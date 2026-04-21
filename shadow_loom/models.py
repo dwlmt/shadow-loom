@@ -5,7 +5,8 @@ from typing import List, Dict, Optional, Literal, Union
 # PART 1: THE GRAPH DATABASE (The Reality Engine)
 # =====================================================================
 
-# --- 0. AMWN BASE CLASS (The Multiverse Tag) ---
+
+# --- 0. AMWN (Ancestral Multiverse World Network) BASE CLASS (The Multiverse Tag) ---
 class AMWNNode(BaseModel):
     world_id: Literal["factual", "shadow"] = Field(
         default="factual", 
