@@ -52,14 +52,19 @@ class Entity(AMWNNode):
     id: str = Field(description="Unique ID, e.g., ENT_MACBETH")
     name: str
     location_id: str = Field(description="Where are they right now?")
-    status: Literal["healthy", "injured", "dead", "unconscious"]
+    status: Literal["healthy", "injured", "ill", "dead", "unconscious"]
     traits: Dict[str, TraitVector] = Field(description="Multidimensional psychology.")
     beliefs: List[Belief] = Field(default_factory=list, description="Epistemic state for Dramatic Irony/Suspense.")
     constants: List[str] = Field(default_factory=list, description="Immutable boolean tags, e.g., ['blind', 'undead']")
 
 class EventNode(AMWNNode):
     id: str = Field(description="Unique ID, e.g., EVT_DUNCAN_MURDER")
-    timestamp: int = Field(description="Chronological integer (1, 2, 3...)")
+    fabula_time: int = Field(
+        description="The strict chronological order (e.g., Year 1000). Used for Causal Physics."
+    )
+    syuzhet_index: int = Field(
+        description="The sequence this appears in the text (e.g., Chapter 4, Paragraph 2). Used for Suspense."
+    )
     event_type: Literal["choice", "outcome", "revelation"]
     actor_id: Optional[str] = Field(description="Who did it? Null if natural event.")
     description: str
