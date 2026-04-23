@@ -20,22 +20,40 @@ This pipeline is divided into four distinct phases:
 #### 1. Coreference Sanitization
 
 - **Actor:** Fast LLM (e.g., Gemini Flash).
-- **Function:** Cleans raw prose before it hits the extraction engines. It replaces ambiguous pronouns ("he," "she," "it") with explicit noun references to ensure the extraction agents do not confuse character identities.
+- **What it Extracts:** Nothing. It translates and sanitizes the raw prose.
+- **How it Works:** You pass the raw text chunk to a very fast, cheap model (like Gemini Flash) with a simple instruction: "Replace all ambiguous pronouns (he, she, it, they) with the explicit proper nouns they refer to. Do not alter the narrative."
+- **Why it Matters:** If the text says, "He stabbed him," extraction agents will hallucinate new IDs or assign the action to the wrong character. By sanitizing it to "Macbeth stabbed Duncan," you eliminate identity confusion before the heavy extraction begins.
 - **Output:** A sanitized text chunk ready for strict parsing.
 
-#### 2. Incremental Multi-Pass Extraction
+#### 2. Incremental Multi-Pass Extraction (The Core Engine)
 
 - **Actor:** Orchestrator Python Script + Three Specialized LLM Agents.
-- **Function:** Breaks down Pydantic schema extraction to prevent hallucinations.
-  - **Pass A (Ontology):** Extracts strict Nouns (Entity, Location, NarrativeObject).
-  - **Pass B (Chronology):** Extracts EventNodes using the Nouns as a forced Ledger.
-  - **Pass C (Topology):** Calculates vectors for RelationshipEdges and psychological traits.
-- **Output:** Three validated, strictly typed JSON payloads containing the localized graph.
+- **Function:** The heart of the pipeline. The sanitized text is passed sequentially to three distinct Pydantic-constrained prompts to prevent hallucinations.
+
+##### Pass A: The Noun Pass (Ontology)
+
+- **What it Extracts:** The physical pieces on the board (Entities, Locations, NarrativeObjects).
+- **How it Works:** The LLM is prompted to read the sanitized chunk and strictly catalog the physical existence of items and people. It does not look at what happened or how people feel; it just logs names and states (e.g., `status: "healthy"`).
+- **Critical Output:** This step generates the **Noun Ledger** — a JSON object containing the exact, approved uppercase IDs (e.g., `['ENT_MACBETH', 'ENT_DUNCAN', 'LOC_COURTYARD']`) and their current states.
+
+##### Pass B: The Event Pass (Chronology)
+
+- **What it Extracts:** The timeline of actions (EventNodes).
+- **How it Works (The Forcing Function):** You pass the sanitized text to the Event Agent, but you inject the Noun Ledger directly into the system prompt. The prompt includes a strict rule: "You MUST ONLY use `actor_id` and `target_id` values from this exact list. If a character is not in the list, ignore the event."
+- **Critical Output:** It extracts the timeline (e.g., `EVT_MURDER_1`). Because of the forcing function, Pydantic will literally reject the LLM's output if it hallucinates an ID like `ENT_GUARDSMAN` that wasn't found in Pass A. This step adds to the ledger, creating the **Hybrid Ledger** (Nouns + Events).
+
+##### Pass C: The Edge Pass (Topology & Math)
+
+- **What it Extracts:** The psychological traits (e.g., Ambition) and social relationships (e.g., Affinity, Power Dynamics).
+- **How it Works (High Reasoning):** This pass requires your smartest model (e.g., Gemini Pro). You pass the text along with the full Hybrid Ledger (the list of people and what they just did). The prompt asks the LLM to calculate the shifting psychological metrics based on the text. For PyMC compatibility, it also asks for the `evidence_strength` (Weak, Moderate, Strong) so Python can calculate the statistical variance later.
+- **Critical Output:** The invisible causal bridges connecting the nodes.
+
+**Overall Output:** Three validated, strictly typed JSON payloads containing the localized graph.
 
 #### 3. Factual Commit (The Global Storage)
 
 - **Actor:** Cognee / Neo4j Graph Database.
-- **Function:** Ingests the output of Step 2. Cognee handles node merging (upserting) natively based on the Pydantic IDs. All nodes and edges in this phase are permanently tagged with the AMWN property `world_id: "factual"`.
+- **How it Works:** Python takes the three separate Pydantic payloads (Nouns, Events, Edges), combines them, and pushes them to the Graph Database. Cognee handles node merging (upserting) natively based on the Pydantic IDs, tagging them all with `world_id: "factual"`.
 - **Output:** A persistently updated, mathematically rigorous global universe state.
 
 ---
