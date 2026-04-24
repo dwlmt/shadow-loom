@@ -112,6 +112,8 @@ def extract_ego_graph_from_memory(
         ):
             # Time-slice: exclude relationships updated after the anchor
             if temporal_anchor is not None and edge.last_updated_fabula > temporal_anchor:
+                logger.debug("[EgoGraph] Excluded relationship %s→%s: last_updated_fabula=%d > anchor=%d",
+                             edge.source_entity_id, edge.target_entity_id, edge.last_updated_fabula, temporal_anchor)
                 continue
             relevant_relationships.append(edge.model_dump())
 
@@ -148,9 +150,13 @@ def extract_ego_graph_from_memory(
             continue
         # Skip terminated links (anchor past termination, or no anchor but link is terminated)
         if ie.terminated_at_fabula is not None:
-            if temporal_anchor is not None and ie.terminated_at_fabula < temporal_anchor:
+            if temporal_anchor is not None and ie.terminated_at_fabula <= temporal_anchor:
+                logger.debug("[EgoGraph] Excluded info edge %s→%s: terminated_at_fabula=%d <= anchor=%d",
+                             ie.source_id, ie.target_ids, ie.terminated_at_fabula, temporal_anchor)
                 continue
             if temporal_anchor is None:
+                logger.debug("[EgoGraph] Excluded info edge %s→%s: terminated (no anchor)",
+                             ie.source_id, ie.target_ids)
                 continue
         relevant_information_edges.append(ie.model_dump())
 
@@ -209,7 +215,7 @@ def extract_full_world_state(
         dump["information_topology"] = [
             ie for ie in dump.get("information_topology", [])
             if ie["established_at_fabula"] <= temporal_anchor
-            and (ie.get("terminated_at_fabula") is None or ie["terminated_at_fabula"] >= temporal_anchor)
+            and (ie.get("terminated_at_fabula") is None or ie["terminated_at_fabula"] > temporal_anchor)
         ]
         logger.info("Omniscient Graph extracted — %d entities, %d locations, %d/%d events (anchor T=%d)",
                      len(dump["entities"]), len(dump["locations"]),

@@ -7,6 +7,8 @@ from shadow_loom.models import WorldStateV1
 from shadow_loom.query_models import UserRequest
 from shadow_loom.extract_graph import EgoGraphPayload, extract_ego_graph_from_memory, extract_full_world_state
 from shadow_loom.instantiator import AMWNInstantiator
+from shadow_loom.causal_physics import CausalPhysicsEngine
+from shadow_loom.directive_assembly import DirectiveAssembler
 
 logger = logging.getLogger(__name__)
 
@@ -14,11 +16,22 @@ logger = logging.getLogger(__name__)
 def calculate_narrative_physics(
     request: UserRequest,
     global_world_state: WorldStateV1,
-    temporal_anchor: Optional[int] = None
+    temporal_anchor: Optional[int] = None,
+    syuzhet_anchor: Optional[int] = None,
+    use_causal_engine: bool = False,
 ) -> Dict[str, Any]:
     """
     Executes structural graph math and topological surgeries.
     Returns the serialized graph state purely in Python dictionaries.
+
+    Parameters
+    ----------
+    temporal_anchor : int or None
+        Fabula-time cutoff for time-slicing (causal physics layer).
+    syuzhet_anchor : int or None
+        Narrative-position cutoff for reader epistemic state
+        (suspense / surprise layer).  Only used when
+        ``use_causal_engine=True`` for directive queries.
     """
     # ==========================================
     # RUNG 1: OBSERVATION
@@ -60,16 +73,29 @@ def calculate_narrative_physics(
         shadow_graph = AMWNInstantiator.create_sandbox(ego_graph.model_dump(), "intervention")
         logger.info("[Intervention] Sandbox built — %d nodes, %d edges. Applying surgeries.",
                      shadow_graph.number_of_nodes(), shadow_graph.number_of_edges())
-        AMWNInstantiator.execute_interventions(shadow_graph, request.interventions)
-        logger.info("[Intervention] Surgeries complete — %d nodes, %d edges.",
-                     shadow_graph.number_of_nodes(), shadow_graph.number_of_edges())
 
-        result = {
-            "status": "success",
-            "query_type": "intervention",
-            "physics_state": nx.node_link_data(shadow_graph),
-            "math_changes": request.interventions
-        }
+        if use_causal_engine:
+            engine = CausalPhysicsEngine(shadow_graph, global_world_state)
+            physics_result = engine.execute(rung=2, interventions=request.interventions)
+            result = {
+                "status": "success",
+                "query_type": "intervention",
+                "physics_state": physics_result.sandbox_data,
+                "math_changes": request.interventions,
+                "mutations": [m.model_dump() for m in physics_result.mutations],
+                "blocked": [b.model_dump() for b in physics_result.blocked],
+                "intervened_nodes": physics_result.intervened_nodes,
+            }
+        else:
+            AMWNInstantiator.execute_interventions(shadow_graph, request.interventions)
+            logger.info("[Intervention] Surgeries complete — %d nodes, %d edges.",
+                         shadow_graph.number_of_nodes(), shadow_graph.number_of_edges())
+            result = {
+                "status": "success",
+                "query_type": "intervention",
+                "physics_state": nx.node_link_data(shadow_graph),
+                "math_changes": request.interventions
+            }
 
         # Semantic Physics Override for split-screen (multi-room) scenarios
         physics_override = _generate_physics_override(shadow_graph)
@@ -92,21 +118,39 @@ def calculate_narrative_physics(
         logger.info("[Counterfactual] Historical sandbox built — %d nodes. Applying surgeries.",
                      shadow_graph.number_of_nodes())
 
-        # --- ABDUCTION STEP: Update hidden variables from present evidence ---
-        _apply_abduction(shadow_graph, request.evidence_node_ids, global_world_state)
+        if use_causal_engine:
+            engine = CausalPhysicsEngine(shadow_graph, global_world_state)
+            physics_result = engine.execute(
+                rung=3,
+                interventions=request.historical_interventions,
+                evidence_node_ids=request.evidence_node_ids,
+            )
+            result = {
+                "status": "success",
+                "query_type": "counterfactual",
+                "physics_state": physics_result.sandbox_data,
+                "math_changes": request.historical_interventions,
+                "evidence_conditions": request.evidence_node_ids,
+                "mutations": [m.model_dump() for m in physics_result.mutations],
+                "blocked": [b.model_dump() for b in physics_result.blocked],
+                "hidden_deltas": physics_result.hidden_deltas,
+            }
+        else:
+            # --- ABDUCTION STEP: Update hidden variables from present evidence ---
+            _apply_abduction(shadow_graph, request.evidence_node_ids, global_world_state)
 
-        AMWNInstantiator.execute_interventions(shadow_graph, request.historical_interventions)
+            AMWNInstantiator.execute_interventions(shadow_graph, request.historical_interventions)
 
-        # --- PREDICTION STEP: Forward cascade through causal topology ---
-        _apply_forward_cascade(shadow_graph, global_world_state)
+            # --- PREDICTION STEP: Forward cascade through causal topology ---
+            _apply_forward_cascade(shadow_graph, global_world_state)
 
-        result = {
-            "status": "success",
-            "query_type": "counterfactual",
-            "physics_state": nx.node_link_data(shadow_graph),
-            "math_changes": request.historical_interventions,
-            "evidence_conditions": request.evidence_node_ids
-        }
+            result = {
+                "status": "success",
+                "query_type": "counterfactual",
+                "physics_state": nx.node_link_data(shadow_graph),
+                "math_changes": request.historical_interventions,
+                "evidence_conditions": request.evidence_node_ids
+            }
 
         physics_override = _generate_physics_override(shadow_graph)
         if physics_override:
@@ -121,9 +165,23 @@ def calculate_narrative_physics(
         logger.info("[Directive] Target entities: %s | Effect: %s | Intensity: %.2f",
                      request.target_entity_ids, request.target_effect, request.intensity)
         ego_graph = extract_ego_graph_from_memory(global_world_state, request.target_entity_ids, temporal_anchor)
+        ego_dump = ego_graph.model_dump()
+
+        if use_causal_engine:
+            assembler = DirectiveAssembler(
+                sandbox=None, ego_payload=ego_dump, world_state=global_world_state,
+            )
+            brief = assembler.assemble(request, syuzhet_anchor=syuzhet_anchor)
+            return {
+                "status": "success",
+                "query_type": "directive",
+                "physics_state": ego_dump,
+                "creative_brief": brief.model_dump(),
+                "target_effect": request.target_effect,
+            }
 
         injection_rules = _generate_directive_rules(
-            ego_graph.model_dump(),
+            ego_dump,
             request.target_vector_id,
             request.intensity
         )
@@ -131,7 +189,7 @@ def calculate_narrative_physics(
         return {
             "status": "success",
             "query_type": "directive",
-            "physics_state": ego_graph.model_dump(),
+            "physics_state": ego_dump,
             "directives": injection_rules,
             "target_effect": request.target_effect
         }
@@ -191,6 +249,7 @@ def _resolve_focus_entities(interventions: Dict[str, Any], global_world_state: W
         if resolved and resolved not in seen:
             seen.add(resolved)
             focus_ids.append(resolved)
+            logger.debug("[ResolveFocus] %s → resolved entity %s", target_path, resolved)
 
         # Also resolve comms targets so their rooms are in the ego-graph
         if prop == "communicating_with":
@@ -250,7 +309,8 @@ def _calculate_past_anchor(interventions: Dict[str, Any], global_world_state: Wo
         raise ValueError(
             f"Temporal Paradox: Could not find a historical anchor for interventions: {interventions}"
         )
-        
+
+    logger.debug("[PastAnchor] earliest_time=%d from %d intervention keys", earliest_time, len(interventions))
     return int(earliest_time)
 
 # ==========================================
@@ -365,6 +425,27 @@ def _generate_physics_override(sandbox: nx.MultiDiGraph) -> Optional[str]:
 # ==========================================
 # HELPER 4: ABDUCTION (Evidence → Latent Variable Update)
 # ==========================================
+
+# Mechanism → trait affinity mapping.  When an event's causal mechanism
+# is known, only traits in the corresponding list are updated.  Traits
+# not in any list receive a reduced fallback impulse.
+_MECHANISM_TRAIT_MAP: Dict[str, List[str]] = {
+    "physical": ["courage", "fear", "anger", "pain", "strength"],
+    "physical_force": ["courage", "fear", "anger", "pain", "strength"],
+    "psychological": ["guilt", "paranoia", "despair", "hope", "anxiety", "fear", "grief", "remorse"],
+    "epistemic_revelation": ["suspicion", "curiosity", "paranoia", "guilt"],
+    "epistemic": ["suspicion", "curiosity", "paranoia", "guilt"],
+    "social_coercion": ["ambition", "fear", "rebelliousness", "loyalty", "obedience"],
+    "social": ["ambition", "fear", "rebelliousness", "loyalty", "obedience"],
+    "emotional": ["love", "affection", "grief", "despair", "hope", "anger", "fear"],
+    "informational": ["suspicion", "curiosity", "paranoia"],
+    "betrayal": ["anger", "grief", "fear", "loyalty", "affinity"],
+}
+
+# Fallback multiplier for traits not matching the mechanism.
+_MECHANISM_FALLBACK_FACTOR = 0.2
+
+
 def _apply_abduction(
     sandbox: nx.MultiDiGraph,
     evidence_node_ids: List[str],
@@ -416,10 +497,15 @@ def _apply_abduction(
                         target_node = sandbox.nodes.get(ce.target_node_id)
                         if target_node and target_node.get("node_type") == "Entity":
                             traits = target_node.get("traits", {})
-                            for trait_data in traits.values():
-                                if isinstance(trait_data, dict) and "value" in trait_data:
-                                    old_val = trait_data["value"]
+                            relevant = _MECHANISM_TRAIT_MAP.get(ce.mechanism, None)
+                            for trait_name, trait_data in traits.items():
+                                if not isinstance(trait_data, dict) or "value" not in trait_data:
+                                    continue
+                                old_val = trait_data["value"]
+                                if relevant is None or trait_name in relevant:
                                     trait_data["value"] = max(0.0, min(1.0, old_val + mult * 0.1))
+                                else:
+                                    trait_data["value"] = max(0.0, min(1.0, old_val + mult * 0.1 * _MECHANISM_FALLBACK_FACTOR))
                 logger.info("[Abduction] Propagated evidence from event %s.", eid)
         else:
             logger.warning("[Abduction] Evidence node %s not in sandbox. Skipping.", eid)
@@ -434,46 +520,131 @@ def _apply_forward_cascade(
 ) -> None:
     """
     CTF Step 3 — Prediction: After abduction and the do-operator, walk
-    the causal topology forward from sandbox events, adjusting downstream
-    entity traits proportionally to the edge's evidence_strength.
+    the causal topology forward, adjusting downstream entity traits
+    proportionally to the edge's evidence_strength.
 
-    The traversal is ordered by fabula_time so that early causes propagate
-    before later ones.  When a causal edge targets an event not yet in the
-    reachable set, it is added so that multi-hop cascades continue.
+    Aligned with CausalPhysicsEngine.propagate():
+      • Topological-sort ordering (falls back to fabula_time if cycles).
+      • Impact > Inertia gating — small impulses are absorbed.
+      • Bidirectional shifts — traits can decrease as well as increase.
+      • Mechanism-targeted updates via _MECHANISM_TRAIT_MAP.
+      • Spatial affordance checks (unlocked paths only).
     """
     strength_mult = {"weak": 0.25, "moderate": 0.5, "strong": 0.75}
 
-    # Seed the reachable set with every event currently in the sandbox
-    reachable_events = {
-        nid for nid, d in sandbox.nodes(data=True)
-        if d.get("node_type") == "EventNode"
-    }
+    # 1. Build a causal DiGraph from the global causal_topology,
+    #    restricted to nodes present in the sandbox.
+    causal_graph = nx.DiGraph()
+    edge_meta: Dict[tuple, Dict[str, Any]] = {}  # (src, tgt) → {weight, mechanism}
 
-    if not reachable_events:
+    for ce in global_world_state.causal_topology:
+        src = ce.source_event_id
+        tgt = ce.target_node_id
+        if not sandbox.has_node(src) and src not in {
+            nid for nid, _ in sandbox.nodes(data=True)
+        }:
+            continue
+        weight = strength_mult.get(ce.evidence_strength, 0.5)
+        key = (src, tgt)
+        if causal_graph.has_edge(src, tgt):
+            existing_w = causal_graph[src][tgt].get("weight", 0.0)
+            weight = max(existing_w, weight)
+        causal_graph.add_edge(src, tgt, weight=weight)
+        edge_meta[key] = {"weight": weight, "mechanism": ce.mechanism}
+
+    if causal_graph.number_of_edges() == 0:
         return
 
-    # Process causal edges in temporal order for proper forward propagation
-    causal_sorted = sorted(
-        global_world_state.causal_topology,
-        key=lambda ce: ce.fabula_time,
-    )
+    # 2. Topological sort (fall back to fabula_time order if cycles)
+    try:
+        execution_order = list(nx.topological_sort(causal_graph))
+    except nx.NetworkXUnfeasible:
+        logger.warning("[Forward Cascade] Cyclic causal graph — falling back to fabula_time order.")
+        execution_order = sorted(
+            causal_graph.nodes(),
+            key=lambda nid: next(
+                (e.fabula_time for e in global_world_state.events if e.id == nid),
+                float("inf"),
+            ),
+        )
 
-    for ce in causal_sorted:
-        if ce.source_event_id not in reachable_events:
+    # 3. Build a spatial traversability sub-graph for affordance checks
+    traversable = nx.DiGraph()
+    for u, v, d in sandbox.edges(data=True):
+        if d.get("edge_type") == "connected_to" and not d.get("is_locked", False):
+            traversable.add_edge(u, v)
+
+    # 4. Propagate
+    for node_id in execution_order:
+        target = sandbox.nodes.get(node_id)
+        if not target or target.get("node_type") != "Entity":
             continue
 
-        target_id = ce.target_node_id
-        mult = strength_mult.get(ce.evidence_strength, 0.5)
+        incoming = list(causal_graph.in_edges(node_id, data=True))
+        if not incoming:
+            continue
 
-        target = sandbox.nodes.get(target_id)
-        if target and target.get("node_type") == "Entity":
-            traits = target.get("traits", {})
-            for trait_data in traits.values():
-                if isinstance(trait_data, dict) and "value" in trait_data:
-                    old_val = trait_data["value"]
-                    trait_data["value"] = max(0.0, min(1.0, old_val + mult * 0.1))
+        traits = target.get("traits", {})
+        if not traits:
+            continue
 
-        # If the target is itself an event, allow further cascading
-        reachable_events.add(target_id)
+        tgt_loc = target.get("location_id")
 
-    logger.info("[Forward Cascade] Processed %d reachable events.", len(reachable_events))
+        for trait_name, trait_data in traits.items():
+            if not isinstance(trait_data, dict) or "value" not in trait_data:
+                continue
+
+            current_val = trait_data["value"]
+            trait_inertia = trait_data.get("inertia", 0.5)
+            total_impact = 0.0
+            spatial_ok = True
+
+            for src, _, edata in incoming:
+                w = edata.get("weight", 0.5)
+                meta = edge_meta.get((src, node_id), {})
+                mechanism = meta.get("mechanism", "physical")
+                relevant_traits = _MECHANISM_TRAIT_MAP.get(mechanism)
+
+                # Mechanism-targeted gating
+                if relevant_traits is not None and trait_name not in relevant_traits:
+                    logger.debug("[ForwardCascade] %s→%s trait=%s: mechanism=%s fallback, w %.3f→%.3f",
+                                 src, node_id, trait_name, mechanism, w, w * _MECHANISM_FALLBACK_FACTOR)
+                    w *= _MECHANISM_FALLBACK_FACTOR
+
+                src_data = sandbox.nodes.get(src)
+                if not src_data:
+                    continue
+
+                if src_data.get("node_type") == "Entity":
+                    src_trait = src_data.get("traits", {}).get(trait_name)
+                    if isinstance(src_trait, dict) and "value" in src_trait:
+                        # Signed delta: shift toward source trait value
+                        total_impact += (src_trait["value"] - current_val) * w
+                    else:
+                        total_impact += w * 0.1
+                    # Spatial affordance
+                    src_loc = src_data.get("location_id")
+                    if (src_loc and tgt_loc and src_loc != tgt_loc
+                            and traversable.has_node(src_loc)
+                            and traversable.has_node(tgt_loc)):
+                        if not nx.has_path(traversable, src_loc, tgt_loc):
+                            spatial_ok = False
+                else:
+                    total_impact += w * 0.1
+
+            if not spatial_ok:
+                logger.debug("[ForwardCascade] BLOCKED spatial: %s.%s", node_id, trait_name)
+                continue
+
+            if abs(total_impact) <= trait_inertia:
+                logger.debug("[ForwardCascade] BLOCKED inertia: %s.%s |impact|=%.3f <= inertia=%.3f",
+                             node_id, trait_name, abs(total_impact), trait_inertia)
+                continue
+
+            # Dampened shift: effective = impact - sign × inertia
+            sign = 1 if total_impact > 0 else -1
+            effective_shift = total_impact - sign * trait_inertia
+            new_val = max(0.0, min(1.0, current_val + effective_shift))
+            trait_data["value"] = new_val
+
+    logger.info("[Forward Cascade] Propagation complete.")

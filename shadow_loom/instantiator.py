@@ -70,12 +70,15 @@ class AMWNInstantiator:
                 sandbox.add_edge(f_id, f_loc, edge_type="located_in")
 
         for ent in ego_payload.get("present_entities", []):
+            e_id = ent.get("id")
             e_loc = ent.get("location_id")
-            if e_loc and sandbox.has_node(e_loc):
-                sandbox.add_edge(ent["id"], e_loc, edge_type="located_in")
+            if e_id and e_loc and sandbox.has_node(e_loc):
+                sandbox.add_edge(e_id, e_loc, edge_type="located_in")
 
         for obj in ego_payload.get("present_objects", []):
-            obj_id = obj["id"]
+            obj_id = obj.get("id")
+            if not obj_id:
+                continue
             owner_id = obj.get("owner_id")
             if owner_id and sandbox.has_node(owner_id):
                 sandbox.add_edge(obj_id, owner_id, edge_type="owned_by")
@@ -115,8 +118,10 @@ class AMWNInstantiator:
             src = ce.get("source_event_id")
             tgt = ce.get("target_node_id")
             mech = ce.get("mechanism", "physical")
+            strength = ce.get("evidence_strength", "moderate")
             if src and tgt and sandbox.has_node(src) and sandbox.has_node(tgt):
                 sandbox.add_edge(src, tgt, edge_type="causal", mechanism=mech,
+                                 evidence_strength=strength,
                                  world_id=target_world_id)
 
         # E. Spatial Navigation Edges (SpatialEdge — ALL edges wired, locked flagged)
@@ -160,6 +165,8 @@ class AMWNInstantiator:
                 if node_id in (src, tgt):
                     continue
                 if node_data.get("location_id") in eavesdrop_locs:
+                    logger.debug("[Instantiator·Eavesdrop] %s can overhear %s→%s (medium=%s, location=%s)",
+                                 node_id, src, tgt, cdata.get("medium"), node_data.get("location_id"))
                     sandbox.add_edge(src, node_id, edge_type="eavesdropped_by",
                                      medium=cdata.get("medium", "unknown"),
                                      world_id=target_world_id)
@@ -228,12 +235,19 @@ class AMWNInstantiator:
     @staticmethod
     def _has_unlock_affordance(sandbox: nx.MultiDiGraph, actor_id: str, barrier_id: str) -> bool:
         """Check if the actor owns any object that can 'unlock' the barrier."""
-        barrier_type = sandbox.nodes.get(barrier_id, {}).get("node_type", "NarrativeObject")
+        barrier_node = sandbox.nodes.get(barrier_id, {})
+        barrier_node_type = barrier_node.get("node_type", "NarrativeObject")
+        barrier_name = barrier_node.get("name", "")
         for node_id, data in sandbox.nodes(data=True):
             if data.get("node_type") != "NarrativeObject" or data.get("owner_id") != actor_id:
                 continue
             for aff in data.get("affordances", []):
-                if isinstance(aff, dict) and aff.get("action") == "unlock" and aff.get("target_type") == barrier_type:
+                if not isinstance(aff, dict) or aff.get("action") != "unlock":
+                    continue
+                aff_target = aff.get("target_type", "")
+                if aff_target == barrier_node_type or aff_target == barrier_name:
+                    logger.debug("[Instantiator·Unlock] %s owns item %s with affordance matching barrier %s (target_type=%s, barrier_type=%s, barrier_name=%s)",
+                                 actor_id, node_id, barrier_id, aff_target, barrier_node_type, barrier_name)
                     return True
         return False
 
@@ -395,6 +409,8 @@ class AMWNInstantiator:
         current_level = node_data
         for key in keys[:-1]:
             if key not in current_level or not isinstance(current_level[key], dict):
+                logger.warning("[Surgery] Path '%s' creates intermediate key '%s' on %s. "
+                               "Verify this is intentional.", path, key, node_id)
                 current_level[key] = {}
             current_level = current_level[key]
         current_level[keys[-1]] = new_value
