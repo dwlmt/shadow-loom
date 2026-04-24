@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional, Literal, Union, Dict, List
+from typing import Any, Optional, Literal, Union, Dict, List
 
 # ==========================================
 # 1. THE OBSERVATION (Rung 1: Natural Progression)
@@ -29,8 +29,8 @@ class InterventionQuery(BaseModel):
     cutting incoming edges, and calculates the future from here.
     """
     query_type: Literal["intervention"] = "intervention"
-    interventions: Dict[str, str] = Field(
-        description="A dictionary of multiple do-operator targets. e.g., {'EVT_MURDER': 'prevented', 'LOC_HALL.visibility': '0.0'}"
+    interventions: Dict[str, Any] = Field(
+        description="A dictionary of do-operator targets. Values are strings for state changes, or dicts for genesis spawns."
     )
     commit_to_factual: bool = Field(
         default=False, 
@@ -46,7 +46,7 @@ class CounterfactualQuery(BaseModel):
     applies multiple interventions, and runs prediction.
     """
     query_type: Literal["counterfactual"] = "counterfactual"
-    historical_interventions: Dict[str, str] = Field(
+    historical_interventions: Dict[str, Any] = Field(
         description="The PAST events to change. e.g., {'EVT_GUARD_DUTY': 'slept'}"
     )
     evidence_node_ids: List[str] = Field(
@@ -62,8 +62,8 @@ class DirectiveQuery(BaseModel):
     a specific psychological or epistemic effect.
     """
     query_type: Literal["directive"] = "directive"
-    target_entity_id: str = Field(description="The Entity experiencing the emotion or the ignorance.")
-    target_effect: Literal["suspense", "dramatic_irony", "grief", "rage", "joy", "regret", "love", "fear"] = Field(
+    target_entity_ids: List[str] = Field(description="The Entities experiencing the emotion or the ignorance.")
+    target_effect: Literal["suspense", "surprise", "dramatic_irony", "grief", "rage", "joy", "regret", "love", "fear"] = Field(
         description="The narrative effect to maximize."
     )
     target_vector_id: Optional[str] = Field(
