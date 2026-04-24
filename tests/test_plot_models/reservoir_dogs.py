@@ -1,6 +1,6 @@
 from shadow_loom.models import (
     WorldStateV1, Location, NarrativeObject, Entity, EventNode,
-    CausalEdge, RelationshipEdge, TraitVector, AmbientVector,
+    CausalEdge, SpatialEdge, RelationshipEdge, TraitVector,
     Affordance, Belief,
 )
 
@@ -13,46 +13,30 @@ world_state = WorldStateV1(
 
     # ── LOCATIONS ──────────────────────────────────────────────────────────
     locations={
-        "LOC_DINER": Location(
-            id="LOC_DINER",
+                "LOC_DINER": Location(
             name="Uncle Bob's Pancake House (Diner)",
-            connected_locations=["LOC_STREETS"],
-            ambient_states={
-                "camaraderie": AmbientVector(value=0.7, volatility=0.3),
-            },
+            description="Uncle Bob's Pancake House (Diner)",
+            ambient_state={"camaraderie": {"value": 0.7, "volatility": 0.3}},
         ),
-        "LOC_JEWELRY_STORE": Location(
-            id="LOC_JEWELRY_STORE",
+                "LOC_JEWELRY_STORE": Location(
             name="Karina's Jewelry Store",
-            connected_locations=["LOC_STREETS"],
-            ambient_states={
-                "tension": AmbientVector(value=0.9, volatility=0.5),
-            },
+            description="Karina's Jewelry Store",
+            ambient_state={"tension": {"value": 0.9, "volatility": 0.5}},
         ),
-        "LOC_STREETS": Location(
-            id="LOC_STREETS",
+                "LOC_STREETS": Location(
             name="Los Angeles Streets",
-            connected_locations=["LOC_DINER", "LOC_JEWELRY_STORE", "LOC_WAREHOUSE"],
-            ambient_states={
-                "danger": AmbientVector(value=0.8, volatility=0.6),
-            },
+            description="Los Angeles Streets",
+            ambient_state={"danger": {"value": 0.8, "volatility": 0.6}},
         ),
-        "LOC_WAREHOUSE": Location(
-            id="LOC_WAREHOUSE",
+                "LOC_WAREHOUSE": Location(
             name="Warehouse Rendezvous Point",
-            connected_locations=["LOC_STREETS"],
-            ambient_states={
-                "paranoia": AmbientVector(value=0.9, volatility=0.4),
-                "dread": AmbientVector(value=0.85, volatility=0.5),
-            },
+            description="Warehouse Rendezvous Point",
+            ambient_state={"paranoia": {"value": 0.9, "volatility": 0.4}, "dread": {"value": 0.85, "volatility": 0.5}},
         ),
-        "LOC_JOES_OFFICE": Location(
-            id="LOC_JOES_OFFICE",
+                "LOC_JOES_OFFICE": Location(
             name="Joe Cabot's Office",
-            connected_locations=["LOC_STREETS"],
-            ambient_states={
-                "authority": AmbientVector(value=0.8, volatility=0.2),
-            },
+            description="Joe Cabot's Office",
+            ambient_state={"authority": {"value": 0.8, "volatility": 0.2}},
         ),
     },
 
@@ -262,6 +246,12 @@ world_state = WorldStateV1(
     ],
 
     # ── SOCIAL TOPOLOGY ────────────────────────────────────────────────────
+    spatial_topology=[
+        SpatialEdge(source_id="LOC_DINER", target_id="LOC_STREETS"),
+        SpatialEdge(source_id="LOC_JEWELRY_STORE", target_id="LOC_STREETS"),
+        SpatialEdge(source_id="LOC_JOES_OFFICE", target_id="LOC_STREETS"),
+        SpatialEdge(source_id="LOC_STREETS", target_id="LOC_WAREHOUSE"),
+    ],
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_WHITE", target_entity_id="ENT_ORANGE", affinity=0.8, friction=0.2, power_dynamic=0.3, inertia=0.7),
         RelationshipEdge(source_entity_id="ENT_ORANGE", target_entity_id="ENT_WHITE", affinity=0.5, friction=0.5, power_dynamic=-0.3, inertia=0.5),

@@ -1,6 +1,6 @@
 from shadow_loom.models import (
     WorldStateV1, Location, NarrativeObject, Entity, EventNode,
-    CausalEdge, RelationshipEdge, TraitVector, AmbientVector,
+    CausalEdge, SpatialEdge, RelationshipEdge, TraitVector,
     Affordance, Belief,
 )
 
@@ -13,58 +13,40 @@ world_state = WorldStateV1(
 
     # ── LOCATIONS ──────────────────────────────────────────────────────────
     locations={
-        "LOC_ASWAN": Location(
-            id="LOC_ASWAN",
+                "LOC_ASWAN": Location(
             name="Aswan",
-            connected_locations=["LOC_KARNAK_STEAMER"],
-            ambient_states={
-                "heat": AmbientVector(value=0.8, volatility=0.1),
-            },
+            description="Aswan",
+            ambient_state={"heat": {"value": 0.8, "volatility": 0.1}},
         ),
-        "LOC_KARNAK_STEAMER": Location(
-            id="LOC_KARNAK_STEAMER",
+                "LOC_KARNAK_STEAMER": Location(
             name="Steamer Karnak",
-            connected_locations=["LOC_ASWAN", "LOC_ABU_SIMBEL", "LOC_WADI_HALFA", "LOC_SHELLAL"],
-            ambient_states={
-                "tension": AmbientVector(value=0.7, volatility=0.5),
-                "confinement": AmbientVector(value=0.8, volatility=0.1),
-            },
+            description="Steamer Karnak",
+            ambient_state={"tension": {"value": 0.7, "volatility": 0.5}, "confinement": {"value": 0.8, "volatility": 0.1}},
         ),
-        "LOC_KARNAK_LOUNGE": Location(
-            id="LOC_KARNAK_LOUNGE",
+                "LOC_KARNAK_LOUNGE": Location(
             name="Steamer Karnak — Lounge",
-            connected_locations=["LOC_KARNAK_STEAMER", "LOC_KARNAK_CABINS"],
-            ambient_states={
-                "social": AmbientVector(value=0.7, volatility=0.4),
-            },
+            description="Steamer Karnak — Lounge",
+            ambient_state={"social": {"value": 0.7, "volatility": 0.4}},
         ),
-        "LOC_KARNAK_CABINS": Location(
-            id="LOC_KARNAK_CABINS",
+                "LOC_KARNAK_CABINS": Location(
             name="Steamer Karnak — Passenger Cabins",
-            connected_locations=["LOC_KARNAK_LOUNGE", "LOC_KARNAK_STEAMER"],
-            ambient_states={
-                "privacy": AmbientVector(value=0.6, volatility=0.5),
-            },
+            description="Steamer Karnak — Passenger Cabins",
+            ambient_state={"privacy": {"value": 0.6, "volatility": 0.5}},
         ),
-        "LOC_ABU_SIMBEL": Location(
-            id="LOC_ABU_SIMBEL",
+                "LOC_ABU_SIMBEL": Location(
             name="Abu Simbel",
-            connected_locations=["LOC_KARNAK_STEAMER"],
-            ambient_states={
-                "danger": AmbientVector(value=0.6, volatility=0.7),
-            },
+            description="Abu Simbel",
+            ambient_state={"danger": {"value": 0.6, "volatility": 0.7}},
         ),
-        "LOC_WADI_HALFA": Location(
-            id="LOC_WADI_HALFA",
+                "LOC_WADI_HALFA": Location(
             name="Wadi Halfa",
-            connected_locations=["LOC_KARNAK_STEAMER"],
-            ambient_states={},
+            description="Wadi Halfa",
+            ambient_state={},
         ),
-        "LOC_SHELLAL": Location(
-            id="LOC_SHELLAL",
+                "LOC_SHELLAL": Location(
             name="Shellal",
-            connected_locations=["LOC_KARNAK_STEAMER"],
-            ambient_states={},
+            description="Shellal",
+            ambient_state={},
         ),
     },
 
@@ -385,6 +367,15 @@ world_state = WorldStateV1(
     ],
 
     # ── SOCIAL TOPOLOGY ────────────────────────────────────────────────────
+    spatial_topology=[
+        SpatialEdge(source_id="LOC_ABU_SIMBEL", target_id="LOC_KARNAK_STEAMER"),
+        SpatialEdge(source_id="LOC_ASWAN", target_id="LOC_KARNAK_STEAMER"),
+        SpatialEdge(source_id="LOC_KARNAK_CABINS", target_id="LOC_KARNAK_LOUNGE"),
+        SpatialEdge(source_id="LOC_KARNAK_CABINS", target_id="LOC_KARNAK_STEAMER"),
+        SpatialEdge(source_id="LOC_KARNAK_LOUNGE", target_id="LOC_KARNAK_STEAMER"),
+        SpatialEdge(source_id="LOC_KARNAK_STEAMER", target_id="LOC_SHELLAL"),
+        SpatialEdge(source_id="LOC_KARNAK_STEAMER", target_id="LOC_WADI_HALFA"),
+    ],
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_SIMON", target_entity_id="ENT_JACQUELINE", affinity=0.9, friction=0.6, power_dynamic=-0.2, inertia=0.85),
         RelationshipEdge(source_entity_id="ENT_JACQUELINE", target_entity_id="ENT_SIMON", affinity=0.95, friction=0.7, power_dynamic=0.3, inertia=0.9),

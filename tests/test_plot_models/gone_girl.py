@@ -1,6 +1,6 @@
 from shadow_loom.models import (
     WorldStateV1, Location, NarrativeObject, Entity, EventNode,
-    CausalEdge, RelationshipEdge, TraitVector, AmbientVector,
+    CausalEdge, SpatialEdge, RelationshipEdge, TraitVector,
     Affordance, Belief,
 )
 
@@ -13,60 +13,40 @@ world_state = WorldStateV1(
 
     # ── LOCATIONS ──────────────────────────────────────────────────────────
     locations={
-        "LOC_NEW_YORK": Location(
-            id="LOC_NEW_YORK",
+                "LOC_NEW_YORK": Location(
             name="New York City (Brooklyn Brownstone)",
-            connected_locations=["LOC_NORTH_CARTHAGE"],
-            ambient_states={
-                "happiness": AmbientVector(value=0.7, volatility=0.6),
-            },
+            description="New York City (Brooklyn Brownstone)",
+            ambient_state={"happiness": {"value": 0.7, "volatility": 0.6}},
         ),
-        "LOC_NORTH_CARTHAGE": Location(
-            id="LOC_NORTH_CARTHAGE",
+                "LOC_NORTH_CARTHAGE": Location(
             name="North Carthage, Missouri",
-            connected_locations=["LOC_NEW_YORK", "LOC_DUNNE_HOUSE", "LOC_THE_BAR", "LOC_GO_WOODSHED"],
-            ambient_states={
-                "stagnation": AmbientVector(value=0.7, volatility=0.3),
-                "tension": AmbientVector(value=0.8, volatility=0.5),
-            },
+            description="North Carthage, Missouri",
+            ambient_state={"stagnation": {"value": 0.7, "volatility": 0.3}, "tension": {"value": 0.8, "volatility": 0.5}},
         ),
-        "LOC_DUNNE_HOUSE": Location(
-            id="LOC_DUNNE_HOUSE",
+                "LOC_DUNNE_HOUSE": Location(
             name="Nick & Amy's House",
-            connected_locations=["LOC_NORTH_CARTHAGE"],
-            ambient_states={
-                "crime_scene": AmbientVector(value=0.9, volatility=0.3),
-            },
+            description="Nick & Amy's House",
+            ambient_state={"crime_scene": {"value": 0.9, "volatility": 0.3}},
         ),
-        "LOC_THE_BAR": Location(
-            id="LOC_THE_BAR",
+                "LOC_THE_BAR": Location(
             name="The Bar (Nick & Go's Bar)",
-            connected_locations=["LOC_NORTH_CARTHAGE"],
-            ambient_states={},
+            description="The Bar (Nick & Go's Bar)",
+            ambient_state={},
         ),
-        "LOC_GO_WOODSHED": Location(
-            id="LOC_GO_WOODSHED",
+                "LOC_GO_WOODSHED": Location(
             name="Go's Woodshed",
-            connected_locations=["LOC_NORTH_CARTHAGE"],
-            ambient_states={
-                "incrimination": AmbientVector(value=0.9, volatility=0.2),
-            },
+            description="Go's Woodshed",
+            ambient_state={"incrimination": {"value": 0.9, "volatility": 0.2}},
         ),
-        "LOC_MOTEL_HIDEOUT": Location(
-            id="LOC_MOTEL_HIDEOUT",
+                "LOC_MOTEL_HIDEOUT": Location(
             name="Amy's Motel Hideout",
-            connected_locations=["LOC_DESI_LAKE_HOUSE"],
-            ambient_states={
-                "isolation": AmbientVector(value=0.8, volatility=0.5),
-            },
+            description="Amy's Motel Hideout",
+            ambient_state={"isolation": {"value": 0.8, "volatility": 0.5}},
         ),
-        "LOC_DESI_LAKE_HOUSE": Location(
-            id="LOC_DESI_LAKE_HOUSE",
+                "LOC_DESI_LAKE_HOUSE": Location(
             name="Desi Collings' Lake House",
-            connected_locations=["LOC_MOTEL_HIDEOUT", "LOC_NORTH_CARTHAGE"],
-            ambient_states={
-                "entrapment": AmbientVector(value=0.8, volatility=0.4),
-            },
+            description="Desi Collings' Lake House",
+            ambient_state={"entrapment": {"value": 0.8, "volatility": 0.4}},
         ),
     },
 
@@ -296,6 +276,14 @@ world_state = WorldStateV1(
     ],
 
     # ── SOCIAL TOPOLOGY ────────────────────────────────────────────────────
+    spatial_topology=[
+        SpatialEdge(source_id="LOC_DESI_LAKE_HOUSE", target_id="LOC_MOTEL_HIDEOUT"),
+        SpatialEdge(source_id="LOC_DESI_LAKE_HOUSE", target_id="LOC_NORTH_CARTHAGE"),
+        SpatialEdge(source_id="LOC_DUNNE_HOUSE", target_id="LOC_NORTH_CARTHAGE"),
+        SpatialEdge(source_id="LOC_GO_WOODSHED", target_id="LOC_NORTH_CARTHAGE"),
+        SpatialEdge(source_id="LOC_NEW_YORK", target_id="LOC_NORTH_CARTHAGE"),
+        SpatialEdge(source_id="LOC_NORTH_CARTHAGE", target_id="LOC_THE_BAR"),
+    ],
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_NICK", target_entity_id="ENT_AMY", affinity=-0.6, friction=0.95, power_dynamic=-0.7, inertia=0.8),
         RelationshipEdge(source_entity_id="ENT_AMY", target_entity_id="ENT_NICK", affinity=0.3, friction=0.9, power_dynamic=0.8, inertia=0.85),

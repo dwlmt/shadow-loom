@@ -1,6 +1,6 @@
 from shadow_loom.models import (
     WorldStateV1, Location, NarrativeObject, Entity, EventNode,
-    CausalEdge, RelationshipEdge, TraitVector, AmbientVector,
+    CausalEdge, SpatialEdge, RelationshipEdge, TraitVector,
     Affordance, Belief,
 )
 
@@ -13,85 +13,50 @@ world_state = WorldStateV1(
 
     # ── LOCATIONS ──────────────────────────────────────────────────────────
     locations={
-        "LOC_LONDON_AIRSTRIP_ONE": Location(
-            id="LOC_LONDON_AIRSTRIP_ONE",
+                "LOC_LONDON_AIRSTRIP_ONE": Location(
             name="London, Airstrip One (Oceania)",
-            connected_locations=["LOC_MINISTRY_OF_TRUTH", "LOC_MINISTRY_OF_LOVE", "LOC_PROLE_QUARTER", "LOC_CHARRINGTON_SHOP", "LOC_VICTORY_MANSIONS"],
-            ambient_states={
-                "surveillance": AmbientVector(value=0.95, volatility=0.05),
-                "oppression": AmbientVector(value=0.95, volatility=0.05),
-            },
+            description="London, Airstrip One (Oceania)",
+            ambient_state={"surveillance": {"value": 0.95, "volatility": 0.05}, "oppression": {"value": 0.95, "volatility": 0.05}},
         ),
-        "LOC_VICTORY_MANSIONS": Location(
-            id="LOC_VICTORY_MANSIONS",
+                "LOC_VICTORY_MANSIONS": Location(
             name="Victory Mansions (Winston's Flat)",
-            connected_locations=["LOC_LONDON_AIRSTRIP_ONE", "LOC_MINISTRY_OF_TRUTH"],
-            ambient_states={
-                "surveillance": AmbientVector(value=0.9, volatility=0.1),
-                "privacy": AmbientVector(value=0.1, volatility=0.1),
-            },
+            description="Victory Mansions (Winston's Flat)",
+            ambient_state={"surveillance": {"value": 0.9, "volatility": 0.1}, "privacy": {"value": 0.1, "volatility": 0.1}},
         ),
-        "LOC_MINISTRY_OF_TRUTH": Location(
-            id="LOC_MINISTRY_OF_TRUTH",
+                "LOC_MINISTRY_OF_TRUTH": Location(
             name="Ministry of Truth",
-            connected_locations=["LOC_LONDON_AIRSTRIP_ONE", "LOC_VICTORY_MANSIONS"],
-            ambient_states={
-                "surveillance": AmbientVector(value=1.0, volatility=0.0),
-                "propaganda": AmbientVector(value=1.0, volatility=0.0),
-            },
+            description="Ministry of Truth",
+            ambient_state={"surveillance": {"value": 1.0, "volatility": 0.0}, "propaganda": {"value": 1.0, "volatility": 0.0}},
         ),
-        "LOC_MINISTRY_OF_LOVE": Location(
-            id="LOC_MINISTRY_OF_LOVE",
+                "LOC_MINISTRY_OF_LOVE": Location(
             name="Ministry of Love (Prison & Re-education)",
-            connected_locations=["LOC_LONDON_AIRSTRIP_ONE", "LOC_ROOM_101"],
-            ambient_states={
-                "terror": AmbientVector(value=1.0, volatility=0.0),
-                "surveillance": AmbientVector(value=1.0, volatility=0.0),
-            },
+            description="Ministry of Love (Prison & Re-education)",
+            ambient_state={"terror": {"value": 1.0, "volatility": 0.0}, "surveillance": {"value": 1.0, "volatility": 0.0}},
         ),
-        "LOC_ROOM_101": Location(
-            id="LOC_ROOM_101",
+                "LOC_ROOM_101": Location(
             name="Room 101",
-            connected_locations=["LOC_MINISTRY_OF_LOVE"],
-            ambient_states={
-                "terror": AmbientVector(value=1.0, volatility=0.0),
-            },
-            constants=["contains_worst_fear"],
+            description="Room 101 (contains_worst_fear)",
+            ambient_state={"terror": {"value": 1.0, "volatility": 0.0}},
         ),
-        "LOC_CHARRINGTON_SHOP": Location(
-            id="LOC_CHARRINGTON_SHOP",
+                "LOC_CHARRINGTON_SHOP": Location(
             name="Mr Charrington's Antiques Shop (Rented Room)",
-            connected_locations=["LOC_PROLE_QUARTER", "LOC_LONDON_AIRSTRIP_ONE"],
-            ambient_states={
-                "privacy": AmbientVector(value=0.7, volatility=0.8),
-                "surveillance": AmbientVector(value=0.9, volatility=0.1),
-            },
+            description="Mr Charrington's Antiques Shop (Rented Room)",
+            ambient_state={"privacy": {"value": 0.7, "volatility": 0.8}, "surveillance": {"value": 0.9, "volatility": 0.1}},
         ),
-        "LOC_PROLE_QUARTER": Location(
-            id="LOC_PROLE_QUARTER",
+                "LOC_PROLE_QUARTER": Location(
             name="Prole Quarter",
-            connected_locations=["LOC_LONDON_AIRSTRIP_ONE", "LOC_CHARRINGTON_SHOP"],
-            ambient_states={
-                "surveillance": AmbientVector(value=0.4, volatility=0.3),
-                "poverty": AmbientVector(value=0.8, volatility=0.1),
-            },
+            description="Prole Quarter",
+            ambient_state={"surveillance": {"value": 0.4, "volatility": 0.3}, "poverty": {"value": 0.8, "volatility": 0.1}},
         ),
-        "LOC_COUNTRYSIDE": Location(
-            id="LOC_COUNTRYSIDE",
+                "LOC_COUNTRYSIDE": Location(
             name="Countryside (Outside London)",
-            connected_locations=["LOC_LONDON_AIRSTRIP_ONE"],
-            ambient_states={
-                "surveillance": AmbientVector(value=0.3, volatility=0.4),
-                "freedom": AmbientVector(value=0.5, volatility=0.5),
-            },
+            description="Countryside (Outside London)",
+            ambient_state={"surveillance": {"value": 0.3, "volatility": 0.4}, "freedom": {"value": 0.5, "volatility": 0.5}},
         ),
-        "LOC_CHESTNUT_TREE_CAFE": Location(
-            id="LOC_CHESTNUT_TREE_CAFE",
+                "LOC_CHESTNUT_TREE_CAFE": Location(
             name="Chestnut Tree Café",
-            connected_locations=["LOC_LONDON_AIRSTRIP_ONE"],
-            ambient_states={
-                "despair": AmbientVector(value=0.8, volatility=0.2),
-            },
+            description="Chestnut Tree Café",
+            ambient_state={"despair": {"value": 0.8, "volatility": 0.2}},
         ),
     },
 
@@ -267,6 +232,18 @@ world_state = WorldStateV1(
     ],
 
     # ── SOCIAL TOPOLOGY ────────────────────────────────────────────────────
+    spatial_topology=[
+        SpatialEdge(source_id="LOC_CHARRINGTON_SHOP", target_id="LOC_LONDON_AIRSTRIP_ONE"),
+        SpatialEdge(source_id="LOC_CHARRINGTON_SHOP", target_id="LOC_PROLE_QUARTER"),
+        SpatialEdge(source_id="LOC_CHESTNUT_TREE_CAFE", target_id="LOC_LONDON_AIRSTRIP_ONE"),
+        SpatialEdge(source_id="LOC_COUNTRYSIDE", target_id="LOC_LONDON_AIRSTRIP_ONE"),
+        SpatialEdge(source_id="LOC_LONDON_AIRSTRIP_ONE", target_id="LOC_MINISTRY_OF_LOVE"),
+        SpatialEdge(source_id="LOC_LONDON_AIRSTRIP_ONE", target_id="LOC_MINISTRY_OF_TRUTH"),
+        SpatialEdge(source_id="LOC_LONDON_AIRSTRIP_ONE", target_id="LOC_PROLE_QUARTER"),
+        SpatialEdge(source_id="LOC_LONDON_AIRSTRIP_ONE", target_id="LOC_VICTORY_MANSIONS"),
+        SpatialEdge(source_id="LOC_MINISTRY_OF_LOVE", target_id="LOC_ROOM_101"),
+        SpatialEdge(source_id="LOC_MINISTRY_OF_TRUTH", target_id="LOC_VICTORY_MANSIONS"),
+    ],
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_WINSTON", target_entity_id="ENT_JULIA", affinity=0.0, friction=0.3, power_dynamic=0.0, inertia=0.3),
         RelationshipEdge(source_entity_id="ENT_WINSTON", target_entity_id="ENT_OBRIEN", affinity=-0.8, friction=0.9, power_dynamic=-1.0, inertia=0.9),

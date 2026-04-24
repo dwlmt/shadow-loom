@@ -1,6 +1,6 @@
 from shadow_loom.models import (
     WorldStateV1, Location, NarrativeObject, Entity, EventNode,
-    CausalEdge, RelationshipEdge, TraitVector, AmbientVector,
+    CausalEdge, SpatialEdge, RelationshipEdge, TraitVector,
     Affordance, Belief,
 )
 
@@ -13,54 +13,35 @@ world_state = WorldStateV1(
 
     # ── LOCATIONS ──────────────────────────────────────────────────────────
     locations={
-        "LOC_WALMINGTON": Location(
-            id="LOC_WALMINGTON",
+                "LOC_WALMINGTON": Location(
             name="Walmington-on-Sea",
-            connected_locations=["LOC_CHURCH_HALL", "LOC_BANK", "LOC_CLIFFS"],
-            ambient_states={
-                "wartime_anxiety": AmbientVector(value=0.6, volatility=0.4),
-                "community": AmbientVector(value=0.7, volatility=0.2),
-            },
+            description="Walmington-on-Sea",
+            ambient_state={"wartime_anxiety": {"value": 0.6, "volatility": 0.4}, "community": {"value": 0.7, "volatility": 0.2}},
         ),
-        "LOC_BANK": Location(
-            id="LOC_BANK",
+                "LOC_BANK": Location(
             name="Martins Bank (Walmington Branch)",
-            connected_locations=["LOC_WALMINGTON"],
-            ambient_states={
-                "routine": AmbientVector(value=0.8, volatility=0.1),
-            },
+            description="Martins Bank (Walmington Branch)",
+            ambient_state={"routine": {"value": 0.8, "volatility": 0.1}},
         ),
-        "LOC_CHURCH_HALL": Location(
-            id="LOC_CHURCH_HALL",
+                "LOC_CHURCH_HALL": Location(
             name="Church Hall (Platoon HQ)",
-            connected_locations=["LOC_WALMINGTON", "LOC_CHURCH_CRYPT"],
-            ambient_states={
-                "community": AmbientVector(value=0.7, volatility=0.3),
-            },
+            description="Church Hall (Platoon HQ)",
+            ambient_state={"community": {"value": 0.7, "volatility": 0.3}},
         ),
-        "LOC_CHURCH_CRYPT": Location(
-            id="LOC_CHURCH_CRYPT",
+                "LOC_CHURCH_CRYPT": Location(
             name="Church Crypt",
-            connected_locations=["LOC_CHURCH_HALL"],
-            ambient_states={
-                "concealment": AmbientVector(value=0.8, volatility=0.2),
-            },
+            description="Church Crypt",
+            ambient_state={"concealment": {"value": 0.8, "volatility": 0.2}},
         ),
-        "LOC_TRAINING_GROUNDS": Location(
-            id="LOC_TRAINING_GROUNDS",
+                "LOC_TRAINING_GROUNDS": Location(
             name="War Games Training Grounds",
-            connected_locations=["LOC_WALMINGTON"],
-            ambient_states={
-                "chaos": AmbientVector(value=0.7, volatility=0.5),
-            },
+            description="War Games Training Grounds",
+            ambient_state={"chaos": {"value": 0.7, "volatility": 0.5}},
         ),
-        "LOC_CLIFFS": Location(
-            id="LOC_CLIFFS",
+                "LOC_CLIFFS": Location(
             name="White Cliffs (overlooking Channel)",
-            connected_locations=["LOC_WALMINGTON"],
-            ambient_states={
-                "defiance": AmbientVector(value=0.8, volatility=0.2),
-            },
+            description="White Cliffs (overlooking Channel)",
+            ambient_state={"defiance": {"value": 0.8, "volatility": 0.2}},
         ),
     },
 
@@ -247,6 +228,13 @@ world_state = WorldStateV1(
     ],
 
     # ── SOCIAL TOPOLOGY ────────────────────────────────────────────────────
+    spatial_topology=[
+        SpatialEdge(source_id="LOC_BANK", target_id="LOC_WALMINGTON"),
+        SpatialEdge(source_id="LOC_CHURCH_CRYPT", target_id="LOC_CHURCH_HALL"),
+        SpatialEdge(source_id="LOC_CHURCH_HALL", target_id="LOC_WALMINGTON"),
+        SpatialEdge(source_id="LOC_CLIFFS", target_id="LOC_WALMINGTON"),
+        SpatialEdge(source_id="LOC_TRAINING_GROUNDS", target_id="LOC_WALMINGTON"),
+    ],
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_MAINWARING", target_entity_id="ENT_WILSON", affinity=0.5, friction=0.5, power_dynamic=0.5, inertia=0.7),
         RelationshipEdge(source_entity_id="ENT_WILSON", target_entity_id="ENT_MAINWARING", affinity=0.5, friction=0.4, power_dynamic=-0.4, inertia=0.6),

@@ -1,6 +1,6 @@
 from shadow_loom.models import (
     WorldStateV1, Location, NarrativeObject, Entity, EventNode,
-    CausalEdge, RelationshipEdge, TraitVector, AmbientVector,
+    CausalEdge, SpatialEdge, RelationshipEdge, TraitVector,
     Affordance, Belief,
 )
 
@@ -13,69 +13,45 @@ world_state = WorldStateV1(
 
     # ── LOCATIONS ──────────────────────────────────────────────────────────
     locations={
-        "LOC_GENEVA": Location(
-            id="LOC_GENEVA",
+                "LOC_GENEVA": Location(
             name="Geneva (Frankenstein Family Home)",
-            connected_locations=["LOC_INGOLSTADT", "LOC_MER_DE_GLACE", "LOC_ALPS"],
-            ambient_states={
-                "domesticity": AmbientVector(value=0.7, volatility=0.4),
-                "grief": AmbientVector(value=0.6, volatility=0.5),
-            },
+            description="Geneva (Frankenstein Family Home)",
+            ambient_state={"domesticity": {"value": 0.7, "volatility": 0.4}, "grief": {"value": 0.6, "volatility": 0.5}},
         ),
-        "LOC_INGOLSTADT": Location(
-            id="LOC_INGOLSTADT",
+                "LOC_INGOLSTADT": Location(
             name="University of Ingolstadt (Laboratory)",
-            connected_locations=["LOC_GENEVA"],
-            ambient_states={
-                "obsession": AmbientVector(value=0.9, volatility=0.3),
-            },
+            description="University of Ingolstadt (Laboratory)",
+            ambient_state={"obsession": {"value": 0.9, "volatility": 0.3}},
         ),
-        "LOC_MER_DE_GLACE": Location(
-            id="LOC_MER_DE_GLACE",
+                "LOC_MER_DE_GLACE": Location(
             name="Mer de Glace (Alpine Glacier)",
-            connected_locations=["LOC_GENEVA"],
-            ambient_states={
-                "desolation": AmbientVector(value=0.8, volatility=0.2),
-                "sublimity": AmbientVector(value=0.9, volatility=0.1),
-            },
+            description="Mer de Glace (Alpine Glacier)",
+            ambient_state={"desolation": {"value": 0.8, "volatility": 0.2}, "sublimity": {"value": 0.9, "volatility": 0.1}},
         ),
-        "LOC_ALPS": Location(
-            id="LOC_ALPS",
+                "LOC_ALPS": Location(
             name="Alpine Countryside",
-            connected_locations=["LOC_GENEVA", "LOC_HOVEL"],
-            ambient_states={},
+            description="Alpine Countryside",
+            ambient_state={},
         ),
-        "LOC_HOVEL": Location(
-            id="LOC_HOVEL",
+                "LOC_HOVEL": Location(
             name="Hovel by the Cottage (Creature's Hiding Place)",
-            connected_locations=["LOC_ALPS"],
-            ambient_states={
-                "isolation": AmbientVector(value=0.8, volatility=0.3),
-            },
+            description="Hovel by the Cottage (Creature's Hiding Place)",
+            ambient_state={"isolation": {"value": 0.8, "volatility": 0.3}},
         ),
-        "LOC_ORKNEY": Location(
-            id="LOC_ORKNEY",
+                "LOC_ORKNEY": Location(
             name="Orkney Laboratory",
-            connected_locations=["LOC_BRITAIN"],
-            ambient_states={
-                "isolation": AmbientVector(value=0.9, volatility=0.2),
-                "dread": AmbientVector(value=0.8, volatility=0.4),
-            },
+            description="Orkney Laboratory",
+            ambient_state={"isolation": {"value": 0.9, "volatility": 0.2}, "dread": {"value": 0.8, "volatility": 0.4}},
         ),
-        "LOC_BRITAIN": Location(
-            id="LOC_BRITAIN",
+                "LOC_BRITAIN": Location(
             name="Britain (Victor & Clerval's Travels)",
-            connected_locations=["LOC_GENEVA", "LOC_ORKNEY"],
-            ambient_states={},
+            description="Britain (Victor & Clerval's Travels)",
+            ambient_state={},
         ),
-        "LOC_ARCTIC": Location(
-            id="LOC_ARCTIC",
+                "LOC_ARCTIC": Location(
             name="The Arctic (Walton's Ship)",
-            connected_locations=[],
-            ambient_states={
-                "desolation": AmbientVector(value=0.95, volatility=0.1),
-                "death": AmbientVector(value=0.8, volatility=0.3),
-            },
+            description="The Arctic (Walton's Ship)",
+            ambient_state={"desolation": {"value": 0.95, "volatility": 0.1}, "death": {"value": 0.8, "volatility": 0.3}},
         ),
     },
 
@@ -270,6 +246,14 @@ world_state = WorldStateV1(
     ],
 
     # ── SOCIAL TOPOLOGY ────────────────────────────────────────────────────
+    spatial_topology=[
+        SpatialEdge(source_id="LOC_ALPS", target_id="LOC_GENEVA"),
+        SpatialEdge(source_id="LOC_ALPS", target_id="LOC_HOVEL"),
+        SpatialEdge(source_id="LOC_BRITAIN", target_id="LOC_GENEVA"),
+        SpatialEdge(source_id="LOC_BRITAIN", target_id="LOC_ORKNEY"),
+        SpatialEdge(source_id="LOC_GENEVA", target_id="LOC_INGOLSTADT"),
+        SpatialEdge(source_id="LOC_GENEVA", target_id="LOC_MER_DE_GLACE"),
+    ],
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_VICTOR", target_entity_id="ENT_CREATURE", affinity=-0.8, friction=0.95, power_dynamic=0.2, inertia=0.7),
         RelationshipEdge(source_entity_id="ENT_CREATURE", target_entity_id="ENT_VICTOR", affinity=-0.5, friction=0.9, power_dynamic=-0.1, inertia=0.7),

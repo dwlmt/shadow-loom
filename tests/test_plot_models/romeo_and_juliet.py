@@ -1,6 +1,6 @@
 from shadow_loom.models import (
     WorldStateV1, Location, NarrativeObject, Entity, EventNode,
-    CausalEdge, RelationshipEdge, TraitVector, AmbientVector,
+    CausalEdge, SpatialEdge, RelationshipEdge, TraitVector,
     Affordance, Belief,
 )
 
@@ -13,65 +13,40 @@ world_state = WorldStateV1(
 
     # ── LOCATIONS ──────────────────────────────────────────────────────────
     locations={
-        "LOC_VERONA_STREETS": Location(
-            id="LOC_VERONA_STREETS",
+                "LOC_VERONA_STREETS": Location(
             name="Streets of Verona",
-            connected_locations=["LOC_CAPULET_HOUSE", "LOC_MONTAGUE_HOUSE", "LOC_FRIAR_CELL"],
-            ambient_states={
-                "danger": AmbientVector(value=0.7, volatility=0.6),
-                "hostility": AmbientVector(value=0.8, volatility=0.5),
-            },
+            description="Streets of Verona",
+            ambient_state={"danger": {"value": 0.7, "volatility": 0.6}, "hostility": {"value": 0.8, "volatility": 0.5}},
         ),
-        "LOC_CAPULET_HOUSE": Location(
-            id="LOC_CAPULET_HOUSE",
+                "LOC_CAPULET_HOUSE": Location(
             name="Capulet House (including Ballroom & Juliet's Chamber)",
-            connected_locations=["LOC_VERONA_STREETS", "LOC_CAPULET_ORCHARD", "LOC_CAPULET_TOMB"],
-            ambient_states={
-                "opulence": AmbientVector(value=0.8, volatility=0.1),
-                "tension": AmbientVector(value=0.6, volatility=0.5),
-            },
+            description="Capulet House (including Ballroom & Juliet's Chamber)",
+            ambient_state={"opulence": {"value": 0.8, "volatility": 0.1}, "tension": {"value": 0.6, "volatility": 0.5}},
         ),
-        "LOC_CAPULET_ORCHARD": Location(
-            id="LOC_CAPULET_ORCHARD",
+                "LOC_CAPULET_ORCHARD": Location(
             name="Capulet Orchard (Balcony Scene)",
-            connected_locations=["LOC_CAPULET_HOUSE", "LOC_VERONA_STREETS"],
-            ambient_states={
-                "romance": AmbientVector(value=0.9, volatility=0.3),
-                "secrecy": AmbientVector(value=0.8, volatility=0.4),
-            },
+            description="Capulet Orchard (Balcony Scene)",
+            ambient_state={"romance": {"value": 0.9, "volatility": 0.3}, "secrecy": {"value": 0.8, "volatility": 0.4}},
         ),
-        "LOC_MONTAGUE_HOUSE": Location(
-            id="LOC_MONTAGUE_HOUSE",
+                "LOC_MONTAGUE_HOUSE": Location(
             name="Montague House",
-            connected_locations=["LOC_VERONA_STREETS"],
-            ambient_states={
-                "concern": AmbientVector(value=0.6, volatility=0.4),
-            },
+            description="Montague House",
+            ambient_state={"concern": {"value": 0.6, "volatility": 0.4}},
         ),
-        "LOC_FRIAR_CELL": Location(
-            id="LOC_FRIAR_CELL",
+                "LOC_FRIAR_CELL": Location(
             name="Friar Laurence's Cell",
-            connected_locations=["LOC_VERONA_STREETS"],
-            ambient_states={
-                "sanctuary": AmbientVector(value=0.7, volatility=0.2),
-            },
+            description="Friar Laurence's Cell",
+            ambient_state={"sanctuary": {"value": 0.7, "volatility": 0.2}},
         ),
-        "LOC_CAPULET_TOMB": Location(
-            id="LOC_CAPULET_TOMB",
+                "LOC_CAPULET_TOMB": Location(
             name="Capulet Family Crypt",
-            connected_locations=["LOC_CAPULET_HOUSE"],
-            ambient_states={
-                "death": AmbientVector(value=1.0, volatility=0.0),
-                "darkness": AmbientVector(value=0.9, volatility=0.1),
-            },
+            description="Capulet Family Crypt",
+            ambient_state={"death": {"value": 1.0, "volatility": 0.0}, "darkness": {"value": 0.9, "volatility": 0.1}},
         ),
-        "LOC_MANTUA": Location(
-            id="LOC_MANTUA",
+                "LOC_MANTUA": Location(
             name="Mantua (Romeo's Exile)",
-            connected_locations=["LOC_VERONA_STREETS"],
-            ambient_states={
-                "isolation": AmbientVector(value=0.7, volatility=0.3),
-            },
+            description="Mantua (Romeo's Exile)",
+            ambient_state={"isolation": {"value": 0.7, "volatility": 0.3}},
         ),
     },
 
@@ -286,6 +261,15 @@ world_state = WorldStateV1(
     ],
 
     # ── SOCIAL TOPOLOGY ────────────────────────────────────────────────────
+    spatial_topology=[
+        SpatialEdge(source_id="LOC_CAPULET_HOUSE", target_id="LOC_CAPULET_ORCHARD"),
+        SpatialEdge(source_id="LOC_CAPULET_HOUSE", target_id="LOC_CAPULET_TOMB"),
+        SpatialEdge(source_id="LOC_CAPULET_HOUSE", target_id="LOC_VERONA_STREETS"),
+        SpatialEdge(source_id="LOC_CAPULET_ORCHARD", target_id="LOC_VERONA_STREETS"),
+        SpatialEdge(source_id="LOC_FRIAR_CELL", target_id="LOC_VERONA_STREETS"),
+        SpatialEdge(source_id="LOC_MANTUA", target_id="LOC_VERONA_STREETS"),
+        SpatialEdge(source_id="LOC_MONTAGUE_HOUSE", target_id="LOC_VERONA_STREETS"),
+    ],
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_ROMEO", target_entity_id="ENT_JULIET", affinity=1.0, friction=0.7, power_dynamic=0.0, inertia=0.95),
         RelationshipEdge(source_entity_id="ENT_JULIET", target_entity_id="ENT_ROMEO", affinity=1.0, friction=0.7, power_dynamic=0.0, inertia=0.95),

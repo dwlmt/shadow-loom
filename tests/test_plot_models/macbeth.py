@@ -1,6 +1,6 @@
 from shadow_loom.models import (
     WorldStateV1, Location, NarrativeObject, Entity, EventNode,
-    CausalEdge, RelationshipEdge, TraitVector, AmbientVector,
+    CausalEdge, SpatialEdge, RelationshipEdge, TraitVector,
     Affordance, Belief,
 )
 
@@ -13,74 +13,45 @@ world_state = WorldStateV1(
 
     # ── LOCATIONS ──────────────────────────────────────────────────────────
     locations={
-        "LOC_HEATH": Location(
-            id="LOC_HEATH",
+                "LOC_HEATH": Location(
             name="The Heath",
-            connected_locations=["LOC_INVERNESS_CASTLE", "LOC_BATTLEFIELD"],
-            ambient_states={
-                "visibility": AmbientVector(value=0.3, volatility=0.6),
-                "supernatural": AmbientVector(value=0.9, volatility=0.4),
-            },
-            constants=["desolate"],
+            description="The Heath (desolate)",
+            ambient_state={"visibility": {"value": 0.3, "volatility": 0.6}, "supernatural": {"value": 0.9, "volatility": 0.4}},
         ),
-        "LOC_BATTLEFIELD": Location(
-            id="LOC_BATTLEFIELD",
+                "LOC_BATTLEFIELD": Location(
             name="Battlefield (Scotland)",
-            connected_locations=["LOC_HEATH", "LOC_INVERNESS_CASTLE"],
-            ambient_states={
-                "danger": AmbientVector(value=0.9, volatility=0.3),
-            },
+            description="Battlefield (Scotland)",
+            ambient_state={"danger": {"value": 0.9, "volatility": 0.3}},
         ),
-        "LOC_INVERNESS_CASTLE": Location(
-            id="LOC_INVERNESS_CASTLE",
+                "LOC_INVERNESS_CASTLE": Location(
             name="Macbeth's Castle at Inverness",
-            connected_locations=["LOC_HEATH", "LOC_DUNSINANE_CASTLE", "LOC_BATTLEFIELD"],
-            ambient_states={
-                "tension": AmbientVector(value=0.7, volatility=0.5),
-                "visibility": AmbientVector(value=0.5, volatility=0.3),
-            },
+            description="Macbeth's Castle at Inverness",
+            ambient_state={"tension": {"value": 0.7, "volatility": 0.5}, "visibility": {"value": 0.5, "volatility": 0.3}},
         ),
-        "LOC_DUNSINANE_CASTLE": Location(
-            id="LOC_DUNSINANE_CASTLE",
+                "LOC_DUNSINANE_CASTLE": Location(
             name="Dunsinane Castle (Royal Palace)",
-            connected_locations=["LOC_INVERNESS_CASTLE", "LOC_BIRNAM_WOOD", "LOC_MACDUFF_CASTLE"],
-            ambient_states={
-                "tension": AmbientVector(value=0.8, volatility=0.4),
-                "paranoia": AmbientVector(value=0.9, volatility=0.3),
-            },
+            description="Dunsinane Castle (Royal Palace)",
+            ambient_state={"tension": {"value": 0.8, "volatility": 0.4}, "paranoia": {"value": 0.9, "volatility": 0.3}},
         ),
-        "LOC_BIRNAM_WOOD": Location(
-            id="LOC_BIRNAM_WOOD",
+                "LOC_BIRNAM_WOOD": Location(
             name="Birnam Wood",
-            connected_locations=["LOC_DUNSINANE_CASTLE"],
-            ambient_states={
-                "concealment": AmbientVector(value=0.8, volatility=0.2),
-            },
+            description="Birnam Wood",
+            ambient_state={"concealment": {"value": 0.8, "volatility": 0.2}},
         ),
-        "LOC_MACDUFF_CASTLE": Location(
-            id="LOC_MACDUFF_CASTLE",
+                "LOC_MACDUFF_CASTLE": Location(
             name="Macduff's Castle at Fife",
-            connected_locations=["LOC_DUNSINANE_CASTLE", "LOC_ENGLAND"],
-            ambient_states={
-                "safety": AmbientVector(value=0.6, volatility=0.7),
-            },
+            description="Macduff's Castle at Fife",
+            ambient_state={"safety": {"value": 0.6, "volatility": 0.7}},
         ),
-        "LOC_ENGLAND": Location(
-            id="LOC_ENGLAND",
+                "LOC_ENGLAND": Location(
             name="England (King Edward's Court)",
-            connected_locations=["LOC_MACDUFF_CASTLE", "LOC_BIRNAM_WOOD"],
-            ambient_states={
-                "safety": AmbientVector(value=0.9, volatility=0.1),
-            },
+            description="England (King Edward's Court)",
+            ambient_state={"safety": {"value": 0.9, "volatility": 0.1}},
         ),
-        "LOC_WITCHES_CAVERN": Location(
-            id="LOC_WITCHES_CAVERN",
+                "LOC_WITCHES_CAVERN": Location(
             name="The Witches' Cavern",
-            connected_locations=["LOC_HEATH"],
-            ambient_states={
-                "supernatural": AmbientVector(value=1.0, volatility=0.2),
-            },
-            constants=["supernatural"],
+            description="The Witches' Cavern (supernatural)",
+            ambient_state={"supernatural": {"value": 1.0, "volatility": 0.2}},
         ),
     },
 
@@ -311,6 +282,17 @@ world_state = WorldStateV1(
     ],
 
     # ── SOCIAL TOPOLOGY ────────────────────────────────────────────────────
+    spatial_topology=[
+        SpatialEdge(source_id="LOC_BATTLEFIELD", target_id="LOC_HEATH"),
+        SpatialEdge(source_id="LOC_BATTLEFIELD", target_id="LOC_INVERNESS_CASTLE"),
+        SpatialEdge(source_id="LOC_BIRNAM_WOOD", target_id="LOC_DUNSINANE_CASTLE"),
+        SpatialEdge(source_id="LOC_BIRNAM_WOOD", target_id="LOC_ENGLAND"),
+        SpatialEdge(source_id="LOC_DUNSINANE_CASTLE", target_id="LOC_INVERNESS_CASTLE"),
+        SpatialEdge(source_id="LOC_DUNSINANE_CASTLE", target_id="LOC_MACDUFF_CASTLE"),
+        SpatialEdge(source_id="LOC_ENGLAND", target_id="LOC_MACDUFF_CASTLE"),
+        SpatialEdge(source_id="LOC_HEATH", target_id="LOC_INVERNESS_CASTLE"),
+        SpatialEdge(source_id="LOC_HEATH", target_id="LOC_WITCHES_CAVERN"),
+    ],
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_MACBETH", target_entity_id="ENT_LADY_MACBETH", affinity=0.8, friction=0.6, power_dynamic=-0.3, inertia=0.7),
         RelationshipEdge(source_entity_id="ENT_MACBETH", target_entity_id="ENT_DUNCAN", affinity=0.3, friction=0.7, power_dynamic=-0.6, inertia=0.4),

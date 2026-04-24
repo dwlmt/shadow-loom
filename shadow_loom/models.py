@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Dict, Optional, Literal, Union
+from typing import Any, List, Dict, Optional, Literal, Union
 
 # =====================================================================
 # PART 1: THE GRAPH DATABASE (The Reality Engine)
@@ -34,11 +34,10 @@ class Belief(BaseModel):
 
 # --- 2. THE NODES (The Nouns) ---
 class Location(AMWNNode):
-    id: str = Field(description="Unique ID, e.g., LOC_COURTYARD")
+    node_type: Literal["Location"] = "Location"
     name: str
-    connected_locations: List[str] = Field(description="IDs of adjacent rooms. Prevents teleporting.")
-    ambient_states: Dict[str, AmbientVector] = Field(description="Hidden environmental U traits. e.g., {'visibility': AmbientVector}")
-    constants: List[str] = Field(default_factory=list, description="Immutable boolean tags, e.g., ['underwater']")
+    description: str
+    ambient_state: Optional[Dict[str, Any]] = Field(default_factory=dict, description="e.g., {'temperature': 'cold', 'lighting': 'dark'}")
 
 class NarrativeObject(AMWNNode):
     id: str = Field(description="Unique ID, e.g., OBJ_DAGGER")
@@ -75,6 +74,33 @@ class CausalEdge(BaseModel):
     target_id: str = Field(description="ID of the resulting EventNode.")
     mechanism: Literal["physical", "psychological", "social", "epistemic"]
 
+class SpatialEdge(BaseModel):
+    """The physical flow of matter (Architecture)."""
+    source_id: str = Field(description="Must be a LOC_ ID")
+    target_id: str = Field(description="Must be a LOC_ ID")
+    is_locked: bool = Field(default=False)
+    barrier_item_id: Optional[str] = Field(default=None, description="ID of a NarrativeObject like a door or lock.")
+
+class InformationEdge(BaseModel):
+    """Upgraded to handle Broadcasts, Eavesdropping, and Time-Slicing."""
+    
+    source_id: str = Field(description="Must be an ENT_ or OBJ_ (e.g., a Radio beacon) ID")
+    
+    target_ids: List[str] = Field(description="List of ENT_ or LOC_ IDs receiving the signal.")
+    
+    medium: Literal["telephone", "telepathy", "radio", "shouting", "magic_mirror", "raven", "letter", "speech"]
+    
+    is_encrypted: bool = Field(
+        default=False, 
+        description="If false, entities in the same spatial Location as the source or target can intercept the payload."
+    )
+    
+    established_at_fabula: int = Field(description="The timestamp when the comms link opened.")
+    terminated_at_fabula: Optional[int] = Field(
+        default=None, 
+        description="The timestamp when the link closed. Null if currently active."
+    )
+
 class RelationshipEdge(BaseModel):
     source_entity_id: str
     target_entity_id: str
@@ -90,4 +116,6 @@ class WorldStateV1(BaseModel):
     entities: Dict[str, Entity]
     events: List[EventNode]
     causal_topology: List[CausalEdge]
+    spatial_topology: List[SpatialEdge] = Field(default_factory=list)
+    information_topology: List[InformationEdge] = Field(default_factory=list)
     social_topology: List[RelationshipEdge]

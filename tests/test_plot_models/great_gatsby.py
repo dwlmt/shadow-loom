@@ -1,6 +1,6 @@
 from shadow_loom.models import (
     WorldStateV1, Location, NarrativeObject, Entity, EventNode,
-    CausalEdge, RelationshipEdge, TraitVector, AmbientVector,
+    CausalEdge, SpatialEdge, RelationshipEdge, TraitVector,
     Affordance, Belief,
 )
 
@@ -13,72 +13,45 @@ world_state = WorldStateV1(
 
     # ── LOCATIONS ──────────────────────────────────────────────────────────
     locations={
-        "LOC_WEST_EGG": Location(
-            id="LOC_WEST_EGG",
+                "LOC_WEST_EGG": Location(
             name="West Egg (New Money)",
-            connected_locations=["LOC_EAST_EGG", "LOC_VALLEY_OF_ASHES", "LOC_NEW_YORK"],
-            ambient_states={
-                "opulence": AmbientVector(value=0.9, volatility=0.2),
-                "artifice": AmbientVector(value=0.8, volatility=0.3),
-            },
+            description="West Egg (New Money)",
+            ambient_state={"opulence": {"value": 0.9, "volatility": 0.2}, "artifice": {"value": 0.8, "volatility": 0.3}},
         ),
-        "LOC_GATSBY_MANSION": Location(
-            id="LOC_GATSBY_MANSION",
+                "LOC_GATSBY_MANSION": Location(
             name="Gatsby's Mansion",
-            connected_locations=["LOC_WEST_EGG"],
-            ambient_states={
-                "opulence": AmbientVector(value=1.0, volatility=0.2),
-                "loneliness": AmbientVector(value=0.7, volatility=0.4),
-            },
+            description="Gatsby's Mansion",
+            ambient_state={"opulence": {"value": 1.0, "volatility": 0.2}, "loneliness": {"value": 0.7, "volatility": 0.4}},
         ),
-        "LOC_EAST_EGG": Location(
-            id="LOC_EAST_EGG",
+                "LOC_EAST_EGG": Location(
             name="East Egg (Old Money)",
-            connected_locations=["LOC_WEST_EGG", "LOC_NEW_YORK"],
-            ambient_states={
-                "privilege": AmbientVector(value=0.95, volatility=0.05),
-            },
+            description="East Egg (Old Money)",
+            ambient_state={"privilege": {"value": 0.95, "volatility": 0.05}},
         ),
-        "LOC_BUCHANAN_MANSION": Location(
-            id="LOC_BUCHANAN_MANSION",
+                "LOC_BUCHANAN_MANSION": Location(
             name="Buchanan Mansion",
-            connected_locations=["LOC_EAST_EGG"],
-            ambient_states={
-                "tension": AmbientVector(value=0.6, volatility=0.5),
-            },
+            description="Buchanan Mansion",
+            ambient_state={"tension": {"value": 0.6, "volatility": 0.5}},
         ),
-        "LOC_VALLEY_OF_ASHES": Location(
-            id="LOC_VALLEY_OF_ASHES",
+                "LOC_VALLEY_OF_ASHES": Location(
             name="Valley of Ashes",
-            connected_locations=["LOC_WEST_EGG", "LOC_NEW_YORK", "LOC_WILSON_GARAGE"],
-            ambient_states={
-                "desolation": AmbientVector(value=0.9, volatility=0.1),
-                "poverty": AmbientVector(value=0.85, volatility=0.1),
-            },
+            description="Valley of Ashes",
+            ambient_state={"desolation": {"value": 0.9, "volatility": 0.1}, "poverty": {"value": 0.85, "volatility": 0.1}},
         ),
-        "LOC_WILSON_GARAGE": Location(
-            id="LOC_WILSON_GARAGE",
+                "LOC_WILSON_GARAGE": Location(
             name="Wilson's Garage",
-            connected_locations=["LOC_VALLEY_OF_ASHES"],
-            ambient_states={
-                "despair": AmbientVector(value=0.8, volatility=0.4),
-            },
+            description="Wilson's Garage",
+            ambient_state={"despair": {"value": 0.8, "volatility": 0.4}},
         ),
-        "LOC_NEW_YORK": Location(
-            id="LOC_NEW_YORK",
+                "LOC_NEW_YORK": Location(
             name="New York City",
-            connected_locations=["LOC_WEST_EGG", "LOC_EAST_EGG", "LOC_VALLEY_OF_ASHES", "LOC_PLAZA_HOTEL"],
-            ambient_states={
-                "energy": AmbientVector(value=0.8, volatility=0.3),
-            },
+            description="New York City",
+            ambient_state={"energy": {"value": 0.8, "volatility": 0.3}},
         ),
-        "LOC_PLAZA_HOTEL": Location(
-            id="LOC_PLAZA_HOTEL",
+                "LOC_PLAZA_HOTEL": Location(
             name="Plaza Hotel Suite",
-            connected_locations=["LOC_NEW_YORK"],
-            ambient_states={
-                "tension": AmbientVector(value=0.9, volatility=0.5),
-            },
+            description="Plaza Hotel Suite",
+            ambient_state={"tension": {"value": 0.9, "volatility": 0.5}},
         ),
     },
 
@@ -267,6 +240,17 @@ world_state = WorldStateV1(
     ],
 
     # ── SOCIAL TOPOLOGY ────────────────────────────────────────────────────
+    spatial_topology=[
+        SpatialEdge(source_id="LOC_BUCHANAN_MANSION", target_id="LOC_EAST_EGG"),
+        SpatialEdge(source_id="LOC_EAST_EGG", target_id="LOC_NEW_YORK"),
+        SpatialEdge(source_id="LOC_EAST_EGG", target_id="LOC_WEST_EGG"),
+        SpatialEdge(source_id="LOC_GATSBY_MANSION", target_id="LOC_WEST_EGG"),
+        SpatialEdge(source_id="LOC_NEW_YORK", target_id="LOC_PLAZA_HOTEL"),
+        SpatialEdge(source_id="LOC_NEW_YORK", target_id="LOC_VALLEY_OF_ASHES"),
+        SpatialEdge(source_id="LOC_NEW_YORK", target_id="LOC_WEST_EGG"),
+        SpatialEdge(source_id="LOC_VALLEY_OF_ASHES", target_id="LOC_WEST_EGG"),
+        SpatialEdge(source_id="LOC_VALLEY_OF_ASHES", target_id="LOC_WILSON_GARAGE"),
+    ],
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_GATSBY", target_entity_id="ENT_DAISY", affinity=1.0, friction=0.6, power_dynamic=-0.3, inertia=0.95),
         RelationshipEdge(source_entity_id="ENT_DAISY", target_entity_id="ENT_GATSBY", affinity=0.5, friction=0.5, power_dynamic=0.3, inertia=0.3),

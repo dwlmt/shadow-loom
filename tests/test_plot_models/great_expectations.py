@@ -1,6 +1,6 @@
 from shadow_loom.models import (
     WorldStateV1, Location, NarrativeObject, Entity, EventNode,
-    CausalEdge, RelationshipEdge, TraitVector, AmbientVector,
+    CausalEdge, SpatialEdge, RelationshipEdge, TraitVector,
     Affordance, Belief,
 )
 
@@ -13,90 +13,55 @@ world_state = WorldStateV1(
 
     # ── LOCATIONS ──────────────────────────────────────────────────────────
     locations={
-        "LOC_KENT_MARSHES": Location(
-            id="LOC_KENT_MARSHES",
+                "LOC_KENT_MARSHES": Location(
             name="Kent Coastal Marshes",
-            connected_locations=["LOC_FORGE", "LOC_SATIS_HOUSE", "LOC_CHURCHYARD"],
-            ambient_states={
-                "desolation": AmbientVector(value=0.7, volatility=0.3),
-                "danger": AmbientVector(value=0.5, volatility=0.5),
-            },
+            description="Kent Coastal Marshes",
+            ambient_state={"desolation": {"value": 0.7, "volatility": 0.3}, "danger": {"value": 0.5, "volatility": 0.5}},
         ),
-        "LOC_CHURCHYARD": Location(
-            id="LOC_CHURCHYARD",
+                "LOC_CHURCHYARD": Location(
             name="Churchyard (Parents' Graves)",
-            connected_locations=["LOC_KENT_MARSHES"],
-            ambient_states={
-                "isolation": AmbientVector(value=0.8, volatility=0.2),
-            },
+            description="Churchyard (Parents' Graves)",
+            ambient_state={"isolation": {"value": 0.8, "volatility": 0.2}},
         ),
-        "LOC_FORGE": Location(
-            id="LOC_FORGE",
+                "LOC_FORGE": Location(
             name="Joe Gargery's Forge & Home",
-            connected_locations=["LOC_KENT_MARSHES", "LOC_SATIS_HOUSE"],
-            ambient_states={
-                "warmth": AmbientVector(value=0.7, volatility=0.3),
-                "simplicity": AmbientVector(value=0.8, volatility=0.1),
-            },
+            description="Joe Gargery's Forge & Home",
+            ambient_state={"warmth": {"value": 0.7, "volatility": 0.3}, "simplicity": {"value": 0.8, "volatility": 0.1}},
         ),
-        "LOC_SATIS_HOUSE": Location(
-            id="LOC_SATIS_HOUSE",
+                "LOC_SATIS_HOUSE": Location(
             name="Satis House (Miss Havisham's Manor)",
-            connected_locations=["LOC_KENT_MARSHES", "LOC_FORGE"],
-            ambient_states={
-                "decay": AmbientVector(value=0.9, volatility=0.1),
-                "obsession": AmbientVector(value=0.95, volatility=0.05),
-            },
-            constants=["dilapidated"],
+            description="Satis House (Miss Havisham's Manor) (dilapidated)",
+            ambient_state={"decay": {"value": 0.9, "volatility": 0.1}, "obsession": {"value": 0.95, "volatility": 0.05}},
         ),
-        "LOC_LONDON": Location(
-            id="LOC_LONDON",
+                "LOC_LONDON": Location(
             name="London",
-            connected_locations=["LOC_BARNARDS_INN", "LOC_JAGGERS_OFFICE", "LOC_KENT_MARSHES"],
-            ambient_states={
-                "grime": AmbientVector(value=0.7, volatility=0.2),
-                "ambition": AmbientVector(value=0.7, volatility=0.4),
-            },
+            description="London",
+            ambient_state={"grime": {"value": 0.7, "volatility": 0.2}, "ambition": {"value": 0.7, "volatility": 0.4}},
         ),
-        "LOC_BARNARDS_INN": Location(
-            id="LOC_BARNARDS_INN",
+                "LOC_BARNARDS_INN": Location(
             name="Barnard's Inn (Pip & Herbert's Rooms)",
-            connected_locations=["LOC_LONDON"],
-            ambient_states={
-                "camaraderie": AmbientVector(value=0.7, volatility=0.3),
-            },
+            description="Barnard's Inn (Pip & Herbert's Rooms)",
+            ambient_state={"camaraderie": {"value": 0.7, "volatility": 0.3}},
         ),
-        "LOC_JAGGERS_OFFICE": Location(
-            id="LOC_JAGGERS_OFFICE",
+                "LOC_JAGGERS_OFFICE": Location(
             name="Mr Jaggers' Office",
-            connected_locations=["LOC_LONDON"],
-            ambient_states={
-                "authority": AmbientVector(value=0.8, volatility=0.1),
-            },
+            description="Mr Jaggers' Office",
+            ambient_state={"authority": {"value": 0.8, "volatility": 0.1}},
         ),
-        "LOC_RIVER_THAMES": Location(
-            id="LOC_RIVER_THAMES",
+                "LOC_RIVER_THAMES": Location(
             name="River Thames (Escape Attempt)",
-            connected_locations=["LOC_LONDON"],
-            ambient_states={
-                "danger": AmbientVector(value=0.8, volatility=0.5),
-            },
+            description="River Thames (Escape Attempt)",
+            ambient_state={"danger": {"value": 0.8, "volatility": 0.5}},
         ),
-        "LOC_SLUICE_HOUSE": Location(
-            id="LOC_SLUICE_HOUSE",
+                "LOC_SLUICE_HOUSE": Location(
             name="Sluice-house on the Marshes",
-            connected_locations=["LOC_KENT_MARSHES"],
-            ambient_states={
-                "danger": AmbientVector(value=0.9, volatility=0.3),
-            },
+            description="Sluice-house on the Marshes",
+            ambient_state={"danger": {"value": 0.9, "volatility": 0.3}},
         ),
-        "LOC_CAIRO": Location(
-            id="LOC_CAIRO",
+                "LOC_CAIRO": Location(
             name="Cairo, Egypt (Clarriker's Office)",
-            connected_locations=[],
-            ambient_states={
-                "fresh_start": AmbientVector(value=0.7, volatility=0.3),
-            },
+            description="Cairo, Egypt (Clarriker's Office)",
+            ambient_state={"fresh_start": {"value": 0.7, "volatility": 0.3}},
         ),
     },
 
@@ -357,6 +322,17 @@ world_state = WorldStateV1(
     ],
 
     # ── SOCIAL TOPOLOGY ────────────────────────────────────────────────────
+    spatial_topology=[
+        SpatialEdge(source_id="LOC_BARNARDS_INN", target_id="LOC_LONDON"),
+        SpatialEdge(source_id="LOC_CHURCHYARD", target_id="LOC_KENT_MARSHES"),
+        SpatialEdge(source_id="LOC_FORGE", target_id="LOC_KENT_MARSHES"),
+        SpatialEdge(source_id="LOC_FORGE", target_id="LOC_SATIS_HOUSE"),
+        SpatialEdge(source_id="LOC_JAGGERS_OFFICE", target_id="LOC_LONDON"),
+        SpatialEdge(source_id="LOC_KENT_MARSHES", target_id="LOC_LONDON"),
+        SpatialEdge(source_id="LOC_KENT_MARSHES", target_id="LOC_SATIS_HOUSE"),
+        SpatialEdge(source_id="LOC_KENT_MARSHES", target_id="LOC_SLUICE_HOUSE"),
+        SpatialEdge(source_id="LOC_LONDON", target_id="LOC_RIVER_THAMES"),
+    ],
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_PIP", target_entity_id="ENT_JOE", affinity=0.8, friction=0.3, power_dynamic=0.1, inertia=0.8),
         RelationshipEdge(source_entity_id="ENT_PIP", target_entity_id="ENT_ESTELLA", affinity=0.9, friction=0.7, power_dynamic=-0.5, inertia=0.85),

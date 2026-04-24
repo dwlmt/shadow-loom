@@ -1,6 +1,6 @@
 from shadow_loom.models import (
     WorldStateV1, Location, NarrativeObject, Entity, EventNode,
-    CausalEdge, RelationshipEdge, TraitVector, AmbientVector,
+    CausalEdge, SpatialEdge, RelationshipEdge, TraitVector,
     Affordance, Belief,
 )
 
@@ -13,75 +13,45 @@ world_state = WorldStateV1(
 
     # ── LOCATIONS ──────────────────────────────────────────────────────────
     locations={
-        "LOC_SAIGON_HOTEL": Location(
-            id="LOC_SAIGON_HOTEL",
+                "LOC_SAIGON_HOTEL": Location(
             name="Saigon Hotel Room",
-            connected_locations=["LOC_NHA_TRANG"],
-            ambient_states={
-                "despair": AmbientVector(value=0.8, volatility=0.4),
-                "confinement": AmbientVector(value=0.7, volatility=0.3),
-            },
+            description="Saigon Hotel Room",
+            ambient_state={"despair": {"value": 0.8, "volatility": 0.4}, "confinement": {"value": 0.7, "volatility": 0.3}},
         ),
-        "LOC_NHA_TRANG": Location(
-            id="LOC_NHA_TRANG",
+                "LOC_NHA_TRANG": Location(
             name="Nha Trang (Military Briefing)",
-            connected_locations=["LOC_SAIGON_HOTEL", "LOC_NUNG_RIVER"],
-            ambient_states={
-                "authority": AmbientVector(value=0.8, volatility=0.1),
-            },
+            description="Nha Trang (Military Briefing)",
+            ambient_state={"authority": {"value": 0.8, "volatility": 0.1}},
         ),
-        "LOC_NUNG_RIVER": Location(
-            id="LOC_NUNG_RIVER",
+                "LOC_NUNG_RIVER": Location(
             name="Nung River (PBR Patrol Boat)",
-            connected_locations=["LOC_NHA_TRANG", "LOC_KILGORE_VILLAGE", "LOC_JUNGLE", "LOC_SUPPLY_DEPOT", "LOC_DO_LUNG_BRIDGE", "LOC_KURTZ_COMPOUND"],
-            ambient_states={
-                "danger": AmbientVector(value=0.7, volatility=0.5),
-                "isolation": AmbientVector(value=0.6, volatility=0.4),
-            },
+            description="Nung River (PBR Patrol Boat)",
+            ambient_state={"danger": {"value": 0.7, "volatility": 0.5}, "isolation": {"value": 0.6, "volatility": 0.4}},
         ),
-        "LOC_KILGORE_VILLAGE": Location(
-            id="LOC_KILGORE_VILLAGE",
+                "LOC_KILGORE_VILLAGE": Location(
             name="Vietcong Village (Kilgore's Air Attack)",
-            connected_locations=["LOC_NUNG_RIVER"],
-            ambient_states={
-                "destruction": AmbientVector(value=0.9, volatility=0.3),
-            },
+            description="Vietcong Village (Kilgore's Air Attack)",
+            ambient_state={"destruction": {"value": 0.9, "volatility": 0.3}},
         ),
-        "LOC_JUNGLE": Location(
-            id="LOC_JUNGLE",
+                "LOC_JUNGLE": Location(
             name="Jungle (Tiger Encounter)",
-            connected_locations=["LOC_NUNG_RIVER"],
-            ambient_states={
-                "danger": AmbientVector(value=0.9, volatility=0.5),
-                "darkness": AmbientVector(value=0.8, volatility=0.3),
-            },
+            description="Jungle (Tiger Encounter)",
+            ambient_state={"danger": {"value": 0.9, "volatility": 0.5}, "darkness": {"value": 0.8, "volatility": 0.3}},
         ),
-        "LOC_SUPPLY_DEPOT": Location(
-            id="LOC_SUPPLY_DEPOT",
+                "LOC_SUPPLY_DEPOT": Location(
             name="U.S. Supply Depot / USO Stage",
-            connected_locations=["LOC_NUNG_RIVER"],
-            ambient_states={
-                "surrealism": AmbientVector(value=0.7, volatility=0.5),
-            },
+            description="U.S. Supply Depot / USO Stage",
+            ambient_state={"surrealism": {"value": 0.7, "volatility": 0.5}},
         ),
-        "LOC_DO_LUNG_BRIDGE": Location(
-            id="LOC_DO_LUNG_BRIDGE",
+                "LOC_DO_LUNG_BRIDGE": Location(
             name="Do Lung Bridge (Last Outpost)",
-            connected_locations=["LOC_NUNG_RIVER"],
-            ambient_states={
-                "chaos": AmbientVector(value=0.95, volatility=0.3),
-                "danger": AmbientVector(value=0.9, volatility=0.2),
-            },
-            constants=["last_outpost"],
+            description="Do Lung Bridge (Last Outpost) (last_outpost)",
+            ambient_state={"chaos": {"value": 0.95, "volatility": 0.3}, "danger": {"value": 0.9, "volatility": 0.2}},
         ),
-        "LOC_KURTZ_COMPOUND": Location(
-            id="LOC_KURTZ_COMPOUND",
+                "LOC_KURTZ_COMPOUND": Location(
             name="Kurtz's Compound (Cambodia)",
-            connected_locations=["LOC_NUNG_RIVER"],
-            ambient_states={
-                "madness": AmbientVector(value=1.0, volatility=0.1),
-                "death": AmbientVector(value=0.95, volatility=0.1),
-            },
+            description="Kurtz's Compound (Cambodia)",
+            ambient_state={"madness": {"value": 1.0, "volatility": 0.1}, "death": {"value": 0.95, "volatility": 0.1}},
         ),
     },
 
@@ -269,6 +239,15 @@ world_state = WorldStateV1(
     ],
 
     # ── SOCIAL TOPOLOGY ────────────────────────────────────────────────────
+    spatial_topology=[
+        SpatialEdge(source_id="LOC_DO_LUNG_BRIDGE", target_id="LOC_NUNG_RIVER"),
+        SpatialEdge(source_id="LOC_JUNGLE", target_id="LOC_NUNG_RIVER"),
+        SpatialEdge(source_id="LOC_KILGORE_VILLAGE", target_id="LOC_NUNG_RIVER"),
+        SpatialEdge(source_id="LOC_KURTZ_COMPOUND", target_id="LOC_NUNG_RIVER"),
+        SpatialEdge(source_id="LOC_NHA_TRANG", target_id="LOC_NUNG_RIVER"),
+        SpatialEdge(source_id="LOC_NHA_TRANG", target_id="LOC_SAIGON_HOTEL"),
+        SpatialEdge(source_id="LOC_NUNG_RIVER", target_id="LOC_SUPPLY_DEPOT"),
+    ],
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_WILLARD", target_entity_id="ENT_KURTZ", affinity=0.2, friction=0.9, power_dynamic=-0.3, inertia=0.6),
         RelationshipEdge(source_entity_id="ENT_KURTZ", target_entity_id="ENT_WILLARD", affinity=0.3, friction=0.7, power_dynamic=0.5, inertia=0.6),

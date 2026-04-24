@@ -1,6 +1,6 @@
 from shadow_loom.models import (
     WorldStateV1, Location, NarrativeObject, Entity, EventNode,
-    CausalEdge, RelationshipEdge, TraitVector, AmbientVector,
+    CausalEdge, SpatialEdge, RelationshipEdge, TraitVector,
     Affordance, Belief,
 )
 
@@ -13,45 +13,30 @@ world_state = WorldStateV1(
 
     # ── LOCATIONS ──────────────────────────────────────────────────────────
     locations={
-        "LOC_WUTHERING_HEIGHTS": Location(
-            id="LOC_WUTHERING_HEIGHTS",
+                "LOC_WUTHERING_HEIGHTS": Location(
             name="Wuthering Heights (Earnshaw Farmhouse)",
-            connected_locations=["LOC_MOORS", "LOC_THRUSHCROSS_GRANGE"],
-            ambient_states={
-                "wildness": AmbientVector(value=0.9, volatility=0.3),
-                "hostility": AmbientVector(value=0.8, volatility=0.4),
-                "decay": AmbientVector(value=0.7, volatility=0.3),
-            },
+            description="Wuthering Heights (Earnshaw Farmhouse)",
+            ambient_state={"wildness": {"value": 0.9, "volatility": 0.3}, "hostility": {"value": 0.8, "volatility": 0.4}, "decay": {"value": 0.7, "volatility": 0.3}},
         ),
-        "LOC_THRUSHCROSS_GRANGE": Location(
-            id="LOC_THRUSHCROSS_GRANGE",
+                "LOC_THRUSHCROSS_GRANGE": Location(
             name="Thrushcross Grange (Linton Estate)",
-            connected_locations=["LOC_WUTHERING_HEIGHTS", "LOC_MOORS"],
-            ambient_states={
-                "refinement": AmbientVector(value=0.8, volatility=0.3),
-                "domesticity": AmbientVector(value=0.7, volatility=0.4),
-            },
+            description="Thrushcross Grange (Linton Estate)",
+            ambient_state={"refinement": {"value": 0.8, "volatility": 0.3}, "domesticity": {"value": 0.7, "volatility": 0.4}},
         ),
-        "LOC_MOORS": Location(
-            id="LOC_MOORS",
+                "LOC_MOORS": Location(
             name="The Yorkshire Moors",
-            connected_locations=["LOC_WUTHERING_HEIGHTS", "LOC_THRUSHCROSS_GRANGE"],
-            ambient_states={
-                "wildness": AmbientVector(value=0.95, volatility=0.2),
-                "freedom": AmbientVector(value=0.8, volatility=0.2),
-            },
+            description="The Yorkshire Moors",
+            ambient_state={"wildness": {"value": 0.95, "volatility": 0.2}, "freedom": {"value": 0.8, "volatility": 0.2}},
         ),
-        "LOC_LIVERPOOL": Location(
-            id="LOC_LIVERPOOL",
+                "LOC_LIVERPOOL": Location(
             name="Liverpool",
-            connected_locations=["LOC_WUTHERING_HEIGHTS"],
-            ambient_states={},
+            description="Liverpool",
+            ambient_state={},
         ),
-        "LOC_SOUTH": Location(
-            id="LOC_SOUTH",
+                "LOC_SOUTH": Location(
             name="Southern England (Isabella's Refuge)",
-            connected_locations=[],
-            ambient_states={},
+            description="Southern England (Isabella's Refuge)",
+            ambient_state={},
         ),
     },
 
@@ -273,6 +258,12 @@ world_state = WorldStateV1(
     ],
 
     # ── SOCIAL TOPOLOGY ────────────────────────────────────────────────────
+    spatial_topology=[
+        SpatialEdge(source_id="LOC_LIVERPOOL", target_id="LOC_WUTHERING_HEIGHTS"),
+        SpatialEdge(source_id="LOC_MOORS", target_id="LOC_THRUSHCROSS_GRANGE"),
+        SpatialEdge(source_id="LOC_MOORS", target_id="LOC_WUTHERING_HEIGHTS"),
+        SpatialEdge(source_id="LOC_THRUSHCROSS_GRANGE", target_id="LOC_WUTHERING_HEIGHTS"),
+    ],
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_HEATHCLIFF", target_entity_id="ENT_CATHERINE", affinity=1.0, friction=0.6, power_dynamic=0.0, inertia=0.95),
         RelationshipEdge(source_entity_id="ENT_CATHERINE", target_entity_id="ENT_HEATHCLIFF", affinity=1.0, friction=0.5, power_dynamic=0.0, inertia=0.95),

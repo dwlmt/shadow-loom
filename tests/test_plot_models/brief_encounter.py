@@ -1,6 +1,6 @@
 from shadow_loom.models import (
     WorldStateV1, Location, NarrativeObject, Entity, EventNode,
-    CausalEdge, RelationshipEdge, TraitVector, AmbientVector,
+    CausalEdge, SpatialEdge, RelationshipEdge, TraitVector,
     Affordance, Belief,
 )
 
@@ -13,52 +13,35 @@ world_state = WorldStateV1(
 
     # ── LOCATIONS ──────────────────────────────────────────────────────────
     locations={
-        "LOC_RAILWAY_STATION": Location(
-            id="LOC_RAILWAY_STATION",
+                "LOC_RAILWAY_STATION": Location(
             name="Milford Junction Railway Station",
-            connected_locations=["LOC_REFRESHMENT_ROOM", "LOC_MILFORD_TOWN"],
-            ambient_states={
-                "transience": AmbientVector(value=0.8, volatility=0.3),
-                "routine": AmbientVector(value=0.7, volatility=0.2),
-            },
+            description="Milford Junction Railway Station",
+            ambient_state={"transience": {"value": 0.8, "volatility": 0.3}, "routine": {"value": 0.7, "volatility": 0.2}},
         ),
-        "LOC_REFRESHMENT_ROOM": Location(
-            id="LOC_REFRESHMENT_ROOM",
+                "LOC_REFRESHMENT_ROOM": Location(
             name="Station Refreshment Room",
-            connected_locations=["LOC_RAILWAY_STATION"],
-            ambient_states={
-                "intimacy": AmbientVector(value=0.6, volatility=0.5),
-                "public_exposure": AmbientVector(value=0.7, volatility=0.3),
-            },
+            description="Station Refreshment Room",
+            ambient_state={"intimacy": {"value": 0.6, "volatility": 0.5}, "public_exposure": {"value": 0.7, "volatility": 0.3}},
         ),
-        "LOC_MILFORD_TOWN": Location(
-            id="LOC_MILFORD_TOWN",
+                "LOC_MILFORD_TOWN": Location(
             name="Milford Town (Cinema, Shops, Chemist)",
-            connected_locations=["LOC_RAILWAY_STATION"],
-            ambient_states={},
+            description="Milford Town (Cinema, Shops, Chemist)",
+            ambient_state={},
         ),
-        "LOC_LAURA_HOME": Location(
-            id="LOC_LAURA_HOME",
+                "LOC_LAURA_HOME": Location(
             name="Laura's Home",
-            connected_locations=["LOC_RAILWAY_STATION"],
-            ambient_states={
-                "domesticity": AmbientVector(value=0.8, volatility=0.1),
-                "emotional_distance": AmbientVector(value=0.6, volatility=0.4),
-            },
+            description="Laura's Home",
+            ambient_state={"domesticity": {"value": 0.8, "volatility": 0.1}, "emotional_distance": {"value": 0.6, "volatility": 0.4}},
         ),
-        "LOC_STEPHEN_FLAT": Location(
-            id="LOC_STEPHEN_FLAT",
+                "LOC_STEPHEN_FLAT": Location(
             name="Stephen's Flat",
-            connected_locations=["LOC_MILFORD_TOWN"],
-            ambient_states={
-                "guilt": AmbientVector(value=0.9, volatility=0.3),
-            },
+            description="Stephen's Flat",
+            ambient_state={"guilt": {"value": 0.9, "volatility": 0.3}},
         ),
-        "LOC_COUNTRYSIDE": Location(
-            id="LOC_COUNTRYSIDE",
+                "LOC_COUNTRYSIDE": Location(
             name="Countryside (Public Meeting Spots)",
-            connected_locations=["LOC_MILFORD_TOWN"],
-            ambient_states={},
+            description="Countryside (Public Meeting Spots)",
+            ambient_state={},
         ),
     },
 
@@ -198,6 +181,13 @@ world_state = WorldStateV1(
     ],
 
     # ── SOCIAL TOPOLOGY ────────────────────────────────────────────────────
+    spatial_topology=[
+        SpatialEdge(source_id="LOC_COUNTRYSIDE", target_id="LOC_MILFORD_TOWN"),
+        SpatialEdge(source_id="LOC_LAURA_HOME", target_id="LOC_RAILWAY_STATION"),
+        SpatialEdge(source_id="LOC_MILFORD_TOWN", target_id="LOC_RAILWAY_STATION"),
+        SpatialEdge(source_id="LOC_MILFORD_TOWN", target_id="LOC_STEPHEN_FLAT"),
+        SpatialEdge(source_id="LOC_RAILWAY_STATION", target_id="LOC_REFRESHMENT_ROOM"),
+    ],
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_LAURA", target_entity_id="ENT_ALEC", affinity=0.9, friction=0.7, power_dynamic=0.0, inertia=0.6),
         RelationshipEdge(source_entity_id="ENT_ALEC", target_entity_id="ENT_LAURA", affinity=0.85, friction=0.7, power_dynamic=0.0, inertia=0.6),

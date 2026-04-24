@@ -1,6 +1,6 @@
 from shadow_loom.models import (
     WorldStateV1, Location, NarrativeObject, Entity, EventNode,
-    CausalEdge, RelationshipEdge, TraitVector, AmbientVector,
+    CausalEdge, SpatialEdge, RelationshipEdge, TraitVector,
     Affordance, Belief,
 )
 
@@ -13,55 +13,40 @@ world_state = WorldStateV1(
 
     # ── LOCATIONS ──────────────────────────────────────────────────────────
     locations={
-        "LOC_LONDON": Location(
-            id="LOC_LONDON",
+                "LOC_LONDON": Location(
             name="London",
-            connected_locations=["LOC_OLD_WORKSHOP", "LOC_COURTHOUSE", "LOC_ARCHIE_HOUSE", "LOC_KEN_FLAT"],
-            ambient_states={
-                "intrigue": AmbientVector(value=0.7, volatility=0.5),
-            },
+            description="London",
+            ambient_state={"intrigue": {"value": 0.7, "volatility": 0.5}},
         ),
-        "LOC_OLD_WORKSHOP": Location(
-            id="LOC_OLD_WORKSHOP",
+                "LOC_OLD_WORKSHOP": Location(
             name="Old Workshop (Original Diamond Stash)",
-            connected_locations=["LOC_LONDON"],
-            ambient_states={},
+            description="Old Workshop (Original Diamond Stash)",
+            ambient_state={},
         ),
-        "LOC_ARCHIE_HOUSE": Location(
-            id="LOC_ARCHIE_HOUSE",
+                "LOC_ARCHIE_HOUSE": Location(
             name="Archie Leach's House",
-            connected_locations=["LOC_LONDON", "LOC_COURTHOUSE"],
-            ambient_states={
-                "domesticity": AmbientVector(value=0.6, volatility=0.5),
-            },
+            description="Archie Leach's House",
+            ambient_state={"domesticity": {"value": 0.6, "volatility": 0.5}},
         ),
-        "LOC_COURTHOUSE": Location(
-            id="LOC_COURTHOUSE",
+                "LOC_COURTHOUSE": Location(
             name="Courthouse",
-            connected_locations=["LOC_LONDON", "LOC_ARCHIE_HOUSE"],
-            ambient_states={
-                "tension": AmbientVector(value=0.8, volatility=0.4),
-            },
+            description="Courthouse",
+            ambient_state={"tension": {"value": 0.8, "volatility": 0.4}},
         ),
-        "LOC_KEN_FLAT": Location(
-            id="LOC_KEN_FLAT",
+                "LOC_KEN_FLAT": Location(
             name="Ken's Flat",
-            connected_locations=["LOC_LONDON"],
-            ambient_states={},
+            description="Ken's Flat",
+            ambient_state={},
         ),
-        "LOC_HEATHROW_HOTEL": Location(
-            id="LOC_HEATHROW_HOTEL",
+                "LOC_HEATHROW_HOTEL": Location(
             name="Hotel near Heathrow Airport",
-            connected_locations=["LOC_LONDON", "LOC_AIRPORT"],
-            ambient_states={},
+            description="Hotel near Heathrow Airport",
+            ambient_state={},
         ),
-        "LOC_AIRPORT": Location(
-            id="LOC_AIRPORT",
+                "LOC_AIRPORT": Location(
             name="Heathrow Airport",
-            connected_locations=["LOC_HEATHROW_HOTEL"],
-            ambient_states={
-                "escape": AmbientVector(value=0.8, volatility=0.5),
-            },
+            description="Heathrow Airport",
+            ambient_state={"escape": {"value": 0.8, "volatility": 0.5}},
         ),
     },
 
@@ -264,6 +249,15 @@ world_state = WorldStateV1(
     ],
 
     # ── SOCIAL TOPOLOGY ────────────────────────────────────────────────────
+    spatial_topology=[
+        SpatialEdge(source_id="LOC_AIRPORT", target_id="LOC_HEATHROW_HOTEL"),
+        SpatialEdge(source_id="LOC_ARCHIE_HOUSE", target_id="LOC_COURTHOUSE"),
+        SpatialEdge(source_id="LOC_ARCHIE_HOUSE", target_id="LOC_LONDON"),
+        SpatialEdge(source_id="LOC_COURTHOUSE", target_id="LOC_LONDON"),
+        SpatialEdge(source_id="LOC_HEATHROW_HOTEL", target_id="LOC_LONDON"),
+        SpatialEdge(source_id="LOC_KEN_FLAT", target_id="LOC_LONDON"),
+        SpatialEdge(source_id="LOC_LONDON", target_id="LOC_OLD_WORKSHOP"),
+    ],
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_WANDA", target_entity_id="ENT_OTTO", affinity=-0.2, friction=0.8, power_dynamic=0.3, inertia=0.4),
         RelationshipEdge(source_entity_id="ENT_OTTO", target_entity_id="ENT_WANDA", affinity=0.7, friction=0.8, power_dynamic=-0.1, inertia=0.6),

@@ -17,7 +17,8 @@ class EgoGraphPayload(BaseModel):
     present_objects: List[dict]
     relevant_relationships: List[dict]
     relevant_causal_edges: List[dict]
-    connected_locations: List[dict]
+    relevant_spatial_edges: List[dict]
+    relevant_information_edges: List[dict]
     recent_memory: List[dict]
 
 # ==========================================
@@ -51,22 +52,25 @@ def extract_ego_graph_from_memory(
     if not focus_entities:
         raise ValueError(f"None of the focus entities {focus_entity_ids} found in WorldState.")
 
-    # Also pull 1-hop neighbor locations so spatial connectivity can be wired
+    # Also pull 1-hop neighbor locations via spatial_topology
     neighbor_location_ids: Set[str] = set()
-    for loc_id in location_ids:
-        loc = world_state.locations.get(loc_id)
-        if loc:
-            current_locations.append(loc.model_dump())
-            for neighbor_id in loc.connected_locations:
-                if neighbor_id not in location_ids:
-                    neighbor_location_ids.add(neighbor_id)
-
-    for n_loc_id in neighbor_location_ids:
-        n_loc = world_state.locations.get(n_loc_id)
-        if n_loc:
-            current_locations.append(n_loc.model_dump())
+    for se in world_state.spatial_topology:
+        if se.source_id in location_ids and se.target_id not in location_ids:
+            neighbor_location_ids.add(se.target_id)
+        elif se.target_id in location_ids and se.source_id not in location_ids:
+            neighbor_location_ids.add(se.source_id)
 
     all_location_ids = location_ids | neighbor_location_ids
+
+    added_locs: Set[str] = set()
+    for loc_id in all_location_ids:
+        if loc_id not in added_locs:
+            loc = world_state.locations.get(loc_id)
+            if loc:
+                loc_data = loc.model_dump()
+                loc_data["id"] = loc_id
+                current_locations.append(loc_data)
+                added_locs.add(loc_id)
 
     # 2. The Spatial Filter (Who/What else is in ANY of these rooms?)
     present_entities = []
@@ -101,23 +105,34 @@ def extract_ego_graph_from_memory(
     if temporal_anchor is not None:
         valid_events = [evt for evt in valid_events if evt.fabula_time <= temporal_anchor]
 
-    valid_events.sort(key=lambda x: x.fabula_time, reverse=True)
+    valid_events = sorted(valid_events, key=lambda x: x.fabula_time, reverse=True)
     recent_memory = [evt.model_dump() for evt in valid_events[:memory_limit]]
 
-    # 5. The Spatial Navigation Filter (Location-to-Location connectivity)
-    connected_locations_list = []
-    for loc_id in all_location_ids:
-        loc = world_state.locations.get(loc_id)
-        if not loc:
-            continue
-        for neighbor_id in loc.connected_locations:
-            if neighbor_id in all_location_ids:
-                connected_locations_list.append({
-                    "source_id": loc_id,
-                    "target_id": neighbor_id,
-                })
+    # 5. The Spatial Navigation Filter (SpatialEdges connecting loaded locations)
+    relevant_spatial_edges = []
+    for se in world_state.spatial_topology:
+        if se.source_id in all_location_ids and se.target_id in all_location_ids:
+            relevant_spatial_edges.append(se.model_dump())
 
-    # 6. The Causal Filter (CausalEdges where both endpoints are in the scene)
+    # 6. The Information Filter (Comms links involving focus entities, time-sliced)
+    relevant_information_edges = []
+    for ie in world_state.information_topology:
+        # Participant filter: source or any target must be a focus entity
+        participants = {ie.source_id} | set(ie.target_ids)
+        if not participants & focus_id_set:
+            continue
+        # Temporal filter: link must have been established by the anchor
+        if temporal_anchor is not None and ie.established_at_fabula > temporal_anchor:
+            continue
+        # Skip terminated links (anchor past termination, or no anchor but link is terminated)
+        if ie.terminated_at_fabula is not None:
+            if temporal_anchor is not None and ie.terminated_at_fabula < temporal_anchor:
+                continue
+            if temporal_anchor is None:
+                continue
+        relevant_information_edges.append(ie.model_dump())
+
+    # 7. The Causal Filter (CausalEdges where both endpoints are in the scene)
     scene_node_ids = (
         focus_id_set
         | present_entity_ids
@@ -137,14 +152,15 @@ def extract_ego_graph_from_memory(
         present_objects=present_objects,
         relevant_relationships=relevant_relationships,
         relevant_causal_edges=relevant_causal_edges,
-        connected_locations=connected_locations_list,
+        relevant_spatial_edges=relevant_spatial_edges,
+        relevant_information_edges=relevant_information_edges,
         recent_memory=recent_memory
     )
 
-    logger.info("Multi-Ego GraphRAG complete — %d focus, %d locations, %d co-present, %d objects, %d relationships, %d causal, %d spatial, %d memory",
+    logger.info("Multi-Ego GraphRAG complete — %d focus, %d locations, %d co-present, %d objects, %d relationships, %d causal, %d spatial, %d info, %d memory",
                  len(focus_entities), len(current_locations), len(present_entities),
                  len(present_objects), len(relevant_relationships), len(relevant_causal_edges),
-                 len(connected_locations_list), len(recent_memory))
+                 len(relevant_spatial_edges), len(relevant_information_edges), len(recent_memory))
     return payload
 
 
@@ -167,11 +183,22 @@ def extract_full_world_state(
             evt for evt in dump["events"]
             if evt["fabula_time"] <= temporal_anchor
         ]
-        logger.info("Omniscient Graph extracted \u2014 %d entities, %d locations, %d/%d events (anchor T=%d)",
+        # Time-slice information_topology: exclude future and terminated comms
+        dump["information_topology"] = [
+            ie for ie in dump.get("information_topology", [])
+            if ie["established_at_fabula"] <= temporal_anchor
+            and (ie.get("terminated_at_fabula") is None or ie["terminated_at_fabula"] >= temporal_anchor)
+        ]
+        logger.info("Omniscient Graph extracted — %d entities, %d locations, %d/%d events (anchor T=%d)",
                      len(dump["entities"]), len(dump["locations"]),
                      len(dump["events"]), pre_count, temporal_anchor)
     else:
-        logger.info("Omniscient Graph extracted \u2014 %d entities, %d locations, %d events (no anchor)",
+        # Without an anchor, exclude terminated comms (they are dead links)
+        dump["information_topology"] = [
+            ie for ie in dump.get("information_topology", [])
+            if ie.get("terminated_at_fabula") is None
+        ]
+        logger.info("Omniscient Graph extracted — %d entities, %d locations, %d events (no anchor)",
                      len(dump["entities"]), len(dump["locations"]), len(dump["events"]))
 
     return dump

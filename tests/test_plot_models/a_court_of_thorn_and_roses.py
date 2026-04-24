@@ -1,6 +1,6 @@
 from shadow_loom.models import (
     WorldStateV1, Location, NarrativeObject, Entity, EventNode,
-    CausalEdge, RelationshipEdge, TraitVector, AmbientVector,
+    CausalEdge, SpatialEdge, RelationshipEdge, TraitVector,
     Affordance, Belief,
 )
 
@@ -13,58 +13,35 @@ world_state = WorldStateV1(
 
     # ── LOCATIONS ──────────────────────────────────────────────────────────
     locations={
-        "LOC_HUMAN_REALM": Location(
-            id="LOC_HUMAN_REALM",
+                "LOC_HUMAN_REALM": Location(
             name="Human Realm (Feyre's Family Cottage)",
-            connected_locations=["LOC_WALL", "LOC_WOODS"],
-            ambient_states={
-                "poverty": AmbientVector(value=0.8, volatility=0.3),
-                "hostility_to_fae": AmbientVector(value=0.9, volatility=0.1),
-            },
+            description="Human Realm (Feyre's Family Cottage)",
+            ambient_state={"poverty": {"value": 0.8, "volatility": 0.3}, "hostility_to_fae": {"value": 0.9, "volatility": 0.1}},
         ),
-        "LOC_WOODS": Location(
-            id="LOC_WOODS",
+                "LOC_WOODS": Location(
             name="The Woods (Hunting Grounds)",
-            connected_locations=["LOC_HUMAN_REALM"],
-            ambient_states={
-                "danger": AmbientVector(value=0.7, volatility=0.5),
-            },
+            description="The Woods (Hunting Grounds)",
+            ambient_state={"danger": {"value": 0.7, "volatility": 0.5}},
         ),
-        "LOC_WALL": Location(
-            id="LOC_WALL",
+                "LOC_WALL": Location(
             name="The Wall (Boundary between Realms)",
-            connected_locations=["LOC_HUMAN_REALM", "LOC_SPRING_COURT"],
-            ambient_states={
-                "magic": AmbientVector(value=0.6, volatility=0.3),
-            },
-            constants=["boundary"],
+            description="The Wall (Boundary between Realms) (boundary)",
+            ambient_state={"magic": {"value": 0.6, "volatility": 0.3}},
         ),
-        "LOC_SPRING_COURT": Location(
-            id="LOC_SPRING_COURT",
+                "LOC_SPRING_COURT": Location(
             name="The Spring Court (Tamlin's Estate)",
-            connected_locations=["LOC_WALL", "LOC_UNDER_THE_MOUNTAIN"],
-            ambient_states={
-                "beauty": AmbientVector(value=0.8, volatility=0.4),
-                "danger": AmbientVector(value=0.6, volatility=0.6),
-            },
+            description="The Spring Court (Tamlin's Estate)",
+            ambient_state={"beauty": {"value": 0.8, "volatility": 0.4}, "danger": {"value": 0.6, "volatility": 0.6}},
         ),
-        "LOC_UNDER_THE_MOUNTAIN": Location(
-            id="LOC_UNDER_THE_MOUNTAIN",
+                "LOC_UNDER_THE_MOUNTAIN": Location(
             name="Under the Mountain (Amarantha's Court)",
-            connected_locations=["LOC_SPRING_COURT", "LOC_NIGHT_COURT"],
-            ambient_states={
-                "oppression": AmbientVector(value=0.95, volatility=0.1),
-                "cruelty": AmbientVector(value=0.9, volatility=0.2),
-            },
+            description="Under the Mountain (Amarantha's Court)",
+            ambient_state={"oppression": {"value": 0.95, "volatility": 0.1}, "cruelty": {"value": 0.9, "volatility": 0.2}},
         ),
-        "LOC_NIGHT_COURT": Location(
-            id="LOC_NIGHT_COURT",
+                "LOC_NIGHT_COURT": Location(
             name="The Night Court (Rhysand's Domain)",
-            connected_locations=["LOC_UNDER_THE_MOUNTAIN"],
-            ambient_states={
-                "power": AmbientVector(value=0.9, volatility=0.2),
-                "mystery": AmbientVector(value=0.85, volatility=0.3),
-            },
+            description="The Night Court (Rhysand's Domain)",
+            ambient_state={"power": {"value": 0.9, "volatility": 0.2}, "mystery": {"value": 0.85, "volatility": 0.3}},
         ),
     },
 
@@ -268,6 +245,13 @@ world_state = WorldStateV1(
     ],
 
     # ── SOCIAL TOPOLOGY ────────────────────────────────────────────────────
+    spatial_topology=[
+        SpatialEdge(source_id="LOC_HUMAN_REALM", target_id="LOC_WALL"),
+        SpatialEdge(source_id="LOC_HUMAN_REALM", target_id="LOC_WOODS"),
+        SpatialEdge(source_id="LOC_NIGHT_COURT", target_id="LOC_UNDER_THE_MOUNTAIN"),
+        SpatialEdge(source_id="LOC_SPRING_COURT", target_id="LOC_UNDER_THE_MOUNTAIN"),
+        SpatialEdge(source_id="LOC_SPRING_COURT", target_id="LOC_WALL"),
+    ],
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_FEYRE", target_entity_id="ENT_TAMLIN", affinity=0.9, friction=0.4, power_dynamic=-0.3, inertia=0.8),
         RelationshipEdge(source_entity_id="ENT_TAMLIN", target_entity_id="ENT_FEYRE", affinity=0.9, friction=0.3, power_dynamic=0.4, inertia=0.8),

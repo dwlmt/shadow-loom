@@ -95,11 +95,20 @@ class AMWNInstantiator:
                 sandbox.add_edge(src, tgt, **edge_attrs)
 
         # C. Historical Causal Edges (actor → event fallback)
+        # Only add if NOT already covered by the formal causal topology (Section D)
+        formal_causal_pairs = set()
+        for ce in ego_payload.get("relevant_causal_edges", []):
+            src = ce.get("source_id")
+            tgt = ce.get("target_id")
+            if src and tgt:
+                formal_causal_pairs.add((src, tgt))
+
         for evt in ego_payload.get("recent_memory", []):
             evt_id = evt.get("id")
             actor_id = evt.get("actor_id")
             if evt_id and actor_id and sandbox.has_node(actor_id):
-                sandbox.add_edge(actor_id, evt_id, edge_type="causal", mechanism="physical")
+                if (actor_id, evt_id) not in formal_causal_pairs:
+                    sandbox.add_edge(actor_id, evt_id, edge_type="causal", mechanism="physical")
 
         # D. Formal Causal Topology Edges (with real mechanism types)
         for ce in ego_payload.get("relevant_causal_edges", []):
@@ -110,15 +119,26 @@ class AMWNInstantiator:
                 sandbox.add_edge(src, tgt, edge_type="causal", mechanism=mech,
                                  world_id=target_world_id)
 
-        # E. Spatial Navigation Edges (Location to Location, bidirectional)
-        for loc_edge in ego_payload.get("connected_locations", []):
-            src_loc = loc_edge.get("source_id")
-            tgt_loc = loc_edge.get("target_id")
-            if src_loc and tgt_loc and sandbox.has_node(src_loc) and sandbox.has_node(tgt_loc):
-                sandbox.add_edge(src_loc, tgt_loc, edge_type="connected_to",
-                                 world_id=target_world_id)
-                sandbox.add_edge(tgt_loc, src_loc, edge_type="connected_to",
-                                 world_id=target_world_id)
+        # E. Spatial Navigation Edges (SpatialEdge, bidirectional unless locked)
+        for se in ego_payload.get("relevant_spatial_edges", []):
+            src_loc = se.get("source_id")
+            tgt_loc = se.get("target_id")
+            is_locked = se.get("is_locked", False)
+            if src_loc and tgt_loc and not is_locked:
+                if sandbox.has_node(src_loc) and sandbox.has_node(tgt_loc):
+                    sandbox.add_edge(src_loc, tgt_loc, edge_type="connected_to",
+                                     world_id=target_world_id)
+                    sandbox.add_edge(tgt_loc, src_loc, edge_type="connected_to",
+                                     world_id=target_world_id)
+
+        # F. Information / Communication Edges (InformationEdge)
+        for ie in ego_payload.get("relevant_information_edges", []):
+            src = ie.get("source_id")
+            medium = ie.get("medium", "unknown")
+            for tgt in ie.get("target_ids", []):
+                if src and tgt and sandbox.has_node(src) and sandbox.has_node(tgt):
+                    sandbox.add_edge(src, tgt, edge_type="communicating_with",
+                                     medium=medium, world_id=target_world_id)
 
         return sandbox
 
@@ -132,6 +152,9 @@ class AMWNInstantiator:
         the correct topological surgery method.
         """
         for target_path, new_value in interventions.items():
+            if '.' not in target_path:
+                logger.warning("Malformed intervention key (no dot): %s. Skipping.", target_path)
+                continue
             node_id, property_path = target_path.split('.', 1)
 
             # --- THE GENESIS CATCH ---
@@ -150,6 +173,8 @@ class AMWNInstantiator:
                 cls._intervene_inventory(sandbox, node_id, new_value)
             elif property_path.startswith("relationships."):
                 cls._intervene_relationship(sandbox, node_id, property_path, new_value)
+            elif property_path == "communicating_with":
+                cls._intervene_comms(sandbox, node_id, new_value)
             else:
                 cls._intervene_state(sandbox, node_id, property_path, new_value)
 
@@ -159,8 +184,6 @@ class AMWNInstantiator:
     @staticmethod
     def _intervene_spatial(sandbox: nx.MultiDiGraph, entity_id: str, new_location_id: str):
         """Forces an entity into a new room, severing old spatial edges."""
-        sandbox.nodes[entity_id]["location_id"] = new_location_id
-        
         edges_to_remove = []
         for u, v, key, data in sandbox.out_edges(entity_id, data=True, keys=True):
             if data.get("edge_type") == "located_in":
@@ -168,7 +191,11 @@ class AMWNInstantiator:
         sandbox.remove_edges_from(edges_to_remove)
         
         if sandbox.has_node(new_location_id):
+            sandbox.nodes[entity_id]["location_id"] = new_location_id
             sandbox.add_edge(entity_id, new_location_id, edge_type="located_in", world_id="shadow")
+        else:
+            sandbox.nodes[entity_id]["location_id"] = new_location_id
+            logger.warning("[Surgery] Target location %s not in sandbox; attribute set but no edge wired.", new_location_id)
             
         logger.info("[Surgery] Teleported %s to %s", entity_id, new_location_id)
 
@@ -178,7 +205,8 @@ class AMWNInstantiator:
     @staticmethod
     def _intervene_inventory(sandbox: nx.MultiDiGraph, object_id: str, new_owner_id: str | None):
         """Forces an item to be picked up or dropped."""
-        sandbox.nodes[object_id]["owner_id"] = new_owner_id
+        # Capture old owner BEFORE overwriting
+        old_owner_id = sandbox.nodes[object_id].get("owner_id")
         
         edges_to_remove = []
         for u, v, key, data in sandbox.out_edges(object_id, data=True, keys=True):
@@ -187,12 +215,19 @@ class AMWNInstantiator:
         sandbox.remove_edges_from(edges_to_remove)
         
         if new_owner_id and sandbox.has_node(new_owner_id):
+            sandbox.nodes[object_id]["owner_id"] = new_owner_id
             sandbox.add_edge(object_id, new_owner_id, edge_type="owned_by", world_id="shadow")
             logger.info("[Surgery] Gave %s to %s", object_id, new_owner_id)
         else:
-            loc_id = sandbox.nodes[object_id].get("location_id")
-            if loc_id and sandbox.has_node(loc_id):
-                sandbox.add_edge(object_id, loc_id, edge_type="located_in", world_id="shadow")
+            sandbox.nodes[object_id]["owner_id"] = new_owner_id
+            # Resolve drop location: prefer the previous owner's current room
+            drop_loc = None
+            if old_owner_id and sandbox.has_node(old_owner_id):
+                drop_loc = sandbox.nodes[old_owner_id].get("location_id")
+            if not drop_loc:
+                drop_loc = sandbox.nodes[object_id].get("location_id")
+            if drop_loc and sandbox.has_node(drop_loc):
+                sandbox.add_edge(object_id, drop_loc, edge_type="located_in", world_id="shadow")
             logger.info("[Surgery] Dropped %s on the floor.", object_id)
 
     # ==========================================
@@ -201,7 +236,11 @@ class AMWNInstantiator:
     @staticmethod
     def _intervene_relationship(sandbox: nx.MultiDiGraph, source_id: str, path: str, new_value: float):
         """Forces a relationship metric (Affinity/Friction) to change."""
-        _, target_id, metric = path.split('.')
+        parts = path.split('.')
+        if len(parts) != 3:
+            logger.warning("Malformed relationship path: %s. Expected 'relationships.<target>.<metric>'.", path)
+            return
+        _, target_id, metric = parts
         
         if not sandbox.has_node(target_id):
             return
@@ -223,7 +262,7 @@ class AMWNInstantiator:
         
         current_level = node_data
         for key in keys[:-1]:
-            if key not in current_level:
+            if key not in current_level or not isinstance(current_level[key], dict):
                 current_level[key] = {}
             current_level = current_level[key]
         current_level[keys[-1]] = new_value
@@ -248,6 +287,7 @@ class AMWNInstantiator:
 
         # 1. Inject the node with the Shadow Multiverse tag
         attributes = payload.copy()
+        attributes["id"] = new_node_id
         attributes["world_id"] = "shadow"
         attributes["node_type"] = node_type
         sandbox.add_node(new_node_id, **attributes)
@@ -257,3 +297,30 @@ class AMWNInstantiator:
             sandbox.add_edge(new_node_id, location_id, edge_type="located_in", world_id="shadow")
 
         logger.info("[Surgery] Genesis Event: Spawned %s into %s", new_node_id, location_id)
+
+    # ==========================================
+    # SURGERY 6: COMMS (Establish / Sever communication)
+    # ==========================================
+    @staticmethod
+    def _intervene_comms(sandbox: nx.MultiDiGraph, source_id: str, target_ids: list | None):
+        """Spawns or severs a communicating_with edge between entities."""
+        # Coerce a bare string to a list
+        if isinstance(target_ids, str):
+            target_ids = [target_ids]
+
+        # Sever all existing comms from this source
+        edges_to_remove = []
+        for u, v, key, data in sandbox.out_edges(source_id, data=True, keys=True):
+            if data.get("edge_type") == "communicating_with":
+                edges_to_remove.append((u, v, key))
+        sandbox.remove_edges_from(edges_to_remove)
+
+        if not target_ids:
+            logger.info("[Surgery] Severed all comms from %s", source_id)
+            return
+
+        for tgt in target_ids:
+            if sandbox.has_node(tgt):
+                sandbox.add_edge(source_id, tgt, edge_type="communicating_with",
+                                 medium="unknown", world_id="shadow")
+        logger.info("[Surgery] Opened comms: %s → %s", source_id, target_ids)

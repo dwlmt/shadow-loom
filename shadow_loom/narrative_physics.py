@@ -64,12 +64,19 @@ def calculate_narrative_physics(
         logger.info("[Intervention] Surgeries complete — %d nodes, %d edges.",
                      shadow_graph.number_of_nodes(), shadow_graph.number_of_edges())
 
-        return {
+        result = {
             "status": "success",
             "query_type": "intervention",
             "physics_state": nx.node_link_data(shadow_graph),
             "math_changes": request.interventions
         }
+
+        # Semantic Physics Override for split-screen (multi-room) scenarios
+        physics_override = _generate_physics_override(shadow_graph)
+        if physics_override:
+            result["physics_override"] = physics_override
+
+        return result
 
     # ==========================================
     # RUNG 3: COUNTERFACTUAL
@@ -87,13 +94,19 @@ def calculate_narrative_physics(
 
         AMWNInstantiator.execute_interventions(shadow_graph, request.historical_interventions)
 
-        return {
+        result = {
             "status": "success",
             "query_type": "counterfactual",
             "physics_state": nx.node_link_data(shadow_graph),
             "math_changes": request.historical_interventions,
             "evidence_conditions": request.evidence_node_ids
         }
+
+        physics_override = _generate_physics_override(shadow_graph)
+        if physics_override:
+            result["physics_override"] = physics_override
+
+        return result
 
     # ==========================================
     # SEMANTIC: DIRECTIVE
@@ -148,6 +161,8 @@ def _resolve_focus_entities(interventions: Dict[str, Any], global_world_state: W
     focus_ids = []
 
     for target_path in interventions:
+        if '.' not in target_path:
+            continue
         node_id, prop = target_path.split('.', 1)
         if prop == "spawn":
             continue
@@ -171,8 +186,17 @@ def _resolve_focus_entities(interventions: Dict[str, Any], global_world_state: W
             seen.add(resolved)
             focus_ids.append(resolved)
 
+        # Also resolve comms targets so their rooms are in the ego-graph
+        if prop == "communicating_with":
+            value = interventions[target_path]
+            if isinstance(value, list):
+                for tgt_id in value:
+                    if tgt_id in global_world_state.entities and tgt_id not in seen:
+                        seen.add(tgt_id)
+                        focus_ids.append(tgt_id)
+
     # Last resort: first entity in the world state
-    if not focus_ids:
+    if not focus_ids and global_world_state.entities:
         focus_ids.append(next(iter(global_world_state.entities)))
 
     return focus_ids
@@ -190,6 +214,8 @@ def _calculate_past_anchor(interventions: Dict[str, Any], global_world_state: Wo
     
     for target_path in interventions.keys():
         # e.g., "EVT_MURDER_1.event_type" -> node_id = "EVT_MURDER_1"
+        if '.' not in target_path:
+            continue
         node_id, prop = target_path.split('.', 1)
 
         # Genesis spawns have no historical footprint — skip them
@@ -235,12 +261,17 @@ def _generate_directive_rules(ego_graph: Dict[str, Any], vector_target_id: str, 
         return f"NARRATIVE DIRECTIVE: Shift the emotional polarity of the scene by {shift:+.2f}."
 
     # Parse the target: e.g., "ENT_MACBETH.traits.ambition" -> "ENT_MACBETH", "traits.ambition"
+    if '.' not in vector_target_id:
+        return f"Alter the state of {vector_target_id} by a trajectory of {shift:+.2f}."
     node_id, vector_path = vector_target_id.split('.', 1)
     
     # 1. SOCIAL DIRECTIVE (Relationships)
     if vector_path.startswith("relationships."):
         # e.g., "relationships.ENT_DUNCAN.affinity"
-        _, target_entity, metric = vector_path.split('.')
+        parts = vector_path.split('.')
+        if len(parts) != 3:
+            return f"Alter the state of {vector_target_id} by a trajectory of {shift:+.2f}."
+        _, target_entity, metric = parts
         
         # Locate the current metric in the localized graph
         current_val = "unknown"
@@ -258,8 +289,9 @@ def _generate_directive_rules(ego_graph: Dict[str, Any], vector_target_id: str, 
 
     # 2. PSYCHOLOGICAL DIRECTIVE (Traits)
     elif vector_path.startswith("traits."):
-        # e.g., "traits.ambition"
-        _, trait_name = vector_path.split('.')
+        # e.g., "traits.ambition" or "traits.ambition.value"
+        trait_parts = vector_path.split('.')
+        trait_name = trait_parts[1] if len(trait_parts) >= 2 else vector_path
         
         # Look up the trait on the POV character or present entities
         current_val = "unknown"
@@ -287,3 +319,38 @@ def _generate_directive_rules(ego_graph: Dict[str, Any], vector_target_id: str, 
         )
 
     return f"Alter the state of {vector_target_id} by a trajectory of {shift:+.2f}."
+
+
+# ==========================================
+# HELPER 3: THE PHYSICS OVERRIDE DETECTOR
+# ==========================================
+def _generate_physics_override(sandbox: nx.MultiDiGraph) -> Optional[str]:
+    """
+    Detects split-screen scenarios (entities in separate rooms communicating remotely).
+    Returns a strict [PHYSICS OVERRIDE] string for the LLM, or None if single-room.
+    """
+    # Collect unique locations that Entity nodes are located_in
+    entity_locations: set = set()
+    for node_id, data in sandbox.nodes(data=True):
+        if data.get("node_type") == "Entity":
+            loc = data.get("location_id")
+            if loc:
+                entity_locations.add(loc)
+
+    if len(entity_locations) <= 1:
+        return None
+
+    # Check if any communicating_with edges exist
+    has_comms = any(
+        d.get("edge_type") == "communicating_with"
+        for _, _, d in sandbox.edges(data=True)
+    )
+
+    if has_comms:
+        return (
+            "[PHYSICS OVERRIDE]: Characters are in SEPARATE locations communicating remotely. "
+            "You MUST NOT describe physical touching, exchanging of items, or any direct physical interaction. "
+            "All interaction must be limited to the communication medium (speech, telepathy, etc.)."
+        )
+
+    return None

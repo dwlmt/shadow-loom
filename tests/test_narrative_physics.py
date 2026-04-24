@@ -649,7 +649,7 @@ class TestTopologyWiring:
         assert "psychological" in mechanisms or "epistemic" in mechanisms or "social" in mechanisms
 
     def test_location_connectivity_edges(self):
-        """connected_locations must produce 'connected_to' edges between Location nodes."""
+        """SpatialEdges must produce 'connected_to' edges between Location nodes."""
         query = InterventionQuery(
             interventions={"ENT_MACBETH.status": "healthy"}
         )
@@ -683,10 +683,11 @@ class TestTopologyWiring:
         result = calculate_narrative_physics(query, macbeth_ws)
         ps = result["physics_state"]
         assert "relevant_causal_edges" in ps
-        assert "connected_locations" in ps
+        assert "relevant_spatial_edges" in ps
+        assert "relevant_information_edges" in ps
 
     def test_connected_to_is_bidirectional(self):
-        """Spatial edges must be bidirectional: A→B and B→A."""
+        """Unlocked SpatialEdges must produce bidirectional connected_to edges: A→B and B→A."""
         query = InterventionQuery(
             interventions={"ENT_MACBETH.status": "healthy"}
         )
@@ -701,13 +702,13 @@ class TestTopologyWiring:
             assert (v, u) in connected_pairs, f"Missing reverse edge {v}→{u}"
 
     def test_neighbor_locations_in_sandbox(self):
-        """1-hop neighbor locations must be pulled into the sandbox as Location nodes."""
+        """1-hop neighbor locations via spatial_topology must be pulled into the sandbox."""
         query = InterventionQuery(
             interventions={"ENT_MACBETH.status": "healthy"}
         )
         result = calculate_narrative_physics(query, macbeth_ws)
         G = nx.node_link_graph(result["physics_state"])
-        # Macbeth is at LOC_DUNSINANE_CASTLE, which connects to
+        # Macbeth is at LOC_DUNSINANE_CASTLE. spatial_topology connects it to:
         # LOC_INVERNESS_CASTLE, LOC_BIRNAM_WOOD, LOC_MACDUFF_CASTLE
         assert G.has_node("LOC_DUNSINANE_CASTLE")
         assert G.has_node("LOC_INVERNESS_CASTLE")
@@ -724,3 +725,356 @@ class TestTopologyWiring:
         result = calculate_narrative_physics(query, macbeth_ws)
         G = nx.node_link_graph(result["physics_state"])
         assert nx.has_path(G, "LOC_DUNSINANE_CASTLE", "LOC_INVERNESS_CASTLE")
+
+    def test_locked_spatial_edge_blocks_path(self):
+        """A locked SpatialEdge must NOT produce a connected_to edge."""
+        from copy import deepcopy
+        from shadow_loom.models import SpatialEdge
+        ws = deepcopy(macbeth_ws)
+        # Lock the edge between Dunsinane and Inverness
+        ws.spatial_topology = [
+            se if not (se.source_id in ("LOC_DUNSINANE_CASTLE", "LOC_INVERNESS_CASTLE")
+                       and se.target_id in ("LOC_DUNSINANE_CASTLE", "LOC_INVERNESS_CASTLE"))
+            else SpatialEdge(source_id=se.source_id, target_id=se.target_id, is_locked=True)
+            for se in ws.spatial_topology
+        ]
+        query = InterventionQuery(interventions={"ENT_MACBETH.status": "healthy"})
+        result = calculate_narrative_physics(query, ws)
+        G = nx.node_link_graph(result["physics_state"])
+        # Locked edge should not appear as connected_to
+        direct = [
+            v for _, v, d in G.out_edges("LOC_DUNSINANE_CASTLE", data=True)
+            if d.get("edge_type") == "connected_to" and v == "LOC_INVERNESS_CASTLE"
+        ]
+        assert len(direct) == 0
+
+
+# =====================================================================
+# INFORMATION EDGES & PHYSICS OVERRIDE — Remote communication
+# =====================================================================
+class TestInformationEdges:
+    """Ensure InformationEdge extraction, wiring, and physics override work."""
+
+    def _make_comms_ws(self):
+        """Macbeth world with an active phone call between Macbeth and Lady Macbeth."""
+        from copy import deepcopy
+        from shadow_loom.models import InformationEdge
+        ws = deepcopy(macbeth_ws)
+        # Put Lady Macbeth in a different room
+        ws.entities["ENT_LADY_MACBETH"].location_id = "LOC_INVERNESS_CASTLE"
+        ws.information_topology = [
+            InformationEdge(
+                source_id="ENT_MACBETH",
+                target_ids=["ENT_LADY_MACBETH"],
+                medium="telepathy",
+                established_at_fabula=10,
+            )
+        ]
+        return ws
+
+    def test_info_edge_extracted_in_observation(self):
+        """InformationEdge must appear in the ego-graph payload."""
+        ws = self._make_comms_ws()
+        query = ObservationQuery(focus_entity_ids=["ENT_MACBETH", "ENT_LADY_MACBETH"])
+        result = calculate_narrative_physics(query, ws)
+        ps = result["physics_state"]
+        assert len(ps["relevant_information_edges"]) >= 1
+        ie = ps["relevant_information_edges"][0]
+        assert ie["source_id"] == "ENT_MACBETH"
+        assert ie["medium"] == "telepathy"
+
+    def test_info_edge_temporal_filter(self):
+        """InformationEdge established AFTER the temporal_anchor must be excluded."""
+        ws = self._make_comms_ws()
+        # anchor=5, but comms established at T=10 → excluded
+        query = ObservationQuery(focus_entity_ids=["ENT_MACBETH", "ENT_LADY_MACBETH"])
+        result = calculate_narrative_physics(query, ws, temporal_anchor=5)
+        ps = result["physics_state"]
+        assert len(ps["relevant_information_edges"]) == 0
+
+    def test_info_edge_wired_in_sandbox(self):
+        """InformationEdge must produce 'communicating_with' edges in the sandbox."""
+        ws = self._make_comms_ws()
+        query = InterventionQuery(
+            interventions={"ENT_MACBETH.status": "healthy", "ENT_LADY_MACBETH.status": "healthy"}
+        )
+        result = calculate_narrative_physics(query, ws)
+        G = nx.node_link_graph(result["physics_state"])
+        comms_edges = [
+            (u, v, d) for u, v, d in G.edges(data=True)
+            if d.get("edge_type") == "communicating_with"
+        ]
+        assert len(comms_edges) >= 1
+        assert comms_edges[0][2]["medium"] == "telepathy"
+
+    def test_physics_override_multi_room_comms(self):
+        """Intervention result must include physics_override when multi-room + comms."""
+        ws = self._make_comms_ws()
+        query = InterventionQuery(
+            interventions={"ENT_MACBETH.status": "healthy", "ENT_LADY_MACBETH.status": "healthy"}
+        )
+        result = calculate_narrative_physics(query, ws)
+        assert "physics_override" in result
+        assert "PHYSICS OVERRIDE" in result["physics_override"]
+        assert "SEPARATE" in result["physics_override"]
+
+    def test_no_physics_override_single_room(self):
+        """Single-room intervention must NOT include a physics_override."""
+        query = InterventionQuery(
+            interventions={"ENT_MACBETH.status": "healthy"}
+        )
+        result = calculate_narrative_physics(query, macbeth_ws)
+        assert "physics_override" not in result
+
+    def test_comms_intervention_establishes_link(self):
+        """communicating_with intervention must spawn communication edges."""
+        query = InterventionQuery(
+            interventions={
+                "ENT_MACBETH.communicating_with": ["ENT_LADY_MACBETH"],
+            }
+        )
+        result = calculate_narrative_physics(query, macbeth_ws)
+        G = nx.node_link_graph(result["physics_state"])
+        comms = [
+            v for _, v, d in G.out_edges("ENT_MACBETH", data=True)
+            if d.get("edge_type") == "communicating_with"
+        ]
+        assert "ENT_LADY_MACBETH" in comms
+
+    def test_terminated_comms_excluded_no_anchor(self):
+        """Terminated InformationEdge must NOT appear when temporal_anchor is None."""
+        from copy import deepcopy
+        from shadow_loom.models import InformationEdge
+        ws = deepcopy(macbeth_ws)
+        ws.entities["ENT_LADY_MACBETH"].location_id = "LOC_INVERNESS_CASTLE"
+        ws.information_topology = [
+            InformationEdge(
+                source_id="ENT_MACBETH",
+                target_ids=["ENT_LADY_MACBETH"],
+                medium="raven",
+                established_at_fabula=5,
+                terminated_at_fabula=15,
+            )
+        ]
+        # No temporal anchor → terminated links are dead and must be excluded
+        query = ObservationQuery(focus_entity_ids=["ENT_MACBETH", "ENT_LADY_MACBETH"])
+        result = calculate_narrative_physics(query, ws)
+        ps = result["physics_state"]
+        assert len(ps["relevant_information_edges"]) == 0
+
+    def test_terminated_comms_no_false_override(self):
+        """Terminated InformationEdge must NOT trigger a physics override."""
+        from copy import deepcopy
+        from shadow_loom.models import InformationEdge
+        ws = deepcopy(macbeth_ws)
+        ws.entities["ENT_LADY_MACBETH"].location_id = "LOC_INVERNESS_CASTLE"
+        ws.information_topology = [
+            InformationEdge(
+                source_id="ENT_MACBETH",
+                target_ids=["ENT_LADY_MACBETH"],
+                medium="raven",
+                established_at_fabula=5,
+                terminated_at_fabula=15,
+            )
+        ]
+        query = InterventionQuery(
+            interventions={
+                "ENT_MACBETH.status": "healthy",
+                "ENT_LADY_MACBETH.status": "healthy",
+            }
+        )
+        result = calculate_narrative_physics(query, ws)
+        # Dead comms should NOT produce a physics override
+        assert "physics_override" not in result
+
+    def test_no_duplicate_causal_edges(self):
+        """Section C fallback must NOT duplicate edges already in formal causal topology."""
+        query = InterventionQuery(
+            interventions={"ENT_MACBETH.status": "healthy"}
+        )
+        result = calculate_narrative_physics(query, macbeth_ws)
+        G = nx.node_link_graph(result["physics_state"])
+        # Collect causal edges as (source, target) pairs with multiplicity
+        from collections import Counter
+        causal_pairs = Counter()
+        for u, v, d in G.edges(data=True):
+            if d.get("edge_type") == "causal":
+                causal_pairs[(u, v)] += 1
+        # No pair should have more than 1 causal edge
+        for pair, count in causal_pairs.items():
+            assert count == 1, f"Duplicate causal edge {pair} appears {count} times"
+
+    def test_inventory_drop_after_teleport_uses_new_location(self):
+        """Dropping an object after teleporting the owner should place it at the new room."""
+        from copy import deepcopy
+        ws = deepcopy(macbeth_ws)
+        # Macbeth owns the crown, is at LOC_DUNSINANE_CASTLE
+        assert ws.objects["OBJ_CROWN"].owner_id == "ENT_MACBETH"
+        assert ws.entities["ENT_MACBETH"].location_id == "LOC_DUNSINANE_CASTLE"
+        # Teleport Macbeth, then drop the crown
+        query = InterventionQuery(
+            interventions={
+                "ENT_MACBETH.location_id": "LOC_INVERNESS_CASTLE",
+                "OBJ_CROWN.owner_id": None,
+            }
+        )
+        result = calculate_narrative_physics(query, ws)
+        G = nx.node_link_graph(result["physics_state"])
+        # Crown should be in the NEW room (Inverness), not the old one (Dunsinane)
+        located_in = [
+            v for _, v, d in G.out_edges("OBJ_CROWN", data=True)
+            if d.get("edge_type") == "located_in"
+        ]
+        assert "LOC_INVERNESS_CASTLE" in located_in, (
+            f"Crown dropped at {located_in}, expected LOC_INVERNESS_CASTLE"
+        )
+
+    def test_full_dump_filters_terminated_comms(self):
+        """extract_full_world_state must exclude terminated comms when no anchor."""
+        from shadow_loom.extract_graph import extract_full_world_state
+        from copy import deepcopy
+        from shadow_loom.models import InformationEdge
+        ws = deepcopy(macbeth_ws)
+        ws.information_topology = [
+            InformationEdge(
+                source_id="ENT_MACBETH",
+                target_ids=["ENT_LADY_MACBETH"],
+                medium="raven",
+                established_at_fabula=5,
+                terminated_at_fabula=15,
+            ),
+            InformationEdge(
+                source_id="ENT_MACBETH",
+                target_ids=["ENT_BANQUO"],
+                medium="speech",
+                established_at_fabula=3,
+            ),
+        ]
+        dump = extract_full_world_state(ws)
+        # Terminated edge excluded, active edge kept
+        assert len(dump["information_topology"]) == 1
+        assert dump["information_topology"][0]["medium"] == "speech"
+
+    def test_full_dump_timeslice_comms_with_anchor(self):
+        """extract_full_world_state must time-slice information_topology when anchor given."""
+        from shadow_loom.extract_graph import extract_full_world_state
+        from copy import deepcopy
+        from shadow_loom.models import InformationEdge
+        ws = deepcopy(macbeth_ws)
+        ws.information_topology = [
+            InformationEdge(
+                source_id="ENT_MACBETH",
+                target_ids=["ENT_LADY_MACBETH"],
+                medium="letter",
+                established_at_fabula=5,
+            ),
+            InformationEdge(
+                source_id="ENT_MACBETH",
+                target_ids=["ENT_BANQUO"],
+                medium="speech",
+                established_at_fabula=20,
+            ),
+        ]
+        dump = extract_full_world_state(ws, temporal_anchor=10)
+        # Only the T=5 edge should survive (T=20 is future)
+        assert len(dump["information_topology"]) == 1
+        assert dump["information_topology"][0]["medium"] == "letter"
+
+    def test_comms_intervention_resolves_remote_target(self):
+        """communicating_with intervention must pull remote target entity into ego-graph."""
+        from copy import deepcopy
+        ws = deepcopy(macbeth_ws)
+        # Ensure Lady Macbeth is in a DIFFERENT room from Macbeth
+        ws.entities["ENT_LADY_MACBETH"].location_id = "LOC_ENGLAND"
+        query = InterventionQuery(
+            interventions={
+                "ENT_MACBETH.communicating_with": ["ENT_LADY_MACBETH"],
+            }
+        )
+        result = calculate_narrative_physics(query, ws)
+        G = nx.node_link_graph(result["physics_state"])
+        # Lady Macbeth must be in the sandbox even though she's far away
+        assert G.has_node("ENT_LADY_MACBETH"), "Remote comms target not pulled into sandbox"
+        comms = [
+            v for _, v, d in G.out_edges("ENT_MACBETH", data=True)
+            if d.get("edge_type") == "communicating_with"
+        ]
+        assert "ENT_LADY_MACBETH" in comms
+
+
+# =====================================================================
+# ROBUSTNESS — Edge-case safety and input validation
+# =====================================================================
+class TestRobustness:
+    """Tests for crash safety, input validation, and data integrity."""
+
+    def test_repeated_calls_dont_mutate_world_state(self):
+        """Pipeline calls must NOT mutate the shared world_state event ordering."""
+        original_order = [evt.id for evt in macbeth_ws.events]
+        # Call twice — the in-place .sort() bug would reorder events
+        calculate_narrative_physics(
+            ObservationQuery(focus_entity_ids=["ENT_MACBETH"]), macbeth_ws
+        )
+        calculate_narrative_physics(
+            ObservationQuery(focus_entity_ids=["ENT_MACBETH"]), macbeth_ws
+        )
+        assert [evt.id for evt in macbeth_ws.events] == original_order
+
+    def test_dotless_intervention_key_skipped(self):
+        """Intervention key without a dot must be skipped, not crash."""
+        query = InterventionQuery(
+            interventions={"ENT_MACBETH": "broken_key", "ENT_MACBETH.status": "healthy"}
+        )
+        result = calculate_narrative_physics(query, macbeth_ws)
+        assert result["status"] == "success"
+
+    def test_comms_intervention_string_coerced_to_list(self):
+        """A bare string for communicating_with must be coerced to a single-element list."""
+        query = InterventionQuery(
+            interventions={
+                "ENT_MACBETH.communicating_with": "ENT_LADY_MACBETH",
+            }
+        )
+        result = calculate_narrative_physics(query, macbeth_ws)
+        G = nx.node_link_graph(result["physics_state"])
+        comms = [
+            v for _, v, d in G.out_edges("ENT_MACBETH", data=True)
+            if d.get("edge_type") == "communicating_with"
+        ]
+        assert "ENT_LADY_MACBETH" in comms
+
+    def test_nested_state_intervention_through_scalar(self):
+        """State intervention through a scalar intermediate must not crash."""
+        query = InterventionQuery(
+            interventions={"ENT_MACBETH.status.sub_field": "test_value"}
+        )
+        result = calculate_narrative_physics(query, macbeth_ws)
+        G = nx.node_link_graph(result["physics_state"])
+        # status was a string; it should now be a dict with sub_field
+        assert G.nodes["ENT_MACBETH"]["status"] == {"sub_field": "test_value"}
+
+    def test_genesis_normalizes_id(self):
+        """Genesis surgery must create the node with the correct graph ID."""
+        query = InterventionQuery(
+            interventions={
+                "ENT_GHOST.spawn": {
+                    "node_type": "Entity",
+                    "location_id": "LOC_DUNSINANE_CASTLE",
+                    "id": "wrong_id",
+                }
+            }
+        )
+        result = calculate_narrative_physics(query, macbeth_ws)
+        G = nx.node_link_graph(result["physics_state"])
+        assert G.has_node("ENT_GHOST")
+        # Node should NOT exist under the payload's stale "wrong_id"
+        assert not G.has_node("wrong_id")
+        assert G.nodes["ENT_GHOST"]["node_type"] == "Entity"
+
+    def test_malformed_relationship_path_skipped(self):
+        """Relationship path with wrong number of dots must be skipped, not crash."""
+        query = InterventionQuery(
+            interventions={"ENT_MACBETH.relationships.ENT_LADY_MACBETH": 0.5}
+        )
+        result = calculate_narrative_physics(query, macbeth_ws)
+        assert result["status"] == "success"

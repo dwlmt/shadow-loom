@@ -1,6 +1,6 @@
 from shadow_loom.models import (
     WorldStateV1, Location, NarrativeObject, Entity, EventNode,
-    CausalEdge, RelationshipEdge, TraitVector, AmbientVector,
+    CausalEdge, SpatialEdge, RelationshipEdge, TraitVector,
     Affordance, Belief,
 )
 
@@ -13,46 +13,30 @@ world_state = WorldStateV1(
 
     # ── LOCATIONS ──────────────────────────────────────────────────────────
     locations={
-        "LOC_KELLYNCH_HALL": Location(
-            id="LOC_KELLYNCH_HALL",
+                "LOC_KELLYNCH_HALL": Location(
             name="Kellynch Hall (Elliot Family Estate)",
-            connected_locations=["LOC_UPPERCROSS", "LOC_BATH"],
-            ambient_states={
-                "decline": AmbientVector(value=0.7, volatility=0.3),
-                "vanity": AmbientVector(value=0.8, volatility=0.1),
-            },
+            description="Kellynch Hall (Elliot Family Estate)",
+            ambient_state={"decline": {"value": 0.7, "volatility": 0.3}, "vanity": {"value": 0.8, "volatility": 0.1}},
         ),
-        "LOC_UPPERCROSS": Location(
-            id="LOC_UPPERCROSS",
+                "LOC_UPPERCROSS": Location(
             name="Uppercross Hall & Cottage (Musgrove Family)",
-            connected_locations=["LOC_KELLYNCH_HALL", "LOC_LYME_REGIS"],
-            ambient_states={
-                "sociability": AmbientVector(value=0.7, volatility=0.3),
-            },
+            description="Uppercross Hall & Cottage (Musgrove Family)",
+            ambient_state={"sociability": {"value": 0.7, "volatility": 0.3}},
         ),
-        "LOC_LYME_REGIS": Location(
-            id="LOC_LYME_REGIS",
+                "LOC_LYME_REGIS": Location(
             name="Lyme Regis (Cobb Seawall & Harville House)",
-            connected_locations=["LOC_UPPERCROSS", "LOC_BATH"],
-            ambient_states={
-                "romance": AmbientVector(value=0.6, volatility=0.4),
-                "danger": AmbientVector(value=0.5, volatility=0.6),
-            },
+            description="Lyme Regis (Cobb Seawall & Harville House)",
+            ambient_state={"romance": {"value": 0.6, "volatility": 0.4}, "danger": {"value": 0.5, "volatility": 0.6}},
         ),
-        "LOC_BATH": Location(
-            id="LOC_BATH",
+                "LOC_BATH": Location(
             name="Bath",
-            connected_locations=["LOC_KELLYNCH_HALL", "LOC_LYME_REGIS"],
-            ambient_states={
-                "social_performance": AmbientVector(value=0.8, volatility=0.2),
-                "tension": AmbientVector(value=0.7, volatility=0.5),
-            },
+            description="Bath",
+            ambient_state={"social_performance": {"value": 0.8, "volatility": 0.2}, "tension": {"value": 0.7, "volatility": 0.5}},
         ),
-        "LOC_SHROPSHIRE": Location(
-            id="LOC_SHROPSHIRE",
+                "LOC_SHROPSHIRE": Location(
             name="Shropshire (Edward Wentworth's Home)",
-            connected_locations=["LOC_BATH"],
-            ambient_states={},
+            description="Shropshire (Edward Wentworth's Home)",
+            ambient_state={},
         ),
     },
 
@@ -295,6 +279,13 @@ world_state = WorldStateV1(
     ],
 
     # ── SOCIAL TOPOLOGY ────────────────────────────────────────────────────
+    spatial_topology=[
+        SpatialEdge(source_id="LOC_BATH", target_id="LOC_KELLYNCH_HALL"),
+        SpatialEdge(source_id="LOC_BATH", target_id="LOC_LYME_REGIS"),
+        SpatialEdge(source_id="LOC_BATH", target_id="LOC_SHROPSHIRE"),
+        SpatialEdge(source_id="LOC_KELLYNCH_HALL", target_id="LOC_UPPERCROSS"),
+        SpatialEdge(source_id="LOC_LYME_REGIS", target_id="LOC_UPPERCROSS"),
+    ],
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_ANNE", target_entity_id="ENT_WENTWORTH", affinity=0.95, friction=0.5, power_dynamic=-0.1, inertia=0.95),
         RelationshipEdge(source_entity_id="ENT_WENTWORTH", target_entity_id="ENT_ANNE", affinity=0.9, friction=0.5, power_dynamic=0.1, inertia=0.8),
