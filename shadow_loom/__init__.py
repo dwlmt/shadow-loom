@@ -3,6 +3,12 @@ from shadow_loom.directive_assembly import (
     DirectiveAssembler, CreativeBrief, NarrativeTension,
     HiddenInformationChannel, CandidateResult,
 )
+from shadow_loom.ingestion import (
+    run_extraction, extract_ontology, extract_topology,
+    assemble_world_state, validate_world_state,
+    GlobalRegister, ChunkTopology, ChunkChronology, ChunkEdges,
+    ValidationReport, ExtractionConfig,
+)
 
 __all__ = [
     "CausalPhysicsEngine",
@@ -12,4 +18,15 @@ __all__ = [
     "NarrativeTension",
     "HiddenInformationChannel",
     "CandidateResult",
+    "run_extraction",
+    "extract_ontology",
+    "extract_topology",
+    "assemble_world_state",
+    "validate_world_state",
+    "GlobalRegister",
+    "ChunkTopology",
+    "ChunkChronology",
+    "ChunkEdges",
+    "ValidationReport",
+    "ExtractionConfig",
 ]
