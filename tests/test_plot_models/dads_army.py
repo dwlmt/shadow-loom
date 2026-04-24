@@ -105,6 +105,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_FULLARD", perceived_state="We must face the enemy regardless — even with an empty gun", confidence=0.95, inertia=0.9, established_at_fabula=0),
+                Belief(target_id="ENT_MAINWARING", perceived_state="I am the natural leader of Walmington-on-Sea's defence", confidence=0.95, inertia=0.9, established_at_fabula=1),
             ],
         ),
         "ENT_WILSON": Entity(
@@ -119,6 +120,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_MAINWARING", perceived_state="Both guns were empty — but his bluff was magnificent", confidence=1.0, inertia=0.8, established_at_fabula=0),
+                Belief(target_id="ENT_MAINWARING", perceived_state="Mainwaring is pompous but means well", confidence=0.8, inertia=0.7, established_at_fabula=2),
             ],
         ),
         "ENT_JONES": Entity(
@@ -246,5 +248,7 @@ world_state = WorldStateV1(
         RelationshipEdge(source_entity_id="ENT_MAINWARING", target_entity_id="ENT_PIKE", affinity=0.3, fear=0.3, power_dynamic=0.7),
         RelationshipEdge(source_entity_id="ENT_MAINWARING", target_entity_id="ENT_FULLARD", affinity=-0.3, fear=0.4, power_dynamic=-0.6),
         RelationshipEdge(source_entity_id="ENT_FULLARD", target_entity_id="ENT_MAINWARING", affinity=-0.4, fear=0.35, power_dynamic=0.7),
+        RelationshipEdge(source_entity_id="ENT_FRAZER", target_entity_id="ENT_MAINWARING", affinity=-0.2, fear=0.15, power_dynamic=-0.3),
+        RelationshipEdge(source_entity_id="ENT_GODFREY", target_entity_id="ENT_MAINWARING", affinity=0.6, fear=0.2, power_dynamic=-0.5),
     ],
 )

@@ -94,8 +94,8 @@ world_state = WorldStateV1(
                 "wildness": TraitVector(value=0.85, inertia=0.8),
             },
             beliefs=[
-                Belief(target_id="ENT_HEATHCLIFF", perceived_state="I am Heathcliff", confidence=1.0, inertia=0.95, established_at_fabula=0),
-                Belief(target_id="ENT_EDGAR", perceived_state="Marrying Edgar will elevate me — it would degrade me to marry Heathcliff", confidence=0.7, inertia=0.5, established_at_fabula=0),
+                Belief(target_id="ENT_HEATHCLIFF", perceived_state="Heathcliff and I are the same — I am Heathcliff", confidence=1.0, inertia=0.95, established_at_fabula=3),
+                Belief(target_id="ENT_EDGAR", perceived_state="Marrying Edgar will elevate both me and Heathcliff", confidence=0.7, inertia=0.5, established_at_fabula=5),
             ],
         ),
         "ENT_EDGAR": Entity(
@@ -136,7 +136,7 @@ world_state = WorldStateV1(
                 "bitterness": TraitVector(value=0.7, inertia=0.6),
             },
             beliefs=[
-                Belief(target_id="ENT_HEATHCLIFF", perceived_state="Heathcliff loves me — I can reform him", confidence=0.8, inertia=0.4, established_at_fabula=0),
+                Belief(target_id="ENT_HEATHCLIFF", perceived_state="Heathcliff is a romantic figure who will love me", confidence=0.8, inertia=0.5, established_at_fabula=7),
             ],
         ),
         "ENT_CATHY": Entity(
@@ -190,6 +190,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_CATHY", perceived_state="The young woman at the Heights must be Heathcliff's wife", confidence=0.7, inertia=0.3, established_at_fabula=0),
+                Belief(target_id="ENT_HEATHCLIFF", perceived_state="Heathcliff is merely a rough but ordinary landlord", confidence=0.7, inertia=0.3, established_at_fabula=20),
             ],
         ),
         "ENT_EARNSHAW": Entity(
@@ -270,6 +271,13 @@ world_state = WorldStateV1(
             medium="spoken_narrative",
             established_at_fabula=21,
         ),
+        InformationEdge(
+            source_id="ENT_CATHERINE",
+            target_ids=["ENT_NELLY"],
+            medium="confession",
+            established_at_fabula=5,
+            terminated_at_fabula=5,
+        ),
     ],
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_HEATHCLIFF", target_entity_id="ENT_CATHERINE", affinity=1.0, fear=0.3, power_dynamic=0.0),
@@ -279,6 +287,7 @@ world_state = WorldStateV1(
         RelationshipEdge(source_entity_id="ENT_HEATHCLIFF", target_entity_id="ENT_HINDLEY", affinity=-0.9, fear=0.47, power_dynamic=0.3),
         RelationshipEdge(source_entity_id="ENT_HINDLEY", target_entity_id="ENT_HEATHCLIFF", affinity=-0.9, fear=0.45, power_dynamic=-0.3),
         RelationshipEdge(source_entity_id="ENT_HEATHCLIFF", target_entity_id="ENT_EDGAR", affinity=-0.8, fear=0.45, power_dynamic=0.4),
+        RelationshipEdge(source_entity_id="ENT_EDGAR", target_entity_id="ENT_HEATHCLIFF", affinity=-0.7, fear=0.3, power_dynamic=0.2),
         RelationshipEdge(source_entity_id="ENT_HEATHCLIFF", target_entity_id="ENT_ISABELLA", affinity=-0.6, fear=0.35, power_dynamic=0.8),
         RelationshipEdge(source_entity_id="ENT_CATHY", target_entity_id="ENT_HARETON", affinity=0.8, fear=0.15, power_dynamic=0.1),
         RelationshipEdge(source_entity_id="ENT_HARETON", target_entity_id="ENT_CATHY", affinity=0.8, fear=0.15, power_dynamic=-0.1),

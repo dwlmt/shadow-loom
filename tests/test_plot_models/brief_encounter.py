@@ -87,6 +87,7 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_ALEC", perceived_state="I love him but our relationship is unworkable", confidence=0.95, inertia=0.7, established_at_fabula=0),
                 Belief(target_id="ENT_FRED", perceived_state="I am betraying my good husband and family", confidence=0.95, inertia=0.7, established_at_fabula=0),
+                Belief(target_id="ENT_ALEC", perceived_state="Our love is real but we can never act on it \u2014 duty comes first", confidence=0.9, inertia=0.7, established_at_fabula=5),
             ],
         ),
         "ENT_ALEC": Entity(
@@ -115,7 +116,8 @@ world_state = WorldStateV1(
                 "perceptiveness": TraitVector(value=0.6, inertia=0.5),
             },
             beliefs=[
-                Belief(target_id="ENT_LAURA", perceived_state="Something has been troubling her — but I may not know the full truth", confidence=0.6, inertia=0.5, established_at_fabula=0),
+                Belief(target_id="ENT_LAURA", perceived_state="Something has been troubling her \u2014 but I may not know the full truth", confidence=0.6, inertia=0.5, established_at_fabula=0),
+                Belief(target_id="ENT_LAURA", perceived_state="Laura has been emotionally distant lately but I trust she will come back to me", confidence=0.7, inertia=0.6, established_at_fabula=7),
             ],
         ),
         "ENT_DOLLY": Entity(
@@ -192,6 +194,13 @@ world_state = WorldStateV1(
             established_at_fabula=12,
             terminated_at_fabula=12,
         ),
+        InformationEdge(
+            source_id="ENT_STEPHEN",
+            target_ids=["ENT_ALEC"],
+            medium="subtle_rebuke",
+            established_at_fabula=5,
+            terminated_at_fabula=5,
+        ),
     ],
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_LAURA", target_entity_id="ENT_ALEC", affinity=0.9, fear=0.35, power_dynamic=0.0),
@@ -199,5 +208,6 @@ world_state = WorldStateV1(
         RelationshipEdge(source_entity_id="ENT_LAURA", target_entity_id="ENT_FRED", affinity=0.6, fear=0.1, power_dynamic=-0.1),
         RelationshipEdge(source_entity_id="ENT_FRED", target_entity_id="ENT_LAURA", affinity=0.7, fear=0.1, power_dynamic=0.1),
         RelationshipEdge(source_entity_id="ENT_LAURA", target_entity_id="ENT_DOLLY", affinity=0.2, fear=0.25, power_dynamic=0.0),
+        RelationshipEdge(source_entity_id="ENT_DOLLY", target_entity_id="ENT_LAURA", affinity=0.5, fear=0.0, power_dynamic=0.1),
     ],
 )

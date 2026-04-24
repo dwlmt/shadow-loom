@@ -161,6 +161,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_ROMEO", perceived_state="This marriage can reconcile the feuding families", confidence=0.7, inertia=0.5, established_at_fabula=0),
+                Belief(target_id="EVT_SLEEPING_POTION", perceived_state="The sleeping potion plan will work and the message will reach Romeo", confidence=0.75, inertia=0.5, established_at_fabula=11),
             ],
         ),
         "ENT_CAPULET": Entity(
@@ -175,6 +176,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_JULIET", perceived_state="Juliet grieves for Tybalt — marriage to Paris will cure her sorrow", confidence=0.8, inertia=0.7, established_at_fabula=0),
+                Belief(target_id="ENT_JULIET", perceived_state="Juliet is dead", confidence=1.0, inertia=0.8, established_at_fabula=12),
             ],
         ),
         "ENT_PARIS": Entity(
@@ -209,6 +211,19 @@ world_state = WorldStateV1(
                 "peacefulness": TraitVector(value=0.8, inertia=0.7),
                 "loyalty": TraitVector(value=0.75, inertia=0.7),
             },
+        ),
+        "ENT_NURSE": Entity(
+            id="ENT_NURSE",
+            name="Nurse",
+            location_id="LOC_CAPULET_HOUSE",
+            status="healthy",
+            traits={
+                "loyalty": TraitVector(value=0.8, inertia=0.6),
+                "pragmatism": TraitVector(value=0.7, inertia=0.5),
+            },
+            beliefs=[
+                Belief(target_id="ENT_JULIET", perceived_state="Romeo and Juliet's marriage can work", confidence=0.6, inertia=0.4, established_at_fabula=4),
+            ],
         ),
     },
 
@@ -268,6 +283,13 @@ world_state = WorldStateV1(
     information_topology=[
         InformationEdge(
             source_id="ENT_FRIAR_LAURENCE",
+            target_ids=["ENT_JULIET"],
+            medium="confession",
+            established_at_fabula=11,
+            terminated_at_fabula=11,
+        ),
+        InformationEdge(
+            source_id="ENT_FRIAR_LAURENCE",
             target_ids=["ENT_ROMEO"],
             medium="letter",
             established_at_fabula=13,
@@ -285,5 +307,7 @@ world_state = WorldStateV1(
         RelationshipEdge(source_entity_id="ENT_FRIAR_LAURENCE", target_entity_id="ENT_JULIET", affinity=0.6, fear=0.1, power_dynamic=0.3),
         RelationshipEdge(source_entity_id="ENT_PRINCE_ESCALUS", target_entity_id="ENT_ROMEO", affinity=-0.3, fear=0.35, power_dynamic=0.9),
         RelationshipEdge(source_entity_id="ENT_BENVOLIO", target_entity_id="ENT_ROMEO", affinity=0.8, fear=0.05, power_dynamic=0.0),
+        RelationshipEdge(source_entity_id="ENT_NURSE", target_entity_id="ENT_JULIET", affinity=0.85, fear=0.2, power_dynamic=0.1),
+        RelationshipEdge(source_entity_id="ENT_JULIET", target_entity_id="ENT_CAPULET", affinity=0.4, fear=0.45, power_dynamic=-0.8),
     ],
 )

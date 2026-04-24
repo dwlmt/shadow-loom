@@ -87,6 +87,17 @@ world_state = WorldStateV1(
                 Affordance(action="conceal_identity", target_type="Entity"),
             ],
         ),
+        "OBJ_RIDDLE": NarrativeObject(
+            id="OBJ_RIDDLE",
+            name="Amarantha's Riddle",
+            location_id="LOC_UNDER_THE_MOUNTAIN",
+            owner_id=None,
+            properties={"answer": "love", "state": "unsolved"},
+            affordances=[
+                Affordance(action="solve", target_type="Entity"),
+                Affordance(action="break_curse", target_type="Entity"),
+            ],
+        ),
     },
 
     # ── ENTITIES ────────────────────────────────────────────────────────────
@@ -107,6 +118,7 @@ world_state = WorldStateV1(
                 Belief(target_id="ENT_TAMLIN", perceived_state="I love him — his heart is literally made of stone", confidence=0.95, inertia=0.9, established_at_fabula=0),
                 Belief(target_id="OBJ_MASKS", perceived_state="The permanent masks are caused by a mysterious blight or plague", confidence=0.8, inertia=0.6, established_at_fabula=0),
                 Belief(target_id="ENT_TAMLIN", perceived_state="Tamlin sent me home only to protect me from the blight's danger", confidence=0.75, inertia=0.5, established_at_fabula=0),
+                Belief(target_id="ENT_TAMLIN", perceived_state="Tamlin is under a curse that I do not understand", confidence=0.7, inertia=0.5, established_at_fabula=6),
             ],
             constants=["high_fae_transformed"],
         ),
@@ -123,6 +135,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_FEYRE", perceived_state="I must protect Feyre even if it means losing her — the curse forbids me from telling her the truth", confidence=0.95, inertia=0.9, established_at_fabula=0),
+                Belief(target_id="ENT_FEYRE", perceived_state="Feyre must be sent home before Amarantha discovers her", confidence=0.9, inertia=0.7, established_at_fabula=5),
             ],
             constants=["high_fae", "shapeshifter"],
         ),
@@ -254,6 +267,13 @@ world_state = WorldStateV1(
             medium="telepathy",
             established_at_fabula=12,
         ),
+        InformationEdge(
+            source_id="ENT_ALIS",
+            target_ids=["ENT_FEYRE"],
+            medium="whispered_confession",
+            established_at_fabula=8,
+            terminated_at_fabula=8,
+        ),
     ],
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_FEYRE", target_entity_id="ENT_TAMLIN", affinity=0.9, fear=0.2, power_dynamic=-0.3),
@@ -264,5 +284,6 @@ world_state = WorldStateV1(
         RelationshipEdge(source_entity_id="ENT_FEYRE", target_entity_id="ENT_LUCIEN", affinity=0.6, fear=0.1, power_dynamic=0.0),
         RelationshipEdge(source_entity_id="ENT_TAMLIN", target_entity_id="ENT_LUCIEN", affinity=0.75, fear=0.1, power_dynamic=0.4),
         RelationshipEdge(source_entity_id="ENT_FEYRE", target_entity_id="ENT_NESTA", affinity=0.5, fear=0.3, power_dynamic=0.0),
+        RelationshipEdge(source_entity_id="ENT_FEYRE", target_entity_id="ENT_RHYSAND", affinity=-0.2, fear=0.4, power_dynamic=-0.4),
     ],
 )

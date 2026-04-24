@@ -150,6 +150,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_JACQUELINE", perceived_state="She had a second pistol — I chose to let her end it", confidence=1.0, inertia=0.9, established_at_fabula=0),
+                Belief(target_id="ENT_JACQUELINE", perceived_state="Jacqueline is dangerous — her love is an obsession", confidence=0.85, inertia=0.7, established_at_fabula=2),
             ],
         ),
         "ENT_LINNET": Entity(
@@ -165,6 +166,8 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_SIMON", perceived_state="Simon genuinely loves me and married me for love", confidence=0.85, inertia=0.7, established_at_fabula=0),
                 Belief(target_id="ENT_JACQUELINE", perceived_state="Jacqueline is a jealous ex who cannot accept losing Simon", confidence=0.9, inertia=0.7, established_at_fabula=0),
+                Belief(target_id="ENT_SIMON", perceived_state="Simon married me out of genuine love", confidence=0.85, inertia=0.7, established_at_fabula=3),
+                Belief(target_id="ENT_JACQUELINE", perceived_state="Jacqueline is merely a jealous ex who cannot let go", confidence=0.8, inertia=0.6, established_at_fabula=3),
             ],
         ),
         "ENT_SIMON": Entity(
@@ -181,6 +184,7 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_LINNET", perceived_state="Linnet is a means to wealth", confidence=0.9, inertia=0.7, established_at_fabula=0),
             ],
+            constants=["co_conspirator"],
         ),
         "ENT_JACQUELINE": Entity(
             id="ENT_JACQUELINE",
@@ -368,6 +372,20 @@ world_state = WorldStateV1(
             medium="conversation",
             established_at_fabula=5,
         ),
+        InformationEdge(
+            source_id="ENT_SIMON",
+            target_ids=["ENT_JACQUELINE"],
+            medium="signal_shout",
+            established_at_fabula=13,
+            terminated_at_fabula=13,
+        ),
+        InformationEdge(
+            source_id="ENT_LOUISE",
+            target_ids=["ENT_SIMON"],
+            medium="veiled_blackmail",
+            established_at_fabula=11,
+            terminated_at_fabula=12,
+        ),
     ],
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_SIMON", target_entity_id="ENT_JACQUELINE", affinity=0.9, fear=0.3, power_dynamic=-0.2),
@@ -382,6 +400,7 @@ world_state = WorldStateV1(
         RelationshipEdge(source_entity_id="ENT_VAN_SCHUYLER", target_entity_id="ENT_CORNELIA", affinity=0.3, fear=0.2, power_dynamic=0.6),
         RelationshipEdge(source_entity_id="ENT_POIROT", target_entity_id="ENT_JACQUELINE", affinity=0.2, fear=0.25, power_dynamic=0.3),
         RelationshipEdge(source_entity_id="ENT_TIM", target_entity_id="ENT_LINNET", affinity=-0.2, fear=0.2, power_dynamic=-0.3),
+        RelationshipEdge(source_entity_id="ENT_LINNET", target_entity_id="ENT_JACQUELINE", affinity=-0.5, fear=0.3, power_dynamic=0.4),
         RelationshipEdge(source_entity_id="ENT_FANTHORP", target_entity_id="ENT_LINNET", affinity=0.3, fear=0.1, power_dynamic=-0.2),
         RelationshipEdge(source_entity_id="ENT_MRS_OTTERBOURNE", target_entity_id="ENT_POIROT", affinity=0.3, fear=0.15, power_dynamic=-0.2),
         RelationshipEdge(source_entity_id="ENT_RICHETTI", target_entity_id="ENT_RACE", affinity=-0.5, fear=0.35, power_dynamic=-0.3),

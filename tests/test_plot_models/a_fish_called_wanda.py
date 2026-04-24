@@ -120,6 +120,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_WANDA", perceived_state="Wanda is genuinely attracted to me", confidence=0.8, inertia=0.5, established_at_fabula=0),
+                Belief(target_id="ENT_WANDA", perceived_state="Wanda genuinely loves me", confidence=0.7, inertia=0.4, established_at_fabula=4),
             ],
         ),
         "ENT_WANDA": Entity(
@@ -167,6 +168,7 @@ world_state = WorldStateV1(
             constants=["stutter"],
             beliefs=[
                 Belief(target_id="ENT_WANDA", perceived_state="Wanda and Otto are brother and sister, not lovers", confidence=0.9, inertia=0.7, established_at_fabula=0),
+                Belief(target_id="ENT_WANDA", perceived_state="Wanda and Otto are brother and sister", confidence=0.9, inertia=0.7, established_at_fabula=1),
             ],
         ),
         "ENT_GEORGE": Entity(
@@ -181,6 +183,7 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_WANDA", perceived_state="Wanda and Otto are brother and sister, not lovers", confidence=0.9, inertia=0.7, established_at_fabula=0),
                 Belief(target_id="ENT_WANDA", perceived_state="Wanda is a loyal member of my gang", confidence=0.8, inertia=0.6, established_at_fabula=0),
+                Belief(target_id="ENT_WANDA", perceived_state="Wanda and Otto are siblings and loyal to me", confidence=0.9, inertia=0.8, established_at_fabula=1),
             ],
         ),
         "ENT_WENDY": Entity(
@@ -193,6 +196,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="OBJ_PENDANT", perceived_state="This pendant is a gift from Archie for me", confidence=0.85, inertia=0.5, established_at_fabula=0),
+                Belief(target_id="ENT_ARCHIE", perceived_state="Archie is faithful to me", confidence=0.8, inertia=0.6, established_at_fabula=1),
             ],
         ),
         "ENT_MRS_COADY": Entity(
@@ -257,6 +261,13 @@ world_state = WorldStateV1(
             established_at_fabula=4,
             terminated_at_fabula=7,
         ),
+        InformationEdge(
+            source_id="ENT_WANDA",
+            target_ids=["ENT_OTTO"],
+            medium="lovers_conspiracy",
+            is_encrypted=True,
+            established_at_fabula=1,
+        ),
     ],
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_WANDA", target_entity_id="ENT_OTTO", affinity=-0.2, fear=0.4, power_dynamic=0.3),
@@ -267,5 +278,6 @@ world_state = WorldStateV1(
         RelationshipEdge(source_entity_id="ENT_KEN", target_entity_id="ENT_GEORGE", affinity=0.6, fear=0.1, power_dynamic=-0.4),
         RelationshipEdge(source_entity_id="ENT_KEN", target_entity_id="ENT_OTTO", affinity=-0.8, fear=0.45, power_dynamic=-0.3),
         RelationshipEdge(source_entity_id="ENT_OTTO", target_entity_id="ENT_ARCHIE", affinity=-0.7, fear=0.45, power_dynamic=0.2),
+        RelationshipEdge(source_entity_id="ENT_GEORGE", target_entity_id="ENT_WANDA", affinity=0.5, fear=0.1, power_dynamic=0.3),
     ],
 )

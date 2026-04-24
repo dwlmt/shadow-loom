@@ -183,15 +183,17 @@ world_state = WorldStateV1(
         "ENT_GEORGE": Entity(
             id="ENT_GEORGE",
             name="George Wilson",
-            location_id="LOC_GATSBY_MANSION",
+            location_id="LOC_WILSON_GARAGE",
             status="dead",
             traits={
                 "despair": TraitVector(value=0.9, inertia=0.6),
                 "passivity": TraitVector(value=0.7, inertia=0.5),
                 "grief": TraitVector(value=0.95, inertia=0.4),
+                "jealousy": TraitVector(value=0.8, inertia=0.5),
             },
             beliefs=[
-                Belief(target_id="ENT_GATSBY", perceived_state="Gatsby is Myrtle's lover and her killer", confidence=1.0, inertia=0.9, established_at_fabula=0),
+                Belief(target_id="ENT_MYRTLE", perceived_state="Myrtle has a secret lover in New York", confidence=0.7, inertia=0.5, established_at_fabula=8),
+                Belief(target_id="ENT_GATSBY", perceived_state="The owner of the yellow car is Myrtle's lover and killed her", confidence=1.0, inertia=0.9, established_at_fabula=12),
             ],
         ),
     },
@@ -250,6 +252,13 @@ world_state = WorldStateV1(
             medium="conversation",
             established_at_fabula=6,
             terminated_at_fabula=6,
+        ),
+        InformationEdge(
+            source_id="ENT_TOM",
+            target_ids=["ENT_GEORGE"],
+            medium="conversation",
+            established_at_fabula=12,
+            terminated_at_fabula=12,
         ),
     ],
     social_topology=[RelationshipEdge(source_entity_id="ENT_GATSBY", target_entity_id="ENT_DAISY", affinity=1.0, fear=0.3, power_dynamic=-0.3),

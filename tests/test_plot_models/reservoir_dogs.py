@@ -89,6 +89,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_ORANGE", perceived_state="Orange is one of us — I got him into this and I owe him", confidence=0.9, inertia=0.85, established_at_fabula=0),
+                Belief(target_id="ENT_ORANGE", perceived_state="Orange is a trustworthy member of the crew — not a cop", confidence=0.85, inertia=0.7, established_at_fabula=3),
             ],
         ),
         "ENT_ORANGE": Entity(
@@ -117,6 +118,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_JOE", perceived_state="I owe Joe everything — he's the only one who stood by me", confidence=0.95, inertia=0.9, established_at_fabula=0),
+                Belief(target_id="ENT_JOE", perceived_state="Joe is loyal and I owe him everything for getting me paroled", confidence=0.9, inertia=0.85, established_at_fabula=1),
             ],
         ),
         "ENT_PINK": Entity(
@@ -145,6 +147,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_ORANGE", perceived_state="Orange is the rat — this kid is the informer", confidence=0.9, inertia=0.8, established_at_fabula=0),
+                Belief(target_id="ENT_ORANGE", perceived_state="There is a rat in the crew — I suspect Orange", confidence=0.8, inertia=0.7, established_at_fabula=8),
             ],
         ),
         "ENT_EDDIE": Entity(
@@ -250,6 +253,14 @@ world_state = WorldStateV1(
             established_at_fabula=2,
             terminated_at_fabula=4,
         ),
+        InformationEdge(
+            source_id="ENT_JOE",
+            target_ids=["ENT_WHITE", "ENT_ORANGE", "ENT_BLONDE", "ENT_PINK", "ENT_BROWN", "ENT_BLUE"],
+            medium="heist_briefing",
+            is_encrypted=True,
+            established_at_fabula=3,
+            terminated_at_fabula=3,
+        ),
     ],
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_WHITE", target_entity_id="ENT_ORANGE", affinity=0.8, fear=0.1, power_dynamic=0.3),
@@ -262,5 +273,7 @@ world_state = WorldStateV1(
         RelationshipEdge(source_entity_id="ENT_EDDIE", target_entity_id="ENT_JOE", affinity=0.85, fear=0.1, power_dynamic=-0.4),
         RelationshipEdge(source_entity_id="ENT_PINK", target_entity_id="ENT_WHITE", affinity=0.1, fear=0.35, power_dynamic=0.0),
         RelationshipEdge(source_entity_id="ENT_BLONDE", target_entity_id="ENT_NASH", affinity=-0.9, fear=0.5, power_dynamic=0.9),
+        RelationshipEdge(source_entity_id="ENT_ORANGE", target_entity_id="ENT_NASH", affinity=0.3, fear=0.15, power_dynamic=0.2),
+        RelationshipEdge(source_entity_id="ENT_PINK", target_entity_id="ENT_BLONDE", affinity=-0.5, fear=0.4, power_dynamic=-0.2),
     ],
 )

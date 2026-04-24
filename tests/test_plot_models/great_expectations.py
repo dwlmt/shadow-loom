@@ -124,6 +124,7 @@ world_state = WorldStateV1(
                 "compassion": TraitVector(value=0.75, inertia=0.7),
             },
             beliefs=[
+                Belief(target_id="ENT_HAVISHAM", perceived_state="Miss Havisham is my secret benefactress and intends me for Estella", confidence=0.95, inertia=0.9, established_at_fabula=7),
                 Belief(target_id="ENT_HAVISHAM", perceived_state="Miss Havisham was my secret benefactress", confidence=0.0, inertia=0.1, established_at_fabula=0),
                 Belief(target_id="ENT_MAGWITCH", perceived_state="Magwitch is my true benefactor", confidence=1.0, inertia=0.9, established_at_fabula=0),
             ],
@@ -169,7 +170,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_COMPEYSON", perceived_state="My fiancé betrayed me — all men are deceivers who break hearts", confidence=0.95, inertia=0.9, established_at_fabula=0),
-                Belief(target_id="ENT_ESTELLA", perceived_state="Estella is my instrument of revenge against men", confidence=0.9, inertia=0.7, established_at_fabula=0),
+                Belief(target_id="ENT_ESTELLA", perceived_state="Estella is my instrument of revenge against all men", confidence=0.9, inertia=0.8, established_at_fabula=4),
             ],
         ),
         "ENT_MAGWITCH": Entity(
@@ -183,6 +184,7 @@ world_state = WorldStateV1(
                 "generosity": TraitVector(value=0.8, inertia=0.7),
             },
             beliefs=[
+                Belief(target_id="ENT_PIP", perceived_state="The boy who helped me will become a true gentleman worthy of my fortune", confidence=0.95, inertia=0.9, established_at_fabula=1),
                 Belief(target_id="ENT_PIP", perceived_state="Pip is the gentleman I created — he is my life's purpose and motivation", confidence=1.0, inertia=0.95, established_at_fabula=0),
             ],
         ),
@@ -329,6 +331,19 @@ world_state = WorldStateV1(
             established_at_fabula=7,
             terminated_at_fabula=7,
         ),
+        InformationEdge(
+            source_id="ENT_HERBERT",
+            target_ids=["ENT_PIP"],
+            medium="conversation",
+            established_at_fabula=8,
+            terminated_at_fabula=8,
+        ),
+        InformationEdge(
+            source_id="ENT_MAGWITCH",
+            target_ids=["ENT_PIP"],
+            medium="confession",
+            established_at_fabula=14,
+        ),
     ],
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_PIP", target_entity_id="ENT_JOE", affinity=0.8, fear=0.15, power_dynamic=0.1),
@@ -345,5 +360,7 @@ world_state = WorldStateV1(
         RelationshipEdge(source_entity_id="ENT_JOE", target_entity_id="ENT_MRS_JOE", affinity=0.6, fear=0.3, power_dynamic=-0.4),
         RelationshipEdge(source_entity_id="ENT_JAGGERS", target_entity_id="ENT_PIP", affinity=0.3, fear=0.15, power_dynamic=0.6),
         RelationshipEdge(source_entity_id="ENT_ESTELLA", target_entity_id="ENT_DRUMMLE", affinity=0.1, fear=0.25, power_dynamic=-0.3),
+        RelationshipEdge(source_entity_id="ENT_HAVISHAM", target_entity_id="ENT_PIP", affinity=0.2, fear=0.1, power_dynamic=0.7),
+        RelationshipEdge(source_entity_id="ENT_COMPEYSON", target_entity_id="ENT_MAGWITCH", affinity=-0.8, fear=0.3, power_dynamic=0.4),
     ],
 )

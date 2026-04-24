@@ -107,6 +107,7 @@ world_state = WorldStateV1(
                 Belief(target_id="ENT_CREATURE", perceived_state="My creation is a monster that must be destroyed", confidence=0.95, inertia=0.9, established_at_fabula=0),
                 Belief(target_id="ENT_CREATURE", perceived_state="The creature will kill ME on my wedding night", confidence=0.9, inertia=0.7, established_at_fabula=0),
                 Belief(target_id="ENT_JUSTINE", perceived_state="Justine is innocent but I cannot reveal why without exposing my creation", confidence=1.0, inertia=0.9, established_at_fabula=0),
+                Belief(target_id="ENT_CREATURE", perceived_state="The creature is irredeemably evil and must be destroyed", confidence=0.9, inertia=0.8, established_at_fabula=5),
             ],
         ),
         "ENT_CREATURE": Entity(
@@ -124,6 +125,7 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_VICTOR", perceived_state="My creator abandoned me — misery made me a fiend", confidence=1.0, inertia=0.9, established_at_fabula=0),
                 Belief(target_id="ENT_VICTOR", perceived_state="Victor will create a female companion for me", confidence=0.8, inertia=0.5, established_at_fabula=0),
+                Belief(target_id="ENT_VICTOR", perceived_state="If Victor creates me a companion, I will leave humanity in peace", confidence=0.85, inertia=0.7, established_at_fabula=8),
             ],
         ),
         "ENT_ELIZABETH": Entity(
@@ -137,6 +139,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_VICTOR", perceived_state="Our wedding will bring happiness and end Victor's melancholy", confidence=0.8, inertia=0.6, established_at_fabula=0),
+                Belief(target_id="ENT_VICTOR", perceived_state="Victor's strange behaviour is due to overwork and grief, not something sinister", confidence=0.8, inertia=0.6, established_at_fabula=3),
             ],
         ),
         "ENT_HENRY": Entity(
@@ -254,6 +257,12 @@ world_state = WorldStateV1(
             established_at_fabula=16,
             terminated_at_fabula=17,
         ),
+        InformationEdge(
+            source_id="ENT_CREATURE",
+            target_ids=["ENT_VICTOR"],
+            medium="confrontation",
+            established_at_fabula=8,
+        ),
     ],
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_VICTOR", target_entity_id="ENT_CREATURE", affinity=-0.8, fear=0.47, power_dynamic=0.2),
@@ -263,5 +272,7 @@ world_state = WorldStateV1(
         RelationshipEdge(source_entity_id="ENT_CREATURE", target_entity_id="ENT_WILLIAM", affinity=-0.7, fear=0.45, power_dynamic=0.9),
         RelationshipEdge(source_entity_id="ENT_WALTON", target_entity_id="ENT_VICTOR", affinity=0.6, fear=0.15, power_dynamic=-0.1),
         RelationshipEdge(source_entity_id="ENT_ALPHONSE", target_entity_id="ENT_VICTOR", affinity=0.9, fear=0.1, power_dynamic=0.3),
+        RelationshipEdge(source_entity_id="ENT_CREATURE", target_entity_id="ENT_ELIZABETH", affinity=-0.5, fear=0.1, power_dynamic=0.7),
+        RelationshipEdge(source_entity_id="ENT_ELIZABETH", target_entity_id="ENT_VICTOR", affinity=0.85, fear=0.15, power_dynamic=-0.2),
     ],
 )

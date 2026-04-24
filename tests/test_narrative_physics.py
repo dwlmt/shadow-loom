@@ -1715,3 +1715,193 @@ class TestRelationshipTimeSlicing:
             for rel in ps["relevant_relationships"]
         )
         assert found, "Relationship updated at T=5 should be included at anchor T=10"
+
+
+# =====================================================================
+# PLOT ENRICHMENT — Verify improved plot model features
+# =====================================================================
+class TestPlotEnrichment:
+    """Verify the enriched plot models have correct beliefs, info edges, and relationships."""
+
+    # --- Multiple Information Edges ---
+    @pytest.mark.parametrize("ws,expected_min", [
+        (macbeth_ws, 3),
+        (gatsby_ws, 2),
+        (orwell_ws, 3),
+        (gone_girl_ws, 3),
+        (nile_ws, 3),
+        (persuasion_ws, 3),
+        (reservoir_ws, 2),
+    ])
+    def test_multiple_information_edges(self, ws, expected_min):
+        """Enriched plots must have multiple information topology edges."""
+        assert len(ws.information_topology) >= expected_min, (
+            f"Expected >= {expected_min} info edges, got {len(ws.information_topology)}"
+        )
+
+    # --- Implicit False Beliefs ---
+    def test_gatsby_george_false_belief(self):
+        """George Wilson must believe Gatsby is Myrtle's lover and killer."""
+        george = gatsby_ws.entities["ENT_GEORGE"]
+        beliefs_about_gatsby = [b for b in george.beliefs if b.target_id == "ENT_GATSBY"]
+        assert len(beliefs_about_gatsby) >= 1
+        assert any("lover" in b.perceived_state.lower() or "killer" in b.perceived_state.lower()
+                    for b in beliefs_about_gatsby)
+
+    def test_gatsby_gatsby_false_belief(self):
+        """Gatsby must believe Daisy will choose him."""
+        gatsby = gatsby_ws.entities["ENT_GATSBY"]
+        beliefs_about_daisy = [b for b in gatsby.beliefs if b.target_id == "ENT_DAISY"]
+        assert len(beliefs_about_daisy) >= 1
+
+    def test_1984_winston_false_beliefs(self):
+        """Winston must hold false beliefs about O'Brien and Charrington."""
+        winston = orwell_ws.entities["ENT_WINSTON"]
+        obrien_beliefs = [b for b in winston.beliefs if b.target_id == "ENT_OBRIEN"]
+        assert any("brotherhood" in b.perceived_state.lower() or "ally" in b.perceived_state.lower()
+                    for b in obrien_beliefs), "Winston must believe O'Brien is a Brotherhood ally"
+        charrington_beliefs = [b for b in winston.beliefs if b.target_id == "ENT_CHARRINGTON"]
+        assert len(charrington_beliefs) >= 1, "Winston must have false beliefs about Charrington"
+
+    def test_pip_central_false_belief(self):
+        """Pip must believe Miss Havisham is his secret benefactress."""
+        pip = expectations_ws.entities["ENT_PIP"]
+        havisham_beliefs = [b for b in pip.beliefs if b.target_id == "ENT_HAVISHAM"]
+        assert any("benefact" in b.perceived_state.lower() for b in havisham_beliefs), (
+            "Pip's central false belief about Havisham as benefactress must be present"
+        )
+
+    def test_wanda_sibling_disguise_beliefs(self):
+        """George and Ken must believe Wanda and Otto are siblings."""
+        george = wanda_ws.entities["ENT_GEORGE"]
+        assert any("sibling" in b.perceived_state.lower() for b in george.beliefs)
+        ken = wanda_ws.entities["ENT_KEN"]
+        assert any("brother" in b.perceived_state.lower() or "sister" in b.perceived_state.lower()
+                    for b in ken.beliefs)
+
+    def test_white_trust_in_orange(self):
+        """Mr. White must believe Orange is trustworthy (not a cop)."""
+        white = reservoir_ws.entities["ENT_WHITE"]
+        orange_beliefs = [b for b in white.beliefs if b.target_id == "ENT_ORANGE"]
+        assert any("trustworthy" in b.perceived_state.lower() or "not a cop" in b.perceived_state.lower()
+                    for b in orange_beliefs)
+
+    # --- Critical Information Transfers ---
+    def test_gatsby_tom_tells_george_info_edge(self):
+        """Gatsby must have Tom→George info edge (the fatal information transfer)."""
+        edges = [ie for ie in gatsby_ws.information_topology
+                 if ie.source_id == "ENT_TOM" and "ENT_GEORGE" in ie.target_ids]
+        assert len(edges) >= 1, "Tom→George info edge (telling about the car) must exist"
+
+    def test_macbeth_prophecy_info_edges(self):
+        """Macbeth must have Witches→Macbeth prophecy info edges."""
+        edges = [ie for ie in macbeth_ws.information_topology
+                 if ie.source_id == "ENT_WITCHES"]
+        assert len(edges) >= 2, "Both prophecy sets must be modelled as info edges"
+
+    def test_1984_false_flag_info_edge(self):
+        """1984 must have O'Brien's false-flag Brotherhood recruitment as info edge."""
+        edges = [ie for ie in orwell_ws.information_topology
+                 if ie.source_id == "ENT_OBRIEN" and "ENT_WINSTON" in ie.target_ids]
+        assert len(edges) >= 1
+
+    def test_nile_signal_shout_info_edge(self):
+        """Death on the Nile must have Simon's signal shout to Jacqueline."""
+        edges = [ie for ie in nile_ws.information_topology
+                 if ie.source_id == "ENT_SIMON" and "ENT_JACQUELINE" in ie.target_ids]
+        assert len(edges) >= 1
+
+    def test_persuasion_overheard_conversation(self):
+        """Persuasion must have the pivotal overheard conversation info edge."""
+        edges = [ie for ie in persuasion_ws.information_topology
+                 if ie.source_id == "ENT_ANNE" and "ENT_WENTWORTH" in ie.target_ids]
+        assert len(edges) >= 1
+
+    # --- New Entities and Relationships ---
+    def test_romeo_nurse_entity_exists(self):
+        """Romeo and Juliet must include the Nurse entity."""
+        assert "ENT_NURSE" in romeo_ws.entities
+        nurse = romeo_ws.entities["ENT_NURSE"]
+        assert nurse.location_id == "LOC_CAPULET_HOUSE"
+
+    def test_romeo_nurse_relationship(self):
+        """Nurse→Juliet relationship must exist."""
+        rels = [r for r in romeo_ws.social_topology
+                if r.source_entity_id == "ENT_NURSE" and r.target_entity_id == "ENT_JULIET"]
+        assert len(rels) >= 1
+
+    def test_juliet_capulet_power_dynamic(self):
+        """Juliet→Capulet relationship must reflect patriarchal power."""
+        rels = [r for r in romeo_ws.social_topology
+                if r.source_entity_id == "ENT_JULIET" and r.target_entity_id == "ENT_CAPULET"]
+        assert len(rels) >= 1
+        assert rels[0].power_dynamic < -0.5, "Juliet must be subordinate to Capulet"
+
+    def test_gatsby_george_correct_location(self):
+        """George Wilson must be at LOC_WILSON_GARAGE, not LOC_GATSBY_MANSION."""
+        george = gatsby_ws.entities["ENT_GEORGE"]
+        assert george.location_id == "LOC_WILSON_GARAGE", (
+            f"George should be at Wilson's Garage, got {george.location_id}"
+        )
+
+    # --- Encrypted Information Edges ---
+    def test_encrypted_info_edges_exist(self):
+        """Encrypted info edges must exist in appropriate plots."""
+        # 1984: secret note
+        encrypted_1984 = [ie for ie in orwell_ws.information_topology if ie.is_encrypted]
+        assert len(encrypted_1984) >= 1
+        # Reservoir Dogs: undercover reports
+        encrypted_rd = [ie for ie in reservoir_ws.information_topology if ie.is_encrypted]
+        assert len(encrypted_rd) >= 1
+
+    # --- Belief Temporal Anchoring ---
+    def test_beliefs_have_fabula_timestamps(self):
+        """Key beliefs should have non-zero established_at_fabula where appropriate."""
+        # George's belief about Gatsby forms at fabula=12 (when Tom tells him)
+        george = gatsby_ws.entities["ENT_GEORGE"]
+        gatsby_beliefs = [b for b in george.beliefs if b.target_id == "ENT_GATSBY"]
+        assert any(b.established_at_fabula > 0 for b in gatsby_beliefs), (
+            "George's belief about Gatsby should have a temporal anchor"
+        )
+
+    # --- Constants on Enriched Entities ---
+    def test_simon_co_conspirator_constant(self):
+        """Simon Doyle must have 'co_conspirator' constant."""
+        simon = nile_ws.entities["ENT_SIMON"]
+        assert "co_conspirator" in simon.constants
+
+    # --- Information Edge Observation Pipeline Integration ---
+    def test_enriched_info_edges_flow_through_observation(self):
+        """Multiple info edges must appear in observation payload for participating entities."""
+        query = ObservationQuery(focus_entity_ids=["ENT_MACBETH"])
+        result = calculate_narrative_physics(query, macbeth_ws)
+        ps = result["physics_state"]
+        # Macbeth participates in prophecy info edges
+        info_edges = ps["relevant_information_edges"]
+        assert len(info_edges) >= 1, "Macbeth should see at least one info edge (prophecy)"
+
+    def test_enriched_info_edges_flow_through_intervention(self):
+        """Active info edges between focus entities must produce communicating_with edges."""
+        from copy import deepcopy
+        from shadow_loom.models import InformationEdge
+        ws = deepcopy(macbeth_ws)
+        # Add an active comms link between Macbeth and Lady Macbeth
+        ws.entities["ENT_LADY_MACBETH"].location_id = "LOC_ENGLAND"
+        ws.information_topology.append(
+            InformationEdge(
+                source_id="ENT_MACBETH",
+                target_ids=["ENT_LADY_MACBETH"],
+                medium="telepathy",
+                established_at_fabula=1,
+            )
+        )
+        query = InterventionQuery(
+            interventions={"ENT_MACBETH.status": "healthy", "ENT_LADY_MACBETH.status": "healthy"}
+        )
+        result = calculate_narrative_physics(query, ws)
+        G = nx.node_link_graph(result["physics_state"])
+        comms = [
+            (u, v, d) for u, v, d in G.edges(data=True)
+            if d.get("edge_type") == "communicating_with"
+        ]
+        assert len(comms) >= 1, "Active info edges should produce communicating_with edges in sandbox"

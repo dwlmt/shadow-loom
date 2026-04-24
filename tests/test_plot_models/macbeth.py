@@ -162,6 +162,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_MACBETH", perceived_state="Macbeth may have murdered Duncan to fulfill the witches' prophecy", confidence=0.7, inertia=0.5, established_at_fabula=0),
+                Belief(target_id="ENT_WITCHES", perceived_state="The witches' prophecies may be instruments of darkness that win us with honest trifles to betray in deepest consequence", confidence=0.65, inertia=0.5, established_at_fabula=2),
             ],
         ),
         "ENT_MACDUFF": Entity(
@@ -287,11 +288,23 @@ world_state = WorldStateV1(
     ],
     information_topology=[
         InformationEdge(
+            source_id="ENT_WITCHES",
+            target_ids=["ENT_MACBETH", "ENT_BANQUO"],
+            medium="prophecy",
+            established_at_fabula=2,
+        ),
+        InformationEdge(
             source_id="ENT_MACBETH",
             target_ids=["ENT_LADY_MACBETH"],
             medium="letter",
             established_at_fabula=4,
             terminated_at_fabula=5,
+        ),
+        InformationEdge(
+            source_id="ENT_WITCHES",
+            target_ids=["ENT_MACBETH"],
+            medium="prophecy",
+            established_at_fabula=13,
         ),
     ],
     social_topology=[
@@ -301,6 +314,7 @@ world_state = WorldStateV1(
         RelationshipEdge(source_entity_id="ENT_MACBETH", target_entity_id="ENT_MACDUFF", affinity=-0.8, fear=0.45, power_dynamic=0.3),
         RelationshipEdge(source_entity_id="ENT_MACDUFF", target_entity_id="ENT_MALCOLM", affinity=0.8, fear=0.1, power_dynamic=-0.3),
         RelationshipEdge(source_entity_id="ENT_LADY_MACBETH", target_entity_id="ENT_DUNCAN", affinity=-0.5, fear=0.4, power_dynamic=-0.4),
+        RelationshipEdge(source_entity_id="ENT_LADY_MACBETH", target_entity_id="ENT_MACBETH", affinity=0.8, fear=0.2, power_dynamic=0.4),
         RelationshipEdge(source_entity_id="ENT_BANQUO", target_entity_id="ENT_MACBETH", affinity=0.2, fear=0.35, power_dynamic=-0.4),
         RelationshipEdge(source_entity_id="ENT_MALCOLM", target_entity_id="ENT_MACBETH", affinity=-0.9, fear=0.45, power_dynamic=-0.5),
         RelationshipEdge(source_entity_id="ENT_MACBETH", target_entity_id="ENT_WITCHES", affinity=0.3, fear=0.3, power_dynamic=-0.5),

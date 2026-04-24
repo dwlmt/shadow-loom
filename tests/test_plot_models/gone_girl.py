@@ -190,6 +190,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_AMY", perceived_state="Amy needs my protection — she will finally be mine", confidence=0.8, inertia=0.7, established_at_fabula=0),
+                Belief(target_id="ENT_AMY", perceived_state="Amy genuinely needs my protection and will stay with me", confidence=0.85, inertia=0.7, established_at_fabula=10),
             ],
         ),
         "ENT_TANNER": Entity(
@@ -284,6 +285,19 @@ world_state = WorldStateV1(
             established_at_fabula=10,
             terminated_at_fabula=14,
         ),
+        InformationEdge(
+            source_id="ENT_AMY",
+            target_ids=["ENT_BONEY", "ENT_NICK", "ENT_NOELLE"],
+            medium="fabricated_diary",
+            established_at_fabula=6,
+        ),
+        InformationEdge(
+            source_id="ENT_NICK",
+            target_ids=["ENT_BONEY"],
+            medium="television_interview",
+            established_at_fabula=11,
+            terminated_at_fabula=11,
+        ),
     ],
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_NICK", target_entity_id="ENT_AMY", affinity=-0.6, fear=0.47, power_dynamic=-0.7),
@@ -295,5 +309,7 @@ world_state = WorldStateV1(
         RelationshipEdge(source_entity_id="ENT_BONEY", target_entity_id="ENT_NICK", affinity=-0.3, fear=0.35, power_dynamic=0.5),
         RelationshipEdge(source_entity_id="ENT_NOELLE", target_entity_id="ENT_AMY", affinity=0.6, fear=0.1, power_dynamic=-0.3),
         RelationshipEdge(source_entity_id="ENT_TANNER", target_entity_id="ENT_NICK", affinity=0.5, fear=0.15, power_dynamic=0.3),
+        RelationshipEdge(source_entity_id="ENT_AMY", target_entity_id="ENT_GO", affinity=-0.6, fear=0.2, power_dynamic=0.3),
+        RelationshipEdge(source_entity_id="ENT_GO", target_entity_id="ENT_AMY", affinity=-0.7, fear=0.3, power_dynamic=-0.2),
     ],
 )

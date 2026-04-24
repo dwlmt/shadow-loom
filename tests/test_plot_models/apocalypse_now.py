@@ -106,6 +106,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_KURTZ", perceived_state="Kurtz had to be terminated — his methods were unsound", confidence=0.9, inertia=0.7, established_at_fabula=0),
+                Belief(target_id="ENT_KURTZ", perceived_state="Kurtz has gone insane and must be terminated", confidence=0.85, inertia=0.6, established_at_fabula=2),
             ],
         ),
         "ENT_KURTZ": Entity(
@@ -122,6 +123,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_WILLARD", perceived_state="You are the one they sent to kill me", confidence=1.0, inertia=0.9, established_at_fabula=0),
+                Belief(target_id="ENT_WILLARD", perceived_state="Willard is the one who will end my suffering", confidence=0.8, inertia=0.7, established_at_fabula=10),
             ],
         ),
         "ENT_KILGORE": Entity(
@@ -249,6 +251,13 @@ world_state = WorldStateV1(
             established_at_fabula=2,
             terminated_at_fabula=9,
         ),
+        InformationEdge(
+            source_id="ENT_WILLARD",
+            target_ids=["ENT_CHIEF", "ENT_CHEF", "ENT_LANCE", "ENT_CLEAN"],
+            medium="classified_mission",
+            is_encrypted=True,
+            established_at_fabula=2,
+        ),
     ],
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_WILLARD", target_entity_id="ENT_KURTZ", affinity=0.2, fear=0.45, power_dynamic=-0.3),
@@ -258,5 +267,6 @@ world_state = WorldStateV1(
         RelationshipEdge(source_entity_id="ENT_WILLARD", target_entity_id="ENT_LANCE", affinity=0.3, fear=0.15, power_dynamic=0.3),
         RelationshipEdge(source_entity_id="ENT_CHIEF", target_entity_id="ENT_WILLARD", affinity=0.1, fear=0.35, power_dynamic=-0.2),
         RelationshipEdge(source_entity_id="ENT_PHOTOJOURNALIST", target_entity_id="ENT_KURTZ", affinity=0.9, fear=0.1, power_dynamic=-0.9),
+        RelationshipEdge(source_entity_id="ENT_KILGORE", target_entity_id="ENT_WILLARD", affinity=0.2, fear=0.0, power_dynamic=0.6),
     ],
 )

@@ -247,6 +247,20 @@ world_state = WorldStateV1(
             established_at_fabula=2,
             terminated_at_fabula=7,
         ),
+        InformationEdge(
+            source_id="ENT_OBRIEN",
+            target_ids=["ENT_WINSTON"],
+            medium="false_flag_recruitment",
+            is_encrypted=True,
+            established_at_fabula=4,
+            terminated_at_fabula=7,
+        ),
+        InformationEdge(
+            source_id="ENT_BIG_BROTHER",
+            target_ids=["ENT_WINSTON", "ENT_JULIA", "ENT_OBRIEN", "ENT_CHARRINGTON"],
+            medium="telescreen",
+            established_at_fabula=1,
+        ),
     ],
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_WINSTON", target_entity_id="ENT_JULIA", affinity=0.0, fear=0.15, power_dynamic=0.0),

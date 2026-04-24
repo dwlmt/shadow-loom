@@ -101,6 +101,7 @@ This pipeline is divided into four distinct phases:
 
 ### Phase IV: The Generation & Verification Pipeline (Math to Text)
 
+
 #### 9. Actor Drafting
 
 - **Actor:** High-Reasoning LLM (e.g., Gemini Pro).

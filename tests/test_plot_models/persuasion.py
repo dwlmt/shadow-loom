@@ -81,6 +81,7 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_WENTWORTH", perceived_state="I have always loved him — women do not give up their feelings", confidence=1.0, inertia=1.0, established_at_fabula=0),
                 Belief(target_id="ENT_WILLIAM_ELLIOT", perceived_state="His character is opaque — I cannot judge him despite his refined manners", confidence=0.7, inertia=0.5, established_at_fabula=0),
+                Belief(target_id="ENT_WENTWORTH", perceived_state="Wentworth will never forgive me for breaking off the engagement", confidence=0.8, inertia=0.6, established_at_fabula=5),
             ],
         ),
         "ENT_WENTWORTH": Entity(
@@ -138,6 +139,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_WENTWORTH", perceived_state="He was an imprudent, unsuitable match for Anne", confidence=0.8, inertia=0.6, established_at_fabula=0),
+                Belief(target_id="ENT_WENTWORTH", perceived_state="Wentworth is too low in status and fortune to be a suitable match for Anne", confidence=0.9, inertia=0.8, established_at_fabula=1),
             ],
         ),
         "ENT_WILLIAM_ELLIOT": Entity(
@@ -153,6 +155,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_MRS_CLAY", perceived_state="She aims to marry Sir Walter — I must prevent this to protect my inheritance", confidence=0.85, inertia=0.7, established_at_fabula=0),
+                Belief(target_id="ENT_ANNE", perceived_state="Marrying Anne will secure my position as heir to Kellynch", confidence=0.85, inertia=0.7, established_at_fabula=14),
             ],
         ),
         "ENT_LOUISA": Entity(
@@ -281,6 +284,19 @@ world_state = WorldStateV1(
     ],
     information_topology=[
         InformationEdge(
+            source_id="ENT_MRS_SMITH",
+            target_ids=["ENT_ANNE"],
+            medium="private_revelation",
+            established_at_fabula=21,
+            terminated_at_fabula=21,
+        ),
+        InformationEdge(
+            source_id="ENT_ANNE",
+            target_ids=["ENT_WENTWORTH"],
+            medium="overheard_conversation",
+            established_at_fabula=23,
+        ),
+        InformationEdge(
             source_id="ENT_WENTWORTH",
             target_ids=["ENT_ANNE"],
             medium="letter",
@@ -299,5 +315,6 @@ world_state = WorldStateV1(
         RelationshipEdge(source_entity_id="ENT_SIR_WALTER", target_entity_id="ENT_ANNE", affinity=0.2, fear=0.2, power_dynamic=0.7),
         RelationshipEdge(source_entity_id="ENT_ANNE", target_entity_id="ENT_MRS_SMITH", affinity=0.7, fear=0.05, power_dynamic=0.1),
         RelationshipEdge(source_entity_id="ENT_LOUISA", target_entity_id="ENT_WENTWORTH", affinity=0.6, fear=0.2, power_dynamic=-0.2),
+        RelationshipEdge(source_entity_id="ENT_MRS_SMITH", target_entity_id="ENT_WILLIAM_ELLIOT", affinity=-0.7, fear=0.2, power_dynamic=-0.6),
     ],
 )
