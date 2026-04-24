@@ -20,21 +20,24 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Dict, List, Literal, Tuple
+from typing import Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, ModelRetry, NativeOutput, RunContext
 from pydantic_ai.providers.ollama import OllamaProvider
 
 from shadow_loom.models import (
+    Belief,
     CausalEdge,
     Entity,
+    EntityStateSnapshot,
     EventNode,
     InformationEdge,
     Location,
     NarrativeObject,
     RelationshipEdge,
     SpatialEdge,
+    TraitVector,
     WorldStateV1,
 )
 
@@ -118,6 +121,7 @@ class ChunkTopology(BaseModel):
     information_topology: List[InformationEdge] = Field(default_factory=list)
     social_topology: List[RelationshipEdge] = Field(default_factory=list)
     spatial_topology: List[SpatialEdge] = Field(default_factory=list)
+    entity_updates: List["EntityUpdate"] = Field(default_factory=list)
 
 
 class QAPair(BaseModel):
@@ -143,12 +147,38 @@ class PhysicsExtraction(BaseModel):
     events: List[EventNode] = Field(default_factory=list)
     causal_topology: List[CausalEdge] = Field(default_factory=list)
     spatial_topology: List[SpatialEdge] = Field(default_factory=list)
+    entity_updates: List["EntityUpdate"] = Field(default_factory=list)
 
 
 class SocialExtraction(BaseModel):
     """Step 3b output: information + relationship edges from the Social Agent."""
     information_topology: List[InformationEdge] = Field(default_factory=list)
     social_topology: List[RelationshipEdge] = Field(default_factory=list)
+
+
+class EntityUpdate(BaseModel):
+    """Per-chunk delta: how an entity's state changed during this chunk."""
+    entity_id: str = Field(description="ENT_ ID of the entity that changed.")
+    fabula_time: int = Field(description="fabula_time when this change occurred.")
+    triggered_by: Optional[str] = Field(default=None, description="EVT_ ID that caused this change.")
+    trait_updates: Dict[str, TraitVector] = Field(
+        default_factory=dict,
+        description="Updated trait values. Only include traits that changed.",
+    )
+    new_beliefs: List[Belief] = Field(default_factory=list, description="New beliefs formed.")
+    invalidated_belief_targets: List[str] = Field(
+        default_factory=list,
+        description="target_ids of beliefs shattered by this event.",
+    )
+    new_status: Optional[Literal["healthy", "injured", "ill", "dead", "unconscious"]] = Field(
+        default=None, description="New status if changed.",
+    )
+    new_location_id: Optional[str] = Field(default=None, description="New location if entity moved.")
+
+
+# Resolve forward references now that EntityUpdate is defined
+ChunkTopology.model_rebuild()
+PhysicsExtraction.model_rebuild()
 
 
 class ValidationIssue(BaseModel):
@@ -622,6 +652,8 @@ def _build_physics_agent(config: ExtractionConfig) -> Agent[_PhysicsDeps, Physic
                 bad.append(f"CausalEdge source_id '{ce.source_id}' is not a valid ID.")
             if ce.target_id not in valid:
                 bad.append(f"CausalEdge target_id '{ce.target_id}' is not a valid ID.")
+            if ce.rel_counterpart_id and ce.rel_counterpart_id not in valid:
+                bad.append(f"CausalEdge rel_counterpart_id '{ce.rel_counterpart_id}' is not a valid ID.")
         for se in result.spatial_topology:
             if se.source_id not in location_ids:
                 bad.append(f"SpatialEdge source_id '{se.source_id}' is not a valid location.")
@@ -874,6 +906,7 @@ def extract_topology(
             information_topology=social.information_topology,
             social_topology=social.social_topology,
             spatial_topology=physics.spatial_topology,
+            entity_updates=physics.entity_updates,
         )
         topologies.append(topo)
 
@@ -979,7 +1012,14 @@ def _normalize_fabula_times(ws: WorldStateV1, spacing: int = 100) -> WorldStateV
             })
             for b in ent.beliefs
         ]
-        new_entities[eid] = ent.model_copy(update={"beliefs": new_beliefs})
+        new_timeline = [
+            snap.model_copy(update={"fabula_time": _map(snap.fabula_time) or snap.fabula_time})
+            for snap in ent.state_timeline
+        ]
+        new_entities[eid] = ent.model_copy(update={
+            "beliefs": new_beliefs,
+            "state_timeline": new_timeline,
+        })
 
     logger.info(
         "[Normalize] Rescaled %d unique fabula_time values (median gap %d → %d).",
@@ -1046,6 +1086,21 @@ def assemble_world_state(
         social_topology.extend(topo.social_topology)
         spatial_topology.extend(topo.spatial_topology)
 
+    # Collect entity updates from all chunks into state_timeline
+    all_entity_updates: Dict[str, List[EntityStateSnapshot]] = {}
+    for topo in topologies:
+        for eu in topo.entity_updates:
+            snap = EntityStateSnapshot(
+                fabula_time=eu.fabula_time,
+                triggered_by=eu.triggered_by,
+                traits=eu.trait_updates,
+                beliefs_added=eu.new_beliefs,
+                beliefs_invalidated=eu.invalidated_belief_targets,
+                status=eu.new_status,
+                location_id=eu.new_location_id,
+            )
+            all_entity_updates.setdefault(eu.entity_id, []).append(snap)
+
     # Sort events chronologically
     events.sort(key=lambda e: e.fabula_time)
     causal_topology.sort(key=lambda c: c.fabula_time)
@@ -1065,7 +1120,14 @@ def assemble_world_state(
     ws = WorldStateV1(
         locations=register.locations,
         objects=register.objects,
-        entities=register.entities,
+        entities={
+            eid: (
+                ent.model_copy(update={"state_timeline": sorted(all_entity_updates[eid], key=lambda s: s.fabula_time)})
+                if eid in all_entity_updates
+                else ent
+            )
+            for eid, ent in register.entities.items()
+        },
         events=events,
         causal_topology=causal_topology,
         spatial_topology=spatial_topology,
@@ -1139,6 +1201,8 @@ def _auto_repair(ws: WorldStateV1) -> Tuple[WorldStateV1, List[str]]:
             repairs.append(f"Removed causal edge: source '{ce.source_id}' not in node set.")
         elif ce.target_id not in valid_ids:
             repairs.append(f"Removed causal edge: target '{ce.target_id}' not in node set.")
+        elif ce.rel_counterpart_id and ce.rel_counterpart_id not in valid_ids:
+            repairs.append(f"Removed causal edge: rel_counterpart_id '{ce.rel_counterpart_id}' not in node set.")
         else:
             clean_causal.append(ce)
 

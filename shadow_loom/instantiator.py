@@ -125,13 +125,22 @@ class AMWNInstantiator:
             delay = ce.get("propagation_delay", 0)
             ft = ce.get("fabula_time", 0)
             if src and tgt and sandbox.has_node(src) and sandbox.has_node(tgt):
-                sandbox.add_edge(src, tgt, edge_type="causal", mechanism=mech,
-                                 evidence_strength=strength,
-                                 causal_force=force,
-                                 causality_type=ctype,
-                                 propagation_delay=delay,
-                                 fabula_time=ft,
-                                 world_id=target_world_id)
+                edge_attrs = dict(
+                    edge_type="causal", mechanism=mech,
+                    evidence_strength=strength,
+                    causal_force=force,
+                    causality_type=ctype,
+                    propagation_delay=delay,
+                    fabula_time=ft,
+                    world_id=target_world_id,
+                )
+                # mutation_social metadata
+                if ctype == "mutation_social":
+                    edge_attrs["target_id"] = tgt
+                    edge_attrs["rel_counterpart_id"] = ce.get("rel_counterpart_id")
+                    edge_attrs["trait_target"] = ce.get("trait_target")
+                    edge_attrs["trait_delta"] = ce.get("trait_delta")
+                sandbox.add_edge(src, tgt, **edge_attrs)
 
         # E. Spatial Navigation Edges (SpatialEdge — ALL edges wired, locked flagged)
         for se in ego_payload.get("relevant_spatial_edges", []):
@@ -335,7 +344,8 @@ class AMWNInstantiator:
     def _intervene_relationship(sandbox: nx.MultiDiGraph, source_id: str, path: str, new_value: float):
         """Forces a relationship metric (Affinity/Fear/Power) to change.
         Applies Impact > Inertia: if |desired_shift| <= edge inertia, the
-        relationship resists entirely; otherwise the shift is dampened."""
+        relationship resists entirely; otherwise the shift is dampened.
+        If no relationship edge exists, one is created with default metrics."""
         parts = path.split('.')
         if len(parts) != 3:
             logger.warning("Malformed relationship path: %s. Expected 'relationships.<target>.<metric>'.", path)
@@ -343,10 +353,14 @@ class AMWNInstantiator:
         _, target_id, metric = parts
         
         if not sandbox.has_node(target_id):
+            logger.warning("[Surgery] Relationship target %s not in sandbox. Skipping.", target_id)
             return
             
+        # Find existing relationship edge
+        found = False
         for u, v, key, data in sandbox.out_edges(source_id, data=True, keys=True):
             if v == target_id and data.get("edge_type") == "relationship":
+                found = True
                 current_val = data.get(metric, 0.0)
                 if not isinstance(current_val, (int, float)):
                     current_val = 0.0
@@ -371,6 +385,27 @@ class AMWNInstantiator:
                 logger.info("[Surgery] Relationship dampened: %s->%s %s desired=%.2f, inertia=%.2f, effective=%.2f",
                              source_id, target_id, metric, new_value, rel_inertia, effective_val)
                 return
+
+        # No existing edge — create a new relationship with default metrics
+        if not found:
+            edge_attrs = {
+                "edge_type": "relationship",
+                "affinity": 0.0,
+                "fear": 0.0,
+                "power_dynamic": 0.0,
+                "inertia": 0.3,
+                "evidence_strength": "weak",
+                "last_updated_fabula": 0,
+                "world_id": "shadow",
+            }
+            # Clamp the target value
+            if metric == "fear":
+                edge_attrs[metric] = max(0.0, min(1.0, float(new_value)))
+            else:
+                edge_attrs[metric] = max(-1.0, min(1.0, float(new_value)))
+            sandbox.add_edge(source_id, target_id, **edge_attrs)
+            logger.info("[Surgery] Created new relationship edge: %s->%s %s=%.2f",
+                         source_id, target_id, metric, edge_attrs[metric])
 
     # ==========================================
     # SURGERY 4: STATE (Classic do-operator)

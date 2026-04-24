@@ -19,9 +19,9 @@ Each key is a unique ID in `ENT_UPPER_SNAKE_CASE` format (e.g. `ENT_MACBETH`).
 Each `Entity` has:
 - `id` (str): Same as the dictionary key.
 - `name` (str): Human-readable canonical name. Include title if relevant (e.g. `"King Duncan"`, `"Macduff (Thane of Fife)"`).
-- `location_id` (str): The `LOC_` ID where this entity is at the **end of the story**. Must reference a location from the Location Register.
-- `status` (str): One of: `"healthy"`, `"injured"`, `"ill"`, `"dead"`, `"unconscious"`. This is their **final** status at the end of the narrative.
-- `traits` (dict): Psychological trait vectors as `{trait_name: {"value": float 0-1, "inertia": float 0-1}}`.
+- `location_id` (str): The `LOC_` ID where this entity is at the **beginning of the story** (or at their first appearance). Must reference a location from the Location Register.
+- `status` (str): One of: `"healthy"`, `"injured"`, `"ill"`, `"dead"`, `"unconscious"`. This is their **initial** status at the start of the narrative (or at first appearance).
+- `traits` (dict): Psychological trait vectors as `{trait_name: {"value": float 0-1, "inertia": float 0-1}}`. **These represent the character's INITIAL baseline psychology — their state BEFORE the story's events transform them.**
   - `value`: How intense this trait is (0 = absent, 1 = maximum).
   - `inertia`: How resistant this trait is to change (0 = easily changed, 1 = permanent/immutable).
   - Common traits: `"ambition"`, `"courage"`, `"guilt"`, `"paranoia"`, `"cruelty"`, `"loyalty"`, `"suspicion"`, `"grief"`, `"vengefulness"`, `"caution"`, `"leadership"`, `"innocence"`, `"malice"`, `"deception"`, `"love"`, `"fear"`, `"resolve"`, `"ruthlessness"`, `"trust"`, `"benevolence"`, `"hope"`, `"anger"`, `"despair"`.
@@ -48,7 +48,7 @@ Each `Entity` has:
 1. **Resolve all aliases.** "He", "she", "the king", "the thane", "the queen" → map to the canonical `ENT_` ID. Characters referred to by title AND name should be one entry.
 2. **Groups as single entities.** If a group acts as a unit (e.g. "The Three Witches"), create one `ENT_` entry.
 3. **ID convention**: `ENT_UPPER_SNAKE_CASE`. E.g. `ENT_MACBETH`, `ENT_LADY_MACBETH`.
-4. **Trait estimation**: Base values on the character's arc across the ENTIRE text, not just the beginning.
-5. **Location assignment**: Place entities at their **final known location** at the end of the story. Must use a `LOC_` ID from the provided Location Register.
+4. **Trait estimation**: Base trait values on the character's state **before the story begins** or at their **first appearance**. These are the *initial conditions* — the physics engine will track how events mutate traits over the timeline.
+5. **Location assignment**: Place entities at their **initial known location** at the start of the story (or first appearance). Must use a `LOC_` ID from the provided Location Register.
 6. **Belief target_id**: Must reference `ENT_`, `OBJ_`, or `LOC_` IDs from the registers provided, or other `ENT_` IDs you are extracting in this pass. Do NOT invent `EVT_` IDs — events have not been extracted yet.
 7. **Be exhaustive**: It is better to include a minor character than to miss one. The extraction pipeline cannot add entities later.

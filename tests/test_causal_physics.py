@@ -23,7 +23,7 @@ from shadow_loom.extract_graph import extract_ego_graph_from_memory
 from shadow_loom.instantiator import AMWNInstantiator
 from shadow_loom.causal_physics import (
     CausalPhysicsEngine, CausalPhysicsResult, STRENGTH_MULTIPLIER,
-    MECHANISM_TRAIT_MAP, MECHANISM_FALLBACK_FACTOR,
+    MECHANISM_TRAIT_MAP, MECHANISM_FALLBACK_FACTOR, SocialMutation,
 )
 from shadow_loom.narrative_physics import calculate_narrative_physics
 from shadow_loom.query_models import InterventionQuery, CounterfactualQuery
@@ -788,3 +788,175 @@ class TestSpatialReachabilityOwnership:
         sandbox = _build_sandbox(ws, ["ENT_ALICE"])
         engine = CausalPhysicsEngine(sandbox, ws)
         assert engine._check_spatial_reachability("LOC_A", "LOC_B") is True
+
+
+# =====================================================================
+# MUTATION_SOCIAL PROPAGATION
+# =====================================================================
+class TestMutationSocialPropagation:
+    """propagate_social() must apply relationship metric deltas from mutation_social causal edges."""
+
+    def _make_social_world(self) -> WorldStateV1:
+        """World with a mutation_social edge: EVT_BETRAYAL → ENT_ALICE's fear of ENT_BOB increases."""
+        return WorldStateV1(
+            locations={
+                "LOC_A": Location(name="Room A", description="A", ambient_state={}),
+            },
+            objects={},
+            entities={
+                "ENT_ALICE": Entity(
+                    id="ENT_ALICE", name="Alice", location_id="LOC_A",
+                    status="healthy",
+                    traits={"courage": TraitVector(value=0.5, inertia=0.2)},
+                ),
+                "ENT_BOB": Entity(
+                    id="ENT_BOB", name="Bob", location_id="LOC_A",
+                    status="healthy",
+                    traits={"courage": TraitVector(value=0.7, inertia=0.3)},
+                ),
+            },
+            events=[
+                EventNode(id="EVT_BETRAYAL", fabula_time=1, syuzhet_index=1,
+                          event_type="choice", actor_ids=["ENT_BOB"],
+                          target_ids=["ENT_ALICE"], description="Bob betrays Alice"),
+            ],
+            causal_topology=[
+                CausalEdge(
+                    source_id="EVT_BETRAYAL", target_id="ENT_ALICE",
+                    causality_type="mutation_social",
+                    mechanism="betrayal", evidence_strength="strong",
+                    causal_force=8.0, fabula_time=1,
+                    trait_target="fear", trait_delta=0.5,
+                    rel_counterpart_id="ENT_BOB",
+                ),
+            ],
+            spatial_topology=[],
+            social_topology=[
+                RelationshipEdge(
+                    source_entity_id="ENT_ALICE", target_entity_id="ENT_BOB",
+                    affinity=0.6, fear=0.1, power_dynamic=0.0, inertia=0.1,
+                ),
+            ],
+        )
+
+    def test_social_propagation_mutates_relationship(self):
+        """mutation_social edge must shift the relationship metric."""
+        ws = self._make_social_world()
+        sandbox = _build_sandbox(ws, ["ENT_ALICE", "ENT_BOB"])
+        engine = CausalPhysicsEngine(sandbox, ws)
+        engine.propagate_social()
+
+        assert len(engine._social_mutations) == 1
+        sm = engine._social_mutations[0]
+        assert sm.source_entity_id == "ENT_ALICE"
+        assert sm.target_entity_id == "ENT_BOB"
+        assert sm.metric == "fear"
+        assert sm.new_value > sm.old_value  # fear should increase
+
+    def test_social_propagation_respects_inertia(self):
+        """High relationship inertia must block the social mutation."""
+        ws = self._make_social_world()
+        # Overwrite the relationship with very high inertia
+        ws.social_topology[0] = RelationshipEdge(
+            source_entity_id="ENT_ALICE", target_entity_id="ENT_BOB",
+            affinity=0.6, fear=0.1, power_dynamic=0.0, inertia=0.99,
+        )
+        sandbox = _build_sandbox(ws, ["ENT_ALICE", "ENT_BOB"])
+        engine = CausalPhysicsEngine(sandbox, ws)
+        engine.propagate_social()
+
+        # Should be blocked by inertia
+        assert len(engine._social_mutations) == 0
+        blocked_social = [b for b in engine._blocked if "rel." in b.trait]
+        assert len(blocked_social) == 1
+
+    def test_social_propagation_creates_missing_edge(self):
+        """If no relationship edge exists, propagate_social must create one."""
+        ws = self._make_social_world()
+        ws.social_topology = []  # Remove existing relationship
+        sandbox = _build_sandbox(ws, ["ENT_ALICE", "ENT_BOB"])
+        engine = CausalPhysicsEngine(sandbox, ws)
+        engine.propagate_social()
+
+        assert len(engine._social_mutations) == 1
+        sm = engine._social_mutations[0]
+        assert sm.old_value == 0.0  # Created from scratch
+        assert sm.new_value > 0.0   # fear should be positive
+
+    def test_social_propagation_scales_by_evidence_and_force(self):
+        """Delta must be scaled by evidence_strength × (causal_force / 10)."""
+        ws = self._make_social_world()
+        # Edge has evidence_strength="strong" (0.75) and causal_force=8.0 (0.8)
+        # raw_delta = 0.5, so scaled = 0.5 * 0.75 * 0.8 = 0.3
+        sandbox = _build_sandbox(ws, ["ENT_ALICE", "ENT_BOB"])
+        engine = CausalPhysicsEngine(sandbox, ws)
+        engine.propagate_social()
+
+        sm = engine._social_mutations[0]
+        expected_scaled = 0.5 * STRENGTH_MULTIPLIER["strong"] * (8.0 / 10.0)
+        # Impact > Inertia dampening: effective = scaled_delta - inertia
+        expected_effective = expected_scaled - 0.1  # inertia=0.1
+        expected_new = 0.1 + expected_effective  # old fear=0.1
+        assert abs(sm.new_value - expected_new) < 0.01
+
+    def test_social_propagation_clamps_fear(self):
+        """Fear must be clamped to [0, 1]."""
+        ws = self._make_social_world()
+        # Give a huge delta to push fear beyond 1.0
+        ws.causal_topology[0] = CausalEdge(
+            source_id="EVT_BETRAYAL", target_id="ENT_ALICE",
+            causality_type="mutation_social",
+            mechanism="betrayal", evidence_strength="strong",
+            causal_force=10.0, fabula_time=1,
+            trait_target="fear", trait_delta=2.0,
+            rel_counterpart_id="ENT_BOB",
+        )
+        sandbox = _build_sandbox(ws, ["ENT_ALICE", "ENT_BOB"])
+        engine = CausalPhysicsEngine(sandbox, ws)
+        engine.propagate_social()
+
+        sm = engine._social_mutations[0]
+        assert sm.new_value <= 1.0
+
+    def test_social_propagation_clamps_affinity(self):
+        """Affinity must be clamped to [-1, 1]."""
+        ws = self._make_social_world()
+        ws.causal_topology[0] = CausalEdge(
+            source_id="EVT_BETRAYAL", target_id="ENT_ALICE",
+            causality_type="mutation_social",
+            mechanism="betrayal", evidence_strength="strong",
+            causal_force=10.0, fabula_time=1,
+            trait_target="affinity", trait_delta=-3.0,
+            rel_counterpart_id="ENT_BOB",
+        )
+        sandbox = _build_sandbox(ws, ["ENT_ALICE", "ENT_BOB"])
+        engine = CausalPhysicsEngine(sandbox, ws)
+        engine.propagate_social()
+
+        sm = engine._social_mutations[0]
+        assert sm.new_value >= -1.0
+
+    def test_execute_includes_social_mutations(self):
+        """Full execute() must return social_mutations in the result."""
+        ws = self._make_social_world()
+        sandbox = _build_sandbox(ws, ["ENT_ALICE", "ENT_BOB"])
+        engine = CausalPhysicsEngine(sandbox, ws)
+        result = engine.execute(rung=2, interventions={
+            "EVT_BETRAYAL.event_type": "outcome",
+        })
+        assert isinstance(result.social_mutations, list)
+        # social_mutations should be populated
+        assert len(result.social_mutations) >= 1
+
+    def test_macbeth_mutation_social_edges_load(self):
+        """Macbeth fixture must contain mutation_social edges."""
+        social_edges = [ce for ce in macbeth_ws.causal_topology
+                        if ce.causality_type == "mutation_social"]
+        assert len(social_edges) == 3
+        # Verify the Duncan murder → Macbeth fears Banquo edge
+        fear_edge = next(ce for ce in social_edges
+                         if ce.source_id == "EVT_DUNCAN_MURDER")
+        assert fear_edge.target_id == "ENT_MACBETH"
+        assert fear_edge.rel_counterpart_id == "ENT_BANQUO"
+        assert fear_edge.trait_target == "fear"
+        assert fear_edge.trait_delta == 0.4

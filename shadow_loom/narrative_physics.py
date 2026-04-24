@@ -3,7 +3,7 @@ import logging
 
 import networkx as nx
 
-from shadow_loom.models import WorldStateV1
+from shadow_loom.models import WorldStateV1, reconstruct_entity_at
 from shadow_loom.query_models import UserRequest
 from shadow_loom.extract_graph import EgoGraphPayload, extract_ego_graph_from_memory, extract_full_world_state
 from shadow_loom.instantiator import AMWNInstantiator
@@ -83,6 +83,7 @@ def calculate_narrative_physics(
                 "physics_state": physics_result.sandbox_data,
                 "math_changes": request.interventions,
                 "mutations": [m.model_dump() for m in physics_result.mutations],
+                "social_mutations": [m.model_dump() for m in physics_result.social_mutations],
                 "blocked": [b.model_dump() for b in physics_result.blocked],
                 "intervened_nodes": physics_result.intervened_nodes,
             }
@@ -132,6 +133,7 @@ def calculate_narrative_physics(
                 "math_changes": request.historical_interventions,
                 "evidence_conditions": request.evidence_node_ids,
                 "mutations": [m.model_dump() for m in physics_result.mutations],
+                "social_mutations": [m.model_dump() for m in physics_result.social_mutations],
                 "blocked": [b.model_dump() for b in physics_result.blocked],
                 "hidden_deltas": physics_result.hidden_deltas,
             }
@@ -143,6 +145,9 @@ def calculate_narrative_physics(
 
             # --- PREDICTION STEP: Forward cascade through causal topology ---
             _apply_forward_cascade(shadow_graph, global_world_state)
+
+            # --- SOCIAL PREDICTION: Propagate mutation_social edges ---
+            _apply_social_cascade(shadow_graph, global_world_state)
 
             result = {
                 "status": "success",
@@ -472,22 +477,41 @@ def _apply_abduction(
         if eid in global_world_state.entities and sandbox.has_node(eid):
             factual_entity = global_world_state.entities[eid]
             node_data = sandbox.nodes[eid]
-            # Back-propagate traits toward current evidence values (50% blend)
-            for trait_name, tv in factual_entity.traits.items():
+
+            # Determine the temporal horizon of the sandbox for reconstruction
+            max_ft = max(
+                (d.get("fabula_time", 0) for _, d in sandbox.nodes(data=True) if d.get("fabula_time")),
+                default=None,
+            )
+
+            # Reconstruct entity state at the sandbox's temporal horizon
+            if max_ft is not None and factual_entity.state_timeline:
+                reconstructed = reconstruct_entity_at(factual_entity, max_ft)
+                target_traits = reconstructed["traits"]
+                target_beliefs = reconstructed["beliefs"]
+            else:
+                target_traits = {k: {"value": v.value, "inertia": v.inertia} for k, v in factual_entity.traits.items()}
+                target_beliefs = [b.model_dump() for b in factual_entity.beliefs]
+
+            # Back-propagate traits toward reconstructed evidence values (50% blend)
+            for trait_name, tv in target_traits.items():
+                tv_value = tv["value"] if isinstance(tv, dict) else tv.value
                 sandbox_traits = node_data.get("traits", {})
                 if trait_name in sandbox_traits and isinstance(sandbox_traits[trait_name], dict):
                     old_val = sandbox_traits[trait_name].get("value", 0.5)
-                    shift = (tv.value - old_val) * 0.5
+                    shift = (tv_value - old_val) * 0.5
                     sandbox_traits[trait_name]["value"] = max(0.0, min(1.0, old_val + shift))
             # Back-propagate beliefs
             if "beliefs" not in node_data:
                 node_data["beliefs"] = []
             existing_beliefs = node_data["beliefs"]
-            for belief in factual_entity.beliefs:
-                if not any(b.get("target_id") == belief.target_id and
-                          b.get("perceived_state") == belief.perceived_state
+            for belief in target_beliefs:
+                b_target_id = belief.get("target_id") if isinstance(belief, dict) else belief.target_id
+                b_state = belief.get("perceived_state") if isinstance(belief, dict) else belief.perceived_state
+                if not any(b.get("target_id") == b_target_id and
+                          b.get("perceived_state") == b_state
                           for b in existing_beliefs):
-                    existing_beliefs.append(belief.model_dump())
+                    existing_beliefs.append(belief if isinstance(belief, dict) else belief.model_dump())
             logger.info("[Abduction] Conditioned entity %s on present-day evidence.", eid)
 
         # Case 2: Evidence is an Event — propagate through causal edges
@@ -666,3 +690,100 @@ def _apply_forward_cascade(
             trait_data["value"] = new_val
 
     logger.info("[Forward Cascade] Propagation complete.")
+
+
+# ==========================================
+# HELPER 6: SOCIAL CASCADE (mutation_social propagation)
+# ==========================================
+def _apply_social_cascade(
+    sandbox: nx.MultiDiGraph,
+    global_world_state: WorldStateV1,
+) -> None:
+    """
+    Walk ``mutation_social`` causal edges from the global causal_topology
+    and apply relationship metric deltas to the sandbox's relationship edges.
+
+    Mirrors CausalPhysicsEngine.propagate_social() for the legacy
+    (use_causal_engine=False) counterfactual path.
+    """
+    strength_mult = {"weak": 0.25, "moderate": 0.5, "strong": 0.75}
+
+    for ce in global_world_state.causal_topology:
+        if ce.causality_type != "mutation_social":
+            continue
+
+        target_id = ce.target_id          # perspective entity
+        counterpart_id = ce.rel_counterpart_id  # other entity in dyad
+        metric = ce.trait_target
+        raw_delta = ce.trait_delta or 0.0
+
+        if not counterpart_id or not metric:
+            continue
+        if not sandbox.has_node(target_id) or not sandbox.has_node(counterpart_id):
+            continue
+
+        # Respect propagation_delay
+        if ce.propagation_delay > 0:
+            target_node_data = sandbox.nodes.get(ce.target_id)
+            target_ft = target_node_data.get("fabula_time", float("inf")) if target_node_data else float("inf")
+            if target_ft < ce.fabula_time + ce.propagation_delay:
+                continue
+
+        # Scale delta
+        evidence_w = strength_mult.get(ce.evidence_strength, 0.5)
+        force_scale = ce.causal_force / 10.0
+        scaled_delta = raw_delta * evidence_w * force_scale
+
+        # Find the relationship edge target_id → counterpart_id
+        rel_found = False
+        for ru, rv, rkey, rdata in sandbox.out_edges(target_id, data=True, keys=True):
+            if rv == counterpart_id and rdata.get("edge_type") == "relationship":
+                rel_found = True
+                current_val = rdata.get(metric, 0.0)
+                if not isinstance(current_val, (int, float)):
+                    current_val = 0.0
+                rel_inertia = rdata.get("inertia", 0.3)
+
+                # Impact > Inertia gating
+                if abs(scaled_delta) <= rel_inertia:
+                    logger.debug("[SocialCascade] Inertia blocked: %s→%s %s |delta|=%.3f <= inertia=%.3f",
+                                 target_id, counterpart_id, metric, abs(scaled_delta), rel_inertia)
+                    break
+
+                # Dampened shift
+                sign = 1 if scaled_delta > 0 else -1
+                effective_shift = scaled_delta - sign * rel_inertia
+                new_val = current_val + effective_shift
+
+                # Clamp
+                if metric == "fear":
+                    new_val = max(0.0, min(1.0, new_val))
+                else:
+                    new_val = max(-1.0, min(1.0, new_val))
+
+                sandbox[ru][rv][rkey][metric] = new_val
+                logger.info("[SocialCascade] %s→%s %s: %.3f→%.3f (trigger=%s)",
+                            target_id, counterpart_id, metric, current_val, new_val, ce.source_id)
+                break
+
+        # No existing relationship edge — create one with defaults
+        if not rel_found:
+            edge_attrs = {
+                "edge_type": "relationship",
+                "affinity": 0.0,
+                "fear": 0.0,
+                "power_dynamic": 0.0,
+                "inertia": 0.3,
+                "evidence_strength": "weak",
+                "last_updated_fabula": ce.fabula_time,
+                "world_id": "shadow",
+            }
+            if metric == "fear":
+                edge_attrs[metric] = max(0.0, min(1.0, scaled_delta))
+            else:
+                edge_attrs[metric] = max(-1.0, min(1.0, scaled_delta))
+            sandbox.add_edge(target_id, counterpart_id, **edge_attrs)
+            logger.info("[SocialCascade] Created relationship %s→%s with %s=%.3f (trigger=%s)",
+                        target_id, counterpart_id, metric, edge_attrs[metric], ce.source_id)
+
+    logger.info("[Social Cascade] Propagation complete.")

@@ -33,6 +33,35 @@ class Belief(BaseModel):
     inertia: float = Field(description="0.0 to 1.0 (How stubborn is this belief?)")
     established_at_fabula: int = Field(default=0, description="Fabula time when this belief was formed. Used for counterfactual time-slicing.")
 
+
+class EntityStateSnapshot(BaseModel):
+    """A point-in-time snapshot of an entity's mutable state.
+
+    Stored on ``Entity.state_timeline`` in fabula_time order.
+    Only *changed* fields need be populated — reconstruction merges
+    each snapshot atop the previous accumulated state.
+    """
+    fabula_time: int = Field(description="fabula_time this snapshot is valid from.")
+    triggered_by: Optional[str] = Field(default=None, description="EVT_ ID that caused this state change.")
+    traits: Dict[str, "TraitVector"] = Field(
+        default_factory=dict,
+        description="Trait values at this point. Only include traits that changed.",
+    )
+    beliefs_added: List["Belief"] = Field(
+        default_factory=list,
+        description="New beliefs formed at this point.",
+    )
+    beliefs_invalidated: List[str] = Field(
+        default_factory=list,
+        description="target_ids of beliefs shattered/superseded at this point.",
+    )
+    status: Optional[Literal["healthy", "injured", "ill", "dead", "unconscious"]] = Field(
+        default=None, description="New status if changed, else null.",
+    )
+    location_id: Optional[str] = Field(
+        default=None, description="New location if entity moved, else null.",
+    )
+
 # --- 2. THE NODES (The Nouns) ---
 class Location(AMWNNode):
     node_type: Literal["Location"] = "Location"
@@ -51,11 +80,16 @@ class NarrativeObject(AMWNNode):
 class Entity(AMWNNode):
     id: str = Field(description="Unique ID, e.g., ENT_MACBETH")
     name: str
-    location_id: str = Field(description="Where are they right now?")
+    location_id: str = Field(description="Initial location (pre-story or earliest known).")
     status: Literal["healthy", "injured", "ill", "dead", "unconscious"]
-    traits: Dict[str, TraitVector] = Field(description="Multidimensional psychology.")
-    beliefs: List[Belief] = Field(default_factory=list, description="Epistemic state for Dramatic Irony/Suspense.")
+    traits: Dict[str, TraitVector] = Field(description="Initial multidimensional psychology (pre-story baseline).")
+    beliefs: List[Belief] = Field(default_factory=list, description="Initial epistemic state.")
     constants: List[str] = Field(default_factory=list, description="Immutable boolean tags, e.g., ['blind', 'undead']")
+    state_timeline: List[EntityStateSnapshot] = Field(
+        default_factory=list,
+        description="Chronological snapshots of state changes through the story. "
+                    "Empty = entity unchanged or legacy data.",
+    )
 
 class EventNode(AMWNNode):
     id: str = Field(description="Unique ID, e.g., EVT_DUNCAN_MURDER")
@@ -114,13 +148,15 @@ class CausalEdge(AMWNEdge):
     causality_type: Literal[
         "chain_reaction",
         "mutation",
+        "mutation_social",
         "affordance_gate",
         "ambient_propagation",
     ] = Field(
         description=(
             "The modality of the causal link: "
             "chain_reaction = Event→Event, "
-            "mutation = Event→State, "
+            "mutation = Event→State (traits/status), "
+            "mutation_social = Event→Relationship (affinity/fear/power), "
             "affordance_gate = State→Event, "
             "ambient_propagation = State→State."
         ),
@@ -149,16 +185,35 @@ class CausalEdge(AMWNEdge):
 
     fabula_time: int = Field(description="The exact physics tick this cause took effect.")
 
+    trait_target: Optional[str] = Field(
+        default=None,
+        description="For mutation edges: the specific trait affected, e.g., 'guilt'. "
+                    "For mutation_social edges: the relationship metric, e.g., 'affinity', 'fear', 'power_dynamic'. "
+                    "Null for non-mutation types.",
+    )
+    trait_delta: Optional[float] = Field(
+        default=None,
+        description="For mutation edges: signed magnitude of trait change (-1.0 to 1.0). "
+                    "For mutation_social edges: signed magnitude of metric change. "
+                    "Null for non-mutation types.",
+    )
+    rel_counterpart_id: Optional[str] = Field(
+        default=None,
+        description="For mutation_social edges only: the other entity in the relationship dyad. "
+                    "source_id is the causal trigger (EVT_), target_id is the perspective entity (ENT_), "
+                    "rel_counterpart_id is the other entity (ENT_). Null for non-social types.",
+    )
+
     @model_validator(mode="after")
     def _check_causality_type_matches_ids(self) -> "CausalEdge":
         src_is_event = self.source_id.startswith("EVT_")
         tgt_is_event = self.target_id.startswith("EVT_")
         ct = self.causality_type
 
-        if src_is_event and ct not in ("chain_reaction", "mutation"):
+        if src_is_event and ct not in ("chain_reaction", "mutation", "mutation_social"):
             raise ValueError(
                 f"source_id '{self.source_id}' is an event — causality_type must be "
-                f"'chain_reaction' or 'mutation', got '{ct}'."
+                f"'chain_reaction', 'mutation', or 'mutation_social', got '{ct}'."
             )
         if not src_is_event and ct not in ("affordance_gate", "ambient_propagation"):
             raise ValueError(
@@ -170,10 +225,16 @@ class CausalEdge(AMWNEdge):
                 f"target_id '{self.target_id}' is an event — causality_type must be "
                 f"'chain_reaction' or 'affordance_gate', got '{ct}'."
             )
-        if not tgt_is_event and ct not in ("mutation", "ambient_propagation"):
+        if not tgt_is_event and ct not in ("mutation", "mutation_social", "ambient_propagation"):
             raise ValueError(
                 f"target_id '{self.target_id}' is a state node — causality_type must be "
-                f"'mutation' or 'ambient_propagation', got '{ct}'."
+                f"'mutation', 'mutation_social', or 'ambient_propagation', got '{ct}'."
+            )
+        # mutation_social requires rel_counterpart_id
+        if ct == "mutation_social" and not self.rel_counterpart_id:
+            raise ValueError(
+                "mutation_social edges require 'rel_counterpart_id' to identify the "
+                "other entity in the relationship dyad."
             )
         return self
 
@@ -231,7 +292,53 @@ class SpatialEdge(AMWNEdge):
     )
     
 
-# --- 4. THE MASTER STATE (The Database Payload for Narrative structure) ---
+# --- 4. TEMPORAL RECONSTRUCTION ---
+
+def reconstruct_entity_at(entity: "Entity", fabula_time: int) -> dict:
+    """Reconstruct an entity's mutable state at a given fabula_time.
+
+    Starts from the Entity's initial (pre-story) fields and replays
+    EntityStateSnapshots up to *fabula_time* inclusive.
+
+    Returns a dict with keys: traits, beliefs, status, location_id.
+    Trait values are dicts ``{"value": float, "inertia": float}``.
+    """
+    # Seed from initial state
+    traits: Dict[str, dict] = {
+        k: {"value": v.value, "inertia": v.inertia}
+        for k, v in entity.traits.items()
+    }
+    beliefs: list = [b.model_dump() for b in entity.beliefs]
+    status: str = entity.status
+    location_id: str = entity.location_id
+
+    for snap in sorted(entity.state_timeline, key=lambda s: s.fabula_time):
+        if snap.fabula_time > fabula_time:
+            break
+        # Merge trait updates
+        for k, tv in snap.traits.items():
+            traits[k] = {"value": tv.value, "inertia": tv.inertia}
+        # Remove invalidated beliefs
+        if snap.beliefs_invalidated:
+            inv_set = set(snap.beliefs_invalidated)
+            beliefs = [b for b in beliefs if b.get("target_id") not in inv_set]
+        # Add new beliefs
+        for b in snap.beliefs_added:
+            beliefs.append(b.model_dump())
+        if snap.status is not None:
+            status = snap.status
+        if snap.location_id is not None:
+            location_id = snap.location_id
+
+    return {
+        "traits": traits,
+        "beliefs": beliefs,
+        "status": status,
+        "location_id": location_id,
+    }
+
+
+# --- 5. THE MASTER STATE (The Database Payload for Narrative structure) ---
 class WorldStateV1(BaseModel):
     locations: Dict[str, Location]
     objects: Dict[str, NarrativeObject]

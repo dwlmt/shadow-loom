@@ -23,7 +23,7 @@ import networkx as nx
 from pydantic import BaseModel, Field
 
 from shadow_loom.instantiator import AMWNInstantiator
-from shadow_loom.models import WorldStateV1
+from shadow_loom.models import WorldStateV1, reconstruct_entity_at
 
 logger = logging.getLogger(__name__)
 
@@ -75,10 +75,23 @@ class BlockedPropagation(BaseModel):
     reason: str  # "inertia" or "spatial_affordance"
 
 
+class SocialMutation(BaseModel):
+    """Record of a relationship metric change applied during social propagation."""
+    source_entity_id: str
+    target_entity_id: str
+    metric: str
+    old_value: float
+    new_value: float
+    impact: float
+    inertia: float
+    triggered_by: str  # source_id of the causal edge (usually EVT_)
+
+
 class CausalPhysicsResult(BaseModel):
     """Structured output of the causal physics simulation."""
     sandbox_data: dict = Field(description="nx.node_link_data(sandbox)")
     mutations: List[TraitMutation] = Field(default_factory=list)
+    social_mutations: List[SocialMutation] = Field(default_factory=list)
     blocked: List[BlockedPropagation] = Field(default_factory=list)
     intervened_nodes: List[str] = Field(default_factory=list)
     hidden_deltas: Dict[str, Dict[str, float]] = Field(
@@ -111,6 +124,7 @@ class CausalPhysicsEngine:
         self._intervened_nodes: set[str] = set()
         self._hidden_deltas: Dict[str, Dict[str, float]] = {}
         self._mutations: List[TraitMutation] = []
+        self._social_mutations: List[SocialMutation] = []
         self._blocked: List[BlockedPropagation] = []
 
     # ------------------------------------------------------------------
@@ -136,16 +150,33 @@ class CausalPhysicsEngine:
                 node_data = self.sandbox.nodes[eid]
                 deltas: Dict[str, float] = {}
 
+                # Determine the temporal horizon of the sandbox for reconstruction
+                max_ft = max(
+                    (d.get("fabula_time", 0) for _, d in self.sandbox.nodes(data=True) if d.get("fabula_time")),
+                    default=None,
+                )
+
+                # Reconstruct entity state at the sandbox's temporal horizon
+                if max_ft is not None and factual.state_timeline:
+                    reconstructed = reconstruct_entity_at(factual, max_ft)
+                    target_traits = reconstructed["traits"]  # dict of {"value": float, "inertia": float}
+                    target_beliefs = reconstructed["beliefs"]
+                else:
+                    # Legacy fallback: use initial state directly
+                    target_traits = {k: {"value": v.value, "inertia": v.inertia} for k, v in factual.traits.items()}
+                    target_beliefs = [b.model_dump() for b in factual.beliefs]
+
                 sandbox_traits = node_data.get("traits", {})
-                for trait_name, tv in factual.traits.items():
+                for trait_name, tv in target_traits.items():
+                    tv_value = tv["value"] if isinstance(tv, dict) else tv.value
                     if trait_name in sandbox_traits and isinstance(sandbox_traits[trait_name], dict):
                         old_val = sandbox_traits[trait_name].get("value", 0.5)
-                        delta = tv.value - old_val
+                        delta = tv_value - old_val
                         deltas[trait_name] = delta
                         blended = old_val + delta * 0.5
                         sandbox_traits[trait_name]["value"] = max(0.0, min(1.0, blended))
-                        logger.debug("[CausalPhysics·Abduction] %s.%s: old=%.3f factual=%.3f delta=%.3f blended=%.3f",
-                                     eid, trait_name, old_val, tv.value, delta, blended)
+                        logger.debug("[CausalPhysics·Abduction] %s.%s: old=%.3f target=%.3f delta=%.3f blended=%.3f",
+                                     eid, trait_name, old_val, tv_value, delta, blended)
 
                 if deltas:
                     self._hidden_deltas[eid] = deltas
@@ -154,13 +185,15 @@ class CausalPhysicsEngine:
                 if "beliefs" not in node_data:
                     node_data["beliefs"] = []
                 existing = node_data["beliefs"]
-                for belief in factual.beliefs:
+                for belief in target_beliefs:
+                    b_target_id = belief.get("target_id") if isinstance(belief, dict) else belief.target_id
+                    b_state = belief.get("perceived_state") if isinstance(belief, dict) else belief.perceived_state
                     if not any(
-                        b.get("target_id") == belief.target_id
-                        and b.get("perceived_state") == belief.perceived_state
+                        b.get("target_id") == b_target_id
+                        and b.get("perceived_state") == b_state
                         for b in existing
                     ):
-                        existing.append(belief.model_dump())
+                        existing.append(belief if isinstance(belief, dict) else belief.model_dump())
 
                 logger.info("[CausalPhysics·Abduction] Conditioned entity %s (deltas: %s).", eid, deltas)
 
@@ -374,6 +407,133 @@ class CausalPhysicsEngine:
         )
 
     # ------------------------------------------------------------------
+    # Social Propagation (mutation_social edges)
+    # ------------------------------------------------------------------
+    def propagate_social(self) -> None:
+        """
+        Walk ``mutation_social`` causal edges and apply relationship metric
+        deltas to the sandbox's relationship edges.
+
+        Each mutation_social CausalEdge specifies:
+          - source_id:  the causal trigger (EVT_)
+          - target_id:  the perspective entity (ENT_) whose relationship changes
+          - rel_counterpart_id:  the other entity in the dyad (ENT_)
+          - trait_target:  the metric name ('affinity', 'fear', 'power_dynamic')
+          - trait_delta:  signed magnitude of the change
+
+        Impact > Inertia gating is applied using the relationship edge's inertia.
+        If no relationship edge exists yet, one is created with defaults.
+
+        Uses the ``evidence_strength × (causal_force / 10)`` weight formula
+        to scale the delta, matching the trait propagation convention.
+        """
+        for u, v, d in self.sandbox.edges(data=True):
+            if d.get("edge_type") != "causal":
+                continue
+            if d.get("causality_type") != "mutation_social":
+                continue
+
+            source_id = u  # EVT_ trigger
+            target_id = d.get("target_id", v)  # perspective entity
+            counterpart_id = d.get("rel_counterpart_id")
+            metric = d.get("trait_target")
+            raw_delta = d.get("trait_delta", 0.0)
+
+            if not counterpart_id or not metric:
+                logger.warning("[CausalPhysics·SocialProp] Incomplete mutation_social edge %s→%s: "
+                               "counterpart=%s, metric=%s. Skipping.", u, v, counterpart_id, metric)
+                continue
+
+            if not self.sandbox.has_node(target_id) or not self.sandbox.has_node(counterpart_id):
+                logger.debug("[CausalPhysics·SocialProp] Endpoint missing: target=%s, counterpart=%s",
+                             target_id, counterpart_id)
+                continue
+
+            # Scale delta by evidence_strength × causal_force
+            evidence_w = STRENGTH_MULTIPLIER.get(d.get("evidence_strength", "moderate"), 0.5)
+            force_scale = d.get("causal_force", 5.0) / 10.0
+            scaled_delta = raw_delta * evidence_w * force_scale
+
+            # Find the relationship edge target_id → counterpart_id
+            rel_found = False
+            for ru, rv, rkey, rdata in self.sandbox.out_edges(target_id, data=True, keys=True):
+                if rv == counterpart_id and rdata.get("edge_type") == "relationship":
+                    rel_found = True
+                    current_val = rdata.get(metric, 0.0)
+                    if not isinstance(current_val, (int, float)):
+                        current_val = 0.0
+                    rel_inertia = rdata.get("inertia", 0.3)
+
+                    # Impact > Inertia gating
+                    if abs(scaled_delta) <= rel_inertia:
+                        logger.debug("[CausalPhysics·SocialProp] Inertia blocked: %s→%s %s |delta|=%.3f <= inertia=%.3f",
+                                     target_id, counterpart_id, metric, abs(scaled_delta), rel_inertia)
+                        self._blocked.append(BlockedPropagation(
+                            node_id=target_id, trait=f"rel.{counterpart_id}.{metric}",
+                            impact=scaled_delta, inertia=rel_inertia, reason="inertia",
+                        ))
+                        break
+
+                    # Dampened shift
+                    sign = 1 if scaled_delta > 0 else -1
+                    effective_shift = scaled_delta - sign * rel_inertia
+                    new_val = current_val + effective_shift
+
+                    # Clamp
+                    if metric == "fear":
+                        new_val = max(0.0, min(1.0, new_val))
+                    else:
+                        new_val = max(-1.0, min(1.0, new_val))
+
+                    self.sandbox[ru][rv][rkey][metric] = new_val
+                    self._social_mutations.append(SocialMutation(
+                        source_entity_id=target_id,
+                        target_entity_id=counterpart_id,
+                        metric=metric,
+                        old_value=current_val,
+                        new_value=new_val,
+                        impact=scaled_delta,
+                        inertia=rel_inertia,
+                        triggered_by=source_id,
+                    ))
+                    logger.info("[CausalPhysics·SocialProp] %s→%s %s: %.3f→%.3f (trigger=%s, delta=%.3f, inertia=%.3f)",
+                                target_id, counterpart_id, metric, current_val, new_val, source_id, scaled_delta, rel_inertia)
+                    break
+
+            # No existing relationship edge — create one with defaults
+            if not rel_found:
+                edge_attrs = {
+                    "edge_type": "relationship",
+                    "affinity": 0.0,
+                    "fear": 0.0,
+                    "power_dynamic": 0.0,
+                    "inertia": 0.3,
+                    "evidence_strength": "weak",
+                    "last_updated_fabula": d.get("fabula_time", 0),
+                    "world_id": "shadow",
+                }
+                # Apply the delta directly (no inertia gating on creation)
+                if metric == "fear":
+                    edge_attrs[metric] = max(0.0, min(1.0, scaled_delta))
+                else:
+                    edge_attrs[metric] = max(-1.0, min(1.0, scaled_delta))
+                self.sandbox.add_edge(target_id, counterpart_id, **edge_attrs)
+                self._social_mutations.append(SocialMutation(
+                    source_entity_id=target_id,
+                    target_entity_id=counterpart_id,
+                    metric=metric,
+                    old_value=0.0,
+                    new_value=edge_attrs[metric],
+                    impact=scaled_delta,
+                    inertia=0.3,
+                    triggered_by=source_id,
+                ))
+                logger.info("[CausalPhysics·SocialProp] Created relationship %s→%s with %s=%.3f (trigger=%s)",
+                            target_id, counterpart_id, metric, edge_attrs[metric], source_id)
+
+        logger.info("[CausalPhysics·SocialProp] %d social mutations applied.", len(self._social_mutations))
+
+    # ------------------------------------------------------------------
     # Spatial reachability helper
     # ------------------------------------------------------------------
     def _check_spatial_reachability(self, src_loc: str, tgt_loc: str) -> bool:
@@ -455,9 +615,13 @@ class CausalPhysicsEngine:
         # Step C — Forward propagation
         self.propagate()
 
+        # Step D — Social propagation (mutation_social edges)
+        self.propagate_social()
+
         return CausalPhysicsResult(
             sandbox_data=nx.node_link_data(self.sandbox),
             mutations=self._mutations,
+            social_mutations=self._social_mutations,
             blocked=self._blocked,
             intervened_nodes=sorted(self._intervened_nodes),
             hidden_deltas=self._hidden_deltas,

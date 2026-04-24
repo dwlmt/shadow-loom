@@ -72,12 +72,13 @@ class TestObservation:
             assert evt["fabula_time"] <= anchor
 
     def test_observation_returns_relationships(self):
-        """Relevant social edges from focus→co-located entities must be present."""
+        """Relevant social edges involving focus entities must be present."""
         query = ObservationQuery(focus_entity_ids=["ENT_MACBETH"])
         result = calculate_narrative_physics(query, macbeth_ws)
         ps = result["physics_state"]
+        assert len(ps["relevant_relationships"]) > 0
         for rel in ps["relevant_relationships"]:
-            assert rel["source_entity_id"] == "ENT_MACBETH"
+            assert rel["source_entity_id"] == "ENT_MACBETH" or rel["target_entity_id"] == "ENT_MACBETH"
 
     def test_observation_romeo(self):
         query = ObservationQuery(focus_entity_ids=["ENT_ROMEO"])

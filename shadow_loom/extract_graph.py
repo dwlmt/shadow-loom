@@ -2,7 +2,7 @@ from typing import List, Optional, Set
 import logging
 from pydantic import BaseModel, Field
 
-from shadow_loom.models import WorldStateV1
+from shadow_loom.models import WorldStateV1, reconstruct_entity_at
 
 logger = logging.getLogger(__name__)
 
@@ -46,12 +46,19 @@ def extract_ego_graph_from_memory(
         if ent:
             ent_data = ent.model_dump()
             if temporal_anchor is not None:
-                ent_data["beliefs"] = [
-                    b for b in ent_data.get("beliefs", [])
-                    if b.get("established_at_fabula", 0) <= temporal_anchor
-                ]
+                if ent.state_timeline:
+                    reconstructed = reconstruct_entity_at(ent, temporal_anchor)
+                    ent_data["traits"] = reconstructed["traits"]
+                    ent_data["beliefs"] = reconstructed["beliefs"]
+                    ent_data["status"] = reconstructed["status"]
+                    ent_data["location_id"] = reconstructed["location_id"]
+                else:
+                    ent_data["beliefs"] = [
+                        b for b in ent_data.get("beliefs", [])
+                        if b.get("established_at_fabula", 0) <= temporal_anchor
+                    ]
             focus_entities.append(ent_data)
-            location_ids.add(ent.location_id)
+            location_ids.add(ent_data["location_id"])
         else:
             logger.warning("Focus Entity '%s' not found.", f_id)
 
@@ -84,14 +91,28 @@ def extract_ego_graph_from_memory(
     focus_id_set = set(focus_entity_ids)
 
     for ent_id, entity in world_state.entities.items():
-        # If they are in one of the active rooms AND not already a focus entity
-        if entity.location_id in location_ids and ent_id not in focus_id_set:
+        if ent_id in focus_id_set:
+            continue
+        # Determine the entity's effective location at the anchor time
+        if temporal_anchor is not None and entity.state_timeline:
+            effective_loc = reconstruct_entity_at(entity, temporal_anchor)["location_id"]
+        else:
+            effective_loc = entity.location_id
+        # If they are in one of the active rooms
+        if effective_loc in location_ids:
             ent_data = entity.model_dump()
             if temporal_anchor is not None:
-                ent_data["beliefs"] = [
-                    b for b in ent_data.get("beliefs", [])
-                    if b.get("established_at_fabula", 0) <= temporal_anchor
-                ]
+                if entity.state_timeline:
+                    reconstructed = reconstruct_entity_at(entity, temporal_anchor)
+                    ent_data["traits"] = reconstructed["traits"]
+                    ent_data["beliefs"] = reconstructed["beliefs"]
+                    ent_data["status"] = reconstructed["status"]
+                    ent_data["location_id"] = reconstructed["location_id"]
+                else:
+                    ent_data["beliefs"] = [
+                        b for b in ent_data.get("beliefs", [])
+                        if b.get("established_at_fabula", 0) <= temporal_anchor
+                    ]
             present_entities.append(ent_data)
             present_entity_ids.add(ent_id)
 
@@ -105,11 +126,15 @@ def extract_ego_graph_from_memory(
 
     # 3. The Relational Filter
     relevant_relationships = []
+    scene_entity_ids = focus_id_set | present_entity_ids
     for edge in world_state.social_topology:
-        # Relationships starting from our Focus Entities toward anyone in the scene
-        if edge.source_entity_id in focus_id_set and (
-            edge.target_entity_id in present_entity_ids or edge.target_entity_id in focus_id_set
-        ):
+        # Include relationships where at least one endpoint is a focus entity
+        # and both endpoints are in the scene (focus + co-present)
+        src_in_focus = edge.source_entity_id in focus_id_set
+        tgt_in_focus = edge.target_entity_id in focus_id_set
+        src_in_scene = edge.source_entity_id in scene_entity_ids
+        tgt_in_scene = edge.target_entity_id in scene_entity_ids
+        if (src_in_focus or tgt_in_focus) and src_in_scene and tgt_in_scene:
             # Time-slice: exclude relationships updated after the anchor
             if temporal_anchor is not None and edge.last_updated_fabula > temporal_anchor:
                 logger.debug("[EgoGraph] Excluded relationship %s→%s: last_updated_fabula=%d > anchor=%d",
