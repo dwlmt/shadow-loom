@@ -1,6 +1,6 @@
 from shadow_loom.models import (
     WorldStateV1, Location, NarrativeObject, Entity, EventNode,
-    CausalEdge, SpatialEdge, RelationshipEdge, TraitVector,
+    CausalEdge, SpatialEdge, InformationEdge, RelationshipEdge, TraitVector,
     Affordance, Belief,
 )
 
@@ -104,7 +104,7 @@ world_state = WorldStateV1(
                 "leadership": TraitVector(value=0.7, inertia=0.7),
             },
             beliefs=[
-                Belief(target_id="ENT_FULLARD", perceived_state="We must face the enemy regardless — even with an empty gun", confidence=0.95, inertia=0.9),
+                Belief(target_id="ENT_FULLARD", perceived_state="We must face the enemy regardless — even with an empty gun", confidence=0.95, inertia=0.9, established_at_fabula=0),
             ],
         ),
         "ENT_WILSON": Entity(
@@ -118,7 +118,7 @@ world_state = WorldStateV1(
                 "competence": TraitVector(value=0.7, inertia=0.6),
             },
             beliefs=[
-                Belief(target_id="ENT_MAINWARING", perceived_state="Both guns were empty — but his bluff was magnificent", confidence=1.0, inertia=0.8),
+                Belief(target_id="ENT_MAINWARING", perceived_state="Both guns were empty — but his bluff was magnificent", confidence=1.0, inertia=0.8, established_at_fabula=0),
             ],
         ),
         "ENT_JONES": Entity(
@@ -182,7 +182,7 @@ world_state = WorldStateV1(
                 "irritability": TraitVector(value=0.8, inertia=0.6),
             },
             beliefs=[
-                Belief(target_id="ENT_MAINWARING", perceived_state="Mainwaring is a bumbling bank clerk playing at soldiers", confidence=0.85, inertia=0.6),
+                Belief(target_id="ENT_MAINWARING", perceived_state="Mainwaring is a bumbling bank clerk playing at soldiers", confidence=0.85, inertia=0.6, established_at_fabula=0),
             ],
         ),
     },
@@ -207,24 +207,19 @@ world_state = WorldStateV1(
 
     # ── CAUSAL TOPOLOGY ────────────────────────────────────────────────────
     causal_topology=[
-        CausalEdge(source_id="EVT_EDEN_BROADCAST", target_id="EVT_MAINWARING_TAKES_CHARGE", mechanism="social"),
-        CausalEdge(source_id="ENT_MAINWARING", target_id="EVT_MAINWARING_TAKES_CHARGE", mechanism="psychological"),
-        CausalEdge(source_id="EVT_MAINWARING_TAKES_CHARGE", target_id="EVT_PLATOON_FORMED", mechanism="social"),
-        CausalEdge(source_id="EVT_PLATOON_FORMED", target_id="EVT_IMPROVISED_WEAPONS", mechanism="physical"),
-        CausalEdge(source_id="EVT_IMPROVISED_WEAPONS", target_id="EVT_UNIFORMS_AND_WEAPONS", mechanism="social"),
-        CausalEdge(source_id="EVT_UNIFORMS_AND_WEAPONS", target_id="EVT_WAR_GAMES_DISASTER", mechanism="social"),
-        CausalEdge(source_id="OBJ_JONES_VAN", target_id="EVT_WAR_GAMES_DISASTER", mechanism="physical"),
-        CausalEdge(source_id="EVT_WAR_GAMES_DISASTER", target_id="EVT_BRIDGE_CHAOS", mechanism="social"),
-        CausalEdge(source_id="EVT_BRIDGE_CHAOS", target_id="EVT_FULLARD_THREATENS", mechanism="social"),
-        CausalEdge(source_id="ENT_FULLARD", target_id="EVT_FULLARD_THREATENS", mechanism="social"),
-        CausalEdge(source_id="EVT_FULLARD_THREATENS", target_id="EVT_LUFTWAFFE_CRASH", mechanism="social"),
-        CausalEdge(source_id="EVT_LUFTWAFFE_CRASH", target_id="EVT_HOSTAGE_SITUATION", mechanism="physical"),
-        CausalEdge(source_id="EVT_HOSTAGE_SITUATION", target_id="EVT_PLATOON_INFILTRATES", mechanism="social"),
-        CausalEdge(source_id="ENT_MAINWARING", target_id="EVT_PLATOON_INFILTRATES", mechanism="psychological"),
-        CausalEdge(source_id="EVT_PLATOON_INFILTRATES", target_id="EVT_GERMAN_STANDOFF", mechanism="physical"),
-        CausalEdge(source_id="OBJ_MAINWARING_REVOLVER", target_id="EVT_GERMAN_STANDOFF", mechanism="physical"),
-        CausalEdge(source_id="EVT_GERMAN_STANDOFF", target_id="EVT_GERMANS_SURRENDER", mechanism="social"),
-        CausalEdge(source_id="EVT_GERMANS_SURRENDER", target_id="EVT_HEROES_OF_TOWN", mechanism="social"),
+        CausalEdge(source_event_id="EVT_EDEN_BROADCAST", target_node_id="EVT_MAINWARING_TAKES_CHARGE", mechanism="social", fabula_time=1),
+        CausalEdge(source_event_id="EVT_MAINWARING_TAKES_CHARGE", target_node_id="EVT_PLATOON_FORMED", mechanism="social", fabula_time=2),
+        CausalEdge(source_event_id="EVT_PLATOON_FORMED", target_node_id="EVT_IMPROVISED_WEAPONS", mechanism="physical", fabula_time=3),
+        CausalEdge(source_event_id="EVT_IMPROVISED_WEAPONS", target_node_id="EVT_UNIFORMS_AND_WEAPONS", mechanism="social", fabula_time=4),
+        CausalEdge(source_event_id="EVT_UNIFORMS_AND_WEAPONS", target_node_id="EVT_WAR_GAMES_DISASTER", mechanism="social", fabula_time=5),
+        CausalEdge(source_event_id="EVT_WAR_GAMES_DISASTER", target_node_id="EVT_BRIDGE_CHAOS", mechanism="social", fabula_time=6),
+        CausalEdge(source_event_id="EVT_BRIDGE_CHAOS", target_node_id="EVT_FULLARD_THREATENS", mechanism="social", fabula_time=7),
+        CausalEdge(source_event_id="EVT_FULLARD_THREATENS", target_node_id="EVT_LUFTWAFFE_CRASH", mechanism="social", fabula_time=8),
+        CausalEdge(source_event_id="EVT_LUFTWAFFE_CRASH", target_node_id="EVT_HOSTAGE_SITUATION", mechanism="physical", fabula_time=9),
+        CausalEdge(source_event_id="EVT_HOSTAGE_SITUATION", target_node_id="EVT_PLATOON_INFILTRATES", mechanism="social", fabula_time=10),
+        CausalEdge(source_event_id="EVT_PLATOON_INFILTRATES", target_node_id="EVT_GERMAN_STANDOFF", mechanism="physical", fabula_time=11),
+        CausalEdge(source_event_id="EVT_GERMAN_STANDOFF", target_node_id="EVT_GERMANS_SURRENDER", mechanism="social", fabula_time=12),
+        CausalEdge(source_event_id="EVT_GERMANS_SURRENDER", target_node_id="EVT_HEROES_OF_TOWN", mechanism="social", fabula_time=13),
     ],
 
     # ── SOCIAL TOPOLOGY ────────────────────────────────────────────────────
@@ -235,13 +230,21 @@ world_state = WorldStateV1(
         SpatialEdge(source_id="LOC_CLIFFS", target_id="LOC_WALMINGTON"),
         SpatialEdge(source_id="LOC_TRAINING_GROUNDS", target_id="LOC_WALMINGTON"),
     ],
+    information_topology=[
+        InformationEdge(
+            source_id="ENT_MAINWARING",
+            target_ids=["ENT_WILSON", "ENT_JONES"],
+            medium="verbal_orders",
+            established_at_fabula=2,
+        ),
+    ],
     social_topology=[
-        RelationshipEdge(source_entity_id="ENT_MAINWARING", target_entity_id="ENT_WILSON", affinity=0.5, friction=0.5, power_dynamic=0.5, inertia=0.7),
-        RelationshipEdge(source_entity_id="ENT_WILSON", target_entity_id="ENT_MAINWARING", affinity=0.5, friction=0.4, power_dynamic=-0.4, inertia=0.6),
-        RelationshipEdge(source_entity_id="ENT_MAINWARING", target_entity_id="ENT_JONES", affinity=0.6, friction=0.5, power_dynamic=0.6, inertia=0.6),
-        RelationshipEdge(source_entity_id="ENT_JONES", target_entity_id="ENT_MAINWARING", affinity=0.8, friction=0.3, power_dynamic=-0.5, inertia=0.7),
-        RelationshipEdge(source_entity_id="ENT_MAINWARING", target_entity_id="ENT_PIKE", affinity=0.3, friction=0.6, power_dynamic=0.7, inertia=0.5),
-        RelationshipEdge(source_entity_id="ENT_MAINWARING", target_entity_id="ENT_FULLARD", affinity=-0.3, friction=0.8, power_dynamic=-0.6, inertia=0.5),
-        RelationshipEdge(source_entity_id="ENT_FULLARD", target_entity_id="ENT_MAINWARING", affinity=-0.4, friction=0.7, power_dynamic=0.7, inertia=0.5),
+        RelationshipEdge(source_entity_id="ENT_MAINWARING", target_entity_id="ENT_WILSON", affinity=0.5, fear=0.25, power_dynamic=0.5),
+        RelationshipEdge(source_entity_id="ENT_WILSON", target_entity_id="ENT_MAINWARING", affinity=0.5, fear=0.2, power_dynamic=-0.4),
+        RelationshipEdge(source_entity_id="ENT_MAINWARING", target_entity_id="ENT_JONES", affinity=0.6, fear=0.25, power_dynamic=0.6),
+        RelationshipEdge(source_entity_id="ENT_JONES", target_entity_id="ENT_MAINWARING", affinity=0.8, fear=0.15, power_dynamic=-0.5),
+        RelationshipEdge(source_entity_id="ENT_MAINWARING", target_entity_id="ENT_PIKE", affinity=0.3, fear=0.3, power_dynamic=0.7),
+        RelationshipEdge(source_entity_id="ENT_MAINWARING", target_entity_id="ENT_FULLARD", affinity=-0.3, fear=0.4, power_dynamic=-0.6),
+        RelationshipEdge(source_entity_id="ENT_FULLARD", target_entity_id="ENT_MAINWARING", affinity=-0.4, fear=0.35, power_dynamic=0.7),
     ],
 )

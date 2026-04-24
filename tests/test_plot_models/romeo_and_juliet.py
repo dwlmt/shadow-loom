@@ -1,6 +1,6 @@
 from shadow_loom.models import (
     WorldStateV1, Location, NarrativeObject, Entity, EventNode,
-    CausalEdge, SpatialEdge, RelationshipEdge, TraitVector,
+    CausalEdge, SpatialEdge, InformationEdge, RelationshipEdge, TraitVector,
     Affordance, Belief,
 )
 
@@ -108,7 +108,7 @@ world_state = WorldStateV1(
                 "melancholy": TraitVector(value=0.7, inertia=0.5),
             },
             beliefs=[
-                Belief(target_id="ENT_JULIET", perceived_state="Juliet is dead", confidence=1.0, inertia=0.9),
+                Belief(target_id="ENT_JULIET", perceived_state="Juliet is dead", confidence=1.0, inertia=0.9, established_at_fabula=0),
             ],
         ),
         "ENT_JULIET": Entity(
@@ -122,7 +122,7 @@ world_state = WorldStateV1(
                 "defiance": TraitVector(value=0.8, inertia=0.6),
             },
             beliefs=[
-                Belief(target_id="ENT_ROMEO", perceived_state="Romeo is my true husband — I will die before marrying Paris", confidence=1.0, inertia=0.95),
+                Belief(target_id="ENT_ROMEO", perceived_state="Romeo is my true husband — I will die before marrying Paris", confidence=1.0, inertia=0.95, established_at_fabula=0),
             ],
         ),
         "ENT_TYBALT": Entity(
@@ -135,7 +135,7 @@ world_state = WorldStateV1(
                 "family_honour": TraitVector(value=0.95, inertia=0.9),
             },
             beliefs=[
-                Belief(target_id="ENT_ROMEO", perceived_state="Romeo came to our feast to insult and mock us", confidence=0.9, inertia=0.8),
+                Belief(target_id="ENT_ROMEO", perceived_state="Romeo came to our feast to insult and mock us", confidence=0.9, inertia=0.8, established_at_fabula=0),
             ],
         ),
         "ENT_MERCUTIO": Entity(
@@ -160,7 +160,7 @@ world_state = WorldStateV1(
                 "risk_taking": TraitVector(value=0.6, inertia=0.4),
             },
             beliefs=[
-                Belief(target_id="ENT_ROMEO", perceived_state="This marriage can reconcile the feuding families", confidence=0.7, inertia=0.5),
+                Belief(target_id="ENT_ROMEO", perceived_state="This marriage can reconcile the feuding families", confidence=0.7, inertia=0.5, established_at_fabula=0),
             ],
         ),
         "ENT_CAPULET": Entity(
@@ -174,7 +174,7 @@ world_state = WorldStateV1(
                 "family_honour": TraitVector(value=0.9, inertia=0.9),
             },
             beliefs=[
-                Belief(target_id="ENT_JULIET", perceived_state="Juliet grieves for Tybalt — marriage to Paris will cure her sorrow", confidence=0.8, inertia=0.7),
+                Belief(target_id="ENT_JULIET", perceived_state="Juliet grieves for Tybalt — marriage to Paris will cure her sorrow", confidence=0.8, inertia=0.7, established_at_fabula=0),
             ],
         ),
         "ENT_PARIS": Entity(
@@ -187,7 +187,7 @@ world_state = WorldStateV1(
                 "devotion": TraitVector(value=0.6, inertia=0.5),
             },
             beliefs=[
-                Belief(target_id="ENT_ROMEO", perceived_state="Romeo is a vandal who has desecrated Juliet's tomb", confidence=0.9, inertia=0.7),
+                Belief(target_id="ENT_ROMEO", perceived_state="Romeo is a vandal who has desecrated Juliet's tomb", confidence=0.9, inertia=0.7, established_at_fabula=0),
             ],
         ),
         "ENT_PRINCE_ESCALUS": Entity(
@@ -228,36 +228,31 @@ world_state = WorldStateV1(
         EventNode(id="EVT_JULIET_TAKES_POTION", fabula_time=12, syuzhet_index=12, event_type="choice", actor_id="ENT_JULIET", description="Juliet takes the sleeping potion and is discovered apparently dead."),
         EventNode(id="EVT_MESSAGE_FAILS", fabula_time=13, syuzhet_index=13, event_type="outcome", actor_id=None, description="Friar John cannot deliver the message to Romeo due to a plague quarantine."),
         EventNode(id="EVT_ROMEO_LEARNS_DEATH", fabula_time=14, syuzhet_index=14, event_type="revelation", actor_id=None, description="Romeo's servant Balthasar tells him Juliet is dead. Romeo buys poison from an apothecary."),
-        EventNode(id="EVT_PARIS_KILLED", fabula_time=15, syuzhet_index=15, event_type="outcome", actor_id="ENT_ROMEO", description="Romeo encounters Paris at the crypt; they fight and Romeo kills Paris."),
+        EventNode(id="EVT_PARIS_KILLED", fabula_time=15, syuzhet_index=15, event_type="outcome", actor_id="ENT_ROMEO", target_id="ENT_PARIS", description="Romeo encounters Paris at the crypt; they fight and Romeo kills Paris."),
         EventNode(id="EVT_ROMEO_DIES", fabula_time=16, syuzhet_index=16, event_type="choice", actor_id="ENT_ROMEO", description="Believing Juliet dead, Romeo drinks poison and dies beside her."),
-        EventNode(id="EVT_JULIET_DIES", fabula_time=17, syuzhet_index=17, event_type="choice", actor_id="ENT_JULIET", description="Juliet awakens, finds Romeo dead, and stabs herself with his dagger."),
+        EventNode(id="EVT_JULIET_DIES", fabula_time=17, syuzhet_index=17, event_type="choice", actor_id="ENT_JULIET", target_id="ENT_JULIET", description="Juliet awakens, finds Romeo dead, and stabs herself with his dagger."),
         EventNode(id="EVT_FAMILIES_RECONCILE", fabula_time=18, syuzhet_index=18, event_type="outcome", actor_id=None, description="The Montagues and Capulets discover the dead lovers and agree to end their feud."),
     ],
 
     # ── CAUSAL TOPOLOGY ────────────────────────────────────────────────────
     causal_topology=[
-        CausalEdge(source_id="EVT_STREET_BRAWL", target_id="EVT_CAPULET_BALL", mechanism="social"),
-        CausalEdge(source_id="EVT_CAPULET_BALL", target_id="EVT_BALCONY_SCENE", mechanism="psychological"),
-        CausalEdge(source_id="EVT_BALCONY_SCENE", target_id="EVT_SECRET_MARRIAGE", mechanism="social"),
-        CausalEdge(source_id="ENT_FRIAR_LAURENCE", target_id="EVT_SECRET_MARRIAGE", mechanism="social"),
-        CausalEdge(source_id="EVT_SECRET_MARRIAGE", target_id="EVT_TYBALT_CHALLENGES_ROMEO", mechanism="social"),
-        CausalEdge(source_id="EVT_TYBALT_CHALLENGES_ROMEO", target_id="EVT_MERCUTIO_KILLED", mechanism="physical"),
-        CausalEdge(source_id="EVT_MERCUTIO_KILLED", target_id="EVT_TYBALT_KILLED", mechanism="psychological"),
-        CausalEdge(source_id="EVT_TYBALT_KILLED", target_id="EVT_ROMEO_EXILED", mechanism="social"),
-        CausalEdge(source_id="EVT_ROMEO_EXILED", target_id="EVT_CONSUMMATION", mechanism="psychological"),
-        CausalEdge(source_id="EVT_CONSUMMATION", target_id="EVT_PARIS_BETROTHAL", mechanism="social"),
-        CausalEdge(source_id="EVT_PARIS_BETROTHAL", target_id="EVT_SLEEPING_POTION", mechanism="psychological"),
-        CausalEdge(source_id="ENT_FRIAR_LAURENCE", target_id="EVT_SLEEPING_POTION", mechanism="physical"),
-        CausalEdge(source_id="OBJ_SLEEPING_POTION", target_id="EVT_JULIET_TAKES_POTION", mechanism="physical"),
-        CausalEdge(source_id="EVT_JULIET_TAKES_POTION", target_id="EVT_MESSAGE_FAILS", mechanism="epistemic"),
-        CausalEdge(source_id="EVT_MESSAGE_FAILS", target_id="EVT_ROMEO_LEARNS_DEATH", mechanism="epistemic"),
-        CausalEdge(source_id="EVT_ROMEO_LEARNS_DEATH", target_id="EVT_PARIS_KILLED", mechanism="physical"),
-        CausalEdge(source_id="OBJ_POISON", target_id="EVT_ROMEO_DIES", mechanism="physical"),
-        CausalEdge(source_id="EVT_ROMEO_LEARNS_DEATH", target_id="EVT_ROMEO_DIES", mechanism="psychological"),
-        CausalEdge(source_id="EVT_ROMEO_DIES", target_id="EVT_JULIET_DIES", mechanism="psychological"),
-        CausalEdge(source_id="OBJ_DAGGER", target_id="EVT_JULIET_DIES", mechanism="physical"),
-        CausalEdge(source_id="EVT_JULIET_DIES", target_id="EVT_FAMILIES_RECONCILE", mechanism="social"),
-        CausalEdge(source_id="EVT_ROMEO_DIES", target_id="EVT_FAMILIES_RECONCILE", mechanism="social"),
+        CausalEdge(source_event_id="EVT_STREET_BRAWL", target_node_id="EVT_CAPULET_BALL", mechanism="social", fabula_time=1),
+        CausalEdge(source_event_id="EVT_CAPULET_BALL", target_node_id="EVT_BALCONY_SCENE", mechanism="psychological", fabula_time=2),
+        CausalEdge(source_event_id="EVT_BALCONY_SCENE", target_node_id="EVT_SECRET_MARRIAGE", mechanism="social", fabula_time=3),
+        CausalEdge(source_event_id="EVT_SECRET_MARRIAGE", target_node_id="EVT_TYBALT_CHALLENGES_ROMEO", mechanism="social", fabula_time=4),
+        CausalEdge(source_event_id="EVT_TYBALT_CHALLENGES_ROMEO", target_node_id="EVT_MERCUTIO_KILLED", mechanism="physical", fabula_time=5),
+        CausalEdge(source_event_id="EVT_MERCUTIO_KILLED", target_node_id="EVT_TYBALT_KILLED", mechanism="psychological", fabula_time=6),
+        CausalEdge(source_event_id="EVT_TYBALT_KILLED", target_node_id="EVT_ROMEO_EXILED", mechanism="social", fabula_time=7),
+        CausalEdge(source_event_id="EVT_ROMEO_EXILED", target_node_id="EVT_CONSUMMATION", mechanism="psychological", fabula_time=8),
+        CausalEdge(source_event_id="EVT_CONSUMMATION", target_node_id="EVT_PARIS_BETROTHAL", mechanism="social", fabula_time=9),
+        CausalEdge(source_event_id="EVT_PARIS_BETROTHAL", target_node_id="EVT_SLEEPING_POTION", mechanism="psychological", fabula_time=10),
+        CausalEdge(source_event_id="EVT_JULIET_TAKES_POTION", target_node_id="EVT_MESSAGE_FAILS", mechanism="epistemic", fabula_time=12),
+        CausalEdge(source_event_id="EVT_MESSAGE_FAILS", target_node_id="EVT_ROMEO_LEARNS_DEATH", mechanism="epistemic", fabula_time=13),
+        CausalEdge(source_event_id="EVT_ROMEO_LEARNS_DEATH", target_node_id="EVT_PARIS_KILLED", mechanism="physical", fabula_time=14),
+        CausalEdge(source_event_id="EVT_ROMEO_LEARNS_DEATH", target_node_id="EVT_ROMEO_DIES", mechanism="psychological", fabula_time=14),
+        CausalEdge(source_event_id="EVT_ROMEO_DIES", target_node_id="EVT_JULIET_DIES", mechanism="psychological", fabula_time=16),
+        CausalEdge(source_event_id="EVT_JULIET_DIES", target_node_id="EVT_FAMILIES_RECONCILE", mechanism="social", fabula_time=17),
+        CausalEdge(source_event_id="EVT_ROMEO_DIES", target_node_id="EVT_FAMILIES_RECONCILE", mechanism="social", fabula_time=16),
     ],
 
     # ── SOCIAL TOPOLOGY ────────────────────────────────────────────────────
@@ -270,16 +265,25 @@ world_state = WorldStateV1(
         SpatialEdge(source_id="LOC_MANTUA", target_id="LOC_VERONA_STREETS"),
         SpatialEdge(source_id="LOC_MONTAGUE_HOUSE", target_id="LOC_VERONA_STREETS"),
     ],
+    information_topology=[
+        InformationEdge(
+            source_id="ENT_FRIAR_LAURENCE",
+            target_ids=["ENT_ROMEO"],
+            medium="letter",
+            established_at_fabula=13,
+            terminated_at_fabula=13,
+        ),
+    ],
     social_topology=[
-        RelationshipEdge(source_entity_id="ENT_ROMEO", target_entity_id="ENT_JULIET", affinity=1.0, friction=0.7, power_dynamic=0.0, inertia=0.95),
-        RelationshipEdge(source_entity_id="ENT_JULIET", target_entity_id="ENT_ROMEO", affinity=1.0, friction=0.7, power_dynamic=0.0, inertia=0.95),
-        RelationshipEdge(source_entity_id="ENT_TYBALT", target_entity_id="ENT_ROMEO", affinity=-0.9, friction=0.95, power_dynamic=0.3, inertia=0.8),
-        RelationshipEdge(source_entity_id="ENT_ROMEO", target_entity_id="ENT_MERCUTIO", affinity=0.85, friction=0.3, power_dynamic=0.0, inertia=0.7),
-        RelationshipEdge(source_entity_id="ENT_CAPULET", target_entity_id="ENT_JULIET", affinity=0.5, friction=0.8, power_dynamic=0.9, inertia=0.7),
-        RelationshipEdge(source_entity_id="ENT_CAPULET", target_entity_id="ENT_PARIS", affinity=0.6, friction=0.2, power_dynamic=0.3, inertia=0.5),
-        RelationshipEdge(source_entity_id="ENT_FRIAR_LAURENCE", target_entity_id="ENT_ROMEO", affinity=0.7, friction=0.2, power_dynamic=0.3, inertia=0.6),
-        RelationshipEdge(source_entity_id="ENT_FRIAR_LAURENCE", target_entity_id="ENT_JULIET", affinity=0.6, friction=0.2, power_dynamic=0.3, inertia=0.5),
-        RelationshipEdge(source_entity_id="ENT_PRINCE_ESCALUS", target_entity_id="ENT_ROMEO", affinity=-0.3, friction=0.7, power_dynamic=0.9, inertia=0.6),
-        RelationshipEdge(source_entity_id="ENT_BENVOLIO", target_entity_id="ENT_ROMEO", affinity=0.8, friction=0.1, power_dynamic=0.0, inertia=0.7),
+        RelationshipEdge(source_entity_id="ENT_ROMEO", target_entity_id="ENT_JULIET", affinity=1.0, fear=0.35, power_dynamic=0.0),
+        RelationshipEdge(source_entity_id="ENT_JULIET", target_entity_id="ENT_ROMEO", affinity=1.0, fear=0.35, power_dynamic=0.0),
+        RelationshipEdge(source_entity_id="ENT_TYBALT", target_entity_id="ENT_ROMEO", affinity=-0.9, fear=0.47, power_dynamic=0.3),
+        RelationshipEdge(source_entity_id="ENT_ROMEO", target_entity_id="ENT_MERCUTIO", affinity=0.85, fear=0.15, power_dynamic=0.0),
+        RelationshipEdge(source_entity_id="ENT_CAPULET", target_entity_id="ENT_JULIET", affinity=0.5, fear=0.4, power_dynamic=0.9),
+        RelationshipEdge(source_entity_id="ENT_CAPULET", target_entity_id="ENT_PARIS", affinity=0.6, fear=0.1, power_dynamic=0.3),
+        RelationshipEdge(source_entity_id="ENT_FRIAR_LAURENCE", target_entity_id="ENT_ROMEO", affinity=0.7, fear=0.1, power_dynamic=0.3),
+        RelationshipEdge(source_entity_id="ENT_FRIAR_LAURENCE", target_entity_id="ENT_JULIET", affinity=0.6, fear=0.1, power_dynamic=0.3),
+        RelationshipEdge(source_entity_id="ENT_PRINCE_ESCALUS", target_entity_id="ENT_ROMEO", affinity=-0.3, fear=0.35, power_dynamic=0.9),
+        RelationshipEdge(source_entity_id="ENT_BENVOLIO", target_entity_id="ENT_ROMEO", affinity=0.8, fear=0.05, power_dynamic=0.0),
     ],
 )

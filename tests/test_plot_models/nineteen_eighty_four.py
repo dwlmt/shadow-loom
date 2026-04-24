@@ -1,6 +1,6 @@
 from shadow_loom.models import (
     WorldStateV1, Location, NarrativeObject, Entity, EventNode,
-    CausalEdge, SpatialEdge, RelationshipEdge, TraitVector,
+    CausalEdge, SpatialEdge, InformationEdge, RelationshipEdge, TraitVector,
     Affordance, Belief,
 )
 
@@ -133,11 +133,11 @@ world_state = WorldStateV1(
                 "obedience": TraitVector(value=0.95, inertia=0.9),
             },
             beliefs=[
-                Belief(target_id="ENT_BIG_BROTHER", perceived_state="I love Big Brother", confidence=1.0, inertia=1.0),
-                Belief(target_id="ENT_OBRIEN", perceived_state="O'Brien is secretly a member of the Brotherhood resistance", confidence=0.7, inertia=0.6),
-                Belief(target_id="ENT_CHARRINGTON", perceived_state="Charrington is a harmless old prole shopkeeper who sympathises with the past", confidence=0.85, inertia=0.7),
-                Belief(target_id="LOC_CHARRINGTON_SHOP", perceived_state="The rented room is a safe refuge free from telescreens", confidence=0.85, inertia=0.7),
-                Belief(target_id="OBJ_GOLDSTEIN_BOOK", perceived_state="This book reveals the genuine truth about how the Party maintains power", confidence=0.7, inertia=0.5),
+                Belief(target_id="ENT_BIG_BROTHER", perceived_state="I love Big Brother", confidence=1.0, inertia=1.0, established_at_fabula=0),
+                Belief(target_id="ENT_OBRIEN", perceived_state="O'Brien is secretly a member of the Brotherhood resistance", confidence=0.7, inertia=0.6, established_at_fabula=0),
+                Belief(target_id="ENT_CHARRINGTON", perceived_state="Charrington is a harmless old prole shopkeeper who sympathises with the past", confidence=0.85, inertia=0.7, established_at_fabula=0),
+                Belief(target_id="LOC_CHARRINGTON_SHOP", perceived_state="The rented room is a safe refuge free from telescreens", confidence=0.85, inertia=0.7, established_at_fabula=0),
+                Belief(target_id="OBJ_GOLDSTEIN_BOOK", perceived_state="This book reveals the genuine truth about how the Party maintains power", confidence=0.7, inertia=0.5, established_at_fabula=0),
             ],
         ),
         "ENT_JULIA": Entity(
@@ -152,8 +152,8 @@ world_state = WorldStateV1(
                 "political_apathy": TraitVector(value=0.7, inertia=0.6),
             },
             beliefs=[
-                Belief(target_id="ENT_WINSTON", perceived_state="We have both betrayed each other", confidence=1.0, inertia=0.9),
-                Belief(target_id="ENT_BIG_BROTHER", perceived_state="The Party is rotten but can only be resisted personally, not overthrown", confidence=0.8, inertia=0.7),
+                Belief(target_id="ENT_WINSTON", perceived_state="We have both betrayed each other", confidence=1.0, inertia=0.9, established_at_fabula=0),
+                Belief(target_id="ENT_BIG_BROTHER", perceived_state="The Party is rotten but can only be resisted personally, not overthrown", confidence=0.8, inertia=0.7, established_at_fabula=0),
             ],
         ),
         "ENT_OBRIEN": Entity(
@@ -168,7 +168,7 @@ world_state = WorldStateV1(
                 "devotion_to_party": TraitVector(value=1.0, inertia=1.0),
             },
             beliefs=[
-                Belief(target_id="ENT_BIG_BROTHER", perceived_state="Power is the purpose — power for its own sake", confidence=1.0, inertia=1.0),
+                Belief(target_id="ENT_BIG_BROTHER", perceived_state="Power is the purpose — power for its own sake", confidence=1.0, inertia=1.0, established_at_fabula=0),
             ],
         ),
         "ENT_CHARRINGTON": Entity(
@@ -205,8 +205,8 @@ world_state = WorldStateV1(
         EventNode(id="EVT_GOLDSTEIN_BOOK_READ", fabula_time=6, syuzhet_index=6, event_type="choice", actor_id="ENT_WINSTON", description="Winston and Julia read parts of Goldstein's book, learning how the Party maintains power through perpetual war."),
         EventNode(id="EVT_CAPTURED", fabula_time=7, syuzhet_index=7, event_type="outcome", actor_id="ENT_CHARRINGTON", description="Winston and Julia are captured when Mr Charrington is revealed as a Thought Police agent."),
         EventNode(id="EVT_OBRIEN_REVEALS_TRUTH", fabula_time=8, syuzhet_index=8, event_type="revelation", actor_id="ENT_OBRIEN", description="O'Brien reveals himself as Thought Police, that the Brotherhood may not exist, and that power is the Party's sole purpose."),
-        EventNode(id="EVT_TORTURE_REEDUCATION", fabula_time=9, syuzhet_index=9, event_type="outcome", actor_id="ENT_OBRIEN", description="Over months, Winston is starved, tortured, and re-educated to align his beliefs with the Party."),
-        EventNode(id="EVT_ROOM_101", fabula_time=10, syuzhet_index=10, event_type="outcome", actor_id="ENT_OBRIEN", description="In Room 101, Winston is confronted with rat torture and begs for it to be done to Julia instead — his final betrayal."),
+        EventNode(id="EVT_TORTURE_REEDUCATION", fabula_time=9, syuzhet_index=9, event_type="outcome", actor_id="ENT_OBRIEN", target_id="ENT_WINSTON", description="Over months, Winston is starved, tortured, and re-educated to align his beliefs with the Party."),
+        EventNode(id="EVT_ROOM_101", fabula_time=10, syuzhet_index=10, event_type="outcome", actor_id="ENT_OBRIEN", target_id="ENT_WINSTON", description="In Room 101, Winston is confronted with rat torture and begs for it to be done to Julia instead — his final betrayal."),
         EventNode(id="EVT_WINSTON_RELEASED", fabula_time=11, syuzhet_index=11, event_type="outcome", actor_id=None, description="Winston is released into public life, a broken man."),
         EventNode(id="EVT_ENCOUNTER_JULIA", fabula_time=12, syuzhet_index=12, event_type="outcome", actor_id=None, description="Winston encounters Julia; both admit they betrayed each other and are no longer in love."),
         EventNode(id="EVT_LOVES_BIG_BROTHER", fabula_time=13, syuzhet_index=13, event_type="outcome", actor_id="ENT_WINSTON", description="Winston accepts that he loves Big Brother. The Party's re-education is complete."),
@@ -214,21 +214,15 @@ world_state = WorldStateV1(
 
     # ── CAUSAL TOPOLOGY ────────────────────────────────────────────────────
     causal_topology=[
-        CausalEdge(source_id="ENT_WINSTON", target_id="EVT_WINSTON_BUYS_DIARY", mechanism="psychological"),
-        CausalEdge(source_id="ENT_JULIA", target_id="EVT_JULIA_LOVE_NOTE", mechanism="psychological"),
-        CausalEdge(source_id="EVT_JULIA_LOVE_NOTE", target_id="EVT_AFFAIR_BEGINS", mechanism="social"),
-        CausalEdge(source_id="LOC_CHARRINGTON_SHOP", target_id="EVT_AFFAIR_BEGINS", mechanism="physical"),
-        CausalEdge(source_id="ENT_OBRIEN", target_id="EVT_OBRIEN_INVITATION", mechanism="epistemic"),
-        CausalEdge(source_id="EVT_OBRIEN_INVITATION", target_id="EVT_GOLDSTEIN_BOOK_READ", mechanism="epistemic"),
-        CausalEdge(source_id="ENT_CHARRINGTON", target_id="EVT_CAPTURED", mechanism="epistemic"),
-        CausalEdge(source_id="EVT_AFFAIR_BEGINS", target_id="EVT_CAPTURED", mechanism="physical"),
-        CausalEdge(source_id="EVT_CAPTURED", target_id="EVT_OBRIEN_REVEALS_TRUTH", mechanism="epistemic"),
-        CausalEdge(source_id="EVT_OBRIEN_REVEALS_TRUTH", target_id="EVT_TORTURE_REEDUCATION", mechanism="physical"),
-        CausalEdge(source_id="EVT_TORTURE_REEDUCATION", target_id="EVT_ROOM_101", mechanism="psychological"),
-        CausalEdge(source_id="OBJ_RAT_CAGE", target_id="EVT_ROOM_101", mechanism="physical"),
-        CausalEdge(source_id="EVT_ROOM_101", target_id="EVT_WINSTON_RELEASED", mechanism="psychological"),
-        CausalEdge(source_id="EVT_ROOM_101", target_id="EVT_ENCOUNTER_JULIA", mechanism="psychological"),
-        CausalEdge(source_id="EVT_ENCOUNTER_JULIA", target_id="EVT_LOVES_BIG_BROTHER", mechanism="psychological"),
+        CausalEdge(source_event_id="EVT_JULIA_LOVE_NOTE", target_node_id="EVT_AFFAIR_BEGINS", mechanism="social", fabula_time=2),
+        CausalEdge(source_event_id="EVT_OBRIEN_INVITATION", target_node_id="EVT_GOLDSTEIN_BOOK_READ", mechanism="epistemic", fabula_time=4),
+        CausalEdge(source_event_id="EVT_AFFAIR_BEGINS", target_node_id="EVT_CAPTURED", mechanism="physical", fabula_time=3),
+        CausalEdge(source_event_id="EVT_CAPTURED", target_node_id="EVT_OBRIEN_REVEALS_TRUTH", mechanism="epistemic", fabula_time=7),
+        CausalEdge(source_event_id="EVT_OBRIEN_REVEALS_TRUTH", target_node_id="EVT_TORTURE_REEDUCATION", mechanism="physical", fabula_time=8),
+        CausalEdge(source_event_id="EVT_TORTURE_REEDUCATION", target_node_id="EVT_ROOM_101", mechanism="psychological", fabula_time=9),
+        CausalEdge(source_event_id="EVT_ROOM_101", target_node_id="EVT_WINSTON_RELEASED", mechanism="psychological", fabula_time=10),
+        CausalEdge(source_event_id="EVT_ROOM_101", target_node_id="EVT_ENCOUNTER_JULIA", mechanism="psychological", fabula_time=10),
+        CausalEdge(source_event_id="EVT_ENCOUNTER_JULIA", target_node_id="EVT_LOVES_BIG_BROTHER", mechanism="psychological", fabula_time=12),
     ],
 
     # ── SOCIAL TOPOLOGY ────────────────────────────────────────────────────
@@ -244,11 +238,21 @@ world_state = WorldStateV1(
         SpatialEdge(source_id="LOC_MINISTRY_OF_LOVE", target_id="LOC_ROOM_101"),
         SpatialEdge(source_id="LOC_MINISTRY_OF_TRUTH", target_id="LOC_VICTORY_MANSIONS"),
     ],
+    information_topology=[
+        InformationEdge(
+            source_id="ENT_JULIA",
+            target_ids=["ENT_WINSTON"],
+            medium="secret_note",
+            is_encrypted=True,
+            established_at_fabula=2,
+            terminated_at_fabula=7,
+        ),
+    ],
     social_topology=[
-        RelationshipEdge(source_entity_id="ENT_WINSTON", target_entity_id="ENT_JULIA", affinity=0.0, friction=0.3, power_dynamic=0.0, inertia=0.3),
-        RelationshipEdge(source_entity_id="ENT_WINSTON", target_entity_id="ENT_OBRIEN", affinity=-0.8, friction=0.9, power_dynamic=-1.0, inertia=0.9),
-        RelationshipEdge(source_entity_id="ENT_WINSTON", target_entity_id="ENT_BIG_BROTHER", affinity=1.0, friction=0.0, power_dynamic=-1.0, inertia=1.0),
-        RelationshipEdge(source_entity_id="ENT_OBRIEN", target_entity_id="ENT_WINSTON", affinity=-0.3, friction=0.8, power_dynamic=1.0, inertia=0.9),
-        RelationshipEdge(source_entity_id="ENT_CHARRINGTON", target_entity_id="ENT_WINSTON", affinity=-0.5, friction=0.2, power_dynamic=0.8, inertia=0.8),
+        RelationshipEdge(source_entity_id="ENT_WINSTON", target_entity_id="ENT_JULIA", affinity=0.0, fear=0.15, power_dynamic=0.0),
+        RelationshipEdge(source_entity_id="ENT_WINSTON", target_entity_id="ENT_OBRIEN", affinity=-0.8, fear=0.45, power_dynamic=-1.0),
+        RelationshipEdge(source_entity_id="ENT_WINSTON", target_entity_id="ENT_BIG_BROTHER", affinity=1.0, fear=0.0, power_dynamic=-1.0),
+        RelationshipEdge(source_entity_id="ENT_OBRIEN", target_entity_id="ENT_WINSTON", affinity=-0.3, fear=0.4, power_dynamic=1.0),
+        RelationshipEdge(source_entity_id="ENT_CHARRINGTON", target_entity_id="ENT_WINSTON", affinity=-0.5, fear=0.1, power_dynamic=0.8),
     ],
 )

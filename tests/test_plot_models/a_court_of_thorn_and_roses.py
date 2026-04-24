@@ -1,6 +1,6 @@
 from shadow_loom.models import (
     WorldStateV1, Location, NarrativeObject, Entity, EventNode,
-    CausalEdge, SpatialEdge, RelationshipEdge, TraitVector,
+    CausalEdge, SpatialEdge, InformationEdge, RelationshipEdge, TraitVector,
     Affordance, Belief,
 )
 
@@ -104,9 +104,9 @@ world_state = WorldStateV1(
                 "guilt": TraitVector(value=0.7, inertia=0.5),
             },
             beliefs=[
-                Belief(target_id="ENT_TAMLIN", perceived_state="I love him — his heart is literally made of stone", confidence=0.95, inertia=0.9),
-                Belief(target_id="OBJ_MASKS", perceived_state="The permanent masks are caused by a mysterious blight or plague", confidence=0.8, inertia=0.6),
-                Belief(target_id="ENT_TAMLIN", perceived_state="Tamlin sent me home only to protect me from the blight's danger", confidence=0.75, inertia=0.5),
+                Belief(target_id="ENT_TAMLIN", perceived_state="I love him — his heart is literally made of stone", confidence=0.95, inertia=0.9, established_at_fabula=0),
+                Belief(target_id="OBJ_MASKS", perceived_state="The permanent masks are caused by a mysterious blight or plague", confidence=0.8, inertia=0.6, established_at_fabula=0),
+                Belief(target_id="ENT_TAMLIN", perceived_state="Tamlin sent me home only to protect me from the blight's danger", confidence=0.75, inertia=0.5, established_at_fabula=0),
             ],
             constants=["high_fae_transformed"],
         ),
@@ -122,7 +122,7 @@ world_state = WorldStateV1(
                 "power": TraitVector(value=0.85, inertia=0.7),
             },
             beliefs=[
-                Belief(target_id="ENT_FEYRE", perceived_state="I must protect Feyre even if it means losing her — the curse forbids me from telling her the truth", confidence=0.95, inertia=0.9),
+                Belief(target_id="ENT_FEYRE", perceived_state="I must protect Feyre even if it means losing her — the curse forbids me from telling her the truth", confidence=0.95, inertia=0.9, established_at_fabula=0),
             ],
             constants=["high_fae", "shapeshifter"],
         ),
@@ -137,7 +137,7 @@ world_state = WorldStateV1(
                 "power": TraitVector(value=0.95, inertia=0.9),
             },
             beliefs=[
-                Belief(target_id="ENT_FEYRE", perceived_state="This mortal is the key to defeating Amarantha — I must ensure she survives", confidence=0.75, inertia=0.6),
+                Belief(target_id="ENT_FEYRE", perceived_state="This mortal is the key to defeating Amarantha — I must ensure she survives", confidence=0.75, inertia=0.6, established_at_fabula=0),
             ],
             constants=["high_fae"],
         ),
@@ -152,8 +152,8 @@ world_state = WorldStateV1(
                 "power": TraitVector(value=0.9, inertia=0.7),
             },
             beliefs=[
-                Belief(target_id="ENT_FEYRE", perceived_state="This mortal girl cannot possibly break my curse — I have already won", confidence=0.9, inertia=0.7),
-                Belief(target_id="ENT_TAMLIN", perceived_state="Tamlin will eventually submit to me and be mine", confidence=0.85, inertia=0.8),
+                Belief(target_id="ENT_FEYRE", perceived_state="This mortal girl cannot possibly break my curse — I have already won", confidence=0.9, inertia=0.7, established_at_fabula=0),
+                Belief(target_id="ENT_TAMLIN", perceived_state="Tamlin will eventually submit to me and be mine", confidence=0.85, inertia=0.8, established_at_fabula=0),
             ],
         ),
         "ENT_LUCIEN": Entity(
@@ -187,7 +187,7 @@ world_state = WorldStateV1(
                 "anger": TraitVector(value=0.75, inertia=0.6),
             },
             beliefs=[
-                Belief(target_id="ENT_FEYRE", perceived_state="Feyre was taken by faeries — our father did nothing, just as he did nothing for our mother", confidence=0.95, inertia=0.8),
+                Belief(target_id="ENT_FEYRE", perceived_state="Feyre was taken by faeries — our father did nothing, just as he did nothing for our mother", confidence=0.95, inertia=0.8, established_at_fabula=0),
             ],
             constants=["glamour_resistant"],
         ),
@@ -203,7 +203,7 @@ world_state = WorldStateV1(
 
     # ── EVENTS (Chronological) ─────────────────────────────────────────────
     events=[
-        EventNode(id="EVT_FEYRE_KILLS_WOLF", fabula_time=1, syuzhet_index=1, event_type="choice", actor_id="ENT_FEYRE", description="Feyre kills a wolf in the woods with an ash arrow, suspecting it might be a faerie (Andras)."),
+        EventNode(id="EVT_FEYRE_KILLS_WOLF", fabula_time=1, syuzhet_index=1, event_type="choice", actor_id="ENT_FEYRE", target_id="ENT_ANDRAS", description="Feyre kills a wolf in the woods with an ash arrow, suspecting it might be a faerie (Andras)."),
         EventNode(id="EVT_TAMLIN_DEMANDS_PAYMENT", fabula_time=2, syuzhet_index=2, event_type="choice", actor_id="ENT_TAMLIN", description="Tamlin arrives at Feyre's cottage in beast form, demanding payment for Andras's death under the Treaty."),
         EventNode(id="EVT_FEYRE_GOES_TO_PRYTHIAN", fabula_time=3, syuzhet_index=3, event_type="choice", actor_id="ENT_FEYRE", description="Feyre chooses to go to Prythian rather than die, and begins living at the Spring Court."),
         EventNode(id="EVT_FEYRE_LEARNS_PRYTHIAN", fabula_time=4, syuzhet_index=4, event_type="revelation", actor_id="ENT_FEYRE", description="Feyre learns about Prythian's history, magic, and the blight. She bonds with Alis and Lucien."),
@@ -217,7 +217,7 @@ world_state = WorldStateV1(
         EventNode(id="EVT_RHYSAND_BARGAIN", fabula_time=12, syuzhet_index=12, event_type="choice", actor_id="ENT_RHYSAND", description="In exchange for healing, Feyre agrees to spend one week per month with Rhysand in the Night Court."),
         EventNode(id="EVT_TASK_TWO", fabula_time=13, syuzhet_index=13, event_type="outcome", actor_id="ENT_FEYRE", description="Feyre solves the puzzle and picks the correct lever, aided by Rhysand's telepathic voice."),
         EventNode(id="EVT_TASK_THREE", fabula_time=14, syuzhet_index=14, event_type="choice", actor_id="ENT_FEYRE", description="Feyre must stab three faeries. She stabs two, then realizes the third is Tamlin — his heart of stone protects him."),
-        EventNode(id="EVT_AMARANTHA_BEATS_FEYRE", fabula_time=15, syuzhet_index=15, event_type="outcome", actor_id="ENT_AMARANTHA", description="Amarantha refuses to honor the bargain and beats Feyre nearly to death."),
+        EventNode(id="EVT_AMARANTHA_BEATS_FEYRE", fabula_time=15, syuzhet_index=15, event_type="outcome", actor_id="ENT_AMARANTHA", target_id="ENT_FEYRE", description="Amarantha refuses to honor the bargain and beats Feyre nearly to death."),
         EventNode(id="EVT_RIDDLE_SOLVED", fabula_time=16, syuzhet_index=16, event_type="revelation", actor_id="ENT_FEYRE", description="Feyre realizes the riddle's answer is 'love' and speaks it aloud, breaking the curse as she dies."),
         EventNode(id="EVT_AMARANTHA_DESTROYED", fabula_time=17, syuzhet_index=17, event_type="outcome", actor_id="ENT_TAMLIN", description="With the curse broken, Tamlin and Rhysand join forces to destroy Amarantha."),
         EventNode(id="EVT_FEYRE_RESURRECTED", fabula_time=18, syuzhet_index=18, event_type="outcome", actor_id=None, description="The six High Lords gift Feyre with healing light and immortality. Tamlin places golden light on her heart, transforming her into High Fae."),
@@ -225,23 +225,18 @@ world_state = WorldStateV1(
 
     # ── CAUSAL TOPOLOGY ────────────────────────────────────────────────────
     causal_topology=[
-        CausalEdge(source_id="OBJ_ASH_ARROW", target_id="EVT_FEYRE_KILLS_WOLF", mechanism="physical"),
-        CausalEdge(source_id="EVT_FEYRE_KILLS_WOLF", target_id="EVT_TAMLIN_DEMANDS_PAYMENT", mechanism="social"),
-        CausalEdge(source_id="EVT_TAMLIN_DEMANDS_PAYMENT", target_id="EVT_FEYRE_GOES_TO_PRYTHIAN", mechanism="social"),
-        CausalEdge(source_id="EVT_FEYRE_GOES_TO_PRYTHIAN", target_id="EVT_FEYRE_LEARNS_PRYTHIAN", mechanism="epistemic"),
-        CausalEdge(source_id="ENT_RHYSAND", target_id="EVT_RHYSAND_THREATENS", mechanism="psychological"),
-        CausalEdge(source_id="EVT_RHYSAND_THREATENS", target_id="EVT_TAMLIN_FEYRE_LOVE", mechanism="psychological"),
-        CausalEdge(source_id="EVT_TAMLIN_FEYRE_LOVE", target_id="EVT_FEYRE_RETURNS_HOME", mechanism="social"),
-        CausalEdge(source_id="ENT_NESTA", target_id="EVT_FEYRE_RETURNS_PRYTHIAN", mechanism="psychological"),
-        CausalEdge(source_id="EVT_FEYRE_RETURNS_PRYTHIAN", target_id="EVT_ALIS_REVEALS_TRUTH", mechanism="epistemic"),
-        CausalEdge(source_id="EVT_ALIS_REVEALS_TRUTH", target_id="EVT_FEYRE_ENTERS_MOUNTAIN", mechanism="psychological"),
-        CausalEdge(source_id="ENT_RHYSAND", target_id="EVT_RHYSAND_BARGAIN", mechanism="social"),
-        CausalEdge(source_id="EVT_RHYSAND_BARGAIN", target_id="EVT_TASK_TWO", mechanism="epistemic"),
-        CausalEdge(source_id="OBJ_ASH_DAGGERS", target_id="EVT_TASK_THREE", mechanism="physical"),
-        CausalEdge(source_id="EVT_TASK_THREE", target_id="EVT_AMARANTHA_BEATS_FEYRE", mechanism="physical"),
-        CausalEdge(source_id="EVT_AMARANTHA_BEATS_FEYRE", target_id="EVT_RIDDLE_SOLVED", mechanism="psychological"),
-        CausalEdge(source_id="EVT_RIDDLE_SOLVED", target_id="EVT_AMARANTHA_DESTROYED", mechanism="epistemic"),
-        CausalEdge(source_id="EVT_AMARANTHA_DESTROYED", target_id="EVT_FEYRE_RESURRECTED", mechanism="physical"),
+        CausalEdge(source_event_id="EVT_FEYRE_KILLS_WOLF", target_node_id="EVT_TAMLIN_DEMANDS_PAYMENT", mechanism="social", fabula_time=1),
+        CausalEdge(source_event_id="EVT_TAMLIN_DEMANDS_PAYMENT", target_node_id="EVT_FEYRE_GOES_TO_PRYTHIAN", mechanism="social", fabula_time=2),
+        CausalEdge(source_event_id="EVT_FEYRE_GOES_TO_PRYTHIAN", target_node_id="EVT_FEYRE_LEARNS_PRYTHIAN", mechanism="epistemic", fabula_time=3),
+        CausalEdge(source_event_id="EVT_RHYSAND_THREATENS", target_node_id="EVT_TAMLIN_FEYRE_LOVE", mechanism="psychological", fabula_time=5),
+        CausalEdge(source_event_id="EVT_TAMLIN_FEYRE_LOVE", target_node_id="EVT_FEYRE_RETURNS_HOME", mechanism="social", fabula_time=6),
+        CausalEdge(source_event_id="EVT_FEYRE_RETURNS_PRYTHIAN", target_node_id="EVT_ALIS_REVEALS_TRUTH", mechanism="epistemic", fabula_time=8),
+        CausalEdge(source_event_id="EVT_ALIS_REVEALS_TRUTH", target_node_id="EVT_FEYRE_ENTERS_MOUNTAIN", mechanism="psychological", fabula_time=9),
+        CausalEdge(source_event_id="EVT_RHYSAND_BARGAIN", target_node_id="EVT_TASK_TWO", mechanism="epistemic", fabula_time=12),
+        CausalEdge(source_event_id="EVT_TASK_THREE", target_node_id="EVT_AMARANTHA_BEATS_FEYRE", mechanism="physical", fabula_time=14),
+        CausalEdge(source_event_id="EVT_AMARANTHA_BEATS_FEYRE", target_node_id="EVT_RIDDLE_SOLVED", mechanism="psychological", fabula_time=15),
+        CausalEdge(source_event_id="EVT_RIDDLE_SOLVED", target_node_id="EVT_AMARANTHA_DESTROYED", mechanism="epistemic", fabula_time=16),
+        CausalEdge(source_event_id="EVT_AMARANTHA_DESTROYED", target_node_id="EVT_FEYRE_RESURRECTED", mechanism="physical", fabula_time=17),
     ],
 
     # ── SOCIAL TOPOLOGY ────────────────────────────────────────────────────
@@ -252,14 +247,22 @@ world_state = WorldStateV1(
         SpatialEdge(source_id="LOC_SPRING_COURT", target_id="LOC_UNDER_THE_MOUNTAIN"),
         SpatialEdge(source_id="LOC_SPRING_COURT", target_id="LOC_WALL"),
     ],
+    information_topology=[
+        InformationEdge(
+            source_id="ENT_RHYSAND",
+            target_ids=["ENT_FEYRE"],
+            medium="telepathy",
+            established_at_fabula=12,
+        ),
+    ],
     social_topology=[
-        RelationshipEdge(source_entity_id="ENT_FEYRE", target_entity_id="ENT_TAMLIN", affinity=0.9, friction=0.4, power_dynamic=-0.3, inertia=0.8),
-        RelationshipEdge(source_entity_id="ENT_TAMLIN", target_entity_id="ENT_FEYRE", affinity=0.9, friction=0.3, power_dynamic=0.4, inertia=0.8),
-        RelationshipEdge(source_entity_id="ENT_RHYSAND", target_entity_id="ENT_FEYRE", affinity=0.6, friction=0.5, power_dynamic=0.3, inertia=0.5),
-        RelationshipEdge(source_entity_id="ENT_AMARANTHA", target_entity_id="ENT_TAMLIN", affinity=0.7, friction=0.8, power_dynamic=0.8, inertia=0.7),
-        RelationshipEdge(source_entity_id="ENT_AMARANTHA", target_entity_id="ENT_FEYRE", affinity=-0.9, friction=0.95, power_dynamic=0.9, inertia=0.6),
-        RelationshipEdge(source_entity_id="ENT_FEYRE", target_entity_id="ENT_LUCIEN", affinity=0.6, friction=0.2, power_dynamic=0.0, inertia=0.5),
-        RelationshipEdge(source_entity_id="ENT_TAMLIN", target_entity_id="ENT_LUCIEN", affinity=0.75, friction=0.2, power_dynamic=0.4, inertia=0.7),
-        RelationshipEdge(source_entity_id="ENT_FEYRE", target_entity_id="ENT_NESTA", affinity=0.5, friction=0.6, power_dynamic=0.0, inertia=0.6),
+        RelationshipEdge(source_entity_id="ENT_FEYRE", target_entity_id="ENT_TAMLIN", affinity=0.9, fear=0.2, power_dynamic=-0.3),
+        RelationshipEdge(source_entity_id="ENT_TAMLIN", target_entity_id="ENT_FEYRE", affinity=0.9, fear=0.15, power_dynamic=0.4),
+        RelationshipEdge(source_entity_id="ENT_RHYSAND", target_entity_id="ENT_FEYRE", affinity=0.6, fear=0.25, power_dynamic=0.3),
+        RelationshipEdge(source_entity_id="ENT_AMARANTHA", target_entity_id="ENT_TAMLIN", affinity=0.7, fear=0.4, power_dynamic=0.8),
+        RelationshipEdge(source_entity_id="ENT_AMARANTHA", target_entity_id="ENT_FEYRE", affinity=-0.9, fear=0.47, power_dynamic=0.9),
+        RelationshipEdge(source_entity_id="ENT_FEYRE", target_entity_id="ENT_LUCIEN", affinity=0.6, fear=0.1, power_dynamic=0.0),
+        RelationshipEdge(source_entity_id="ENT_TAMLIN", target_entity_id="ENT_LUCIEN", affinity=0.75, fear=0.1, power_dynamic=0.4),
+        RelationshipEdge(source_entity_id="ENT_FEYRE", target_entity_id="ENT_NESTA", affinity=0.5, fear=0.3, power_dynamic=0.0),
     ],
 )

@@ -14,7 +14,6 @@ class ObservationQuery(BaseModel):
         default_factory=dict, 
         description="Multiple facts observed right now. e.g., {'OBJ_CUP': 'empty', 'ENT_GUARD': 'asleep'}"
     )
-    time_steps: int = Field(default=1, description="How many sequential events to simulate.")
     focus_entity_ids: List[str] = Field(
         default_factory=list, 
         description="Multiple characters to lock the POV onto."
@@ -31,10 +30,6 @@ class InterventionQuery(BaseModel):
     query_type: Literal["intervention"] = "intervention"
     interventions: Dict[str, Any] = Field(
         description="A dictionary of do-operator targets. Values are strings for state changes, or dicts for genesis spawns."
-    )
-    commit_to_factual: bool = Field(
-        default=False, 
-        description="If TRUE, permanently alters T_0. If FALSE, spawns a forward-looking shadow branch."
     )
 
 # ==========================================

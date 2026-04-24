@@ -1,6 +1,6 @@
 from shadow_loom.models import (
     WorldStateV1, Location, NarrativeObject, Entity, EventNode,
-    CausalEdge, SpatialEdge, RelationshipEdge, TraitVector,
+    CausalEdge, SpatialEdge, InformationEdge, RelationshipEdge, TraitVector,
     Affordance, Belief,
 )
 
@@ -85,8 +85,8 @@ world_state = WorldStateV1(
                 "emotional_depth": TraitVector(value=0.9, inertia=0.7),
             },
             beliefs=[
-                Belief(target_id="ENT_ALEC", perceived_state="I love him but our relationship is unworkable", confidence=0.95, inertia=0.7),
-                Belief(target_id="ENT_FRED", perceived_state="I am betraying my good husband and family", confidence=0.95, inertia=0.7),
+                Belief(target_id="ENT_ALEC", perceived_state="I love him but our relationship is unworkable", confidence=0.95, inertia=0.7, established_at_fabula=0),
+                Belief(target_id="ENT_FRED", perceived_state="I am betraying my good husband and family", confidence=0.95, inertia=0.7, established_at_fabula=0),
             ],
         ),
         "ENT_ALEC": Entity(
@@ -101,7 +101,7 @@ world_state = WorldStateV1(
                 "self_sacrifice": TraitVector(value=0.75, inertia=0.6),
             },
             beliefs=[
-                Belief(target_id="ENT_LAURA", perceived_state="I love her but must end it for my family's sake", confidence=0.9, inertia=0.6),
+                Belief(target_id="ENT_LAURA", perceived_state="I love her but must end it for my family's sake", confidence=0.9, inertia=0.6, established_at_fabula=0),
             ],
         ),
         "ENT_FRED": Entity(
@@ -115,7 +115,7 @@ world_state = WorldStateV1(
                 "perceptiveness": TraitVector(value=0.6, inertia=0.5),
             },
             beliefs=[
-                Belief(target_id="ENT_LAURA", perceived_state="Something has been troubling her — but I may not know the full truth", confidence=0.6, inertia=0.5),
+                Belief(target_id="ENT_LAURA", perceived_state="Something has been troubling her — but I may not know the full truth", confidence=0.6, inertia=0.5, established_at_fabula=0),
             ],
         ),
         "ENT_DOLLY": Entity(
@@ -128,7 +128,7 @@ world_state = WorldStateV1(
                 "chattiness": TraitVector(value=0.9, inertia=0.8),
             },
             beliefs=[
-                Belief(target_id="ENT_LAURA", perceived_state="Laura and this man at the table are just casual acquaintances", confidence=0.95, inertia=0.9),
+                Belief(target_id="ENT_LAURA", perceived_state="Laura and this man at the table are just casual acquaintances", confidence=0.95, inertia=0.9, established_at_fabula=0),
             ],
         ),
         "ENT_STEPHEN": Entity(
@@ -140,7 +140,7 @@ world_state = WorldStateV1(
                 "disapproval": TraitVector(value=0.6, inertia=0.5),
             },
             beliefs=[
-                Belief(target_id="ENT_ALEC", perceived_state="Alec is being unfaithful and using my flat for it", confidence=0.9, inertia=0.7),
+                Belief(target_id="ENT_ALEC", perceived_state="Alec is being unfaithful and using my flat for it", confidence=0.9, inertia=0.7, established_at_fabula=0),
             ],
         ),
     },
@@ -163,21 +163,17 @@ world_state = WorldStateV1(
 
     # ── CAUSAL TOPOLOGY ────────────────────────────────────────────────────
     causal_topology=[
-        CausalEdge(source_id="OBJ_GRIT", target_id="EVT_GRIT_IN_EYE", mechanism="physical"),
-        CausalEdge(source_id="EVT_GRIT_IN_EYE", target_id="EVT_WEEKLY_MEETINGS", mechanism="social"),
-        CausalEdge(source_id="EVT_WEEKLY_MEETINGS", target_id="EVT_LOVE_ADMITTED", mechanism="psychological"),
-        CausalEdge(source_id="EVT_LOVE_ADMITTED", target_id="EVT_FRIENDS_SPOTTED", mechanism="social"),
-        CausalEdge(source_id="EVT_LOVE_ADMITTED", target_id="EVT_STEPHEN_FLAT_ATTEMPT", mechanism="psychological"),
-        CausalEdge(source_id="ENT_STEPHEN", target_id="EVT_STEPHEN_FLAT_ATTEMPT", mechanism="social"),
-        CausalEdge(source_id="EVT_STEPHEN_FLAT_ATTEMPT", target_id="EVT_LAURA_WANDERS", mechanism="psychological"),
-        CausalEdge(source_id="EVT_LAURA_WANDERS", target_id="EVT_RELATIONSHIP_UNWORKABLE", mechanism="psychological"),
-        CausalEdge(source_id="EVT_RELATIONSHIP_UNWORKABLE", target_id="EVT_ALEC_TAKES_JOB", mechanism="psychological"),
-        CausalEdge(source_id="EVT_ALEC_TAKES_JOB", target_id="EVT_FINAL_MEETING", mechanism="social"),
-        CausalEdge(source_id="ENT_DOLLY", target_id="EVT_FINAL_MEETING", mechanism="social"),
-        CausalEdge(source_id="EVT_FINAL_MEETING", target_id="EVT_ALEC_DEPARTS", mechanism="social"),
-        CausalEdge(source_id="EVT_ALEC_DEPARTS", target_id="EVT_SUICIDE_ATTEMPT", mechanism="psychological"),
-        CausalEdge(source_id="OBJ_EXPRESS_TRAIN", target_id="EVT_SUICIDE_ATTEMPT", mechanism="physical"),
-        CausalEdge(source_id="EVT_SUICIDE_ATTEMPT", target_id="EVT_LAURA_RETURNS_HOME", mechanism="psychological"),
+        CausalEdge(source_event_id="EVT_GRIT_IN_EYE", target_node_id="EVT_WEEKLY_MEETINGS", mechanism="social", fabula_time=1),
+        CausalEdge(source_event_id="EVT_WEEKLY_MEETINGS", target_node_id="EVT_LOVE_ADMITTED", mechanism="psychological", fabula_time=2),
+        CausalEdge(source_event_id="EVT_LOVE_ADMITTED", target_node_id="EVT_FRIENDS_SPOTTED", mechanism="social", fabula_time=3),
+        CausalEdge(source_event_id="EVT_LOVE_ADMITTED", target_node_id="EVT_STEPHEN_FLAT_ATTEMPT", mechanism="psychological", fabula_time=3),
+        CausalEdge(source_event_id="EVT_STEPHEN_FLAT_ATTEMPT", target_node_id="EVT_LAURA_WANDERS", mechanism="psychological", fabula_time=5),
+        CausalEdge(source_event_id="EVT_LAURA_WANDERS", target_node_id="EVT_RELATIONSHIP_UNWORKABLE", mechanism="psychological", fabula_time=6),
+        CausalEdge(source_event_id="EVT_RELATIONSHIP_UNWORKABLE", target_node_id="EVT_ALEC_TAKES_JOB", mechanism="psychological", fabula_time=7),
+        CausalEdge(source_event_id="EVT_ALEC_TAKES_JOB", target_node_id="EVT_FINAL_MEETING", mechanism="social", fabula_time=8),
+        CausalEdge(source_event_id="EVT_FINAL_MEETING", target_node_id="EVT_ALEC_DEPARTS", mechanism="social", fabula_time=9),
+        CausalEdge(source_event_id="EVT_ALEC_DEPARTS", target_node_id="EVT_SUICIDE_ATTEMPT", mechanism="psychological", fabula_time=10),
+        CausalEdge(source_event_id="EVT_SUICIDE_ATTEMPT", target_node_id="EVT_LAURA_RETURNS_HOME", mechanism="psychological", fabula_time=11),
     ],
 
     # ── SOCIAL TOPOLOGY ────────────────────────────────────────────────────
@@ -188,11 +184,20 @@ world_state = WorldStateV1(
         SpatialEdge(source_id="LOC_MILFORD_TOWN", target_id="LOC_STEPHEN_FLAT"),
         SpatialEdge(source_id="LOC_RAILWAY_STATION", target_id="LOC_REFRESHMENT_ROOM"),
     ],
+    information_topology=[
+        InformationEdge(
+            source_id="ENT_LAURA",
+            target_ids=["ENT_FRED"],
+            medium="narration",
+            established_at_fabula=12,
+            terminated_at_fabula=12,
+        ),
+    ],
     social_topology=[
-        RelationshipEdge(source_entity_id="ENT_LAURA", target_entity_id="ENT_ALEC", affinity=0.9, friction=0.7, power_dynamic=0.0, inertia=0.6),
-        RelationshipEdge(source_entity_id="ENT_ALEC", target_entity_id="ENT_LAURA", affinity=0.85, friction=0.7, power_dynamic=0.0, inertia=0.6),
-        RelationshipEdge(source_entity_id="ENT_LAURA", target_entity_id="ENT_FRED", affinity=0.6, friction=0.2, power_dynamic=-0.1, inertia=0.8),
-        RelationshipEdge(source_entity_id="ENT_FRED", target_entity_id="ENT_LAURA", affinity=0.7, friction=0.2, power_dynamic=0.1, inertia=0.85),
-        RelationshipEdge(source_entity_id="ENT_LAURA", target_entity_id="ENT_DOLLY", affinity=0.2, friction=0.5, power_dynamic=0.0, inertia=0.4),
+        RelationshipEdge(source_entity_id="ENT_LAURA", target_entity_id="ENT_ALEC", affinity=0.9, fear=0.35, power_dynamic=0.0),
+        RelationshipEdge(source_entity_id="ENT_ALEC", target_entity_id="ENT_LAURA", affinity=0.85, fear=0.35, power_dynamic=0.0),
+        RelationshipEdge(source_entity_id="ENT_LAURA", target_entity_id="ENT_FRED", affinity=0.6, fear=0.1, power_dynamic=-0.1),
+        RelationshipEdge(source_entity_id="ENT_FRED", target_entity_id="ENT_LAURA", affinity=0.7, fear=0.1, power_dynamic=0.1),
+        RelationshipEdge(source_entity_id="ENT_LAURA", target_entity_id="ENT_DOLLY", affinity=0.2, fear=0.25, power_dynamic=0.0),
     ],
 )

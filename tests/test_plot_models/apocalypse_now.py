@@ -1,6 +1,6 @@
 from shadow_loom.models import (
     WorldStateV1, Location, NarrativeObject, Entity, EventNode,
-    CausalEdge, SpatialEdge, RelationshipEdge, TraitVector,
+    CausalEdge, SpatialEdge, InformationEdge, RelationshipEdge, TraitVector,
     Affordance, Belief,
 )
 
@@ -105,7 +105,7 @@ world_state = WorldStateV1(
                 "discipline": TraitVector(value=0.75, inertia=0.6),
             },
             beliefs=[
-                Belief(target_id="ENT_KURTZ", perceived_state="Kurtz had to be terminated — his methods were unsound", confidence=0.9, inertia=0.7),
+                Belief(target_id="ENT_KURTZ", perceived_state="Kurtz had to be terminated — his methods were unsound", confidence=0.9, inertia=0.7, established_at_fabula=0),
             ],
         ),
         "ENT_KURTZ": Entity(
@@ -121,7 +121,7 @@ world_state = WorldStateV1(
                 "nihilism": TraitVector(value=0.85, inertia=0.8),
             },
             beliefs=[
-                Belief(target_id="ENT_WILLARD", perceived_state="You are the one they sent to kill me", confidence=1.0, inertia=0.9),
+                Belief(target_id="ENT_WILLARD", perceived_state="You are the one they sent to kill me", confidence=1.0, inertia=0.9, established_at_fabula=0),
             ],
         ),
         "ENT_KILGORE": Entity(
@@ -135,7 +135,7 @@ world_state = WorldStateV1(
                 "war_love": TraitVector(value=0.9, inertia=0.9),
             },
             beliefs=[
-                Belief(target_id="ENT_KURTZ", perceived_state="War is glorious — I love the smell of napalm in the morning", confidence=0.95, inertia=0.9),
+                Belief(target_id="ENT_KURTZ", perceived_state="War is glorious — I love the smell of napalm in the morning", confidence=0.95, inertia=0.9, established_at_fabula=0),
             ],
         ),
         "ENT_CHIEF": Entity(
@@ -148,7 +148,7 @@ world_state = WorldStateV1(
                 "duty": TraitVector(value=0.85, inertia=0.8),
             },
             beliefs=[
-                Belief(target_id="ENT_WILLARD", perceived_state="I am the boat commander — my authority governs this mission", confidence=0.85, inertia=0.7),
+                Belief(target_id="ENT_WILLARD", perceived_state="I am the boat commander — my authority governs this mission", confidence=0.85, inertia=0.7, established_at_fabula=0),
             ],
         ),
         "ENT_CHEF": Entity(
@@ -161,7 +161,7 @@ world_state = WorldStateV1(
                 "vulnerability": TraitVector(value=0.75, inertia=0.5),
             },
             beliefs=[
-                Belief(target_id="ENT_KURTZ", perceived_state="The jungle and this mission will kill us all", confidence=0.85, inertia=0.6),
+                Belief(target_id="ENT_KURTZ", perceived_state="The jungle and this mission will kill us all", confidence=0.85, inertia=0.6, established_at_fabula=0),
             ],
         ),
         "ENT_LANCE": Entity(
@@ -194,7 +194,7 @@ world_state = WorldStateV1(
                 "mania": TraitVector(value=0.8, inertia=0.6),
             },
             beliefs=[
-                Belief(target_id="ENT_KURTZ", perceived_state="Kurtz is a genius — the man has enlarged my mind", confidence=0.95, inertia=0.8),
+                Belief(target_id="ENT_KURTZ", perceived_state="Kurtz is a genius — the man has enlarged my mind", confidence=0.95, inertia=0.8, established_at_fabula=0),
             ],
         ),
     },
@@ -206,36 +206,29 @@ world_state = WorldStateV1(
         EventNode(id="EVT_KILGORE_ATTACK", fabula_time=3, syuzhet_index=3, event_type="choice", actor_id="ENT_KILGORE", description="Kilgore orders an air attack on a Vietcong village, playing Wagner's Ride of the Valkyries. The PBR is placed in the river."),
         EventNode(id="EVT_TIGER_ENCOUNTER", fabula_time=4, syuzhet_index=4, event_type="outcome", actor_id=None, description="Chef and Willard disembark in the jungle searching for mangoes. A tiger lunges at them; Chef has a nervous breakdown."),
         EventNode(id="EVT_USO_SHOW", fabula_time=5, syuzhet_index=5, event_type="outcome", actor_id=None, description="At a supply depot, the crew watches a USO show with Playboy Playmates that descends into chaos as soldiers storm the stage."),
-        EventNode(id="EVT_SAMPAN_MASSACRE", fabula_time=6, syuzhet_index=6, event_type="choice", actor_id="ENT_WILLARD", description="Chief orders a sampan search. Clean panics and kills the civilians. Willard executes the surviving woman to avoid a detour."),
+        EventNode(id="EVT_SAMPAN_MASSACRE", fabula_time=6, syuzhet_index=6, event_type="choice", actor_id="ENT_WILLARD", target_id="ENT_CHIEF", description="Chief orders a sampan search. Clean panics and kills the civilians. Willard executes the surviving woman to avoid a detour."),
         EventNode(id="EVT_CLEAN_KILLED", fabula_time=7, syuzhet_index=7, event_type="outcome", actor_id=None, description="Past Do Lung Bridge, the PBR comes under surprise Vietcong attack. Clean is fatally shot while listening to a tape from his mother."),
         EventNode(id="EVT_CHIEF_KILLED", fabula_time=8, syuzhet_index=8, event_type="outcome", actor_id=None, description="Natives attack the PBR with arrows. Chief is impaled with a spear and dies."),
         EventNode(id="EVT_ARRIVE_COMPOUND", fabula_time=9, syuzhet_index=9, event_type="outcome", actor_id=None, description="The surviving crew reaches Kurtz's macabre compound, strewn with corpses and severed heads. The photojournalist greets them."),
         EventNode(id="EVT_WILLARD_IMPRISONED", fabula_time=10, syuzhet_index=10, event_type="outcome", actor_id="ENT_KURTZ", description="Kurtz imprisons Willard in a tiger cage. During the night, Kurtz throws Chef's severed head into Willard's lap."),
         EventNode(id="EVT_KURTZ_PHILOSOPHIZES", fabula_time=11, syuzhet_index=11, event_type="revelation", actor_id="ENT_KURTZ", description="Willard is freed and given freedom to roam. He listens to Kurtz's philosophizing for several days."),
-        EventNode(id="EVT_KURTZ_KILLED", fabula_time=12, syuzhet_index=12, event_type="choice", actor_id="ENT_WILLARD", description="Intercut with the ritual sacrifice of a caribou, Willard slaughters Kurtz with a machete. Kurtz's last words: 'The horror, the horror.'"),
+        EventNode(id="EVT_KURTZ_KILLED", fabula_time=12, syuzhet_index=12, event_type="choice", actor_id="ENT_WILLARD", target_id="ENT_KURTZ", description="Intercut with the ritual sacrifice of a caribou, Willard slaughters Kurtz with a machete. Kurtz's last words: 'The horror, the horror.'"),
         EventNode(id="EVT_WILLARD_DEPARTS", fabula_time=13, syuzhet_index=13, event_type="choice", actor_id="ENT_WILLARD", description="The natives acknowledge Willard as their new leader. He throws down the machete, collects Lance, and departs on the PBR."),
     ],
 
     # ── CAUSAL TOPOLOGY ────────────────────────────────────────────────────
     causal_topology=[
-        CausalEdge(source_id="ENT_WILLARD", target_id="EVT_WILLARD_IN_SAIGON", mechanism="psychological"),
-        CausalEdge(source_id="EVT_WILLARD_IN_SAIGON", target_id="EVT_MISSION_BRIEFING", mechanism="social"),
-        CausalEdge(source_id="OBJ_KURTZ_DOSSIER", target_id="EVT_MISSION_BRIEFING", mechanism="epistemic"),
-        CausalEdge(source_id="EVT_MISSION_BRIEFING", target_id="EVT_KILGORE_ATTACK", mechanism="social"),
-        CausalEdge(source_id="ENT_KILGORE", target_id="EVT_KILGORE_ATTACK", mechanism="physical"),
-        CausalEdge(source_id="EVT_KILGORE_ATTACK", target_id="EVT_TIGER_ENCOUNTER", mechanism="physical"),
-        CausalEdge(source_id="EVT_TIGER_ENCOUNTER", target_id="EVT_USO_SHOW", mechanism="social"),
-        CausalEdge(source_id="ENT_CHIEF", target_id="EVT_SAMPAN_MASSACRE", mechanism="social"),
-        CausalEdge(source_id="ENT_WILLARD", target_id="EVT_SAMPAN_MASSACRE", mechanism="physical"),
-        CausalEdge(source_id="EVT_SAMPAN_MASSACRE", target_id="EVT_CLEAN_KILLED", mechanism="physical"),
-        CausalEdge(source_id="EVT_CLEAN_KILLED", target_id="EVT_CHIEF_KILLED", mechanism="physical"),
-        CausalEdge(source_id="EVT_CHIEF_KILLED", target_id="EVT_ARRIVE_COMPOUND", mechanism="physical"),
-        CausalEdge(source_id="ENT_KURTZ", target_id="EVT_WILLARD_IMPRISONED", mechanism="physical"),
-        CausalEdge(source_id="EVT_ARRIVE_COMPOUND", target_id="EVT_WILLARD_IMPRISONED", mechanism="social"),
-        CausalEdge(source_id="EVT_WILLARD_IMPRISONED", target_id="EVT_KURTZ_PHILOSOPHIZES", mechanism="psychological"),
-        CausalEdge(source_id="EVT_KURTZ_PHILOSOPHIZES", target_id="EVT_KURTZ_KILLED", mechanism="psychological"),
-        CausalEdge(source_id="OBJ_MACHETE", target_id="EVT_KURTZ_KILLED", mechanism="physical"),
-        CausalEdge(source_id="EVT_KURTZ_KILLED", target_id="EVT_WILLARD_DEPARTS", mechanism="social"),
+        CausalEdge(source_event_id="EVT_WILLARD_IN_SAIGON", target_node_id="EVT_MISSION_BRIEFING", mechanism="social", fabula_time=1),
+        CausalEdge(source_event_id="EVT_MISSION_BRIEFING", target_node_id="EVT_KILGORE_ATTACK", mechanism="social", fabula_time=2),
+        CausalEdge(source_event_id="EVT_KILGORE_ATTACK", target_node_id="EVT_TIGER_ENCOUNTER", mechanism="physical", fabula_time=3),
+        CausalEdge(source_event_id="EVT_TIGER_ENCOUNTER", target_node_id="EVT_USO_SHOW", mechanism="social", fabula_time=4),
+        CausalEdge(source_event_id="EVT_SAMPAN_MASSACRE", target_node_id="EVT_CLEAN_KILLED", mechanism="physical", fabula_time=6),
+        CausalEdge(source_event_id="EVT_CLEAN_KILLED", target_node_id="EVT_CHIEF_KILLED", mechanism="physical", fabula_time=7),
+        CausalEdge(source_event_id="EVT_CHIEF_KILLED", target_node_id="EVT_ARRIVE_COMPOUND", mechanism="physical", fabula_time=8),
+        CausalEdge(source_event_id="EVT_ARRIVE_COMPOUND", target_node_id="EVT_WILLARD_IMPRISONED", mechanism="social", fabula_time=9),
+        CausalEdge(source_event_id="EVT_WILLARD_IMPRISONED", target_node_id="EVT_KURTZ_PHILOSOPHIZES", mechanism="psychological", fabula_time=10),
+        CausalEdge(source_event_id="EVT_KURTZ_PHILOSOPHIZES", target_node_id="EVT_KURTZ_KILLED", mechanism="psychological", fabula_time=11),
+        CausalEdge(source_event_id="EVT_KURTZ_KILLED", target_node_id="EVT_WILLARD_DEPARTS", mechanism="social", fabula_time=12),
     ],
 
     # ── SOCIAL TOPOLOGY ────────────────────────────────────────────────────
@@ -248,13 +241,22 @@ world_state = WorldStateV1(
         SpatialEdge(source_id="LOC_NHA_TRANG", target_id="LOC_SAIGON_HOTEL"),
         SpatialEdge(source_id="LOC_NUNG_RIVER", target_id="LOC_SUPPLY_DEPOT"),
     ],
+    information_topology=[
+        InformationEdge(
+            source_id="ENT_KURTZ",
+            target_ids=["ENT_WILLARD"],
+            medium="radio_intercepts",
+            established_at_fabula=2,
+            terminated_at_fabula=9,
+        ),
+    ],
     social_topology=[
-        RelationshipEdge(source_entity_id="ENT_WILLARD", target_entity_id="ENT_KURTZ", affinity=0.2, friction=0.9, power_dynamic=-0.3, inertia=0.6),
-        RelationshipEdge(source_entity_id="ENT_KURTZ", target_entity_id="ENT_WILLARD", affinity=0.3, friction=0.7, power_dynamic=0.5, inertia=0.6),
-        RelationshipEdge(source_entity_id="ENT_WILLARD", target_entity_id="ENT_CHIEF", affinity=0.3, friction=0.6, power_dynamic=0.2, inertia=0.4),
-        RelationshipEdge(source_entity_id="ENT_WILLARD", target_entity_id="ENT_CHEF", affinity=0.3, friction=0.4, power_dynamic=0.3, inertia=0.3),
-        RelationshipEdge(source_entity_id="ENT_WILLARD", target_entity_id="ENT_LANCE", affinity=0.3, friction=0.3, power_dynamic=0.3, inertia=0.3),
-        RelationshipEdge(source_entity_id="ENT_CHIEF", target_entity_id="ENT_WILLARD", affinity=0.1, friction=0.7, power_dynamic=-0.2, inertia=0.5),
-        RelationshipEdge(source_entity_id="ENT_PHOTOJOURNALIST", target_entity_id="ENT_KURTZ", affinity=0.9, friction=0.2, power_dynamic=-0.9, inertia=0.7),
+        RelationshipEdge(source_entity_id="ENT_WILLARD", target_entity_id="ENT_KURTZ", affinity=0.2, fear=0.45, power_dynamic=-0.3),
+        RelationshipEdge(source_entity_id="ENT_KURTZ", target_entity_id="ENT_WILLARD", affinity=0.3, fear=0.35, power_dynamic=0.5),
+        RelationshipEdge(source_entity_id="ENT_WILLARD", target_entity_id="ENT_CHIEF", affinity=0.3, fear=0.3, power_dynamic=0.2),
+        RelationshipEdge(source_entity_id="ENT_WILLARD", target_entity_id="ENT_CHEF", affinity=0.3, fear=0.2, power_dynamic=0.3),
+        RelationshipEdge(source_entity_id="ENT_WILLARD", target_entity_id="ENT_LANCE", affinity=0.3, fear=0.15, power_dynamic=0.3),
+        RelationshipEdge(source_entity_id="ENT_CHIEF", target_entity_id="ENT_WILLARD", affinity=0.1, fear=0.35, power_dynamic=-0.2),
+        RelationshipEdge(source_entity_id="ENT_PHOTOJOURNALIST", target_entity_id="ENT_KURTZ", affinity=0.9, fear=0.1, power_dynamic=-0.9),
     ],
 )

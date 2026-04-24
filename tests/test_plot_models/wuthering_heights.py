@@ -1,6 +1,6 @@
 from shadow_loom.models import (
     WorldStateV1, Location, NarrativeObject, Entity, EventNode,
-    CausalEdge, SpatialEdge, RelationshipEdge, TraitVector,
+    CausalEdge, SpatialEdge, InformationEdge, RelationshipEdge, TraitVector,
     Affordance, Belief,
 )
 
@@ -78,8 +78,8 @@ world_state = WorldStateV1(
                 "obsession": TraitVector(value=0.95, inertia=0.9),
             },
             beliefs=[
-                Belief(target_id="ENT_CATHERINE", perceived_state="Catherine is my soul — without her I am nothing", confidence=1.0, inertia=0.95),
-                Belief(target_id="ENT_CATHERINE", perceived_state="Catherine despised me for my low status and chose Edgar over me", confidence=0.8, inertia=0.7),
+                Belief(target_id="ENT_CATHERINE", perceived_state="Catherine is my soul — without her I am nothing", confidence=1.0, inertia=0.95, established_at_fabula=0),
+                Belief(target_id="ENT_CATHERINE", perceived_state="Catherine despised me for my low status and chose Edgar over me", confidence=0.8, inertia=0.7, established_at_fabula=0),
             ],
         ),
         "ENT_CATHERINE": Entity(
@@ -94,8 +94,8 @@ world_state = WorldStateV1(
                 "wildness": TraitVector(value=0.85, inertia=0.8),
             },
             beliefs=[
-                Belief(target_id="ENT_HEATHCLIFF", perceived_state="I am Heathcliff", confidence=1.0, inertia=0.95),
-                Belief(target_id="ENT_EDGAR", perceived_state="Marrying Edgar will elevate me — it would degrade me to marry Heathcliff", confidence=0.7, inertia=0.5),
+                Belief(target_id="ENT_HEATHCLIFF", perceived_state="I am Heathcliff", confidence=1.0, inertia=0.95, established_at_fabula=0),
+                Belief(target_id="ENT_EDGAR", perceived_state="Marrying Edgar will elevate me — it would degrade me to marry Heathcliff", confidence=0.7, inertia=0.5, established_at_fabula=0),
             ],
         ),
         "ENT_EDGAR": Entity(
@@ -109,7 +109,7 @@ world_state = WorldStateV1(
                 "refinement": TraitVector(value=0.8, inertia=0.7),
             },
             beliefs=[
-                Belief(target_id="ENT_CATHERINE", perceived_state="I can make Catherine happy if Heathcliff would leave us in peace", confidence=0.7, inertia=0.5),
+                Belief(target_id="ENT_CATHERINE", perceived_state="I can make Catherine happy if Heathcliff would leave us in peace", confidence=0.7, inertia=0.5, established_at_fabula=0),
             ],
         ),
         "ENT_HINDLEY": Entity(
@@ -123,7 +123,7 @@ world_state = WorldStateV1(
                 "bitterness": TraitVector(value=0.85, inertia=0.8),
             },
             beliefs=[
-                Belief(target_id="ENT_HEATHCLIFF", perceived_state="Heathcliff stole my father's love and ruined my birthright", confidence=0.95, inertia=0.9),
+                Belief(target_id="ENT_HEATHCLIFF", perceived_state="Heathcliff stole my father's love and ruined my birthright", confidence=0.95, inertia=0.9, established_at_fabula=0),
             ],
         ),
         "ENT_ISABELLA": Entity(
@@ -136,7 +136,7 @@ world_state = WorldStateV1(
                 "bitterness": TraitVector(value=0.7, inertia=0.6),
             },
             beliefs=[
-                Belief(target_id="ENT_HEATHCLIFF", perceived_state="Heathcliff loves me — I can reform him", confidence=0.8, inertia=0.4),
+                Belief(target_id="ENT_HEATHCLIFF", perceived_state="Heathcliff loves me — I can reform him", confidence=0.8, inertia=0.4, established_at_fabula=0),
             ],
         ),
         "ENT_CATHY": Entity(
@@ -189,7 +189,7 @@ world_state = WorldStateV1(
                 "curiosity": TraitVector(value=0.7, inertia=0.5),
             },
             beliefs=[
-                Belief(target_id="ENT_CATHY", perceived_state="The young woman at the Heights must be Heathcliff's wife", confidence=0.7, inertia=0.3),
+                Belief(target_id="ENT_CATHY", perceived_state="The young woman at the Heights must be Heathcliff's wife", confidence=0.7, inertia=0.3, established_at_fabula=0),
             ],
         ),
         "ENT_EARNSHAW": Entity(
@@ -206,7 +206,7 @@ world_state = WorldStateV1(
     # ── EVENTS (Chronological — fabula order) ──────────────────────────────
     events=[
         EventNode(id="EVT_HEATHCLIFF_BROUGHT", fabula_time=1, syuzhet_index=3, event_type="outcome", actor_id="ENT_EARNSHAW", description="Earnshaw returns from Liverpool with an orphan he names Heathcliff, favouring him over his own children."),
-        EventNode(id="EVT_HINDLEY_BULLIES", fabula_time=2, syuzhet_index=4, event_type="outcome", actor_id="ENT_HINDLEY", description="Hindley beats and humiliates Heathcliff. Catherine and Heathcliff become inseparable companions on the moors."),
+        EventNode(id="EVT_HINDLEY_BULLIES", fabula_time=2, syuzhet_index=4, event_type="outcome", actor_id="ENT_HINDLEY", target_id="ENT_HEATHCLIFF", description="Hindley beats and humiliates Heathcliff. Catherine and Heathcliff become inseparable companions on the moors."),
         EventNode(id="EVT_EARNSHAW_DIES", fabula_time=3, syuzhet_index=5, event_type="outcome", actor_id=None, description="Mr Earnshaw dies. Hindley inherits Wuthering Heights and forces Heathcliff to live as a servant."),
         EventNode(id="EVT_CATHERINE_AT_GRANGE", fabula_time=4, syuzhet_index=6, event_type="outcome", actor_id=None, description="Catherine is bitten by the Lintons' dog while spying. She stays at the Grange for weeks, returning refined."),
         EventNode(id="EVT_HEATHCLIFF_HUMILIATED", fabula_time=5, syuzhet_index=7, event_type="outcome", actor_id=None, description="Hindley and Edgar mock Heathcliff. He is banished to an attic and swears revenge."),
@@ -233,28 +233,26 @@ world_state = WorldStateV1(
 
     # ── CAUSAL TOPOLOGY ────────────────────────────────────────────────────
     causal_topology=[
-        CausalEdge(source_id="EVT_HEATHCLIFF_BROUGHT", target_id="EVT_HINDLEY_BULLIES", mechanism="social"),
-        CausalEdge(source_id="EVT_HINDLEY_BULLIES", target_id="EVT_HEATHCLIFF_HUMILIATED", mechanism="psychological"),
-        CausalEdge(source_id="EVT_EARNSHAW_DIES", target_id="EVT_HEATHCLIFF_HUMILIATED", mechanism="social"),
-        CausalEdge(source_id="EVT_CATHERINE_AT_GRANGE", target_id="EVT_CATHERINE_ACCEPTS_EDGAR", mechanism="social"),
-        CausalEdge(source_id="EVT_HEATHCLIFF_HUMILIATED", target_id="EVT_CATHERINE_ACCEPTS_EDGAR", mechanism="social"),
-        CausalEdge(source_id="EVT_CATHERINE_ACCEPTS_EDGAR", target_id="EVT_HEATHCLIFF_FLEES", mechanism="psychological"),
-        CausalEdge(source_id="EVT_HEATHCLIFF_FLEES", target_id="EVT_HEATHCLIFF_RETURNS", mechanism="psychological"),
-        CausalEdge(source_id="EVT_HEATHCLIFF_RETURNS", target_id="EVT_ISABELLA_ELOPEMENT", mechanism="psychological"),
-        CausalEdge(source_id="EVT_ISABELLA_ELOPEMENT", target_id="EVT_CATHERINE_ILL", mechanism="psychological"),
-        CausalEdge(source_id="EVT_CATHERINE_ILL", target_id="EVT_CATHERINE_DIES", mechanism="physical"),
-        CausalEdge(source_id="EVT_CATHERINE_DIES", target_id="EVT_ISABELLA_FLEES", mechanism="psychological"),
-        CausalEdge(source_id="EVT_HEATHCLIFF_RETURNS", target_id="EVT_HINDLEY_DIES", mechanism="social"),
-        CausalEdge(source_id="EVT_FRANCES_DIES", target_id="EVT_HINDLEY_DIES", mechanism="psychological"),
-        CausalEdge(source_id="EVT_ISABELLA_FLEES", target_id="EVT_LINTON_TO_HEIGHTS", mechanism="social"),
-        CausalEdge(source_id="EVT_LINTON_TO_HEIGHTS", target_id="EVT_FORCED_MARRIAGE", mechanism="social"),
-        CausalEdge(source_id="ENT_HEATHCLIFF", target_id="EVT_FORCED_MARRIAGE", mechanism="psychological"),
-        CausalEdge(source_id="EVT_FORCED_MARRIAGE", target_id="EVT_EDGAR_DIES", mechanism="social"),
-        CausalEdge(source_id="EVT_EDGAR_DIES", target_id="EVT_LINTON_DIES", mechanism="social"),
-        CausalEdge(source_id="EVT_LINTON_DIES", target_id="EVT_CATHY_HARETON_RECONCILE", mechanism="social"),
-        CausalEdge(source_id="EVT_CATHY_HARETON_RECONCILE", target_id="EVT_HEATHCLIFF_DECLINES", mechanism="psychological"),
-        CausalEdge(source_id="ENT_CATHERINE", target_id="EVT_HEATHCLIFF_DECLINES", mechanism="psychological"),
-        CausalEdge(source_id="EVT_HEATHCLIFF_DECLINES", target_id="EVT_HEATHCLIFF_DIES", mechanism="physical"),
+        CausalEdge(source_event_id="EVT_HEATHCLIFF_BROUGHT", target_node_id="EVT_HINDLEY_BULLIES", mechanism="social", fabula_time=1),
+        CausalEdge(source_event_id="EVT_HINDLEY_BULLIES", target_node_id="EVT_HEATHCLIFF_HUMILIATED", mechanism="psychological", fabula_time=2),
+        CausalEdge(source_event_id="EVT_EARNSHAW_DIES", target_node_id="EVT_HEATHCLIFF_HUMILIATED", mechanism="social", fabula_time=3),
+        CausalEdge(source_event_id="EVT_CATHERINE_AT_GRANGE", target_node_id="EVT_CATHERINE_ACCEPTS_EDGAR", mechanism="social", fabula_time=4),
+        CausalEdge(source_event_id="EVT_HEATHCLIFF_HUMILIATED", target_node_id="EVT_CATHERINE_ACCEPTS_EDGAR", mechanism="social", fabula_time=5),
+        CausalEdge(source_event_id="EVT_CATHERINE_ACCEPTS_EDGAR", target_node_id="EVT_HEATHCLIFF_FLEES", mechanism="psychological", fabula_time=7),
+        CausalEdge(source_event_id="EVT_HEATHCLIFF_FLEES", target_node_id="EVT_HEATHCLIFF_RETURNS", mechanism="psychological", fabula_time=8),
+        CausalEdge(source_event_id="EVT_HEATHCLIFF_RETURNS", target_node_id="EVT_ISABELLA_ELOPEMENT", mechanism="psychological", fabula_time=10),
+        CausalEdge(source_event_id="EVT_ISABELLA_ELOPEMENT", target_node_id="EVT_CATHERINE_ILL", mechanism="psychological", fabula_time=11),
+        CausalEdge(source_event_id="EVT_CATHERINE_ILL", target_node_id="EVT_CATHERINE_DIES", mechanism="physical", fabula_time=12),
+        CausalEdge(source_event_id="EVT_CATHERINE_DIES", target_node_id="EVT_ISABELLA_FLEES", mechanism="psychological", fabula_time=13),
+        CausalEdge(source_event_id="EVT_HEATHCLIFF_RETURNS", target_node_id="EVT_HINDLEY_DIES", mechanism="social", fabula_time=10),
+        CausalEdge(source_event_id="EVT_FRANCES_DIES", target_node_id="EVT_HINDLEY_DIES", mechanism="psychological", fabula_time=6),
+        CausalEdge(source_event_id="EVT_ISABELLA_FLEES", target_node_id="EVT_LINTON_TO_HEIGHTS", mechanism="social", fabula_time=14),
+        CausalEdge(source_event_id="EVT_LINTON_TO_HEIGHTS", target_node_id="EVT_FORCED_MARRIAGE", mechanism="social", fabula_time=16),
+        CausalEdge(source_event_id="EVT_FORCED_MARRIAGE", target_node_id="EVT_EDGAR_DIES", mechanism="social", fabula_time=17),
+        CausalEdge(source_event_id="EVT_EDGAR_DIES", target_node_id="EVT_LINTON_DIES", mechanism="social", fabula_time=18),
+        CausalEdge(source_event_id="EVT_LINTON_DIES", target_node_id="EVT_CATHY_HARETON_RECONCILE", mechanism="social", fabula_time=19),
+        CausalEdge(source_event_id="EVT_CATHY_HARETON_RECONCILE", target_node_id="EVT_HEATHCLIFF_DECLINES", mechanism="psychological", fabula_time=22),
+        CausalEdge(source_event_id="EVT_HEATHCLIFF_DECLINES", target_node_id="EVT_HEATHCLIFF_DIES", mechanism="physical", fabula_time=23),
     ],
 
     # ── SOCIAL TOPOLOGY ────────────────────────────────────────────────────
@@ -263,18 +261,27 @@ world_state = WorldStateV1(
         SpatialEdge(source_id="LOC_MOORS", target_id="LOC_THRUSHCROSS_GRANGE"),
         SpatialEdge(source_id="LOC_MOORS", target_id="LOC_WUTHERING_HEIGHTS"),
         SpatialEdge(source_id="LOC_THRUSHCROSS_GRANGE", target_id="LOC_WUTHERING_HEIGHTS"),
+        SpatialEdge(source_id="LOC_SOUTH", target_id="LOC_THRUSHCROSS_GRANGE"),
+    ],
+    information_topology=[
+        InformationEdge(
+            source_id="ENT_NELLY",
+            target_ids=["ENT_LOCKWOOD"],
+            medium="spoken_narrative",
+            established_at_fabula=21,
+        ),
     ],
     social_topology=[
-        RelationshipEdge(source_entity_id="ENT_HEATHCLIFF", target_entity_id="ENT_CATHERINE", affinity=1.0, friction=0.6, power_dynamic=0.0, inertia=0.95),
-        RelationshipEdge(source_entity_id="ENT_CATHERINE", target_entity_id="ENT_HEATHCLIFF", affinity=1.0, friction=0.5, power_dynamic=0.0, inertia=0.95),
-        RelationshipEdge(source_entity_id="ENT_CATHERINE", target_entity_id="ENT_EDGAR", affinity=0.5, friction=0.3, power_dynamic=-0.2, inertia=0.5),
-        RelationshipEdge(source_entity_id="ENT_EDGAR", target_entity_id="ENT_CATHERINE", affinity=0.85, friction=0.4, power_dynamic=0.2, inertia=0.7),
-        RelationshipEdge(source_entity_id="ENT_HEATHCLIFF", target_entity_id="ENT_HINDLEY", affinity=-0.9, friction=0.95, power_dynamic=0.3, inertia=0.8),
-        RelationshipEdge(source_entity_id="ENT_HINDLEY", target_entity_id="ENT_HEATHCLIFF", affinity=-0.9, friction=0.9, power_dynamic=-0.3, inertia=0.8),
-        RelationshipEdge(source_entity_id="ENT_HEATHCLIFF", target_entity_id="ENT_EDGAR", affinity=-0.8, friction=0.9, power_dynamic=0.4, inertia=0.8),
-        RelationshipEdge(source_entity_id="ENT_HEATHCLIFF", target_entity_id="ENT_ISABELLA", affinity=-0.6, friction=0.7, power_dynamic=0.8, inertia=0.6),
-        RelationshipEdge(source_entity_id="ENT_CATHY", target_entity_id="ENT_HARETON", affinity=0.8, friction=0.3, power_dynamic=0.1, inertia=0.6),
-        RelationshipEdge(source_entity_id="ENT_HARETON", target_entity_id="ENT_CATHY", affinity=0.8, friction=0.3, power_dynamic=-0.1, inertia=0.6),
-        RelationshipEdge(source_entity_id="ENT_HEATHCLIFF", target_entity_id="ENT_HARETON", affinity=-0.3, friction=0.6, power_dynamic=0.8, inertia=0.5),
+        RelationshipEdge(source_entity_id="ENT_HEATHCLIFF", target_entity_id="ENT_CATHERINE", affinity=1.0, fear=0.3, power_dynamic=0.0),
+        RelationshipEdge(source_entity_id="ENT_CATHERINE", target_entity_id="ENT_HEATHCLIFF", affinity=1.0, fear=0.25, power_dynamic=0.0),
+        RelationshipEdge(source_entity_id="ENT_CATHERINE", target_entity_id="ENT_EDGAR", affinity=0.5, fear=0.15, power_dynamic=-0.2),
+        RelationshipEdge(source_entity_id="ENT_EDGAR", target_entity_id="ENT_CATHERINE", affinity=0.85, fear=0.2, power_dynamic=0.2),
+        RelationshipEdge(source_entity_id="ENT_HEATHCLIFF", target_entity_id="ENT_HINDLEY", affinity=-0.9, fear=0.47, power_dynamic=0.3),
+        RelationshipEdge(source_entity_id="ENT_HINDLEY", target_entity_id="ENT_HEATHCLIFF", affinity=-0.9, fear=0.45, power_dynamic=-0.3),
+        RelationshipEdge(source_entity_id="ENT_HEATHCLIFF", target_entity_id="ENT_EDGAR", affinity=-0.8, fear=0.45, power_dynamic=0.4),
+        RelationshipEdge(source_entity_id="ENT_HEATHCLIFF", target_entity_id="ENT_ISABELLA", affinity=-0.6, fear=0.35, power_dynamic=0.8),
+        RelationshipEdge(source_entity_id="ENT_CATHY", target_entity_id="ENT_HARETON", affinity=0.8, fear=0.15, power_dynamic=0.1),
+        RelationshipEdge(source_entity_id="ENT_HARETON", target_entity_id="ENT_CATHY", affinity=0.8, fear=0.15, power_dynamic=-0.1),
+        RelationshipEdge(source_entity_id="ENT_HEATHCLIFF", target_entity_id="ENT_HARETON", affinity=-0.3, fear=0.3, power_dynamic=0.8),
     ],
 )

@@ -1,6 +1,6 @@
 from shadow_loom.models import (
     WorldStateV1, Location, NarrativeObject, Entity, EventNode,
-    CausalEdge, SpatialEdge, RelationshipEdge, TraitVector,
+    CausalEdge, SpatialEdge, InformationEdge, RelationshipEdge, TraitVector,
     Affordance, Belief,
 )
 
@@ -105,9 +105,9 @@ world_state = WorldStateV1(
                 "naivete": TraitVector(value=0.7, inertia=0.7),
             },
             beliefs=[
-                Belief(target_id="ENT_DAISY", perceived_state="Daisy will choose me if I show enough wealth", confidence=0.85, inertia=0.9),
-                Belief(target_id="OBJ_GREEN_LIGHT", perceived_state="The dream is still within reach", confidence=0.8, inertia=0.9),
-                Belief(target_id="ENT_DAISY", perceived_state="Daisy never truly loved Tom — she was always waiting for me", confidence=0.8, inertia=0.85),
+                Belief(target_id="ENT_DAISY", perceived_state="Daisy will choose me if I show enough wealth", confidence=0.85, inertia=0.9, established_at_fabula=0),
+                Belief(target_id="OBJ_GREEN_LIGHT", perceived_state="The dream is still within reach", confidence=0.8, inertia=0.9, established_at_fabula=0),
+                Belief(target_id="ENT_DAISY", perceived_state="Daisy never truly loved Tom — she was always waiting for me", confidence=0.8, inertia=0.85, established_at_fabula=0),
             ],
         ),
         "ENT_NICK": Entity(
@@ -122,7 +122,7 @@ world_state = WorldStateV1(
                 "disillusionment": TraitVector(value=0.8, inertia=0.6),
             },
             beliefs=[
-                Belief(target_id="ENT_GATSBY", perceived_state="Gatsby is worth more than the whole damn bunch put together", confidence=0.8, inertia=0.7),
+                Belief(target_id="ENT_GATSBY", perceived_state="Gatsby is worth more than the whole damn bunch put together", confidence=0.8, inertia=0.7, established_at_fabula=0),
             ],
         ),
         "ENT_DAISY": Entity(
@@ -137,7 +137,7 @@ world_state = WorldStateV1(
                 "carelessness": TraitVector(value=0.85, inertia=0.8),
             },
             beliefs=[
-                Belief(target_id="ENT_GATSBY", perceived_state="Gatsby will take the blame and protect me", confidence=0.9, inertia=0.5),
+                Belief(target_id="ENT_GATSBY", perceived_state="Gatsby will take the blame and protect me", confidence=0.9, inertia=0.5, established_at_fabula=0),
             ],
         ),
         "ENT_TOM": Entity(
@@ -152,8 +152,8 @@ world_state = WorldStateV1(
                 "dominance": TraitVector(value=0.9, inertia=0.85),
             },
             beliefs=[
-                Belief(target_id="ENT_GATSBY", perceived_state="Gatsby is a criminal bootlegger and a fraud", confidence=0.9, inertia=0.8),
-                Belief(target_id="ENT_DAISY", perceived_state="Daisy will never leave me — she belongs to my world", confidence=0.9, inertia=0.85),
+                Belief(target_id="ENT_GATSBY", perceived_state="Gatsby is a criminal bootlegger and a fraud", confidence=0.9, inertia=0.8, established_at_fabula=0),
+                Belief(target_id="ENT_DAISY", perceived_state="Daisy will never leave me — she belongs to my world", confidence=0.9, inertia=0.85, established_at_fabula=0),
             ],
         ),
         "ENT_JORDAN": Entity(
@@ -177,7 +177,7 @@ world_state = WorldStateV1(
                 "vitality": TraitVector(value=0.8, inertia=0.4),
             },
             beliefs=[
-                Belief(target_id="ENT_TOM", perceived_state="Tom will leave Daisy and take me into his world", confidence=0.6, inertia=0.4),
+                Belief(target_id="ENT_TOM", perceived_state="Tom will leave Daisy and take me into his world", confidence=0.6, inertia=0.4, established_at_fabula=0),
             ],
         ),
         "ENT_GEORGE": Entity(
@@ -191,7 +191,7 @@ world_state = WorldStateV1(
                 "grief": TraitVector(value=0.95, inertia=0.4),
             },
             beliefs=[
-                Belief(target_id="ENT_GATSBY", perceived_state="Gatsby is Myrtle's lover and her killer", confidence=1.0, inertia=0.9),
+                Belief(target_id="ENT_GATSBY", perceived_state="Gatsby is Myrtle's lover and her killer", confidence=1.0, inertia=0.9, established_at_fabula=0),
             ],
         ),
     },
@@ -207,36 +207,28 @@ world_state = WorldStateV1(
         EventNode(id="EVT_GATSBY_DAISY_REUNION", fabula_time=7, syuzhet_index=7, event_type="choice", actor_id="ENT_GATSBY", description="Gatsby uses Nick to stage a reunion with Daisy. They begin an affair."),
         EventNode(id="EVT_TOM_DISCOVERS_AFFAIR", fabula_time=8, syuzhet_index=8, event_type="revelation", actor_id="ENT_TOM", description="Tom discovers Gatsby and Daisy's affair when Daisy addresses Gatsby with unguarded intimacy."),
         EventNode(id="EVT_PLAZA_CONFRONTATION", fabula_time=9, syuzhet_index=9, event_type="outcome", actor_id="ENT_TOM", description="At the Plaza Hotel, Tom and Gatsby argue. Tom reveals Gatsby's bootlegging. Daisy chooses to stay with Tom."),
-        EventNode(id="EVT_MYRTLE_KILLED", fabula_time=10, syuzhet_index=10, event_type="outcome", actor_id="ENT_DAISY", description="Driving back from the Plaza, Daisy (driving Gatsby's car) strikes and kills Myrtle Wilson."),
+        EventNode(id="EVT_MYRTLE_KILLED", fabula_time=10, syuzhet_index=10, event_type="outcome", actor_id="ENT_DAISY", target_id="ENT_MYRTLE", description="Driving back from the Plaza, Daisy (driving Gatsby's car) strikes and kills Myrtle Wilson."),
         EventNode(id="EVT_GATSBY_TAKES_BLAME", fabula_time=11, syuzhet_index=11, event_type="choice", actor_id="ENT_GATSBY", description="Gatsby tells Nick that Daisy was driving but he intends to take the blame."),
         EventNode(id="EVT_TOM_TELLS_GEORGE", fabula_time=12, syuzhet_index=12, event_type="choice", actor_id="ENT_TOM", description="Tom tells George Wilson that the car that killed Myrtle belongs to Gatsby."),
-        EventNode(id="EVT_GATSBY_MURDERED", fabula_time=13, syuzhet_index=13, event_type="outcome", actor_id="ENT_GEORGE", description="George shoots Gatsby in his pool, then kills himself, believing Gatsby was Myrtle's lover and killer."),
+        EventNode(id="EVT_GATSBY_MURDERED", fabula_time=13, syuzhet_index=13, event_type="outcome", actor_id="ENT_GEORGE", target_id="ENT_GATSBY", description="George shoots Gatsby in his pool, then kills himself, believing Gatsby was Myrtle's lover and killer."),
         EventNode(id="EVT_FUNERAL", fabula_time=14, syuzhet_index=14, event_type="outcome", actor_id=None, description="Gatsby's funeral is sparsely attended. His father Henry Gatz arrives."),
         EventNode(id="EVT_NICK_LEAVES", fabula_time=15, syuzhet_index=15, event_type="choice", actor_id="ENT_NICK", description="Nick, disillusioned, decides to leave New York and return to the Midwest."),
     ],
 
     # ── CAUSAL TOPOLOGY ────────────────────────────────────────────────────
     causal_topology=[
-        CausalEdge(source_id="EVT_NICK_ARRIVES", target_id="EVT_DINNER_EAST_EGG", mechanism="social"),
-        CausalEdge(source_id="EVT_DINNER_EAST_EGG", target_id="EVT_GATSBY_STARES_GREEN_LIGHT", mechanism="social"),
-        CausalEdge(source_id="ENT_GATSBY", target_id="EVT_GATSBY_STARES_GREEN_LIGHT", mechanism="psychological"),
-        CausalEdge(source_id="OBJ_GREEN_LIGHT", target_id="EVT_GATSBY_STARES_GREEN_LIGHT", mechanism="psychological"),
-        CausalEdge(source_id="EVT_GATSBY_PARTY", target_id="EVT_JORDAN_REVEALS_PAST", mechanism="epistemic"),
-        CausalEdge(source_id="EVT_JORDAN_REVEALS_PAST", target_id="EVT_GATSBY_DAISY_REUNION", mechanism="epistemic"),
-        CausalEdge(source_id="ENT_NICK", target_id="EVT_GATSBY_DAISY_REUNION", mechanism="social"),
-        CausalEdge(source_id="EVT_GATSBY_DAISY_REUNION", target_id="EVT_TOM_DISCOVERS_AFFAIR", mechanism="social"),
-        CausalEdge(source_id="EVT_TOM_DISCOVERS_AFFAIR", target_id="EVT_PLAZA_CONFRONTATION", mechanism="psychological"),
-        CausalEdge(source_id="EVT_PLAZA_CONFRONTATION", target_id="EVT_MYRTLE_KILLED", mechanism="psychological"),
-        CausalEdge(source_id="OBJ_GATSBY_CAR", target_id="EVT_MYRTLE_KILLED", mechanism="physical"),
-        CausalEdge(source_id="ENT_DAISY", target_id="EVT_MYRTLE_KILLED", mechanism="physical"),
-        CausalEdge(source_id="EVT_MYRTLE_KILLED", target_id="EVT_GATSBY_TAKES_BLAME", mechanism="psychological"),
-        CausalEdge(source_id="EVT_MYRTLE_KILLED", target_id="EVT_TOM_TELLS_GEORGE", mechanism="social"),
-        CausalEdge(source_id="ENT_TOM", target_id="EVT_TOM_TELLS_GEORGE", mechanism="psychological"),
-        CausalEdge(source_id="EVT_TOM_TELLS_GEORGE", target_id="EVT_GATSBY_MURDERED", mechanism="epistemic"),
-        CausalEdge(source_id="OBJ_GUN", target_id="EVT_GATSBY_MURDERED", mechanism="physical"),
-        CausalEdge(source_id="ENT_GEORGE", target_id="EVT_GATSBY_MURDERED", mechanism="physical"),
-        CausalEdge(source_id="EVT_GATSBY_MURDERED", target_id="EVT_FUNERAL", mechanism="social"),
-        CausalEdge(source_id="EVT_FUNERAL", target_id="EVT_NICK_LEAVES", mechanism="psychological"),
+        CausalEdge(source_event_id="EVT_NICK_ARRIVES", target_node_id="EVT_DINNER_EAST_EGG", mechanism="social", fabula_time=1),
+        CausalEdge(source_event_id="EVT_DINNER_EAST_EGG", target_node_id="EVT_GATSBY_STARES_GREEN_LIGHT", mechanism="social", fabula_time=2),
+        CausalEdge(source_event_id="EVT_GATSBY_PARTY", target_node_id="EVT_JORDAN_REVEALS_PAST", mechanism="epistemic", fabula_time=5),
+        CausalEdge(source_event_id="EVT_JORDAN_REVEALS_PAST", target_node_id="EVT_GATSBY_DAISY_REUNION", mechanism="epistemic", fabula_time=6),
+        CausalEdge(source_event_id="EVT_GATSBY_DAISY_REUNION", target_node_id="EVT_TOM_DISCOVERS_AFFAIR", mechanism="social", fabula_time=7),
+        CausalEdge(source_event_id="EVT_TOM_DISCOVERS_AFFAIR", target_node_id="EVT_PLAZA_CONFRONTATION", mechanism="psychological", fabula_time=8),
+        CausalEdge(source_event_id="EVT_PLAZA_CONFRONTATION", target_node_id="EVT_MYRTLE_KILLED", mechanism="psychological", fabula_time=9),
+        CausalEdge(source_event_id="EVT_MYRTLE_KILLED", target_node_id="EVT_GATSBY_TAKES_BLAME", mechanism="psychological", fabula_time=10),
+        CausalEdge(source_event_id="EVT_MYRTLE_KILLED", target_node_id="EVT_TOM_TELLS_GEORGE", mechanism="social", fabula_time=10),
+        CausalEdge(source_event_id="EVT_TOM_TELLS_GEORGE", target_node_id="EVT_GATSBY_MURDERED", mechanism="epistemic", fabula_time=12),
+        CausalEdge(source_event_id="EVT_GATSBY_MURDERED", target_node_id="EVT_FUNERAL", mechanism="social", fabula_time=13),
+        CausalEdge(source_event_id="EVT_FUNERAL", target_node_id="EVT_NICK_LEAVES", mechanism="psychological", fabula_time=14),
     ],
 
     # ── SOCIAL TOPOLOGY ────────────────────────────────────────────────────
@@ -251,14 +243,22 @@ world_state = WorldStateV1(
         SpatialEdge(source_id="LOC_VALLEY_OF_ASHES", target_id="LOC_WEST_EGG"),
         SpatialEdge(source_id="LOC_VALLEY_OF_ASHES", target_id="LOC_WILSON_GARAGE"),
     ],
-    social_topology=[
-        RelationshipEdge(source_entity_id="ENT_GATSBY", target_entity_id="ENT_DAISY", affinity=1.0, friction=0.6, power_dynamic=-0.3, inertia=0.95),
-        RelationshipEdge(source_entity_id="ENT_DAISY", target_entity_id="ENT_GATSBY", affinity=0.5, friction=0.5, power_dynamic=0.3, inertia=0.3),
-        RelationshipEdge(source_entity_id="ENT_TOM", target_entity_id="ENT_DAISY", affinity=0.4, friction=0.6, power_dynamic=0.7, inertia=0.7),
-        RelationshipEdge(source_entity_id="ENT_TOM", target_entity_id="ENT_MYRTLE", affinity=0.3, friction=0.7, power_dynamic=0.8, inertia=0.3),
-        RelationshipEdge(source_entity_id="ENT_TOM", target_entity_id="ENT_GATSBY", affinity=-0.8, friction=0.9, power_dynamic=0.4, inertia=0.7),
-        RelationshipEdge(source_entity_id="ENT_GEORGE", target_entity_id="ENT_MYRTLE", affinity=0.7, friction=0.6, power_dynamic=-0.5, inertia=0.5),
-        RelationshipEdge(source_entity_id="ENT_NICK", target_entity_id="ENT_GATSBY", affinity=0.7, friction=0.2, power_dynamic=-0.1, inertia=0.6),
-        RelationshipEdge(source_entity_id="ENT_NICK", target_entity_id="ENT_JORDAN", affinity=0.5, friction=0.3, power_dynamic=0.0, inertia=0.3),
+    information_topology=[
+        InformationEdge(
+            source_id="ENT_JORDAN",
+            target_ids=["ENT_NICK"],
+            medium="conversation",
+            established_at_fabula=6,
+            terminated_at_fabula=6,
+        ),
+    ],
+    social_topology=[RelationshipEdge(source_entity_id="ENT_GATSBY", target_entity_id="ENT_DAISY", affinity=1.0, fear=0.3, power_dynamic=-0.3),
+        RelationshipEdge(source_entity_id="ENT_DAISY", target_entity_id="ENT_GATSBY", affinity=0.5, fear=0.25, power_dynamic=0.3),
+        RelationshipEdge(source_entity_id="ENT_TOM", target_entity_id="ENT_DAISY", affinity=0.4, fear=0.3, power_dynamic=0.7),
+        RelationshipEdge(source_entity_id="ENT_TOM", target_entity_id="ENT_MYRTLE", affinity=0.3, fear=0.35, power_dynamic=0.8),
+        RelationshipEdge(source_entity_id="ENT_TOM", target_entity_id="ENT_GATSBY", affinity=-0.8, fear=0.45, power_dynamic=0.4),
+        RelationshipEdge(source_entity_id="ENT_GEORGE", target_entity_id="ENT_MYRTLE", affinity=0.7, fear=0.3, power_dynamic=-0.5),
+        RelationshipEdge(source_entity_id="ENT_NICK", target_entity_id="ENT_GATSBY", affinity=0.7, fear=0.1, power_dynamic=-0.1),
+        RelationshipEdge(source_entity_id="ENT_NICK", target_entity_id="ENT_JORDAN", affinity=0.5, fear=0.15, power_dynamic=0.0),
     ],
 )

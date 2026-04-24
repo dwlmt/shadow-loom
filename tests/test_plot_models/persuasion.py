@@ -1,6 +1,6 @@
 from shadow_loom.models import (
     WorldStateV1, Location, NarrativeObject, Entity, EventNode,
-    CausalEdge, SpatialEdge, RelationshipEdge, TraitVector,
+    CausalEdge, SpatialEdge, InformationEdge, RelationshipEdge, TraitVector,
     Affordance, Belief,
 )
 
@@ -79,8 +79,8 @@ world_state = WorldStateV1(
                 "composure": TraitVector(value=0.85, inertia=0.7),
             },
             beliefs=[
-                Belief(target_id="ENT_WENTWORTH", perceived_state="I have always loved him — women do not give up their feelings", confidence=1.0, inertia=1.0),
-                Belief(target_id="ENT_WILLIAM_ELLIOT", perceived_state="His character is opaque — I cannot judge him despite his refined manners", confidence=0.7, inertia=0.5),
+                Belief(target_id="ENT_WENTWORTH", perceived_state="I have always loved him — women do not give up their feelings", confidence=1.0, inertia=1.0, established_at_fabula=0),
+                Belief(target_id="ENT_WILLIAM_ELLIOT", perceived_state="His character is opaque — I cannot judge him despite his refined manners", confidence=0.7, inertia=0.5, established_at_fabula=0),
             ],
         ),
         "ENT_WENTWORTH": Entity(
@@ -96,7 +96,7 @@ world_state = WorldStateV1(
                 "devotion": TraitVector(value=0.9, inertia=0.8),
             },
             beliefs=[
-                Belief(target_id="ENT_ANNE", perceived_state="She was weak — she let herself be persuaded and lacked resolution", confidence=0.8, inertia=0.5),
+                Belief(target_id="ENT_ANNE", perceived_state="She was weak — she let herself be persuaded and lacked resolution", confidence=0.8, inertia=0.5, established_at_fabula=0),
             ],
         ),
         "ENT_SIR_WALTER": Entity(
@@ -110,7 +110,7 @@ world_state = WorldStateV1(
                 "snobbery": TraitVector(value=0.9, inertia=0.85),
             },
             beliefs=[
-                Belief(target_id="ENT_WILLIAM_ELLIOT", perceived_state="William's attentions are genuine and will restore family fortunes", confidence=0.8, inertia=0.6),
+                Belief(target_id="ENT_WILLIAM_ELLIOT", perceived_state="William's attentions are genuine and will restore family fortunes", confidence=0.8, inertia=0.6, established_at_fabula=0),
             ],
         ),
         "ENT_ELIZABETH": Entity(
@@ -123,7 +123,7 @@ world_state = WorldStateV1(
                 "snobbery": TraitVector(value=0.85, inertia=0.8),
             },
             beliefs=[
-                Belief(target_id="ENT_MRS_CLAY", perceived_state="Mrs Clay is my harmless companion — she has no designs on Father", confidence=0.85, inertia=0.7),
+                Belief(target_id="ENT_MRS_CLAY", perceived_state="Mrs Clay is my harmless companion — she has no designs on Father", confidence=0.85, inertia=0.7, established_at_fabula=0),
             ],
         ),
         "ENT_LADY_RUSSELL": Entity(
@@ -137,7 +137,7 @@ world_state = WorldStateV1(
                 "affection_for_anne": TraitVector(value=0.8, inertia=0.8),
             },
             beliefs=[
-                Belief(target_id="ENT_WENTWORTH", perceived_state="He was an imprudent, unsuitable match for Anne", confidence=0.8, inertia=0.6),
+                Belief(target_id="ENT_WENTWORTH", perceived_state="He was an imprudent, unsuitable match for Anne", confidence=0.8, inertia=0.6, established_at_fabula=0),
             ],
         ),
         "ENT_WILLIAM_ELLIOT": Entity(
@@ -152,7 +152,7 @@ world_state = WorldStateV1(
                 "self_interest": TraitVector(value=0.9, inertia=0.85),
             },
             beliefs=[
-                Belief(target_id="ENT_MRS_CLAY", perceived_state="She aims to marry Sir Walter — I must prevent this to protect my inheritance", confidence=0.85, inertia=0.7),
+                Belief(target_id="ENT_MRS_CLAY", perceived_state="She aims to marry Sir Walter — I must prevent this to protect my inheritance", confidence=0.85, inertia=0.7, established_at_fabula=0),
             ],
         ),
         "ENT_LOUISA": Entity(
@@ -205,7 +205,7 @@ world_state = WorldStateV1(
                 "manipulation": TraitVector(value=0.75, inertia=0.5),
             },
             beliefs=[
-                Belief(target_id="ENT_SIR_WALTER", perceived_state="I can marry Sir Walter and secure my position", confidence=0.7, inertia=0.5),
+                Belief(target_id="ENT_SIR_WALTER", perceived_state="I can marry Sir Walter and secure my position", confidence=0.7, inertia=0.5, established_at_fabula=0),
             ],
         ),
         "ENT_CROFTS": Entity(
@@ -255,27 +255,20 @@ world_state = WorldStateV1(
 
     # ── CAUSAL TOPOLOGY ────────────────────────────────────────────────────
     causal_topology=[
-        CausalEdge(source_id="ENT_LADY_RUSSELL", target_id="EVT_BROKEN_ENGAGEMENT", mechanism="social"),
-        CausalEdge(source_id="EVT_BROKEN_ENGAGEMENT", target_id="EVT_WENTWORTH_RETURNS", mechanism="psychological"),
-        CausalEdge(source_id="ENT_SIR_WALTER", target_id="EVT_FINANCIAL_TROUBLE", mechanism="social"),
-        CausalEdge(source_id="EVT_FINANCIAL_TROUBLE", target_id="EVT_CROFTS_RENT_KELLYNCH", mechanism="social"),
-        CausalEdge(source_id="EVT_CROFTS_RENT_KELLYNCH", target_id="EVT_WENTWORTH_RETURNS", mechanism="social"),
-        CausalEdge(source_id="EVT_WENTWORTH_RETURNS", target_id="EVT_LOUISA_HENRIETTA_INTEREST", mechanism="social"),
-        CausalEdge(source_id="EVT_WENTWORTH_RETURNS", target_id="EVT_ANNE_OVERHEARS", mechanism="epistemic"),
-        CausalEdge(source_id="EVT_LOUISA_HENRIETTA_INTEREST", target_id="EVT_LYME_VISIT", mechanism="social"),
-        CausalEdge(source_id="ENT_LOUISA", target_id="EVT_LOUISA_FALLS", mechanism="physical"),
-        CausalEdge(source_id="EVT_LOUISA_FALLS", target_id="EVT_WENTWORTH_GUILT", mechanism="psychological"),
-        CausalEdge(source_id="EVT_WENTWORTH_GUILT", target_id="EVT_WENTWORTH_TO_BATH", mechanism="psychological"),
-        CausalEdge(source_id="EVT_LOUISA_FALLS", target_id="EVT_LOUISA_BENWICK_ENGAGED", mechanism="social"),
-        CausalEdge(source_id="ENT_WILLIAM_ELLIOT", target_id="EVT_WILLIAM_COURTS_ANNE", mechanism="social"),
-        CausalEdge(source_id="ENT_MRS_SMITH", target_id="EVT_MRS_SMITH_REVEALS", mechanism="epistemic"),
-        CausalEdge(source_id="EVT_WENTWORTH_TO_BATH", target_id="EVT_HARVILLE_DEBATE", mechanism="social"),
-        CausalEdge(source_id="EVT_HARVILLE_DEBATE", target_id="EVT_WENTWORTH_LETTER", mechanism="psychological"),
-        CausalEdge(source_id="OBJ_WENTWORTH_LETTER", target_id="EVT_RECONCILIATION", mechanism="epistemic"),
-        CausalEdge(source_id="EVT_RECONCILIATION", target_id="EVT_LADY_RUSSELL_ADMITS", mechanism="social"),
-        CausalEdge(source_id="EVT_MRS_SMITH_REVEALS", target_id="EVT_WILLIAM_LEAVES", mechanism="social"),
-        CausalEdge(source_id="ENT_MRS_CLAY", target_id="EVT_WILLIAM_LEAVES", mechanism="social"),
-        CausalEdge(source_id="EVT_RECONCILIATION", target_id="EVT_MARRIAGE", mechanism="social"),
+        CausalEdge(source_event_id="EVT_BROKEN_ENGAGEMENT", target_node_id="EVT_WENTWORTH_RETURNS", mechanism="psychological", fabula_time=1),
+        CausalEdge(source_event_id="EVT_FINANCIAL_TROUBLE", target_node_id="EVT_CROFTS_RENT_KELLYNCH", mechanism="social", fabula_time=9),
+        CausalEdge(source_event_id="EVT_CROFTS_RENT_KELLYNCH", target_node_id="EVT_WENTWORTH_RETURNS", mechanism="social", fabula_time=10),
+        CausalEdge(source_event_id="EVT_WENTWORTH_RETURNS", target_node_id="EVT_LOUISA_HENRIETTA_INTEREST", mechanism="social", fabula_time=11),
+        CausalEdge(source_event_id="EVT_WENTWORTH_RETURNS", target_node_id="EVT_ANNE_OVERHEARS", mechanism="epistemic", fabula_time=11),
+        CausalEdge(source_event_id="EVT_LOUISA_HENRIETTA_INTEREST", target_node_id="EVT_LYME_VISIT", mechanism="social", fabula_time=12),
+        CausalEdge(source_event_id="EVT_LOUISA_FALLS", target_node_id="EVT_WENTWORTH_GUILT", mechanism="psychological", fabula_time=15),
+        CausalEdge(source_event_id="EVT_WENTWORTH_GUILT", target_node_id="EVT_WENTWORTH_TO_BATH", mechanism="psychological", fabula_time=16),
+        CausalEdge(source_event_id="EVT_LOUISA_FALLS", target_node_id="EVT_LOUISA_BENWICK_ENGAGED", mechanism="social", fabula_time=15),
+        CausalEdge(source_event_id="EVT_WENTWORTH_TO_BATH", target_node_id="EVT_HARVILLE_DEBATE", mechanism="social", fabula_time=20),
+        CausalEdge(source_event_id="EVT_HARVILLE_DEBATE", target_node_id="EVT_WENTWORTH_LETTER", mechanism="psychological", fabula_time=22),
+        CausalEdge(source_event_id="EVT_RECONCILIATION", target_node_id="EVT_LADY_RUSSELL_ADMITS", mechanism="social", fabula_time=24),
+        CausalEdge(source_event_id="EVT_MRS_SMITH_REVEALS", target_node_id="EVT_WILLIAM_LEAVES", mechanism="social", fabula_time=21),
+        CausalEdge(source_event_id="EVT_RECONCILIATION", target_node_id="EVT_MARRIAGE", mechanism="social", fabula_time=24),
     ],
 
     # ── SOCIAL TOPOLOGY ────────────────────────────────────────────────────
@@ -286,16 +279,25 @@ world_state = WorldStateV1(
         SpatialEdge(source_id="LOC_KELLYNCH_HALL", target_id="LOC_UPPERCROSS"),
         SpatialEdge(source_id="LOC_LYME_REGIS", target_id="LOC_UPPERCROSS"),
     ],
+    information_topology=[
+        InformationEdge(
+            source_id="ENT_WENTWORTH",
+            target_ids=["ENT_ANNE"],
+            medium="letter",
+            established_at_fabula=23,
+            terminated_at_fabula=23,
+        ),
+    ],
     social_topology=[
-        RelationshipEdge(source_entity_id="ENT_ANNE", target_entity_id="ENT_WENTWORTH", affinity=0.95, friction=0.5, power_dynamic=-0.1, inertia=0.95),
-        RelationshipEdge(source_entity_id="ENT_WENTWORTH", target_entity_id="ENT_ANNE", affinity=0.9, friction=0.5, power_dynamic=0.1, inertia=0.8),
-        RelationshipEdge(source_entity_id="ENT_ANNE", target_entity_id="ENT_LADY_RUSSELL", affinity=0.7, friction=0.4, power_dynamic=-0.4, inertia=0.7),
-        RelationshipEdge(source_entity_id="ENT_LADY_RUSSELL", target_entity_id="ENT_WENTWORTH", affinity=-0.3, friction=0.6, power_dynamic=0.3, inertia=0.4),
-        RelationshipEdge(source_entity_id="ENT_WILLIAM_ELLIOT", target_entity_id="ENT_ANNE", affinity=0.6, friction=0.3, power_dynamic=0.2, inertia=0.3),
-        RelationshipEdge(source_entity_id="ENT_ANNE", target_entity_id="ENT_WILLIAM_ELLIOT", affinity=0.2, friction=0.5, power_dynamic=-0.1, inertia=0.2),
-        RelationshipEdge(source_entity_id="ENT_WENTWORTH", target_entity_id="ENT_WILLIAM_ELLIOT", affinity=-0.5, friction=0.7, power_dynamic=0.2, inertia=0.4),
-        RelationshipEdge(source_entity_id="ENT_SIR_WALTER", target_entity_id="ENT_ANNE", affinity=0.2, friction=0.4, power_dynamic=0.7, inertia=0.6),
-        RelationshipEdge(source_entity_id="ENT_ANNE", target_entity_id="ENT_MRS_SMITH", affinity=0.7, friction=0.1, power_dynamic=0.1, inertia=0.5),
-        RelationshipEdge(source_entity_id="ENT_LOUISA", target_entity_id="ENT_WENTWORTH", affinity=0.6, friction=0.4, power_dynamic=-0.2, inertia=0.3),
+        RelationshipEdge(source_entity_id="ENT_ANNE", target_entity_id="ENT_WENTWORTH", affinity=0.95, fear=0.25, power_dynamic=-0.1),
+        RelationshipEdge(source_entity_id="ENT_WENTWORTH", target_entity_id="ENT_ANNE", affinity=0.9, fear=0.25, power_dynamic=0.1),
+        RelationshipEdge(source_entity_id="ENT_ANNE", target_entity_id="ENT_LADY_RUSSELL", affinity=0.7, fear=0.2, power_dynamic=-0.4),
+        RelationshipEdge(source_entity_id="ENT_LADY_RUSSELL", target_entity_id="ENT_WENTWORTH", affinity=-0.3, fear=0.3, power_dynamic=0.3),
+        RelationshipEdge(source_entity_id="ENT_WILLIAM_ELLIOT", target_entity_id="ENT_ANNE", affinity=0.6, fear=0.15, power_dynamic=0.2),
+        RelationshipEdge(source_entity_id="ENT_ANNE", target_entity_id="ENT_WILLIAM_ELLIOT", affinity=0.2, fear=0.25, power_dynamic=-0.1),
+        RelationshipEdge(source_entity_id="ENT_WENTWORTH", target_entity_id="ENT_WILLIAM_ELLIOT", affinity=-0.5, fear=0.35, power_dynamic=0.2),
+        RelationshipEdge(source_entity_id="ENT_SIR_WALTER", target_entity_id="ENT_ANNE", affinity=0.2, fear=0.2, power_dynamic=0.7),
+        RelationshipEdge(source_entity_id="ENT_ANNE", target_entity_id="ENT_MRS_SMITH", affinity=0.7, fear=0.05, power_dynamic=0.1),
+        RelationshipEdge(source_entity_id="ENT_LOUISA", target_entity_id="ENT_WENTWORTH", affinity=0.6, fear=0.2, power_dynamic=-0.2),
     ],
 )

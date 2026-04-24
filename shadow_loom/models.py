@@ -31,13 +31,14 @@ class Belief(BaseModel):
     perceived_state: str = Field(description="What they THINK is true (e.g., 'Cup is safe').")
     confidence: float = Field(description="0.0 to 1.0 (How sure are they?)")
     inertia: float = Field(description="0.0 to 1.0 (How stubborn is this belief?)")
+    established_at_fabula: int = Field(default=0, description="Fabula time when this belief was formed. Used for counterfactual time-slicing.")
 
 # --- 2. THE NODES (The Nouns) ---
 class Location(AMWNNode):
     node_type: Literal["Location"] = "Location"
     name: str
     description: str
-    ambient_state: Optional[Dict[str, Any]] = Field(default_factory=dict, description="e.g., {'temperature': 'cold', 'lighting': 'dark'}")
+    ambient_state: Dict[str, AmbientVector] = Field(default_factory=dict, description="e.g., {'temperature': AmbientVector(value=0.8, volatility=0.3)}")
 
 class NarrativeObject(AMWNNode):
     id: str = Field(description="Unique ID, e.g., OBJ_DAGGER")
@@ -65,49 +66,102 @@ class EventNode(AMWNNode):
         description="The sequence this appears in the text (e.g., Chapter 4, Paragraph 2). Used for Suspense."
     )
     event_type: Literal["choice", "outcome", "revelation"]
-    actor_id: Optional[str] = Field(description="Who did it? Null if natural event.")
+    actor_id: Optional[str] = Field(default=None, description="Who did it? Null if natural event.")
+    target_id: Optional[str] = Field(default=None, description="Who/what was acted upon? e.g., ENT_DUNCAN in a murder event.")
     description: str
 
-# --- 3. THE EDGES (The Verbs & Bridges) ---
-class CausalEdge(BaseModel):
-    source_id: str = Field(description="ID of the Entity, Object, Location, or prior Event.")
-    target_id: str = Field(description="ID of the resulting EventNode.")
-    mechanism: Literal["physical", "psychological", "social", "epistemic"]
+class AMWNEdge(BaseModel):
+    """Base class for all topology edges. Distinct from AMWNNode."""
+    world_id: str = Field(default="factual", description="Allows edges to exist only in shadow branches.")
 
-class SpatialEdge(BaseModel):
-    """The physical flow of matter (Architecture)."""
+# ==========================================
+# 1. THE VOLATILE INTERVAL: InformationEdge
+# ==========================================
+class InformationEdge(AMWNEdge):
+    source_id: str = Field(description="Must be an ENT_ or OBJ_ ID")
+    target_ids: List[str] = Field(description="Allows 1-to-Many broadcasting")
+    
+    # UPGRADE: Freeform string with suggestions
+    medium: str = Field(
+        description="The channel of communication. e.g., 'telephone', 'telepathy', 'shouting', 'magic_mirror', 'carrier_pigeon'"
+    )
+    is_encrypted: bool = Field(default=False, description="If False, triggers Eavesdropping Leakage.")
+    
+    established_at_fabula: int
+    terminated_at_fabula: Optional[int] = None
+    discovered_at_syuzhet: int = 0
+
+# ==========================================
+# 2. THE EXPLANATORY LINK: CausalEdge
+# ==========================================
+class CausalEdge(AMWNEdge):
+    source_event_id: str = Field(description="Must be an EVT_ID")
+    target_node_id: str = Field(description="The Node altered by the event.")
+    
+    # UPGRADE: The Mechanism
+    mechanism: str = Field(
+        description="The 'how' of the causality. e.g., 'physical_force', 'epistemic_revelation', 'social_coercion', 'magic_mutation'"
+    )
+    evidence_strength: Literal["weak", "moderate", "strong"] = Field(
+        default="moderate",
+        description="Statistical confidence for PyMC variance: weak=high variance, strong=low variance."
+    )
+    
+    fabula_time: int = Field(description="The exact physics tick this cause took effect.")
+
+# ==========================================
+# 3. THE ACCUMULATOR EDGE: RelationshipEdge
+# ==========================================
+class RelationshipEdge(AMWNEdge):
+    """Tracks continuous psychological and social metrics."""
+    source_entity_id: str = Field(description="Must be an ENT_ ID")
+    target_entity_id: str = Field(description="Must be an ENT_ ID")
+    
+    # --- SOCIAL DELTAS ---
+    affinity: float = Field(default=0.0, description="-1.0 (Hate) to 1.0 (Love)")
+    fear: float = Field(default=0.0, description="0.0 (None) to 1.0 (Terrified)")
+    power_dynamic: float = Field(default=0.0, description="-1.0 (Subservient) to 1.0 (Dominant)")
+    
+    # --- INERTIA (Resistance to relationship mutation) ---
+    inertia: float = Field(default=0.3, description="0.0 to 1.0 (Force required to shift this bond. 1.0 = unbreakable)")
+    
+    # --- STATISTICAL CONFIDENCE ---
+    evidence_strength: Literal["weak", "moderate", "strong"] = Field(
+        default="moderate",
+        description="Statistical confidence for Bayesian variance: weak=high variance, strong=low variance."
+    )
+    
+    # --- TEMPORAL TRACKING ---
+    last_updated_fabula: int = Field(
+        default=0, 
+        description="Relationships don't 'end', they just mutate. This timestamp dictates how far back to roll for counterfactuals."
+    )
+
+# ==========================================
+# 4. THE EPOCH EDGE: SpatialEdge
+# ==========================================
+class SpatialEdge(AMWNEdge):
+    """Tracks the physical flow of matter (Architecture)."""
     source_id: str = Field(description="Must be a LOC_ ID")
     target_id: str = Field(description="Must be a LOC_ ID")
+    
+    # --- PHYSICAL CONSTRAINTS ---
     is_locked: bool = Field(default=False)
-    barrier_item_id: Optional[str] = Field(default=None, description="ID of a NarrativeObject like a door or lock.")
-
-class InformationEdge(BaseModel):
-    """Upgraded to handle Broadcasts, Eavesdropping, and Time-Slicing."""
-    
-    source_id: str = Field(description="Must be an ENT_ or OBJ_ (e.g., a Radio beacon) ID")
-    
-    target_ids: List[str] = Field(description="List of ENT_ or LOC_ IDs receiving the signal.")
-    
-    medium: Literal["telephone", "telepathy", "radio", "shouting", "magic_mirror", "raven", "letter", "speech"]
-    
-    is_encrypted: bool = Field(
-        default=False, 
-        description="If false, entities in the same spatial Location as the source or target can intercept the payload."
-    )
-    
-    established_at_fabula: int = Field(description="The timestamp when the comms link opened.")
-    terminated_at_fabula: Optional[int] = Field(
+    barrier_item_id: Optional[str] = Field(
         default=None, 
-        description="The timestamp when the link closed. Null if currently active."
+        description="The ID of a NarrativeObject that dictates the 'locked' state (e.g., OBJ_IRON_DOOR)."
     )
-
-class RelationshipEdge(BaseModel):
-    source_entity_id: str
-    target_entity_id: str
-    affinity: float = Field(description="-1.0 (Hatred) to 1.0 (Love/Adoration)")
-    friction: float = Field(description="0.0 (Calm/Predictable) to 1.0 (Volatile/High-Energy)")
-    power_dynamic: float = Field(description="-1.0 (Submission) to 1.0 (Dominance)")
-    inertia: float = Field(description="0.0 to 1.0 (How hard is it to alter this dynamic?)")
+    
+    # --- TEMPORAL TRACKING ---
+    established_at_fabula: int = Field(
+        default=0, 
+        description="Usually 0, unless the path was actively built during the story timeline."
+    )
+    destroyed_at_fabula: Optional[int] = Field(
+        default=None, 
+        description="T when the physical path was destroyed (e.g., a cave-in). Null if currently traversable."
+    )
+    
 
 # --- 4. THE MASTER STATE (The Database Payload for Narrative structure) ---
 class WorldStateV1(BaseModel):

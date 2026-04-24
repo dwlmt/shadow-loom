@@ -1,6 +1,6 @@
 from shadow_loom.models import (
     WorldStateV1, Location, NarrativeObject, Entity, EventNode,
-    CausalEdge, SpatialEdge, RelationshipEdge, TraitVector,
+    CausalEdge, SpatialEdge, InformationEdge, RelationshipEdge, TraitVector,
     Affordance, Belief,
 )
 
@@ -119,7 +119,7 @@ world_state = WorldStateV1(
                 "romantic_frustration": TraitVector(value=0.8, inertia=0.4),
             },
             beliefs=[
-                Belief(target_id="ENT_WANDA", perceived_state="Wanda is genuinely attracted to me", confidence=0.8, inertia=0.5),
+                Belief(target_id="ENT_WANDA", perceived_state="Wanda is genuinely attracted to me", confidence=0.8, inertia=0.5, established_at_fabula=0),
             ],
         ),
         "ENT_WANDA": Entity(
@@ -134,7 +134,7 @@ world_state = WorldStateV1(
                 "self_interest": TraitVector(value=0.9, inertia=0.8),
             },
             beliefs=[
-                Belief(target_id="ENT_OTTO", perceived_state="Otto is a useful tool I will discard when I have the diamonds", confidence=0.9, inertia=0.8),
+                Belief(target_id="ENT_OTTO", perceived_state="Otto is a useful tool I will discard when I have the diamonds", confidence=0.9, inertia=0.8, established_at_fabula=0),
             ],
         ),
         "ENT_OTTO": Entity(
@@ -150,7 +150,7 @@ world_state = WorldStateV1(
                 "pseudo_intellectualism": TraitVector(value=0.8, inertia=0.7),
             },
             beliefs=[
-                Belief(target_id="ENT_WANDA", perceived_state="Wanda is my lover and partner — she won't betray me", confidence=0.7, inertia=0.4),
+                Belief(target_id="ENT_WANDA", perceived_state="Wanda is my lover and partner — she won't betray me", confidence=0.7, inertia=0.4, established_at_fabula=0),
             ],
         ),
         "ENT_KEN": Entity(
@@ -166,7 +166,7 @@ world_state = WorldStateV1(
             },
             constants=["stutter"],
             beliefs=[
-                Belief(target_id="ENT_WANDA", perceived_state="Wanda and Otto are brother and sister, not lovers", confidence=0.9, inertia=0.7),
+                Belief(target_id="ENT_WANDA", perceived_state="Wanda and Otto are brother and sister, not lovers", confidence=0.9, inertia=0.7, established_at_fabula=0),
             ],
         ),
         "ENT_GEORGE": Entity(
@@ -179,8 +179,8 @@ world_state = WorldStateV1(
                 "authority": TraitVector(value=0.7, inertia=0.5),
             },
             beliefs=[
-                Belief(target_id="ENT_WANDA", perceived_state="Wanda and Otto are brother and sister, not lovers", confidence=0.9, inertia=0.7),
-                Belief(target_id="ENT_WANDA", perceived_state="Wanda is a loyal member of my gang", confidence=0.8, inertia=0.6),
+                Belief(target_id="ENT_WANDA", perceived_state="Wanda and Otto are brother and sister, not lovers", confidence=0.9, inertia=0.7, established_at_fabula=0),
+                Belief(target_id="ENT_WANDA", perceived_state="Wanda is a loyal member of my gang", confidence=0.8, inertia=0.6, established_at_fabula=0),
             ],
         ),
         "ENT_WENDY": Entity(
@@ -192,7 +192,7 @@ world_state = WorldStateV1(
                 "propriety": TraitVector(value=0.8, inertia=0.7),
             },
             beliefs=[
-                Belief(target_id="OBJ_PENDANT", perceived_state="This pendant is a gift from Archie for me", confidence=0.85, inertia=0.5),
+                Belief(target_id="OBJ_PENDANT", perceived_state="This pendant is a gift from Archie for me", confidence=0.85, inertia=0.5, established_at_fabula=0),
             ],
         ),
         "ENT_MRS_COADY": Entity(
@@ -213,7 +213,7 @@ world_state = WorldStateV1(
         EventNode(id="EVT_ARCHIE_FALLS_FOR_WANDA", fabula_time=5, syuzhet_index=5, event_type="outcome", actor_id="ENT_ARCHIE", description="Archie, in a loveless marriage, falls for Wanda. Otto's jealous interference causes their meetings to go wrong."),
         EventNode(id="EVT_PENDANT_LOST", fabula_time=6, syuzhet_index=6, event_type="outcome", actor_id="ENT_WANDA", description="Wanda accidentally leaves her pendant at Archie's house. Wendy mistakes it for a gift. Archie stages a burglary to recover it."),
         EventNode(id="EVT_ARCHIE_ENDS_AFFAIR", fabula_time=7, syuzhet_index=7, event_type="choice", actor_id="ENT_ARCHIE", description="Feeling guilty, Archie ends the affair with Wanda."),
-        EventNode(id="EVT_KEN_KILLS_DOGS", fabula_time=8, syuzhet_index=8, event_type="outcome", actor_id="ENT_KEN", description="Ken's attempts to kill witness Mrs Coady accidentally kill her three dogs. She ultimately dies of a heart attack."),
+        EventNode(id="EVT_KEN_KILLS_DOGS", fabula_time=8, syuzhet_index=8, event_type="outcome", actor_id="ENT_KEN", target_id="ENT_MRS_COADY", description="Ken's attempts to kill witness Mrs Coady accidentally kill her three dogs. She ultimately dies of a heart attack."),
         EventNode(id="EVT_WANDA_TESTIFIES_AGAINST_GEORGE", fabula_time=9, syuzhet_index=9, event_type="choice", actor_id="ENT_WANDA", description="At trial, defence witness Wanda unexpectedly testifies against George."),
         EventNode(id="EVT_ARCHIE_EXPOSED", fabula_time=10, syuzhet_index=10, event_type="outcome", actor_id="ENT_ARCHIE", description="Archie calls Wanda 'darling' during cross-examination. Wendy realizes the affair and decides to divorce him."),
         EventNode(id="EVT_OTTO_EATS_FISH", fabula_time=11, syuzhet_index=11, event_type="choice", actor_id="ENT_OTTO", description="Otto eats Ken's pet fish one by one to force Ken to reveal the diamonds' location at the Heathrow hotel."),
@@ -226,26 +226,17 @@ world_state = WorldStateV1(
 
     # ── CAUSAL TOPOLOGY ────────────────────────────────────────────────────
     causal_topology=[
-        CausalEdge(source_id="ENT_GEORGE", target_id="EVT_HEIST", mechanism="social"),
-        CausalEdge(source_id="EVT_HEIST", target_id="EVT_WANDA_OTTO_BETRAY_GEORGE", mechanism="social"),
-        CausalEdge(source_id="EVT_WANDA_OTTO_BETRAY_GEORGE", target_id="EVT_DIAMONDS_MOVED", mechanism="epistemic"),
-        CausalEdge(source_id="OBJ_SAFE_KEY", target_id="EVT_DIAMONDS_MOVED", mechanism="physical"),
-        CausalEdge(source_id="EVT_WANDA_OTTO_BETRAY_GEORGE", target_id="EVT_WANDA_SEDUCES_ARCHIE", mechanism="social"),
-        CausalEdge(source_id="ENT_WANDA", target_id="EVT_WANDA_SEDUCES_ARCHIE", mechanism="psychological"),
-        CausalEdge(source_id="EVT_WANDA_SEDUCES_ARCHIE", target_id="EVT_ARCHIE_FALLS_FOR_WANDA", mechanism="psychological"),
-        CausalEdge(source_id="ENT_OTTO", target_id="EVT_ARCHIE_FALLS_FOR_WANDA", mechanism="social"),
-        CausalEdge(source_id="OBJ_PENDANT", target_id="EVT_PENDANT_LOST", mechanism="physical"),
-        CausalEdge(source_id="EVT_PENDANT_LOST", target_id="EVT_ARCHIE_ENDS_AFFAIR", mechanism="psychological"),
-        CausalEdge(source_id="ENT_KEN", target_id="EVT_KEN_KILLS_DOGS", mechanism="physical"),
-        CausalEdge(source_id="EVT_KEN_KILLS_DOGS", target_id="EVT_WANDA_TESTIFIES_AGAINST_GEORGE", mechanism="social"),
-        CausalEdge(source_id="EVT_WANDA_TESTIFIES_AGAINST_GEORGE", target_id="EVT_ARCHIE_EXPOSED", mechanism="social"),
-        CausalEdge(source_id="OBJ_KEN_FISH", target_id="EVT_OTTO_EATS_FISH", mechanism="psychological"),
-        CausalEdge(source_id="EVT_OTTO_EATS_FISH", target_id="EVT_DIAMOND_CHASE", mechanism="epistemic"),
-        CausalEdge(source_id="EVT_ARCHIE_EXPOSED", target_id="EVT_ARCHIE_RESOLVES_STEAL", mechanism="psychological"),
-        CausalEdge(source_id="EVT_DIAMOND_CHASE", target_id="EVT_OTTO_VS_ARCHIE", mechanism="physical"),
-        CausalEdge(source_id="OBJ_STEAMROLLER", target_id="EVT_STEAMROLLER", mechanism="physical"),
-        CausalEdge(source_id="EVT_OTTO_EATS_FISH", target_id="EVT_STEAMROLLER", mechanism="psychological"),
-        CausalEdge(source_id="OBJ_DIAMONDS", target_id="EVT_ESCAPE", mechanism="physical"),
+        CausalEdge(source_event_id="EVT_HEIST", target_node_id="EVT_WANDA_OTTO_BETRAY_GEORGE", mechanism="social", fabula_time=1),
+        CausalEdge(source_event_id="EVT_WANDA_OTTO_BETRAY_GEORGE", target_node_id="EVT_DIAMONDS_MOVED", mechanism="epistemic", fabula_time=2),
+        CausalEdge(source_event_id="EVT_WANDA_OTTO_BETRAY_GEORGE", target_node_id="EVT_WANDA_SEDUCES_ARCHIE", mechanism="social", fabula_time=2),
+        CausalEdge(source_event_id="EVT_WANDA_SEDUCES_ARCHIE", target_node_id="EVT_ARCHIE_FALLS_FOR_WANDA", mechanism="psychological", fabula_time=4),
+        CausalEdge(source_event_id="EVT_PENDANT_LOST", target_node_id="EVT_ARCHIE_ENDS_AFFAIR", mechanism="psychological", fabula_time=6),
+        CausalEdge(source_event_id="EVT_KEN_KILLS_DOGS", target_node_id="EVT_WANDA_TESTIFIES_AGAINST_GEORGE", mechanism="social", fabula_time=8),
+        CausalEdge(source_event_id="EVT_WANDA_TESTIFIES_AGAINST_GEORGE", target_node_id="EVT_ARCHIE_EXPOSED", mechanism="social", fabula_time=9),
+        CausalEdge(source_event_id="EVT_OTTO_EATS_FISH", target_node_id="EVT_DIAMOND_CHASE", mechanism="epistemic", fabula_time=11),
+        CausalEdge(source_event_id="EVT_ARCHIE_EXPOSED", target_node_id="EVT_ARCHIE_RESOLVES_STEAL", mechanism="psychological", fabula_time=10),
+        CausalEdge(source_event_id="EVT_DIAMOND_CHASE", target_node_id="EVT_OTTO_VS_ARCHIE", mechanism="physical", fabula_time=13),
+        CausalEdge(source_event_id="EVT_OTTO_EATS_FISH", target_node_id="EVT_STEAMROLLER", mechanism="psychological", fabula_time=11),
     ],
 
     # ── SOCIAL TOPOLOGY ────────────────────────────────────────────────────
@@ -258,14 +249,23 @@ world_state = WorldStateV1(
         SpatialEdge(source_id="LOC_KEN_FLAT", target_id="LOC_LONDON"),
         SpatialEdge(source_id="LOC_LONDON", target_id="LOC_OLD_WORKSHOP"),
     ],
+    information_topology=[
+        InformationEdge(
+            source_id="ENT_WANDA",
+            target_ids=["ENT_ARCHIE"],
+            medium="seduction",
+            established_at_fabula=4,
+            terminated_at_fabula=7,
+        ),
+    ],
     social_topology=[
-        RelationshipEdge(source_entity_id="ENT_WANDA", target_entity_id="ENT_OTTO", affinity=-0.2, friction=0.8, power_dynamic=0.3, inertia=0.4),
-        RelationshipEdge(source_entity_id="ENT_OTTO", target_entity_id="ENT_WANDA", affinity=0.7, friction=0.8, power_dynamic=-0.1, inertia=0.6),
-        RelationshipEdge(source_entity_id="ENT_WANDA", target_entity_id="ENT_ARCHIE", affinity=0.5, friction=0.4, power_dynamic=0.4, inertia=0.4),
-        RelationshipEdge(source_entity_id="ENT_ARCHIE", target_entity_id="ENT_WANDA", affinity=0.8, friction=0.5, power_dynamic=-0.3, inertia=0.5),
-        RelationshipEdge(source_entity_id="ENT_ARCHIE", target_entity_id="ENT_WENDY", affinity=0.1, friction=0.6, power_dynamic=0.0, inertia=0.5),
-        RelationshipEdge(source_entity_id="ENT_KEN", target_entity_id="ENT_GEORGE", affinity=0.6, friction=0.2, power_dynamic=-0.4, inertia=0.5),
-        RelationshipEdge(source_entity_id="ENT_KEN", target_entity_id="ENT_OTTO", affinity=-0.8, friction=0.9, power_dynamic=-0.3, inertia=0.5),
-        RelationshipEdge(source_entity_id="ENT_OTTO", target_entity_id="ENT_ARCHIE", affinity=-0.7, friction=0.9, power_dynamic=0.2, inertia=0.5),
+        RelationshipEdge(source_entity_id="ENT_WANDA", target_entity_id="ENT_OTTO", affinity=-0.2, fear=0.4, power_dynamic=0.3),
+        RelationshipEdge(source_entity_id="ENT_OTTO", target_entity_id="ENT_WANDA", affinity=0.7, fear=0.4, power_dynamic=-0.1),
+        RelationshipEdge(source_entity_id="ENT_WANDA", target_entity_id="ENT_ARCHIE", affinity=0.5, fear=0.2, power_dynamic=0.4),
+        RelationshipEdge(source_entity_id="ENT_ARCHIE", target_entity_id="ENT_WANDA", affinity=0.8, fear=0.25, power_dynamic=-0.3),
+        RelationshipEdge(source_entity_id="ENT_ARCHIE", target_entity_id="ENT_WENDY", affinity=0.1, fear=0.3, power_dynamic=0.0),
+        RelationshipEdge(source_entity_id="ENT_KEN", target_entity_id="ENT_GEORGE", affinity=0.6, fear=0.1, power_dynamic=-0.4),
+        RelationshipEdge(source_entity_id="ENT_KEN", target_entity_id="ENT_OTTO", affinity=-0.8, fear=0.45, power_dynamic=-0.3),
+        RelationshipEdge(source_entity_id="ENT_OTTO", target_entity_id="ENT_ARCHIE", affinity=-0.7, fear=0.45, power_dynamic=0.2),
     ],
 )

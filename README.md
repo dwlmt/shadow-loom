@@ -75,7 +75,7 @@ This pipeline is divided into four distinct phases:
 #### 6. AMWN Shadow Instantiation
 
 - **Actor:** Pure Python / NetworkX.
-- **Function:** Takes the localized Ego-Graph from Step 5 and instantiates it as a miniature, in-memory NetworkX graph. If the query is an Intervention or Counterfactual, it tags the sandbox with `world_id: "shadow"`. This isolates the volatile simulation math from the permanent Neo4j database.
+- **Function:** Takes the localized Ego-Graph from Step 5 and instantiates it as a miniature, in-memory NetworkX graph. If the query is an Intervention or Counterfactual, it tags the sandbox with `world_id: "shadow"`. This isolates the volatile simulation math from the permanent database.
 - **Output:** A live, traversable physics environment in system RAM.
 
 ---

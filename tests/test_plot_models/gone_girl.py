@@ -1,6 +1,6 @@
 from shadow_loom.models import (
     WorldStateV1, Location, NarrativeObject, Entity, EventNode,
-    CausalEdge, SpatialEdge, RelationshipEdge, TraitVector,
+    CausalEdge, SpatialEdge, InformationEdge, RelationshipEdge, TraitVector,
     Affordance, Belief,
 )
 
@@ -131,7 +131,7 @@ world_state = WorldStateV1(
                 "resentment": TraitVector(value=0.7, inertia=0.5),
             },
             beliefs=[
-                Belief(target_id="ENT_AMY", perceived_state="Amy is a sociopath — I know the truth but can't prove it", confidence=1.0, inertia=0.9),
+                Belief(target_id="ENT_AMY", perceived_state="Amy is a sociopath — I know the truth but can't prove it", confidence=1.0, inertia=0.9, established_at_fabula=0),
             ],
         ),
         "ENT_AMY": Entity(
@@ -147,8 +147,8 @@ world_state = WorldStateV1(
                 "perfectionism": TraitVector(value=0.9, inertia=0.85),
             },
             beliefs=[
-                Belief(target_id="ENT_NICK", perceived_state="Nick and I uniquely understand each other", confidence=0.8, inertia=0.7),
-                Belief(target_id="ENT_NICK", perceived_state="Nick deserves to be punished with death for wasting my life and betraying me", confidence=0.95, inertia=0.7),
+                Belief(target_id="ENT_NICK", perceived_state="Nick and I uniquely understand each other", confidence=0.8, inertia=0.7, established_at_fabula=0),
+                Belief(target_id="ENT_NICK", perceived_state="Nick deserves to be punished with death for wasting my life and betraying me", confidence=0.95, inertia=0.7, established_at_fabula=0),
             ],
         ),
         "ENT_GO": Entity(
@@ -161,8 +161,8 @@ world_state = WorldStateV1(
                 "skepticism": TraitVector(value=0.8, inertia=0.7),
             },
             beliefs=[
-                Belief(target_id="ENT_NICK", perceived_state="Nick is innocent — Amy set him up", confidence=0.95, inertia=0.9),
-                Belief(target_id="ENT_AMY", perceived_state="Amy is a dangerous liar and manipulator", confidence=0.95, inertia=0.9),
+                Belief(target_id="ENT_NICK", perceived_state="Nick is innocent — Amy set him up", confidence=0.95, inertia=0.9, established_at_fabula=0),
+                Belief(target_id="ENT_AMY", perceived_state="Amy is a dangerous liar and manipulator", confidence=0.95, inertia=0.9, established_at_fabula=0),
             ],
         ),
         "ENT_BONEY": Entity(
@@ -175,7 +175,7 @@ world_state = WorldStateV1(
                 "suspicion": TraitVector(value=0.8, inertia=0.7),
             },
             beliefs=[
-                Belief(target_id="ENT_AMY", perceived_state="Amy is lying about the kidnapping but I cannot prove it", confidence=0.85, inertia=0.6),
+                Belief(target_id="ENT_AMY", perceived_state="Amy is lying about the kidnapping but I cannot prove it", confidence=0.85, inertia=0.6, established_at_fabula=0),
             ],
         ),
         "ENT_DESI": Entity(
@@ -189,7 +189,7 @@ world_state = WorldStateV1(
                 "wealth": TraitVector(value=0.9, inertia=0.9),
             },
             beliefs=[
-                Belief(target_id="ENT_AMY", perceived_state="Amy needs my protection — she will finally be mine", confidence=0.8, inertia=0.7),
+                Belief(target_id="ENT_AMY", perceived_state="Amy needs my protection — she will finally be mine", confidence=0.8, inertia=0.7, established_at_fabula=0),
             ],
         ),
         "ENT_TANNER": Entity(
@@ -211,8 +211,8 @@ world_state = WorldStateV1(
                 "gullibility": TraitVector(value=0.7, inertia=0.5),
             },
             beliefs=[
-                Belief(target_id="ENT_AMY", perceived_state="Amy was my best friend and was pregnant when she vanished", confidence=0.95, inertia=0.7),
-                Belief(target_id="ENT_NICK", perceived_state="Nick murdered his pregnant wife", confidence=0.9, inertia=0.6),
+                Belief(target_id="ENT_AMY", perceived_state="Amy was my best friend and was pregnant when she vanished", confidence=0.95, inertia=0.7, established_at_fabula=0),
+                Belief(target_id="ENT_NICK", perceived_state="Nick murdered his pregnant wife", confidence=0.9, inertia=0.6, established_at_fabula=0),
             ],
         ),
         "ENT_ANDIE": Entity(
@@ -224,7 +224,7 @@ world_state = WorldStateV1(
                 "naivete": TraitVector(value=0.7, inertia=0.5),
             },
             beliefs=[
-                Belief(target_id="ENT_NICK", perceived_state="Nick will leave Amy for me", confidence=0.7, inertia=0.4),
+                Belief(target_id="ENT_NICK", perceived_state="Nick will leave Amy for me", confidence=0.7, inertia=0.4, established_at_fabula=0),
             ],
         ),
     },
@@ -244,7 +244,7 @@ world_state = WorldStateV1(
         EventNode(id="EVT_NICK_TV_INTERVIEW", fabula_time=11, syuzhet_index=11, event_type="choice", actor_id="ENT_NICK", description="With Tanner Bolt's help, Nick gives a TV interview performing the perfect apologetic husband."),
         EventNode(id="EVT_NICK_ARRESTED", fabula_time=12, syuzhet_index=12, event_type="outcome", actor_id=None, description="Police discover the woodshed and Amy's faked diary. Nick is arrested."),
         EventNode(id="EVT_AMY_WATCHES_INTERVIEW", fabula_time=13, syuzhet_index=13, event_type="revelation", actor_id="ENT_AMY", description="Amy sees Nick's TV interview and is impressed, convinced they are uniquely matched."),
-        EventNode(id="EVT_DESI_MURDERED", fabula_time=14, syuzhet_index=14, event_type="choice", actor_id="ENT_AMY", description="Amy mutilates herself to fake captivity, seduces Desi, then murders him to escape and frame him as her kidnapper."),
+        EventNode(id="EVT_DESI_MURDERED", fabula_time=14, syuzhet_index=14, event_type="choice", actor_id="ENT_AMY", target_id="ENT_DESI", description="Amy mutilates herself to fake captivity, seduces Desi, then murders him to escape and frame him as her kidnapper."),
         EventNode(id="EVT_AMY_RETURNS", fabula_time=15, syuzhet_index=15, event_type="outcome", actor_id="ENT_AMY", description="Amy returns to North Carthage with a fabricated kidnapping story. Nick is released."),
         EventNode(id="EVT_FORCED_MARRIAGE", fabula_time=16, syuzhet_index=16, event_type="outcome", actor_id=None, description="Nick, Go, and Boney know Amy is lying but have no proof. Nick is forced back into married life."),
         EventNode(id="EVT_AMY_INSEMINATES", fabula_time=17, syuzhet_index=17, event_type="choice", actor_id="ENT_AMY", description="Amy uses Nick's frozen semen to become pregnant, using the unborn child as leverage to keep Nick compliant."),
@@ -253,26 +253,18 @@ world_state = WorldStateV1(
 
     # ── CAUSAL TOPOLOGY ────────────────────────────────────────────────────
     causal_topology=[
-        CausalEdge(source_id="EVT_JOBS_LOST", target_id="EVT_TRUST_FUND_DEPLETED", mechanism="social"),
-        CausalEdge(source_id="EVT_TRUST_FUND_DEPLETED", target_id="EVT_RELOCATE_MISSOURI", mechanism="social"),
-        CausalEdge(source_id="EVT_RELOCATE_MISSOURI", target_id="EVT_MARRIAGE_DETERIORATES", mechanism="psychological"),
-        CausalEdge(source_id="EVT_MARRIAGE_DETERIORATES", target_id="EVT_AMY_DISCOVERS_AFFAIR", mechanism="epistemic"),
-        CausalEdge(source_id="EVT_AMY_DISCOVERS_AFFAIR", target_id="EVT_AMY_DISAPPEARS", mechanism="psychological"),
-        CausalEdge(source_id="OBJ_FAKE_DIARY", target_id="EVT_NICK_SUSPECT", mechanism="epistemic"),
-        CausalEdge(source_id="OBJ_LIFE_INSURANCE", target_id="EVT_NICK_SUSPECT", mechanism="epistemic"),
-        CausalEdge(source_id="EVT_AMY_DISAPPEARS", target_id="EVT_NICK_SUSPECT", mechanism="epistemic"),
-        CausalEdge(source_id="OBJ_TREASURE_HUNT_CLUES", target_id="EVT_NICK_FINDS_CLUES", mechanism="epistemic"),
-        CausalEdge(source_id="EVT_AMY_ROBBED", target_id="EVT_AMY_SEEKS_DESI", mechanism="psychological"),
-        CausalEdge(source_id="ENT_TANNER", target_id="EVT_NICK_TV_INTERVIEW", mechanism="social"),
-        CausalEdge(source_id="OBJ_PUNCH_JUDY_PUPPETS", target_id="EVT_NICK_ARRESTED", mechanism="physical"),
-        CausalEdge(source_id="OBJ_FAKE_DIARY", target_id="EVT_NICK_ARRESTED", mechanism="epistemic"),
-        CausalEdge(source_id="EVT_NICK_TV_INTERVIEW", target_id="EVT_AMY_WATCHES_INTERVIEW", mechanism="psychological"),
-        CausalEdge(source_id="EVT_AMY_WATCHES_INTERVIEW", target_id="EVT_DESI_MURDERED", mechanism="psychological"),
-        CausalEdge(source_id="ENT_AMY", target_id="EVT_DESI_MURDERED", mechanism="physical"),
-        CausalEdge(source_id="EVT_DESI_MURDERED", target_id="EVT_AMY_RETURNS", mechanism="social"),
-        CausalEdge(source_id="EVT_AMY_RETURNS", target_id="EVT_FORCED_MARRIAGE", mechanism="social"),
-        CausalEdge(source_id="OBJ_FROZEN_SEMEN", target_id="EVT_AMY_INSEMINATES", mechanism="physical"),
-        CausalEdge(source_id="EVT_AMY_INSEMINATES", target_id="EVT_NICK_SUBMITS", mechanism="psychological"),
+        CausalEdge(source_event_id="EVT_JOBS_LOST", target_node_id="EVT_TRUST_FUND_DEPLETED", mechanism="social", fabula_time=1),
+        CausalEdge(source_event_id="EVT_TRUST_FUND_DEPLETED", target_node_id="EVT_RELOCATE_MISSOURI", mechanism="social", fabula_time=2),
+        CausalEdge(source_event_id="EVT_RELOCATE_MISSOURI", target_node_id="EVT_MARRIAGE_DETERIORATES", mechanism="psychological", fabula_time=3),
+        CausalEdge(source_event_id="EVT_MARRIAGE_DETERIORATES", target_node_id="EVT_AMY_DISCOVERS_AFFAIR", mechanism="epistemic", fabula_time=4),
+        CausalEdge(source_event_id="EVT_AMY_DISCOVERS_AFFAIR", target_node_id="EVT_AMY_DISAPPEARS", mechanism="psychological", fabula_time=5),
+        CausalEdge(source_event_id="EVT_AMY_DISAPPEARS", target_node_id="EVT_NICK_SUSPECT", mechanism="epistemic", fabula_time=6),
+        CausalEdge(source_event_id="EVT_AMY_ROBBED", target_node_id="EVT_AMY_SEEKS_DESI", mechanism="psychological", fabula_time=9),
+        CausalEdge(source_event_id="EVT_NICK_TV_INTERVIEW", target_node_id="EVT_AMY_WATCHES_INTERVIEW", mechanism="psychological", fabula_time=11),
+        CausalEdge(source_event_id="EVT_AMY_WATCHES_INTERVIEW", target_node_id="EVT_DESI_MURDERED", mechanism="psychological", fabula_time=13),
+        CausalEdge(source_event_id="EVT_DESI_MURDERED", target_node_id="EVT_AMY_RETURNS", mechanism="social", fabula_time=14),
+        CausalEdge(source_event_id="EVT_AMY_RETURNS", target_node_id="EVT_FORCED_MARRIAGE", mechanism="social", fabula_time=15),
+        CausalEdge(source_event_id="EVT_AMY_INSEMINATES", target_node_id="EVT_NICK_SUBMITS", mechanism="psychological", fabula_time=17),
     ],
 
     # ── SOCIAL TOPOLOGY ────────────────────────────────────────────────────
@@ -284,15 +276,24 @@ world_state = WorldStateV1(
         SpatialEdge(source_id="LOC_NEW_YORK", target_id="LOC_NORTH_CARTHAGE"),
         SpatialEdge(source_id="LOC_NORTH_CARTHAGE", target_id="LOC_THE_BAR"),
     ],
+    information_topology=[
+        InformationEdge(
+            source_id="ENT_AMY",
+            target_ids=["ENT_DESI"],
+            medium="telephone",
+            established_at_fabula=10,
+            terminated_at_fabula=14,
+        ),
+    ],
     social_topology=[
-        RelationshipEdge(source_entity_id="ENT_NICK", target_entity_id="ENT_AMY", affinity=-0.6, friction=0.95, power_dynamic=-0.7, inertia=0.8),
-        RelationshipEdge(source_entity_id="ENT_AMY", target_entity_id="ENT_NICK", affinity=0.3, friction=0.9, power_dynamic=0.8, inertia=0.85),
-        RelationshipEdge(source_entity_id="ENT_NICK", target_entity_id="ENT_GO", affinity=0.9, friction=0.1, power_dynamic=0.0, inertia=0.9),
-        RelationshipEdge(source_entity_id="ENT_NICK", target_entity_id="ENT_ANDIE", affinity=0.4, friction=0.5, power_dynamic=0.4, inertia=0.2),
-        RelationshipEdge(source_entity_id="ENT_AMY", target_entity_id="ENT_DESI", affinity=-0.3, friction=0.7, power_dynamic=0.5, inertia=0.3),
-        RelationshipEdge(source_entity_id="ENT_DESI", target_entity_id="ENT_AMY", affinity=0.8, friction=0.6, power_dynamic=0.4, inertia=0.7),
-        RelationshipEdge(source_entity_id="ENT_BONEY", target_entity_id="ENT_NICK", affinity=-0.3, friction=0.7, power_dynamic=0.5, inertia=0.5),
-        RelationshipEdge(source_entity_id="ENT_NOELLE", target_entity_id="ENT_AMY", affinity=0.6, friction=0.2, power_dynamic=-0.3, inertia=0.3),
-        RelationshipEdge(source_entity_id="ENT_TANNER", target_entity_id="ENT_NICK", affinity=0.5, friction=0.3, power_dynamic=0.3, inertia=0.4),
+        RelationshipEdge(source_entity_id="ENT_NICK", target_entity_id="ENT_AMY", affinity=-0.6, fear=0.47, power_dynamic=-0.7),
+        RelationshipEdge(source_entity_id="ENT_AMY", target_entity_id="ENT_NICK", affinity=0.3, fear=0.45, power_dynamic=0.8),
+        RelationshipEdge(source_entity_id="ENT_NICK", target_entity_id="ENT_GO", affinity=0.9, fear=0.05, power_dynamic=0.0),
+        RelationshipEdge(source_entity_id="ENT_NICK", target_entity_id="ENT_ANDIE", affinity=0.4, fear=0.25, power_dynamic=0.4),
+        RelationshipEdge(source_entity_id="ENT_AMY", target_entity_id="ENT_DESI", affinity=-0.3, fear=0.35, power_dynamic=0.5),
+        RelationshipEdge(source_entity_id="ENT_DESI", target_entity_id="ENT_AMY", affinity=0.8, fear=0.3, power_dynamic=0.4),
+        RelationshipEdge(source_entity_id="ENT_BONEY", target_entity_id="ENT_NICK", affinity=-0.3, fear=0.35, power_dynamic=0.5),
+        RelationshipEdge(source_entity_id="ENT_NOELLE", target_entity_id="ENT_AMY", affinity=0.6, fear=0.1, power_dynamic=-0.3),
+        RelationshipEdge(source_entity_id="ENT_TANNER", target_entity_id="ENT_NICK", affinity=0.5, fear=0.15, power_dynamic=0.3),
     ],
 )

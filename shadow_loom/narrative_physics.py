@@ -92,7 +92,13 @@ def calculate_narrative_physics(
         logger.info("[Counterfactual] Historical sandbox built — %d nodes. Applying surgeries.",
                      shadow_graph.number_of_nodes())
 
+        # --- ABDUCTION STEP: Update hidden variables from present evidence ---
+        _apply_abduction(shadow_graph, request.evidence_node_ids, global_world_state)
+
         AMWNInstantiator.execute_interventions(shadow_graph, request.historical_interventions)
+
+        # --- PREDICTION STEP: Forward cascade through causal topology ---
+        _apply_forward_cascade(shadow_graph, global_world_state)
 
         result = {
             "status": "success",
@@ -354,3 +360,120 @@ def _generate_physics_override(sandbox: nx.MultiDiGraph) -> Optional[str]:
         )
 
     return None
+
+
+# ==========================================
+# HELPER 4: ABDUCTION (Evidence → Latent Variable Update)
+# ==========================================
+def _apply_abduction(
+    sandbox: nx.MultiDiGraph,
+    evidence_node_ids: List[str],
+    global_world_state: WorldStateV1,
+) -> None:
+    """
+    Rung 3 Abduction: uses present-day evidence nodes to back-propagate
+    latent trait/belief updates into the historical shadow graph.
+
+    For each evidence node that exists in the CURRENT world state, we update
+    the sandbox's entity traits and beliefs to reflect what MUST have been
+    true at the point of divergence given the observed evidence.
+    """
+    if not evidence_node_ids:
+        return
+
+    evidence_strength_multiplier = {"weak": 0.25, "moderate": 0.5, "strong": 0.75}
+
+    for eid in evidence_node_ids:
+        # Case 1: Evidence is an Entity — condition on its current factual state
+        if eid in global_world_state.entities and sandbox.has_node(eid):
+            factual_entity = global_world_state.entities[eid]
+            node_data = sandbox.nodes[eid]
+            # Back-propagate traits toward current evidence values (50% blend)
+            for trait_name, tv in factual_entity.traits.items():
+                sandbox_traits = node_data.get("traits", {})
+                if trait_name in sandbox_traits and isinstance(sandbox_traits[trait_name], dict):
+                    old_val = sandbox_traits[trait_name].get("value", 0.5)
+                    shift = (tv.value - old_val) * 0.5
+                    sandbox_traits[trait_name]["value"] = max(0.0, min(1.0, old_val + shift))
+            # Back-propagate beliefs
+            if "beliefs" not in node_data:
+                node_data["beliefs"] = []
+            existing_beliefs = node_data["beliefs"]
+            for belief in factual_entity.beliefs:
+                if not any(b.get("target_id") == belief.target_id and
+                          b.get("perceived_state") == belief.perceived_state
+                          for b in existing_beliefs):
+                    existing_beliefs.append(belief.model_dump())
+            logger.info("[Abduction] Conditioned entity %s on present-day evidence.", eid)
+
+        # Case 2: Evidence is an Event — propagate through causal edges
+        elif sandbox.has_node(eid):
+            node_data = sandbox.nodes[eid]
+            if node_data.get("node_type") == "EventNode":
+                for ce in global_world_state.causal_topology:
+                    if ce.source_event_id == eid:
+                        mult = evidence_strength_multiplier.get(ce.evidence_strength, 0.5)
+                        target_node = sandbox.nodes.get(ce.target_node_id)
+                        if target_node and target_node.get("node_type") == "Entity":
+                            traits = target_node.get("traits", {})
+                            for trait_data in traits.values():
+                                if isinstance(trait_data, dict) and "value" in trait_data:
+                                    old_val = trait_data["value"]
+                                    trait_data["value"] = max(0.0, min(1.0, old_val + mult * 0.1))
+                logger.info("[Abduction] Propagated evidence from event %s.", eid)
+        else:
+            logger.warning("[Abduction] Evidence node %s not in sandbox. Skipping.", eid)
+
+
+# ==========================================
+# HELPER 5: FORWARD CASCADE (CTF Step 3 — Prediction)
+# ==========================================
+def _apply_forward_cascade(
+    sandbox: nx.MultiDiGraph,
+    global_world_state: WorldStateV1,
+) -> None:
+    """
+    CTF Step 3 — Prediction: After abduction and the do-operator, walk
+    the causal topology forward from sandbox events, adjusting downstream
+    entity traits proportionally to the edge's evidence_strength.
+
+    The traversal is ordered by fabula_time so that early causes propagate
+    before later ones.  When a causal edge targets an event not yet in the
+    reachable set, it is added so that multi-hop cascades continue.
+    """
+    strength_mult = {"weak": 0.25, "moderate": 0.5, "strong": 0.75}
+
+    # Seed the reachable set with every event currently in the sandbox
+    reachable_events = {
+        nid for nid, d in sandbox.nodes(data=True)
+        if d.get("node_type") == "EventNode"
+    }
+
+    if not reachable_events:
+        return
+
+    # Process causal edges in temporal order for proper forward propagation
+    causal_sorted = sorted(
+        global_world_state.causal_topology,
+        key=lambda ce: ce.fabula_time,
+    )
+
+    for ce in causal_sorted:
+        if ce.source_event_id not in reachable_events:
+            continue
+
+        target_id = ce.target_node_id
+        mult = strength_mult.get(ce.evidence_strength, 0.5)
+
+        target = sandbox.nodes.get(target_id)
+        if target and target.get("node_type") == "Entity":
+            traits = target.get("traits", {})
+            for trait_data in traits.values():
+                if isinstance(trait_data, dict) and "value" in trait_data:
+                    old_val = trait_data["value"]
+                    trait_data["value"] = max(0.0, min(1.0, old_val + mult * 0.1))
+
+        # If the target is itself an event, allow further cascading
+        reachable_events.add(target_id)
+
+    logger.info("[Forward Cascade] Processed %d reachable events.", len(reachable_events))

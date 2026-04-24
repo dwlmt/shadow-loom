@@ -44,7 +44,13 @@ def extract_ego_graph_from_memory(
     for f_id in focus_entity_ids:
         ent = world_state.entities.get(f_id)
         if ent:
-            focus_entities.append(ent.model_dump())
+            ent_data = ent.model_dump()
+            if temporal_anchor is not None:
+                ent_data["beliefs"] = [
+                    b for b in ent_data.get("beliefs", [])
+                    if b.get("established_at_fabula", 0) <= temporal_anchor
+                ]
+            focus_entities.append(ent_data)
             location_ids.add(ent.location_id)
         else:
             logger.warning("Focus Entity '%s' not found.", f_id)
@@ -80,7 +86,13 @@ def extract_ego_graph_from_memory(
     for ent_id, entity in world_state.entities.items():
         # If they are in one of the active rooms AND not already a focus entity
         if entity.location_id in location_ids and ent_id not in focus_id_set:
-            present_entities.append(entity.model_dump())
+            ent_data = entity.model_dump()
+            if temporal_anchor is not None:
+                ent_data["beliefs"] = [
+                    b for b in ent_data.get("beliefs", [])
+                    if b.get("established_at_fabula", 0) <= temporal_anchor
+                ]
+            present_entities.append(ent_data)
             present_entity_ids.add(ent_id)
 
     present_objects = []
@@ -98,6 +110,9 @@ def extract_ego_graph_from_memory(
         if edge.source_entity_id in focus_id_set and (
             edge.target_entity_id in present_entity_ids or edge.target_entity_id in focus_id_set
         ):
+            # Time-slice: exclude relationships updated after the anchor
+            if temporal_anchor is not None and edge.last_updated_fabula > temporal_anchor:
+                continue
             relevant_relationships.append(edge.model_dump())
 
     # 4. The Temporal Filter (Memory & Time-Slicing)
@@ -112,6 +127,13 @@ def extract_ego_graph_from_memory(
     relevant_spatial_edges = []
     for se in world_state.spatial_topology:
         if se.source_id in all_location_ids and se.target_id in all_location_ids:
+            # Skip paths not yet established at the anchor time
+            if temporal_anchor is not None and se.established_at_fabula > temporal_anchor:
+                continue
+            # Skip destroyed paths (destroyed before or at anchor, or destroyed at all if no anchor)
+            if se.destroyed_at_fabula is not None:
+                if temporal_anchor is None or se.destroyed_at_fabula <= temporal_anchor:
+                    continue
             relevant_spatial_edges.append(se.model_dump())
 
     # 6. The Information Filter (Comms links involving focus entities, time-sliced)
@@ -142,7 +164,7 @@ def extract_ego_graph_from_memory(
     )
     relevant_causal_edges = []
     for edge in world_state.causal_topology:
-        if edge.source_id in scene_node_ids and edge.target_id in scene_node_ids:
+        if edge.source_event_id in scene_node_ids and edge.target_node_id in scene_node_ids:
             relevant_causal_edges.append(edge.model_dump())
 
     payload = EgoGraphPayload(

@@ -1,6 +1,6 @@
 from shadow_loom.models import (
     WorldStateV1, Location, NarrativeObject, Entity, EventNode,
-    CausalEdge, SpatialEdge, RelationshipEdge, TraitVector,
+    CausalEdge, SpatialEdge, InformationEdge, RelationshipEdge, TraitVector,
     Affordance, Belief,
 )
 
@@ -88,7 +88,7 @@ world_state = WorldStateV1(
                 "temper": TraitVector(value=0.7, inertia=0.6),
             },
             beliefs=[
-                Belief(target_id="ENT_ORANGE", perceived_state="Orange is one of us — I got him into this and I owe him", confidence=0.9, inertia=0.85),
+                Belief(target_id="ENT_ORANGE", perceived_state="Orange is one of us — I got him into this and I owe him", confidence=0.9, inertia=0.85, established_at_fabula=0),
             ],
         ),
         "ENT_ORANGE": Entity(
@@ -102,7 +102,7 @@ world_state = WorldStateV1(
                 "guilt": TraitVector(value=0.7, inertia=0.5),
             },
             beliefs=[
-                Belief(target_id="ENT_WHITE", perceived_state="White protected me — I owe him the truth", confidence=0.9, inertia=0.7),
+                Belief(target_id="ENT_WHITE", perceived_state="White protected me — I owe him the truth", confidence=0.9, inertia=0.7, established_at_fabula=0),
             ],
         ),
         "ENT_BLONDE": Entity(
@@ -116,7 +116,7 @@ world_state = WorldStateV1(
                 "sadism": TraitVector(value=0.9, inertia=0.8),
             },
             beliefs=[
-                Belief(target_id="ENT_JOE", perceived_state="I owe Joe everything — he's the only one who stood by me", confidence=0.95, inertia=0.9),
+                Belief(target_id="ENT_JOE", perceived_state="I owe Joe everything — he's the only one who stood by me", confidence=0.95, inertia=0.9, established_at_fabula=0),
             ],
         ),
         "ENT_PINK": Entity(
@@ -130,7 +130,7 @@ world_state = WorldStateV1(
                 "self_preservation": TraitVector(value=0.95, inertia=0.85),
             },
             beliefs=[
-                Belief(target_id="ENT_JOE", perceived_state="The job was a setup — someone tipped off the cops", confidence=0.95, inertia=0.8),
+                Belief(target_id="ENT_JOE", perceived_state="The job was a setup — someone tipped off the cops", confidence=0.95, inertia=0.8, established_at_fabula=0),
             ],
         ),
         "ENT_JOE": Entity(
@@ -144,7 +144,7 @@ world_state = WorldStateV1(
                 "ruthlessness": TraitVector(value=0.8, inertia=0.7),
             },
             beliefs=[
-                Belief(target_id="ENT_ORANGE", perceived_state="Orange is the rat — this kid is the informer", confidence=0.9, inertia=0.8),
+                Belief(target_id="ENT_ORANGE", perceived_state="Orange is the rat — this kid is the informer", confidence=0.9, inertia=0.8, established_at_fabula=0),
             ],
         ),
         "ENT_EDDIE": Entity(
@@ -157,7 +157,7 @@ world_state = WorldStateV1(
                 "volatility": TraitVector(value=0.7, inertia=0.6),
             },
             beliefs=[
-                Belief(target_id="ENT_BLONDE", perceived_state="Blonde was loyal — he did four years and never talked", confidence=0.9, inertia=0.8),
+                Belief(target_id="ENT_BLONDE", perceived_state="Blonde was loyal — he did four years and never talked", confidence=0.9, inertia=0.8, established_at_fabula=0),
             ],
         ),
         "ENT_BROWN": Entity(
@@ -188,7 +188,7 @@ world_state = WorldStateV1(
                 "integrity": TraitVector(value=0.85, inertia=0.8),
             },
             beliefs=[
-                Belief(target_id="ENT_ORANGE", perceived_state="Orange is undercover — I must protect his cover and survive", confidence=1.0, inertia=0.9),
+                Belief(target_id="ENT_ORANGE", perceived_state="Orange is undercover — I must protect his cover and survive", confidence=1.0, inertia=0.9, established_at_fabula=0),
             ],
         ),
     },
@@ -204,9 +204,9 @@ world_state = WorldStateV1(
         EventNode(id="EVT_WAREHOUSE_RENDEZVOUS", fabula_time=7, syuzhet_index=5, event_type="outcome", actor_id=None, description="White and the bleeding Orange reach the warehouse. Pink arrives with the diamonds hidden nearby. They debate whether the job was a setup."),
         EventNode(id="EVT_BLONDE_BRINGS_NASH", fabula_time=8, syuzhet_index=6, event_type="outcome", actor_id="ENT_BLONDE", description="Blonde arrives with kidnapped Officer Marvin Nash. White and Pink stand down from their argument."),
         EventNode(id="EVT_NASH_TORTURED", fabula_time=9, syuzhet_index=8, event_type="outcome", actor_id=None, description="White and Pink rough up Nash. Eddie arrives and sends them to ditch the getaway cars, leaving Blonde in charge."),
-        EventNode(id="EVT_EAR_SCENE", fabula_time=10, syuzhet_index=9, event_type="choice", actor_id="ENT_BLONDE", description="Blonde tortures Nash — slashing his face, cutting off his ear with a razor while dancing to 'Stuck in the Middle with You' — then prepares to set him on fire."),
-        EventNode(id="EVT_ORANGE_KILLS_BLONDE", fabula_time=11, syuzhet_index=10, event_type="choice", actor_id="ENT_ORANGE", description="Orange shoots and kills Blonde. He reveals to Nash that he is an undercover cop. Nash confirms he recognised and protected Orange's cover."),
-        EventNode(id="EVT_EDDIE_KILLS_NASH", fabula_time=12, syuzhet_index=12, event_type="choice", actor_id="ENT_EDDIE", description="Eddie, Pink, and White return. Orange claims Blonde planned to steal the diamonds. Eddie shoots Nash and accuses Orange of lying."),
+        EventNode(id="EVT_EAR_SCENE", fabula_time=10, syuzhet_index=9, event_type="choice", actor_id="ENT_BLONDE", target_id="ENT_NASH", description="Blonde tortures Nash — slashing his face, cutting off his ear with a razor while dancing to 'Stuck in the Middle with You' — then prepares to set him on fire."),
+        EventNode(id="EVT_ORANGE_KILLS_BLONDE", fabula_time=11, syuzhet_index=10, event_type="choice", actor_id="ENT_ORANGE", target_id="ENT_BLONDE", description="Orange shoots and kills Blonde. He reveals to Nash that he is an undercover cop. Nash confirms he recognised and protected Orange's cover."),
+        EventNode(id="EVT_EDDIE_KILLS_NASH", fabula_time=12, syuzhet_index=12, event_type="choice", actor_id="ENT_EDDIE", target_id="ENT_NASH", description="Eddie, Pink, and White return. Orange claims Blonde planned to steal the diamonds. Eddie shoots Nash and accuses Orange of lying."),
         EventNode(id="EVT_JOE_ACCUSES_ORANGE", fabula_time=13, syuzhet_index=13, event_type="choice", actor_id="ENT_JOE", description="Joe arrives, reports Blue killed by police, and identifies Orange as the traitor. He draws on Orange to execute him."),
         EventNode(id="EVT_MEXICAN_STANDOFF", fabula_time=14, syuzhet_index=14, event_type="outcome", actor_id=None, description="White defends Orange at gunpoint against Joe. Eddie aims at White. All three fire — Joe and Eddie are killed, White and Orange wounded."),
         EventNode(id="EVT_PINK_FLEES", fabula_time=15, syuzhet_index=15, event_type="choice", actor_id="ENT_PINK", description="Pink grabs the diamonds and flees. A crash and gunshots are heard outside."),
@@ -216,33 +216,22 @@ world_state = WorldStateV1(
 
     # ── CAUSAL TOPOLOGY ────────────────────────────────────────────────────
     causal_topology=[
-        CausalEdge(source_id="EVT_BLONDE_PAROLED", target_id="EVT_TEAM_ASSEMBLED", mechanism="social"),
-        CausalEdge(source_id="EVT_ORANGE_UNDERCOVER", target_id="EVT_TEAM_ASSEMBLED", mechanism="epistemic"),
-        CausalEdge(source_id="ENT_JOE", target_id="EVT_TEAM_ASSEMBLED", mechanism="social"),
-        CausalEdge(source_id="EVT_TEAM_ASSEMBLED", target_id="EVT_HEIST_GOES_WRONG", mechanism="social"),
-        CausalEdge(source_id="ENT_ORANGE", target_id="EVT_HEIST_GOES_WRONG", mechanism="epistemic"),
-        CausalEdge(source_id="ENT_BLONDE", target_id="EVT_HEIST_GOES_WRONG", mechanism="physical"),
-        CausalEdge(source_id="EVT_HEIST_GOES_WRONG", target_id="EVT_BROWN_KILLED", mechanism="physical"),
-        CausalEdge(source_id="EVT_HEIST_GOES_WRONG", target_id="EVT_ORANGE_SHOT", mechanism="physical"),
-        CausalEdge(source_id="EVT_ORANGE_SHOT", target_id="EVT_WAREHOUSE_RENDEZVOUS", mechanism="physical"),
-        CausalEdge(source_id="OBJ_DIAMONDS", target_id="EVT_WAREHOUSE_RENDEZVOUS", mechanism="social"),
-        CausalEdge(source_id="EVT_WAREHOUSE_RENDEZVOUS", target_id="EVT_BLONDE_BRINGS_NASH", mechanism="social"),
-        CausalEdge(source_id="ENT_BLONDE", target_id="EVT_BLONDE_BRINGS_NASH", mechanism="physical"),
-        CausalEdge(source_id="EVT_BLONDE_BRINGS_NASH", target_id="EVT_NASH_TORTURED", mechanism="physical"),
-        CausalEdge(source_id="EVT_NASH_TORTURED", target_id="EVT_EAR_SCENE", mechanism="physical"),
-        CausalEdge(source_id="OBJ_STRAIGHT_RAZOR", target_id="EVT_EAR_SCENE", mechanism="physical"),
-        CausalEdge(source_id="EVT_EAR_SCENE", target_id="EVT_ORANGE_KILLS_BLONDE", mechanism="physical"),
-        CausalEdge(source_id="ENT_ORANGE", target_id="EVT_ORANGE_KILLS_BLONDE", mechanism="psychological"),
-        CausalEdge(source_id="EVT_ORANGE_KILLS_BLONDE", target_id="EVT_EDDIE_KILLS_NASH", mechanism="social"),
-        CausalEdge(source_id="ENT_EDDIE", target_id="EVT_EDDIE_KILLS_NASH", mechanism="psychological"),
-        CausalEdge(source_id="EVT_EDDIE_KILLS_NASH", target_id="EVT_JOE_ACCUSES_ORANGE", mechanism="social"),
-        CausalEdge(source_id="ENT_JOE", target_id="EVT_JOE_ACCUSES_ORANGE", mechanism="epistemic"),
-        CausalEdge(source_id="EVT_JOE_ACCUSES_ORANGE", target_id="EVT_MEXICAN_STANDOFF", mechanism="physical"),
-        CausalEdge(source_id="ENT_WHITE", target_id="EVT_MEXICAN_STANDOFF", mechanism="psychological"),
-        CausalEdge(source_id="EVT_MEXICAN_STANDOFF", target_id="EVT_PINK_FLEES", mechanism="social"),
-        CausalEdge(source_id="OBJ_DIAMONDS", target_id="EVT_PINK_FLEES", mechanism="psychological"),
-        CausalEdge(source_id="EVT_MEXICAN_STANDOFF", target_id="EVT_ORANGE_CONFESSES", mechanism="psychological"),
-        CausalEdge(source_id="EVT_ORANGE_CONFESSES", target_id="EVT_WHITE_KILLED", mechanism="psychological"),
+        CausalEdge(source_event_id="EVT_BLONDE_PAROLED", target_node_id="EVT_TEAM_ASSEMBLED", mechanism="social", fabula_time=1),
+        CausalEdge(source_event_id="EVT_ORANGE_UNDERCOVER", target_node_id="EVT_TEAM_ASSEMBLED", mechanism="epistemic", fabula_time=2),
+        CausalEdge(source_event_id="EVT_TEAM_ASSEMBLED", target_node_id="EVT_HEIST_GOES_WRONG", mechanism="social", fabula_time=3),
+        CausalEdge(source_event_id="EVT_HEIST_GOES_WRONG", target_node_id="EVT_BROWN_KILLED", mechanism="physical", fabula_time=4),
+        CausalEdge(source_event_id="EVT_HEIST_GOES_WRONG", target_node_id="EVT_ORANGE_SHOT", mechanism="physical", fabula_time=4),
+        CausalEdge(source_event_id="EVT_ORANGE_SHOT", target_node_id="EVT_WAREHOUSE_RENDEZVOUS", mechanism="physical", fabula_time=6),
+        CausalEdge(source_event_id="EVT_WAREHOUSE_RENDEZVOUS", target_node_id="EVT_BLONDE_BRINGS_NASH", mechanism="social", fabula_time=7),
+        CausalEdge(source_event_id="EVT_BLONDE_BRINGS_NASH", target_node_id="EVT_NASH_TORTURED", mechanism="physical", fabula_time=8),
+        CausalEdge(source_event_id="EVT_NASH_TORTURED", target_node_id="EVT_EAR_SCENE", mechanism="physical", fabula_time=9),
+        CausalEdge(source_event_id="EVT_EAR_SCENE", target_node_id="EVT_ORANGE_KILLS_BLONDE", mechanism="physical", fabula_time=10),
+        CausalEdge(source_event_id="EVT_ORANGE_KILLS_BLONDE", target_node_id="EVT_EDDIE_KILLS_NASH", mechanism="social", fabula_time=11),
+        CausalEdge(source_event_id="EVT_EDDIE_KILLS_NASH", target_node_id="EVT_JOE_ACCUSES_ORANGE", mechanism="social", fabula_time=12),
+        CausalEdge(source_event_id="EVT_JOE_ACCUSES_ORANGE", target_node_id="EVT_MEXICAN_STANDOFF", mechanism="physical", fabula_time=13),
+        CausalEdge(source_event_id="EVT_MEXICAN_STANDOFF", target_node_id="EVT_PINK_FLEES", mechanism="social", fabula_time=14),
+        CausalEdge(source_event_id="EVT_MEXICAN_STANDOFF", target_node_id="EVT_ORANGE_CONFESSES", mechanism="psychological", fabula_time=14),
+        CausalEdge(source_event_id="EVT_ORANGE_CONFESSES", target_node_id="EVT_WHITE_KILLED", mechanism="psychological", fabula_time=16),
     ],
 
     # ── SOCIAL TOPOLOGY ────────────────────────────────────────────────────
@@ -252,16 +241,26 @@ world_state = WorldStateV1(
         SpatialEdge(source_id="LOC_JOES_OFFICE", target_id="LOC_STREETS"),
         SpatialEdge(source_id="LOC_STREETS", target_id="LOC_WAREHOUSE"),
     ],
+    information_topology=[
+        InformationEdge(
+            source_id="ENT_ORANGE",
+            target_ids=["ENT_NASH"],
+            medium="undercover_reports",
+            is_encrypted=True,
+            established_at_fabula=2,
+            terminated_at_fabula=4,
+        ),
+    ],
     social_topology=[
-        RelationshipEdge(source_entity_id="ENT_WHITE", target_entity_id="ENT_ORANGE", affinity=0.8, friction=0.2, power_dynamic=0.3, inertia=0.7),
-        RelationshipEdge(source_entity_id="ENT_ORANGE", target_entity_id="ENT_WHITE", affinity=0.5, friction=0.5, power_dynamic=-0.3, inertia=0.5),
-        RelationshipEdge(source_entity_id="ENT_WHITE", target_entity_id="ENT_JOE", affinity=0.5, friction=0.5, power_dynamic=-0.4, inertia=0.6),
-        RelationshipEdge(source_entity_id="ENT_WHITE", target_entity_id="ENT_BLONDE", affinity=-0.7, friction=0.9, power_dynamic=0.0, inertia=0.5),
-        RelationshipEdge(source_entity_id="ENT_BLONDE", target_entity_id="ENT_JOE", affinity=0.85, friction=0.1, power_dynamic=-0.5, inertia=0.9),
-        RelationshipEdge(source_entity_id="ENT_JOE", target_entity_id="ENT_BLONDE", affinity=0.7, friction=0.3, power_dynamic=0.5, inertia=0.7),
-        RelationshipEdge(source_entity_id="ENT_JOE", target_entity_id="ENT_EDDIE", affinity=0.8, friction=0.2, power_dynamic=0.4, inertia=0.8),
-        RelationshipEdge(source_entity_id="ENT_EDDIE", target_entity_id="ENT_JOE", affinity=0.85, friction=0.2, power_dynamic=-0.4, inertia=0.8),
-        RelationshipEdge(source_entity_id="ENT_PINK", target_entity_id="ENT_WHITE", affinity=0.1, friction=0.7, power_dynamic=0.0, inertia=0.4),
-        RelationshipEdge(source_entity_id="ENT_BLONDE", target_entity_id="ENT_NASH", affinity=-0.9, friction=1.0, power_dynamic=0.9, inertia=0.3),
+        RelationshipEdge(source_entity_id="ENT_WHITE", target_entity_id="ENT_ORANGE", affinity=0.8, fear=0.1, power_dynamic=0.3),
+        RelationshipEdge(source_entity_id="ENT_ORANGE", target_entity_id="ENT_WHITE", affinity=0.5, fear=0.25, power_dynamic=-0.3),
+        RelationshipEdge(source_entity_id="ENT_WHITE", target_entity_id="ENT_JOE", affinity=0.5, fear=0.25, power_dynamic=-0.4),
+        RelationshipEdge(source_entity_id="ENT_WHITE", target_entity_id="ENT_BLONDE", affinity=-0.7, fear=0.45, power_dynamic=0.0),
+        RelationshipEdge(source_entity_id="ENT_BLONDE", target_entity_id="ENT_JOE", affinity=0.85, fear=0.05, power_dynamic=-0.5),
+        RelationshipEdge(source_entity_id="ENT_JOE", target_entity_id="ENT_BLONDE", affinity=0.7, fear=0.15, power_dynamic=0.5),
+        RelationshipEdge(source_entity_id="ENT_JOE", target_entity_id="ENT_EDDIE", affinity=0.8, fear=0.1, power_dynamic=0.4),
+        RelationshipEdge(source_entity_id="ENT_EDDIE", target_entity_id="ENT_JOE", affinity=0.85, fear=0.1, power_dynamic=-0.4),
+        RelationshipEdge(source_entity_id="ENT_PINK", target_entity_id="ENT_WHITE", affinity=0.1, fear=0.35, power_dynamic=0.0),
+        RelationshipEdge(source_entity_id="ENT_BLONDE", target_entity_id="ENT_NASH", affinity=-0.9, fear=0.5, power_dynamic=0.9),
     ],
 )

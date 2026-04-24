@@ -98,8 +98,8 @@ class AMWNInstantiator:
         # Only add if NOT already covered by the formal causal topology (Section D)
         formal_causal_pairs = set()
         for ce in ego_payload.get("relevant_causal_edges", []):
-            src = ce.get("source_id")
-            tgt = ce.get("target_id")
+            src = ce.get("source_event_id")
+            tgt = ce.get("target_node_id")
             if src and tgt:
                 formal_causal_pairs.add((src, tgt))
 
@@ -112,33 +112,57 @@ class AMWNInstantiator:
 
         # D. Formal Causal Topology Edges (with real mechanism types)
         for ce in ego_payload.get("relevant_causal_edges", []):
-            src = ce.get("source_id")
-            tgt = ce.get("target_id")
+            src = ce.get("source_event_id")
+            tgt = ce.get("target_node_id")
             mech = ce.get("mechanism", "physical")
             if src and tgt and sandbox.has_node(src) and sandbox.has_node(tgt):
                 sandbox.add_edge(src, tgt, edge_type="causal", mechanism=mech,
                                  world_id=target_world_id)
 
-        # E. Spatial Navigation Edges (SpatialEdge, bidirectional unless locked)
+        # E. Spatial Navigation Edges (SpatialEdge — ALL edges wired, locked flagged)
         for se in ego_payload.get("relevant_spatial_edges", []):
             src_loc = se.get("source_id")
             tgt_loc = se.get("target_id")
             is_locked = se.get("is_locked", False)
-            if src_loc and tgt_loc and not is_locked:
-                if sandbox.has_node(src_loc) and sandbox.has_node(tgt_loc):
-                    sandbox.add_edge(src_loc, tgt_loc, edge_type="connected_to",
-                                     world_id=target_world_id)
-                    sandbox.add_edge(tgt_loc, src_loc, edge_type="connected_to",
-                                     world_id=target_world_id)
+            barrier_item_id = se.get("barrier_item_id")
+            if src_loc and tgt_loc and sandbox.has_node(src_loc) and sandbox.has_node(tgt_loc):
+                sandbox.add_edge(src_loc, tgt_loc, edge_type="connected_to",
+                                 is_locked=is_locked, barrier_item_id=barrier_item_id,
+                                 world_id=target_world_id)
+                sandbox.add_edge(tgt_loc, src_loc, edge_type="connected_to",
+                                 is_locked=is_locked, barrier_item_id=barrier_item_id,
+                                 world_id=target_world_id)
 
         # F. Information / Communication Edges (InformationEdge)
         for ie in ego_payload.get("relevant_information_edges", []):
             src = ie.get("source_id")
             medium = ie.get("medium", "unknown")
+            is_encrypted = ie.get("is_encrypted", False)
             for tgt in ie.get("target_ids", []):
                 if src and tgt and sandbox.has_node(src) and sandbox.has_node(tgt):
                     sandbox.add_edge(src, tgt, edge_type="communicating_with",
-                                     medium=medium, world_id=target_world_id)
+                                     medium=medium, is_encrypted=is_encrypted,
+                                     world_id=target_world_id)
+
+        # G. Epistemic Leakage (Eavesdropping on unencrypted comms)
+        # Any entity co-located with a comms participant can overhear unencrypted channels.
+        comms_edges = [
+            (u, v, d) for u, v, d in sandbox.edges(data=True)
+            if d.get("edge_type") == "communicating_with" and not d.get("is_encrypted", False)
+        ]
+        for src, tgt, cdata in comms_edges:
+            src_loc = sandbox.nodes.get(src, {}).get("location_id")
+            tgt_loc = sandbox.nodes.get(tgt, {}).get("location_id")
+            eavesdrop_locs = {loc for loc in (src_loc, tgt_loc) if loc}
+            for node_id, node_data in sandbox.nodes(data=True):
+                if node_data.get("node_type") != "Entity":
+                    continue
+                if node_id in (src, tgt):
+                    continue
+                if node_data.get("location_id") in eavesdrop_locs:
+                    sandbox.add_edge(src, node_id, edge_type="eavesdropped_by",
+                                     medium=cdata.get("medium", "unknown"),
+                                     world_id=target_world_id)
 
         return sandbox
 
@@ -179,11 +203,57 @@ class AMWNInstantiator:
                 cls._intervene_state(sandbox, node_id, property_path, new_value)
 
     # ==========================================
+    # SPATIAL AFFORDANCE CHECK
+    # ==========================================
+    @staticmethod
+    def _check_spatial_path(sandbox: nx.MultiDiGraph, entity_id: str,
+                            old_loc: str, new_loc: str) -> bool:
+        """Runs nx.has_path on a traversability sub-graph.
+        An edge is traversable if it is unlocked, or if the entity holds
+        an object whose affordances include 'unlock' targeting the barrier."""
+        traversable = nx.DiGraph()
+        for u, v, d in sandbox.edges(data=True):
+            if d.get("edge_type") != "connected_to":
+                continue
+            if not d.get("is_locked", False):
+                traversable.add_edge(u, v)
+            else:
+                barrier_id = d.get("barrier_item_id")
+                if barrier_id and AMWNInstantiator._has_unlock_affordance(sandbox, entity_id, barrier_id):
+                    traversable.add_edge(u, v)
+        if not traversable.has_node(old_loc) or not traversable.has_node(new_loc):
+            return False
+        return nx.has_path(traversable, old_loc, new_loc)
+
+    @staticmethod
+    def _has_unlock_affordance(sandbox: nx.MultiDiGraph, actor_id: str, barrier_id: str) -> bool:
+        """Check if the actor owns any object that can 'unlock' the barrier."""
+        barrier_type = sandbox.nodes.get(barrier_id, {}).get("node_type", "NarrativeObject")
+        for node_id, data in sandbox.nodes(data=True):
+            if data.get("node_type") != "NarrativeObject" or data.get("owner_id") != actor_id:
+                continue
+            for aff in data.get("affordances", []):
+                if isinstance(aff, dict) and aff.get("action") == "unlock" and aff.get("target_type") == barrier_type:
+                    return True
+        return False
+
+    # ==========================================
     # SURGERY 1: SPATIAL
     # ==========================================
     @staticmethod
     def _intervene_spatial(sandbox: nx.MultiDiGraph, entity_id: str, new_location_id: str):
-        """Forces an entity into a new room, severing old spatial edges."""
+        """Forces an entity into a new room, severing old spatial edges.
+        Validates the path using nx.has_path on traversable edges and checks
+        locked-barrier affordances before allowing the move."""
+        old_location_id = sandbox.nodes[entity_id].get("location_id")
+
+        # Spatial affordance gate: verify a valid path exists
+        if old_location_id and old_location_id != new_location_id and sandbox.has_node(new_location_id):
+            if not AMWNInstantiator._check_spatial_path(sandbox, entity_id, old_location_id, new_location_id):
+                logger.warning("[Surgery] Spatial affordance BLOCKED: no traversable path from %s to %s for %s.",
+                               old_location_id, new_location_id, entity_id)
+                return
+
         edges_to_remove = []
         for u, v, key, data in sandbox.out_edges(entity_id, data=True, keys=True):
             if data.get("edge_type") == "located_in":
@@ -231,11 +301,13 @@ class AMWNInstantiator:
             logger.info("[Surgery] Dropped %s on the floor.", object_id)
 
     # ==========================================
-    # SURGERY 3: SOCIAL
+    # SURGERY 3: SOCIAL (Impact > Inertia for relationships)
     # ==========================================
     @staticmethod
     def _intervene_relationship(sandbox: nx.MultiDiGraph, source_id: str, path: str, new_value: float):
-        """Forces a relationship metric (Affinity/Friction) to change."""
+        """Forces a relationship metric (Affinity/Fear/Power) to change.
+        Applies Impact > Inertia: if |desired_shift| <= edge inertia, the
+        relationship resists entirely; otherwise the shift is dampened."""
         parts = path.split('.')
         if len(parts) != 3:
             logger.warning("Malformed relationship path: %s. Expected 'relationships.<target>.<metric>'.", path)
@@ -247,8 +319,29 @@ class AMWNInstantiator:
             
         for u, v, key, data in sandbox.out_edges(source_id, data=True, keys=True):
             if v == target_id and data.get("edge_type") == "relationship":
-                sandbox[u][v][key][metric] = new_value
-                logger.info("[Surgery] Forced %s->%s %s to %s", source_id, target_id, metric, new_value)
+                current_val = data.get(metric, 0.0)
+                if not isinstance(current_val, (int, float)):
+                    current_val = 0.0
+                rel_inertia = data.get("inertia", 0.3)
+                desired_shift = float(new_value) - current_val
+
+                if abs(desired_shift) <= rel_inertia:
+                    logger.info("[Surgery] Relationship inertia blocked: %s->%s %s shift=%.2f <= inertia=%.2f. No change.",
+                                 source_id, target_id, metric, abs(desired_shift), rel_inertia)
+                    return
+
+                sign = 1 if desired_shift > 0 else -1
+                effective_shift = desired_shift - sign * rel_inertia
+                effective_val = current_val + effective_shift
+                # Clamp: affinity/power_dynamic in [-1,1], fear in [0,1]
+                if metric == "fear":
+                    effective_val = max(0.0, min(1.0, effective_val))
+                else:
+                    effective_val = max(-1.0, min(1.0, effective_val))
+
+                sandbox[u][v][key][metric] = effective_val
+                logger.info("[Surgery] Relationship dampened: %s->%s %s desired=%.2f, inertia=%.2f, effective=%.2f",
+                             source_id, target_id, metric, new_value, rel_inertia, effective_val)
                 return
 
     # ==========================================
@@ -256,10 +349,49 @@ class AMWNInstantiator:
     # ==========================================
     @staticmethod
     def _intervene_state(sandbox: nx.MultiDiGraph, node_id: str, path: str, new_value: Any):
-        """Forces a physical or psychological property and severs incoming causes."""
+        """Forces a physical or psychological property and severs incoming causes.
+        
+        If the path targets a trait value (e.g., 'traits.ambition.value' or 'traits.ambition'),
+        the Impact > Inertia check is applied: the effective shift is dampened by the trait's
+        inertia. If |desired_shift| <= inertia, the trait resists entirely.
+        """
         node_data = sandbox.nodes[node_id]
         keys = path.split('.')
-        
+
+        # --- IMPACT > INERTIA CHECK for trait mutations ---
+        if keys[0] == "traits" and len(keys) >= 2:
+            trait_name = keys[1]
+            trait_data = node_data.get("traits", {}).get(trait_name)
+            if isinstance(trait_data, dict) and "value" in trait_data and "inertia" in trait_data:
+                current_val = trait_data["value"]
+                trait_inertia = trait_data["inertia"]
+                # Determine the target value
+                if len(keys) == 2 and isinstance(new_value, (int, float)):
+                    target_val = float(new_value)
+                elif len(keys) == 3 and keys[2] == "value" and isinstance(new_value, (int, float)):
+                    target_val = float(new_value)
+                else:
+                    target_val = None
+                if target_val is not None:
+                    desired_shift = target_val - current_val
+                    if abs(desired_shift) <= trait_inertia:
+                        logger.info("[Surgery] Inertia blocked: %s.%s shift=%.2f <= inertia=%.2f. No change.",
+                                     node_id, path, abs(desired_shift), trait_inertia)
+                        return  # Trait resists — do NOT sever edges
+                    # Dampen: effective shift = desired_shift - sign(shift)*inertia
+                    sign = 1 if desired_shift > 0 else -1
+                    effective_shift = desired_shift - sign * trait_inertia
+                    effective_val = max(0.0, min(1.0, current_val + effective_shift))
+                    new_value = effective_val
+                    if len(keys) == 2:
+                        # Promote shorthand "traits.X" → "traits.X.value" so the
+                        # standard mutation updates the value inside the dict
+                        # instead of replacing the entire TraitVector.
+                        keys = [keys[0], keys[1], "value"]
+                    logger.info("[Surgery] Inertia dampened: %s.%s desired=%.2f, inertia=%.2f, effective=%.2f",
+                                 node_id, path, target_val, trait_inertia, effective_val)
+
+        # --- STANDARD STATE MUTATION ---
         current_level = node_data
         for key in keys[:-1]:
             if key not in current_level or not isinstance(current_level[key], dict):
