@@ -169,10 +169,19 @@ class CausalPhysicsEngine:
                 node_data = self.sandbox.nodes[eid]
                 if node_data.get("node_type") == "EventNode":
                     for ce in self.world_state.causal_topology:
-                        if ce.source_event_id != eid:
+                        if ce.source_id != eid:
                             continue
+                        # Respect propagation_delay: skip edges whose effect hasn't elapsed
+                        if ce.propagation_delay > 0:
+                            target_node = self.sandbox.nodes.get(ce.target_id)
+                            target_ft = target_node.get("fabula_time", float("inf")) if target_node else float("inf")
+                            if target_ft < ce.fabula_time + ce.propagation_delay:
+                                logger.debug("[CausalPhysics·Abduction] Skipping edge %s→%s: delay=%d not elapsed.",
+                                             ce.source_id, ce.target_id, ce.propagation_delay)
+                                continue
                         mult = STRENGTH_MULTIPLIER.get(ce.evidence_strength, 0.5)
-                        target_node = self.sandbox.nodes.get(ce.target_node_id)
+                        force_scale = ce.causal_force / 10.0
+                        target_node = self.sandbox.nodes.get(ce.target_id)
                         if target_node and target_node.get("node_type") == "Entity":
                             traits = target_node.get("traits", {})
                             relevant = MECHANISM_TRAIT_MAP.get(ce.mechanism, None)
@@ -181,13 +190,13 @@ class CausalPhysicsEngine:
                                     continue
                                 old_val = trait_data["value"]
                                 if relevant is None or trait_name in relevant:
-                                    trait_data["value"] = max(0.0, min(1.0, old_val + mult * 0.1))
+                                    trait_data["value"] = max(0.0, min(1.0, old_val + mult * force_scale))
                                     logger.debug("[CausalPhysics·Abduction] Event %s → %s.%s: mechanism=%s matched, old=%.3f new=%.3f",
-                                                 eid, ce.target_node_id, trait_name, ce.mechanism, old_val, trait_data["value"])
+                                                 eid, ce.target_id, trait_name, ce.mechanism, old_val, trait_data["value"])
                                 else:
-                                    trait_data["value"] = max(0.0, min(1.0, old_val + mult * 0.1 * MECHANISM_FALLBACK_FACTOR))
+                                    trait_data["value"] = max(0.0, min(1.0, old_val + mult * force_scale * MECHANISM_FALLBACK_FACTOR))
                                     logger.debug("[CausalPhysics·Abduction] Event %s → %s.%s: mechanism=%s fallback, old=%.3f new=%.3f",
-                                                 eid, ce.target_node_id, trait_name, ce.mechanism, old_val, trait_data["value"])
+                                                 eid, ce.target_id, trait_name, ce.mechanism, old_val, trait_data["value"])
                     logger.info("[CausalPhysics·Abduction] Propagated evidence from event %s.", eid)
             else:
                 logger.warning("[CausalPhysics·Abduction] Evidence node %s not in sandbox. Skipping.", eid)
@@ -224,7 +233,19 @@ class CausalPhysicsEngine:
         causal_graph = nx.DiGraph()
         for u, v, d in self.sandbox.edges(data=True):
             if d.get("edge_type") == "causal":
-                weight = STRENGTH_MULTIPLIER.get(d.get("evidence_strength", "moderate"), 0.5)
+                # Respect propagation_delay: skip edges whose effect hasn't manifested yet
+                delay = d.get("propagation_delay", 0)
+                edge_ft = d.get("fabula_time", 0)
+                target_node = self.sandbox.nodes.get(v, {})
+                target_ft = target_node.get("fabula_time", float("inf"))
+                if delay > 0 and target_ft < edge_ft + delay:
+                    logger.debug("[CausalPhysics·Propagate] Skipping edge %s→%s: delay=%d, edge_ft=%d, target_ft=%s",
+                                 u, v, delay, edge_ft, target_ft)
+                    continue
+
+                evidence_w = STRENGTH_MULTIPLIER.get(d.get("evidence_strength", "moderate"), 0.5)
+                force_scale = d.get("causal_force", 5.0) / 10.0
+                weight = evidence_w * force_scale
                 # DiGraph only keeps one edge per (u,v), take the max weight
                 mechanism = d.get("mechanism", "physical")
                 if causal_graph.has_edge(u, v):
@@ -271,10 +292,10 @@ class CausalPhysicsEngine:
                 current_val = trait_data["value"]
                 trait_inertia = trait_data.get("inertia", 0.5)
 
-                # Sum impact: each incoming causal edge contributes
-                # source_trait_value × causal_weight.  For event→entity edges
-                # the source is an EventNode (no traits), so we use the edge
-                # weight directly as a fixed impulse.
+                # Sum impact: each incoming causal edge contributes.
+                # Edge weight already encodes evidence_strength × causal_force.
+                # For entity→entity edges, use signed delta toward source.
+                # For event→entity or other, use weight as fixed impulse.
                 total_impact = 0.0
                 spatial_ok = True
 
@@ -299,10 +320,10 @@ class CausalPhysicsEngine:
                             # Signed delta: shift toward source trait value
                             total_impact += (src_trait["value"] - current_val) * w
                         else:
-                            total_impact += w * 0.1
+                            total_impact += w
                     else:
                         # EventNode or other — fixed impulse from edge weight
-                        total_impact += w * 0.1
+                        total_impact += w
 
                     # Spatial affordance: if the target entity's location is
                     # reachable from the source's location.  We only check when

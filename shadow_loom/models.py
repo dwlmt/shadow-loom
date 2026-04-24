@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import Any, List, Dict, Optional, Literal, Union
 
 # =====================================================================
@@ -66,8 +66,8 @@ class EventNode(AMWNNode):
         description="The sequence this appears in the text (e.g., Chapter 4, Paragraph 2). Used for Suspense."
     )
     event_type: Literal["choice", "outcome", "revelation"]
-    actor_id: Optional[str] = Field(default=None, description="Who did it? Null if natural event.")
-    target_id: Optional[str] = Field(default=None, description="Who/what was acted upon? e.g., ENT_DUNCAN in a murder event.")
+    actor_ids: List[str] = Field(default_factory=list, description="Who did it? Empty if natural event. Supports joint actions (e.g., ['ENT_MACBETH', 'ENT_LADY_MACBETH']).")
+    target_ids: List[str] = Field(default_factory=list, description="Who/what was acted upon? e.g., ['ENT_DUNCAN'] in a murder event. Supports diffuse effects.")
     description: str
 
 class AMWNEdge(BaseModel):
@@ -92,22 +92,90 @@ class InformationEdge(AMWNEdge):
     discovered_at_syuzhet: int = 0
 
 # ==========================================
-# 2. THE EXPLANATORY LINK: CausalEdge
+# 2. THE UNIVERSAL CAUSAL LINK: CausalEdge
 # ==========================================
 class CausalEdge(AMWNEdge):
-    source_event_id: str = Field(description="Must be an EVT_ID")
-    target_node_id: str = Field(description="The Node altered by the event.")
-    
-    # UPGRADE: The Mechanism
+    """
+    A universal causal link that can bridge Events, States, Traits, and Affordances.
+
+    Supports four modalities of narrative causality:
+      - chain_reaction:        Event → Event  (direct sequential triggers)
+      - mutation:              Event → State   (actions leave marks on the world)
+      - affordance_gate:       State → Event   (states enable or prevent events)
+      - ambient_propagation:   State → State   (background physics without events)
+    """
+    source_id: str = Field(
+        description="The cause. Can be an EVT_ (Event), ENT_ (Trait/State), LOC_ (Ambient State), or OBJ_ (Affordance)."
+    )
+    target_id: str = Field(
+        description="The effect. The node that is triggered or mutated."
+    )
+
+    causality_type: Literal[
+        "chain_reaction",
+        "mutation",
+        "affordance_gate",
+        "ambient_propagation",
+    ] = Field(
+        description=(
+            "The modality of the causal link: "
+            "chain_reaction = Event→Event, "
+            "mutation = Event→State, "
+            "affordance_gate = State→Event, "
+            "ambient_propagation = State→State."
+        ),
+    )
+
+    causal_force: float = Field(
+        default=5.0,
+        description="0.0 to 10.0. The Impact magnitude this cause applies to the target.",
+    )
+
     mechanism: str = Field(
-        description="The 'how' of the causality. e.g., 'physical_force', 'epistemic_revelation', 'social_coercion', 'magic_mutation'"
+        description=(
+            "The 'how' of the causality. e.g., 'physical_force', 'epistemic_revelation', "
+            "'social_coercion', 'psychological', 'emotional', 'kinetic', 'chemical'"
+        ),
     )
     evidence_strength: Literal["weak", "moderate", "strong"] = Field(
         default="moderate",
-        description="Statistical confidence for PyMC variance: weak=high variance, strong=low variance."
+        description="Statistical confidence for Bayes variance: weak=high variance, strong=low variance.",
     )
-    
+
+    propagation_delay: int = Field(
+        default=0,
+        description="Number of fabula ticks between cause firing and effect manifesting. 0 = instantaneous.",
+    )
+
     fabula_time: int = Field(description="The exact physics tick this cause took effect.")
+
+    @model_validator(mode="after")
+    def _check_causality_type_matches_ids(self) -> "CausalEdge":
+        src_is_event = self.source_id.startswith("EVT_")
+        tgt_is_event = self.target_id.startswith("EVT_")
+        ct = self.causality_type
+
+        if src_is_event and ct not in ("chain_reaction", "mutation"):
+            raise ValueError(
+                f"source_id '{self.source_id}' is an event — causality_type must be "
+                f"'chain_reaction' or 'mutation', got '{ct}'."
+            )
+        if not src_is_event and ct not in ("affordance_gate", "ambient_propagation"):
+            raise ValueError(
+                f"source_id '{self.source_id}' is a state node — causality_type must be "
+                f"'affordance_gate' or 'ambient_propagation', got '{ct}'."
+            )
+        if tgt_is_event and ct not in ("chain_reaction", "affordance_gate"):
+            raise ValueError(
+                f"target_id '{self.target_id}' is an event — causality_type must be "
+                f"'chain_reaction' or 'affordance_gate', got '{ct}'."
+            )
+        if not tgt_is_event and ct not in ("mutation", "ambient_propagation"):
+            raise ValueError(
+                f"target_id '{self.target_id}' is a state node — causality_type must be "
+                f"'mutation' or 'ambient_propagation', got '{ct}'."
+            )
+        return self
 
 # ==========================================
 # 3. THE ACCUMULATOR EDGE: RelationshipEdge
@@ -172,4 +240,4 @@ class WorldStateV1(BaseModel):
     causal_topology: List[CausalEdge]
     spatial_topology: List[SpatialEdge] = Field(default_factory=list)
     information_topology: List[InformationEdge] = Field(default_factory=list)
-    social_topology: List[RelationshipEdge]
+    social_topology: List[RelationshipEdge] = Field(default_factory=list)

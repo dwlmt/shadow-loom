@@ -238,8 +238,11 @@ def _resolve_focus_entities(interventions: Dict[str, Any], global_world_state: W
         else:
             # Event reference — use the event's actor
             event = next((e for e in global_world_state.events if e.id == node_id), None)
-            if event and event.actor_id and event.actor_id in global_world_state.entities:
-                resolved = event.actor_id
+            if event and event.actor_ids:
+                for _aid in event.actor_ids:
+                    if _aid in global_world_state.entities:
+                        resolved = _aid
+                        break
             else:
                 # Object reference — use the object's owner
                 obj = global_world_state.objects.get(node_id)
@@ -298,7 +301,7 @@ def _calculate_past_anchor(interventions: Dict[str, Any], global_world_state: Wo
         # We must find the last time this object was interacted with to anchor the timeline.
         relevant_events = [
             evt for evt in global_world_state.events 
-            if evt.actor_id == node_id or (evt.description and node_id in evt.description)
+            if node_id in evt.actor_ids or node_id in evt.target_ids or (evt.description and node_id in evt.description)
         ]
         if relevant_events:
             # Find the most recent event involving this noun
@@ -492,9 +495,16 @@ def _apply_abduction(
             node_data = sandbox.nodes[eid]
             if node_data.get("node_type") == "EventNode":
                 for ce in global_world_state.causal_topology:
-                    if ce.source_event_id == eid:
+                    if ce.source_id == eid:
+                        # Respect propagation_delay
+                        if ce.propagation_delay > 0:
+                            target_node_data = sandbox.nodes.get(ce.target_id)
+                            target_ft = target_node_data.get("fabula_time", float("inf")) if target_node_data else float("inf")
+                            if target_ft < ce.fabula_time + ce.propagation_delay:
+                                continue
                         mult = evidence_strength_multiplier.get(ce.evidence_strength, 0.5)
-                        target_node = sandbox.nodes.get(ce.target_node_id)
+                        force_scale = ce.causal_force / 10.0
+                        target_node = sandbox.nodes.get(ce.target_id)
                         if target_node and target_node.get("node_type") == "Entity":
                             traits = target_node.get("traits", {})
                             relevant = _MECHANISM_TRAIT_MAP.get(ce.mechanism, None)
@@ -503,9 +513,9 @@ def _apply_abduction(
                                     continue
                                 old_val = trait_data["value"]
                                 if relevant is None or trait_name in relevant:
-                                    trait_data["value"] = max(0.0, min(1.0, old_val + mult * 0.1))
+                                    trait_data["value"] = max(0.0, min(1.0, old_val + mult * force_scale))
                                 else:
-                                    trait_data["value"] = max(0.0, min(1.0, old_val + mult * 0.1 * _MECHANISM_FALLBACK_FACTOR))
+                                    trait_data["value"] = max(0.0, min(1.0, old_val + mult * force_scale * _MECHANISM_FALLBACK_FACTOR))
                 logger.info("[Abduction] Propagated evidence from event %s.", eid)
         else:
             logger.warning("[Abduction] Evidence node %s not in sandbox. Skipping.", eid)
@@ -538,13 +548,21 @@ def _apply_forward_cascade(
     edge_meta: Dict[tuple, Dict[str, Any]] = {}  # (src, tgt) → {weight, mechanism}
 
     for ce in global_world_state.causal_topology:
-        src = ce.source_event_id
-        tgt = ce.target_node_id
+        src = ce.source_id
+        tgt = ce.target_id
         if not sandbox.has_node(src) and src not in {
             nid for nid, _ in sandbox.nodes(data=True)
         }:
             continue
-        weight = strength_mult.get(ce.evidence_strength, 0.5)
+        # Respect propagation_delay
+        if ce.propagation_delay > 0:
+            target_node_data = sandbox.nodes.get(tgt)
+            target_ft = target_node_data.get("fabula_time", float("inf")) if target_node_data else float("inf")
+            if target_ft < ce.fabula_time + ce.propagation_delay:
+                continue
+        evidence_w = strength_mult.get(ce.evidence_strength, 0.5)
+        force_scale = ce.causal_force / 10.0
+        weight = evidence_w * force_scale
         key = (src, tgt)
         if causal_graph.has_edge(src, tgt):
             existing_w = causal_graph[src][tgt].get("weight", 0.0)
@@ -621,7 +639,7 @@ def _apply_forward_cascade(
                         # Signed delta: shift toward source trait value
                         total_impact += (src_trait["value"] - current_val) * w
                     else:
-                        total_impact += w * 0.1
+                        total_impact += w
                     # Spatial affordance
                     src_loc = src_data.get("location_id")
                     if (src_loc and tgt_loc and src_loc != tgt_loc
@@ -630,7 +648,7 @@ def _apply_forward_cascade(
                         if not nx.has_path(traversable, src_loc, tgt_loc):
                             spatial_ok = False
                 else:
-                    total_impact += w * 0.1
+                    total_impact += w
 
             if not spatial_ok:
                 logger.debug("[ForwardCascade] BLOCKED spatial: %s.%s", node_id, trait_name)

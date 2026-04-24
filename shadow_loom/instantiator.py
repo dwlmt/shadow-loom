@@ -101,27 +101,36 @@ class AMWNInstantiator:
         # Only add if NOT already covered by the formal causal topology (Section D)
         formal_causal_pairs = set()
         for ce in ego_payload.get("relevant_causal_edges", []):
-            src = ce.get("source_event_id")
-            tgt = ce.get("target_node_id")
+            src = ce.get("source_id")
+            tgt = ce.get("target_id")
             if src and tgt:
                 formal_causal_pairs.add((src, tgt))
 
         for evt in ego_payload.get("recent_memory", []):
             evt_id = evt.get("id")
-            actor_id = evt.get("actor_id")
-            if evt_id and actor_id and sandbox.has_node(actor_id):
-                if (actor_id, evt_id) not in formal_causal_pairs:
-                    sandbox.add_edge(actor_id, evt_id, edge_type="causal", mechanism="physical")
+            actor_ids = evt.get("actor_ids", [])
+            for actor_id in actor_ids:
+                if evt_id and actor_id and sandbox.has_node(actor_id):
+                    if (actor_id, evt_id) not in formal_causal_pairs:
+                        sandbox.add_edge(actor_id, evt_id, edge_type="causal", mechanism="physical")
 
         # D. Formal Causal Topology Edges (with real mechanism types)
         for ce in ego_payload.get("relevant_causal_edges", []):
-            src = ce.get("source_event_id")
-            tgt = ce.get("target_node_id")
+            src = ce.get("source_id")
+            tgt = ce.get("target_id")
             mech = ce.get("mechanism", "physical")
             strength = ce.get("evidence_strength", "moderate")
+            force = ce.get("causal_force", 5.0)
+            ctype = ce.get("causality_type", "chain_reaction")
+            delay = ce.get("propagation_delay", 0)
+            ft = ce.get("fabula_time", 0)
             if src and tgt and sandbox.has_node(src) and sandbox.has_node(tgt):
                 sandbox.add_edge(src, tgt, edge_type="causal", mechanism=mech,
                                  evidence_strength=strength,
+                                 causal_force=force,
+                                 causality_type=ctype,
+                                 propagation_delay=delay,
+                                 fabula_time=ft,
                                  world_id=target_world_id)
 
         # E. Spatial Navigation Edges (SpatialEdge — ALL edges wired, locked flagged)
@@ -300,6 +309,10 @@ class AMWNInstantiator:
         
         if new_owner_id and sandbox.has_node(new_owner_id):
             sandbox.nodes[object_id]["owner_id"] = new_owner_id
+            # Sync location_id to the new owner's location
+            owner_loc = sandbox.nodes[new_owner_id].get("location_id")
+            if owner_loc:
+                sandbox.nodes[object_id]["location_id"] = None
             sandbox.add_edge(object_id, new_owner_id, edge_type="owned_by", world_id="shadow")
             logger.info("[Surgery] Gave %s to %s", object_id, new_owner_id)
         else:
@@ -311,6 +324,7 @@ class AMWNInstantiator:
             if not drop_loc:
                 drop_loc = sandbox.nodes[object_id].get("location_id")
             if drop_loc and sandbox.has_node(drop_loc):
+                sandbox.nodes[object_id]["location_id"] = drop_loc
                 sandbox.add_edge(object_id, drop_loc, edge_type="located_in", world_id="shadow")
             logger.info("[Surgery] Dropped %s on the floor.", object_id)
 

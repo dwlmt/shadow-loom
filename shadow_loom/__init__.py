@@ -6,7 +6,9 @@ from shadow_loom.directive_assembly import (
 from shadow_loom.ingestion import (
     run_extraction, extract_ontology, extract_topology,
     assemble_world_state, validate_world_state,
-    GlobalRegister, ChunkTopology, ChunkChronology, ChunkEdges,
+    GlobalRegister, LocationRegister, ObjectRegister, EntityRegister,
+    ChunkTopology, QAPair, SocraticScaffold,
+    PhysicsExtraction, SocialExtraction,
     ValidationReport, ExtractionConfig,
 )
 
@@ -24,9 +26,14 @@ __all__ = [
     "assemble_world_state",
     "validate_world_state",
     "GlobalRegister",
+    "LocationRegister",
+    "ObjectRegister",
+    "EntityRegister",
     "ChunkTopology",
-    "ChunkChronology",
-    "ChunkEdges",
+    "QAPair",
+    "SocraticScaffold",
+    "PhysicsExtraction",
+    "SocialExtraction",
     "ValidationReport",
     "ExtractionConfig",
 ]

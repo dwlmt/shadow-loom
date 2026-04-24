@@ -1166,8 +1166,8 @@ class TestInertiaPhysics:
         # Inject one so we can verify it survives an inertia-blocked mutation.
         ws.causal_topology.append(
             CausalEdge(
-                source_event_id="EVT_MACBETH_KILLED",
-                target_node_id="ENT_MACBETH",
+                source_id="EVT_MACBETH_KILLED",
+                target_id="ENT_MACBETH", causality_type="mutation", causal_force=5.0,
                 mechanism="physical",
                 fabula_time=19,
             )
@@ -1304,24 +1304,24 @@ class TestBeliefTimeSlicing:
 class TestSchemaCompleteness:
     """Verify new schema fields are present and correctly typed."""
 
-    def test_event_node_has_target_id(self):
-        """EventNode must have target_id field."""
+    def test_event_node_has_target_ids(self):
+        """EventNode must have target_ids field."""
         from shadow_loom.models import EventNode
         evt = EventNode(
             id="EVT_TEST", fabula_time=1, syuzhet_index=1,
-            event_type="choice", actor_id="ENT_A", target_id="ENT_B",
+            event_type="choice", actor_ids=["ENT_A"], target_ids=["ENT_B"],
             description="Test"
         )
-        assert evt.target_id == "ENT_B"
+        assert evt.target_ids == ["ENT_B"]
 
-    def test_event_node_target_id_defaults_none(self):
-        """EventNode.target_id must default to None."""
+    def test_event_node_target_ids_defaults_empty(self):
+        """EventNode.target_ids must default to empty list."""
         from shadow_loom.models import EventNode
         evt = EventNode(
             id="EVT_TEST", fabula_time=1, syuzhet_index=1,
             event_type="choice", description="Test"
         )
-        assert evt.target_id is None
+        assert evt.target_ids == []
 
     def test_belief_has_established_at_fabula(self):
         """Belief must have established_at_fabula field."""
@@ -1361,7 +1361,7 @@ class TestSchemaCompleteness:
         """CausalEdge must have evidence_strength field."""
         from shadow_loom.models import CausalEdge
         ce = CausalEdge(
-            source_event_id="EVT_A", target_node_id="ENT_B",
+            source_id="EVT_A", target_id="ENT_B", causality_type="mutation", causal_force=5.0,
             mechanism="physical", fabula_time=1, evidence_strength="strong"
         )
         assert ce.evidence_strength == "strong"
@@ -1370,7 +1370,7 @@ class TestSchemaCompleteness:
         """CausalEdge.evidence_strength must default to 'moderate'."""
         from shadow_loom.models import CausalEdge
         ce = CausalEdge(
-            source_event_id="EVT_A", target_node_id="ENT_B",
+            source_id="EVT_A", target_id="ENT_B", causality_type="mutation", causal_force=5.0,
             mechanism="physical", fabula_time=1
         )
         assert ce.evidence_strength == "moderate"

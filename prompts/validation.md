@@ -55,4 +55,5 @@ Return a JSON object with:
 3. **Logical contradictions are errors.** Traits/beliefs that conflict with events, impossible spatial movements.
 4. **Missing causal chains and information flows are errors** if they represent significant narrative omissions.
 5. **Orphaned nodes are warnings** unless they represent significant omissions.
-6. **Focus on narrative logic and completeness**, not structural correctness. You are checking the story's internal consistency.
+6. **Causal edges can link ANY node types** — events, entities, objects, or locations. A `source_id` or `target_id` pointing to an `ENT_`, `OBJ_`, or `LOC_` ID is valid and expected. Check that the `causality_type` makes narrative sense (e.g. a `mutation` edge should show an event changing a state, an `affordance_gate` should show a state enabling an event). Do NOT flag non-event sources or targets as structural errors.
+7. **Focus on narrative logic and completeness**, not structural correctness. You are checking the story's internal consistency.

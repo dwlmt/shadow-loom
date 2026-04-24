@@ -170,7 +170,10 @@ def extract_ego_graph_from_memory(
     )
     relevant_causal_edges = []
     for edge in world_state.causal_topology:
-        if edge.source_event_id in scene_node_ids and edge.target_node_id in scene_node_ids:
+        if edge.source_id in scene_node_ids and edge.target_id in scene_node_ids:
+            # Filter out future causal edges when a temporal anchor is set
+            if temporal_anchor is not None and edge.fabula_time > temporal_anchor:
+                continue
             relevant_causal_edges.append(edge.model_dump())
 
     payload = EgoGraphPayload(

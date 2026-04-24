@@ -1,10 +1,15 @@
 """
-Text-to-WorldState Extraction Pipeline.
+Text-to-WorldState Register-Hybrid Extraction Pipeline.
 
-Three-step LLM extraction using PydanticAI + Ollama:
-  Step 1 — Global Ontology Extraction (entities, locations, objects)
-  Step 2 — Chunk-by-chunk Topology Extraction (events, edges)
-  Step 3 — Assembly + Validation (merge, sort, audit)
+Five-step LLM extraction using PydanticAI + Ollama:
+  Step 1 — Global Coreference Pre-Pass (three separate passes → GlobalRegister)
+    Step 1a — Location extraction (LOC_ nodes)
+    Step 1b — Object extraction (OBJ_ nodes, with location context)
+    Step 1c — Entity extraction (ENT_ nodes, with location + object context)
+  Step 2 — Semantic Scaffolding (Socratic QA per chunk)
+  Step 3 — Decomposed Topology Extraction (Physics Agent + Social Agent per chunk)
+  Step 4 — Pydantic Propose-Critique-Repair (per-chunk result validation)
+  Step 5 — Global Assembly + Mathematical Sorting + Validation + Correction
 
 All LLM system prompts are loaded from external markdown files
 in the ``prompts/`` directory at the project root.
@@ -15,10 +20,10 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import Dict, List, Literal, Tuple
 
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent, NativeOutput, RunContext
+from pydantic_ai import Agent, ModelRetry, NativeOutput, RunContext
 from pydantic_ai.providers.ollama import OllamaProvider
 
 from shadow_loom.models import (
@@ -85,8 +90,29 @@ class GlobalRegister(BaseModel):
     )
 
 
+class LocationRegister(BaseModel):
+    """Step 1a output: all unique locations extracted from the narrative."""
+    locations: Dict[str, Location] = Field(
+        description="All unique locations keyed by LOC_ IDs (e.g. LOC_INVERNESS_CASTLE).",
+    )
+
+
+class ObjectRegister(BaseModel):
+    """Step 1b output: all unique narrative objects extracted from the narrative."""
+    objects: Dict[str, NarrativeObject] = Field(
+        description="All unique narrative objects keyed by OBJ_ IDs (e.g. OBJ_DAGGER).",
+    )
+
+
+class EntityRegister(BaseModel):
+    """Step 1c output: all unique entities (characters, groups) extracted from the narrative."""
+    entities: Dict[str, Entity] = Field(
+        description="All unique entities (characters, groups) keyed by ENT_ IDs (e.g. ENT_MACBETH).",
+    )
+
+
 class ChunkTopology(BaseModel):
-    """Step 2 output: localised events and edges from a single text chunk."""
+    """Merged output per chunk: events + all edge types. Used by assembly."""
     events: List[EventNode] = Field(default_factory=list)
     causal_topology: List[CausalEdge] = Field(default_factory=list)
     information_topology: List[InformationEdge] = Field(default_factory=list)
@@ -94,17 +120,35 @@ class ChunkTopology(BaseModel):
     spatial_topology: List[SpatialEdge] = Field(default_factory=list)
 
 
-class ChunkChronology(BaseModel):
-    """Pass B output: events only from a single text chunk."""
+class QAPair(BaseModel):
+    """A single Socratic question-answer pair from semantic scaffolding."""
+    category: Literal["who", "what", "where", "when", "why", "how"] = Field(
+        description="The interrogative category of this QA pair.",
+    )
+    question: str = Field(description="The question about this chunk of text.")
+    answer: str = Field(description="The answer, articulating implicit reasoning and hidden variables.")
+
+
+class SocraticScaffold(BaseModel):
+    """Step 2 output: semantic scaffolding QA pairs for a single chunk."""
+    qa_pairs: List[QAPair] = Field(
+        default_factory=list,
+        description="Who/What/Where/When/Why/How pairs articulating the "
+        "narrative logic of this chunk before structured extraction.",
+    )
+
+
+class PhysicsExtraction(BaseModel):
+    """Step 3a output: events + causal/spatial edges from the Physics Agent."""
     events: List[EventNode] = Field(default_factory=list)
-
-
-class ChunkEdges(BaseModel):
-    """Pass C output: edges only from a single text chunk."""
     causal_topology: List[CausalEdge] = Field(default_factory=list)
+    spatial_topology: List[SpatialEdge] = Field(default_factory=list)
+
+
+class SocialExtraction(BaseModel):
+    """Step 3b output: information + relationship edges from the Social Agent."""
     information_topology: List[InformationEdge] = Field(default_factory=list)
     social_topology: List[RelationshipEdge] = Field(default_factory=list)
-    spatial_topology: List[SpatialEdge] = Field(default_factory=list)
 
 
 class ValidationIssue(BaseModel):
@@ -142,18 +186,29 @@ class ExtractionConfig(BaseModel):
         description="How to split the input text into chunks for Step 2.",
     )
     output_retries: int = Field(
-        default=3,
+        default=5,
         description="Max retries for PydanticAI output validation.",
     )
     fabula_time_spacing: int = Field(
-        default=100,
-        description="Base spacing between fabula_time values (e.g. 100 → 100, 200, 300). "
+        default=1000,
+        description="Base spacing between fabula_time values (e.g. 1000 → 1000, 2000, 3000). "
         "Gaps allow flashbacks and interstitial events to be inserted later.",
     )
     min_chunk_chars: int = Field(
         default=1500,
         description="Minimum chunk size in characters. Adjacent small paragraphs are "
         "merged until they reach this threshold.",
+    )
+    chunk_overlap_chars: int = Field(
+        default=300,
+        description="Number of trailing characters from the previous chunk to prepend "
+        "as context for the next chunk. Helps maintain coreference across "
+        "chunk boundaries.",
+    )
+    max_correction_retries: int = Field(
+        default=1,
+        description="Maximum correction passes after validation. Each pass feeds "
+        "programmatic errors back to the LLM for targeted repair.",
     )
 
 
@@ -237,11 +292,110 @@ def chunk_text(text: str, strategy: str = "act_headings", min_chunk_chars: int =
 
 
 # =====================================================================
-# Step 1 — Global Ontology Extraction
+# Step 1 — Global Ontology Extraction (Three Separate Passes)
 # =====================================================================
 
+# --- Step 1a: Location extraction (no dependencies) ---
+
+def _build_location_agent(config: ExtractionConfig) -> Agent[None, LocationRegister]:
+    """Construct the Step 1a Location Agent."""
+    return Agent(
+        _resolve_model(config.model),
+        output_type=NativeOutput(LocationRegister),
+        system_prompt=_load_prompt("ontology_locations.md"),
+        retries=config.output_retries,
+    )
+
+
+# --- Step 1b: Object extraction (depends on locations) ---
+
+class _ObjectDeps(BaseModel):
+    """Dependencies for Step 1b — objects need location IDs for location_id."""
+    model_config = {"protected_namespaces": ()}
+    location_register: LocationRegister
+
+
+def _build_object_agent(config: ExtractionConfig) -> Agent[_ObjectDeps, ObjectRegister]:
+    """Construct the Step 1b Object Agent."""
+    agent: Agent[_ObjectDeps, ObjectRegister] = Agent(
+        _resolve_model(config.model),
+        deps_type=_ObjectDeps,
+        output_type=NativeOutput(ObjectRegister),
+        system_prompt=_load_prompt("ontology_objects.md"),
+        retries=config.output_retries,
+    )
+
+    @agent.system_prompt
+    def inject_locations_for_objects(ctx: RunContext[_ObjectDeps]) -> str:
+        loc_ids = sorted(ctx.deps.location_register.locations.keys())
+        loc_names = {
+            lid: ctx.deps.location_register.locations[lid].name
+            for lid in loc_ids
+        }
+        return (
+            "=== LOCATION REGISTER (from Step 1a) ===\n"
+            f"LOCATION IDs: {loc_ids}\n"
+            f"LOCATION NAMES: {loc_names}\n"
+            "\n"
+            "Use ONLY these LOC_ IDs when assigning location_id to objects.\n"
+            "Set location_id to null if the object is held by someone."
+        )
+
+    return agent
+
+
+# --- Step 1c: Entity extraction (depends on locations + objects) ---
+
+class _EntityDeps(BaseModel):
+    """Dependencies for Step 1c — entities need location + object IDs."""
+    model_config = {"protected_namespaces": ()}
+    location_register: LocationRegister
+    object_register: ObjectRegister
+
+
+def _build_entity_agent(config: ExtractionConfig) -> Agent[_EntityDeps, EntityRegister]:
+    """Construct the Step 1c Entity Agent."""
+    agent: Agent[_EntityDeps, EntityRegister] = Agent(
+        _resolve_model(config.model),
+        deps_type=_EntityDeps,
+        output_type=NativeOutput(EntityRegister),
+        system_prompt=_load_prompt("ontology_entities.md"),
+        retries=config.output_retries,
+    )
+
+    @agent.system_prompt
+    def inject_registers_for_entities(ctx: RunContext[_EntityDeps]) -> str:
+        loc_ids = sorted(ctx.deps.location_register.locations.keys())
+        loc_names = {
+            lid: ctx.deps.location_register.locations[lid].name
+            for lid in loc_ids
+        }
+        obj_ids = sorted(ctx.deps.object_register.objects.keys())
+        obj_names = {
+            oid: ctx.deps.object_register.objects[oid].name
+            for oid in obj_ids
+        }
+        return (
+            "=== LOCATION REGISTER (from Step 1a) ===\n"
+            f"LOCATION IDs: {loc_ids}\n"
+            f"LOCATION NAMES: {loc_names}\n"
+            "\n"
+            "=== OBJECT REGISTER (from Step 1b) ===\n"
+            f"OBJECT IDs: {obj_ids}\n"
+            f"OBJECT NAMES: {obj_names}\n"
+            "\n"
+            "Use ONLY these LOC_ IDs when assigning location_id.\n"
+            "You may reference LOC_ and OBJ_ IDs in belief target_id fields.\n"
+            "You may also reference ENT_ IDs you are creating in this pass."
+        )
+
+    return agent
+
+
+# --- Legacy single-pass agent (kept for backward compatibility) ---
+
 def _build_ontology_agent(config: ExtractionConfig) -> Agent[None, GlobalRegister]:
-    """Construct the Step 1 PydanticAI agent."""
+    """Construct the legacy single-pass Step 1 PydanticAI agent."""
     return Agent(
         _resolve_model(config.model),
         output_type=NativeOutput(GlobalRegister),
@@ -250,16 +404,81 @@ def _build_ontology_agent(config: ExtractionConfig) -> Agent[None, GlobalRegiste
     )
 
 
+def _resolve_object_owner_ids(
+    objects: Dict[str, NarrativeObject],
+    entities: Dict[str, Entity],
+) -> Dict[str, NarrativeObject]:
+    """
+    Resolve owner_id strings from Step 1b (which may be names/descriptions)
+    to canonical ENT_ IDs now that entities are available from Step 1c.
+    """
+    entity_name_map: Dict[str, str] = {}
+    for eid, ent in entities.items():
+        entity_name_map[ent.name.lower()] = eid
+        entity_name_map[eid.lower()] = eid
+
+    resolved: Dict[str, NarrativeObject] = {}
+    for oid, obj in objects.items():
+        if obj.owner_id and not obj.owner_id.startswith("ENT_"):
+            # Try to match by name
+            matched = entity_name_map.get(obj.owner_id.lower())
+            if matched:
+                resolved[oid] = obj.model_copy(update={"owner_id": matched})
+                logger.debug("[Step 1·Resolve] Object %s owner_id '%s' → '%s'", oid, obj.owner_id, matched)
+            else:
+                logger.warning("[Step 1·Resolve] Object %s owner_id '%s' could not be resolved to an entity.", oid, obj.owner_id)
+                resolved[oid] = obj
+        else:
+            resolved[oid] = obj
+    return resolved
+
+
 def extract_ontology(text: str, config: ExtractionConfig | None = None) -> GlobalRegister:
     """
     Step 1: Extract the global ontology (locations, objects, entities)
-    from the full manuscript text.
+    from the full manuscript text via three separate passes.
+
+    Pass order:
+      1a. Locations — no dependencies, extracts all LOC_ nodes.
+      1b. Objects — receives location register, extracts all OBJ_ nodes.
+      1c. Entities — receives location + object registers, extracts all ENT_ nodes.
+
+    The three passes are then merged into a single GlobalRegister.
     """
     config = config or ExtractionConfig()
-    agent = _build_ontology_agent(config)
-    logger.info("[Step 1] Extracting global ontology with %s …", config.model)
-    result = agent.run_sync(text)
-    register = result.output
+
+    # --- Step 1a: Locations ---
+    location_agent = _build_location_agent(config)
+    logger.info("[Step 1a] Extracting locations with %s …", config.model)
+    loc_result = location_agent.run_sync(text)
+    loc_register = loc_result.output
+    logger.info("[Step 1a] Extracted %d locations.", len(loc_register.locations))
+
+    # --- Step 1b: Objects (with location context) ---
+    object_agent = _build_object_agent(config)
+    obj_deps = _ObjectDeps(location_register=loc_register)
+    logger.info("[Step 1b] Extracting objects with %s …", config.model)
+    obj_result = object_agent.run_sync(text, deps=obj_deps)
+    obj_register = obj_result.output
+    logger.info("[Step 1b] Extracted %d objects.", len(obj_register.objects))
+
+    # --- Step 1c: Entities (with location + object context) ---
+    entity_agent = _build_entity_agent(config)
+    ent_deps = _EntityDeps(location_register=loc_register, object_register=obj_register)
+    logger.info("[Step 1c] Extracting entities with %s …", config.model)
+    ent_result = entity_agent.run_sync(text, deps=ent_deps)
+    ent_register = ent_result.output
+    logger.info("[Step 1c] Extracted %d entities.", len(ent_register.entities))
+
+    # --- Resolve object owner_ids to ENT_ IDs ---
+    resolved_objects = _resolve_object_owner_ids(obj_register.objects, ent_register.entities)
+
+    # --- Merge into GlobalRegister ---
+    register = GlobalRegister(
+        locations=loc_register.locations,
+        objects=resolved_objects,
+        entities=ent_register.entities,
+    )
     logger.info(
         "[Step 1] Ontology extracted — %d locations, %d objects, %d entities.",
         len(register.locations), len(register.objects), len(register.entities),
@@ -268,41 +487,107 @@ def extract_ontology(text: str, config: ExtractionConfig | None = None) -> Globa
 
 
 # =====================================================================
-# Step 2 — Chunk-by-Chunk Extraction (Pass B: Events, Pass C: Edges)
+# Step 2 — Semantic Scaffolding (Socratic QA)
 # =====================================================================
 
-class _ChronologyDeps(BaseModel):
-    """Dependencies for Pass B (event extraction)."""
+class _SocraticDeps(BaseModel):
+    """Dependencies for Step 2 (Socratic QA scaffolding)."""
     model_config = {"protected_namespaces": ()}
     global_register: GlobalRegister
-    previous_event_ids: List[str] = Field(default_factory=list)
 
 
-class _EdgesDeps(BaseModel):
-    """Dependencies for Pass C (edge extraction)."""
-    model_config = {"protected_namespaces": ()}
-    global_register: GlobalRegister
-    chunk_event_ids: List[str] = Field(default_factory=list)
-    previous_event_ids: List[str] = Field(default_factory=list)
-
-
-def _build_chronology_agent(config: ExtractionConfig) -> Agent[_ChronologyDeps, ChunkChronology]:
-    """Construct the Pass B agent — event extraction only."""
-    agent: Agent[_ChronologyDeps, ChunkChronology] = Agent(
+def _build_socratic_agent(config: ExtractionConfig) -> Agent[_SocraticDeps, SocraticScaffold]:
+    """Construct the Step 2 Socratic QA agent."""
+    agent: Agent[_SocraticDeps, SocraticScaffold] = Agent(
         _resolve_model(config.model),
-        deps_type=_ChronologyDeps,
-        output_type=NativeOutput(ChunkChronology),
-        system_prompt=_load_prompt("chunk_chronology.md"),
+        deps_type=_SocraticDeps,
+        output_type=NativeOutput(SocraticScaffold),
+        system_prompt=_load_prompt("socratic_scaffolding.md"),
         retries=config.output_retries,
     )
 
     @agent.system_prompt
-    def inject_register_for_chronology(ctx: RunContext[_ChronologyDeps]) -> str:
+    def inject_register_for_socratic(ctx: RunContext[_SocraticDeps]) -> str:
         reg = ctx.deps.global_register
         entity_ids = sorted(reg.entities.keys())
         location_ids = sorted(reg.locations.keys())
         object_ids = sorted(reg.objects.keys())
         entity_names = {eid: reg.entities[eid].name for eid in entity_ids}
+        return (
+            "=== NARRATIVE REGISTER (from Step 1) ===\n"
+            f"CHARACTERS: {entity_names}\n"
+            f"LOCATIONS: {location_ids}\n"
+            f"OBJECTS: {object_ids}\n"
+            "\n"
+            "Reference these characters, locations, and objects by their "
+            "canonical names or IDs in your answers."
+        )
+
+    return agent
+
+
+# =====================================================================
+# Step 3 — Decomposed Topology Extraction (Physics + Social Agents)
+# =====================================================================
+
+class _PhysicsDeps(BaseModel):
+    """Dependencies for Step 3a (Physics Agent: events + causal + spatial)."""
+    model_config = {"protected_namespaces": ()}
+    global_register: GlobalRegister
+    scaffold: SocraticScaffold
+    previous_event_ids: List[str] = Field(default_factory=list)
+
+
+class _SocialDeps(BaseModel):
+    """Dependencies for Step 3b (Social Agent: info + relationship)."""
+    model_config = {"protected_namespaces": ()}
+    global_register: GlobalRegister
+    scaffold: SocraticScaffold
+    chunk_event_ids: List[str] = Field(default_factory=list)
+    previous_event_ids: List[str] = Field(default_factory=list)
+
+
+def _format_scaffold(scaffold: SocraticScaffold) -> str:
+    """Format a SocraticScaffold as a readable text block for agent injection."""
+    if not scaffold.qa_pairs:
+        return "(No scaffolding QA available for this chunk.)"
+    lines = []
+    for qa in scaffold.qa_pairs:
+        lines.append(f"  [{qa.category.upper()}] Q: {qa.question}")
+        lines.append(f"           A: {qa.answer}")
+    return "\n".join(lines)
+
+
+def _build_valid_id_set(reg: GlobalRegister, event_ids: List[str] | None = None) -> set[str]:
+    """Build the complete set of valid IDs from the register + optional event IDs."""
+    valid = (
+        set(reg.entities.keys())
+        | set(reg.locations.keys())
+        | set(reg.objects.keys())
+    )
+    if event_ids:
+        valid |= set(event_ids)
+    return valid
+
+
+def _build_physics_agent(config: ExtractionConfig) -> Agent[_PhysicsDeps, PhysicsExtraction]:
+    """Construct the Step 3a Physics Agent — events + causal + spatial edges."""
+    agent: Agent[_PhysicsDeps, PhysicsExtraction] = Agent(
+        _resolve_model(config.model),
+        deps_type=_PhysicsDeps,
+        output_type=NativeOutput(PhysicsExtraction),
+        system_prompt=_load_prompt("physics_extraction.md"),
+        retries=config.output_retries,
+    )
+
+    @agent.system_prompt
+    def inject_register_for_physics(ctx: RunContext[_PhysicsDeps]) -> str:
+        reg = ctx.deps.global_register
+        entity_ids = sorted(reg.entities.keys())
+        location_ids = sorted(reg.locations.keys())
+        object_ids = sorted(reg.objects.keys())
+        entity_names = {eid: reg.entities[eid].name for eid in entity_ids}
+        scaffold_text = _format_scaffold(ctx.deps.scaffold)
         return (
             "=== VALID ID REGISTER (from Step 1) ===\n"
             f"ENTITY IDs: {entity_ids}\n"
@@ -313,30 +598,64 @@ def _build_chronology_agent(config: ExtractionConfig) -> Agent[_ChronologyDeps, 
             "\n"
             "You MUST ONLY use ENT_, LOC_, OBJ_ IDs from the lists above.\n"
             "You MAY create new EVT_ IDs for events discovered in this chunk.\n"
-            "Do NOT invent new ENT_, LOC_, or OBJ_ IDs."
+            "Do NOT invent new ENT_, LOC_, or OBJ_ IDs.\n"
+            "\n"
+            "=== SOCRATIC SCAFFOLD (semantic pre-analysis) ===\n"
+            f"{scaffold_text}\n"
+            "\n"
+            "Use the scaffold above to inform your extraction — it identifies "
+            "hidden motivations, implicit causal chains, and unobserved variables "
+            "that you should capture as events and edges."
         )
+
+    @agent.result_validator
+    def validate_physics_ids(ctx: RunContext[_PhysicsDeps], result: PhysicsExtraction) -> PhysicsExtraction:
+        """Per-chunk result validation — catch hallucinated IDs before assembly."""
+        reg = ctx.deps.global_register
+        # Build valid set including this chunk's new events + previous events
+        new_evt_ids = [e.id for e in result.events]
+        valid = _build_valid_id_set(reg, ctx.deps.previous_event_ids + new_evt_ids)
+        location_ids = set(reg.locations.keys())
+        bad: List[str] = []
+        for ce in result.causal_topology:
+            if ce.source_id not in valid:
+                bad.append(f"CausalEdge source_id '{ce.source_id}' is not a valid ID.")
+            if ce.target_id not in valid:
+                bad.append(f"CausalEdge target_id '{ce.target_id}' is not a valid ID.")
+        for se in result.spatial_topology:
+            if se.source_id not in location_ids:
+                bad.append(f"SpatialEdge source_id '{se.source_id}' is not a valid location.")
+            if se.target_id not in location_ids:
+                bad.append(f"SpatialEdge target_id '{se.target_id}' is not a valid location.")
+        if bad:
+            raise ModelRetry(
+                "The following IDs do not exist in the register. "
+                "Fix them using ONLY IDs from the register:\n" + "\n".join(bad)
+            )
+        return result
 
     return agent
 
 
-def _build_edges_agent(config: ExtractionConfig) -> Agent[_EdgesDeps, ChunkEdges]:
-    """Construct the Pass C agent — edge extraction given known events."""
-    agent: Agent[_EdgesDeps, ChunkEdges] = Agent(
+def _build_social_agent(config: ExtractionConfig) -> Agent[_SocialDeps, SocialExtraction]:
+    """Construct the Step 3b Social Agent — information + relationship edges."""
+    agent: Agent[_SocialDeps, SocialExtraction] = Agent(
         _resolve_model(config.model),
-        deps_type=_EdgesDeps,
-        output_type=NativeOutput(ChunkEdges),
-        system_prompt=_load_prompt("chunk_edges.md"),
+        deps_type=_SocialDeps,
+        output_type=NativeOutput(SocialExtraction),
+        system_prompt=_load_prompt("social_extraction.md"),
         retries=config.output_retries,
     )
 
     @agent.system_prompt
-    def inject_register_for_edges(ctx: RunContext[_EdgesDeps]) -> str:
+    def inject_register_for_social(ctx: RunContext[_SocialDeps]) -> str:
         reg = ctx.deps.global_register
         entity_ids = sorted(reg.entities.keys())
         location_ids = sorted(reg.locations.keys())
         object_ids = sorted(reg.objects.keys())
         entity_names = {eid: reg.entities[eid].name for eid in entity_ids}
         all_evt_ids = ctx.deps.previous_event_ids + ctx.deps.chunk_event_ids
+        scaffold_text = _format_scaffold(ctx.deps.scaffold)
         return (
             "=== VALID ID REGISTER ===\n"
             f"ENTITY IDs: {entity_ids}\n"
@@ -349,9 +668,38 @@ def _build_edges_agent(config: ExtractionConfig) -> Agent[_EdgesDeps, ChunkEdges
             "\n"
             "You MUST ONLY use IDs from the lists above.\n"
             "Do NOT invent new IDs of any kind.\n"
-            "Causal edges MAY reference PREVIOUS CHUNKS' EVENT IDs as "
-            "source_event_id for cross-chunk causation."
+            "\n"
+            "=== SOCRATIC SCAFFOLD (semantic pre-analysis) ===\n"
+            f"{scaffold_text}\n"
+            "\n"
+            "Use the scaffold above to identify implicit social dynamics, "
+            "hidden information flows, and unspoken relationship shifts."
         )
+
+    @agent.result_validator
+    def validate_social_ids(ctx: RunContext[_SocialDeps], result: SocialExtraction) -> SocialExtraction:
+        """Per-chunk result validation — catch hallucinated IDs before assembly."""
+        reg = ctx.deps.global_register
+        entity_ids = set(reg.entities.keys())
+        node_ids = entity_ids | set(reg.objects.keys())
+        bad: List[str] = []
+        for ie in result.information_topology:
+            if ie.source_id not in node_ids:
+                bad.append(f"InformationEdge source_id '{ie.source_id}' is not a valid entity/object.")
+            for tid in ie.target_ids:
+                if tid not in node_ids:
+                    bad.append(f"InformationEdge target_id '{tid}' is not a valid entity/object.")
+        for re_edge in result.social_topology:
+            if re_edge.source_entity_id not in entity_ids:
+                bad.append(f"RelationshipEdge source_entity_id '{re_edge.source_entity_id}' is not a valid entity.")
+            if re_edge.target_entity_id not in entity_ids:
+                bad.append(f"RelationshipEdge target_entity_id '{re_edge.target_entity_id}' is not a valid entity.")
+        if bad:
+            raise ModelRetry(
+                "The following IDs do not exist in the register. "
+                "Fix them using ONLY IDs from the register:\n" + "\n".join(bad)
+            )
+        return result
 
     return agent
 
@@ -362,105 +710,292 @@ def extract_topology(
     config: ExtractionConfig | None = None,
 ) -> List[ChunkTopology]:
     """
-    Step 2: Two-pass extraction for each chunk.
+    Steps 2–4: Three-agent extraction per chunk with Socratic scaffolding.
 
-    **Pass B** extracts events (chronology) with a focused, simple schema.
-    **Pass C** extracts edges (topology) given the concrete events from Pass B.
+    **Step 2** — Socratic QA scaffolding: lightweight agent generates
+    Who/What/Where/When/Why/How pairs to articulate hidden reasoning.
 
-    This split reduces schema complexity per LLM call and lets the edge
-    pass reference real event IDs rather than hallucinating them.
+    **Step 3a** — Physics Agent: extracts events + causal + spatial edges,
+    informed by the scaffold. Result validator catches hallucinated IDs.
+
+    **Step 3b** — Social Agent: extracts information + relationship edges,
+    informed by the scaffold + concrete events from 3a. Result validator
+    catches hallucinated IDs.
+
+    The GlobalRegister (from Step 1) is injected into every agent via
+    dependency injection, preventing hallucination of new entity/location/
+    object IDs.
     """
     config = config or ExtractionConfig()
-    chrono_agent = _build_chronology_agent(config)
-    edges_agent = _build_edges_agent(config)
+    socratic_agent = _build_socratic_agent(config)
+    physics_agent = _build_physics_agent(config)
+    social_agent = _build_social_agent(config)
     topologies: List[ChunkTopology] = []
     syuzhet_counter = 0
     fabula_time_base = config.fabula_time_spacing
     all_event_ids: List[str] = []
+    prev_chunk_tail = ""  # trailing context for coreference continuity
 
     for i, chunk in enumerate(chunks):
-        logger.info("[Step 2B] Processing chunk %d/%d (%d chars) — events …", i + 1, len(chunks), len(chunk))
+        logger.info("[Step 2] Processing chunk %d/%d (%d chars) — scaffolding …", i + 1, len(chunks), len(chunk))
 
-        # --- Pass B: Event extraction ---
-        chrono_msg = (
+        # Prepend trailing context from previous chunk for coreference
+        overlap_ctx = ""
+        if prev_chunk_tail and config.chunk_overlap_chars > 0:
+            overlap_ctx = (
+                f"[CONTEXT FROM PREVIOUS CHUNK — do NOT re-extract events from this]\n"
+                f"{prev_chunk_tail}\n"
+                f"[END CONTEXT]\n\n"
+            )
+
+        chunk_with_ctx = f"{overlap_ctx}{chunk}"
+
+        # --- Step 2: Socratic QA Scaffolding ---
+        socratic_msg = (
+            f"Chunk {i + 1} of {len(chunks)}:\n\n"
+            f"{chunk_with_ctx}"
+        )
+        socratic_deps = _SocraticDeps(global_register=register)
+        try:
+            scaffold_result = socratic_agent.run_sync(socratic_msg, deps=socratic_deps)
+            scaffold = scaffold_result.output
+        except Exception:
+            logger.exception("[Step 2] Chunk %d scaffolding FAILED — using empty scaffold.", i + 1)
+            scaffold = SocraticScaffold()
+
+        logger.info("[Step 2] Chunk %d: %d QA pairs generated.", i + 1, len(scaffold.qa_pairs))
+
+        # --- Step 3a: Physics Agent (events + causal + spatial) ---
+        logger.info("[Step 3a] Processing chunk %d/%d — physics …", i + 1, len(chunks))
+        physics_msg = (
             f"Chunk {i + 1} of {len(chunks)} "
             f"(syuzhet_index offset: {syuzhet_counter}, "
-            f"fabula_time_base: {fabula_time_base}):\n\n{chunk}"
+            f"fabula_time_base: {fabula_time_base}):\n\n"
+            f"{chunk_with_ctx}"
         )
-        chrono_deps = _ChronologyDeps(
+        physics_deps = _PhysicsDeps(
             global_register=register,
+            scaffold=scaffold,
             previous_event_ids=all_event_ids.copy(),
         )
         try:
-            chrono_result = chrono_agent.run_sync(chrono_msg, deps=chrono_deps)
-            chrono = chrono_result.output
+            physics_result = physics_agent.run_sync(physics_msg, deps=physics_deps)
+            physics = physics_result.output
         except Exception:
-            logger.exception("[Step 2B] Chunk %d FAILED — returning empty events.", i + 1)
-            chrono = ChunkChronology()
+            logger.exception("[Step 3a] Chunk %d FAILED — returning empty physics.", i + 1)
+            physics = PhysicsExtraction()
 
-        logger.info("[Step 2B] Chunk %d: %d events extracted.", i + 1, len(chrono.events))
+        # Retry once if zero events from a substantive chunk
+        if not physics.events and len(chunk) > 500:
+            logger.info("[Step 3a] Chunk %d: 0 events from %d chars — retrying …", i + 1, len(chunk))
+            retry_msg = (
+                "IMPORTANT: The previous extraction returned zero events. "
+                "Re-read the chunk carefully — every narrative chunk contains "
+                "at least one event (choice, outcome, or revelation). "
+                "Look for decisions, consequences, emotional shifts, and "
+                "information reveals.\n\n" + physics_msg
+            )
+            try:
+                physics_result = physics_agent.run_sync(retry_msg, deps=physics_deps)
+                physics = physics_result.output
+            except Exception:
+                logger.exception("[Step 3a] Chunk %d retry FAILED.", i + 1)
 
-        # Build event summary for Pass C
-        chunk_evt_ids = [e.id for e in chrono.events]
+        logger.info(
+            "[Step 3a] Chunk %d: %d events, %d causal, %d spatial edges.",
+            i + 1, len(physics.events), len(physics.causal_topology),
+            len(physics.spatial_topology),
+        )
+
+        # Build event summary for Social Agent
+        chunk_evt_ids = [e.id for e in physics.events]
         event_summary_lines = []
-        for e in chrono.events:
+        for e in physics.events:
             event_summary_lines.append(
                 f"  - {e.id} (fabula={e.fabula_time}, syuzhet={e.syuzhet_index}, "
-                f"type={e.event_type}, actor={e.actor_id}, target={e.target_id}): "
+                f"type={e.event_type}, actors={e.actor_ids}, targets={e.target_ids}): "
                 f"{e.description}"
             )
         event_summary = "\n".join(event_summary_lines)
 
-        # --- Pass C: Edge extraction ---
-        edges = ChunkEdges()
-        if chrono.events:
-            logger.info("[Step 2C] Processing chunk %d/%d — edges …", i + 1, len(chunks))
-            edges_msg = (
+        # --- Step 3b: Social Agent (information + relationship) ---
+        social = SocialExtraction()
+        if physics.events:
+            logger.info("[Step 3b] Processing chunk %d/%d — social …", i + 1, len(chunks))
+            social_msg = (
                 f"Chunk {i + 1} of {len(chunks)}.\n\n"
                 f"EVENTS EXTRACTED FROM THIS CHUNK:\n{event_summary}\n\n"
                 f"ORIGINAL TEXT:\n{chunk}"
             )
-            edges_deps = _EdgesDeps(
+            social_deps = _SocialDeps(
                 global_register=register,
+                scaffold=scaffold,
                 chunk_event_ids=chunk_evt_ids,
                 previous_event_ids=all_event_ids.copy(),
             )
             try:
-                edges_result = edges_agent.run_sync(edges_msg, deps=edges_deps)
-                edges = edges_result.output
+                social_result = social_agent.run_sync(social_msg, deps=social_deps)
+                social = social_result.output
             except Exception:
-                logger.exception("[Step 2C] Chunk %d FAILED — returning empty edges.", i + 1)
+                logger.exception("[Step 3b] Chunk %d FAILED — returning empty social.", i + 1)
+
+            # Retry if zero info edges with multiple events (quality gate)
+            if len(physics.events) >= 2 and not social.information_topology:
+                logger.info("[Step 3b] Chunk %d: 0 info edges — retrying with emphasis …", i + 1)
+                retry_social_msg = (
+                    "IMPORTANT: The previous extraction returned zero InformationEdge "
+                    "entries. Most narrative chunks contain conversations, prophecies, "
+                    "letters, confessions, orders, announcements, or rumours — each "
+                    "one MUST produce an InformationEdge. Re-read the text and extract "
+                    "ALL information flows.\n\n" + social_msg
+                )
+                try:
+                    retry_result = social_agent.run_sync(retry_social_msg, deps=social_deps)
+                    retry_social = retry_result.output
+                    if retry_social.information_topology:
+                        # Merge: keep original social, take retry's info
+                        social = SocialExtraction(
+                            information_topology=retry_social.information_topology,
+                            social_topology=social.social_topology,
+                        )
+                        logger.info(
+                            "[Step 3b] Chunk %d: retry recovered %d info edges.",
+                            i + 1, len(social.information_topology),
+                        )
+                except Exception:
+                    logger.exception("[Step 3b] Chunk %d info retry FAILED.", i + 1)
         else:
-            logger.info("[Step 2C] Chunk %d: skipping edge pass (no events).", i + 1)
+            logger.info("[Step 3b] Chunk %d: skipping social pass (no events).", i + 1)
 
         # Merge into ChunkTopology
         topo = ChunkTopology(
-            events=chrono.events,
-            causal_topology=edges.causal_topology,
-            information_topology=edges.information_topology,
-            social_topology=edges.social_topology,
-            spatial_topology=edges.spatial_topology,
+            events=physics.events,
+            causal_topology=physics.causal_topology,
+            information_topology=social.information_topology,
+            social_topology=social.social_topology,
+            spatial_topology=physics.spatial_topology,
         )
         topologies.append(topo)
 
         # Accumulate counters
-        syuzhet_counter += len(chrono.events)
-        if chrono.events:
-            max_fabula = max(e.fabula_time for e in chrono.events)
-            fabula_time_base = (
+        syuzhet_counter += len(physics.events)
+        if physics.events:
+            max_fabula = max(e.fabula_time for e in physics.events)
+            # Ensure base always advances — even if LLM used small integers,
+            # guarantee at least one spacing unit beyond the previous base.
+            next_from_max = (
                 (max_fabula // config.fabula_time_spacing + 1)
                 * config.fabula_time_spacing
             )
+            next_from_prev = fabula_time_base + config.fabula_time_spacing
+            fabula_time_base = max(next_from_max, next_from_prev)
         all_event_ids.extend(chunk_evt_ids)
 
+        # Save trailing context for next chunk's coreference overlap
+        if config.chunk_overlap_chars > 0:
+            prev_chunk_tail = chunk[-config.chunk_overlap_chars:]
+
         logger.info(
-            "[Step 2] Chunk %d: %d events, %d causal, %d social, %d spatial, %d info edges.",
+            "[Step 3] Chunk %d: %d events, %d causal, %d social, %d spatial, %d info edges.",
             i + 1, len(topo.events), len(topo.causal_topology),
             len(topo.social_topology), len(topo.spatial_topology),
             len(topo.information_topology),
         )
 
     return topologies
+
+
+# =====================================================================
+# Fabula-Time Normalization
+# =====================================================================
+
+
+def _normalize_fabula_times(ws: WorldStateV1, spacing: int = 100) -> WorldStateV1:
+    """
+    Re-space ``fabula_time`` values using *spacing* when the LLM ignores
+    the requested 100-scale and returns small sequential integers (1, 2, 3 …).
+
+    Builds a monotonic mapping ``{old_time: new_time}`` from the sorted
+    unique fabula_time values found on events, then applies it to every
+    temporal field across events, edges, and entity beliefs.
+
+    Returns the original world-state unchanged when times are already
+    well-spaced (median gap ≥ spacing / 2).
+    """
+    if not ws.events:
+        return ws
+
+    unique_times = sorted({e.fabula_time for e in ws.events})
+    if len(unique_times) < 2:
+        return ws
+
+    diffs = [unique_times[i + 1] - unique_times[i] for i in range(len(unique_times) - 1)]
+    median_diff = sorted(diffs)[len(diffs) // 2]
+    if median_diff >= spacing // 2:
+        return ws  # already well-spaced
+
+    # Build old → new mapping
+    time_map: dict[int, int] = {t: (i + 1) * spacing for i, t in enumerate(unique_times)}
+
+    def _map(t: int | None) -> int | None:
+        if t is None:
+            return None
+        return time_map.get(t, t)
+
+    new_events = [
+        e.model_copy(update={"fabula_time": time_map[e.fabula_time]}) for e in ws.events
+    ]
+    new_causal = [
+        ce.model_copy(update={"fabula_time": _map(ce.fabula_time) or ce.fabula_time})
+        for ce in ws.causal_topology
+    ]
+    new_info = [
+        ie.model_copy(update={
+            "established_at_fabula": _map(ie.established_at_fabula) or ie.established_at_fabula,
+            "terminated_at_fabula": _map(ie.terminated_at_fabula),
+        })
+        for ie in ws.information_topology
+    ]
+    new_social = [
+        re_edge.model_copy(update={
+            "last_updated_fabula": _map(re_edge.last_updated_fabula) or re_edge.last_updated_fabula,
+        })
+        for re_edge in ws.social_topology
+    ]
+    new_spatial = [
+        se.model_copy(update={
+            "established_at_fabula": _map(se.established_at_fabula) or se.established_at_fabula,
+            "destroyed_at_fabula": _map(se.destroyed_at_fabula),
+        })
+        for se in ws.spatial_topology
+    ]
+
+    # Remap belief established_at_fabula (0 = pre-story, stays 0)
+    new_entities: dict[str, Entity] = {}
+    for eid, ent in ws.entities.items():
+        new_beliefs = [
+            b.model_copy(update={
+                "established_at_fabula": _map(b.established_at_fabula) or b.established_at_fabula,
+            })
+            for b in ent.beliefs
+        ]
+        new_entities[eid] = ent.model_copy(update={"beliefs": new_beliefs})
+
+    logger.info(
+        "[Normalize] Rescaled %d unique fabula_time values (median gap %d → %d).",
+        len(unique_times), median_diff, spacing,
+    )
+
+    return WorldStateV1(
+        locations=ws.locations,
+        objects=ws.objects,
+        entities=new_entities,
+        events=new_events,
+        causal_topology=new_causal,
+        spatial_topology=new_spatial,
+        information_topology=new_info,
+        social_topology=new_social,
+    )
 
 
 # =====================================================================
@@ -546,6 +1081,116 @@ def assemble_world_state(
     return ws
 
 
+# =====================================================================
+# Auto-Repair — programmatically fix broken links
+# =====================================================================
+
+def _auto_repair(ws: WorldStateV1) -> Tuple[WorldStateV1, List[str]]:
+    """
+    Programmatically repair a WorldStateV1 by removing broken edges
+    and duplicate events. Returns (repaired_ws, list_of_repairs).
+
+    This is inspired by GraphRAG's entity-summarization merging step
+    but applied at the validation layer — strip provably broken
+    references rather than forcing LLM re-extraction.
+    """
+    repairs: List[str] = []
+
+    valid_ids = (
+        set(ws.locations.keys())
+        | set(ws.objects.keys())
+        | set(ws.entities.keys())
+        | {e.id for e in ws.events}
+    )
+    event_ids = {e.id for e in ws.events}
+    entity_ids = set(ws.entities.keys())
+    location_ids = set(ws.locations.keys())
+    node_ids = entity_ids | set(ws.objects.keys())
+
+    # --- Deduplicate events (keep first occurrence) ---
+    seen_evt: set[str] = set()
+    deduped_events: List[EventNode] = []
+    for evt in ws.events:
+        if evt.id in seen_evt:
+            repairs.append(f"Removed duplicate event '{evt.id}'.")
+        else:
+            seen_evt.add(evt.id)
+            deduped_events.append(evt)
+
+    # --- Fix broken event actor_ids / target_ids references ---
+    object_ids = set(ws.objects.keys())
+    clean_events: List[EventNode] = []
+    for evt in deduped_events:
+        updates: dict = {}
+        bad_actors = [a for a in evt.actor_ids if a not in entity_ids]
+        if bad_actors:
+            repairs.append(f"Removed invalid actor_ids {bad_actors} from event '{evt.id}'.")
+            updates["actor_ids"] = [a for a in evt.actor_ids if a in entity_ids]
+        bad_targets = [t for t in evt.target_ids if t not in (entity_ids | object_ids)]
+        if bad_targets:
+            repairs.append(f"Removed invalid target_ids {bad_targets} from event '{evt.id}'.")
+            updates["target_ids"] = [t for t in evt.target_ids if t in (entity_ids | object_ids)]
+        clean_events.append(evt.model_copy(update=updates) if updates else evt)
+
+    # --- Strip broken causal edges ---
+    clean_causal: List[CausalEdge] = []
+    for ce in ws.causal_topology:
+        if ce.source_id not in valid_ids:
+            repairs.append(f"Removed causal edge: source '{ce.source_id}' not in node set.")
+        elif ce.target_id not in valid_ids:
+            repairs.append(f"Removed causal edge: target '{ce.target_id}' not in node set.")
+        else:
+            clean_causal.append(ce)
+
+    # --- Strip broken social edges ---
+    clean_social: List[RelationshipEdge] = []
+    for re_edge in ws.social_topology:
+        if re_edge.source_entity_id not in entity_ids or re_edge.target_entity_id not in entity_ids:
+            repairs.append(
+                f"Removed relationship edge: '{re_edge.source_entity_id}' → '{re_edge.target_entity_id}'."
+            )
+        else:
+            clean_social.append(re_edge)
+
+    # --- Strip broken spatial edges ---
+    clean_spatial: List[SpatialEdge] = []
+    for se in ws.spatial_topology:
+        if se.source_id not in location_ids or se.target_id not in location_ids:
+            repairs.append(f"Removed spatial edge: '{se.source_id}' → '{se.target_id}'.")
+        else:
+            clean_spatial.append(se)
+
+    # --- Strip broken information edges ---
+    clean_info: List[InformationEdge] = []
+    for ie in ws.information_topology:
+        if ie.source_id not in node_ids:
+            repairs.append(f"Removed info edge: source '{ie.source_id}' not in entities/objects.")
+            continue
+        clean_targets = [t for t in ie.target_ids if t in node_ids]
+        bad_targets = [t for t in ie.target_ids if t not in node_ids]
+        for bt in bad_targets:
+            repairs.append(f"Removed info edge target '{bt}' (not in entities/objects).")
+        if clean_targets:
+            clean_info.append(ie.model_copy(update={"target_ids": clean_targets}))
+        else:
+            repairs.append(f"Removed info edge from '{ie.source_id}' (all targets invalid).")
+
+    if repairs:
+        logger.info("[Auto-Repair] Applied %d repairs.", len(repairs))
+        ws = WorldStateV1(
+            locations=ws.locations,
+            objects=ws.objects,
+            entities=ws.entities,
+            events=clean_events,
+            causal_topology=clean_causal,
+            spatial_topology=clean_spatial,
+            information_topology=clean_info,
+            social_topology=clean_social,
+        )
+
+    return ws, repairs
+
+
 def _programmatic_validation(ws: WorldStateV1) -> List[ValidationIssue]:
     """Fast structural checks that don't require an LLM."""
     issues: List[ValidationIssue] = []
@@ -559,16 +1204,17 @@ def _programmatic_validation(ws: WorldStateV1) -> List[ValidationIssue]:
     )
 
     # Check causal edges
+    event_ids = {e.id for e in ws.events}
     for ce in ws.causal_topology:
-        if ce.source_event_id not in valid_ids:
+        if ce.source_id not in valid_ids:
             issues.append(ValidationIssue(
                 severity="error", category="broken_link",
-                detail=f"CausalEdge.source_event_id '{ce.source_event_id}' not in node set.",
+                detail=f"CausalEdge.source_id '{ce.source_id}' not in node set.",
             ))
-        if ce.target_node_id not in valid_ids:
+        if ce.target_id not in valid_ids:
             issues.append(ValidationIssue(
                 severity="error", category="broken_link",
-                detail=f"CausalEdge.target_node_id '{ce.target_node_id}' not in node set.",
+                detail=f"CausalEdge.target_id '{ce.target_id}' not in node set.",
             ))
 
     # Check relationship edges
@@ -614,19 +1260,21 @@ def _programmatic_validation(ws: WorldStateV1) -> List[ValidationIssue]:
                     detail=f"InformationEdge.target_id '{tid}' not in entities/objects.",
                 ))
 
-    # Check event actor_id and target_id references
-    all_node_ids = valid_ids
+    # Check event actor_ids (must be entities) and target_ids (must be entities/objects)
+    object_ids = set(ws.objects.keys())
     for evt in ws.events:
-        if evt.actor_id and evt.actor_id not in all_node_ids:
-            issues.append(ValidationIssue(
-                severity="error", category="hallucinated_id",
-                detail=f"EventNode '{evt.id}' actor_id '{evt.actor_id}' not in node set.",
-            ))
-        if evt.target_id and evt.target_id not in all_node_ids:
-            issues.append(ValidationIssue(
-                severity="error", category="hallucinated_id",
-                detail=f"EventNode '{evt.id}' target_id '{evt.target_id}' not in node set.",
-            ))
+        for aid in evt.actor_ids:
+            if aid not in entity_ids:
+                issues.append(ValidationIssue(
+                    severity="error", category="hallucinated_id",
+                    detail=f"EventNode '{evt.id}' actor_ids entry '{aid}' is not a valid entity.",
+                ))
+        for tid in evt.target_ids:
+            if tid not in (entity_ids | object_ids):
+                issues.append(ValidationIssue(
+                    severity="error", category="hallucinated_id",
+                    detail=f"EventNode '{evt.id}' target_ids entry '{tid}' is not a valid entity/object.",
+                ))
 
     # Check entity location_id references
     for eid, ent in ws.entities.items():
@@ -649,6 +1297,19 @@ def _programmatic_validation(ws: WorldStateV1) -> List[ValidationIssue]:
                 detail=f"Object '{oid}' owner_id '{obj.owner_id}' not in entities.",
             ))
 
+    # Check entity belief target_id references
+    all_valid_belief_targets = (
+        set(ws.locations.keys()) | set(ws.objects.keys())
+        | set(ws.entities.keys()) | {e.id for e in ws.events}
+    )
+    for eid, ent in ws.entities.items():
+        for belief in ent.beliefs:
+            if belief.target_id not in all_valid_belief_targets:
+                issues.append(ValidationIssue(
+                    severity="warning", category="broken_link",
+                    detail=f"Entity '{eid}' belief target_id '{belief.target_id}' not in locations/objects/entities/events.",
+                ))
+
     # Check for duplicate event IDs
     seen_evt_ids: set[str] = set()
     for evt in ws.events:
@@ -658,6 +1319,43 @@ def _programmatic_validation(ws: WorldStateV1) -> List[ValidationIssue]:
                 detail=f"Duplicate event ID: '{evt.id}'.",
             ))
         seen_evt_ids.add(evt.id)
+
+    # --- Orphan event check ---
+    if ws.events:
+        referenced_events: set[str] = set()
+        for ce in ws.causal_topology:
+            if ce.source_id.startswith("EVT_"):
+                referenced_events.add(ce.source_id)
+            if ce.target_id.startswith("EVT_"):
+                referenced_events.add(ce.target_id)
+        orphan_events = [e for e in ws.events if e.id not in referenced_events]
+        if orphan_events:
+            orphan_ids = [e.id for e in orphan_events[:10]]
+            issues.append(ValidationIssue(
+                severity="warning", category="orphan",
+                detail=(
+                    f"{len(orphan_events)} event(s) not referenced by any causal edge: "
+                    f"{orphan_ids}{'…' if len(orphan_events) > 10 else ''}. "
+                    f"Consider adding causal connections."
+                ),
+            ))
+
+    # --- Information edge density check ---
+    if len(ws.events) >= 3 and len(ws.information_topology) == 0:
+        issues.append(ValidationIssue(
+            severity="warning", category="missing_information",
+            detail="Zero information edges extracted. Most narratives contain conversations, "
+            "letters, or revelations that should produce InformationEdge entries.",
+        ))
+    elif len(ws.events) >= 5 and len(ws.information_topology) < len(ws.events) // 5:
+        issues.append(ValidationIssue(
+            severity="warning", category="missing_information",
+            detail=(
+                f"Low information edge density: {len(ws.information_topology)} info edges "
+                f"for {len(ws.events)} events (ratio {len(ws.information_topology)/len(ws.events):.2f}). "
+                f"Expected at least 1 info edge per 5 events."
+            ),
+        ))
 
     # --- Time validation ---
     issues.extend(_validate_time_ordering(ws))
@@ -669,7 +1367,12 @@ def _programmatic_validation(ws: WorldStateV1) -> List[ValidationIssue]:
 
 
 def _validate_dead_actors(ws: WorldStateV1) -> List[ValidationIssue]:
-    """Check that entities marked dead do not act after their death event."""
+    """Check that entities marked dead do not act after their death event.
+
+    Emits **warnings** (not errors) because narratives commonly use fake
+    deaths, ghost scenes, flashback POV, and murder-suicides. The LLM
+    validator can promote these to errors when it knows the story context.
+    """
     issues: List[ValidationIssue] = []
 
     # Find entities with status == "dead"
@@ -677,33 +1380,49 @@ def _validate_dead_actors(ws: WorldStateV1) -> List[ValidationIssue]:
     if not dead_entities:
         return issues
 
-    # For each dead entity, find the earliest outcome event targeting them
-    # as the probable death event
+    # For each dead entity, find the earliest death-like event.
+    # A death event can be ANY event_type — suicides are often "choice",
+    # learning someone died is "revelation", and killings are "outcome".
+    # We match:
+    #   (a) entity is in target_ids, OR
+    #   (b) entity is in actor_ids with no targets (self-caused death)
     death_times: dict[str, int] = {}
     death_events: dict[str, str] = {}
     for evt in ws.events:
-        if (
-            evt.target_id in dead_entities
-            and evt.event_type == "outcome"
-        ):
-            if evt.target_id not in death_times or evt.fabula_time < death_times[evt.target_id]:
-                death_times[evt.target_id] = evt.fabula_time
-                death_events[evt.target_id] = evt.id
+        # Case (a): entity is a target
+        for tid in evt.target_ids:
+            if tid in dead_entities:
+                if tid not in death_times or evt.fabula_time < death_times[tid]:
+                    death_times[tid] = evt.fabula_time
+                    death_events[tid] = evt.id
+        # Case (b): entity is an actor with no targets (suicide / self-death)
+        if not evt.target_ids:
+            for aid in evt.actor_ids:
+                if aid in dead_entities:
+                    if aid not in death_times or evt.fabula_time < death_times[aid]:
+                        death_times[aid] = evt.fabula_time
+                        death_events[aid] = evt.id
 
     # Check for actor references after death
     for evt in ws.events:
-        if evt.actor_id and evt.actor_id in death_times:
-            death_t = death_times[evt.actor_id]
-            if evt.fabula_time > death_t:
-                issues.append(ValidationIssue(
-                    severity="error",
-                    category="contradiction",
-                    detail=(
-                        f"Dead entity '{evt.actor_id}' acts in '{evt.id}' "
-                        f"(fabula={evt.fabula_time}) after death in "
-                        f"'{death_events[evt.actor_id]}' (fabula={death_t})."
-                    ),
-                ))
+        for aid in evt.actor_ids:
+            if aid in death_times:
+                death_t = death_times[aid]
+                death_evt = death_events[aid]
+                # Skip the death event itself (the entity is the actor of their own death)
+                if evt.id == death_evt:
+                    continue
+                if evt.fabula_time > death_t:
+                    issues.append(ValidationIssue(
+                        severity="warning",
+                        category="contradiction",
+                        detail=(
+                            f"Dead entity '{aid}' acts in '{evt.id}' "
+                            f"(fabula={evt.fabula_time}) after death in "
+                            f"'{death_evt}' (fabula={death_t}). "
+                            f"Could be a fake death, ghost, or flashback."
+                        ),
+                    ))
 
     return issues
 
@@ -749,18 +1468,20 @@ def _validate_time_ordering(ws: WorldStateV1) -> List[ValidationIssue]:
                 ),
             ))
 
-    # 3. Check causal edges: cause must precede or coincide with effect in fabula_time
+    # 3. Check causal edges: for chain_reaction (event→event), cause must
+    #    precede or coincide with effect in fabula_time.
     evt_fabula = {e.id: e.fabula_time for e in ws.events}
     for ce in ws.causal_topology:
-        src_t = evt_fabula.get(ce.source_event_id)
-        # target can be an event or another node type
-        tgt_t = evt_fabula.get(ce.target_node_id)
-        if src_t is not None and tgt_t is not None and src_t > tgt_t:
+        if ce.causality_type != "chain_reaction":
+            continue  # temporal ordering only meaningful for event→event
+        src_t = evt_fabula.get(ce.source_id)
+        tgt_t = evt_fabula.get(ce.target_id)
+        if src_t is not None and tgt_t is not None and src_t + ce.propagation_delay > tgt_t:
             issues.append(ValidationIssue(
                 severity="error", category="temporal",
                 detail=(
-                    f"Causal edge '{ce.source_event_id}' (fabula={src_t}) → "
-                    f"'{ce.target_node_id}' (fabula={tgt_t}): cause after effect."
+                    f"Causal edge '{ce.source_id}' (fabula={src_t}, delay={ce.propagation_delay}) → "
+                    f"'{ce.target_id}' (fabula={tgt_t}): effect manifests before cause + delay."
                 ),
             ))
 
@@ -785,6 +1506,16 @@ def _build_validation_agent(config: ExtractionConfig) -> Agent[None, ValidationR
         _resolve_model(config.model),
         output_type=NativeOutput(ValidationReport),
         system_prompt=_load_prompt("validation.md"),
+        retries=config.output_retries,
+    )
+
+
+def _build_correction_agent(config: ExtractionConfig) -> Agent[None, WorldStateV1]:
+    """Construct the correction agent that repairs a WorldStateV1 given errors."""
+    return Agent(
+        _resolve_model(config.model),
+        output_type=NativeOutput(WorldStateV1),
+        system_prompt=_load_prompt("correction.md"),
         retries=config.output_retries,
     )
 
@@ -816,8 +1547,21 @@ def validate_world_state(
         ws_json = ws_json[:max_chars] + "\n... [TRUNCATED]"
 
     logger.info("[Step 3·LLM] Running validation agent (%d chars) …", len(ws_json))
+
+    # Summarise programmatic findings so the LLM doesn't duplicate them
+    if prog_issues:
+        prog_summary = "\n".join(
+            f"  [{i.severity}/{i.category}] {i.detail}" for i in prog_issues
+        )
+        preamble = (
+            "The following issues were ALREADY found by programmatic validation. "
+            "Do NOT re-report them:\n" + prog_summary + "\n\n"
+        )
+    else:
+        preamble = "Programmatic validation found 0 issues.\n\n"
+
     result = agent.run_sync(
-        f"Validate the following WorldStateV1 JSON:\n\n{ws_json}"
+        preamble + f"Validate the following WorldStateV1 JSON:\n\n{ws_json}"
     )
     llm_report = result.output
 
@@ -871,8 +1615,64 @@ def run_extraction(
     logger.info("[Pipeline] Text split into %d chunks.", len(chunks))
     topologies = extract_topology(chunks, register, config)
 
-    # Step 3: Assembly + Validation
+    # Step 3: Assembly + Normalize + Auto-Repair + Validation
     world_state = assemble_world_state(register, topologies)
+
+    # Normalize fabula_time if the LLM used small integers
+    world_state = _normalize_fabula_times(world_state, config.fabula_time_spacing)
+
+    # Auto-repair broken links and duplicates before validation
+    world_state, repairs = _auto_repair(world_state)
+    if repairs:
+        logger.info("[Pipeline] Auto-repaired %d issues before validation.", len(repairs))
+
     report = validate_world_state(world_state, config)
+
+    # --- Correction retry loop ---
+    # If programmatic errors remain after auto-repair, attempt LLM correction
+    for retry_num in range(config.max_correction_retries):
+        prog_errors = [i for i in report.issues if i.severity == "error"]
+        if not prog_errors:
+            break
+
+        logger.info(
+            "[Pipeline·Correction %d/%d] %d errors remain — running correction agent.",
+            retry_num + 1, config.max_correction_retries, len(prog_errors),
+        )
+
+        try:
+            correction_agent = _build_correction_agent(config)
+            ws_json = world_state.model_dump_json(indent=2)
+            max_chars = 80_000
+            if len(ws_json) > max_chars:
+                ws_json = ws_json[:max_chars] + "\n... [TRUNCATED]"
+
+            error_summary = "\n".join(
+                f"  [{e.category}] {e.detail}" for e in prog_errors
+            )
+            correction_msg = (
+                f"The following {len(prog_errors)} error(s) were found in this WorldStateV1. "
+                f"Fix them and return the corrected WorldStateV1:\n\n"
+                f"ERRORS:\n{error_summary}\n\n"
+                f"WORLD STATE:\n{ws_json}"
+            )
+
+            correction_result = correction_agent.run_sync(correction_msg)
+            world_state = correction_result.output
+            logger.info("[Pipeline·Correction %d] Correction applied.", retry_num + 1)
+
+            # Re-normalize, re-repair, and re-validate after correction
+            world_state = _normalize_fabula_times(world_state, config.fabula_time_spacing)
+            world_state, new_repairs = _auto_repair(world_state)
+            if new_repairs:
+                repairs.extend(new_repairs)
+            report = validate_world_state(world_state, config)
+
+        except Exception:
+            logger.exception(
+                "[Pipeline·Correction %d] Correction agent FAILED — keeping previous state.",
+                retry_num + 1,
+            )
+            break
 
     return world_state, report

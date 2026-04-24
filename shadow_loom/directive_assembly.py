@@ -350,12 +350,14 @@ class DirectiveAssembler:
         _STRENGTH_W = {"weak": 0.25, "moderate": 0.5, "strong": 0.75}
         g = nx.DiGraph()
         for ce in self.world_state.causal_topology:
-            w = _STRENGTH_W.get(ce.evidence_strength, 0.5)
-            if g.has_edge(ce.source_event_id, ce.target_node_id):
-                existing = g[ce.source_event_id][ce.target_node_id]["weight"]
+            evidence_w = _STRENGTH_W.get(ce.evidence_strength, 0.5)
+            force_scale = ce.causal_force / 10.0
+            w = evidence_w * force_scale
+            if g.has_edge(ce.source_id, ce.target_id):
+                existing = g[ce.source_id][ce.target_id]["weight"]
                 if w <= existing:
                     continue
-            g.add_edge(ce.source_event_id, ce.target_node_id,
+            g.add_edge(ce.source_id, ce.target_id,
                        weight=w, mechanism=ce.mechanism)
         return g
 
@@ -389,7 +391,7 @@ class DirectiveAssembler:
         effect_nodes: set[str] = set()
         for evt in self.world_state.events:
             if evt.id in revealed and (
-                evt.actor_id in eid_set or evt.target_id in eid_set
+                set(evt.actor_ids) & eid_set or set(evt.target_ids) & eid_set
             ):
                 effect_nodes.add(evt.id)
         effect_nodes |= eid_set
@@ -449,12 +451,12 @@ class DirectiveAssembler:
 
             # Revealed causal edges targeting this entity
             for ce in self.world_state.causal_topology:
-                if ce.target_node_id != eid:
+                if ce.target_id != eid:
                     continue
-                if ce.source_event_id not in revealed:
+                if ce.source_id not in revealed:
                     continue  # Reader doesn't know this either
                 total_connections += 1
-                if ce.source_event_id not in character_aware_of:
+                if ce.source_id not in character_aware_of:
                     irony_gaps += 1
 
             # Revealed information edges the character is unaware of
@@ -511,7 +513,7 @@ class DirectiveAssembler:
             )
             if not evt:
                 continue
-            if evt.actor_id not in eid_set and evt.target_id not in eid_set:
+            if not (set(evt.actor_ids) & eid_set) and not (set(evt.target_ids) & eid_set):
                 continue
 
             # Probability proxy: prefer incoming edge weight, fall back to
@@ -527,9 +529,9 @@ class DirectiveAssembler:
                     prob = max(d.get("weight", 0.5) for _, _, d in out_edges)
 
             # Classify: entity acted upon → threat; entity acting → hope
-            if evt.target_id in eid_set and evt.actor_id not in eid_set:
+            if (set(evt.target_ids) & eid_set) and not (set(evt.actor_ids) & eid_set):
                 threat_prob = max(threat_prob, prob)
-            elif evt.actor_id in eid_set:
+            elif set(evt.actor_ids) & eid_set:
                 hope_prob = max(hope_prob, prob)
 
         if hope_prob <= 0.0:
@@ -598,9 +600,9 @@ class DirectiveAssembler:
                 # for each revealed causal edge targeting this entity.
                 prior_val = 0.5
                 for ce in self.world_state.causal_topology:
-                    if ce.target_node_id != eid:
+                    if ce.target_id != eid:
                         continue
-                    if ce.source_event_id not in revealed:
+                    if ce.source_id not in revealed:
                         continue
                     w = _STRENGTH_W.get(ce.evidence_strength, 0.5)
                     prior_val += (actual_val - prior_val) * w * 0.5
@@ -848,7 +850,7 @@ class DirectiveAssembler:
             for evt in self.world_state.events:
                 if evt.id not in revealed:
                     continue
-                if evt.actor_id not in eid_set and evt.target_id not in eid_set:
+                if not (set(evt.actor_ids) & eid_set) and not (set(evt.target_ids) & eid_set):
                     continue
                 if not causal_g.has_node(evt.id):
                     continue
@@ -957,14 +959,14 @@ class DirectiveAssembler:
                     continue
                 character_aware_of = {b.target_id for b in ent.beliefs}
                 for ce in self.world_state.causal_topology:
-                    if ce.target_node_id != eid:
+                    if ce.target_id != eid:
                         continue
-                    if ce.source_event_id not in revealed:
+                    if ce.source_id not in revealed:
                         continue
-                    if ce.source_event_id not in character_aware_of:
+                    if ce.source_id not in character_aware_of:
                         src_evt = next(
                             (e for e in self.world_state.events
-                             if e.id == ce.source_event_id),
+                             if e.id == ce.source_id),
                             None,
                         )
                         if src_evt:
@@ -1365,7 +1367,7 @@ class DirectiveAssembler:
         # Event
         evt = next((e for e in self.world_state.events if e.id == target_id), None)
         if evt:
-            return f"event_type={evt.event_type}, actor={evt.actor_id}"
+            return f"event_type={evt.event_type}, actors={evt.actor_ids}"
 
         return "unknown"
 
