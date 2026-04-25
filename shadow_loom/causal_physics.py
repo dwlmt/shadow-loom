@@ -127,6 +127,12 @@ class CausalPhysicsEngine:
         self._social_mutations: List[SocialMutation] = []
         self._blocked: List[BlockedPropagation] = []
 
+    def _simulation_horizon(self) -> float:
+        """Return the maximum fabula_time across all events (the 'now' of the story)."""
+        if self.world_state.events:
+            return max(e.fabula_time for e in self.world_state.events)
+        return 0
+
     # ------------------------------------------------------------------
     # Rung 3 — Abduction
     # ------------------------------------------------------------------
@@ -207,7 +213,10 @@ class CausalPhysicsEngine:
                         # Respect propagation_delay: skip edges whose effect hasn't elapsed
                         if ce.propagation_delay > 0:
                             target_node = self.sandbox.nodes.get(ce.target_id)
-                            target_ft = target_node.get("fabula_time", float("inf")) if target_node else float("inf")
+                            target_ft = target_node.get("fabula_time") if target_node else None
+                            # Entity targets have no fabula_time — use simulation horizon
+                            if target_ft is None:
+                                target_ft = self._simulation_horizon()
                             if target_ft < ce.fabula_time + ce.propagation_delay:
                                 logger.debug("[CausalPhysics·Abduction] Skipping edge %s→%s: delay=%d not elapsed.",
                                              ce.source_id, ce.target_id, ce.propagation_delay)
@@ -275,17 +284,20 @@ class CausalPhysicsEngine:
         """
         # 1. Extract causal-only DiGraph from MultiDiGraph
         causal_graph = nx.DiGraph()
+        horizon = self._simulation_horizon()
         for u, v, d in self.sandbox.edges(data=True):
             if d.get("edge_type") == "causal":
                 # Respect propagation_delay: skip edges whose effect hasn't manifested yet
                 delay = d.get("propagation_delay", 0)
                 edge_ft = d.get("fabula_time", 0)
-                target_node = self.sandbox.nodes.get(v, {})
-                target_ft = target_node.get("fabula_time", float("inf"))
-                if delay > 0 and target_ft < edge_ft + delay:
-                    logger.debug("[CausalPhysics·Propagate] Skipping edge %s→%s: delay=%d, edge_ft=%d, target_ft=%s",
-                                 u, v, delay, edge_ft, target_ft)
-                    continue
+                if delay > 0:
+                    target_node = self.sandbox.nodes.get(v, {})
+                    # Entity targets have no fabula_time — use simulation horizon
+                    target_ft = target_node.get("fabula_time") or horizon
+                    if target_ft < edge_ft + delay:
+                        logger.debug("[CausalPhysics·Propagate] Skipping edge %s→%s: delay=%d, edge_ft=%d, target_ft=%s",
+                                     u, v, delay, edge_ft, target_ft)
+                        continue
 
                 evidence_w = STRENGTH_MULTIPLIER.get(d.get("evidence_strength", "moderate"), 0.5)
                 force_scale = d.get("causal_force", 5.0) / 10.0

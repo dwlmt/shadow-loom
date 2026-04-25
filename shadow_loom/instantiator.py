@@ -319,10 +319,8 @@ class AMWNInstantiator:
         
         if new_owner_id and sandbox.has_node(new_owner_id):
             sandbox.nodes[object_id]["owner_id"] = new_owner_id
-            # Sync location_id to the new owner's location
-            owner_loc = sandbox.nodes[new_owner_id].get("location_id")
-            if owner_loc:
-                sandbox.nodes[object_id]["location_id"] = None
+            # Owned items follow their owner — clear stale location
+            sandbox.nodes[object_id]["location_id"] = None
             sandbox.add_edge(object_id, new_owner_id, edge_type="owned_by", world_id="shadow")
             logger.info("[Surgery] Gave %s to %s", object_id, new_owner_id)
         else:

@@ -1559,7 +1559,10 @@ def _apply_event_renames(topo: ChunkTopology, rmap: Dict[str, str]) -> ChunkTopo
         }) for ce in topo.causal_topology
     ]
     new_info = [
-        ie.model_copy(update={"source_id": _r(ie.source_id)})
+        ie.model_copy(update={
+            "source_id": _r(ie.source_id),
+            "target_ids": [_r(tid) for tid in ie.target_ids],
+        })
         for ie in topo.information_topology
     ]
     new_entity_updates = [

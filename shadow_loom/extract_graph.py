@@ -441,9 +441,18 @@ class VersionedWorldModel(BaseModel):
         merged = copy.deepcopy(self.current)
         changeset = MergeChangeset()
 
-        # --- Events ---
+        # --- Events (deduplicate by ID, keep existing) ---
         pre_events = len(merged.events)
-        merged.events.extend(topology.events)
+        existing_event_ids = {e.id for e in merged.events}
+        for evt in topology.events:
+            if evt.id not in existing_event_ids:
+                merged.events.append(evt)
+                existing_event_ids.add(evt.id)
+            else:
+                logger.debug(
+                    "[VersionedWorldModel·merge] Duplicate event %s — kept existing.",
+                    evt.id,
+                )
         merged.events.sort(key=lambda e: e.fabula_time)
         changeset.events_added = len(merged.events) - pre_events
 

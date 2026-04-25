@@ -13,6 +13,27 @@ from shadow_loom.directive_assembly import DirectiveAssembler
 logger = logging.getLogger(__name__)
 
 
+def _get_delay_target_ft(
+    sandbox: nx.MultiDiGraph,
+    target_id: str,
+    world_state: WorldStateV1,
+) -> float:
+    """Resolve the effective fabula_time for a causal edge target.
+
+    Entity targets have no ``fabula_time`` — fall back to the simulation
+    horizon (max fabula_time across all events in the world state).
+    """
+    node_data = sandbox.nodes.get(target_id)
+    if node_data:
+        ft = node_data.get("fabula_time")
+        if ft is not None:
+            return ft
+    # Fallback: simulation horizon
+    if world_state.events:
+        return max(e.fabula_time for e in world_state.events)
+    return 0
+
+
 def calculate_narrative_physics(
     request: UserRequest,
     global_world_state: WorldStateV1,
@@ -258,11 +279,18 @@ def _resolve_focus_entities(interventions: Dict[str, Any], global_world_state: W
         else:
             # Event reference — use the event's actor
             event = next((e for e in global_world_state.events if e.id == node_id), None)
-            if event and event.actor_ids:
-                for _aid in event.actor_ids:
-                    if _aid in global_world_state.entities:
-                        resolved = _aid
-                        break
+            if event is not None:
+                if event.actor_ids:
+                    for _aid in event.actor_ids:
+                        if _aid in global_world_state.entities:
+                            resolved = _aid
+                            break
+                # Fallback: try target_ids if no actors
+                if resolved is None and event.target_ids:
+                    for _tid in event.target_ids:
+                        if _tid in global_world_state.entities:
+                            resolved = _tid
+                            break
             else:
                 # Object reference — use the object's owner
                 obj = global_world_state.objects.get(node_id)
@@ -537,8 +565,7 @@ def _apply_abduction(
                     if ce.source_id == eid:
                         # Respect propagation_delay
                         if ce.propagation_delay > 0:
-                            target_node_data = sandbox.nodes.get(ce.target_id)
-                            target_ft = target_node_data.get("fabula_time", float("inf")) if target_node_data else float("inf")
+                            target_ft = _get_delay_target_ft(sandbox, ce.target_id, global_world_state)
                             if target_ft < ce.fabula_time + ce.propagation_delay:
                                 continue
                         mult = evidence_strength_multiplier.get(ce.evidence_strength, 0.5)
@@ -604,8 +631,7 @@ def _apply_forward_cascade(
             continue
         # Respect propagation_delay
         if ce.propagation_delay > 0:
-            target_node_data = sandbox.nodes.get(tgt)
-            target_ft = target_node_data.get("fabula_time", float("inf")) if target_node_data else float("inf")
+            target_ft = _get_delay_target_ft(sandbox, tgt, global_world_state)
             if target_ft < ce.fabula_time + ce.propagation_delay:
                 continue
         evidence_w = strength_mult.get(ce.evidence_strength, 0.5)
@@ -769,8 +795,7 @@ def _apply_social_cascade(
 
         # Respect propagation_delay
         if ce.propagation_delay > 0:
-            target_node_data = sandbox.nodes.get(ce.target_id)
-            target_ft = target_node_data.get("fabula_time", float("inf")) if target_node_data else float("inf")
+            target_ft = _get_delay_target_ft(sandbox, ce.target_id, global_world_state)
             if target_ft < ce.fabula_time + ce.propagation_delay:
                 continue
 

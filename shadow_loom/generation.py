@@ -435,8 +435,6 @@ def build_intervention_brief(
     # Build InterventionMechanism entries from the interventions dict
     mechanisms: List[InterventionMechanism] = []
     for target_path, new_value in query.interventions.items():
-        if not isinstance(new_value, str):
-            continue
         parts = target_path.split(".", 1)
         node_id = parts[0]
         prop = parts[1] if len(parts) > 1 else "state"
@@ -693,13 +691,23 @@ def render_scene(
     if config.max_tokens != 4096:
         model_settings["max_tokens"] = config.max_tokens
 
-    result = agent.run_sync(
-        f"Render the scene now. Target effect: {brief.target_effect}.",
-        deps=deps,
-        model_settings=model_settings if model_settings else None,
-    )
+    try:
+        result = agent.run_sync(
+            f"Render the scene now. Target effect: {brief.target_effect}.",
+            deps=deps,
+            model_settings=model_settings if model_settings else None,
+        )
+        scene = result.output
+    except Exception as exc:
+        logger.error("[Generation] LLM call failed: %s. Returning fallback scene.", exc)
+        return GeneratedScene(
+            prose=f"[Generation failed: {exc}]",
+            pov_entity=None,
+            rendering_mode="fallback",
+            constraints_honoured=[],
+            constraints_violated=["generation_failure"],
+        )
 
-    scene = result.output
     logger.info(
         "[Generation] Scene rendered: %d chars, mode=%s, %d constraints honoured, %d violated",
         len(scene.prose),

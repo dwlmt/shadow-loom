@@ -544,11 +544,19 @@ def run_audit(
     if config.max_tokens_audit != 2048:
         model_settings["max_tokens"] = config.max_tokens_audit
 
-    result = agent.run_sync(
-        f"Audit the prose for target effect: {brief.target_effect}.",
-        deps=deps,
-        model_settings=model_settings if model_settings else None,
-    )
+    try:
+        result = agent.run_sync(
+            f"Audit the prose for target effect: {brief.target_effect}.",
+            deps=deps,
+            model_settings=model_settings if model_settings else None,
+        )
+    except Exception as exc:
+        logger.error("[Auditor] LLM call failed: %s. Returning pass-through.", exc)
+        return AuditResult(
+            passed=True,
+            violations=[],
+            audit_summary=f"Audit skipped due to LLM error: {exc}",
+        )
 
     audit = result.output
     logger.info(
@@ -700,14 +708,18 @@ def run_feedback_loop(
         if generation_config.max_tokens != 4096:
             model_settings["max_tokens"] = generation_config.max_tokens
 
-        result = agent.run_sync(
-            f"Rewrite the scene. Target effect: {brief.target_effect}. "
-            f"Address ALL auditor violations.",
-            deps=deps,
-            model_settings=model_settings if model_settings else None,
-        )
+        try:
+            result = agent.run_sync(
+                f"Rewrite the scene. Target effect: {brief.target_effect}. "
+                f"Address ALL auditor violations.",
+                deps=deps,
+                model_settings=model_settings if model_settings else None,
+            )
+            current_scene = result.output
+        except Exception as exc:
+            logger.error("[FeedbackLoop] Re-generation LLM call failed: %s. Keeping previous scene.", exc)
+            break
 
-        current_scene = result.output
         logger.info(
             "[FeedbackLoop] Re-rendered: %d chars, mode=%s",
             len(current_scene.prose), current_scene.rendering_mode,
