@@ -42,7 +42,7 @@ from shadow_loom.models import WorldStateV1
 
 logger = logging.getLogger(__name__)
 
-_PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
+_PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 _OLLAMA_BASE_URL = "http://localhost:11434/v1/"
 
 # =====================================================================

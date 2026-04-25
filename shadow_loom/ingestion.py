@@ -12,7 +12,7 @@ Five-step LLM extraction using PydanticAI + Ollama:
   Step 5 — Global Assembly + Mathematical Sorting + Validation + Correction
 
 All LLM system prompts are loaded from external markdown files
-in the ``prompts/`` directory at the project root.
+in the ``prompts/`` directory inside the package.
 """
 
 from __future__ import annotations
@@ -45,9 +45,9 @@ from shadow_loom.models import (
 logger = logging.getLogger(__name__)
 
 # =====================================================================
-# Prompts directory — lives at the project root, not inside the package
+# Prompts directory — lives inside the package
 # =====================================================================
-_PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
+_PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 
 # Default Ollama base URL for local inference
 _OLLAMA_BASE_URL = "http://localhost:11434/v1/"

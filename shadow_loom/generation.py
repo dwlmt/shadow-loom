@@ -49,7 +49,7 @@ from shadow_loom.query_models import (
 
 logger = logging.getLogger(__name__)
 
-_PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
+_PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 _OLLAMA_BASE_URL = "http://localhost:11434/v1/"
 
 
