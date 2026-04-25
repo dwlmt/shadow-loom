@@ -943,7 +943,7 @@ def extract_topology(
 # =====================================================================
 
 
-def _normalize_fabula_times(ws: WorldStateV1, spacing: int = 100) -> WorldStateV1:
+def _normalize_fabula_times(ws: WorldStateV1, spacing: int = 1000) -> WorldStateV1:
     """
     Re-space ``fabula_time`` values using *spacing* when the LLM ignores
     the requested 100-scale and returns small sequential integers (1, 2, 3 …).

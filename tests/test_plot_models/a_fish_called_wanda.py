@@ -78,6 +78,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_GEORGE", perceived_state="George is my boss and I am loyal to him", confidence=0.8, inertia=0.5),
+                Belief(target_id="ENT_OTTO", perceived_state="Otto is Wanda's brother", confidence=0.8, inertia=0.4),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=700, triggered_by="EVT_KEN_KILLS_DOGS",
@@ -91,6 +92,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_KEN", perceived_state="Ken is loyal and reliable", confidence=0.8, inertia=0.5),
+                Belief(target_id="ENT_OTTO", perceived_state="Otto and Wanda are siblings", confidence=0.9, inertia=0.5),
             ]),
         "ENT_ARCHIE": Entity(id="ENT_ARCHIE", name="Archie Leach",
             location_id="LOC_ARCHIE_FLAT", status="healthy",

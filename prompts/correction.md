@@ -22,10 +22,11 @@ Your job is to produce a **corrected WorldStateV1** that resolves every reported
 10. **Missing information edges**: If the errors mention low information density, add InformationEdge entries for conversations, revelations, or knowledge transfers implied by the events.
 11. **Causal edge causality_type mismatch**: `causality_type` must match the ID prefixes of `source_id` and `target_id`:
     - `EVT_` → `EVT_`: `"chain_reaction"`
-    - `EVT_` → non-event: `"mutation"`
+    - `EVT_` → non-event (trait/status change): `"mutation"`
+    - `EVT_` → non-event (relationship change, requires `rel_counterpart_id`): `"mutation_social"`
     - non-event → `EVT_`: `"affordance_gate"`
     - non-event → non-event: `"ambient_propagation"`
-    If the type is wrong, change it to match the prefix rule.
+    If the type is wrong, change it to match the prefix rule. For `mutation_social` edges, ensure `rel_counterpart_id` is set to a valid `ENT_` ID and `trait_target` is one of `"affinity"`, `"fear"`, or `"power_dynamic"`.
 12. **Propagation delay violations**: If a `chain_reaction` edge has `propagation_delay > 0`, the target event's `fabula_time` must be ≥ source event's `fabula_time + propagation_delay`. If violated, either increase the target's `fabula_time` or reduce the `propagation_delay` to fit.
 
 ---

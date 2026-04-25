@@ -56,7 +56,7 @@ world_state = WorldStateV1(
         ),
         "OBJ_CROWN": NarrativeObject(
             id="OBJ_CROWN", name="Crown of Scotland",
-            location_id="LOC_INVERNESS_CASTLE", owner_id=None,
+            location_id=None, owner_id="ENT_MACBETH",
             properties={"state": "contested"},
             affordances=[Affordance(action="legitimize", target_type="Entity")],
         ),
@@ -78,14 +78,15 @@ world_state = WorldStateV1(
     entities={
         "ENT_MACBETH": Entity(
             id="ENT_MACBETH", name="Macbeth (Thane of Glamis)",
-            location_id="LOC_BATTLEFIELD", status="healthy",
+            location_id="LOC_DUNSINANE_CASTLE", status="healthy",
             traits={
-                "ambition": TraitVector(value=0.6, inertia=0.3),
+                "ambition": TraitVector(value=0.95, inertia=0.8),
                 "courage": TraitVector(value=0.8, inertia=0.5),
                 "guilt": TraitVector(value=0.1, inertia=0.2),
                 "paranoia": TraitVector(value=0.2, inertia=0.2),
                 "loyalty": TraitVector(value=0.6, inertia=0.4),
                 "ruthlessness": TraitVector(value=0.3, inertia=0.3),
+                "despair": TraitVector(value=0.1, inertia=0.2),
             },
             beliefs=[
                 Belief(target_id="ENT_DUNCAN", perceived_state="Duncan is my kinsman and king whom I serve loyally", confidence=0.9, inertia=0.6),
@@ -107,7 +108,7 @@ world_state = WorldStateV1(
         ),
         "ENT_LADY_MACBETH": Entity(
             id="ENT_LADY_MACBETH", name="Lady Macbeth",
-            location_id="LOC_INVERNESS_CASTLE", status="healthy",
+            location_id="LOC_DUNSINANE_CASTLE", status="healthy",
             traits={
                 "ambition": TraitVector(value=0.9, inertia=0.4),
                 "ruthlessness": TraitVector(value=0.8, inertia=0.4),
@@ -204,7 +205,7 @@ world_state = WorldStateV1(
         ),
         "ENT_FLEANCE": Entity(
             id="ENT_FLEANCE", name="Fleance (son of Banquo)",
-            location_id="LOC_INVERNESS_CASTLE", status="healthy",
+            location_id="LOC_ENGLAND", status="healthy",
             traits={
                 "innocence": TraitVector(value=0.9, inertia=0.5),
             },
@@ -377,10 +378,6 @@ world_state = WorldStateV1(
                    causality_type="mutation_social", mechanism="betrayal", evidence_strength="strong",
                    causal_force=9.0, fabula_time=1400,
                    trait_target="affinity", trait_delta=-0.9, rel_counterpart_id="ENT_MACBETH"),
-        CausalEdge(source_id="EVT_LADY_MACBETH_PERSUADES", target_id="ENT_MACBETH",
-                   causality_type="mutation_social", mechanism="psychological", evidence_strength="moderate",
-                   causal_force=5.0, fabula_time=500,
-                   trait_target="power_dynamic", trait_delta=-0.2, rel_counterpart_id="ENT_LADY_MACBETH"),
 
         # ── affordance_gate (State → Event) ──
         CausalEdge(source_id="ENT_MACBETH", target_id="EVT_LADY_MACBETH_PERSUADES",
@@ -409,6 +406,7 @@ world_state = WorldStateV1(
         SpatialEdge(source_id="LOC_HEATH", target_id="LOC_INVERNESS_CASTLE"),
         SpatialEdge(source_id="LOC_HEATH", target_id="LOC_WITCHES_CAVERN"),
         SpatialEdge(source_id="LOC_INVERNESS_CASTLE", target_id="LOC_DUNSINANE_CASTLE"),
+        SpatialEdge(source_id="LOC_DUNSINANE_CASTLE", target_id="LOC_INVERNESS_CASTLE"),
         SpatialEdge(source_id="LOC_DUNSINANE_CASTLE", target_id="LOC_MACDUFF_CASTLE"),
         SpatialEdge(source_id="LOC_DUNSINANE_CASTLE", target_id="LOC_BIRNAM_WOOD"),
         SpatialEdge(source_id="LOC_BIRNAM_WOOD", target_id="LOC_ENGLAND"),
@@ -435,7 +433,7 @@ world_state = WorldStateV1(
     # ── SOCIAL TOPOLOGY ─────────────────────────────────────────────────
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_MACBETH", target_entity_id="ENT_LADY_MACBETH",
-                         affinity=0.8, fear=0.3, power_dynamic=-0.3, inertia=0.5, evidence_strength="strong"),
+                         affinity=0.8, fear=0.3, power_dynamic=-0.3, inertia=0.3, evidence_strength="strong"),
         RelationshipEdge(source_entity_id="ENT_LADY_MACBETH", target_entity_id="ENT_MACBETH",
                          affinity=0.8, fear=0.2, power_dynamic=0.4, inertia=0.5, evidence_strength="strong"),
         RelationshipEdge(source_entity_id="ENT_MACBETH", target_entity_id="ENT_DUNCAN",

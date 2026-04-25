@@ -50,14 +50,12 @@ Fields:
   - 4.0–6.0: Moderate force (persuasion, moderate physical action, emotional revelation)
   - 7.0–9.0: Major force (violence, life-changing revelation, catastrophic event)
   - 10.0: Absolute/irresistible force (death, total destruction)
-- `mechanism` (str): How the cause produced the effect. Use one of:
-  - `"physical"` or `"physical_force"` — bodily violence, environmental destruction, physical action.
-  - `"psychological"` — emotional manipulation, persuasion, fear, guilt, motivation.
-  - `"epistemic"` or `"epistemic_revelation"` — gaining or losing knowledge, discovering truth.
-  - `"social"` or `"social_coercion"` — political power, authority, social pressure, legal consequence.
-  - `"emotional"` — love, grief, joy, despair driving action.
-  - `"informational"` — spreading or receiving specific information.
-  - `"betrayal"` — breaking trust, treachery.
+- `mechanism` (str): How the cause produced the effect. Use EXACTLY one of these five canonical values:
+  - `"physical"` — bodily violence, environmental destruction, physical action, material causation.
+  - `"psychological"` — emotional manipulation, persuasion, fear, guilt, internal motivation.
+  - `"epistemic"` — gaining or losing knowledge, discovering truth, learning secrets.
+  - `"social"` — political power, authority, social pressure, legal consequence, betrayal of trust.
+  - `"emotional"` — love, grief, joy, despair directly driving action.
 - `evidence_strength` (str): `"weak"` (implied/speculative), `"moderate"` (strongly suggested), `"strong"` (directly stated).
 - `fabula_time` (int): The fabula_time when this cause took effect. Use the fabula_time from the source event (for event sources) or the current fabula_time in the chunk (for state sources).
 - `propagation_delay` (int): How many fabula_time units the effect takes to manifest after the cause fires. Default 0 (instant). Use >0 for slow-burn consequences: poison taking effect over time, rumours spreading gradually, economic collapse after a policy change. The effect node's fabula_time must be ≥ source fabula_time + propagation_delay.

@@ -358,13 +358,13 @@ class TestNarrativeTension:
         as 'linear' regardless of displacement."""
         ego = _ego_payload(brief_encounter_ws, ["ENT_LAURA"])
         assembler = DirectiveAssembler(None, ego, brief_encounter_ws)
-        # Anchor at 2: EVT_FINAL_MEETING (s=1) and EVT_ALEC_DEPARTS (s=2)
+        # Anchor at 2: EVT_FRED_UNDERSTANDS (s=1) and EVT_FINAL_MEETING (s=2)
         # are revealed, so they should be 'linear' even though displaced.
         tensions = assembler.compute_narrative_tension(syuzhet_anchor=2)
 
         tension_map = {t.event_id: t for t in tensions}
+        assert tension_map["EVT_FRED_UNDERSTANDS"].tension_type == "linear"
         assert tension_map["EVT_FINAL_MEETING"].tension_type == "linear"
-        assert tension_map["EVT_ALEC_DEPARTS"].tension_type == "linear"
 
     def test_syuzhet_anchor_unrevealed_events_flagged(self):
         """Events NOT yet revealed (syuzhet_index > anchor) should keep their

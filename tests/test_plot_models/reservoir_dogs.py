@@ -44,7 +44,7 @@ world_state = WorldStateV1(
                 "temper": TraitVector(value=0.5, inertia=0.3),
             },
             beliefs=[
-                Belief(target_id="ENT_ORANGE", perceived_state="Orange is a good kid who needs my protection", confidence=0.8, inertia=0.5),
+                Belief(target_id="ENT_ORANGE", perceived_state="Orange is trustworthy and not a cop", confidence=0.8, inertia=0.4, established_at_fabula=100),
                 Belief(target_id="ENT_BLONDE", perceived_state="Blonde is a psychopath who blew the heist", confidence=0.8, inertia=0.4),
             ],
             state_timeline=[
@@ -241,7 +241,7 @@ world_state = WorldStateV1(
     ],
     information_topology=[
         InformationEdge(source_id="ENT_ORANGE", target_ids=["ENT_WHITE"], medium="confession", established_at_fabula=750),
-        InformationEdge(source_id="ENT_JOE", target_ids=["ENT_EDDIE"], medium="conversation", established_at_fabula=100),
+        InformationEdge(source_id="ENT_JOE", target_ids=["ENT_EDDIE"], medium="conversation", is_encrypted=True, established_at_fabula=100),
         InformationEdge(source_id="ENT_PINK", target_ids=["ENT_WHITE"], medium="argument", established_at_fabula=400),
     ],
     social_topology=[

@@ -447,7 +447,7 @@ class TestCounterfactual:
         # Time-slice: no events after T=6
         for _, data in G.nodes(data=True):
             if data.get("node_type") == "EventNode":
-                assert data["fabula_time"] <= 6
+                assert data["fabula_time"] <= 600
 
     def test_counterfactual_shadow_world_id(self):
         """Counterfactual sandbox must tag all nodes as 'shadow'."""
@@ -1767,7 +1767,7 @@ class TestPlotEnrichment:
     def test_pip_central_false_belief(self):
         """Pip must believe Miss Havisham is his secret benefactress."""
         pip = expectations_ws.entities["ENT_PIP"]
-        havisham_beliefs = [b for b in pip.beliefs if b.target_id == "ENT_HAVISHAM"]
+        havisham_beliefs = [b for b in pip.beliefs if b.target_id == "ENT_MISS_HAVISHAM"]
         assert any("benefact" in b.perceived_state.lower() for b in havisham_beliefs), (
             "Pip's central false belief about Havisham as benefactress must be present"
         )

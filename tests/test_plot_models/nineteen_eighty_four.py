@@ -52,8 +52,9 @@ world_state = WorldStateV1(
                 "integrity": TraitVector(value=0.5, inertia=0.3),
             },
             beliefs=[
-                Belief(target_id="ENT_OBRIEN", perceived_state="O'Brien is a secret rebel against the Party", confidence=0.7, inertia=0.3),
+                Belief(target_id="ENT_OBRIEN", perceived_state="O'Brien is a Brotherhood ally who shares my rebellion", confidence=0.7, inertia=0.3, established_at_fabula=600),
                 Belief(target_id="ENT_BIG_BROTHER", perceived_state="Big Brother's regime can be overthrown", confidence=0.4, inertia=0.2),
+                Belief(target_id="ENT_CHARRINGTON", perceived_state="Charrington is a harmless old shopkeeper", confidence=0.8, inertia=0.4, established_at_fabula=300),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=300, triggered_by="EVT_JULIA_NOTE",
@@ -103,9 +104,7 @@ world_state = WorldStateV1(
                 "deceit": TraitVector(value=0.9, inertia=0.7),
                 "patience": TraitVector(value=0.8, inertia=0.6),
             },
-            beliefs=[
-                Belief(target_id="ENT_WINSTON", perceived_state="Winston is a target to be entrapped", confidence=0.95, inertia=0.6),
-            ]),
+            beliefs=[]),
         "ENT_SYME": Entity(id="ENT_SYME", name="Syme",
             location_id="LOC_MINISTRY_TRUTH", status="healthy",
             traits={
@@ -270,7 +269,7 @@ world_state = WorldStateV1(
         SpatialEdge(source_id="LOC_MINISTRY_LOVE", target_id="LOC_CHESTNUT_TREE_CAFE"),
     ],
     information_topology=[
-        InformationEdge(source_id="ENT_JULIA", target_ids=["ENT_WINSTON"], medium="handwritten_note", established_at_fabula=300),
+        InformationEdge(source_id="ENT_JULIA", target_ids=["ENT_WINSTON"], medium="handwritten_note", is_encrypted=True, established_at_fabula=300),
         InformationEdge(source_id="ENT_OBRIEN", target_ids=["ENT_WINSTON", "ENT_JULIA"], medium="meeting", established_at_fabula=600, terminated_at_fabula=800),
         InformationEdge(source_id="ENT_CHARRINGTON", target_ids=["ENT_OBRIEN"], medium="surveillance", established_at_fabula=400),
         InformationEdge(source_id="ENT_OBRIEN", target_ids=["ENT_WINSTON"], medium="torture_interrogation", established_at_fabula=900),

@@ -330,6 +330,9 @@ def reconstruct_entity_at(entity: "Entity", fabula_time: int) -> dict:
         if snap.location_id is not None:
             location_id = snap.location_id
 
+    # Filter beliefs by temporal anchor
+    beliefs = [b for b in beliefs if b.get("established_at_fabula", 0) <= fabula_time]
+
     return {
         "traits": traits,
         "beliefs": beliefs,

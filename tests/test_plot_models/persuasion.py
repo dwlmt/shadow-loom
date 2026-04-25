@@ -258,6 +258,7 @@ world_state = WorldStateV1(
         InformationEdge(source_id="ENT_WENTWORTH", target_ids=["ENT_ANNE"], medium="letter", established_at_fabula=1000),
         InformationEdge(source_id="ENT_MRS_SMITH", target_ids=["ENT_ANNE"], medium="conversation", established_at_fabula=950),
         InformationEdge(source_id="ENT_LADY_RUSSELL", target_ids=["ENT_ANNE"], medium="conversation", established_at_fabula=100),
+        InformationEdge(source_id="ENT_ANNE", target_ids=["ENT_WENTWORTH"], medium="overheard_conversation", established_at_fabula=900),
     ],
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_ANNE", target_entity_id="ENT_WENTWORTH", affinity=0.8, fear=0.1, power_dynamic=-0.2, inertia=0.5),

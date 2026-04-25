@@ -444,6 +444,8 @@ world_state = WorldStateV1(
                          affinity=0.5, fear=0.0, power_dynamic=0.6, inertia=0.4, evidence_strength="moderate"),
         RelationshipEdge(source_entity_id="ENT_JULIET", target_entity_id="ENT_NURSE",
                          affinity=0.7, fear=0.0, power_dynamic=0.1, inertia=0.5, evidence_strength="moderate"),
+        RelationshipEdge(source_entity_id="ENT_NURSE", target_entity_id="ENT_JULIET",
+                         affinity=0.9, fear=0.1, power_dynamic=0.3, inertia=0.4),
         RelationshipEdge(source_entity_id="ENT_JULIET", target_entity_id="ENT_FRIAR_LAURENCE",
                          affinity=0.6, fear=0.1, power_dynamic=-0.3, inertia=0.4, evidence_strength="moderate"),
         RelationshipEdge(source_entity_id="ENT_ROMEO", target_entity_id="ENT_FRIAR_LAURENCE",

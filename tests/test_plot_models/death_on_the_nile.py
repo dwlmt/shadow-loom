@@ -107,6 +107,7 @@ world_state = WorldStateV1(
         "ENT_SIMON": Entity(
             id="ENT_SIMON", name="Simon Doyle",
             location_id="LOC_KARNAK_DECK", status="healthy",
+            constants=["co_conspirator"],
             traits={
                 "charm": TraitVector(value=0.7, inertia=0.5),
                 "greed": TraitVector(value=0.7, inertia=0.4),
@@ -221,7 +222,7 @@ world_state = WorldStateV1(
         EventNode(id="EVT_STAGED_SHOOTING", fabula_time=800, syuzhet_index=8,
                   event_type="choice", actor_ids=["ENT_JACQUELINE", "ENT_SIMON"], target_ids=[],
                   description="Jacqueline stages shooting Simon in the lounge; Simon fakes his injury with red ink."),
-        EventNode(id="EVT_SIMON_KILLS_LINNET", fabula_time=900, syuzhet_index=9,
+        EventNode(id="EVT_SIMON_MURDERS_LINNET", fabula_time=900, syuzhet_index=9,
                   event_type="choice", actor_ids=["ENT_SIMON"], target_ids=["ENT_LINNET"],
                   description="While everyone tends to the staged scene, Simon takes the pistol and shoots Linnet in her cabin."),
         EventNode(id="EVT_LINNET_MURDERED", fabula_time=1000, syuzhet_index=10,
@@ -263,7 +264,7 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_JACQUELINE_STALKS", target_id="EVT_STAGED_SHOOTING",
                    causality_type="chain_reaction", mechanism="psychological", evidence_strength="strong",
                    causal_force=7.0, fabula_time=300, propagation_delay=500),
-        CausalEdge(source_id="EVT_STAGED_SHOOTING", target_id="EVT_SIMON_KILLS_LINNET",
+        CausalEdge(source_id="EVT_STAGED_SHOOTING", target_id="EVT_SIMON_MURDERS_LINNET",
                    causality_type="chain_reaction", mechanism="physical", evidence_strength="strong",
                    causal_force=10.0, fabula_time=800),
         CausalEdge(source_id="EVT_LINNET_MURDERED", target_id="EVT_INVESTIGATION_BEGINS",
@@ -325,7 +326,7 @@ world_state = WorldStateV1(
         CausalEdge(source_id="OBJ_RED_INK", target_id="EVT_STAGED_SHOOTING",
                    causality_type="affordance_gate", mechanism="physical", evidence_strength="strong",
                    causal_force=7.0, fabula_time=800),
-        CausalEdge(source_id="OBJ_VELVET_STOLE", target_id="EVT_SIMON_KILLS_LINNET",
+        CausalEdge(source_id="OBJ_VELVET_STOLE", target_id="EVT_SIMON_MURDERS_LINNET",
                    causality_type="affordance_gate", mechanism="physical", evidence_strength="strong",
                    causal_force=6.0, fabula_time=900),
         CausalEdge(source_id="OBJ_SECOND_PISTOL", target_id="EVT_MURDER_SUICIDE",
@@ -358,6 +359,8 @@ world_state = WorldStateV1(
                         medium="eyewitness_testimony", established_at_fabula=1300, terminated_at_fabula=1300),
         InformationEdge(source_id="ENT_POIROT", target_ids=["ENT_RACE"],
                         medium="deductive_reconstruction", established_at_fabula=1600),
+        InformationEdge(source_id="ENT_SIMON", target_ids=["ENT_JACQUELINE"],
+                        medium="signal_shout", established_at_fabula=800),
     ],
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_LINNET", target_entity_id="ENT_SIMON",
