@@ -15,6 +15,7 @@ from shadow_loom.query_models import (
     CounterfactualQuery,
     DirectiveQuery,
     InterrogationQuery,
+    GeneralQuery,
 )
 
 # ── Import plot world-states used across tests ──────────────────────────
@@ -591,6 +592,51 @@ class TestInterrogation:
         )
         result = calculate_narrative_physics(query, gone_girl_ws)
         assert result["status"] == "success"
+
+
+class TestGeneral:
+    """General queries return the full world state for open-ended Q&A."""
+
+    def test_general_basic(self):
+        query = GeneralQuery(question="What is the overall power structure?")
+        result = calculate_narrative_physics(query, macbeth_ws)
+        assert result["status"] == "success"
+        assert result["query_type"] == "general"
+        assert result["question"] == "What is the overall power structure?"
+        assert result["include_topology"] is True
+
+    def test_general_returns_full_world_state(self):
+        query = GeneralQuery(question="Describe everything.")
+        result = calculate_narrative_physics(query, macbeth_ws)
+        ps = result["physics_state"]
+        assert "locations" in ps
+        assert "entities" in ps
+        assert "objects" in ps
+        assert "events" in ps
+        assert "causal_topology" in ps
+        assert "social_topology" in ps
+        assert "information_topology" in ps
+
+    def test_general_with_temporal_anchor(self):
+        anchor = 5
+        query = GeneralQuery(question="What happened so far?")
+        result = calculate_narrative_physics(query, macbeth_ws, temporal_anchor=anchor)
+        ps = result["physics_state"]
+        for evt in ps["events"]:
+            assert evt["fabula_time"] <= anchor
+        assert set(ps["entities"].keys()) == set(macbeth_ws.entities.keys())
+
+    def test_general_without_topology(self):
+        query = GeneralQuery(question="Just the basics.", include_topology=False)
+        result = calculate_narrative_physics(query, macbeth_ws)
+        assert result["include_topology"] is False
+        assert result["status"] == "success"
+
+    def test_general_gone_girl(self):
+        query = GeneralQuery(question="Summarise the relationships in this story.")
+        result = calculate_narrative_physics(query, gone_girl_ws)
+        assert result["status"] == "success"
+        assert result["query_type"] == "general"
 
 
 # =====================================================================

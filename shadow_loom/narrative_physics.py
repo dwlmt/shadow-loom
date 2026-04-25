@@ -214,6 +214,21 @@ def calculate_narrative_physics(
             "require_proof": request.require_proof
         }
 
+    # ==========================================
+    # FULL-GRAPH Q&A: GENERAL QUESTION
+    # ==========================================
+    elif request.query_type == "general":
+        logger.info("[General] Full-graph Q&A for question: %s", request.question[:80])
+        full_state = extract_full_world_state(global_world_state, temporal_anchor)
+
+        return {
+            "status": "success",
+            "query_type": "general",
+            "physics_state": full_state,
+            "question": request.question,
+            "include_topology": request.include_topology,
+        }
+
     # Fallback
     raise ValueError(f"Unknown Query Type: {request.query_type}")
 

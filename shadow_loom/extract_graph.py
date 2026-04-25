@@ -1,8 +1,17 @@
-from typing import List, Optional, Set
+from __future__ import annotations
+
+import copy
 import logging
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Set
+
 from pydantic import BaseModel, Field
 
-from shadow_loom.models import WorldStateV1, reconstruct_entity_at
+from shadow_loom.models import (
+    EntityStateSnapshot,
+    WorldStateV1,
+    reconstruct_entity_at,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -258,4 +267,266 @@ def extract_full_world_state(
                      len(dump["entities"]), len(dump["locations"]), len(dump["events"]))
 
     return dump
+
+
+# ==========================================
+# 4. PROSE → TOPOLOGY EXTRACTION
+# ==========================================
+
+def extract_topology_from_prose(
+    prose: str,
+    world_state: WorldStateV1,
+    config: "ExtractionConfig | None" = None,
+) -> "ChunkTopology":
+    """Extract graph topology from generated prose using the existing physics + social agents.
+
+    Builds a ``GlobalRegister`` directly from the ``WorldStateV1`` (no LLM
+    ontology extraction needed — the entities/locations/objects are already
+    known) and then runs the physics and social extraction agents on the
+    prose as a single chunk.
+
+    Returns a :class:`ChunkTopology` containing new events, edges, and
+    entity state updates found in the prose.
+    """
+    from shadow_loom.ingestion import (
+        ChunkTopology,
+        ExtractionConfig,
+        GlobalRegister,
+        PhysicsExtraction,
+        SocialExtraction,
+        SocraticScaffold,
+        _PhysicsDeps,
+        _SocialDeps,
+        _build_physics_agent,
+        _build_social_agent,
+    )
+
+    if config is None:
+        config = ExtractionConfig()
+
+    register = GlobalRegister(
+        locations=world_state.locations,
+        objects=world_state.objects,
+        entities=world_state.entities,
+    )
+
+    empty_scaffold = SocraticScaffold(qa_pairs=[])
+
+    # --- Physics extraction (events + causal + spatial + entity_updates) ---
+    physics_agent = _build_physics_agent(config)
+    physics_deps = _PhysicsDeps(
+        global_register=register,
+        scaffold=empty_scaffold,
+        previous_event_ids=[evt.id for evt in world_state.events],
+    )
+    physics_result: PhysicsExtraction = physics_agent.run_sync(
+        prose, deps=physics_deps,
+    ).output
+
+    # --- Social extraction (information + relationship edges) ---
+    social_agent = _build_social_agent(config)
+    social_deps = _SocialDeps(
+        global_register=register,
+        scaffold=empty_scaffold,
+        chunk_event_ids=[evt.id for evt in physics_result.events],
+        previous_event_ids=[evt.id for evt in world_state.events],
+    )
+    social_result: SocialExtraction = social_agent.run_sync(
+        prose, deps=social_deps,
+    ).output
+
+    topology = ChunkTopology(
+        events=physics_result.events,
+        causal_topology=physics_result.causal_topology,
+        spatial_topology=physics_result.spatial_topology,
+        entity_updates=physics_result.entity_updates,
+        information_topology=social_result.information_topology,
+        social_topology=social_result.social_topology,
+    )
+
+    logger.info(
+        "Prose extraction complete — %d events, %d causal, %d spatial, "
+        "%d info, %d social edges, %d entity updates.",
+        len(topology.events), len(topology.causal_topology),
+        len(topology.spatial_topology), len(topology.information_topology),
+        len(topology.social_topology), len(topology.entity_updates),
+    )
+    return topology
+
+
+# ==========================================
+# 5. TOPOLOGY MERGE INTO WORLD STATE
+# ==========================================
+
+class MergeChangeset(BaseModel):
+    """Summary of what a single merge operation added to the world model."""
+    events_added: int = 0
+    causal_edges_added: int = 0
+    spatial_edges_added: int = 0
+    information_edges_added: int = 0
+    social_edges_added: int = 0
+    entity_updates_applied: int = 0
+    entity_updates_skipped: List[str] = Field(default_factory=list)
+
+
+class WorldModelVersion(BaseModel):
+    """A single entry in the version history of a VersionedWorldModel."""
+    version: int = Field(description="Monotonically increasing version number (0 = original).")
+    timestamp: str = Field(description="ISO-8601 timestamp of when this version was created.")
+    source: str = Field(
+        description="What produced this version, e.g. 'original', 'merge_topology', 'feedback_loop'.",
+    )
+    description: str = Field(default="", description="Human-readable summary of changes.")
+    changeset: Optional[MergeChangeset] = Field(
+        default=None,
+        description="Detailed counts of what was added. None for version 0 (original).",
+    )
+
+
+class VersionedWorldModel(BaseModel):
+    """Immutable-history wrapper around WorldStateV1.
+
+    Every mutation produces a new deep-copied ``WorldStateV1`` and appends
+    a version record.  The original world state is never modified.
+    """
+    current: WorldStateV1
+    history: List[WorldModelVersion] = Field(default_factory=list)
+
+    @staticmethod
+    def from_world_state(world_state: WorldStateV1) -> "VersionedWorldModel":
+        """Create a new versioned world model from an existing WorldStateV1.
+
+        The incoming ``world_state`` is deep-copied so that subsequent
+        merges never mutate the caller's original.
+        """
+        return VersionedWorldModel(
+            current=copy.deepcopy(world_state),
+            history=[
+                WorldModelVersion(
+                    version=0,
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    source="original",
+                    description="Initial world state.",
+                ),
+            ],
+        )
+
+    @property
+    def version(self) -> int:
+        """Current version number."""
+        return self.history[-1].version if self.history else 0
+
+    def merge(
+        self,
+        topology: "ChunkTopology",
+        *,
+        source: str = "merge_topology",
+        description: str = "",
+    ) -> "VersionedWorldModel":
+        """Merge a topology into the world model, returning a **new** VersionedWorldModel.
+
+        The current ``WorldStateV1`` is deep-copied, the topology is merged
+        into the copy, and a new version record is appended.  ``self`` is
+        never mutated.
+        """
+        from shadow_loom.ingestion import (
+            ChunkTopology,
+            EntityUpdate,
+            deduplicate_causal,
+            deduplicate_info,
+            deduplicate_social,
+            deduplicate_spatial,
+        )
+
+        merged = copy.deepcopy(self.current)
+        changeset = MergeChangeset()
+
+        # --- Events ---
+        pre_events = len(merged.events)
+        merged.events.extend(topology.events)
+        merged.events.sort(key=lambda e: e.fabula_time)
+        changeset.events_added = len(merged.events) - pre_events
+
+        # --- Causal edges ---
+        pre_causal = len(merged.causal_topology)
+        merged.causal_topology.extend(topology.causal_topology)
+        merged.causal_topology = deduplicate_causal(merged.causal_topology)
+        merged.causal_topology.sort(key=lambda c: c.fabula_time)
+        changeset.causal_edges_added = len(merged.causal_topology) - pre_causal
+
+        # --- Spatial edges ---
+        pre_spatial = len(merged.spatial_topology)
+        merged.spatial_topology.extend(topology.spatial_topology)
+        merged.spatial_topology = deduplicate_spatial(merged.spatial_topology)
+        changeset.spatial_edges_added = len(merged.spatial_topology) - pre_spatial
+
+        # --- Information edges ---
+        pre_info = len(merged.information_topology)
+        merged.information_topology.extend(topology.information_topology)
+        merged.information_topology = deduplicate_info(merged.information_topology)
+        changeset.information_edges_added = len(merged.information_topology) - pre_info
+
+        # --- Social edges ---
+        pre_social = len(merged.social_topology)
+        merged.social_topology.extend(topology.social_topology)
+        merged.social_topology = deduplicate_social(merged.social_topology)
+        changeset.social_edges_added = len(merged.social_topology) - pre_social
+
+        # --- Entity state updates ---
+        for eu in topology.entity_updates:
+            entity = merged.entities.get(eu.entity_id)
+            if entity is None:
+                logger.warning(
+                    "Entity update for unknown entity '%s' — skipped.", eu.entity_id,
+                )
+                changeset.entity_updates_skipped.append(eu.entity_id)
+                continue
+            snap = EntityStateSnapshot(
+                fabula_time=eu.fabula_time,
+                triggered_by=eu.triggered_by,
+                traits=eu.trait_updates,
+                beliefs_added=eu.new_beliefs,
+                beliefs_invalidated=eu.invalidated_belief_targets,
+                status=eu.new_status,
+                location_id=eu.new_location_id,
+            )
+            entity.state_timeline.append(snap)
+            entity.state_timeline.sort(key=lambda s: s.fabula_time)
+            changeset.entity_updates_applied += 1
+
+        next_version = self.version + 1
+        new_history = list(self.history) + [
+            WorldModelVersion(
+                version=next_version,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                source=source,
+                description=description or f"Merged topology: +{changeset.events_added} events.",
+                changeset=changeset,
+            ),
+        ]
+
+        logger.info(
+            "[VersionedWorldModel] v%d → v%d: +%d events, +%d causal, "
+            "+%d spatial, +%d info, +%d social, %d entity updates (%d skipped).",
+            self.version, next_version,
+            changeset.events_added, changeset.causal_edges_added,
+            changeset.spatial_edges_added, changeset.information_edges_added,
+            changeset.social_edges_added, changeset.entity_updates_applied,
+            len(changeset.entity_updates_skipped),
+        )
+
+        return VersionedWorldModel(current=merged, history=new_history)
+
+
+def merge_topology(
+    base: WorldStateV1,
+    topology: "ChunkTopology",
+) -> WorldStateV1:
+    """Convenience function: deep-copy ``base``, merge ``topology``, return new WorldStateV1.
+
+    For full version tracking, use :class:`VersionedWorldModel` instead.
+    """
+    vwm = VersionedWorldModel.from_world_state(base)
+    result = vwm.merge(topology)
+    return result.current
 

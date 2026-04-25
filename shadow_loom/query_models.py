@@ -77,6 +77,27 @@ class InterrogationQuery(BaseModel):
     require_proof: bool = Field(default=True, description="Returns the Causal Bridges as mathematical proof.")
 
 # ==========================================
+# 6. GENERAL QUESTION (Full-Graph Q&A)
+# ==========================================
+class GeneralQuery(BaseModel):
+    """Open-ended question answered against the full world-state graph.
+
+    Unlike InterrogationQuery (which targets pathfinding and requires proof),
+    GeneralQuery accepts any natural-language question and returns the full
+    omniscient graph so an LLM can reason freely over all entities, events,
+    locations, topology, and timeline.
+    """
+    query_type: Literal["general"] = "general"
+    question: str = Field(
+        description="Any question about the world state, e.g. 'What are all the "
+        "relationships between the Capulets and Montagues?'"
+    )
+    include_topology: bool = Field(
+        default=True,
+        description="Include causal, spatial, social, and information edges in the response.",
+    )
+
+# ==========================================
 # THE MASTER ROUTER
 # ==========================================
 UserRequest = Union[
@@ -84,5 +105,6 @@ UserRequest = Union[
     InterventionQuery, 
     CounterfactualQuery, 
     DirectiveQuery, 
-    InterrogationQuery
+    InterrogationQuery,
+    GeneralQuery,
 ]

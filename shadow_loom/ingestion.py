@@ -1322,6 +1322,13 @@ def _deduplicate_info(edges: List[InformationEdge]) -> List[InformationEdge]:
     return deduped
 
 
+# Public aliases for reuse outside the ingestion pipeline
+deduplicate_social = _deduplicate_social
+deduplicate_spatial = _deduplicate_spatial
+deduplicate_causal = _deduplicate_causal
+deduplicate_info = _deduplicate_info
+
+
 def assemble_world_state(
     register: GlobalRegister,
     topologies: List[ChunkTopology],

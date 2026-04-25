@@ -13,6 +13,12 @@ from shadow_loom.generation import (
     build_observation_brief, build_intervention_brief,
     build_counterfactual_brief,
 )
+from shadow_loom.auditor import (
+    AuditResult, AuditViolation, AuditCycleSnapshot,
+    AuditorConfig, FeedbackLoopResult, VersionedGraph,
+    run_audit, run_feedback_loop, render_and_audit,
+    assemble_audit_prompt,
+)
 from shadow_loom.ingestion import (
     run_extraction, extract_ontology, extract_topology,
     assemble_world_state, validate_world_state,
@@ -20,6 +26,15 @@ from shadow_loom.ingestion import (
     ChunkTopology, QAPair, SocraticScaffold,
     PhysicsExtraction, SocialExtraction, EntityUpdate,
     ValidationReport, ExtractionConfig,
+    deduplicate_social, deduplicate_spatial,
+    deduplicate_causal, deduplicate_info,
+)
+from shadow_loom.extract_graph import (
+    extract_topology_from_prose, merge_topology,
+    VersionedWorldModel, WorldModelVersion, MergeChangeset,
+)
+from shadow_loom.pipeline import (
+    run_pipeline, PipelineConfig, PipelineResult, PipelineHistory,
 )
 
 __all__ = [
@@ -63,4 +78,27 @@ __all__ = [
     "EntityUpdate",
     "ValidationReport",
     "ExtractionConfig",
+    "AuditResult",
+    "AuditViolation",
+    "AuditCycleSnapshot",
+    "AuditorConfig",
+    "FeedbackLoopResult",
+    "VersionedGraph",
+    "run_audit",
+    "run_feedback_loop",
+    "render_and_audit",
+    "assemble_audit_prompt",
+    "deduplicate_social",
+    "deduplicate_spatial",
+    "deduplicate_causal",
+    "deduplicate_info",
+    "extract_topology_from_prose",
+    "merge_topology",
+    "VersionedWorldModel",
+    "WorldModelVersion",
+    "MergeChangeset",
+    "run_pipeline",
+    "PipelineConfig",
+    "PipelineResult",
+    "PipelineHistory",
 ]

@@ -62,6 +62,7 @@ Generate **at least one pair per category** (6 minimum). For rich chunks, genera
 - How do character traits or environmental conditions gate events? (affordance logic)
 - How strong is each causal link? (subtle influence vs. overwhelming force)
 - **How do relationships shift?** Which dyads changed in affinity, fear, or power dynamic, and what event drove the shift?
+- **Who is the target of each action?** For every event, identify who or what is directly acted upon — even when the text doesn't name them explicitly. A murder has a victim. A theft has a target object. A betrayal has a betrayed party. A confession has a listener. The downstream extraction step needs explicit actor→target mappings.
 
 ---
 
