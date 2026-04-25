@@ -17,6 +17,7 @@ in the ``prompts/`` directory at the project root.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from pathlib import Path
@@ -236,9 +237,19 @@ class ExtractionConfig(BaseModel):
         "chunk boundaries.",
     )
     max_correction_retries: int = Field(
-        default=1,
+        default=3,
         description="Maximum correction passes after validation. Each pass feeds "
         "programmatic errors back to the LLM for targeted repair.",
+    )
+    max_concurrent_chunks: int = Field(
+        default=4,
+        description="Maximum number of chunks to extract in parallel during "
+        "async topology extraction. Controls LLM request concurrency.",
+    )
+    estimated_events_per_chunk: int = Field(
+        default=10,
+        description="Estimated events per chunk — used to pre-allocate syuzhet "
+        "and fabula_time ranges for parallel extraction.",
     )
 
 
@@ -539,6 +550,84 @@ def extract_ontology(text: str, config: ExtractionConfig | None = None) -> Globa
     resolved_objects = _resolve_object_owner_ids(obj_register.objects, ent_register.entities)
 
     # --- Merge into GlobalRegister ---
+    register = GlobalRegister(
+        locations=loc_register.locations,
+        objects=resolved_objects,
+        entities=ent_register.entities,
+    )
+    logger.info(
+        "[Step 1] Ontology extracted — %d locations, %d objects, %d entities.",
+        len(register.locations), len(register.objects), len(register.entities),
+    )
+    return register
+
+
+async def extract_ontology_async(
+    text: str,
+    config: ExtractionConfig | None = None,
+) -> GlobalRegister:
+    """Async variant of :func:`extract_ontology`.
+
+    Runs Step 1a (locations) first, then Steps 1b (objects) and
+    1c (entities) in parallel via ``asyncio.gather``.  Entity
+    extraction does not structurally depend on object IDs — objects
+    reference entities via ``owner_id``, not the reverse — so
+    running them concurrently is safe.  ``_resolve_object_owner_ids``
+    is called after both complete.
+    """
+    config = config or ExtractionConfig()
+
+    # --- Step 1a: Locations (must complete first — both 1b and 1c need it) ---
+    location_agent = _build_location_agent(config)
+    logger.info("[Step 1a] Extracting locations with %s …", config.model)
+    try:
+        loc_result = await location_agent.run(text)
+        loc_register = loc_result.output
+    except Exception:
+        logger.exception("[Step 1a] Location extraction failed — retrying once …")
+        loc_result = await location_agent.run(text)
+        loc_register = loc_result.output
+    logger.info("[Step 1a] Extracted %d locations.", len(loc_register.locations))
+
+    # --- Steps 1b + 1c in parallel ---
+    async def _extract_objects() -> ObjectRegister:
+        object_agent = _build_object_agent(config)
+        obj_deps = _ObjectDeps(location_register=loc_register)
+        logger.info("[Step 1b] Extracting objects with %s …", config.model)
+        try:
+            obj_result = await object_agent.run(text, deps=obj_deps)
+            return obj_result.output
+        except Exception:
+            logger.exception("[Step 1b] Object extraction failed — retrying once …")
+            obj_result = await object_agent.run(text, deps=obj_deps)
+            return obj_result.output
+
+    async def _extract_entities() -> EntityRegister:
+        entity_agent = _build_entity_agent(config)
+        # Entity extraction does NOT structurally need object IDs.
+        # We pass an empty ObjectRegister so the agent still gets location context.
+        ent_deps = _EntityDeps(
+            location_register=loc_register,
+            object_register=ObjectRegister(objects={}),
+        )
+        logger.info("[Step 1c] Extracting entities with %s …", config.model)
+        try:
+            ent_result = await entity_agent.run(text, deps=ent_deps)
+            return ent_result.output
+        except Exception:
+            logger.exception("[Step 1c] Entity extraction failed — retrying once …")
+            ent_result = await entity_agent.run(text, deps=ent_deps)
+            return ent_result.output
+
+    obj_register, ent_register = await asyncio.gather(
+        _extract_objects(), _extract_entities()
+    )
+    logger.info("[Step 1b] Extracted %d objects.", len(obj_register.objects))
+    logger.info("[Step 1c] Extracted %d entities.", len(ent_register.entities))
+
+    # --- Resolve object owner_ids to ENT_ IDs (needs both registers) ---
+    resolved_objects = _resolve_object_owner_ids(obj_register.objects, ent_register.entities)
+
     register = GlobalRegister(
         locations=loc_register.locations,
         objects=resolved_objects,
@@ -1167,6 +1256,390 @@ def extract_topology(
         )
 
     return topologies
+
+
+# =====================================================================
+# Parallel Chunk Extraction (Async)
+# =====================================================================
+
+
+class _ChunkParams(BaseModel):
+    """Pre-allocated parameters for a single chunk in parallel extraction."""
+    chunk_index: int
+    total_chunks: int
+    syuzhet_offset: int
+    fabula_time_base: int
+    prev_chunk_tail: str
+
+
+def _pre_allocate_chunk_params(
+    chunks: List[str],
+    config: ExtractionConfig,
+) -> List[_ChunkParams]:
+    """Pre-compute per-chunk extraction parameters for parallel dispatch.
+
+    Each chunk gets a deterministic ``syuzhet_offset`` and
+    ``fabula_time_base`` range so parallel extraction produces
+    non-overlapping indices that can be reconciled afterwards.
+    The ``prev_chunk_tail`` is pre-computed from raw chunk
+    boundaries — no sequential dependency required.
+    """
+    params: List[_ChunkParams] = []
+    est = config.estimated_events_per_chunk
+    for i, chunk in enumerate(chunks):
+        tail = ""
+        if i > 0 and config.chunk_overlap_chars > 0:
+            tail = chunks[i - 1][-config.chunk_overlap_chars:]
+        params.append(_ChunkParams(
+            chunk_index=i,
+            total_chunks=len(chunks),
+            syuzhet_offset=i * est,
+            fabula_time_base=(i + 1) * est * config.fabula_time_spacing,
+            prev_chunk_tail=tail,
+        ))
+    return params
+
+
+async def _extract_single_chunk_async(
+    chunk: str,
+    params: _ChunkParams,
+    register: GlobalRegister,
+    config: ExtractionConfig,
+    socratic_agent: Agent,
+    physics_agent: Agent,
+    social_agent: Agent,
+) -> ChunkTopology:
+    """Process one chunk through the three-agent pipeline (async).
+
+    Runs Socratic scaffolding → Physics → Social for a single chunk.
+    ``previous_event_ids`` is empty (advisory context only; the
+    ``GlobalRegister`` provides structural ID validation).
+    """
+    i = params.chunk_index
+    n = params.total_chunks
+
+    # Prepend trailing context from previous chunk for coreference
+    overlap_ctx = ""
+    if params.prev_chunk_tail and config.chunk_overlap_chars > 0:
+        overlap_ctx = (
+            f"[CONTEXT FROM PREVIOUS CHUNK — do NOT re-extract events from this]\n"
+            f"{params.prev_chunk_tail}\n"
+            f"[END CONTEXT]\n\n"
+        )
+    chunk_with_ctx = f"{overlap_ctx}{chunk}"
+
+    # --- Step 2: Socratic QA Scaffolding ---
+    logger.info("[Step 2·Async] Processing chunk %d/%d (%d chars) — scaffolding …", i + 1, n, len(chunk))
+    socratic_msg = f"Chunk {i + 1} of {n}:\n\n{chunk_with_ctx}"
+    socratic_deps = _SocraticDeps(global_register=register)
+    try:
+        scaffold_result = await socratic_agent.run(socratic_msg, deps=socratic_deps)
+        scaffold = scaffold_result.output
+    except Exception:
+        logger.exception("[Step 2·Async] Chunk %d scaffolding FAILED — using empty scaffold.", i + 1)
+        scaffold = SocraticScaffold()
+
+    logger.info("[Step 2·Async] Chunk %d: %d QA pairs generated.", i + 1, len(scaffold.qa_pairs))
+
+    # --- Step 3a: Physics Agent ---
+    logger.info("[Step 3a·Async] Processing chunk %d/%d — physics …", i + 1, n)
+    physics_msg = (
+        f"Chunk {i + 1} of {n} "
+        f"(syuzhet_index offset: {params.syuzhet_offset}, "
+        f"fabula_time_base: {params.fabula_time_base}, "
+        f"fabula_time_spacing: {config.fabula_time_spacing}):\n\n"
+        f"{chunk_with_ctx}"
+    )
+    physics_deps = _PhysicsDeps(
+        global_register=register,
+        scaffold=scaffold,
+        previous_event_ids=[],  # no cross-chunk IDs in parallel mode
+    )
+    try:
+        physics_result = await physics_agent.run(physics_msg, deps=physics_deps)
+        physics = physics_result.output
+    except Exception:
+        logger.exception("[Step 3a·Async] Chunk %d FAILED — returning empty physics.", i + 1)
+        physics = PhysicsExtraction()
+
+    # Retry once if zero events from a substantive chunk
+    if not physics.events and len(chunk) > 500:
+        logger.info("[Step 3a·Async] Chunk %d: 0 events from %d chars — retrying …", i + 1, len(chunk))
+        retry_msg = (
+            "IMPORTANT: The previous extraction returned zero events. "
+            "Re-read the chunk carefully — every narrative chunk contains "
+            "at least one event (choice, outcome, or revelation). "
+            "Look for decisions, consequences, emotional shifts, and "
+            "information reveals.\n\n" + physics_msg
+        )
+        try:
+            physics_result = await physics_agent.run(retry_msg, deps=physics_deps)
+            physics = physics_result.output
+        except Exception:
+            logger.exception("[Step 3a·Async] Chunk %d retry FAILED.", i + 1)
+
+    logger.info(
+        "[Step 3a·Async] Chunk %d: %d events, %d causal, %d spatial edges.",
+        i + 1, len(physics.events), len(physics.causal_topology),
+        len(physics.spatial_topology),
+    )
+
+    # Build event summary for Social Agent
+    chunk_evt_ids = [e.id for e in physics.events]
+    event_summary_lines = []
+    for e in physics.events:
+        event_summary_lines.append(
+            f"  - {e.id} (fabula={e.fabula_time}, syuzhet={e.syuzhet_index}, "
+            f"type={e.event_type}, actors={e.actor_ids}, targets={e.target_ids}): "
+            f"{e.description}"
+        )
+    event_summary = "\n".join(event_summary_lines)
+
+    # --- Step 3b: Social Agent ---
+    social = SocialExtraction()
+    if physics.events:
+        logger.info("[Step 3b·Async] Processing chunk %d/%d — social …", i + 1, n)
+        social_msg = (
+            f"Chunk {i + 1} of {n}.\n\n"
+            f"EVENTS EXTRACTED FROM THIS CHUNK:\n{event_summary}\n\n"
+            f"ORIGINAL TEXT:\n{chunk}"
+        )
+        social_deps = _SocialDeps(
+            global_register=register,
+            scaffold=scaffold,
+            chunk_event_ids=chunk_evt_ids,
+            previous_event_ids=[],  # no cross-chunk IDs in parallel mode
+        )
+        try:
+            social_result = await social_agent.run(social_msg, deps=social_deps)
+            social = social_result.output
+        except Exception:
+            logger.exception("[Step 3b·Async] Chunk %d FAILED — returning empty social.", i + 1)
+
+        # Retry if zero info edges with multiple events (quality gate)
+        if len(physics.events) >= 2 and not social.information_topology:
+            logger.info("[Step 3b·Async] Chunk %d: 0 info edges — retrying with emphasis …", i + 1)
+            retry_social_msg = (
+                "IMPORTANT: The previous extraction returned zero InformationEdge "
+                "entries. Most narrative chunks contain conversations, prophecies, "
+                "letters, confessions, orders, announcements, or rumours — each "
+                "one MUST produce an InformationEdge. Re-read the text and extract "
+                "ALL information flows.\n\n" + social_msg
+            )
+            try:
+                retry_result = await social_agent.run(retry_social_msg, deps=social_deps)
+                retry_social = retry_result.output
+                if retry_social.information_topology:
+                    social = SocialExtraction(
+                        information_topology=retry_social.information_topology,
+                        social_topology=social.social_topology,
+                    )
+                    logger.info(
+                        "[Step 3b·Async] Chunk %d: retry recovered %d info edges.",
+                        i + 1, len(social.information_topology),
+                    )
+            except Exception:
+                logger.exception("[Step 3b·Async] Chunk %d info retry FAILED.", i + 1)
+    else:
+        logger.info("[Step 3b·Async] Chunk %d: skipping social pass (no events).", i + 1)
+
+    topo = ChunkTopology(
+        events=physics.events,
+        causal_topology=physics.causal_topology,
+        information_topology=social.information_topology,
+        social_topology=social.social_topology,
+        spatial_topology=physics.spatial_topology,
+        entity_updates=physics.entity_updates,
+    )
+    logger.info(
+        "[Step 3·Async] Chunk %d: %d events, %d causal, %d social, %d spatial, %d info edges.",
+        i + 1, len(topo.events), len(topo.causal_topology),
+        len(topo.social_topology), len(topo.spatial_topology),
+        len(topo.information_topology),
+    )
+    return topo
+
+
+def _reconcile_chunk_topologies(
+    topologies: List[ChunkTopology],
+    config: ExtractionConfig,
+) -> List[ChunkTopology]:
+    """Post-merge reconciliation for parallel-extracted chunk topologies.
+
+    1. Detects and renames duplicate ``EVT_`` IDs across chunks
+       (appends ``_cN`` suffix where N is the chunk index).
+    2. Re-numbers ``syuzhet_index`` globally in chunk order.
+    3. Ensures ``fabula_time`` ordering across chunks: all events
+       in chunk N have ``fabula_time`` < all events in chunk N+1.
+    """
+    # --- Pass 1: Detect and resolve duplicate event IDs across chunks ---
+    global_evt_ids: Dict[str, int] = {}  # evt_id → first chunk index
+    chunk_renames: List[Dict[str, str]] = [{} for _ in topologies]
+
+    for ci, topo in enumerate(topologies):
+        for evt in topo.events:
+            if evt.id in global_evt_ids:
+                # Collision — rename in the later chunk
+                new_id = f"{evt.id}_c{ci}"
+                # Ensure the rename itself doesn't collide
+                suffix = ci
+                while new_id in global_evt_ids:
+                    suffix += len(topologies)
+                    new_id = f"{evt.id}_c{suffix}"
+                chunk_renames[ci][evt.id] = new_id
+                global_evt_ids[new_id] = ci
+                logger.info(
+                    "[Reconcile] Duplicate EVT ID %s in chunk %d — renamed to %s.",
+                    evt.id, ci, new_id,
+                )
+            else:
+                global_evt_ids[evt.id] = ci
+
+    # Apply renames to events and all edge references
+    reconciled: List[ChunkTopology] = []
+    for ci, topo in enumerate(topologies):
+        rmap = chunk_renames[ci]
+        if rmap:
+            topo = _apply_event_renames(topo, rmap)
+        reconciled.append(topo)
+
+    # --- Pass 2: Re-number syuzhet_index globally in chunk order ---
+    # Build per-chunk old → new syuzhet mappings for remapping discovered_at_syuzhet
+    chunk_syuzhet_remaps: List[Dict[int, int]] = []
+    syuzhet_counter = 0
+    for topo in reconciled:
+        remap: Dict[int, int] = {}
+        sorted_events = sorted(topo.events, key=lambda e: e.syuzhet_index)
+        for evt in sorted_events:
+            remap[evt.syuzhet_index] = syuzhet_counter
+            evt.syuzhet_index = syuzhet_counter
+            syuzhet_counter += 1
+        chunk_syuzhet_remaps.append(remap)
+
+    # Remap discovered_at_syuzhet on InformationEdges using per-chunk maps
+    for ci, topo in enumerate(reconciled):
+        remap = chunk_syuzhet_remaps[ci]
+        for ie in topo.information_topology:
+            if ie.discovered_at_syuzhet in remap:
+                ie.discovered_at_syuzhet = remap[ie.discovered_at_syuzhet]
+
+    # --- Pass 3: Ensure fabula_time inter-chunk ordering ---
+    # Within each chunk, preserve relative order. Between chunks,
+    # shift later chunks so they don't overlap earlier ones.
+    spacing = config.fabula_time_spacing
+    running_max = 0
+    for topo in reconciled:
+        if not topo.events:
+            continue
+        chunk_min = min(e.fabula_time for e in topo.events)
+        # Ensure this chunk starts above the running max
+        needed_shift = 0
+        if chunk_min <= running_max:
+            needed_shift = running_max + spacing - chunk_min
+        if needed_shift > 0:
+            _shift_fabula_times(topo, needed_shift)
+        if topo.events:
+            running_max = max(e.fabula_time for e in topo.events)
+
+    return reconciled
+
+
+def _apply_event_renames(topo: ChunkTopology, rmap: Dict[str, str]) -> ChunkTopology:
+    """Apply event ID renames to all fields in a ChunkTopology."""
+    def _r(eid: str) -> str:
+        return rmap.get(eid, eid)
+
+    new_events = [
+        e.model_copy(update={"id": _r(e.id)}) for e in topo.events
+    ]
+    new_causal = [
+        ce.model_copy(update={
+            "source_id": _r(ce.source_id),
+            "target_id": _r(ce.target_id),
+        }) for ce in topo.causal_topology
+    ]
+    new_info = [
+        ie.model_copy(update={"source_id": _r(ie.source_id)})
+        for ie in topo.information_topology
+    ]
+    new_entity_updates = [
+        eu.model_copy(update={
+            "triggered_by": _r(eu.triggered_by) if eu.triggered_by else None,
+        }) for eu in topo.entity_updates
+    ]
+    return ChunkTopology(
+        events=new_events,
+        causal_topology=new_causal,
+        information_topology=new_info,
+        social_topology=topo.social_topology,
+        spatial_topology=topo.spatial_topology,
+        entity_updates=new_entity_updates,
+    )
+
+
+def _shift_fabula_times(topo: ChunkTopology, shift: int) -> None:
+    """Shift all fabula_time values in a ChunkTopology by *shift* (in-place)."""
+    for evt in topo.events:
+        evt.fabula_time += shift
+    for ce in topo.causal_topology:
+        ce.fabula_time += shift
+    for ie in topo.information_topology:
+        ie.established_at_fabula += shift
+        if ie.terminated_at_fabula is not None:
+            ie.terminated_at_fabula += shift
+    for se in topo.social_topology:
+        se.last_updated_fabula += shift
+    for sp in topo.spatial_topology:
+        sp.established_at_fabula += shift
+        if sp.destroyed_at_fabula is not None:
+            sp.destroyed_at_fabula += shift
+    for eu in topo.entity_updates:
+        eu.fabula_time += shift
+        for belief in eu.new_beliefs:
+            belief.established_at_fabula += shift
+
+
+async def extract_topology_async(
+    chunks: List[str],
+    register: GlobalRegister,
+    config: ExtractionConfig | None = None,
+) -> List[ChunkTopology]:
+    """Async variant of :func:`extract_topology` — extracts chunks in parallel.
+
+    Chunks are dispatched concurrently (limited by
+    ``config.max_concurrent_chunks``) with pre-allocated syuzhet and
+    fabula_time ranges.  After all chunks complete, a reconciliation
+    pass re-numbers ``syuzhet_index`` globally, ensures inter-chunk
+    ``fabula_time`` ordering, and resolves any duplicate event IDs.
+    """
+    config = config or ExtractionConfig()
+    socratic_agent = _build_socratic_agent(config)
+    physics_agent = _build_physics_agent(config)
+    social_agent = _build_social_agent(config)
+
+    params_list = _pre_allocate_chunk_params(chunks, config)
+    semaphore = asyncio.Semaphore(config.max_concurrent_chunks)
+
+    async def _guarded_extract(chunk: str, params: _ChunkParams) -> ChunkTopology:
+        async with semaphore:
+            return await _extract_single_chunk_async(
+                chunk, params, register, config,
+                socratic_agent, physics_agent, social_agent,
+            )
+
+    topologies = await asyncio.gather(*[
+        _guarded_extract(chunk, params)
+        for chunk, params in zip(chunks, params_list)
+    ])
+    topologies_list = list(topologies)
+
+    # Post-merge reconciliation
+    topologies_list = _reconcile_chunk_topologies(topologies_list, config)
+
+    logger.info(
+        "[Step 3·Async] All %d chunks extracted and reconciled.", len(topologies_list),
+    )
+    return topologies_list
 
 
 # =====================================================================
@@ -2104,6 +2577,85 @@ def run_extraction(
         except Exception:
             logger.exception(
                 "[Pipeline·Correction %d] Correction agent FAILED — keeping previous state.",
+                retry_num + 1,
+            )
+            break
+
+    return world_state, report
+
+
+async def run_extraction_async(
+    text: str,
+    config: ExtractionConfig | None = None,
+) -> Tuple[WorldStateV1, ValidationReport]:
+    """Async variant of :func:`run_extraction`.
+
+    Uses :func:`extract_ontology_async` (parallel 1b/1c) and
+    :func:`extract_topology_async` (parallel chunk dispatch) for
+    higher throughput.  Validation and correction remain synchronous
+    (they are fast compared to extraction).
+    """
+    config = config or ExtractionConfig()
+    logger.info("[Pipeline·Async] Starting extraction with model=%s, strategy=%s", config.model, config.chunk_strategy)
+
+    # Step 1: Global Ontology (parallel 1b + 1c)
+    register = await extract_ontology_async(text, config)
+
+    # Step 2: Chunk Topology (parallel chunks)
+    chunks = chunk_text(text, strategy=config.chunk_strategy, min_chunk_chars=config.min_chunk_chars)
+    logger.info("[Pipeline·Async] Text split into %d chunks.", len(chunks))
+    topologies = await extract_topology_async(chunks, register, config)
+
+    # Step 3: Assembly + Normalize + Auto-Repair + Validation (same as sync)
+    world_state = assemble_world_state(register, topologies)
+    world_state = _normalize_fabula_times(world_state, config.fabula_time_spacing)
+    world_state, repairs = _auto_repair(world_state)
+    if repairs:
+        logger.info("[Pipeline·Async] Auto-repaired %d issues before validation.", len(repairs))
+
+    report = validate_world_state(world_state, config)
+
+    # --- Correction retry loop (sync — fast relative to extraction) ---
+    for retry_num in range(config.max_correction_retries):
+        prog_errors = [i for i in report.issues if i.severity == "error"]
+        if not prog_errors:
+            break
+
+        logger.info(
+            "[Pipeline·Async·Correction %d/%d] %d errors remain — running correction agent.",
+            retry_num + 1, config.max_correction_retries, len(prog_errors),
+        )
+
+        try:
+            correction_agent = _build_correction_agent(config)
+            ws_json = world_state.model_dump_json(indent=2)
+            max_chars = 80_000
+            if len(ws_json) > max_chars:
+                ws_json = ws_json[:max_chars] + "\n... [TRUNCATED]"
+
+            error_summary = "\n".join(
+                f"  [{e.category}] {e.detail}" for e in prog_errors
+            )
+            correction_msg = (
+                f"The following {len(prog_errors)} error(s) were found in this WorldStateV1. "
+                f"Fix them and return the corrected WorldStateV1:\n\n"
+                f"ERRORS:\n{error_summary}\n\n"
+                f"WORLD STATE:\n{ws_json}"
+            )
+
+            correction_result = correction_agent.run_sync(correction_msg)
+            world_state = correction_result.output
+            logger.info("[Pipeline·Async·Correction %d] Correction applied.", retry_num + 1)
+
+            world_state = _normalize_fabula_times(world_state, config.fabula_time_spacing)
+            world_state, new_repairs = _auto_repair(world_state)
+            if new_repairs:
+                repairs.extend(new_repairs)
+            report = validate_world_state(world_state, config)
+
+        except Exception:
+            logger.exception(
+                "[Pipeline·Async·Correction %d] Correction agent FAILED — keeping previous state.",
                 retry_num + 1,
             )
             break

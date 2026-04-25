@@ -42,7 +42,7 @@ from shadow_loom.generation import (
     GenerationConfig,
     render_from_query,
 )
-from shadow_loom.ingestion import ExtractionConfig, ValidationReport, run_extraction
+from shadow_loom.ingestion import ExtractionConfig, ValidationReport, run_extraction, run_extraction_async
 from shadow_loom.models import WorldStateV1
 from shadow_loom.narrative_physics import calculate_narrative_physics
 from shadow_loom.query_models import UserRequest
@@ -449,6 +449,158 @@ def run_pipeline(
             history.record("reextraction_merge", {"error": "extraction_or_merge_failed"})
 
     logger.info("[Pipeline] Complete — query_type=%s, prose=%s.",
+                query.query_type, "yes" if result.prose else "no")
+    return result
+
+
+async def run_pipeline_async(
+    query: UserRequest,
+    *,
+    world_state: WorldStateV1 | None = None,
+    versioned_model: VersionedWorldModel | None = None,
+    raw_text: str | None = None,
+    config: PipelineConfig | None = None,
+) -> PipelineResult:
+    """Async variant of :func:`run_pipeline`.
+
+    Uses :func:`run_extraction_async` for parallel ingestion when
+    ``raw_text`` is supplied.  All other stages are identical to the
+    synchronous pipeline.
+    """
+    cfg = config or PipelineConfig()
+    history = PipelineHistory()
+    result = PipelineResult(query_type=query.query_type, history=history)
+
+    # =================================================================
+    # Step 0: Resolve the world model (async ingestion when raw_text)
+    # =================================================================
+    sources = sum([world_state is not None, versioned_model is not None, raw_text is not None])
+    if sources == 0:
+        raise ValueError("Supply one of: world_state, versioned_model, or raw_text.")
+    if sources > 1:
+        raise ValueError("Supply only one of: world_state, versioned_model, or raw_text.")
+
+    if raw_text is not None:
+        logger.info("[Pipeline·Async] Step 1: Ingesting raw text (%d chars).", len(raw_text))
+        ing_cfg = cfg.ingestion_config or ExtractionConfig()
+        ws, validation_report = await run_extraction_async(raw_text, config=ing_cfg)
+        vwm = VersionedWorldModel.from_world_state(ws)
+        history.record("ingestion", IngestionStepRecord(
+            is_valid=validation_report.is_valid,
+            num_events=len(ws.events),
+            num_entities=len(ws.entities),
+            num_locations=len(ws.locations),
+        ))
+        logger.info(
+            "[Pipeline·Async] Ingestion complete — %d events, %d entities, valid=%s.",
+            len(ws.events), len(ws.entities), validation_report.is_valid,
+        )
+    elif versioned_model is not None:
+        vwm = versioned_model
+        ws = vwm.current
+    else:
+        vwm = VersionedWorldModel.from_world_state(world_state)
+        ws = vwm.current
+
+    result.world_model = vwm
+
+    # Remaining steps are identical to sync pipeline — delegate
+    # (physics, generation, audit, re-extraction are all sync)
+    logger.info(
+        "[Pipeline·Async] Step 2: Narrative physics — query_type=%s, causal_engine=%s.",
+        query.query_type, cfg.use_causal_engine,
+    )
+    physics_result = calculate_narrative_physics(
+        request=query,
+        global_world_state=ws,
+        temporal_anchor=cfg.temporal_anchor,
+        syuzhet_anchor=cfg.syuzhet_anchor,
+        use_causal_engine=cfg.use_causal_engine,
+    )
+    result.physics_result = physics_result
+
+    common_keys = {"status", "query_type", "physics_state"}
+    extras = {k: v for k, v in physics_result.items() if k not in common_keys}
+    history.record("narrative_physics", PhysicsStepRecord(
+        query_type=physics_result.get("query_type", query.query_type),
+        status=physics_result.get("status", "unknown"),
+        physics_state=physics_result.get("physics_state", {}),
+        extra=extras,
+    ))
+
+    if query.query_type in ("interrogate", "general"):
+        return result
+
+    # Steps 3–4: Brief + Generation (same as sync)
+    physics_state = physics_result.get("physics_state", {})
+    brief: CreativeBrief | None = None
+    if query.query_type == "directive" and "creative_brief" in physics_result:
+        brief_data = physics_result["creative_brief"]
+        brief = CreativeBrief(**brief_data) if isinstance(brief_data, dict) else brief_data
+
+    if cfg.skip_audit:
+        gen_cfg = cfg.generation_config or GenerationConfig()
+        scene = render_from_query(query, physics_result, ws, gen_cfg)
+        history.record("generation", GenerationStepRecord(scene=scene, brief=brief))
+        result.scene = scene
+        result.prose = scene.prose
+    else:
+        if brief is not None:
+            feedback = render_and_audit(
+                brief=brief, world_state=ws,
+                auditor_config=cfg.auditor_config,
+                generation_config=cfg.generation_config,
+                query_type=query.query_type,
+                physics_state=physics_state,
+            )
+        else:
+            gen_cfg = cfg.generation_config or GenerationConfig()
+            initial_scene = render_from_query(query, physics_result, ws, gen_cfg)
+            brief = _build_brief_for_query(query, physics_result, ws)
+            from shadow_loom.auditor import run_feedback_loop
+            feedback = run_feedback_loop(
+                initial_scene=initial_scene, brief=brief, world_state=ws,
+                auditor_config=cfg.auditor_config,
+                generation_config=cfg.generation_config,
+                query_type=query.query_type,
+                physics_state=physics_state,
+            )
+        history.record("generation", GenerationStepRecord(scene=feedback.final_scene, brief=brief))
+        history.record("audit", AuditStepRecord(feedback_result=feedback))
+        result.scene = feedback.final_scene
+        result.prose = feedback.final_scene.prose
+        result.converged = feedback.converged
+        result.audit_iterations = feedback.iterations
+        result.feedback_result = feedback
+
+    # Steps 6–7: Re-extraction + merge (same as sync)
+    if cfg.skip_reextraction:
+        logger.info("[Pipeline·Async] Steps 6–7: Re-extraction skipped.")
+    else:
+        logger.info("[Pipeline·Async] Steps 6–7: Extracting topology from prose and merging.")
+        try:
+            topology = extract_topology_from_prose(
+                prose=result.prose, world_state=ws, config=cfg.extraction_config,
+            )
+            description = (
+                f"Pipeline merge after {query.query_type} query"
+                f" (audit={'converged' if result.converged else 'skipped/failed'})"
+            )
+            vwm_next = vwm.merge(topology, source="pipeline", description=description)
+            changeset = vwm_next.history[-1].changeset
+            history.record("reextraction_merge", ReextractionStepRecord(
+                events_added=changeset.events_added if changeset else 0,
+                causal_edges_added=changeset.causal_edges_added if changeset else 0,
+                entity_updates_applied=changeset.entity_updates_applied if changeset else 0,
+                entity_updates_skipped=changeset.entity_updates_skipped if changeset else [],
+                new_version=vwm_next.version,
+            ))
+            result.world_model = vwm_next
+        except Exception:
+            logger.exception("[Pipeline·Async] Re-extraction/merge failed.")
+            history.record("reextraction_merge", {"error": "extraction_or_merge_failed"})
+
+    logger.info("[Pipeline·Async] Complete — query_type=%s, prose=%s.",
                 query.query_type, "yes" if result.prose else "no")
     return result
 

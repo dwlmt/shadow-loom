@@ -36,6 +36,10 @@ from shadow_loom.ingestion import (
     _validate_time_ordering,
     assemble_world_state,
     ChunkTopology,
+    _pre_allocate_chunk_params,
+    _reconcile_chunk_topologies,
+    _apply_event_renames,
+    _shift_fabula_times,
 )
 
 
@@ -988,7 +992,9 @@ class TestExtractionConfig:
         assert c.min_chunk_chars == 1500
         assert c.output_retries == 5
         assert c.chunk_overlap_chars == 300
-        assert c.max_correction_retries == 1
+        assert c.max_correction_retries == 3
+        assert c.max_concurrent_chunks == 4
+        assert c.estimated_events_per_chunk == 10
 
     def test_custom_values(self):
         c = ExtractionConfig(fabula_time_spacing=50, min_chunk_chars=500,
@@ -1229,3 +1235,350 @@ class TestResultValidators:
             if ce.target_id not in valid:
                 bad.append(ce.target_id)
         assert bad == []
+
+
+# =====================================================================
+# Tests for Parallel Extraction Infrastructure
+# =====================================================================
+
+class TestPreAllocateChunkParams:
+    """Tests for _pre_allocate_chunk_params."""
+
+    def test_basic_allocation(self):
+        chunks = ["chunk0", "chunk1", "chunk2"]
+        config = ExtractionConfig(
+            estimated_events_per_chunk=10,
+            fabula_time_spacing=1000,
+            chunk_overlap_chars=5,
+        )
+        params = _pre_allocate_chunk_params(chunks, config)
+        assert len(params) == 3
+        # First chunk has no prev tail
+        assert params[0].chunk_index == 0
+        assert params[0].syuzhet_offset == 0
+        assert params[0].prev_chunk_tail == ""
+        # Second chunk
+        assert params[1].chunk_index == 1
+        assert params[1].syuzhet_offset == 10
+        assert params[1].prev_chunk_tail == "hunk0"
+        # Third chunk
+        assert params[2].chunk_index == 2
+        assert params[2].syuzhet_offset == 20
+
+    def test_no_overlap(self):
+        chunks = ["aaa", "bbb"]
+        config = ExtractionConfig(chunk_overlap_chars=0)
+        params = _pre_allocate_chunk_params(chunks, config)
+        assert params[1].prev_chunk_tail == ""
+
+    def test_single_chunk(self):
+        config = ExtractionConfig()
+        params = _pre_allocate_chunk_params(["solo"], config)
+        assert len(params) == 1
+        assert params[0].syuzhet_offset == 0
+
+    def test_fabula_bases_non_overlapping(self):
+        chunks = ["a", "b", "c", "d"]
+        config = ExtractionConfig(
+            estimated_events_per_chunk=5,
+            fabula_time_spacing=100,
+        )
+        params = _pre_allocate_chunk_params(chunks, config)
+        bases = [p.fabula_time_base for p in params]
+        # Each base should be strictly greater than the previous
+        for i in range(1, len(bases)):
+            assert bases[i] > bases[i - 1]
+
+
+class TestReconcileChunkTopologies:
+    """Tests for _reconcile_chunk_topologies — syuzhet renumbering,
+    fabula ordering, and duplicate event ID resolution."""
+
+    def _make_topo(self, events=None, causal=None, info=None, social=None,
+                   spatial=None, entity_updates=None) -> ChunkTopology:
+        return ChunkTopology(
+            events=events or [],
+            causal_topology=causal or [],
+            information_topology=info or [],
+            social_topology=social or [],
+            spatial_topology=spatial or [],
+            entity_updates=entity_updates or [],
+        )
+
+    def test_syuzhet_renumbered_across_chunks(self):
+        """Events from chunk 0 get syuzhet 0,1; chunk 1 gets 2,3."""
+        topo0 = self._make_topo(events=[
+            EventNode(id="EVT_A", description="a", event_type="choice",
+                      fabula_time=100, syuzhet_index=0, actor_ids=[], target_ids=[]),
+            EventNode(id="EVT_B", description="b", event_type="outcome",
+                      fabula_time=200, syuzhet_index=1, actor_ids=[], target_ids=[]),
+        ])
+        topo1 = self._make_topo(events=[
+            EventNode(id="EVT_C", description="c", event_type="choice",
+                      fabula_time=300, syuzhet_index=0, actor_ids=[], target_ids=[]),
+        ])
+        config = ExtractionConfig(fabula_time_spacing=100)
+        result = _reconcile_chunk_topologies([topo0, topo1], config)
+        all_syuzhets = [e.syuzhet_index for t in result for e in t.events]
+        assert all_syuzhets == [0, 1, 2]
+
+    def test_fabula_time_ordering_across_chunks(self):
+        """If chunk 1 events overlap chunk 0's range, they get shifted."""
+        topo0 = self._make_topo(events=[
+            EventNode(id="EVT_A", description="a", event_type="choice",
+                      fabula_time=500, syuzhet_index=0, actor_ids=[], target_ids=[]),
+        ])
+        topo1 = self._make_topo(events=[
+            EventNode(id="EVT_B", description="b", event_type="choice",
+                      fabula_time=100, syuzhet_index=0, actor_ids=[], target_ids=[]),
+        ])
+        config = ExtractionConfig(fabula_time_spacing=1000)
+        result = _reconcile_chunk_topologies([topo0, topo1], config)
+        # Chunk 1's event must come after chunk 0's max (500)
+        assert result[1].events[0].fabula_time > result[0].events[0].fabula_time
+
+    def test_duplicate_event_ids_renamed(self):
+        """Same EVT_ID in two chunks → later chunk's ID gets _cN suffix."""
+        topo0 = self._make_topo(events=[
+            EventNode(id="EVT_DUEL", description="first", event_type="choice",
+                      fabula_time=100, syuzhet_index=0, actor_ids=[], target_ids=[]),
+        ])
+        topo1 = self._make_topo(events=[
+            EventNode(id="EVT_DUEL", description="second", event_type="outcome",
+                      fabula_time=200, syuzhet_index=0, actor_ids=[], target_ids=[]),
+        ])
+        config = ExtractionConfig(fabula_time_spacing=100)
+        result = _reconcile_chunk_topologies([topo0, topo1], config)
+        ids = [e.id for t in result for e in t.events]
+        assert len(set(ids)) == 2  # no duplicates
+        assert ids[0] == "EVT_DUEL"
+        assert ids[1].startswith("EVT_DUEL_c")
+
+    def test_duplicate_event_id_renames_propagate_to_edges(self):
+        """Renamed event IDs must update causal edge references."""
+        topo0 = self._make_topo(events=[
+            EventNode(id="EVT_X", description="first", event_type="choice",
+                      fabula_time=100, syuzhet_index=0, actor_ids=[], target_ids=[]),
+        ])
+        topo1 = self._make_topo(
+            events=[
+                EventNode(id="EVT_X", description="second", event_type="outcome",
+                          fabula_time=200, syuzhet_index=0, actor_ids=[], target_ids=[]),
+            ],
+            causal=[
+                CausalEdge(source_id="EVT_X", target_id="ENT_Y",
+                           causality_type="mutation", mechanism="physical",
+                           fabula_time=200),
+            ],
+        )
+        config = ExtractionConfig(fabula_time_spacing=100)
+        result = _reconcile_chunk_topologies([topo0, topo1], config)
+        renamed_id = result[1].events[0].id
+        assert renamed_id != "EVT_X"
+        # Causal edge source should be renamed too
+        assert result[1].causal_topology[0].source_id == renamed_id
+
+    def test_empty_topologies(self):
+        config = ExtractionConfig()
+        result = _reconcile_chunk_topologies([], config)
+        assert result == []
+
+    def test_no_events_passthrough(self):
+        """Chunks with no events pass through without error."""
+        topo = self._make_topo()
+        config = ExtractionConfig()
+        result = _reconcile_chunk_topologies([topo], config)
+        assert len(result) == 1
+        assert result[0].events == []
+
+    def test_discovered_at_syuzhet_remapped(self):
+        """InformationEdge.discovered_at_syuzhet should follow syuzhet renumbering."""
+        topo0 = self._make_topo(
+            events=[
+                EventNode(id="EVT_A", description="a", event_type="choice",
+                          fabula_time=100, syuzhet_index=0, actor_ids=[], target_ids=[]),
+            ],
+            info=[
+                InformationEdge(source_id="ENT_X", target_ids=["ENT_Y"],
+                                medium="speech", established_at_fabula=100,
+                                discovered_at_syuzhet=0),
+            ],
+        )
+        topo1 = self._make_topo(
+            events=[
+                EventNode(id="EVT_B", description="b", event_type="choice",
+                          fabula_time=200, syuzhet_index=0, actor_ids=[], target_ids=[]),
+            ],
+            info=[
+                InformationEdge(source_id="ENT_X", target_ids=["ENT_Y"],
+                                medium="letter", established_at_fabula=200,
+                                discovered_at_syuzhet=0),
+            ],
+        )
+        config = ExtractionConfig(fabula_time_spacing=100)
+        result = _reconcile_chunk_topologies([topo0, topo1], config)
+        # Chunk 0's info edge should have discovered_at_syuzhet=0
+        assert result[0].information_topology[0].discovered_at_syuzhet == 0
+        # Chunk 1's info edge should have discovered_at_syuzhet=1 (renumbered)
+        assert result[1].information_topology[0].discovered_at_syuzhet == 1
+
+    def test_fabula_shift_includes_entity_update_beliefs(self):
+        """_shift_fabula_times should shift beliefs in entity_updates too."""
+        from shadow_loom.ingestion import EntityUpdate
+        topo0 = self._make_topo(events=[
+            EventNode(id="EVT_A", description="a", event_type="choice",
+                      fabula_time=500, syuzhet_index=0, actor_ids=[], target_ids=[]),
+        ])
+        topo1 = self._make_topo(
+            events=[
+                EventNode(id="EVT_B", description="b", event_type="choice",
+                          fabula_time=100, syuzhet_index=0, actor_ids=[], target_ids=[]),
+            ],
+            entity_updates=[
+                EntityUpdate(
+                    entity_id="ENT_X", fabula_time=100, triggered_by="EVT_B",
+                    new_beliefs=[Belief(
+                        target_id="ENT_Y", perceived_state="alive",
+                        confidence=0.9, inertia=0.5, established_at_fabula=100,
+                    )],
+                ),
+            ],
+        )
+        config = ExtractionConfig(fabula_time_spacing=1000)
+        result = _reconcile_chunk_topologies([topo0, topo1], config)
+        # Chunk 1 should have been shifted so its events come after chunk 0's
+        eu = result[1].entity_updates[0]
+        assert eu.fabula_time > 500
+        # The belief's established_at_fabula should be shifted too
+        assert eu.new_beliefs[0].established_at_fabula == eu.fabula_time
+
+
+class TestApplyEventRenames:
+    """Tests for _apply_event_renames."""
+
+    def test_renames_event_ids(self):
+        topo = ChunkTopology(
+            events=[EventNode(id="EVT_OLD", description="d", event_type="choice",
+                              fabula_time=100, syuzhet_index=0, actor_ids=[], target_ids=[])],
+            causal_topology=[],
+            information_topology=[],
+            social_topology=[],
+            spatial_topology=[],
+            entity_updates=[],
+        )
+        result = _apply_event_renames(topo, {"EVT_OLD": "EVT_NEW"})
+        assert result.events[0].id == "EVT_NEW"
+
+    def test_renames_causal_references(self):
+        topo = ChunkTopology(
+            events=[],
+            causal_topology=[CausalEdge(
+                source_id="EVT_OLD", target_id="EVT_OTHER",
+                causality_type="chain_reaction", mechanism="physical",
+                fabula_time=100,
+            )],
+            information_topology=[],
+            social_topology=[],
+            spatial_topology=[],
+            entity_updates=[],
+        )
+        result = _apply_event_renames(topo, {"EVT_OLD": "EVT_NEW"})
+        assert result.causal_topology[0].source_id == "EVT_NEW"
+        assert result.causal_topology[0].target_id == "EVT_OTHER"
+
+    def test_no_rename_if_not_in_map(self):
+        topo = ChunkTopology(
+            events=[EventNode(id="EVT_KEEP", description="d", event_type="choice",
+                              fabula_time=100, syuzhet_index=0, actor_ids=[], target_ids=[])],
+            causal_topology=[],
+            information_topology=[],
+            social_topology=[],
+            spatial_topology=[],
+            entity_updates=[],
+        )
+        result = _apply_event_renames(topo, {"EVT_OTHER": "EVT_NEW"})
+        assert result.events[0].id == "EVT_KEEP"
+
+
+class TestShiftFabulaTimes:
+    """Tests for _shift_fabula_times."""
+
+    def test_shifts_events(self):
+        topo = ChunkTopology(
+            events=[EventNode(id="EVT_A", description="d", event_type="choice",
+                              fabula_time=100, syuzhet_index=0, actor_ids=[], target_ids=[])],
+            causal_topology=[],
+            information_topology=[],
+            social_topology=[],
+            spatial_topology=[],
+            entity_updates=[],
+        )
+        _shift_fabula_times(topo, 500)
+        assert topo.events[0].fabula_time == 600
+
+    def test_shifts_causal_edges(self):
+        topo = ChunkTopology(
+            events=[],
+            causal_topology=[CausalEdge(
+                source_id="EVT_A", target_id="EVT_B",
+                causality_type="chain_reaction", mechanism="physical",
+                fabula_time=200,
+            )],
+            information_topology=[],
+            social_topology=[],
+            spatial_topology=[],
+            entity_updates=[],
+        )
+        _shift_fabula_times(topo, 1000)
+        assert topo.causal_topology[0].fabula_time == 1200
+
+    def test_shifts_info_edges(self):
+        topo = ChunkTopology(
+            events=[],
+            causal_topology=[],
+            information_topology=[InformationEdge(
+                source_id="ENT_A", target_ids=["ENT_B"],
+                medium="speech",
+                established_at_fabula=100,
+                terminated_at_fabula=200,
+            )],
+            social_topology=[],
+            spatial_topology=[],
+            entity_updates=[],
+        )
+        _shift_fabula_times(topo, 300)
+        assert topo.information_topology[0].established_at_fabula == 400
+        assert topo.information_topology[0].terminated_at_fabula == 500
+
+    def test_shifts_social_edges(self):
+        topo = ChunkTopology(
+            events=[],
+            causal_topology=[],
+            information_topology=[],
+            social_topology=[RelationshipEdge(
+                source_entity_id="ENT_A", target_entity_id="ENT_B",
+                affinity=0.5, fear=0.0, power_balance=0.0,
+                last_updated_fabula=100,
+            )],
+            spatial_topology=[],
+            entity_updates=[],
+        )
+        _shift_fabula_times(topo, 200)
+        assert topo.social_topology[0].last_updated_fabula == 300
+
+    def test_shifts_spatial_edges(self):
+        topo = ChunkTopology(
+            events=[],
+            causal_topology=[],
+            information_topology=[],
+            social_topology=[],
+            spatial_topology=[SpatialEdge(
+                source_id="LOC_A", target_id="LOC_B",
+                established_at_fabula=50,
+                destroyed_at_fabula=150,
+            )],
+            entity_updates=[],
+        )
+        _shift_fabula_times(topo, 100)
+        assert topo.spatial_topology[0].established_at_fabula == 150
+        assert topo.spatial_topology[0].destroyed_at_fabula == 250

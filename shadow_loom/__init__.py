@@ -20,7 +20,9 @@ from shadow_loom.auditor import (
     assemble_audit_prompt,
 )
 from shadow_loom.ingestion import (
-    run_extraction, extract_ontology, extract_topology,
+    run_extraction, run_extraction_async,
+    extract_ontology, extract_ontology_async,
+    extract_topology, extract_topology_async,
     assemble_world_state, validate_world_state,
     GlobalRegister, LocationRegister, ObjectRegister, EntityRegister,
     ChunkTopology, QAPair, SocraticScaffold,
@@ -34,7 +36,7 @@ from shadow_loom.extract_graph import (
     VersionedWorldModel, WorldModelVersion, MergeChangeset,
 )
 from shadow_loom.pipeline import (
-    run_pipeline, PipelineConfig, PipelineResult, PipelineHistory,
+    run_pipeline, run_pipeline_async, PipelineConfig, PipelineResult, PipelineHistory,
 )
 
 __all__ = [
@@ -62,8 +64,11 @@ __all__ = [
     "build_intervention_brief",
     "build_counterfactual_brief",
     "run_extraction",
+    "run_extraction_async",
     "extract_ontology",
+    "extract_ontology_async",
     "extract_topology",
+    "extract_topology_async",
     "assemble_world_state",
     "validate_world_state",
     "GlobalRegister",
@@ -98,6 +103,7 @@ __all__ = [
     "WorldModelVersion",
     "MergeChangeset",
     "run_pipeline",
+    "run_pipeline_async",
     "PipelineConfig",
     "PipelineResult",
     "PipelineHistory",
