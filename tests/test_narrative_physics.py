@@ -1655,8 +1655,10 @@ class TestForwardCascade:
         G = nx.node_link_graph(result["physics_state"])
         if G.has_node("ENT_MACBETH"):
             post_guilt = G.nodes["ENT_MACBETH"]["traits"]["guilt"]["value"]
-            # Forward cascade should have shifted traits (exact value depends on causal edges)
-            assert post_guilt != pre_guilt or True  # cascade ran without error
+            # Forward cascade should have shifted traits from the counterfactual intervention
+            assert post_guilt != pre_guilt, (
+                f"Counterfactual should shift guilt: pre={pre_guilt}, post={post_guilt}"
+            )
 
     def test_forward_cascade_runs_after_intervention(self):
         """Counterfactual result must include the forward cascade step without crashing."""

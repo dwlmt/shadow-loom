@@ -265,8 +265,8 @@ def _format_scene_context(ctx: Dict[str, Any]) -> str:
         loc = ent.get("location_id", "unknown")
         lines.append(f"  {name} ({eid}) — present at {loc}")
 
-    # Locations
-    for loc in ctx.get("relevant_locations", []):
+    # Locations (ego-graph uses "current_locations")
+    for loc in ctx.get("current_locations", ctx.get("relevant_locations", [])):
         lid = loc.get("id", "?")
         lname = loc.get("name", lid)
         lines.append(f"  Location: {lname} ({lid})")

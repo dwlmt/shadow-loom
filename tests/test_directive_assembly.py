@@ -565,9 +565,9 @@ class TestClassifyGapQuantitative:
         gaps = assembler.compute_epistemic_gaps(["ENT_MACBETH"])
 
         crown_gaps = [g for g in gaps if g.belief_target_id == "OBJ_CROWN"]
-        if crown_gaps:
-            assert crown_gaps[0].gap_type == "quantitative"
-            assert crown_gaps[0].gap_magnitude > 0
+        assert crown_gaps, "Object with numeric property should produce quantitative gap"
+        assert crown_gaps[0].gap_type == "quantitative"
+        assert crown_gaps[0].gap_magnitude > 0
 
     def test_non_numeric_belief_uses_token_heuristic(self):
         """Belief without numbers must fall through to token overlap."""
@@ -581,8 +581,8 @@ class TestClassifyGapQuantitative:
         gaps = assembler.compute_epistemic_gaps(["ENT_MACBETH"])
 
         crown_gaps = [g for g in gaps if g.belief_target_id == "OBJ_CROWN"]
-        if crown_gaps:
-            assert crown_gaps[0].gap_type in ("confirmed", "contradicted", "unknown")
+        assert crown_gaps, "Non-numeric belief should produce gap via token heuristic"
+        assert crown_gaps[0].gap_type in ("confirmed", "contradicted", "unknown")
 
 
 # =====================================================================
@@ -609,9 +609,9 @@ class TestEffectDecreaseDirection:
             c for c in brief.constraints
             if "hope" in c.instruction.lower() and c.constraint_type == "mathematical"
         ]
-        if hope_constraints:
-            # Direction should be negative (decrease hope)
-            assert "-0.70" in hope_constraints[0].instruction
+        assert hope_constraints, "Grief effect should produce hope constraint with value=0.8"
+        # Direction should be negative (decrease hope)
+        assert "-0.70" in hope_constraints[0].instruction
 
     def test_grief_despair_produces_positive_direction(self):
         """Grief → despair must produce a POSITIVE direction."""
@@ -631,8 +631,8 @@ class TestEffectDecreaseDirection:
             c for c in brief.constraints
             if "despair" in c.instruction.lower() and c.constraint_type == "mathematical"
         ]
-        if despair_constraints:
-            assert "+0.70" in despair_constraints[0].instruction
+        assert despair_constraints, "Grief effect should produce despair constraint with value=0.2"
+        assert "+0.70" in despair_constraints[0].instruction
 
     def test_headroom_floor_skip(self):
         """Trait with headroom < 0.05 must be skipped."""
@@ -805,8 +805,8 @@ class TestBuildVectorConstraint:
         constraint = assembler._build_vector_constraint(
             "ENT_MACBETH.beliefs.ENT_DUNCAN", 0.7,
         )
-        if constraint:
-            assert constraint.constraint_type == "epistemic"
+        assert constraint is not None, "Beliefs path should produce an epistemic constraint"
+        assert constraint.constraint_type == "epistemic"
 
 
 # =====================================================================

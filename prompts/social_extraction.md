@@ -50,7 +50,7 @@ Fields:
 
 ## Rules
 
-1. **Use ONLY the IDs provided** — entity, location, object, and event IDs. Do NOT invent new IDs of any kind.
+1. **Use ONLY the IDs provided.** InformationEdge `source_id` must be an `ENT_` or `OBJ_` ID; `target_ids` entries must be `ENT_` IDs. RelationshipEdge `source_entity_id` and `target_entity_id` must be `ENT_` IDs. Do NOT use `LOC_` or `EVT_` IDs in these fields. Do NOT invent new IDs of any kind.
 2. **Consult the Socratic Scaffold.** The WHO answers identify information asymmetries (who knows what others don't). The WHY answers reveal hidden social pressures. The HOW answers describe information flow mechanisms. Translate all of these into edges.
 3. **Information edges are MANDATORY** — every conversation, prophecy, letter, lie, revelation, overheard exchange, announcement, order, or rumour MUST produce an InformationEdge. If characters communicate or transfer knowledge in any way, there is an information flow. **A chunk with zero InformationEdge entries is almost always wrong.** Re-read the text and look for any knowledge transfer.
 4. **Extract implicit information flows.** If Character A witnesses an event, they now KNOW about it — that witnessing IS an information flow from the event's actors to A. The scaffold's WHO category identifies these. **Witnessing creates knowledge**: if an entity is present at a location where an event occurs (check the entity's location and the event's spatial context), they gain information about that event — model this as an InformationEdge with medium `"witnessed"` or `"overheard"` as appropriate.

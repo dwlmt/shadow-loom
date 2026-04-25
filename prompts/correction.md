@@ -8,7 +8,7 @@ Your job is to produce a **corrected WorldStateV1** that resolves every reported
 
 ## Correction Rules
 
-1. **Fix only what is broken.** Do not add, remove, or modify data that is not mentioned in the error list. Preserve the existing structure as much as possible.
+1. **Fix only what is reported.** Do not add, remove, or modify data that is not mentioned in the error list. The exceptions are rules 9 and 10 below, which apply only when the error list explicitly mentions orphan events or low information density.
 2. **Broken causal edges**: If a `source_id` or `target_id` references a non-existent ID, either:
    - Replace it with the closest valid ID (if the intent is clear from the description), OR
    - Remove the edge entirely.

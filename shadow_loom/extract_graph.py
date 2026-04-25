@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
 from pydantic import BaseModel, Field
 
@@ -12,6 +12,9 @@ from shadow_loom.models import (
     WorldStateV1,
     reconstruct_entity_at,
 )
+
+if TYPE_CHECKING:
+    from shadow_loom.ingestion import ChunkTopology, ExtractionConfig
 
 logger = logging.getLogger(__name__)
 

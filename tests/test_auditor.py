@@ -687,3 +687,42 @@ class TestAuditPromptFromWorldState:
 
         assert "DRAMATIC_IRONY" in prompt
         assert "ENT_NICK" in prompt
+
+
+# =====================================================================
+# AuditResult.failed_open flag
+# =====================================================================
+
+class TestAuditResultFailedOpen:
+    """Tests for the fail-open behaviour marker."""
+
+    def test_default_is_false(self):
+        """Normal audit results have failed_open=False."""
+        result = AuditResult(
+            passed=True,
+            violations=[],
+            audit_summary="All good.",
+        )
+        assert result.failed_open is False
+
+    def test_explicit_failed_open(self):
+        """Error-fallback results have failed_open=True."""
+        result = AuditResult(
+            passed=True,
+            violations=[],
+            audit_summary="Audit skipped due to LLM error: timeout",
+            failed_open=True,
+        )
+        assert result.failed_open is True
+        assert result.passed is True  # fail-open = pass through
+
+    def test_failed_open_distinguishable_from_real_pass(self):
+        """Callers can detect that a pass-through is not a genuine pass."""
+        real = AuditResult(passed=True, violations=[], audit_summary="Clean.")
+        fallback = AuditResult(
+            passed=True, violations=[],
+            audit_summary="Audit skipped due to LLM error: conn refused",
+            failed_open=True,
+        )
+        assert real.passed == fallback.passed
+        assert real.failed_open != fallback.failed_open

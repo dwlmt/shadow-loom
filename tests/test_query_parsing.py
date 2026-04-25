@@ -904,3 +904,85 @@ class TestParseQueryFallback:
         result = self._run("Kill Macbeth", parsed, world_state=macbeth)
         assert result.is_valid
         assert result.fallback is None
+
+
+# =====================================================================
+# _resolve_model
+# =====================================================================
+
+class TestResolveModel:
+    """Test model string resolution in query_parsing."""
+
+    def test_ollama_prefix_returns_model_object(self):
+        from shadow_loom.query_parsing import _resolve_model
+        model = _resolve_model("ollama:qwen3:8b")
+        assert model is not None
+        assert not isinstance(model, str)
+
+    def test_non_ollama_passthrough(self):
+        from shadow_loom.query_parsing import _resolve_model
+        model = _resolve_model("openai:gpt-4o")
+        assert model == "openai:gpt-4o"
+
+
+# =====================================================================
+# parse_query_async (mocked LLM)
+# =====================================================================
+
+class TestParseQueryAsync:
+    """Test the async variant of parse_query."""
+
+    @pytest.fixture
+    def macbeth(self):
+        return macbeth_ws
+
+    async def _run_async(self, nl, parsed, world_state=None):
+        mock_result = _make_mock_result(parsed)
+        with patch("shadow_loom.query_parsing.Agent") as MockAgent:
+            instance = MockAgent.return_value
+            instance.run = MagicMock()
+            # Make run() return an awaitable
+            import asyncio
+            future = asyncio.Future()
+            future.set_result(mock_result)
+            instance.run.return_value = future
+            from shadow_loom.query_parsing import parse_query_async
+            return await parse_query_async(nl, world_state=world_state)
+
+    @pytest.mark.asyncio
+    async def test_async_observation(self, macbeth):
+        parsed = ParsedQuery(
+            query_type="observation",
+            reasoning="Async test.",
+            focus_entity_ids=["ENT_MACBETH"],
+        )
+        result = await self._run_async(
+            "Show me Macbeth", parsed, world_state=macbeth,
+        )
+        assert result.is_valid
+        assert isinstance(result.query, ObservationQuery)
+
+    @pytest.mark.asyncio
+    async def test_async_fallback_on_bad_id(self, macbeth):
+        parsed = ParsedQuery(
+            query_type="intervention",
+            reasoning="Async bad ID.",
+            interventions={"ENT_DOES_NOT_EXIST_AT_ALL_999": "dead"},
+        )
+        result = await self._run_async(
+            "Kill nobody", parsed, world_state=macbeth,
+        )
+        assert result.is_valid
+        assert isinstance(result.query, GeneralQuery)
+        assert result.fallback is not None
+
+    @pytest.mark.asyncio
+    async def test_async_no_world_state(self):
+        parsed = ParsedQuery(
+            query_type="general",
+            reasoning="Async general.",
+            question="What is happening?",
+        )
+        result = await self._run_async("What is happening?", parsed)
+        assert result.is_valid
+        assert isinstance(result.query, GeneralQuery)

@@ -174,7 +174,12 @@ class TestRung2Intervention:
         # Result should contain either mutations or blocked entries for Bob
         # (EVT_FIGHT → ENT_BOB causal edge exists)
         all_nodes = [m.node_id for m in result.mutations] + [b.node_id for b in result.blocked]
-        assert "ENT_BOB" in all_nodes or len(result.mutations) >= 0  # engine processed it
+        # The engine must have processed the downstream entity
+        assert "ENT_BOB" in all_nodes, (
+            f"ENT_BOB not found in mutations or blocked. "
+            f"mutations={[m.node_id for m in result.mutations]}, "
+            f"blocked={[b.node_id for b in result.blocked]}"
+        )
 
 
 # =====================================================================
@@ -477,8 +482,10 @@ class TestMechanismTraitMap:
         all_items = engine._mutations + engine._blocked
         guilt_items = [x for x in all_items if x.trait == "guilt"]
         courage_items = [x for x in all_items if x.trait == "courage"]
+        # Psychological mechanism must produce at least guilt entries
+        assert guilt_items, "Psychological mechanism should produce guilt mutations/blocked"
         # If there are entries for both, guilt impact should be >= courage impact
-        if guilt_items and courage_items:
+        if courage_items:
             assert abs(guilt_items[0].impact) >= abs(courage_items[0].impact)
 
 
@@ -522,9 +529,9 @@ class TestSignedDeltaPropagation:
 
         mutations = [m for m in engine._mutations
                      if m.node_id == "ENT_TGT" and m.trait == "courage"]
-        if mutations:
-            assert mutations[0].new_value < 0.8, \
-                f"Target courage should decrease, got {mutations[0].new_value}"
+        assert mutations, "Target should have courage mutations from strong source"
+        assert mutations[0].new_value < 0.8, \
+            f"Target courage should decrease, got {mutations[0].new_value}"
 
     def test_trait_increases_when_source_higher(self):
         """If source courage=0.9, target courage=0.2, target must increase."""
@@ -559,9 +566,9 @@ class TestSignedDeltaPropagation:
 
         mutations = [m for m in engine._mutations
                      if m.node_id == "ENT_TGT" and m.trait == "courage"]
-        if mutations:
-            assert mutations[0].new_value > 0.2, \
-                f"Target courage should increase, got {mutations[0].new_value}"
+        assert mutations, "Target should have courage mutations from strong source"
+        assert mutations[0].new_value > 0.2, \
+            f"Target courage should increase, got {mutations[0].new_value}"
 
 
 # =====================================================================

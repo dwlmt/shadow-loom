@@ -294,8 +294,10 @@ class TestCausalPhysicsEnvelopeIntegration:
         ]
 
         # At least one of these should hold (depends on causal graph topology)
-        # The key is the ENGINE makes the distinction
-        assert len(courage_blocked) + len(fear_mutated) >= 0  # no crash
+        # The key is the ENGINE makes the distinction between high/low inertia
+        assert len(courage_blocked) + len(fear_mutated) > 0, (
+            "Engine should produce at least one mutation or blocked entry for Bob"
+        )
         assert isinstance(result, CausalPhysicsResult)
 
     def test_spatial_affordance_blocks_unreachable(self):
@@ -763,7 +765,7 @@ class TestEndToEndPipeline:
         assert "creative_brief" in dir_result
         brief = dir_result["creative_brief"]
         assert brief["target_effect"] == "suspense"
-        assert len(brief["constraints"]) >= 0
+        assert isinstance(brief["constraints"], list)
 
     def test_counterfactual_to_directive_pipeline(self):
         """Counterfactual via CausalPhysicsEngine, then directive assembly."""

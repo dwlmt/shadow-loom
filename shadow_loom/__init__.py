@@ -121,4 +121,5 @@ __all__ = [
     "ParsedQuery",
     "ResolvedID",
     "QueryValidationError",
+    "FallbackInfo",
 ]

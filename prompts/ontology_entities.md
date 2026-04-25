@@ -27,7 +27,7 @@ Each `Entity` has:
   - Common traits: `"ambition"`, `"courage"`, `"guilt"`, `"paranoia"`, `"cruelty"`, `"loyalty"`, `"suspicion"`, `"grief"`, `"vengefulness"`, `"caution"`, `"leadership"`, `"innocence"`, `"malice"`, `"deception"`, `"love"`, `"fear"`, `"resolve"`, `"ruthlessness"`, `"trust"`, `"benevolence"`, `"hope"`, `"anger"`, `"despair"`.
   - Choose traits that are **narratively significant** for each character. 2-6 traits per entity is typical.
 - `beliefs` (list): What this character believes to be true — **including false beliefs, misconceptions, and information asymmetries**. These are critical for dramatic irony, suspense, and surprise. Each belief has:
-  - `target_id` (str): The ID of the thing they hold a belief about. **Must be an ENT_, OBJ_, LOC_, or EVT_ ID** from the register or events extracted so far.
+  - `target_id` (str): The ID of the thing they hold a belief about. **Must be an ENT_, OBJ_, or LOC_ ID** from the register. Do NOT use EVT_ IDs — events have not been extracted yet.
   - `perceived_state` (str): What they THINK is true — a natural language statement. This should capture **their subjective view**, which may be wrong.
   - `confidence` (float 0-1): How sure they are.
   - `inertia` (float 0-1): How stubbornly they hold this belief.

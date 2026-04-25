@@ -118,6 +118,10 @@ class AuditResult(BaseModel):
         default="",
         description="One-sentence summary of the overall audit result.",
     )
+    failed_open: bool = Field(
+        default=False,
+        description="True if this result was produced by error fallback, not real audit.",
+    )
 
 
 class AuditCycleSnapshot(BaseModel):
@@ -556,6 +560,7 @@ def run_audit(
             passed=True,
             violations=[],
             audit_summary=f"Audit skipped due to LLM error: {exc}",
+            failed_open=True,
         )
 
     audit = result.output

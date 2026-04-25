@@ -54,7 +54,7 @@ Return a JSON object with:
 - `is_valid` (bool): `true` if no errors found (warnings are acceptable). `false` if any errors exist.
 - `issues` (list): Each issue has:
   - `severity` (str): `"error"` (must fix) or `"warning"` (informational).
-  - `category` (str): One of `"contradiction"`, `"orphan"`, `"missing_causal"`, `"missing_information"`, `"narrative_gap"`, `"missing_mutation"`, `"missing_state_timeline"`.
+  - `category` (str): One of `"contradiction"`, `"orphan"`, `"missing_causal"`, `"missing_information"`, `"narrative_gap"`, `"missing_mutation"`, `"missing_state_timeline"`, `"broken_link"`, `"hallucinated_id"`, `"temporal"`, `"duplicate"`, `"dead_actor"`, `"type_mismatch"`, `"low_information_density"`.
   - `detail` (str): Human-readable description of the specific problem.
 - `suggestions` (list[str]): Recommended fixes. Be specific — reference exact IDs and propose concrete changes.
 

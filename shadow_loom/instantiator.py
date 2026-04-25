@@ -324,7 +324,12 @@ class AMWNInstantiator:
             sandbox.add_edge(object_id, new_owner_id, edge_type="owned_by", world_id="shadow")
             logger.info("[Surgery] Gave %s to %s", object_id, new_owner_id)
         else:
-            sandbox.nodes[object_id]["owner_id"] = new_owner_id
+            if new_owner_id and not sandbox.has_node(new_owner_id):
+                logger.warning(
+                    "[Surgery] Owner %s not in sandbox — treating as drop.",
+                    new_owner_id,
+                )
+            sandbox.nodes[object_id]["owner_id"] = None
             # Resolve drop location: prefer the previous owner's current room
             drop_loc = None
             if old_owner_id and sandbox.has_node(old_owner_id):
