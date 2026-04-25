@@ -601,13 +601,15 @@ def _apply_forward_cascade(
             existing_w = causal_graph[src][tgt].get("weight", 0.0)
             weight = max(existing_w, weight)
         causal_graph.add_edge(src, tgt, weight=weight)
-        edge_meta[key] = {
-            "weight": weight,
-            "mechanism": ce.mechanism,
-            "causality_type": ce.causality_type,
-            "trait_target": ce.trait_target,
-            "trait_delta": ce.trait_delta,
-        }
+        # Only overwrite edge_meta if this edge actually won the weight contest
+        if key not in edge_meta or weight >= edge_meta[key]["weight"]:
+            edge_meta[key] = {
+                "weight": weight,
+                "mechanism": ce.mechanism,
+                "causality_type": ce.causality_type,
+                "trait_target": ce.trait_target,
+                "trait_delta": ce.trait_delta,
+            }
 
     if causal_graph.number_of_edges() == 0:
         return

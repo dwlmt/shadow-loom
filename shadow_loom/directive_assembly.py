@@ -120,8 +120,130 @@ class ConstraintBlock(BaseModel):
     evidence: Dict[str, Any] = Field(default_factory=dict)
 
 
+# =====================================================================
+# Rendering directive models — carry effect-specific data the LLM needs
+# =====================================================================
+
+class RenderingDirective(BaseModel):
+    """Specifies the exact stylistic and semantic actions the LLM must
+    execute when rendering prose for a given query type + effect."""
+    rendering_mode: str = Field(
+        description=(
+            "The rendering strategy: mystery, dramatic_irony, surprise, "
+            "suspense, fear, joy, regret, grief, rage, love, "
+            "observation, intervention, counterfactual, interrogation."
+        ),
+    )
+    pov_lock: Optional[str] = Field(
+        default=None,
+        description="Entity ID to lock the narrative perspective to.",
+    )
+    pacing: Literal["dilated", "normal", "accelerated", "sharp_pivot"] = Field(
+        default="normal",
+        description="Temporal pacing of the prose.",
+    )
+    sensory_focus: Literal["wide", "normal", "tunnel", "absence"] = Field(
+        default="normal",
+        description=(
+            "wide = expansive environment; tunnel = strip background, "
+            "fixate on threat; absence = focus on what is missing."
+        ),
+    )
+    tone_arc: Optional[str] = Field(
+        default=None,
+        description=(
+            "A tonal trajectory description, e.g. "
+            "'passive_sorrow → active_hostility' for rage."
+        ),
+    )
+    stylistic_instructions: List[str] = Field(
+        default_factory=list,
+        description="Ordered list of specific prose instructions.",
+    )
+
+
+class CounterfactualBranch(BaseModel):
+    """The actual vs. simulated outcome for regret rendering."""
+    actual_outcome: str
+    simulated_outcome: str
+    divergence_event_id: Optional[str] = None
+    divergence_description: Optional[str] = None
+
+
+class ThreatProximity(BaseModel):
+    """Threat information for fear/suspense rendering."""
+    threat_event_id: Optional[str] = None
+    threat_description: str = ""
+    threat_probability: float = 0.5
+    hope_probability: float = 0.5
+    spatial_distance: Optional[int] = Field(
+        default=None,
+        description="Number of spatial hops between threat and target.",
+    )
+    damage_potential: float = Field(
+        default=5.0,
+        description="causal_force of the threat edge (0-10).",
+    )
+
+
+class CausalAttribution(BaseModel):
+    """Who caused the loss — for rage rendering."""
+    perpetrator_id: str
+    perpetrator_name: Optional[str] = None
+    loss_event_id: str
+    loss_description: str
+    causal_chain: List[str] = Field(
+        default_factory=list,
+        description="Ordered list of event IDs from perpetrator action to loss.",
+    )
+
+
+class EntanglementPair(BaseModel):
+    """Structural coupling between two entities — for love rendering."""
+    entity_a: str
+    entity_b: str
+    coupling_strength: float = Field(
+        description="Normalised 0-1 coupling derived from relationship metrics.",
+    )
+    shared_location: bool = False
+
+
+class InterventionMechanism(BaseModel):
+    """How a do-operator state change must be physically rendered."""
+    node_id: str
+    old_state: str
+    new_state: str
+    mechanism_hint: str = Field(
+        description=(
+            "The physical/social mechanism that overcomes inertia, "
+            "e.g. 'kinetic force on locked door', 'persuasion overcoming loyalty'."
+        ),
+    )
+    inertia: float = 0.5
+
+
+class AbductionTruth(BaseModel):
+    """A hidden background variable inferred by Rung 3 abduction."""
+    entity_id: str
+    hidden_variable: str = Field(
+        description="What must be true, e.g. 'stole the key yesterday'.",
+    )
+    weave_hint: str = Field(
+        default="",
+        description=(
+            "How to surface this subtly in prose, e.g. "
+            "'character reaches into pocket to feel the key'."
+        ),
+    )
+
+
 class CreativeBrief(BaseModel):
-    """Structured output ready for a downstream drafting LLM."""
+    """Structured output ready for a downstream drafting LLM.
+
+    Contains both the mathematical constraints (Step 9) and the
+    rendering directives (Step 10 input) that control how the
+    LLM translates the math into prose.
+    """
     target_effect: str
     target_entities: List[str]
     constraints: List[ConstraintBlock] = Field(default_factory=list)
@@ -132,6 +254,15 @@ class CreativeBrief(BaseModel):
     relationship_tensions: List[RelationshipTension] = Field(default_factory=list)
     physics_override: Optional[str] = None
     scene_context: Dict[str, Any] = Field(default_factory=dict)
+
+    # --- Rendering directives (Step 10 control layer) ---
+    rendering: Optional[RenderingDirective] = None
+    counterfactual_branch: Optional[CounterfactualBranch] = None
+    threat_proximity: Optional[ThreatProximity] = None
+    causal_attribution: Optional[CausalAttribution] = None
+    entanglement_pairs: List[EntanglementPair] = Field(default_factory=list)
+    intervention_mechanisms: List[InterventionMechanism] = Field(default_factory=list)
+    abduction_truths: List[AbductionTruth] = Field(default_factory=list)
 
 
 # =====================================================================
@@ -1320,6 +1451,183 @@ class DirectiveAssembler:
                 evidence={},
             ))
 
+        # =============================================================
+        # Build RenderingDirective + effect-specific payloads
+        # =============================================================
+        rendering, counterfactual_branch, threat_proximity = None, None, None
+        causal_attribution = None
+        entanglement_pairs: List[EntanglementPair] = []
+
+        pov_entity = entity_ids[0] if entity_ids else None
+
+        if effect == "mystery":
+            rendering = RenderingDirective(
+                rendering_mode="mystery",
+                pov_lock=pov_entity,
+                pacing="normal",
+                sensory_focus="wide",
+                stylistic_instructions=[
+                    "Focus heavily on sensory details and the aftermath of events.",
+                    "Portray the characters' confusion and initial processing of the scene.",
+                    "Suppress any omniscient narration that might hint at hidden causal ancestors.",
+                    "Lock the prose strictly to the focal character's limited perspective.",
+                    "Describe effects without causes — the reader must feel the weight of the unknown.",
+                ],
+            )
+
+        elif effect == "dramatic_irony":
+            rendering = RenderingDirective(
+                rendering_mode="dramatic_irony",
+                pov_lock=pov_entity,
+                pacing="normal",
+                sensory_focus="normal",
+                stylistic_instructions=[
+                    "Juxtapose the character's naive internal monologue against the looming threat the reader knows about.",
+                    "Generate prose where the character feels a false sense of security.",
+                    "Show the character making plans based on incomplete information.",
+                    "Maximise the emotional friction between the reader's knowledge and the character's ignorance.",
+                    "The character MUST NOT learn the truth during this scene.",
+                ],
+            )
+
+        elif effect == "surprise":
+            rendering = RenderingDirective(
+                rendering_mode="surprise",
+                pov_lock=pov_entity,
+                pacing="sharp_pivot",
+                sensory_focus="normal",
+                tone_arc="comfortable_flow → abrupt_shock",
+                stylistic_instructions=[
+                    "Begin with flowing, comfortable prose that lulls the reader into the expected outcome.",
+                    "Telegraph the reader's prior expectation through character thoughts and environmental cues.",
+                    "At the moment of revelation, execute a sharp syntactical pivot.",
+                    "Use a short, blunt sentence to reveal the hidden truth.",
+                    "Force an immediate update to the reader's mental model — maximise prediction error.",
+                ],
+            )
+
+        elif effect == "suspense":
+            # Compute threat/hope for ThreatProximity
+            suspense_data = self._compute_threat_hope_detail(entity_ids, syuzhet_anchor)
+            threat_proximity = suspense_data
+
+            rendering = RenderingDirective(
+                rendering_mode="suspense",
+                pov_lock=pov_entity,
+                pacing="dilated",
+                sensory_focus="normal",
+                stylistic_instructions=[
+                    "Dilate time — slow the pacing obsessively.",
+                    "Focus on the mechanical, step-by-step progression of the threat (footsteps, ticking clocks, closing distance).",
+                    "Keep the 'hopeful' escape route visible in the prose but physically just out of reach.",
+                    "Force the reader to agonize over the closing window of opportunity.",
+                    "Do NOT resolve the tension in this scene — maintain both doom and hope.",
+                ],
+            )
+
+        elif effect == "fear":
+            fear_data = self._compute_threat_hope_detail(entity_ids, syuzhet_anchor)
+            threat_proximity = fear_data
+
+            rendering = RenderingDirective(
+                rendering_mode="fear",
+                pov_lock=pov_entity,
+                pacing="accelerated",
+                sensory_focus="tunnel",
+                stylistic_instructions=[
+                    "Simulate tunnel vision — as the threat closes, strip away background descriptions.",
+                    "Focus entirely on the imminent danger and the protagonist's visceral physiological reactions.",
+                    "Describe racing heart, paralysis, shallow breathing, adrenaline.",
+                    "Collapse the prose's descriptive scope as distance to the threat shrinks.",
+                    "The environment fades; only the threat and the body's response remain.",
+                ],
+            )
+
+        elif effect == "joy":
+            rendering = RenderingDirective(
+                rendering_mode="joy",
+                pov_lock=pov_entity,
+                pacing="normal",
+                sensory_focus="wide",
+                stylistic_instructions=[
+                    "Reverse the tunnel vision of fear — expand the prose outward.",
+                    "Describe the environment in brighter, broader, more vivid terms.",
+                    "Focus on the physiological sensation of relief: unclenching muscles, deep breath, warmth.",
+                    "Show the sudden opening of new, positive future pathways.",
+                    "If a threat node was just eliminated, contrast the silence left behind with the character's flooding relief.",
+                ],
+            )
+
+        elif effect == "regret":
+            # Build counterfactual branch data
+            counterfactual_branch = self._build_counterfactual_branch(entity_ids)
+
+            rendering = RenderingDirective(
+                rendering_mode="regret",
+                pov_lock=pov_entity,
+                pacing="dilated",
+                sensory_focus="normal",
+                tone_arc="harsh_reality ↔ agonizing_visualization",
+                stylistic_instructions=[
+                    "Weave the counterfactual graph directly into the character's internal monologue.",
+                    "The prose MUST explicitly articulate 'if only...' logic.",
+                    "Contrast the harsh sensory reality of the present with the character's visualization of the alternate timeline.",
+                    "Do NOT simply state the character is sad — render the specific alternate path they failed to choose.",
+                    "Alternate between the bleak present and the imagined better world, each making the other more painful.",
+                ],
+            )
+
+        elif effect == "grief":
+            rendering = RenderingDirective(
+                rendering_mode="grief",
+                pov_lock=pov_entity,
+                pacing="dilated",
+                sensory_focus="absence",
+                stylistic_instructions=[
+                    "Focus on ABSENCE — describe the physical space left behind by the lost entity.",
+                    "Use fragmented or numb prose reflecting the system's loss of a structural pillar.",
+                    "Render the silence where a voice used to be, the empty chair, the cold side of the bed.",
+                    "The character's ego-graph has lost a central node — reflect this structural collapse in the prose's coherence.",
+                    "Short sentences. Disconnected observations. The world feels wrong.",
+                ],
+            )
+
+        elif effect == "rage":
+            # Build causal attribution — who caused the loss
+            causal_attribution = self._build_causal_attribution(entity_ids)
+
+            rendering = RenderingDirective(
+                rendering_mode="rage",
+                pov_lock=pov_entity,
+                pacing="accelerated",
+                sensory_focus="tunnel",
+                tone_arc="passive_sorrow → active_targeted_hostility",
+                stylistic_instructions=[
+                    "Execute a tonal shift from passive sorrow to active, targeted hostility.",
+                    "The prose accelerates as focus narrows obsessively onto the perpetrator.",
+                    "Reflect the character marshaling their damage_potential trait vectors.",
+                    "Show the character preparing to initiate a retaliatory causal chain.",
+                    "The grief doesn't disappear — it transmutes into directed kinetic energy.",
+                ],
+            )
+
+        elif effect == "love":
+            entanglement_pairs = self._build_entanglement_pairs(entity_ids)
+
+            rendering = RenderingDirective(
+                rendering_mode="love",
+                pov_lock=pov_entity,
+                pacing="normal",
+                sensory_focus="normal",
+                stylistic_instructions=[
+                    "Demonstrate structural entanglement through mirrored reactions.",
+                    "If Entity A takes a hit, Entity B reacts instantly — prioritizing A's safety over their own.",
+                    "Highlight shared physical and emotional proximity.",
+                    "Show harm-to-A equaling harm-to-B through the coupled entity's involuntary response.",
+                    "Render the entanglement through action, not declaration — show, never tell.",
+                ],
+            )
+
         return CreativeBrief(
             target_effect=effect,
             target_entities=entity_ids,
@@ -1331,6 +1639,11 @@ class DirectiveAssembler:
             relationship_tensions=rel_tensions,
             physics_override=physics_override,
             scene_context=self.ego,
+            rendering=rendering,
+            counterfactual_branch=counterfactual_branch,
+            threat_proximity=threat_proximity,
+            causal_attribution=causal_attribution,
+            entanglement_pairs=entanglement_pairs,
         )
 
     # ------------------------------------------------------------------
@@ -1497,6 +1810,294 @@ class DirectiveAssembler:
             )
 
         return None
+
+    # ------------------------------------------------------------------
+    # Rendering-specific data builders
+    # ------------------------------------------------------------------
+    def _compute_threat_hope_detail(
+        self,
+        entity_ids: List[str],
+        syuzhet_anchor: Optional[int] = None,
+    ) -> ThreatProximity:
+        """Build a ThreatProximity payload for fear/suspense rendering."""
+        causal_g = self._build_causal_digraph()
+        revealed = self._revealed_event_ids(syuzhet_anchor)
+        all_evt_ids = {e.id for e in self.world_state.events}
+        unrevealed = all_evt_ids - revealed
+        eid_set = set(entity_ids)
+
+        best_threat_id: Optional[str] = None
+        best_threat_desc = ""
+        threat_prob = 0.0
+        hope_prob = 0.0
+        best_force = 0.0  # will be set from actual causal_force
+
+        for evt_id in unrevealed:
+            evt = next(
+                (e for e in self.world_state.events if e.id == evt_id), None,
+            )
+            if not evt:
+                continue
+            if not (set(evt.actor_ids) & eid_set) and not (set(evt.target_ids) & eid_set):
+                continue
+
+            prob = 0.5
+            force = 0.0
+            if causal_g.has_node(evt_id):
+                in_edges = list(causal_g.in_edges(evt_id, data=True))
+                if in_edges:
+                    prob = max(d.get("weight", 0.5) for _, _, d in in_edges)
+
+            # Get max causal force of edges targeting the event
+            for ce in self.world_state.causal_topology:
+                if ce.target_id == evt_id:
+                    force = max(force, ce.causal_force)
+
+            if (set(evt.target_ids) & eid_set) and not (set(evt.actor_ids) & eid_set):
+                if prob > threat_prob:
+                    threat_prob = prob
+                    best_threat_id = evt.id
+                    best_threat_desc = evt.description
+                    best_force = force
+            elif set(evt.actor_ids) & eid_set:
+                hope_prob = max(hope_prob, prob)
+
+        # Compute spatial distance from threat to entity
+        spatial_dist = None
+        if best_threat_id and self.sandbox is not None:
+            # Try to find the threat event's location and the entity's location
+            threat_node = self.sandbox.nodes.get(best_threat_id, {})
+            entity_node = self.sandbox.nodes.get(entity_ids[0], {}) if entity_ids else {}
+            threat_loc = threat_node.get("location_id")
+            entity_loc = entity_node.get("location_id")
+            if threat_loc and entity_loc and threat_loc != entity_loc:
+                # Build traversable spatial subgraph
+                spatial_g = nx.Graph()
+                for u, v, d in self.sandbox.edges(data=True):
+                    if d.get("edge_type") == "connected_to" and not d.get("is_locked", False):
+                        spatial_g.add_edge(u, v)
+                try:
+                    spatial_dist = nx.shortest_path_length(spatial_g, threat_loc, entity_loc)
+                except nx.NetworkXNoPath:
+                    spatial_dist = None
+
+        return ThreatProximity(
+            threat_event_id=best_threat_id,
+            threat_description=best_threat_desc,
+            threat_probability=round(threat_prob, 3),
+            hope_probability=round(hope_prob, 3),
+            spatial_distance=spatial_dist,
+            damage_potential=best_force,
+        )
+
+    def _build_counterfactual_branch(
+        self,
+        entity_ids: List[str],
+    ) -> Optional[CounterfactualBranch]:
+        """Build the actual vs. simulated outcome for regret rendering.
+
+        Uses the most recent negative event targeting the entities as the
+        'actual outcome', and looks for the most recent choice event by the
+        entities as the divergence point whose alternate path would have
+        led to a better state.
+        """
+        eid_set = set(entity_ids)
+
+        # Build a set of event IDs that have negative causal effects
+        # (trait_delta < 0 on outgoing mutation edges).  Events with no
+        # mutation edges are treated as *possibly* negative (we include them
+        # to avoid false negatives when extraction didn't annotate deltas).
+        negative_event_ids: set[str] = set()
+        events_with_deltas: set[str] = set()
+        for ce in self.world_state.causal_topology:
+            if ce.trait_delta is not None:
+                events_with_deltas.add(ce.source_id)
+                if ce.trait_delta < 0:
+                    negative_event_ids.add(ce.source_id)
+
+        def _is_likely_negative(evt_id: str) -> bool:
+            if evt_id in negative_event_ids:
+                return True
+            # If the event has no delta annotations at all, include it
+            # conservatively (extraction may not have annotated deltas).
+            return evt_id not in events_with_deltas
+
+        # Find the most recent negative outcome targeting our entities
+        negative_events = [
+            e for e in sorted(self.world_state.events, key=lambda x: x.fabula_time, reverse=True)
+            if e.event_type == "outcome" and (set(e.target_ids) & eid_set) and _is_likely_negative(e.id)
+        ]
+        if not negative_events:
+            return None
+
+        actual_evt = negative_events[0]
+
+        # Find the most recent choice by our entities that preceded the outcome
+        choices = [
+            e for e in sorted(self.world_state.events, key=lambda x: x.fabula_time, reverse=True)
+            if e.event_type == "choice"
+            and (set(e.actor_ids) & eid_set)
+            and e.fabula_time <= actual_evt.fabula_time
+        ]
+        divergence_evt = choices[0] if choices else None
+
+        return CounterfactualBranch(
+            actual_outcome=actual_evt.description,
+            simulated_outcome=(
+                f"If {divergence_evt.id} had gone differently, "
+                f"the outcome '{actual_evt.id}' might have been averted."
+                if divergence_evt
+                else "An alternate choice might have prevented this outcome."
+            ),
+            divergence_event_id=divergence_evt.id if divergence_evt else None,
+            divergence_description=divergence_evt.description if divergence_evt else None,
+        )
+
+    def _build_causal_attribution(
+        self,
+        entity_ids: List[str],
+    ) -> Optional[CausalAttribution]:
+        """For rage: trace the causal chain from a loss back to a perpetrator."""
+        eid_set = set(entity_ids)
+        causal_g = self._build_causal_digraph()
+
+        # Identify events with negative causal effects (trait_delta < 0).
+        negative_event_ids: set[str] = set()
+        events_with_deltas: set[str] = set()
+        for ce in self.world_state.causal_topology:
+            if ce.trait_delta is not None:
+                events_with_deltas.add(ce.source_id)
+                if ce.trait_delta < 0:
+                    negative_event_ids.add(ce.source_id)
+
+        def _is_likely_negative(evt_id: str) -> bool:
+            if evt_id in negative_event_ids:
+                return True
+            return evt_id not in events_with_deltas
+
+        # Find loss events — negative outcomes targeting our entities
+        loss_events = [
+            e for e in sorted(self.world_state.events, key=lambda x: x.fabula_time, reverse=True)
+            if e.event_type == "outcome" and (set(e.target_ids) & eid_set) and _is_likely_negative(e.id)
+        ]
+        if not loss_events:
+            return None
+
+        loss_evt = loss_events[0]
+
+        # Trace back through the causal graph to find the originating actor
+        if not causal_g.has_node(loss_evt.id):
+            # Fallback: use the actor of the loss event itself
+            if loss_evt.actor_ids:
+                perp_id = loss_evt.actor_ids[0]
+                perp_ent = self.world_state.entities.get(perp_id)
+                return CausalAttribution(
+                    perpetrator_id=perp_id,
+                    perpetrator_name=perp_ent.name if perp_ent else None,
+                    loss_event_id=loss_evt.id,
+                    loss_description=loss_evt.description,
+                    causal_chain=[loss_evt.id],
+                )
+            return None
+
+        # Walk ancestors to find the originating entity (choice-maker)
+        # Sort ancestors by graph distance (descending) to find the most
+        # upstream perpetrator — the root cause, not a proximate relay.
+        ancestors = nx.ancestors(causal_g, loss_evt.id)
+        ancestors_by_depth: List[str] = []
+        for anc_id in ancestors:
+            try:
+                dist = nx.shortest_path_length(causal_g, anc_id, loss_evt.id)
+            except nx.NetworkXNoPath:
+                dist = 0
+            ancestors_by_depth.append((dist, anc_id))
+        ancestors_by_depth.sort(reverse=True)  # most upstream first
+
+        perpetrator_id: Optional[str] = None
+        causal_chain: List[str] = []
+
+        for _, anc_id in ancestors_by_depth:
+            anc_evt = next(
+                (e for e in self.world_state.events if e.id == anc_id), None,
+            )
+            if anc_evt and anc_evt.event_type == "choice" and anc_evt.actor_ids:
+                # Found an entity who made a choice upstream of the loss
+                actor = anc_evt.actor_ids[0]
+                if actor not in eid_set:  # perpetrator is someone ELSE
+                    perpetrator_id = actor
+                    # Build the causal chain path
+                    try:
+                        path = nx.shortest_path(causal_g, anc_id, loss_evt.id)
+                        causal_chain = path
+                    except nx.NetworkXNoPath:
+                        causal_chain = [anc_id, loss_evt.id]
+                    break
+
+        if not perpetrator_id and loss_evt.actor_ids:
+            perpetrator_id = loss_evt.actor_ids[0]
+            causal_chain = [loss_evt.id]
+
+        if not perpetrator_id:
+            return None
+
+        perp_ent = self.world_state.entities.get(perpetrator_id)
+        return CausalAttribution(
+            perpetrator_id=perpetrator_id,
+            perpetrator_name=perp_ent.name if perp_ent else None,
+            loss_event_id=loss_evt.id,
+            loss_description=loss_evt.description,
+            causal_chain=causal_chain,
+        )
+
+    def _build_entanglement_pairs(
+        self,
+        entity_ids: List[str],
+    ) -> List[EntanglementPair]:
+        """For love: find structurally entangled entity pairs."""
+        pairs: List[EntanglementPair] = []
+        eid_set = set(entity_ids)
+
+        for rel in self.ego.get("relevant_relationships", []):
+            src = rel.get("source_entity_id", "")
+            tgt = rel.get("target_entity_id", "")
+            if src not in eid_set and tgt not in eid_set:
+                continue
+
+            affinity = rel.get("affinity", 0.0)
+            fear = rel.get("fear", 0.0)
+            if affinity <= 0.3:
+                continue  # Not a love-candidate
+
+            # Look for the reverse edge to compute coupling
+            reverse_aff = 0.0
+            for rev in self.ego.get("relevant_relationships", []):
+                if rev.get("source_entity_id") == tgt and rev.get("target_entity_id") == src:
+                    reverse_aff = rev.get("affinity", 0.0)
+                    break
+
+            # Coupling strength: geometric mean of mutual affinity
+            coupling = (abs(affinity) * abs(reverse_aff)) ** 0.5 if reverse_aff > 0 else abs(affinity) * 0.5
+
+            # Check co-location
+            shared_loc = False
+            src_data = self._find_entity(src)
+            tgt_data = self._find_entity(tgt)
+            if src_data and tgt_data:
+                shared_loc = (
+                    src_data.get("location_id") is not None
+                    and src_data.get("location_id") == tgt_data.get("location_id")
+                )
+
+            pairs.append(EntanglementPair(
+                entity_a=src,
+                entity_b=tgt,
+                coupling_strength=round(coupling, 3),
+                shared_location=shared_loc,
+            ))
+
+        # Sort by coupling strength descending
+        pairs.sort(key=lambda p: p.coupling_strength, reverse=True)
+        return pairs
 
     def _detect_physics_override(self) -> Optional[str]:
         """Detect split-screen scenarios from the sandbox or ego payload."""
