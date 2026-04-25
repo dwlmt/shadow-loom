@@ -217,6 +217,17 @@ class CausalPhysicsEngine:
                         target_node = self.sandbox.nodes.get(ce.target_id)
                         if target_node and target_node.get("node_type") == "Entity":
                             traits = target_node.get("traits", {})
+
+                            # Precise mutation: use trait_target/trait_delta
+                            if ce.causality_type == "mutation" and ce.trait_target is not None:
+                                td = traits.get(ce.trait_target)
+                                if isinstance(td, dict) and "value" in td:
+                                    delta = (ce.trait_delta if ce.trait_delta is not None else 1.0) * mult * force_scale
+                                    td["value"] = max(0.0, min(1.0, td["value"] + delta))
+                                    logger.debug("[CausalPhysics·Abduction] Event %s → %s.%s: mutation delta=%.3f",
+                                                 eid, ce.target_id, ce.trait_target, delta)
+                                continue
+
                             relevant = MECHANISM_TRAIT_MAP.get(ce.mechanism, None)
                             for trait_name, trait_data in traits.items():
                                 if not isinstance(trait_data, dict) or "value" not in trait_data:
@@ -281,13 +292,21 @@ class CausalPhysicsEngine:
                 weight = evidence_w * force_scale
                 # DiGraph only keeps one edge per (u,v), take the max weight
                 mechanism = d.get("mechanism", "physical")
+                trait_target = d.get("trait_target")
+                trait_delta = d.get("trait_delta")
+                causality_type = d.get("causality_type", "chain_reaction")
                 if causal_graph.has_edge(u, v):
                     existing_w = causal_graph[u][v].get("weight", 0.0)
                     if weight > existing_w:
                         causal_graph[u][v]["weight"] = weight
                         causal_graph[u][v]["mechanism"] = mechanism
+                        causal_graph[u][v]["trait_target"] = trait_target
+                        causal_graph[u][v]["trait_delta"] = trait_delta
+                        causal_graph[u][v]["causality_type"] = causality_type
                     continue
-                causal_graph.add_edge(u, v, weight=weight, mechanism=mechanism)
+                causal_graph.add_edge(u, v, weight=weight, mechanism=mechanism,
+                                      trait_target=trait_target, trait_delta=trait_delta,
+                                      causality_type=causality_type)
 
         if causal_graph.number_of_edges() == 0:
             logger.info("[CausalPhysics·Propagate] No causal edges in sandbox. Skipping.")
@@ -327,6 +346,8 @@ class CausalPhysicsEngine:
 
                 # Sum impact: each incoming causal edge contributes.
                 # Edge weight already encodes evidence_strength × causal_force.
+                # For mutation edges with trait_target/trait_delta, use the
+                # precise delta if this trait matches; skip non-matching traits.
                 # For entity→entity edges, use signed delta toward source.
                 # For event→entity or other, use weight as fixed impulse.
                 total_impact = 0.0
@@ -335,6 +356,19 @@ class CausalPhysicsEngine:
                 for src, _, edata in incoming:
                     w = edata.get("weight", 0.5)
                     mechanism = edata.get("mechanism", "physical")
+                    edge_ctype = edata.get("causality_type", "chain_reaction")
+                    edge_trait_target = edata.get("trait_target")
+                    edge_trait_delta = edata.get("trait_delta")
+
+                    # Precise mutation: if the edge specifies a trait_target,
+                    # only affect that specific trait (skip all others).
+                    if edge_ctype == "mutation" and edge_trait_target is not None:
+                        if trait_name != edge_trait_target:
+                            continue  # this edge doesn't affect this trait
+                        if edge_trait_delta is not None:
+                            total_impact += edge_trait_delta * w
+                            continue
+
                     relevant_traits = MECHANISM_TRAIT_MAP.get(mechanism)
 
                     # Mechanism-targeted gating: reduce weight for non-matching traits
@@ -361,7 +395,7 @@ class CausalPhysicsEngine:
                     # Spatial affordance: if the target entity's location is
                     # reachable from the source's location.  We only check when
                     # both sides have locations (entity nodes).
-                    if src_data.get("node_type") == "Entity":
+                    if src_data and src_data.get("node_type") == "Entity":
                         src_loc = src_data.get("location_id")
                         tgt_loc = node_data.get("location_id")
                         if src_loc and tgt_loc and src_loc != tgt_loc:

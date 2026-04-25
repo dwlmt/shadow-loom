@@ -17,7 +17,7 @@ Return a JSON object with four lists:
 
 Each event occurring in this chunk. Fields:
 - `id` (str): Unique event ID in `EVT_UPPER_SNAKE_CASE` format. E.g. `EVT_DUNCAN_MURDER`. Choose descriptive names.
-- `fabula_time` (int): **The objective chronological position of this event in the story's physical reality.** Use multiples of 100 as the baseline spacing (100, 200, 300, …). This leaves room to insert flashbacks, flashforwards, and interstitial events between major beats. If events happen simultaneously, give them the same fabula_time. If a chunk describes events out of chronological order (flashbacks, memories, revelations of past events), assign them the fabula_time of when they **actually happened**, not when they are narrated. The user message provides the `fabula_time_base` — the next available fabula_time value. Use it as a starting point and increment by 100 for each successive beat.
+- `fabula_time` (int): **The objective chronological position of this event in the story's physical reality.** The user message provides `fabula_time_base` (the next available value) and `fabula_time_spacing` (the gap between successive beats). Start at `fabula_time_base` and increment by `fabula_time_spacing` for each new chronological beat. If events happen simultaneously, give them the same fabula_time. If a chunk describes events out of chronological order (flashbacks, memories, revelations of past events), assign them the fabula_time of when they **actually happened**, not when they are narrated.
 - `syuzhet_index` (int): **The position this event appears in the text as the reader encounters it.** Use the offset provided in the user message and increment by 1 for each event in the order they appear in the text. This can differ from fabula_time ordering when the narrative uses flashbacks, flashforwards, or non-linear revelation.
 - `event_type` (str): One of:
   - `"choice"` — A deliberate decision by a character (e.g. murder, betrayal, alliance).
@@ -50,12 +50,14 @@ Fields:
   - 4.0–6.0: Moderate force (persuasion, moderate physical action, emotional revelation)
   - 7.0–9.0: Major force (violence, life-changing revelation, catastrophic event)
   - 10.0: Absolute/irresistible force (death, total destruction)
-- `mechanism` (str): How the cause produced the effect. Use EXACTLY one of these five canonical values:
-  - `"physical"` — bodily violence, environmental destruction, physical action, material causation.
-  - `"psychological"` — emotional manipulation, persuasion, fear, guilt, internal motivation.
-  - `"epistemic"` — gaining or losing knowledge, discovering truth, learning secrets.
-  - `"social"` — political power, authority, social pressure, legal consequence, betrayal of trust.
-  - `"emotional"` — love, grief, joy, despair directly driving action.
+- `mechanism` (str): How the cause produced the effect. Use one of these canonical values when possible:
+  - `"physical"` — bodily violence, environmental destruction, physical action, material causation, kinetic or chemical processes.
+  - `"psychological"` — emotional manipulation, persuasion, fear, guilt, internal motivation, mental pressure.
+  - `"epistemic"` — gaining or losing knowledge, discovering truth, learning secrets, deception, revelation.
+  - `"social"` — political power, authority, social pressure, legal consequence, betrayal of trust, public opinion.
+  - `"emotional"` — love, grief, joy, despair, rage, or other raw emotion directly driving action.
+  
+  You may also use specific mechanism labels when they are more descriptive: `"betrayal"`, `"seduction"`, `"coercion"`, `"deduction"`, `"kinetic"`, `"chemical"`. Keep labels short (1-2 words, lowercase).
 - `evidence_strength` (str): `"weak"` (implied/speculative), `"moderate"` (strongly suggested), `"strong"` (directly stated).
 - `fabula_time` (int): The fabula_time when this cause took effect. Use the fabula_time from the source event (for event sources) or the current fabula_time in the chunk (for state sources).
 - `propagation_delay` (int): How many fabula_time units the effect takes to manifest after the cause fires. Default 0 (instant). Use >0 for slow-burn consequences: poison taking effect over time, rumours spreading gradually, economic collapse after a policy change. The effect node's fabula_time must be ≥ source fabula_time + propagation_delay.
@@ -94,6 +96,24 @@ For each entity whose traits, beliefs, status, or location changed due to events
 - Focus on **narratively significant** changes: a character's guilt spiking after a murder, a belief being shattered by a revelation, a status change from healthy to dead.
 - Trait updates should reflect the **new** value after the event, not the delta. The engine computes deltas automatically.
 - Multiple updates for the same entity in one chunk are allowed if they change at different fabula_times.
+- **Entity updates are the ONLY way the engine knows how events changed characters.** Without them, characters are frozen at their initial state forever. If a `mutation` causal edge says "event X increased Macbeth's guilt", there MUST be a corresponding entity_update for ENT_MACBETH with a `trait_updates` entry for `"guilt"`.
+- **Every mutation CausalEdge should have a matching entity_update.** If you emit a `mutation` edge from EVT_X → ENT_Y with `trait_target: "guilt"`, also emit an EntityUpdate for ENT_Y at the same fabula_time with the new guilt value in `trait_updates`.
+- **Belief changes are entity_updates too.** When a revelation event shatters a false belief, emit an EntityUpdate with `invalidated_belief_targets` listing the target_id of the shattered belief. When an event creates new knowledge, emit `new_beliefs`.
+
+**Example:**
+If Macbeth murders Duncan (EVT_DUNCAN_MURDER at fabula_time 300):
+```json
+{
+  "entity_id": "ENT_MACBETH",
+  "fabula_time": 300,
+  "triggered_by": "EVT_DUNCAN_MURDER",
+  "trait_updates": {"guilt": {"value": 0.7, "inertia": 0.4}, "paranoia": {"value": 0.5, "inertia": 0.3}},
+  "new_beliefs": [{"target_id": "ENT_DUNCAN", "perceived_state": "Duncan is dead by my hand", "confidence": 1.0, "inertia": 0.9, "established_at_fabula": 300}],
+  "invalidated_belief_targets": [],
+  "new_status": null,
+  "new_location_id": null
+}
+```
 
 ---
 
@@ -101,7 +121,7 @@ For each entity whose traits, beliefs, status, or location changed due to events
 
 1. **Use ONLY the entity, location, and object IDs from the Global Register** injected into this prompt. If a character appears who is not in the register, use the closest matching ID or omit the event.
 2. **You MAY create new `EVT_` IDs** for events discovered in this chunk. Use descriptive UPPER_SNAKE_CASE names.
-3. **fabula_time uses multiples of 100** (100, 200, 300…) as baseline spacing. The user message gives you a `fabula_time_base` — start from that value and increment by 100 for each new chronological beat. If a flashback/memory describes something earlier, assign a fabula_time EARLIER than the base (it happened in the past). Leave gaps so interstitial events can be inserted later.
+3. **fabula_time uses the spacing from the user message.** The user message gives you `fabula_time_base` and `fabula_time_spacing`. Start from `fabula_time_base` and increment by `fabula_time_spacing` for each new chronological beat. If a flashback/memory describes something earlier, assign a fabula_time EARLIER than the base (it happened in the past). Leave gaps so interstitial events can be inserted later.
 4. **syuzhet_index** starts from the offset provided in the user message and increments by 1 for each event in text order. syuzhet_index tracks **narration order**, fabula_time tracks **chronological order** — they CAN differ.
 5. **Do not repeat events** from previous chunks. Only extract events that occur within THIS chunk.
 6. **Extract implicit events too**: Internal decisions, emotional turning points, realizations, and psychological shifts are events. A character deciding to betray someone is a `"choice"` even if they haven't acted yet.
@@ -111,3 +131,11 @@ For each entity whose traits, beliefs, status, or location changed due to events
 10. **Cross-chunk causation**: If an event from a previous chunk caused something in this chunk, use that earlier `EVT_` ID as `source_id`.
 11. **Use `causal_force` to express impact magnitude.** A gentle suggestion is 2.0; a murder is 9.0. This feeds the physics engine's Impact > Inertia calculation.
 12. **Every event should participate in at least one causal edge.** If an event seems disconnected, look harder for its causal relationships using the scaffold's WHY answers.
+13. **Extract implicit states, not just explicit ones.** Characters rarely announce their inner state. You MUST infer and emit entity_updates for:
+    - **Implicit guilt** after killing, betraying, or harming someone.
+    - **Implicit fear/paranoia** after danger, threat, or narrow escape.
+    - **Implicit grief** when someone close dies, even if tears are not described.
+    - **Implicit suspicion** when evidence of deception appears and the character is perceptive.
+    - **Implicit resolve/determination** when a character commits to a difficult plan.
+    - **Implicit belief formation** from witnessing events — if Character A is PRESENT when Event X occurs, A now holds a belief about X. Emit it as a `new_beliefs` entry in entity_updates. If A is ABSENT, they do NOT learn about X unless told (information edge in social extraction).
+14. **mutation edges MUST have trait_target and trait_delta.** When you create a `mutation` CausalEdge (EVT→ENT), always fill `trait_target` with the specific trait name (e.g. `"guilt"`, `"courage"`, `"paranoia"`) and `trait_delta` with the signed change magnitude (-1.0 to 1.0). The physics engine uses these for precision propagation. Without them, the engine falls back to coarse mechanism-based estimation.

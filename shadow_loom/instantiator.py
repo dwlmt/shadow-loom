@@ -134,12 +134,13 @@ class AMWNInstantiator:
                     fabula_time=ft,
                     world_id=target_world_id,
                 )
-                # mutation_social metadata
+                # mutation / mutation_social metadata (trait_target, trait_delta)
+                if ctype in ("mutation", "mutation_social"):
+                    edge_attrs["trait_target"] = ce.get("trait_target")
+                    edge_attrs["trait_delta"] = ce.get("trait_delta")
                 if ctype == "mutation_social":
                     edge_attrs["target_id"] = tgt
                     edge_attrs["rel_counterpart_id"] = ce.get("rel_counterpart_id")
-                    edge_attrs["trait_target"] = ce.get("trait_target")
-                    edge_attrs["trait_delta"] = ce.get("trait_delta")
                 sandbox.add_edge(src, tgt, **edge_attrs)
 
         # E. Spatial Navigation Edges (SpatialEdge — ALL edges wired, locked flagged)

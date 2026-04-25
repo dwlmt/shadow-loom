@@ -18,6 +18,8 @@ Each `Location` has:
 - `name` (str): Human-readable name.
 - `description` (str): Short physical description.
 - `ambient_state` (dict): Environmental properties as `{trait_name: {"value": float 0-1, "volatility": float 0-1}}`. Examples: `"danger"`, `"tension"`, `"visibility"`, `"supernatural"`, `"safety"`, `"concealment"`, `"warmth"`.
+  - `value`: The **initial** intensity of this property at the **start** of the story. The causal physics engine tracks how events change these over time — you provide the opening conditions.
+  - `volatility`: How rapidly this property can change. 0.0 = immutable; 1.0 = shifts constantly.
 
 ### `objects` — Dict[str, NarrativeObject]
 
@@ -40,9 +42,9 @@ Each key is a unique ID in `ENT_UPPER_SNAKE_CASE` format (e.g. `ENT_MACBETH`).
 Each `Entity` has:
 - `id` (str): Same as the dictionary key.
 - `name` (str): Human-readable canonical name. Include title if relevant (e.g. `"King Duncan"`, `"Macduff (Thane of Fife)"`).
-- `location_id` (str): The `LOC_` ID where this entity is at the **end of the story**. Must reference a location from your `locations` dict.
-- `status` (str): One of: `"healthy"`, `"injured"`, `"ill"`, `"dead"`, `"unconscious"`. This is their **final** status at the end of the narrative.
-- `traits` (dict): Psychological trait vectors as `{trait_name: {"value": float 0-1, "inertia": float 0-1}}`.
+- `location_id` (str): The `LOC_` ID where this entity is at the **beginning of the story** (or at their first appearance). Must reference a location from your `locations` dict.
+- `status` (str): One of: `"healthy"`, `"injured"`, `"ill"`, `"dead"`, `"unconscious"`. This is their **initial** status at the start of the narrative (or at first appearance).
+- `traits` (dict): Psychological trait vectors as `{trait_name: {"value": float 0-1, "inertia": float 0-1}}`. **These represent the character's INITIAL baseline psychology — their state BEFORE the story's events transform them.**
   - `value`: How intense this trait is (0 = absent, 1 = maximum).
   - `inertia`: How resistant this trait is to change (0 = easily changed, 1 = permanent/immutable).
   - Common traits: `"ambition"`, `"courage"`, `"guilt"`, `"paranoia"`, `"cruelty"`, `"loyalty"`, `"suspicion"`, `"grief"`, `"vengefulness"`, `"caution"`, `"leadership"`, `"innocence"`, `"malice"`, `"deception"`, `"love"`, `"fear"`, `"resolve"`, `"ruthlessness"`, `"trust"`, `"benevolence"`, `"hope"`, `"anger"`, `"despair"`.
@@ -52,7 +54,7 @@ Each `Entity` has:
   - `perceived_state` (str): What they THINK is true — a natural language statement. This should capture **their subjective view**, which may be wrong.
   - `confidence` (float 0-1): How sure they are.
   - `inertia` (float 0-1): How stubbornly they hold this belief.
-  - `established_at_fabula` (int): The fabula_time when this belief was formed. Use 0 if it's a pre-story belief.
+  - `established_at_fabula` (int): **Always set to 0.** All beliefs at this extraction step are treated as pre-story priors. Later pipeline steps will create beliefs with proper fabula timestamps.
   
   **Extract ALL of these belief types:**
   - **False beliefs**: Things a character believes that are objectively wrong (e.g. "Cup is safe" when it's poisoned, "He loves me" when he doesn't).
@@ -71,6 +73,6 @@ Each `Entity` has:
 3. **Every location mentioned** in the text gets a LOC_ entry — even if only briefly referenced.
 4. **Every significant object** gets an OBJ_ entry. Objects that drive plot, carry information, or enable key actions.
 5. **ID convention**: UPPER_SNAKE_CASE with prefix. E.g. `LOC_THE_HEATH`, `OBJ_BLOODY_DAGGERS`, `ENT_LADY_MACBETH`.
-6. **Trait estimation**: Base values on the character's arc across the ENTIRE text, not just the beginning.
-7. **Location assignment**: Place entities at their **final known location** at the end of the story.
+6. **Trait estimation**: Base trait values on the character's state **before the story begins** or at their **first appearance**. These are the *initial conditions* — the physics engine will track how events mutate traits over the timeline.
+7. **Location assignment**: Place entities at their **initial known location** at the **start of the story** (or their first appearance).
 8. **Be exhaustive**: It is better to include a minor character than to miss one. The extraction pipeline cannot add entities later.

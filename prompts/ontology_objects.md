@@ -20,7 +20,7 @@ Each `NarrativeObject` has:
 - `id` (str): Same as the dictionary key.
 - `name` (str): Human-readable name.
 - `location_id` (str | null): The `LOC_` ID where this object is located. Null if held by someone. **Must be a LOC_ ID from the Location Register provided.**
-- `owner_id` (str | null): The name or description of whoever holds it (exact entity IDs are not available yet). Null if on the ground. This will be resolved to an `ENT_` ID in a later step.
+- `owner_id` (str | null): The name of whoever holds it (exact entity IDs are not available yet). Use the character's **canonical name** exactly as it appears in the text (e.g. `"Macbeth"`, `"Lady Macbeth"`, `"Three Witches"`). Null if on the ground. This will be resolved to an `ENT_` ID in a later step. **Tip**: Use simple, unambiguous names — avoid descriptions like "the king" when you know the name is "Duncan".
 - `properties` (dict): Key-value pairs describing its current state. E.g. `{"state": "poisoned"}`, `{"content": "witches_prophecy"}`.
 - `affordances` (list): What this object can do. Each entry has:
   - `action` (str): The verb — e.g. `"kill"`, `"unlock"`, `"read"`, `"inform"`, `"frame"`, `"legitimize"`, `"prophesy"`, `"deceive"`.

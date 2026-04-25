@@ -1348,10 +1348,17 @@ class DirectiveAssembler:
 
     def _resolve_actual_state(self, target_id: str) -> str:
         """Look up the objective state of a belief target in the world state."""
-        # Entity status
+        # Entity status + key traits
         ent = self.world_state.entities.get(target_id)
         if ent:
-            return f"status={ent.status}"
+            parts = [f"status={ent.status}"]
+            if ent.location_id:
+                parts.append(f"location={ent.location_id}")
+            # Include traits with extreme values (far from 0.5 baseline)
+            for tname, tv in ent.traits.items():
+                if abs(tv.value - 0.5) >= 0.2:
+                    parts.append(f"{tname}={tv.value:.2f}")
+            return ", ".join(parts)
 
         # Object properties
         obj = self.world_state.objects.get(target_id)

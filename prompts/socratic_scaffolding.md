@@ -53,12 +53,15 @@ Generate **at least one pair per category** (6 minimum). For rich chunks, genera
 - What **background conditions** (traits, beliefs, environmental states) enabled or prevented events?
 - What information asymmetries drive the dramatic tension?
 - Why does a character believe what they believe? Is their belief correct?
+- **Which character traits CHANGED** because of events in this chunk? (e.g. guilt increased, trust shattered, courage grew). Name the trait and the event that caused it.
+- **Which beliefs were SHATTERED or FORMED** in this chunk? (e.g. "She discovers the letter is forged" = belief invalidated; "He now believes the prophecy" = new belief formed)
 
 ### HOW — Mechanisms and Modalities
-- How does each cause produce its effect? (physical force, psychological pressure, social coercion, epistemic revelation)
-- How does information flow between characters? (speech, letter, overheard, deduced)
+- How does each cause produce its effect? (physical, psychological, social, epistemic, emotional)
+- How does information flow between characters? (speech, letter, overheard, deduced, witnessed)
 - How do character traits or environmental conditions gate events? (affordance logic)
 - How strong is each causal link? (subtle influence vs. overwhelming force)
+- **How do relationships shift?** Which dyads changed in affinity, fear, or power dynamic, and what event drove the shift?
 
 ---
 
@@ -70,3 +73,11 @@ Generate **at least one pair per category** (6 minimum). For rich chunks, genera
 4. **Flag information asymmetries.** Explicitly note when one character knows something another doesn't, or when a character holds a false belief. These are the seeds of dramatic irony, suspense, and surprise.
 5. **Be concise but precise.** Each answer should be 1-3 sentences. Quality over quantity — but every category must be covered.
 6. **Don't extract structured data.** This is reasoning, not extraction. The structured event/edge extraction happens in the next step, informed by your reasoning here.
+7. **Infer implicit psychological states.** Characters rarely announce their emotions. You MUST infer:
+   - **Implicit guilt** — if a character kills, betrays, or harms someone, they likely feel guilt unless their traits suggest otherwise (psychopathy, righteousness).
+   - **Implicit fear** — if a character faces danger, threat, or the unknown, infer rising fear.
+   - **Implicit suspicion** — if evidence of deception appears nearby, infer that observant characters grow suspicious.
+   - **Implicit loyalty shifts** — if a character witnesses betrayal by an ally, infer loyalty/trust erosion.
+   - **Implicit grief** — death of someone close implies grief even when not narrated.
+   - **Implicit resolve/determination** — when a character commits to a plan, infer rising determination.
+8. **Infer implicit beliefs.** Every character who WITNESSES an event forms a belief about it. If Character A sees Character B kill Character C, A now BELIEVES "B killed C". If a character is ABSENT, they DON'T know — and the gap between knowledge and ignorance drives dramatic irony. Always note: who saw what, who doesn't know, and what false beliefs persist.

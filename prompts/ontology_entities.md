@@ -31,7 +31,7 @@ Each `Entity` has:
   - `perceived_state` (str): What they THINK is true — a natural language statement. This should capture **their subjective view**, which may be wrong.
   - `confidence` (float 0-1): How sure they are.
   - `inertia` (float 0-1): How stubbornly they hold this belief.
-  - `established_at_fabula` (int): The fabula_time when this belief was formed. Use 0 if it's a pre-story belief.
+  - `established_at_fabula` (int): **Always set to 0 at this step.** Fabula times have not been assigned yet — all beliefs extracted here are treated as pre-story priors. Events in later steps will create new beliefs with proper fabula timestamps.
   
   **Extract ALL of these belief types:**
   - **False beliefs**: Things a character believes that are objectively wrong (e.g. "Cup is safe" when it's poisoned, "He loves me" when he doesn't).

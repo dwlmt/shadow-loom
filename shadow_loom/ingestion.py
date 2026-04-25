@@ -446,12 +446,32 @@ def _resolve_object_owner_ids(
     for eid, ent in entities.items():
         entity_name_map[ent.name.lower()] = eid
         entity_name_map[eid.lower()] = eid
+        # Also index by individual name parts and common abbreviations
+        # e.g. "King Duncan" → match "duncan", "king duncan"
+        for part in ent.name.lower().split():
+            if len(part) > 2 and part not in entity_name_map:
+                entity_name_map[part] = eid
+        # Strip parenthetical suffixes: "Macduff (Thane of Fife)" → "macduff"
+        base = ent.name.split("(")[0].strip().lower()
+        if base and base not in entity_name_map:
+            entity_name_map[base] = eid
+        # Map ID-like forms: "ENT_THREE_WITCHES" → also match "three witches"
+        readable = eid.replace("ENT_", "").replace("_", " ").lower()
+        if readable not in entity_name_map:
+            entity_name_map[readable] = eid
 
     resolved: Dict[str, NarrativeObject] = {}
     for oid, obj in objects.items():
         if obj.owner_id and not obj.owner_id.startswith("ENT_"):
-            # Try to match by name
-            matched = entity_name_map.get(obj.owner_id.lower())
+            owner_lower = obj.owner_id.lower()
+            # Try exact match first
+            matched = entity_name_map.get(owner_lower)
+            # Try substring match if exact fails
+            if not matched:
+                for name_key, eid in entity_name_map.items():
+                    if name_key in owner_lower or owner_lower in name_key:
+                        matched = eid
+                        break
             if matched:
                 resolved[oid] = obj.model_copy(update={"owner_id": matched})
                 logger.debug("[Step 1·Resolve] Object %s owner_id '%s' → '%s'", oid, obj.owner_id, matched)
@@ -480,24 +500,39 @@ def extract_ontology(text: str, config: ExtractionConfig | None = None) -> Globa
     # --- Step 1a: Locations ---
     location_agent = _build_location_agent(config)
     logger.info("[Step 1a] Extracting locations with %s …", config.model)
-    loc_result = location_agent.run_sync(text)
-    loc_register = loc_result.output
+    try:
+        loc_result = location_agent.run_sync(text)
+        loc_register = loc_result.output
+    except Exception:
+        logger.exception("[Step 1a] Location extraction failed — retrying once …")
+        loc_result = location_agent.run_sync(text)
+        loc_register = loc_result.output
     logger.info("[Step 1a] Extracted %d locations.", len(loc_register.locations))
 
     # --- Step 1b: Objects (with location context) ---
     object_agent = _build_object_agent(config)
     obj_deps = _ObjectDeps(location_register=loc_register)
     logger.info("[Step 1b] Extracting objects with %s …", config.model)
-    obj_result = object_agent.run_sync(text, deps=obj_deps)
-    obj_register = obj_result.output
+    try:
+        obj_result = object_agent.run_sync(text, deps=obj_deps)
+        obj_register = obj_result.output
+    except Exception:
+        logger.exception("[Step 1b] Object extraction failed — retrying once …")
+        obj_result = object_agent.run_sync(text, deps=obj_deps)
+        obj_register = obj_result.output
     logger.info("[Step 1b] Extracted %d objects.", len(obj_register.objects))
 
     # --- Step 1c: Entities (with location + object context) ---
     entity_agent = _build_entity_agent(config)
     ent_deps = _EntityDeps(location_register=loc_register, object_register=obj_register)
     logger.info("[Step 1c] Extracting entities with %s …", config.model)
-    ent_result = entity_agent.run_sync(text, deps=ent_deps)
-    ent_register = ent_result.output
+    try:
+        ent_result = entity_agent.run_sync(text, deps=ent_deps)
+        ent_register = ent_result.output
+    except Exception:
+        logger.exception("[Step 1c] Entity extraction failed — retrying once …")
+        ent_result = entity_agent.run_sync(text, deps=ent_deps)
+        ent_register = ent_result.output
     logger.info("[Step 1c] Extracted %d entities.", len(ent_register.entities))
 
     # --- Resolve object owner_ids to ENT_ IDs ---
@@ -600,6 +635,76 @@ def _build_valid_id_set(reg: GlobalRegister, event_ids: List[str] | None = None)
     return valid
 
 
+# =====================================================================
+# Fuzzy ID Resolution — fix LLM typos without expensive retries
+# =====================================================================
+
+
+def _fuzzy_resolve_id(candidate: str, valid_ids: set[str]) -> Optional[str]:
+    """Attempt to resolve *candidate* to a valid ID via fuzzy matching.
+
+    Matching strategy (in priority order):
+    1. Exact match.
+    2. Case-insensitive exact match (same prefix).
+    3. Substring match on the base portion (``ENT_KING_DUNCAN`` ↔ ``ENT_DUNCAN``).
+
+    Returns the matched valid ID or *None* if no match is found.
+    Only considers IDs sharing the same prefix (``EVT_``, ``ENT_``, etc.)
+    so prefix semantics are preserved and ``model_validator`` stays happy.
+    """
+    if candidate in valid_ids:
+        return candidate
+
+    # Determine prefix
+    prefix = ""
+    for p in ("EVT_", "ENT_", "LOC_", "OBJ_"):
+        if candidate.startswith(p):
+            prefix = p
+            break
+    if not prefix:
+        return None  # can't fuzzy-match unprefixed IDs safely
+
+    same_prefix = {vid for vid in valid_ids if vid.startswith(prefix)}
+    if not same_prefix:
+        return None
+
+    # Case-insensitive exact match
+    lower_map = {vid.lower(): vid for vid in same_prefix}
+    if candidate.lower() in lower_map:
+        return lower_map[candidate.lower()]
+
+    # Substring match on the base (without prefix, underscores → spaces)
+    cand_base = candidate[len(prefix):].replace("_", " ").lower().strip()
+    if not cand_base:
+        return None
+
+    best: Optional[str] = None
+    best_len = 0
+    for vid in same_prefix:
+        vid_base = vid[len(prefix):].replace("_", " ").lower().strip()
+        if cand_base in vid_base or vid_base in cand_base:
+            match_len = min(len(cand_base), len(vid_base))
+            if match_len > best_len:
+                best = vid
+                best_len = match_len
+
+    return best
+
+
+def _fix_id(candidate: str, valid_ids: set[str], field_label: str, fixes: List[str]) -> Tuple[str, bool]:
+    """Try to fuzzy-fix *candidate*. Returns (resolved_id, was_fixed).
+
+    Appends a human-readable note to *fixes* when a correction is made.
+    """
+    if candidate in valid_ids:
+        return candidate, False
+    resolved = _fuzzy_resolve_id(candidate, valid_ids)
+    if resolved:
+        fixes.append(f"[Auto-Fix] {field_label} '{candidate}' → '{resolved}'")
+        return resolved, True
+    return candidate, False
+
+
 def _build_physics_agent(config: ExtractionConfig) -> Agent[_PhysicsDeps, PhysicsExtraction]:
     """Construct the Step 3a Physics Agent — events + causal + spatial edges."""
     agent: Agent[_PhysicsDeps, PhysicsExtraction] = Agent(
@@ -618,6 +723,20 @@ def _build_physics_agent(config: ExtractionConfig) -> Agent[_PhysicsDeps, Physic
         object_ids = sorted(reg.objects.keys())
         entity_names = {eid: reg.entities[eid].name for eid in entity_ids}
         scaffold_text = _format_scaffold(ctx.deps.scaffold)
+
+        # Build compact entity baseline so the LLM knows starting trait values
+        entity_baselines: List[str] = []
+        for eid in entity_ids:
+            ent = reg.entities[eid]
+            traits_str = ", ".join(
+                f"{k}={v.value:.1f}" for k, v in ent.traits.items()
+            )
+            entity_baselines.append(
+                f"  {eid} ({ent.name}): status={ent.status}, "
+                f"loc={ent.location_id}, traits=[{traits_str}]"
+            )
+        baselines_block = "\n".join(entity_baselines)
+
         return (
             "=== VALID ID REGISTER (from Step 1) ===\n"
             f"ENTITY IDs: {entity_ids}\n"
@@ -630,6 +749,12 @@ def _build_physics_agent(config: ExtractionConfig) -> Agent[_PhysicsDeps, Physic
             "You MAY create new EVT_ IDs for events discovered in this chunk.\n"
             "Do NOT invent new ENT_, LOC_, or OBJ_ IDs.\n"
             "\n"
+            "=== ENTITY BASELINES (initial trait values — use for entity_updates) ===\n"
+            f"{baselines_block}\n"
+            "\n"
+            "When emitting entity_updates, use these baselines as reference.\n"
+            "The trait_updates values should be the NEW absolute value after the event, not the delta.\n"
+            "\n"
             "=== SOCRATIC SCAFFOLD (semantic pre-analysis) ===\n"
             f"{scaffold_text}\n"
             "\n"
@@ -638,33 +763,99 @@ def _build_physics_agent(config: ExtractionConfig) -> Agent[_PhysicsDeps, Physic
             "that you should capture as events and edges."
         )
 
-    @agent.result_validator
+    @agent.output_validator
     def validate_physics_ids(ctx: RunContext[_PhysicsDeps], result: PhysicsExtraction) -> PhysicsExtraction:
-        """Per-chunk result validation — catch hallucinated IDs before assembly."""
+        """Per-chunk validation — fix typos via fuzzy match, retry only for unfixable IDs."""
         reg = ctx.deps.global_register
-        # Build valid set including this chunk's new events + previous events
         new_evt_ids = [e.id for e in result.events]
         valid = _build_valid_id_set(reg, ctx.deps.previous_event_ids + new_evt_ids)
+        entity_ids = set(reg.entities.keys())
         location_ids = set(reg.locations.keys())
+        fixes: List[str] = []
         bad: List[str] = []
+
+        # --- Fix causal edge IDs ---
+        fixed_causal: List[CausalEdge] = []
         for ce in result.causal_topology:
-            if ce.source_id not in valid:
-                bad.append(f"CausalEdge source_id '{ce.source_id}' is not a valid ID.")
-            if ce.target_id not in valid:
-                bad.append(f"CausalEdge target_id '{ce.target_id}' is not a valid ID.")
+            updates: dict = {}
+            src, src_fixed = _fix_id(ce.source_id, valid, "CausalEdge.source_id", fixes)
+            tgt, tgt_fixed = _fix_id(ce.target_id, valid, "CausalEdge.target_id", fixes)
+            if src != ce.source_id:
+                updates["source_id"] = src
+            if tgt != ce.target_id:
+                updates["target_id"] = tgt
             if ce.rel_counterpart_id and ce.rel_counterpart_id not in valid:
-                bad.append(f"CausalEdge rel_counterpart_id '{ce.rel_counterpart_id}' is not a valid ID.")
+                rc, rc_fixed = _fix_id(ce.rel_counterpart_id, valid, "CausalEdge.rel_counterpart_id", fixes)
+                if rc != ce.rel_counterpart_id:
+                    updates["rel_counterpart_id"] = rc
+                if not rc_fixed and rc not in valid:
+                    bad.append(f"CausalEdge rel_counterpart_id '{ce.rel_counterpart_id}' is not a valid ID.")
+            if src not in valid and not updates.get("source_id"):
+                bad.append(f"CausalEdge source_id '{ce.source_id}' is not a valid ID.")
+            if tgt not in valid and not updates.get("target_id"):
+                bad.append(f"CausalEdge target_id '{ce.target_id}' is not a valid ID.")
+            try:
+                fixed_causal.append(ce.model_copy(update=updates) if updates else ce)
+            except Exception:
+                # model_validator rejected the fix (prefix mismatch) — drop edge
+                fixes.append(f"[Auto-Fix] Dropped causal edge {ce.source_id}→{ce.target_id} (validation error after fix)")
+
+        # --- Fix spatial edge IDs ---
+        fixed_spatial: List[SpatialEdge] = []
         for se in result.spatial_topology:
-            if se.source_id not in location_ids:
+            updates = {}
+            src, _ = _fix_id(se.source_id, location_ids, "SpatialEdge.source_id", fixes)
+            tgt, _ = _fix_id(se.target_id, location_ids, "SpatialEdge.target_id", fixes)
+            if src != se.source_id:
+                updates["source_id"] = src
+            if tgt != se.target_id:
+                updates["target_id"] = tgt
+            if src not in location_ids:
                 bad.append(f"SpatialEdge source_id '{se.source_id}' is not a valid location.")
-            if se.target_id not in location_ids:
+            elif tgt not in location_ids:
                 bad.append(f"SpatialEdge target_id '{se.target_id}' is not a valid location.")
+            else:
+                fixed_spatial.append(se.model_copy(update=updates) if updates else se)
+
+        # --- Fix entity_update IDs ---
+        fixed_updates: List[EntityUpdate] = []
+        for eu in result.entity_updates:
+            updates = {}
+            eid, _ = _fix_id(eu.entity_id, entity_ids, "EntityUpdate.entity_id", fixes)
+            if eid != eu.entity_id:
+                updates["entity_id"] = eid
+            if eu.triggered_by and eu.triggered_by not in valid:
+                trig, _ = _fix_id(eu.triggered_by, valid, "EntityUpdate.triggered_by", fixes)
+                if trig != eu.triggered_by:
+                    updates["triggered_by"] = trig
+                if trig not in valid:
+                    bad.append(f"EntityUpdate triggered_by '{eu.triggered_by}' is not a valid event.")
+            if eu.new_location_id and eu.new_location_id not in location_ids:
+                loc, _ = _fix_id(eu.new_location_id, location_ids, "EntityUpdate.new_location_id", fixes)
+                if loc != eu.new_location_id:
+                    updates["new_location_id"] = loc
+                if loc not in location_ids:
+                    bad.append(f"EntityUpdate new_location_id '{eu.new_location_id}' is not a valid location.")
+            if eid not in entity_ids:
+                bad.append(f"EntityUpdate entity_id '{eu.entity_id}' is not a valid entity.")
+            else:
+                fixed_updates.append(eu.model_copy(update=updates) if updates else eu)
+
+        if fixes:
+            logger.info("[Validator·Physics] Auto-fixed %d ID(s): %s", len(fixes), "; ".join(fixes))
+
         if bad:
             raise ModelRetry(
-                "The following IDs do not exist in the register. "
+                "The following IDs could not be auto-resolved. "
                 "Fix them using ONLY IDs from the register:\n" + "\n".join(bad)
             )
-        return result
+
+        return PhysicsExtraction(
+            events=result.events,
+            causal_topology=fixed_causal,
+            spatial_topology=fixed_spatial,
+            entity_updates=fixed_updates,
+        )
 
     return agent
 
@@ -708,30 +899,69 @@ def _build_social_agent(config: ExtractionConfig) -> Agent[_SocialDeps, SocialEx
             "hidden information flows, and unspoken relationship shifts."
         )
 
-    @agent.result_validator
+    @agent.output_validator
     def validate_social_ids(ctx: RunContext[_SocialDeps], result: SocialExtraction) -> SocialExtraction:
-        """Per-chunk result validation — catch hallucinated IDs before assembly."""
+        """Per-chunk validation — fix typos via fuzzy match, retry only for unfixable IDs."""
         reg = ctx.deps.global_register
         entity_ids = set(reg.entities.keys())
         node_ids = entity_ids | set(reg.objects.keys())
+        fixes: List[str] = []
         bad: List[str] = []
+
+        # --- Fix information edge IDs ---
+        fixed_info: List[InformationEdge] = []
         for ie in result.information_topology:
-            if ie.source_id not in node_ids:
+            updates: dict = {}
+            src, _ = _fix_id(ie.source_id, node_ids, "InformationEdge.source_id", fixes)
+            if src != ie.source_id:
+                updates["source_id"] = src
+            if src not in node_ids:
                 bad.append(f"InformationEdge source_id '{ie.source_id}' is not a valid entity/object.")
+                continue
+            fixed_targets = []
             for tid in ie.target_ids:
-                if tid not in node_ids:
+                t, _ = _fix_id(tid, node_ids, "InformationEdge.target_id", fixes)
+                if t in node_ids:
+                    fixed_targets.append(t)
+                else:
                     bad.append(f"InformationEdge target_id '{tid}' is not a valid entity/object.")
+            if fixed_targets:
+                if fixed_targets != list(ie.target_ids):
+                    updates["target_ids"] = fixed_targets
+                fixed_info.append(ie.model_copy(update=updates) if updates else ie)
+
+        # --- Fix relationship edge IDs ---
+        fixed_social: List[RelationshipEdge] = []
         for re_edge in result.social_topology:
-            if re_edge.source_entity_id not in entity_ids:
+            updates = {}
+            src, _ = _fix_id(re_edge.source_entity_id, entity_ids, "RelationshipEdge.source_entity_id", fixes)
+            tgt, _ = _fix_id(re_edge.target_entity_id, entity_ids, "RelationshipEdge.target_entity_id", fixes)
+            if src != re_edge.source_entity_id:
+                updates["source_entity_id"] = src
+            if tgt != re_edge.target_entity_id:
+                updates["target_entity_id"] = tgt
+            if src not in entity_ids:
                 bad.append(f"RelationshipEdge source_entity_id '{re_edge.source_entity_id}' is not a valid entity.")
-            if re_edge.target_entity_id not in entity_ids:
+            elif tgt not in entity_ids:
                 bad.append(f"RelationshipEdge target_entity_id '{re_edge.target_entity_id}' is not a valid entity.")
+            elif src == tgt:
+                fixes.append(f"[Auto-Fix] Dropped self-referencing RelationshipEdge '{src}'→'{tgt}'")
+            else:
+                fixed_social.append(re_edge.model_copy(update=updates) if updates else re_edge)
+
+        if fixes:
+            logger.info("[Validator·Social] Auto-fixed %d issue(s): %s", len(fixes), "; ".join(fixes))
+
         if bad:
             raise ModelRetry(
-                "The following IDs do not exist in the register. "
+                "The following IDs could not be auto-resolved. "
                 "Fix them using ONLY IDs from the register:\n" + "\n".join(bad)
             )
-        return result
+
+        return SocialExtraction(
+            information_topology=fixed_info,
+            social_topology=fixed_social,
+        )
 
     return agent
 
@@ -802,7 +1032,8 @@ def extract_topology(
         physics_msg = (
             f"Chunk {i + 1} of {len(chunks)} "
             f"(syuzhet_index offset: {syuzhet_counter}, "
-            f"fabula_time_base: {fabula_time_base}):\n\n"
+            f"fabula_time_base: {fabula_time_base}, "
+            f"fabula_time_spacing: {config.fabula_time_spacing}):\n\n"
             f"{chunk_with_ctx}"
         )
         physics_deps = _PhysicsDeps(
@@ -1062,6 +1293,35 @@ def _deduplicate_spatial(edges: List[SpatialEdge]) -> List[SpatialEdge]:
     return list(best.values())
 
 
+def _deduplicate_causal(edges: List[CausalEdge]) -> List[CausalEdge]:
+    """Deduplicate causal edges by (source, target, causality_type, fabula_time).
+
+    Keeps the edge with the highest ``causal_force`` when duplicates
+    are found (the stronger signal wins).
+    """
+    best: dict[tuple, CausalEdge] = {}
+    for e in edges:
+        key = (e.source_id, e.target_id, e.causality_type, e.fabula_time)
+        if key not in best or e.causal_force > best[key].causal_force:
+            best[key] = e
+    return list(best.values())
+
+
+def _deduplicate_info(edges: List[InformationEdge]) -> List[InformationEdge]:
+    """Deduplicate information edges by (source, targets, medium, established_at).
+
+    Keeps the first occurrence when duplicates are found.
+    """
+    seen: set[tuple] = set()
+    deduped: List[InformationEdge] = []
+    for e in edges:
+        key = (e.source_id, tuple(sorted(e.target_ids)), e.medium, e.established_at_fabula)
+        if key not in seen:
+            seen.add(key)
+            deduped.append(e)
+    return deduped
+
+
 def assemble_world_state(
     register: GlobalRegister,
     topologies: List[ChunkTopology],
@@ -1105,17 +1365,26 @@ def assemble_world_state(
     events.sort(key=lambda e: e.fabula_time)
     causal_topology.sort(key=lambda c: c.fabula_time)
 
-    # Deduplicate relationship and spatial edges across chunks
+    # Deduplicate relationship, spatial, causal, and information edges across chunks
     social_before = len(social_topology)
     social_topology = _deduplicate_social(social_topology)
     spatial_before = len(spatial_topology)
     spatial_topology = _deduplicate_spatial(spatial_topology)
-    if social_before != len(social_topology) or spatial_before != len(spatial_topology):
-        logger.info(
-            "[Step 3] Deduplicated edges: social %d→%d, spatial %d→%d.",
-            social_before, len(social_topology),
-            spatial_before, len(spatial_topology),
-        )
+    causal_before = len(causal_topology)
+    causal_topology = _deduplicate_causal(causal_topology)
+    info_before = len(information_topology)
+    information_topology = _deduplicate_info(information_topology)
+    deduped_parts = []
+    if social_before != len(social_topology):
+        deduped_parts.append(f"social {social_before}→{len(social_topology)}")
+    if spatial_before != len(spatial_topology):
+        deduped_parts.append(f"spatial {spatial_before}→{len(spatial_topology)}")
+    if causal_before != len(causal_topology):
+        deduped_parts.append(f"causal {causal_before}→{len(causal_topology)}")
+    if info_before != len(information_topology):
+        deduped_parts.append(f"info {info_before}→{len(information_topology)}")
+    if deduped_parts:
+        logger.info("[Step 3] Deduplicated edges: %s.", ", ".join(deduped_parts))
 
     ws = WorldStateV1(
         locations=register.locations,
@@ -1193,6 +1462,18 @@ def _auto_repair(ws: WorldStateV1) -> Tuple[WorldStateV1, List[str]]:
             repairs.append(f"Removed invalid target_ids {bad_targets} from event '{evt.id}'.")
             updates["target_ids"] = [t for t in evt.target_ids if t in (entity_ids | object_ids)]
         clean_events.append(evt.model_copy(update=updates) if updates else evt)
+
+    # --- Fix broken entity location_ids ---
+    first_loc = next(iter(ws.locations.keys()), None)
+    if first_loc:
+        new_entities_map: dict[str, Entity] = {}
+        for eid, ent in ws.entities.items():
+            if ent.location_id not in location_ids:
+                repairs.append(f"Fixed entity '{eid}' location_id '{ent.location_id}' → '{first_loc}'.")
+                new_entities_map[eid] = ent.model_copy(update={"location_id": first_loc})
+            else:
+                new_entities_map[eid] = ent
+        ws = ws.model_copy(update={"entities": new_entities_map})
 
     # --- Strip broken causal edges ---
     clean_causal: List[CausalEdge] = []
@@ -1374,6 +1655,27 @@ def _programmatic_validation(ws: WorldStateV1) -> List[ValidationIssue]:
                     detail=f"Entity '{eid}' belief target_id '{belief.target_id}' not in locations/objects/entities/events.",
                 ))
 
+    # Check entity state_timeline references
+    for eid, ent in ws.entities.items():
+        prev_ft = -1
+        for snap in ent.state_timeline:
+            if snap.triggered_by and snap.triggered_by not in event_ids:
+                issues.append(ValidationIssue(
+                    severity="warning", category="broken_link",
+                    detail=f"Entity '{eid}' state_timeline triggered_by '{snap.triggered_by}' not in events.",
+                ))
+            if snap.location_id and snap.location_id not in location_ids:
+                issues.append(ValidationIssue(
+                    severity="warning", category="broken_link",
+                    detail=f"Entity '{eid}' state_timeline location_id '{snap.location_id}' not in locations.",
+                ))
+            if snap.fabula_time < prev_ft:
+                issues.append(ValidationIssue(
+                    severity="warning", category="temporal",
+                    detail=f"Entity '{eid}' state_timeline not monotonic: fabula_time {snap.fabula_time} follows {prev_ft}.",
+                ))
+            prev_ft = snap.fabula_time
+
     # Check for duplicate event IDs
     seen_evt_ids: set[str] = set()
     for evt in ws.events:
@@ -1420,6 +1722,66 @@ def _programmatic_validation(ws: WorldStateV1) -> List[ValidationIssue]:
                 f"Expected at least 1 info edge per 5 events."
             ),
         ))
+
+    # --- Self-referencing relationship edges ---
+    for re_edge in ws.social_topology:
+        if re_edge.source_entity_id == re_edge.target_entity_id:
+            issues.append(ValidationIssue(
+                severity="warning", category="contradiction",
+                detail=(
+                    f"Self-referencing RelationshipEdge: "
+                    f"'{re_edge.source_entity_id}' → '{re_edge.target_entity_id}'. "
+                    f"Relationships should be between different entities."
+                ),
+            ))
+
+    # --- Mutation edge coverage check ---
+    # Events that change entity state should have mutation causal edges
+    if ws.events and ws.causal_topology:
+        mutation_target_events: set[str] = set()
+        for ce in ws.causal_topology:
+            if ce.causality_type in ("mutation", "mutation_social"):
+                mutation_target_events.add(ce.source_id)
+        # Significant events: choices and outcomes typically cause state changes
+        sig_events = [
+            e for e in ws.events
+            if e.event_type in ("choice", "outcome") and e.target_ids
+        ]
+        unmutated = [e for e in sig_events if e.id not in mutation_target_events]
+        if len(unmutated) > len(sig_events) // 2 and len(unmutated) >= 3:
+            sample_ids = [e.id for e in unmutated[:5]]
+            issues.append(ValidationIssue(
+                severity="warning", category="missing_mutation",
+                detail=(
+                    f"{len(unmutated)}/{len(sig_events)} significant events "
+                    f"(choices/outcomes with targets) lack mutation causal edges: "
+                    f"{sample_ids}{'…' if len(unmutated) > 5 else ''}. "
+                    f"Events that affect characters should produce mutation edges."
+                ),
+            ))
+
+    # --- State timeline coverage check ---
+    # Entities involved in events (as targets) should have state_timeline entries
+    if ws.events:
+        targeted_entities: set[str] = set()
+        for evt in ws.events:
+            for tid in evt.target_ids:
+                if tid in entity_ids:
+                    targeted_entities.add(tid)
+        entities_with_timeline = {
+            eid for eid in entity_ids
+            if ws.entities[eid].state_timeline
+        }
+        missing_timeline = targeted_entities - entities_with_timeline
+        if missing_timeline and len(missing_timeline) >= 2:
+            issues.append(ValidationIssue(
+                severity="warning", category="missing_state_timeline",
+                detail=(
+                    f"{len(missing_timeline)} entities targeted by events lack "
+                    f"state_timeline entries: {sorted(missing_timeline)[:5]}. "
+                    f"Entity state changes should be tracked in state_timeline."
+                ),
+            ))
 
     # --- Time validation ---
     issues.extend(_validate_time_ordering(ws))

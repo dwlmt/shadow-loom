@@ -40,6 +40,8 @@ Return a complete, corrected `WorldStateV1` JSON object with the same schema as 
 ## Important
 
 - Do NOT re-report errors. Just fix them.
-- Do NOT add new entities, locations, or objects. Only fix edges and events.
+- Do NOT add new entities, locations, or objects unless the error specifically requires it. Only fix edges, events, and entity state data.
 - If you cannot determine the correct fix, remove the broken element rather than guessing.
 - Preserve all `fabula_time`, `syuzhet_index`, and other temporal data unless the error specifically requires a temporal fix.
+- **Entity state_timeline**: If an error mentions missing state_timeline entries or mutation coverage, add `EntityStateSnapshot` entries to the affected entity's `state_timeline` array. Each snapshot needs `fabula_time`, `triggered_by` (the EVT_ ID), and the relevant changed field (`traits`, `beliefs_added`, `beliefs_invalidated`, `status`, or `location_id`).
+- **Mechanism values**: Prefer the five canonical values (`"physical"`, `"psychological"`, `"epistemic"`, `"social"`, `"emotional"`) but also accept specific descriptive labels like `"betrayal"`, `"seduction"`, `"coercion"`, `"deduction"`, `"kinetic"`, `"chemical"`. Only replace a mechanism if it is clearly nonsensical or empty — short lowercase labels (1-2 words) are valid.

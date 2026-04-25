@@ -531,6 +531,15 @@ def _apply_abduction(
                         target_node = sandbox.nodes.get(ce.target_id)
                         if target_node and target_node.get("node_type") == "Entity":
                             traits = target_node.get("traits", {})
+
+                            # Precise mutation: use trait_target/trait_delta
+                            if ce.causality_type == "mutation" and ce.trait_target is not None:
+                                td = traits.get(ce.trait_target)
+                                if isinstance(td, dict) and "value" in td:
+                                    delta = (ce.trait_delta if ce.trait_delta is not None else 1.0) * mult * force_scale
+                                    td["value"] = max(0.0, min(1.0, td["value"] + delta))
+                                continue
+
                             relevant = _MECHANISM_TRAIT_MAP.get(ce.mechanism, None)
                             for trait_name, trait_data in traits.items():
                                 if not isinstance(trait_data, dict) or "value" not in trait_data:
@@ -592,7 +601,13 @@ def _apply_forward_cascade(
             existing_w = causal_graph[src][tgt].get("weight", 0.0)
             weight = max(existing_w, weight)
         causal_graph.add_edge(src, tgt, weight=weight)
-        edge_meta[key] = {"weight": weight, "mechanism": ce.mechanism}
+        edge_meta[key] = {
+            "weight": weight,
+            "mechanism": ce.mechanism,
+            "causality_type": ce.causality_type,
+            "trait_target": ce.trait_target,
+            "trait_delta": ce.trait_delta,
+        }
 
     if causal_graph.number_of_edges() == 0:
         return
@@ -645,6 +660,19 @@ def _apply_forward_cascade(
                 w = edata.get("weight", 0.5)
                 meta = edge_meta.get((src, node_id), {})
                 mechanism = meta.get("mechanism", "physical")
+                edge_ctype = meta.get("causality_type", "chain_reaction")
+                edge_trait_target = meta.get("trait_target")
+                edge_trait_delta = meta.get("trait_delta")
+
+                # Precise mutation: if the edge specifies a trait_target,
+                # only affect that specific trait (skip all others).
+                if edge_ctype == "mutation" and edge_trait_target is not None:
+                    if trait_name != edge_trait_target:
+                        continue  # this edge doesn't affect this trait
+                    if edge_trait_delta is not None:
+                        total_impact += edge_trait_delta * w
+                        continue
+
                 relevant_traits = _MECHANISM_TRAIT_MAP.get(mechanism)
 
                 # Mechanism-targeted gating

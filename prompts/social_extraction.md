@@ -28,7 +28,7 @@ Fields:
 - `is_encrypted` (bool): Whether others can overhear/intercept. Default false. True for private, coded, or deliberately hidden channels.
 - `established_at_fabula` (int): When communication started.
 - `terminated_at_fabula` (int | null): When it ended. Null if ongoing or if the knowledge persists.
-- `discovered_at_syuzhet` (int): The syuzhet_index when the reader learns about this channel. Default 0.
+- `discovered_at_syuzhet` (int): The `syuzhet_index` of the event when the reader first learns about this communication channel. Use the syuzhet_index from the relevant event extracted by the Physics Agent. Default 0 only if the channel existed before the story began.
 
 ### `social_topology` — List[RelationshipEdge]
 
@@ -53,7 +53,7 @@ Fields:
 1. **Use ONLY the IDs provided** — entity, location, object, and event IDs. Do NOT invent new IDs of any kind.
 2. **Consult the Socratic Scaffold.** The WHO answers identify information asymmetries (who knows what others don't). The WHY answers reveal hidden social pressures. The HOW answers describe information flow mechanisms. Translate all of these into edges.
 3. **Information edges are MANDATORY** — every conversation, prophecy, letter, lie, revelation, overheard exchange, announcement, order, or rumour MUST produce an InformationEdge. If characters communicate or transfer knowledge in any way, there is an information flow. **A chunk with zero InformationEdge entries is almost always wrong.** Re-read the text and look for any knowledge transfer.
-4. **Extract implicit information flows.** If Character A witnesses an event, they now KNOW about it — that witnessing IS an information flow from the event's actors to A. The scaffold's WHO category identifies these.
+4. **Extract implicit information flows.** If Character A witnesses an event, they now KNOW about it — that witnessing IS an information flow from the event's actors to A. The scaffold's WHO category identifies these. **Witnessing creates knowledge**: if an entity is present at a location where an event occurs (check the entity's location and the event's spatial context), they gain information about that event — model this as an InformationEdge with medium `"witnessed"` or `"overheard"` as appropriate.
 5. **One relationship edge per direction per pair**: If both A→B and B→A dynamics are demonstrated, create two separate edges.
 6. **Deception creates information edges.** When a character lies, plants false evidence, or creates a cover story, that is an InformationEdge with a descriptive medium like `"fabricated_diary"`, `"planted_evidence"`, `"deliberate_lie"`.
 7. **Use temporal anchoring from the events.** The `established_at_fabula` and `last_updated_fabula` fields should correspond to the `fabula_time` of events extracted from this chunk.
