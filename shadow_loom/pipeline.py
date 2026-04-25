@@ -104,6 +104,13 @@ class PipelineConfig(BaseModel):
         "Only used when ``raw_text`` is provided instead of a WorldStateV1.",
     )
 
+    # --- World-model versioning ---
+    max_snapshots: int = Field(
+        default=10,
+        description="Maximum number of full world-state snapshots to retain "
+        "in the VersionedWorldModel history (last-K).",
+    )
+
 
 # =====================================================================
 # Pipeline step records
@@ -273,7 +280,7 @@ def run_pipeline(
         logger.info("[Pipeline] Step 1: Ingesting raw text (%d chars).", len(raw_text))
         ing_cfg = cfg.ingestion_config or ExtractionConfig()
         ws, validation_report = run_extraction(raw_text, config=ing_cfg)
-        vwm = VersionedWorldModel.from_world_state(ws)
+        vwm = VersionedWorldModel.from_world_state(ws, max_snapshots=cfg.max_snapshots)
         history.record("ingestion", IngestionStepRecord(
             is_valid=validation_report.is_valid,
             num_events=len(ws.events),
@@ -293,7 +300,7 @@ def run_pipeline(
         )
     else:
         # world_state is not None
-        vwm = VersionedWorldModel.from_world_state(world_state)
+        vwm = VersionedWorldModel.from_world_state(world_state, max_snapshots=cfg.max_snapshots)
         ws = vwm.current
         logger.info("[Pipeline] Wrapped WorldStateV1 in VersionedWorldModel v0.")
 
@@ -484,7 +491,7 @@ async def run_pipeline_async(
         logger.info("[Pipeline·Async] Step 1: Ingesting raw text (%d chars).", len(raw_text))
         ing_cfg = cfg.ingestion_config or ExtractionConfig()
         ws, validation_report = await run_extraction_async(raw_text, config=ing_cfg)
-        vwm = VersionedWorldModel.from_world_state(ws)
+        vwm = VersionedWorldModel.from_world_state(ws, max_snapshots=cfg.max_snapshots)
         history.record("ingestion", IngestionStepRecord(
             is_valid=validation_report.is_valid,
             num_events=len(ws.events),
@@ -499,7 +506,7 @@ async def run_pipeline_async(
         vwm = versioned_model
         ws = vwm.current
     else:
-        vwm = VersionedWorldModel.from_world_state(world_state)
+        vwm = VersionedWorldModel.from_world_state(world_state, max_snapshots=cfg.max_snapshots)
         ws = vwm.current
 
     result.world_model = vwm

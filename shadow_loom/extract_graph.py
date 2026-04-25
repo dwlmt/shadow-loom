@@ -383,24 +383,48 @@ class WorldModelVersion(BaseModel):
     )
 
 
+class WorldSnapshot(BaseModel):
+    """A full deep-copy of a WorldStateV1 at a specific version."""
+    version: int = Field(description="Version number this snapshot corresponds to.")
+    world_state: WorldStateV1
+
+
 class VersionedWorldModel(BaseModel):
     """Immutable-history wrapper around WorldStateV1.
 
     Every mutation produces a new deep-copied ``WorldStateV1`` and appends
     a version record.  The original world state is never modified.
+
+    The ``snapshots`` list retains full deep-copies of the last *K*
+    world states (controlled by ``max_snapshots``).  When the list
+    exceeds ``max_snapshots``, the oldest non-original snapshots are
+    trimmed.  Version 0 (the original) is always retained.
     """
     current: WorldStateV1
     history: List[WorldModelVersion] = Field(default_factory=list)
+    snapshots: List[WorldSnapshot] = Field(
+        default_factory=list,
+        description="Last-K full world-state deep-copies for rollback/inspection.",
+    )
+    max_snapshots: int = Field(
+        default=10,
+        description="Maximum number of snapshots to retain.  Oldest non-original are trimmed first.",
+    )
 
     @staticmethod
-    def from_world_state(world_state: WorldStateV1) -> "VersionedWorldModel":
+    def from_world_state(
+        world_state: WorldStateV1,
+        *,
+        max_snapshots: int = 10,
+    ) -> "VersionedWorldModel":
         """Create a new versioned world model from an existing WorldStateV1.
 
         The incoming ``world_state`` is deep-copied so that subsequent
         merges never mutate the caller's original.
         """
+        frozen = copy.deepcopy(world_state)
         return VersionedWorldModel(
-            current=copy.deepcopy(world_state),
+            current=copy.deepcopy(frozen),
             history=[
                 WorldModelVersion(
                     version=0,
@@ -409,12 +433,91 @@ class VersionedWorldModel(BaseModel):
                     description="Initial world state.",
                 ),
             ],
+            snapshots=[
+                WorldSnapshot(version=0, world_state=frozen),
+            ],
+            max_snapshots=max_snapshots,
         )
 
     @property
     def version(self) -> int:
         """Current version number."""
         return self.history[-1].version if self.history else 0
+
+    def get_snapshot(self, version: int) -> Optional[WorldSnapshot]:
+        """Retrieve a stored snapshot by version number, or None if trimmed."""
+        for snap in self.snapshots:
+            if snap.version == version:
+                return snap
+        return None
+
+    @property
+    def original(self) -> Optional[WorldStateV1]:
+        """The original (version-0) world state, if still retained."""
+        snap = self.get_snapshot(0)
+        return snap.world_state if snap else None
+
+    def rollback(self, version: int) -> "VersionedWorldModel":
+        """Create a new VersionedWorldModel rewound to a stored snapshot.
+
+        The snapshot at *version* becomes the new ``current``.  History is
+        truncated to entries <= *version*, and a new "rollback" entry is
+        appended so the operation is auditable.  The snapshot list is
+        carried forward (trimmed as usual).
+
+        Raises ``KeyError`` if the requested version has been trimmed.
+        """
+        snap = self.get_snapshot(version)
+        if snap is None:
+            available = sorted(s.version for s in self.snapshots)
+            raise KeyError(
+                f"Snapshot for version {version} not available.  "
+                f"Retained versions: {available}"
+            )
+
+        # History up to (and including) the target version
+        kept_history = [h for h in self.history if h.version <= version]
+
+        next_version = self.version + 1
+        kept_history.append(WorldModelVersion(
+            version=next_version,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            source="rollback",
+            description=f"Rolled back to version {version}.",
+        ))
+
+        rolled_back = copy.deepcopy(snap.world_state)
+
+        # Snapshots: keep everything up to the target, plus add the new current
+        new_snapshots = [s for s in self.snapshots if s.version <= version]
+        new_snapshots.append(WorldSnapshot(version=next_version, world_state=copy.deepcopy(rolled_back)))
+        new_snapshots = self._trim_snapshots(new_snapshots, self.max_snapshots)
+
+        logger.info(
+            "[VersionedWorldModel] Rollback v%d → v%d (rewound to v%d).",
+            self.version, next_version, version,
+        )
+        return VersionedWorldModel(
+            current=rolled_back,
+            history=kept_history,
+            snapshots=new_snapshots,
+            max_snapshots=self.max_snapshots,
+        )
+
+    def _trim_snapshots(self, snapshots: List[WorldSnapshot], max_k: int) -> List[WorldSnapshot]:
+        """Trim snapshot list to at most *max_k*, preserving version 0."""
+        if len(snapshots) <= max_k:
+            return snapshots
+        # Partition: keep version 0 always, trim oldest of the rest
+        v0 = [s for s in snapshots if s.version == 0]
+        rest = [s for s in snapshots if s.version != 0]
+        # Keep the most recent (max_k - len(v0)) from rest
+        keep = max_k - len(v0)
+        if keep <= 0:
+            return v0[:max_k]
+        trimmed = v0 + rest[-keep:]
+        trimmed.sort(key=lambda s: s.version)
+        return trimmed
 
     def merge(
         self,
@@ -524,7 +627,18 @@ class VersionedWorldModel(BaseModel):
             len(changeset.entity_updates_skipped),
         )
 
-        return VersionedWorldModel(current=merged, history=new_history)
+        # Build snapshot list: carry forward existing + add current merged state
+        new_snapshots = list(self.snapshots) + [
+            WorldSnapshot(version=next_version, world_state=copy.deepcopy(merged)),
+        ]
+        new_snapshots = self._trim_snapshots(new_snapshots, self.max_snapshots)
+
+        return VersionedWorldModel(
+            current=merged,
+            history=new_history,
+            snapshots=new_snapshots,
+            max_snapshots=self.max_snapshots,
+        )
 
 
 def merge_topology(

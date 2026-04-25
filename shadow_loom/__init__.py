@@ -33,10 +33,16 @@ from shadow_loom.ingestion import (
 )
 from shadow_loom.extract_graph import (
     extract_topology_from_prose, merge_topology,
-    VersionedWorldModel, WorldModelVersion, MergeChangeset,
+    VersionedWorldModel, WorldModelVersion, WorldSnapshot, MergeChangeset,
 )
 from shadow_loom.pipeline import (
     run_pipeline, run_pipeline_async, PipelineConfig, PipelineResult, PipelineHistory,
+)
+from shadow_loom.query_parsing import (
+    parse_query, parse_query_async,
+    QueryParsingConfig, QueryParseResult, ParsedQuery,
+    ResolvedID, ValidationError as QueryValidationError,
+    FallbackInfo,
 )
 
 __all__ = [
@@ -101,10 +107,18 @@ __all__ = [
     "merge_topology",
     "VersionedWorldModel",
     "WorldModelVersion",
+    "WorldSnapshot",
     "MergeChangeset",
     "run_pipeline",
     "run_pipeline_async",
     "PipelineConfig",
     "PipelineResult",
     "PipelineHistory",
+    "parse_query",
+    "parse_query_async",
+    "QueryParsingConfig",
+    "QueryParseResult",
+    "ParsedQuery",
+    "ResolvedID",
+    "QueryValidationError",
 ]

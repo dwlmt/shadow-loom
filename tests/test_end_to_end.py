@@ -858,6 +858,160 @@ class TestVersionedWorldModel:
         cs = vwm2.history[1].changeset
         assert "ENT_GHOST_999" in cs.entity_updates_skipped
 
+    # --- Snapshot retention ---
+
+    def test_snapshots_stored_on_merge(self):
+        """Each merge stores a snapshot of the new state."""
+        vwm = VersionedWorldModel.from_world_state(macbeth_ws)
+        assert len(vwm.snapshots) == 1  # v0
+
+        topo = _mock_topology(macbeth_ws)
+        vwm2 = vwm.merge(topo, description="First merge")
+        assert len(vwm2.snapshots) == 2
+        assert vwm2.get_snapshot(0) is not None
+        assert vwm2.get_snapshot(1) is not None
+
+    def test_max_snapshots_trims_oldest(self):
+        """When snapshots exceed max_snapshots, oldest non-v0 are trimmed."""
+        vwm = VersionedWorldModel.from_world_state(macbeth_ws, max_snapshots=3)
+
+        for i in range(5):
+            topo = _mock_topology(macbeth_ws)
+            topo.events[0] = topo.events[0].model_copy(
+                update={"id": f"EVT_TRIM_{i}", "fabula_time": 99000 + i * 1000}
+            )
+            topo.causal_topology[0] = topo.causal_topology[0].model_copy(
+                update={"target_id": f"EVT_TRIM_{i}", "fabula_time": 99000 + i * 1000}
+            )
+            vwm = vwm.merge(topo, description=f"Merge {i}")
+
+        assert vwm.version == 5
+        # max_snapshots=3 → keep v0 + 2 most recent
+        assert len(vwm.snapshots) <= 3
+        # v0 is always retained
+        assert vwm.get_snapshot(0) is not None
+        # Oldest non-v0 versions should be trimmed
+        versions = sorted(s.version for s in vwm.snapshots)
+        assert versions[0] == 0
+        # Most recent is always retained
+        assert vwm.get_snapshot(vwm.version) is not None
+
+    def test_get_snapshot_returns_none_for_trimmed(self):
+        """Requesting a trimmed snapshot returns None."""
+        vwm = VersionedWorldModel.from_world_state(macbeth_ws, max_snapshots=2)
+        for i in range(3):
+            topo = _mock_topology(macbeth_ws)
+            topo.events[0] = topo.events[0].model_copy(
+                update={"id": f"EVT_SNAP_{i}", "fabula_time": 99000 + i * 1000}
+            )
+            topo.causal_topology[0] = topo.causal_topology[0].model_copy(
+                update={"target_id": f"EVT_SNAP_{i}", "fabula_time": 99000 + i * 1000}
+            )
+            vwm = vwm.merge(topo)
+
+        # v1 should have been trimmed (only v0 and v3 kept)
+        assert vwm.get_snapshot(1) is None
+
+    # --- Rollback ---
+
+    def test_rollback_to_version_zero(self):
+        """Rollback to v0 restores the original world state."""
+        vwm = VersionedWorldModel.from_world_state(macbeth_ws)
+        original_event_count = len(vwm.current.events)
+
+        topo = _mock_topology(macbeth_ws)
+        vwm2 = vwm.merge(topo, description="Add event")
+        assert len(vwm2.current.events) == original_event_count + 1
+
+        vwm3 = vwm2.rollback(0)
+        assert len(vwm3.current.events) == original_event_count
+        # Version increments (rollback is a new version entry)
+        assert vwm3.version == 2
+        assert vwm3.history[-1].source == "rollback"
+
+    def test_rollback_to_intermediate_version(self):
+        """Rollback to an intermediate version restores that snapshot."""
+        vwm = VersionedWorldModel.from_world_state(macbeth_ws)
+        base_count = len(vwm.current.events)
+
+        topo1 = _mock_topology(macbeth_ws)
+        topo1.events[0] = topo1.events[0].model_copy(
+            update={"id": "EVT_ROLL_1", "fabula_time": 99000}
+        )
+        topo1.causal_topology[0] = topo1.causal_topology[0].model_copy(
+            update={"target_id": "EVT_ROLL_1", "fabula_time": 99000}
+        )
+        vwm1 = vwm.merge(topo1, description="First merge")
+        count_at_v1 = len(vwm1.current.events)
+
+        topo2 = _mock_topology(macbeth_ws)
+        topo2.events[0] = topo2.events[0].model_copy(
+            update={"id": "EVT_ROLL_2", "fabula_time": 99001}
+        )
+        topo2.causal_topology[0] = topo2.causal_topology[0].model_copy(
+            update={"target_id": "EVT_ROLL_2", "fabula_time": 99001}
+        )
+        vwm2 = vwm1.merge(topo2, description="Second merge")
+        assert len(vwm2.current.events) == count_at_v1 + 1
+
+        vwm3 = vwm2.rollback(1)
+        assert len(vwm3.current.events) == count_at_v1
+        assert vwm3.version == 3
+
+    def test_rollback_does_not_mutate_self(self):
+        """rollback() returns a new object; self is unchanged."""
+        vwm = VersionedWorldModel.from_world_state(macbeth_ws)
+        topo = _mock_topology(macbeth_ws)
+        vwm2 = vwm.merge(topo)
+        v2_events = len(vwm2.current.events)
+
+        vwm3 = vwm2.rollback(0)
+        assert len(vwm2.current.events) == v2_events  # unchanged
+
+    def test_rollback_raises_on_trimmed_version(self):
+        """Rollback to a trimmed snapshot raises KeyError."""
+        vwm = VersionedWorldModel.from_world_state(macbeth_ws, max_snapshots=2)
+        for i in range(3):
+            topo = _mock_topology(macbeth_ws)
+            topo.events[0] = topo.events[0].model_copy(
+                update={"id": f"EVT_RBTRIM_{i}", "fabula_time": 99000 + i * 1000}
+            )
+            topo.causal_topology[0] = topo.causal_topology[0].model_copy(
+                update={"target_id": f"EVT_RBTRIM_{i}", "fabula_time": 99000 + i * 1000}
+            )
+            vwm = vwm.merge(topo)
+
+        # v1 should be trimmed
+        with pytest.raises(KeyError, match="not available"):
+            vwm.rollback(1)
+
+    def test_rollback_history_is_truncated(self):
+        """After rollback, history only contains entries up to the target + the rollback entry."""
+        vwm = VersionedWorldModel.from_world_state(macbeth_ws)
+        topo1 = _mock_topology(macbeth_ws)
+        topo1.events[0] = topo1.events[0].model_copy(
+            update={"id": "EVT_HIST_1", "fabula_time": 99000}
+        )
+        topo1.causal_topology[0] = topo1.causal_topology[0].model_copy(
+            update={"target_id": "EVT_HIST_1", "fabula_time": 99000}
+        )
+        vwm1 = vwm.merge(topo1)
+
+        topo2 = _mock_topology(macbeth_ws)
+        topo2.events[0] = topo2.events[0].model_copy(
+            update={"id": "EVT_HIST_2", "fabula_time": 99001}
+        )
+        topo2.causal_topology[0] = topo2.causal_topology[0].model_copy(
+            update={"target_id": "EVT_HIST_2", "fabula_time": 99001}
+        )
+        vwm2 = vwm1.merge(topo2)
+
+        vwm3 = vwm2.rollback(0)
+        # History: v0 (original) + v3 (rollback). v1 and v2 are dropped.
+        assert len(vwm3.history) == 2
+        assert vwm3.history[0].version == 0
+        assert vwm3.history[-1].source == "rollback"
+
 
 # =========================================================================
 # Test: extract_topology_from_prose (mocked agents)
