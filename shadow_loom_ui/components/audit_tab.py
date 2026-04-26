@@ -1,7 +1,9 @@
-"""Audit tab — quality evaluation scorecard + per-query feedback history.
+"""Audit tab — NarrativeOrderObject scorecard, evaluation, audit loop replay.
 
-Provides a full-story evaluation button (NarrativeOrderObject scorecard)
-and a history of per-query audit cycles with violations and metrics.
+Provides:
+- Full-story evaluation with structured scorecard visualization
+- Per-query audit history with convergence tracking
+- Audit loop iteration replay (prose + violations per cycle)
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from typing import TYPE_CHECKING
 from nicegui import ui
 
 from shadow_loom_ui.state import AppState, NLQueryResult, StateEvent
+from shadow_loom_ui.viz import render_emotional_gauges
 
 if TYPE_CHECKING:
     pass
@@ -24,7 +27,37 @@ def build_audit_tab(state: AppState) -> None:
     """Build the Audit tab layout."""
 
     with ui.column().classes("w-full h-full q-pa-md gap-4"):
-        # ---- Full Story Evaluation ----
+        # ── NL prompt for evaluation ──────────────────────────────
+        with ui.row().classes("w-full gap-2 flex-wrap"):
+            ui.chip(
+                "Run full evaluation",
+                icon="fact_check",
+                on_click=lambda: state.emit(
+                    StateEvent.QUERY_STARTED,
+                    suggestion="Evaluate the story quality comprehensively",
+                    query_type="evaluate",
+                ),
+            ).props("dense outline clickable color=primary")
+            ui.chip(
+                "Check for miracle steps",
+                icon="warning",
+                on_click=lambda: state.emit(
+                    StateEvent.QUERY_STARTED,
+                    suggestion="Are there any miracle steps or impossible state changes in the story?",
+                    query_type="evaluate",
+                ),
+            ).props("dense outline clickable")
+            ui.chip(
+                "Evaluate character consistency",
+                icon="psychology",
+                on_click=lambda: state.emit(
+                    StateEvent.QUERY_STARTED,
+                    suggestion="Evaluate character consistency and cognitive plausibility",
+                    query_type="evaluate",
+                ),
+            ).props("dense outline clickable")
+
+        # ── Full Story Evaluation ─────────────────────────────────
         with ui.card().classes("w-full"):
             with ui.row().classes("items-center gap-2"):
                 ui.icon("fact_check", size="md", color="primary")
@@ -42,7 +75,7 @@ def build_audit_tab(state: AppState) -> None:
                     ui.notify("No world model loaded", type="warning")
                     return
 
-                eval_status.set_text("Running evaluation...")
+                eval_status.set_text("Running evaluation…")
                 try:
                     from shadow_loom.query_models import EvaluationQuery
                     query = EvaluationQuery()
@@ -60,16 +93,18 @@ def build_audit_tab(state: AppState) -> None:
                 "Run Evaluation", icon="play_arrow", on_click=_run_evaluation
             ).props("color=primary no-caps")
 
-        # ---- Per-Query Audit History ----
+        # ── Per-Query Audit History ───────────────────────────────
         with ui.card().classes("w-full"):
             ui.label("Query Audit History").classes("text-h6")
             history_container = ui.column().classes("w-full")
 
-            def _refresh_history():
+            def _refresh_history(**kw):
                 history_container.clear()
                 if not state.query_history:
                     with history_container:
-                        ui.label("No queries yet.").classes("text-body2 text-grey")
+                        ui.label("No queries yet. Use the command bar to ask questions.").classes(
+                            "text-body2 text-grey"
+                        )
                     return
 
                 with history_container:
@@ -77,15 +112,15 @@ def build_audit_tab(state: AppState) -> None:
                         _render_query_audit_entry(i, result)
 
             _refresh_history()
-            state.on(StateEvent.PIPELINE_RESULT, lambda **kw: _refresh_history())
+            state.on(StateEvent.PIPELINE_RESULT, _refresh_history)
 
 
 # =====================================================================
-# Evaluation result renderer
+# Evaluation result renderer (NarrativeOrderObject scorecard)
 # =====================================================================
 
 def _render_evaluation_result(container, result: NLQueryResult) -> None:
-    """Render the full-story NarrativeOrderObject evaluation."""
+    """Render the full-story evaluation with structured scorecard."""
     container.clear()
 
     if result.error:
@@ -100,71 +135,117 @@ def _render_evaluation_result(container, result: NLQueryResult) -> None:
         return
 
     with container:
-        # If there's a narrative order object in the result
-        if pr.prose:
+        # Evaluation scorecard (NarrativeOrderObject)
+        eval_result = getattr(pr, "evaluation_result", None)
+
+        if eval_result:
+            _render_scorecard(container, eval_result)
+        elif pr.prose:
             with ui.card().classes("w-full q-pa-md"):
                 ui.label("Evaluation Report").classes("text-subtitle1")
                 ui.markdown(pr.prose)
 
-        # Audit convergence info
+        # Convergence info
         if pr.converged is not None:
             with ui.card().classes("w-full q-pa-md"):
                 status = "Converged" if pr.converged else "Did not converge"
                 color = "positive" if pr.converged else "warning"
-                ui.badge(status, color=color).classes("q-mb-sm")
-                ui.label(f"Audit iterations: {pr.audit_iterations}").classes("text-caption")
-
-        # Change impact metrics
-        if hasattr(pr, "change_impact") and pr.change_impact:
-            _render_change_impact(container, pr.change_impact)
-
-        # Physics state (for interrogate-style evaluations)
-        if pr.physics_state and not pr.prose:
-            with ui.expansion("Raw Physics State", icon="data_object").classes("w-full"):
-                ui.code(pr.physics_state[:3000], language="json")
+                with ui.row().classes("items-center gap-2"):
+                    ui.badge(status, color=color)
+                    ui.label(f"Audit iterations: {pr.audit_iterations}").classes("text-caption")
 
 
-def _render_change_impact(container, impact) -> None:
-    """Render change impact metrics with progress bars."""
+def _render_scorecard(container, eval_result) -> None:
+    """Render NarrativeOrderObject scorecard with gauges and metrics."""
     with container:
-        with ui.card().classes("w-full q-pa-md"):
-            ui.label("Change Impact").classes("text-subtitle1")
-            if hasattr(impact, "causal_delta"):
-                with ui.row().classes("items-center gap-2 w-full"):
-                    ui.label("Causal Delta").classes("w-32 text-caption")
-                    ui.linear_progress(
-                        value=min(1, abs(impact.causal_delta)),
-                        show_value=False,
-                        color="red" if impact.causal_delta > 0.5 else "green",
-                    ).classes("flex-grow")
-                    ui.label(f"{impact.causal_delta:.3f}").classes("text-caption")
+        # Extract scores
+        narrative_order = getattr(eval_result, "narrative_order", None)
+        if narrative_order is None:
+            ui.label("No scorecard data.").classes("text-grey")
+            return
 
-            if hasattr(impact, "affective_delta"):
-                with ui.row().classes("items-center gap-2 w-full"):
-                    ui.label("Affective Delta").classes("w-32 text-caption")
-                    ui.linear_progress(
-                        value=min(1, abs(impact.affective_delta)),
-                        show_value=False,
-                        color="orange" if impact.affective_delta > 0.5 else "green",
-                    ).classes("flex-grow")
-                    ui.label(f"{impact.affective_delta:.3f}").classes("text-caption")
+        # Overall pass/fail
+        overall = getattr(narrative_order, "overall_pass", None)
+        if overall is not None:
+            color = "positive" if overall else "negative"
+            ui.badge(
+                "PASS" if overall else "FAIL",
+                color=color,
+            ).classes("text-h6 q-mb-md")
+
+        # Causal feedback
+        causal = getattr(narrative_order, "causal_feedback", None)
+        if causal:
+            with ui.card().classes("w-full q-pa-md"):
+                ui.label("Causal Metrics").classes("text-subtitle1 q-mb-sm")
+                scores = {}
+                if hasattr(causal, "foreshadowing_payoff_score"):
+                    scores["Foreshadowing"] = causal.foreshadowing_payoff_score
+                if hasattr(causal, "cognitive_plausibility_score"):
+                    scores["Plausibility"] = causal.cognitive_plausibility_score
+                if scores:
+                    render_emotional_gauges(scores, height="150px")
+
+                # Miracle steps
+                miracles = getattr(causal, "miracle_steps_detected", [])
+                if miracles:
+                    ui.label(f"⚠️ Miracle steps detected: {len(miracles)}").classes(
+                        "text-negative q-mt-sm"
+                    )
+                    for m in miracles[:5]:
+                        ui.label(f"  • {m}").classes("text-caption text-negative")
+                else:
+                    ui.label("✓ No miracle steps").classes("text-positive q-mt-sm")
+
+        # Affective feedback
+        affective = getattr(narrative_order, "affective_feedback", None)
+        if affective:
+            with ui.card().classes("w-full q-pa-md"):
+                ui.label("Affective Metrics").classes("text-subtitle1 q-mb-sm")
+                scores = {}
+                if hasattr(affective, "emotional_trajectory_scores") and affective.emotional_trajectory_scores:
+                    scores.update(affective.emotional_trajectory_scores)
+                if hasattr(affective, "affective_loss_mse"):
+                    scores["Affective Loss"] = affective.affective_loss_mse
+                if scores:
+                    render_emotional_gauges(scores, height="150px")
+
+                if hasattr(affective, "kl_divergence_prediction_error"):
+                    ui.label(
+                        f"KL Divergence (surprise): {affective.kl_divergence_prediction_error:.3f}"
+                    ).classes("text-caption q-mt-sm")
+
+        # Quality synthesis
+        quality = getattr(narrative_order, "quality_synthesis", None)
+        if quality:
+            with ui.card().classes("w-full q-pa-md"):
+                ui.label("Quality Synthesis").classes("text-subtitle1 q-mb-sm")
+                if hasattr(quality, "coherence_and_consistency_review") and quality.coherence_and_consistency_review:
+                    with ui.expansion("Coherence Review", icon="check_circle").props("dense"):
+                        ui.markdown(quality.coherence_and_consistency_review)
+                if hasattr(quality, "reward_hacking_diagnostics") and quality.reward_hacking_diagnostics:
+                    with ui.expansion("Reward-Hacking Diagnostics", icon="warning").props("dense"):
+                        ui.markdown(quality.reward_hacking_diagnostics)
+                if hasattr(quality, "actionable_rewrite_directives") and quality.actionable_rewrite_directives:
+                    with ui.expansion("Rewrite Directives", icon="edit_note").props("dense"):
+                        ui.markdown(quality.actionable_rewrite_directives)
 
 
 # =====================================================================
-# Per-query audit entry
+# Per-query audit entry with loop replay
 # =====================================================================
 
 def _render_query_audit_entry(index: int, result: NLQueryResult) -> None:
-    """Render a single query's audit information."""
+    """Render a single query's audit information with iteration replay."""
     pr = result.pipeline_result
     query_type = pr.query_type if pr else "unknown"
     converged = pr.converged if pr else None
 
+    icon = "check_circle" if converged else "warning" if converged is False else "help"
     with ui.expansion(
         f"#{index + 1} — {query_type}",
-        icon="check_circle" if converged else "warning" if converged is False else "help",
+        icon=icon,
     ).classes("w-full").props("dense"):
-        # Summary
         if result.summary:
             ui.label(result.summary).classes("text-body2")
 
@@ -175,16 +256,26 @@ def _render_query_audit_entry(index: int, result: NLQueryResult) -> None:
             # Convergence
             if pr.converged is not None:
                 status = "Converged" if pr.converged else "Did not converge"
-                ui.label(
-                    f"Audit: {status} ({pr.audit_iterations} iterations)"
-                ).classes("text-caption")
+                with ui.row().classes("items-center gap-2"):
+                    color = "positive" if pr.converged else "warning"
+                    ui.badge(status, color=color).props("dense")
+                    ui.label(f"{pr.audit_iterations} iterations").classes("text-caption")
 
             # Prose excerpt
             if pr.prose:
                 with ui.expansion("Prose", icon="article").props("dense"):
-                    ui.markdown(pr.prose[:500] + ("..." if len(pr.prose) > 500 else ""))
+                    ui.markdown(pr.prose[:500] + ("…" if len(pr.prose) > 500 else ""))
 
-            # Violations (if available in audit data)
+            # Audit loop replay (if feedback_result has cycles)
+            feedback = getattr(pr, "feedback_result", None)
+            if feedback and hasattr(feedback, "cycles") and feedback.cycles:
+                with ui.expansion(
+                    f"Audit Loop ({len(feedback.cycles)} iterations)", icon="replay"
+                ).props("dense"):
+                    for cycle in feedback.cycles:
+                        _render_audit_cycle(cycle)
+
+            # Violations
             if hasattr(pr, "violations") and pr.violations:
                 with ui.expansion(f"Violations ({len(pr.violations)})").props("dense"):
                     for v in pr.violations:
@@ -205,3 +296,32 @@ def _render_query_audit_entry(index: int, result: NLQueryResult) -> None:
                 parsed = result.parse_result.parsed
                 if hasattr(parsed, "reasoning") and parsed.reasoning:
                     ui.label(f"Reasoning: {parsed.reasoning}").classes("text-caption text-grey")
+
+
+def _render_audit_cycle(cycle) -> None:
+    """Render a single audit cycle (iteration) in the replay view."""
+    iteration = getattr(cycle, "iteration", "?")
+    with ui.card().classes("w-full q-pa-sm q-mb-xs").style("background: #252530"):
+        ui.label(f"Iteration {iteration}").classes("text-subtitle2")
+
+        # Prose excerpt for this iteration
+        prose = getattr(cycle, "prose", "")
+        if prose:
+            ui.markdown(prose[:300] + ("…" if len(prose) > 300 else "")).classes("text-caption")
+
+        # Audit result
+        audit = getattr(cycle, "audit_result", None)
+        if audit:
+            passed = getattr(audit, "passed", None)
+            if passed is not None:
+                color = "positive" if passed else "warning"
+                ui.badge("passed" if passed else "failed", color=color).props("dense")
+
+            violations = getattr(audit, "violations", [])
+            if violations:
+                for v in violations[:3]:
+                    with ui.row().classes("items-center gap-1"):
+                        ui.icon("error_outline", size="xs", color="warning")
+                        ui.label(
+                            getattr(v, "message", str(v))[:100]
+                        ).classes("text-caption text-grey")

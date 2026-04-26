@@ -301,6 +301,7 @@ def ws_to_social_graph_data(
             "symbol": "circle",
             "itemStyle": {"color": NODE_COLORS["Entity"]},
             "tooltip": {"formatter": tooltip},
+            "_sl_node_type": "Entity",
         })
 
     for rel in ws.social_topology:
@@ -346,6 +347,7 @@ def ws_to_spatial_graph_data(
             "symbol": "rect",
             "itemStyle": {"color": NODE_COLORS["Location"]},
             "tooltip": {"formatter": tooltip},
+            "_sl_node_type": "Location",
         })
 
     for se in ws.spatial_topology:
@@ -714,3 +716,237 @@ def ws_to_info_rows(ws: WorldStateV1) -> list[dict]:
         }
         for ie in ws.information_topology
     ]
+
+
+# ── ThemeRiver (multi-entity trait evolution over time) ───────────
+
+def ws_to_theme_river_data(
+    ws: WorldStateV1,
+    trait_names: list[str] | None = None,
+    max_entities: int = 6,
+) -> list[list]:
+    """Build ThemeRiver series data: [[time, value, "entity:trait"], ...].
+
+    Each river band is an entity-trait pair showing evolution over fabula time.
+    """
+    if not ws.events:
+        return []
+
+    times = sorted({evt.fabula_time for evt in ws.events})
+    if not times:
+        return []
+
+    ent_ids = list(ws.entities.keys())[:max_entities]
+
+    if trait_names is None:
+        trait_counts: dict[str, int] = {}
+        for eid in ent_ids:
+            for t in ws.entities[eid].traits:
+                trait_counts[t] = trait_counts.get(t, 0) + 1
+        trait_names = sorted(trait_counts, key=trait_counts.get, reverse=True)[:4]
+
+    data: list[list] = []
+    for t in times:
+        for eid in ent_ids:
+            ent = ws.entities[eid]
+            snapshot = reconstruct_entity_at(ent, t)
+            for tn in trait_names:
+                tv = snapshot.get("traits", {}).get(tn)
+                if tv is not None:
+                    val = tv.value if hasattr(tv, "value") else tv
+                else:
+                    val = ent.traits[tn].value if tn in ent.traits else 0.5
+                # ThemeRiver needs positive values; shift from [0,1] to [0.1, 1.1]
+                data.append([str(t), round(max(0.01, val + 0.1), 3), f"{ent.name}:{tn}"])
+
+    return data
+
+
+# ── Chord diagram (relationship reciprocity) ─────────────────────
+
+def ws_to_chord_data(
+    ws: WorldStateV1,
+    metric: str = "affinity",
+) -> tuple[list[str], list[list[float]]]:
+    """Build chord diagram matrix: entity names + NxN adjacency matrix.
+
+    Returns ``(entity_names, matrix)`` where matrix[i][j] is the
+    absolute metric value from entity i to entity j.
+    """
+    ent_ids = list(ws.entities.keys())
+    ent_names = [ws.entities[eid].name for eid in ent_ids]
+    n = len(ent_ids)
+    idx = {eid: i for i, eid in enumerate(ent_ids)}
+
+    matrix = [[0.0] * n for _ in range(n)]
+    for rel in ws.social_topology:
+        si = idx.get(rel.source_entity_id)
+        ti = idx.get(rel.target_entity_id)
+        if si is not None and ti is not None:
+            val = abs(getattr(rel, metric, 0.0))
+            matrix[si][ti] = round(val, 2)
+
+    return ent_names, matrix
+
+
+# ── Parallel coordinates (trait comparison across entities) ───────
+
+def ws_to_parallel_data(
+    ws: WorldStateV1,
+) -> tuple[list[dict], list[list[float]], list[str]]:
+    """Build parallel coordinate axes + data.
+
+    Returns ``(dimensions, data_rows, entity_names)``.
+    """
+    trait_set: set[str] = set()
+    for ent in ws.entities.values():
+        trait_set |= set(ent.traits.keys())
+    trait_names = sorted(trait_set)
+
+    dimensions = [{"name": t, "min": 0, "max": 1} for t in trait_names]
+    data_rows: list[list[float]] = []
+    entity_names: list[str] = []
+
+    for eid, ent in ws.entities.items():
+        row = []
+        for t in trait_names:
+            tv = ent.traits.get(t)
+            row.append(round(tv.value, 3) if tv else 0.5)
+        data_rows.append(row)
+        entity_names.append(ent.name)
+
+    return dimensions, data_rows, entity_names
+
+
+# ── Event Gantt / swim lanes ─────────────────────────────────────
+
+def ws_to_gantt_data(
+    ws: WorldStateV1,
+) -> tuple[list[str], list[dict]]:
+    """Build Gantt/swim-lane data: actor lanes x event time spans.
+
+    Returns ``(actor_names, event_items)``.
+    """
+    actor_ids: list[str] = []
+    actor_names: list[str] = []
+    for eid, ent in ws.entities.items():
+        actor_ids.append(eid)
+        actor_names.append(ent.name)
+    actor_idx = {aid: i for i, aid in enumerate(actor_ids)}
+
+    items: list[dict] = []
+    for evt in sorted(ws.events, key=lambda e: e.fabula_time):
+        actors = evt.actor_ids if evt.actor_ids else []
+        for aid in actors:
+            idx_val = actor_idx.get(aid)
+            if idx_val is not None:
+                items.append({
+                    "actor_idx": idx_val,
+                    "start": evt.fabula_time,
+                    "end": evt.fabula_time + 1,
+                    "event_id": evt.id,
+                    "event_type": evt.event_type,
+                    "description": evt.description[:50] if evt.description else evt.id,
+                })
+
+    return actor_names, items
+
+
+# ── Propagation waterfall (causal chain impact) ──────────────────
+
+def mutations_to_waterfall_data(
+    mutations: list[dict],
+    blocked: list[dict] | None = None,
+) -> list[dict]:
+    """Convert causal physics mutations into waterfall chart data.
+
+    mutations: [{"entity_id", "trait", "old", "new", "impact"}]
+    blocked: [{"source", "target", "reason", "trait"}]
+    """
+    data: list[dict] = []
+
+    for m in mutations:
+        shift = m.get("new", 0) - m.get("old", 0)
+        data.append({
+            "name": f"{m.get('entity_id', '?')}:{m.get('trait', '?')}",
+            "value": round(shift, 3),
+            "type": "positive" if shift > 0 else "negative",
+            "detail": f"impact={m.get('impact', 0):.2f}",
+        })
+
+    if blocked:
+        for b in blocked:
+            data.append({
+                "name": f"{b.get('target', '?')}:{b.get('trait', '?')}",
+                "value": 0,
+                "type": "blocked",
+                "detail": f"blocked by {b.get('reason', 'unknown')}",
+            })
+
+    return data
+
+
+# ── Sunburst (world model composition hierarchy) ─────────────────
+
+def ws_to_sunburst_data(ws: WorldStateV1) -> dict:
+    """Build sunburst hierarchy: World → Locations → Entities → Traits."""
+    children: list[dict] = []
+
+    for lid, loc in ws.locations.items():
+        loc_children: list[dict] = []
+        for eid, ent in ws.entities.items():
+            if ent.location_id == lid:
+                trait_children = [
+                    {
+                        "name": tname,
+                        "value": max(1, int(tv.value * 10)),
+                        "itemStyle": {"color": NODE_COLORS.get("Entity", "#4CAF50")},
+                    }
+                    for tname, tv in list(ent.traits.items())[:6]
+                ]
+                loc_children.append({
+                    "name": ent.name,
+                    "value": max(1, len(ent.traits)),
+                    "children": trait_children,
+                    "itemStyle": {"color": NODE_COLORS["Entity"]},
+                })
+        for oid, obj in ws.objects.items():
+            if obj.location_id == lid:
+                loc_children.append({
+                    "name": obj.name,
+                    "value": 1,
+                    "itemStyle": {"color": NODE_COLORS["NarrativeObject"]},
+                })
+        children.append({
+            "name": loc.name,
+            "value": max(1, len(loc_children)),
+            "children": loc_children,
+            "itemStyle": {"color": NODE_COLORS["Location"]},
+        })
+
+    # Entities without a location
+    for eid, ent in ws.entities.items():
+        if ent.location_id not in ws.locations:
+            children.append({
+                "name": ent.name,
+                "value": max(1, len(ent.traits)),
+                "itemStyle": {"color": NODE_COLORS["Entity"]},
+            })
+
+    if ws.world_traits:
+        wt_children = [
+            {
+                "name": wt.name,
+                "value": max(1, int(wt.magnitude.value * 10)),
+                "itemStyle": {"color": NODE_COLORS["WorldTrait"]},
+            }
+            for wt in ws.world_traits.values()
+        ]
+        children.append({
+            "name": "World Traits",
+            "value": len(ws.world_traits),
+            "children": wt_children,
+            "itemStyle": {"color": NODE_COLORS["WorldTrait"]},
+        })
+
+    return {"name": "World", "children": children}

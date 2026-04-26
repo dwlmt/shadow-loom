@@ -18,15 +18,21 @@ from shadow_loom_ui.viz_helpers import (
     NODE_COLORS,
     entity_state_timeline_data,
     entity_to_radar_data,
+    mutations_to_waterfall_data,
     version_tree_to_echart_data,
     ws_to_causal_force_data,
+    ws_to_chord_data,
     ws_to_ego_graph_data,
     ws_to_epistemic_data,
+    ws_to_gantt_data,
     ws_to_graph_data,
     ws_to_heatmap_data,
+    ws_to_parallel_data,
     ws_to_sankey_data,
     ws_to_social_graph_data,
     ws_to_spatial_graph_data,
+    ws_to_sunburst_data,
+    ws_to_theme_river_data,
     ws_to_timeline_data,
 )
 
@@ -638,6 +644,294 @@ def render_epistemic_map(
             "data": data,
             "label": {"show": True, "fontSize": 9, "color": "#eee"},
             "emphasis": {"itemStyle": {"shadowBlur": 10}},
+        }],
+    }).classes("w-full").style(f"height:{height}")
+
+    if on_click:
+        chart.on("click", on_click)
+    return chart
+
+
+# ── ThemeRiver (multi-entity trait evolution) ─────────────────────
+
+def render_theme_river(
+    ws: WorldStateV1,
+    *,
+    trait_names: list[str] | None = None,
+    max_entities: int = 6,
+    height: str = "400px",
+) -> ui.echart:
+    """ThemeRiver showing entity trait evolution as flowing bands."""
+    data = ws_to_theme_river_data(ws, trait_names=trait_names, max_entities=max_entities)
+    if not data:
+        return ui.label("No temporal data for ThemeRiver.").classes("text-grey q-pa-md")
+
+    # Extract legend entries
+    legends = sorted({d[2] for d in data})
+
+    return ui.echart({
+        "backgroundColor": _DARK_BG,
+        "tooltip": {**_DARK_TOOLTIP, "trigger": "axis"},
+        "legend": {
+            "data": legends,
+            "textStyle": {"color": _DARK_TEXT},
+            "top": 0,
+            "type": "scroll",
+        },
+        "singleAxis": {
+            "type": "category",
+            "bottom": 50,
+            "top": 50,
+            "axisLabel": {"color": _DARK_TEXT},
+            "axisLine": {"lineStyle": {"color": "#555"}},
+        },
+        "series": [{
+            "type": "themeRiver",
+            "data": data,
+            "label": {"show": False},
+            "emphasis": {"itemStyle": {"shadowBlur": 20, "shadowColor": "rgba(0,0,0,0.8)"}},
+        }],
+    }).classes("w-full").style(f"height:{height}")
+
+
+# ── Chord diagram (relationship reciprocity) ─────────────────────
+
+def render_chord_diagram(
+    ws: WorldStateV1,
+    *,
+    metric: str = "affinity",
+    height: str = "400px",
+) -> ui.echart:
+    """Chord diagram showing bidirectional relationship strengths."""
+    names, matrix = ws_to_chord_data(ws, metric=metric)
+    if not names or all(all(v == 0 for v in row) for row in matrix):
+        return ui.label("No relationship data for chord.").classes("text-grey q-pa-md")
+
+    # Build as a graph with circular layout (chord alternative for ECharts < 6)
+    nodes = [{"name": n, "symbolSize": 30} for n in names]
+    links = []
+    for i, row in enumerate(matrix):
+        for j, val in enumerate(row):
+            if val > 0 and i != j:
+                links.append({
+                    "source": names[i],
+                    "target": names[j],
+                    "value": val,
+                    "lineStyle": {"width": max(1, val * 5), "opacity": 0.6},
+                })
+
+    return ui.echart({
+        "backgroundColor": _DARK_BG,
+        "tooltip": {**_DARK_TOOLTIP, "trigger": "item"},
+        "series": [{
+            "type": "graph",
+            "layout": "circular",
+            "circular": {"rotateLabel": True},
+            "data": nodes,
+            "links": links,
+            "roam": True,
+            "label": {"show": True, "position": "right", "color": _DARK_TEXT, "fontSize": 11},
+            "lineStyle": {"curveness": 0.3, "color": "source"},
+            "emphasis": {"focus": "adjacency"},
+        }],
+    }).classes("w-full").style(f"height:{height}")
+
+
+# ── Parallel coordinates (entity trait comparison) ────────────────
+
+def render_parallel_coords(
+    ws: WorldStateV1,
+    *,
+    height: str = "400px",
+) -> ui.echart:
+    """Parallel coordinates comparing all entities' trait profiles."""
+    dimensions, data_rows, entity_names = ws_to_parallel_data(ws)
+    if not dimensions or not data_rows:
+        return ui.label("No trait data for parallel view.").classes("text-grey q-pa-md")
+
+    colors = ["#4CAF50", "#2196F3", "#FF9800", "#E91E63", "#9C27B0",
+              "#00BCD4", "#FFEB3B", "#FF5722", "#607D8B", "#795548"]
+
+    series = []
+    for i, (row, name) in enumerate(zip(data_rows, entity_names)):
+        series.append({
+            "type": "parallel",
+            "name": name,
+            "data": [row],
+            "lineStyle": {"width": 2, "color": colors[i % len(colors)], "opacity": 0.7},
+        })
+
+    return ui.echart({
+        "backgroundColor": _DARK_BG,
+        "tooltip": _DARK_TOOLTIP,
+        "legend": {
+            "data": entity_names,
+            "textStyle": {"color": _DARK_TEXT},
+            "top": 0,
+            "type": "scroll",
+        },
+        "parallelAxis": [
+            {
+                "dim": i,
+                "name": d["name"],
+                "min": d["min"],
+                "max": d["max"],
+                "nameTextStyle": {"color": _DARK_TEXT, "fontSize": 10},
+                "axisLabel": {"color": _DARK_TEXT},
+                "axisLine": {"lineStyle": {"color": "#555"}},
+            }
+            for i, d in enumerate(dimensions)
+        ],
+        "parallel": {"left": 60, "right": 40, "bottom": 30, "top": 50},
+        "series": series,
+    }).classes("w-full").style(f"height:{height}")
+
+
+# ── Event swim lanes (Gantt-style) ───────────────────────────────
+
+def render_event_gantt(
+    ws: WorldStateV1,
+    *,
+    on_click: OnClick = None,
+    height: str = "400px",
+) -> ui.echart:
+    """Swim-lane Gantt chart: events grouped by actor, x = fabula_time."""
+    from shadow_loom_ui.viz_helpers import EVENT_TYPE_COLORS
+
+    actor_names, items = ws_to_gantt_data(ws)
+    if not items:
+        return ui.label("No actor events for swim lanes.").classes("text-grey q-pa-md")
+
+    # Build custom series data
+    render_data = []
+    for item in items:
+        color = EVENT_TYPE_COLORS.get(item["event_type"], "#607D8B")
+        render_data.append({
+            "value": [item["start"], item["actor_idx"], item["end"], item["event_type"]],
+            "itemStyle": {"color": color},
+            "name": item["description"],
+        })
+
+    chart = ui.echart({
+        "backgroundColor": _DARK_BG,
+        "tooltip": {
+            **_DARK_TOOLTIP,
+            "trigger": "item",
+        },
+        "grid": {"top": 30, "bottom": 40, "left": 120, "right": 30},
+        "xAxis": {
+            "type": "value",
+            "name": "Fabula Time",
+            "nameTextStyle": {"color": _DARK_TEXT},
+            "axisLabel": {"color": _DARK_TEXT},
+            "splitLine": {"lineStyle": {"color": "#333"}},
+        },
+        "yAxis": {
+            "type": "category",
+            "data": actor_names,
+            "axisLabel": {"color": _DARK_TEXT, "fontSize": 10},
+            "axisLine": {"lineStyle": {"color": "#555"}},
+        },
+        "series": [{
+            "type": "custom",
+            "renderItem": """function(params, api) {
+                var start = api.coord([api.value(0), api.value(1)]);
+                var end = api.coord([api.value(2), api.value(1)]);
+                var height = api.size([0, 1])[1] * 0.6;
+                return {
+                    type: 'rect',
+                    shape: {x: start[0], y: start[1] - height/2, width: Math.max(end[0]-start[0], 8), height: height},
+                    style: api.style()
+                };
+            }""",
+            "encode": {"x": [0, 2], "y": 1},
+            "data": render_data,
+        }],
+    }).classes("w-full").style(f"height:{height}")
+
+    if on_click:
+        chart.on("click", on_click)
+    return chart
+
+
+# ── Propagation waterfall ─────────────────────────────────────────
+
+def render_propagation_waterfall(
+    mutations: list[dict],
+    blocked: list[dict] | None = None,
+    *,
+    height: str = "350px",
+) -> ui.echart:
+    """Waterfall chart showing causal propagation steps and blocks."""
+    data = mutations_to_waterfall_data(mutations, blocked)
+    if not data:
+        return ui.label("No propagation data.").classes("text-grey q-pa-md")
+
+    categories = [d["name"] for d in data]
+    values = []
+    for d in data:
+        if d["type"] == "blocked":
+            values.append({"value": 0, "itemStyle": {"color": "#616161", "borderType": "dashed"}})
+        elif d["type"] == "positive":
+            values.append({"value": d["value"], "itemStyle": {"color": "#4CAF50"}})
+        else:
+            values.append({"value": d["value"], "itemStyle": {"color": "#F44336"}})
+
+    return ui.echart({
+        "backgroundColor": _DARK_BG,
+        "tooltip": {**_DARK_TOOLTIP, "trigger": "axis"},
+        "grid": {"top": 30, "bottom": 80, "left": 50, "right": 30},
+        "xAxis": {
+            "type": "category",
+            "data": categories,
+            "axisLabel": {"rotate": 45, "color": _DARK_TEXT, "fontSize": 9},
+            "axisLine": {"lineStyle": {"color": "#555"}},
+        },
+        "yAxis": {
+            "type": "value",
+            "name": "Trait Delta",
+            "nameTextStyle": {"color": _DARK_TEXT},
+            "axisLabel": {"color": _DARK_TEXT},
+            "splitLine": {"lineStyle": {"color": "#333"}},
+        },
+        "series": [{
+            "type": "bar",
+            "data": values,
+            "label": {"show": True, "position": "top", "fontSize": 9, "color": _DARK_TEXT},
+        }],
+    }).classes("w-full").style(f"height:{height}")
+
+
+# ── World sunburst ────────────────────────────────────────────────
+
+def render_sunburst(
+    ws: WorldStateV1,
+    *,
+    on_click: OnClick = None,
+    height: str = "500px",
+) -> ui.echart:
+    """Sunburst showing world model composition: locations → entities → traits."""
+    root = ws_to_sunburst_data(ws)
+    if not root.get("children"):
+        return ui.label("No world data for sunburst.").classes("text-grey q-pa-md")
+
+    chart = ui.echart({
+        "backgroundColor": _DARK_BG,
+        "tooltip": {**_DARK_TOOLTIP, "trigger": "item"},
+        "series": [{
+            "type": "sunburst",
+            "data": root["children"],
+            "radius": ["10%", "90%"],
+            "sort": None,
+            "emphasis": {"focus": "ancestor"},
+            "levels": [
+                {},
+                {"r0": "10%", "r": "35%", "label": {"rotate": "tangential", "color": _DARK_TEXT, "fontSize": 11}},
+                {"r0": "35%", "r": "65%", "label": {"rotate": "tangential", "color": _DARK_TEXT, "fontSize": 9}},
+                {"r0": "65%", "r": "90%", "label": {"rotate": "tangential", "color": _DARK_TEXT, "fontSize": 8}},
+            ],
+            "label": {"color": _DARK_TEXT},
+            "itemStyle": {"borderWidth": 1, "borderColor": "#1e1e1e"},
         }],
     }).classes("w-full").style(f"height:{height}")
 

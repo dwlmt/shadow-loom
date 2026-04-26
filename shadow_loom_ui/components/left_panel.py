@@ -139,61 +139,98 @@ def _render_explorer(state: AppState, container) -> None:
     stats = ws_stats(ws)
 
     with container:
-        # Entities
-        with ui.expansion(
-            f"Entities ({stats['entities']})", icon="people"
-        ).classes("w-full").props("dense"):
-            for eid, ent in ws.entities.items():
-                color = "negative" if ent.status == "dead" else "positive"
-                btn = ui.button(
-                    ent.name,
-                    on_click=lambda e_id=eid: state.select_node(e_id, "Entity"),
-                ).props("flat dense no-caps align=left").classes("w-full text-left")
+        # Search/filter input
+        search = ui.input(
+            placeholder="Filter…",
+        ).classes("w-full q-mb-xs").props("dense outlined clearable")
 
-        # Locations
-        with ui.expansion(
-            f"Locations ({stats['locations']})", icon="place"
-        ).classes("w-full").props("dense"):
-            for lid, loc in ws.locations.items():
-                ui.button(
-                    loc.name,
-                    on_click=lambda l_id=lid: state.select_node(l_id, "Location"),
-                ).props("flat dense no-caps align=left").classes("w-full text-left")
+        # Container that gets filtered
+        items_container = ui.column().classes("w-full")
 
-        # Events
-        with ui.expansion(
-            f"Events ({stats['events']})", icon="bolt"
-        ).classes("w-full").props("dense"):
-            for evt in sorted(ws.events, key=lambda e: e.fabula_time):
-                label = f"t{evt.fabula_time}: {evt.description[:40]}"
-                ui.button(
-                    label,
-                    on_click=lambda ev_id=evt.id: state.select_node(ev_id, "EventNode"),
-                ).props("flat dense no-caps align=left").classes(
-                    "w-full text-left text-caption"
-                )
+        def _build_items(filter_text: str = ""):
+            items_container.clear()
+            ft = filter_text.lower().strip()
+            with items_container:
+                # Entities
+                filtered_ents = [
+                    (eid, ent) for eid, ent in ws.entities.items()
+                    if not ft or ft in ent.name.lower()
+                ]
+                if filtered_ents:
+                    with ui.expansion(
+                        f"Entities ({len(filtered_ents)})", icon="people"
+                    ).classes("w-full").props("dense"):
+                        for eid, ent in filtered_ents:
+                            ui.button(
+                                ent.name,
+                                on_click=lambda e_id=eid: state.select_node(e_id, "Entity"),
+                            ).props("flat dense no-caps align=left").classes("w-full text-left")
 
-        # Objects
-        if stats["objects"]:
-            with ui.expansion(
-                f"Objects ({stats['objects']})", icon="category"
-            ).classes("w-full").props("dense"):
-                for oid, obj in ws.objects.items():
-                    ui.button(
-                        obj.name,
-                        on_click=lambda o_id=oid: state.select_node(o_id, "NarrativeObject"),
-                    ).props("flat dense no-caps align=left").classes("w-full text-left")
+                # Locations
+                filtered_locs = [
+                    (lid, loc) for lid, loc in ws.locations.items()
+                    if not ft or ft in loc.name.lower()
+                ]
+                if filtered_locs:
+                    with ui.expansion(
+                        f"Locations ({len(filtered_locs)})", icon="place"
+                    ).classes("w-full").props("dense"):
+                        for lid, loc in filtered_locs:
+                            ui.button(
+                                loc.name,
+                                on_click=lambda l_id=lid: state.select_node(l_id, "Location"),
+                            ).props("flat dense no-caps align=left").classes("w-full text-left")
 
-        # World Traits
-        if stats["world_traits"]:
-            with ui.expansion(
-                f"World Traits ({stats['world_traits']})", icon="public"
-            ).classes("w-full").props("dense"):
-                for wid, wt in ws.world_traits.items():
-                    ui.button(
-                        f"{wt.name} ({wt.magnitude.value:.2f})",
-                        on_click=lambda w_id=wid: state.select_node(w_id, "WorldTrait"),
-                    ).props("flat dense no-caps align=left").classes("w-full text-left")
+                # Events
+                filtered_evts = [
+                    evt for evt in sorted(ws.events, key=lambda e: e.fabula_time)
+                    if not ft or ft in (evt.description or "").lower() or ft in evt.id.lower()
+                ]
+                if filtered_evts:
+                    with ui.expansion(
+                        f"Events ({len(filtered_evts)})", icon="bolt"
+                    ).classes("w-full").props("dense"):
+                        for evt in filtered_evts[:30]:
+                            label = f"t{evt.fabula_time}: {evt.description[:40]}"
+                            ui.button(
+                                label,
+                                on_click=lambda ev_id=evt.id: state.select_node(ev_id, "EventNode"),
+                            ).props("flat dense no-caps align=left").classes(
+                                "w-full text-left text-caption"
+                            )
+
+                # Objects
+                filtered_objs = [
+                    (oid, obj) for oid, obj in ws.objects.items()
+                    if not ft or ft in obj.name.lower()
+                ]
+                if filtered_objs:
+                    with ui.expansion(
+                        f"Objects ({len(filtered_objs)})", icon="category"
+                    ).classes("w-full").props("dense"):
+                        for oid, obj in filtered_objs:
+                            ui.button(
+                                obj.name,
+                                on_click=lambda o_id=oid: state.select_node(o_id, "NarrativeObject"),
+                            ).props("flat dense no-caps align=left").classes("w-full text-left")
+
+                # World Traits
+                filtered_wts = [
+                    (wid, wt) for wid, wt in ws.world_traits.items()
+                    if not ft or ft in wt.name.lower()
+                ]
+                if filtered_wts:
+                    with ui.expansion(
+                        f"World Traits ({len(filtered_wts)})", icon="public"
+                    ).classes("w-full").props("dense"):
+                        for wid, wt in filtered_wts:
+                            ui.button(
+                                f"{wt.name} ({wt.magnitude.value:.2f})",
+                                on_click=lambda w_id=wid: state.select_node(w_id, "WorldTrait"),
+                            ).props("flat dense no-caps align=left").classes("w-full text-left")
+
+        _build_items()
+        search.on("update:model-value", lambda e: _build_items(search.value or ""))
 
 
 # =====================================================================
@@ -211,16 +248,21 @@ def _render_inspector(state: AppState, container, node_id: str | None, node_type
     with container:
         if node_type == "Entity" and node_id in ws.entities:
             _inspect_entity(ws, node_id)
+            _inspector_suggestions(state, node_id, node_type, ws.entities[node_id].name)
         elif node_type == "Location" and node_id in ws.locations:
             _inspect_location(ws, node_id)
+            _inspector_suggestions(state, node_id, node_type, ws.locations[node_id].name)
         elif node_type == "EventNode":
             evt = next((e for e in ws.events if e.id == node_id), None)
             if evt:
                 _inspect_event(ws, evt)
+                _inspector_suggestions(state, node_id, node_type, evt.description[:30])
         elif node_type == "NarrativeObject" and node_id in ws.objects:
             _inspect_object(ws, node_id)
+            _inspector_suggestions(state, node_id, node_type, ws.objects[node_id].name)
         elif node_type == "WorldTrait" and node_id in ws.world_traits:
             _inspect_world_trait(ws, node_id)
+            _inspector_suggestions(state, node_id, node_type, ws.world_traits[node_id].name)
         else:
             ui.label(f"Unknown: {node_id}").classes("text-caption text-grey q-pa-sm")
 
@@ -365,3 +407,52 @@ def _inspect_world_trait(ws: WorldStateV1, wid: str) -> None:
             if snap.description:
                 parts.append(snap.description[:40])
             ui.label(" | ".join(parts)).classes("text-caption q-px-sm")
+
+
+def _inspector_suggestions(state: AppState, node_id: str, node_type: str, name: str) -> None:
+    """Context-aware NL suggestion chips based on selected node."""
+    suggestions: list[tuple[str, str]] = []
+
+    if node_type == "Entity":
+        suggestions = [
+            ("What happens to this character next?", "interrogate"),
+            (f"Kill {name}", "intervention"),
+            (f"What if {name} never existed?", "counterfactual"),
+            (f"Move {name} to a different location", "intervention"),
+            (f"Make {name} feel suspense", "directive"),
+        ]
+    elif node_type == "Location":
+        suggestions = [
+            (f"What is happening at {name}?", "interrogate"),
+            (f"Lock all exits from {name}", "intervention"),
+            (f"Describe the atmosphere at {name}", "general"),
+        ]
+    elif node_type == "EventNode":
+        suggestions = [
+            ("What caused this event?", "interrogate"),
+            ("What if this never happened?", "counterfactual"),
+            ("What are the consequences?", "interrogate"),
+        ]
+    elif node_type == "NarrativeObject":
+        suggestions = [
+            (f"What role does {name} play?", "interrogate"),
+            (f"Destroy {name}", "intervention"),
+        ]
+    elif node_type == "WorldTrait":
+        suggestions = [
+            (f"How does {name} affect the story?", "interrogate"),
+            (f"Increase {name} dramatically", "intervention"),
+        ]
+
+    if suggestions:
+        ui.separator().classes("q-my-xs")
+        ui.label("Try:").classes("text-caption text-grey q-px-xs")
+        with ui.column().classes("w-full gap-0 q-px-xs"):
+            for text, qtype in suggestions[:4]:
+                ui.chip(
+                    text[:45],
+                    icon="flash_on",
+                    on_click=lambda t=text, q=qtype: state.emit(
+                        StateEvent.QUERY_STARTED, suggestion=t, query_type=q
+                    ),
+                ).props("dense outline size=sm clickable").classes("q-my-none")

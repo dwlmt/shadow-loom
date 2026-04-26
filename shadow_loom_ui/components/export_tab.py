@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from nicegui import ui
 
 from shadow_loom_ui import db
-from shadow_loom_ui.state import AppState
+from shadow_loom_ui.state import AppState, StateEvent
 
 if TYPE_CHECKING:
     pass
@@ -95,26 +95,35 @@ def build_export_tab(state: AppState) -> None:
                 )
 
         # ---- Summary Stats ----
-        if state.world_state:
-            with ui.card().classes("w-full"):
-                ui.label("World Model Summary").classes("text-h6")
-                ws = state.world_state
-                stats = [
-                    ("Entities", len(ws.entities)),
-                    ("Locations", len(ws.locations)),
-                    ("Events", len(ws.events)),
-                    ("Objects", len(getattr(ws, "objects", {}))),
-                    ("World Traits", len(getattr(ws, "world_traits", {}))),
-                    ("Causal Edges", len(getattr(ws, "causal_topology", []))),
-                    ("Spatial Edges", len(getattr(ws, "spatial_topology", []))),
-                    ("Social Edges", len(getattr(ws, "social_topology", []))),
-                    ("Info Edges", len(getattr(ws, "information_topology", []))),
-                ]
-                with ui.row().classes("gap-4 flex-wrap"):
-                    for label, count in stats:
-                        with ui.column().classes("items-center"):
-                            ui.label(str(count)).classes("text-h5 text-primary")
-                            ui.label(label).classes("text-caption text-grey")
+        stats_container = ui.column().classes("w-full")
+
+        def _refresh_stats(**kw):
+            stats_container.clear()
+            ws = state.world_state
+            if ws is None:
+                return
+            with stats_container:
+                with ui.card().classes("w-full"):
+                    ui.label("World Model Summary").classes("text-h6")
+                    stats = [
+                        ("Entities", len(ws.entities)),
+                        ("Locations", len(ws.locations)),
+                        ("Events", len(ws.events)),
+                        ("Objects", len(ws.objects)),
+                        ("World Traits", len(ws.world_traits)),
+                        ("Causal Edges", len(ws.causal_topology)),
+                        ("Spatial Edges", len(ws.spatial_topology)),
+                        ("Social Edges", len(ws.social_topology)),
+                        ("Info Edges", len(ws.information_topology)),
+                    ]
+                    with ui.row().classes("gap-4 flex-wrap"):
+                        for label, count in stats:
+                            with ui.column().classes("items-center"):
+                                ui.label(str(count)).classes("text-h5 text-primary")
+                                ui.label(label).classes("text-caption text-grey")
+
+        _refresh_stats()
+        state.on(StateEvent.WORLD_STATE_CHANGED, _refresh_stats)
 
         # ---- Share / Collaborate ----
         if state.user_id and state.project_id:
@@ -130,20 +139,22 @@ def build_export_tab(state: AppState) -> None:
                     # Visibility toggle
                     is_public = project.is_public if project else False
 
-                    def _toggle_visibility():
-                        new_val = not is_public
+                    vis_switch = ui.switch(
+                        "Public",
+                        value=is_public,
+                    )
+
+                    def _toggle_visibility(e):
+                        new_val = vis_switch.value
                         db.update_project(state.project_id, is_public=new_val)
                         ui.notify(
                             "Project is now public" if new_val else "Project is now private"
                         )
 
+                    vis_switch.on("update:model-value", _toggle_visibility)
+
                     with ui.row().classes("items-center gap-2"):
                         ui.label("Visibility:").classes("text-body2")
-                        ui.switch(
-                            "Public",
-                            value=is_public,
-                            on_change=_toggle_visibility,
-                        )
 
                     # Invite collaborators
                     ui.separator().classes("q-my-sm")

@@ -25,6 +25,7 @@ from shadow_loom.models import WorldStateV1
 from shadow_loom.query_models import (
     CounterfactualQuery,
     DirectiveQuery,
+    EvaluationQuery,
     GeneralQuery,
     InterrogationQuery,
     InterventionQuery,
@@ -78,7 +79,7 @@ class ParsedQuery(BaseModel):
 
     query_type: Literal[
         "observation", "intervention", "counterfactual",
-        "directive", "interrogate", "general", "manual_edit",
+        "directive", "interrogate", "general", "manual_edit", "evaluate",
     ] = Field(description="The best-matching query type.")
 
     reasoning: str = Field(
@@ -890,6 +891,11 @@ def _build_query(parsed: ParsedQuery) -> UserRequest:
         return ManualEditQuery(
             edited_prose=parsed.edited_prose or "",
             description=parsed.edit_description or "",
+            focus_entity_ids=parsed.focus_entity_ids or [],
+        )
+
+    if qt == "evaluate":
+        return EvaluationQuery(
             focus_entity_ids=parsed.focus_entity_ids or [],
         )
 

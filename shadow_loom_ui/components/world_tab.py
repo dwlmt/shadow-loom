@@ -1,8 +1,9 @@
 """World tab — multi-view ECharts exploration with click-to-inspect.
 
-View modes: Overview | Social | Spatial | Ego | Temporal | Epistemic
+View modes: Overview | Social | Spatial | Ego | Temporal | Composition |
+            Epistemic | Comparison
 Clicking a node updates the left-panel inspector.
-Bottom drawer shows filterable topology edge tables.
+Bottom expansion shows filterable topology edge tables.
 """
 
 from __future__ import annotations
@@ -14,13 +15,18 @@ from nicegui import ui
 
 from shadow_loom_ui.state import AppState, StateEvent
 from shadow_loom_ui.viz import (
+    render_chord_diagram,
     render_ego_graph,
     render_entity_state_timeline,
     render_epistemic_map,
+    render_event_gantt,
     render_event_timeline,
+    render_parallel_coords,
     render_relationship_heatmap,
     render_social_graph,
     render_spatial_map,
+    render_sunburst,
+    render_theme_river,
     render_world_graph,
 )
 from shadow_loom_ui.viz_helpers import (
@@ -41,7 +47,9 @@ _VIEW_MODES = {
     "spatial": "Spatial",
     "ego": "Ego-Graph",
     "temporal": "Temporal",
+    "composition": "Composition",
     "epistemic": "Epistemic",
+    "comparison": "Comparison",
 }
 
 
@@ -93,8 +101,9 @@ def build_world_tab(state: AppState) -> None:
         # ── Graph click → inspector ───────────────────────────────
         def _on_graph_click(e):
             data = e.args if isinstance(e.args, dict) else {}
-            node_id = data.get("name") or data.get("data", {}).get("id")
-            node_type = data.get("data", {}).get("_sl_node_type")
+            node_data = data.get("data", {})
+            node_id = node_data.get("id") or data.get("name")
+            node_type = node_data.get("_sl_node_type")
             if node_id and node_type:
                 state.select_node(node_id, node_type)
 
@@ -118,9 +127,10 @@ def build_world_tab(state: AppState) -> None:
                     if mode == "overview":
                         render_world_graph(ws, on_click=_on_graph_click, height="100%")
                     elif mode == "social":
-                        with ui.row().classes("w-full h-full gap-2"):
+                        with ui.row().classes("w-full gap-2"):
                             with ui.column().classes("flex-grow"):
-                                render_social_graph(ws, on_click=_on_graph_click, height="100%")
+                                render_social_graph(ws, on_click=_on_graph_click, height="50%")
+                                render_chord_diagram(ws, height="50%")
                             with ui.column().classes("w-1/3"):
                                 render_relationship_heatmap(ws, height="100%")
                     elif mode == "spatial":
@@ -137,15 +147,17 @@ def build_world_tab(state: AppState) -> None:
                     elif mode == "temporal":
                         eid = temporal_select.value
                         if eid:
-                            render_entity_state_timeline(eid, ws, height="300px")
-                        else:
-                            ui.label("Select an entity above.").classes(
-                                "text-body2 text-grey"
-                            )
-                        # Also show event timeline
-                        render_event_timeline(ws, on_click=_on_graph_click, height="250px")
+                            render_entity_state_timeline(eid, ws, height="250px")
+                        # ThemeRiver for multi-entity trait flow
+                        render_theme_river(ws, height="300px")
+                        # Event swim lanes
+                        render_event_gantt(ws, on_click=_on_graph_click, height="250px")
+                    elif mode == "composition":
+                        render_sunburst(ws, on_click=_on_graph_click, height="100%")
                     elif mode == "epistemic":
                         render_epistemic_map(ws, height="100%")
+                    elif mode == "comparison":
+                        render_parallel_coords(ws, height="400px")
                 except Exception as e:
                     logger.exception("Graph rendering failed")
                     ui.label(f"Render error: {e}").classes("text-negative")
