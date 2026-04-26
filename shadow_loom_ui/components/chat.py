@@ -52,8 +52,9 @@ def build_chat_panel(state: AppState) -> None:
                     None, lambda: state.run_manual_edit(prose, description="Chat edit"),
                 )
             else:
+                selected_type = chat_type_select.value
                 result = await asyncio.get_event_loop().run_in_executor(
-                    None, state.run_nl_query, text,
+                    None, lambda: state.run_nl_query(text, query_type=selected_type),
                 )
             # Remove typing indicator
             messages.pop()
@@ -141,6 +142,19 @@ def build_chat_panel(state: AppState) -> None:
 
         # Input area
         with ui.row().classes("w-full items-center q-pa-sm gap-2"):
+            chat_type_select = ui.select(
+                options={
+                    "observation": "Observation",
+                    "intervention": "Intervention",
+                    "counterfactual": "Counterfactual",
+                    "directive": "Directive",
+                    "interrogate": "Interrogation",
+                    "general": "General",
+                },
+                value="general",
+                label="Type",
+            ).classes("w-36").props("outlined dense")
+
             input_field = ui.input(
                 placeholder="Ask about the story world...",
             ).classes("flex-grow").props("outlined dense")

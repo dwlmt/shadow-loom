@@ -19,6 +19,7 @@ from shadow_loom.query_parsing import (
     ParsedQuery,
     QueryParseResult,
     QueryParsingConfig,
+    QUERY_TYPES,
     ResolvedID,
     ValidationError,
     _apply_fallback,
@@ -26,6 +27,7 @@ from shadow_loom.query_parsing import (
     _build_graph_summary,
     _build_name_index,
     _build_query,
+    _build_typed_system_prompt,
     _collect_all_ids,
     _fuzzy_resolve_id,
     _normalise_id_name,
@@ -986,3 +988,127 @@ class TestParseQueryAsync:
         result = await self._run_async("What is happening?", parsed)
         assert result.is_valid
         assert isinstance(result.query, GeneralQuery)
+
+
+# =====================================================================
+# Typed query parsing (pre-specified query_type)
+# =====================================================================
+
+class TestTypedQueryParsing:
+    """Tests for parse_query with explicit query_type parameter."""
+
+    def _run(self, nl, parsed, query_type, world_state=None):
+        mock_result = _make_mock_result(parsed)
+        with patch("shadow_loom.query_parsing.Agent") as MockAgent:
+            instance = MockAgent.return_value
+            instance.run_sync.return_value = mock_result
+            return parse_query(nl, query_type=query_type, world_state=world_state)
+
+    def test_typed_prompt_used_for_intervention(self, macbeth):
+        """When query_type is specified, the typed prompt is used."""
+        parsed = ParsedQuery(
+            query_type="intervention",
+            reasoning="Force Macbeth dead.",
+            interventions={"ENT_MACBETH": "dead"},
+        )
+        mock_result = _make_mock_result(parsed)
+        with patch("shadow_loom.query_parsing.Agent") as MockAgent:
+            instance = MockAgent.return_value
+            instance.run_sync.return_value = mock_result
+            parse_query("Kill Macbeth", query_type="intervention", world_state=macbeth)
+            # Verify the typed prompt was used (not the legacy one)
+            agent_call_kwargs = MockAgent.call_args
+            prompt = agent_call_kwargs.kwargs.get("system_prompt", "")
+            assert "INTERVENTION QUERY" in prompt
+            assert "classify it into exactly one" not in prompt
+
+    def test_typed_prompt_used_for_observation(self, macbeth):
+        parsed = ParsedQuery(
+            query_type="observation",
+            reasoning="Show the scene.",
+            focus_entity_ids=["ENT_MACBETH"],
+        )
+        mock_result = _make_mock_result(parsed)
+        with patch("shadow_loom.query_parsing.Agent") as MockAgent:
+            instance = MockAgent.return_value
+            instance.run_sync.return_value = mock_result
+            parse_query("Show Macbeth's scene", query_type="observation", world_state=macbeth)
+            prompt = MockAgent.call_args.kwargs.get("system_prompt", "")
+            assert "OBSERVATION QUERY" in prompt
+
+    def test_type_override_on_misclassification(self, macbeth):
+        """If the LLM returns the wrong query_type, it gets overridden."""
+        parsed = ParsedQuery(
+            query_type="general",  # LLM returns wrong type
+            reasoning="Misclassified",
+            interventions={"ENT_MACBETH": "dead"},
+        )
+        result = self._run("Kill Macbeth", parsed, "intervention", macbeth)
+        assert result.is_valid
+        assert isinstance(result.query, InterventionQuery)
+
+    def test_invalid_query_type_raises(self):
+        with pytest.raises(ValueError, match="Invalid query_type"):
+            parse_query("test", query_type="invalid_type")
+
+    def test_all_query_types_are_valid(self):
+        """Every type in QUERY_TYPES has a corresponding prompt."""
+        for qt in QUERY_TYPES:
+            prompt = _build_typed_system_prompt(qt)
+            assert qt in prompt
+            assert "ID RESOLUTION RULES" in prompt
+
+    def test_none_query_type_uses_legacy_prompt(self, macbeth):
+        """When query_type is None, the legacy classification prompt is used."""
+        parsed = ParsedQuery(
+            query_type="general",
+            reasoning="test",
+            question="What is happening?",
+        )
+        mock_result = _make_mock_result(parsed)
+        with patch("shadow_loom.query_parsing.Agent") as MockAgent:
+            instance = MockAgent.return_value
+            instance.run_sync.return_value = mock_result
+            parse_query("What is happening?", query_type=None, world_state=macbeth)
+            prompt = MockAgent.call_args.kwargs.get("system_prompt", "")
+            assert "classify it into exactly one" in prompt
+
+    def test_typed_counterfactual(self, macbeth):
+        evt_id = macbeth.events[0].id
+        ent_id = next(iter(macbeth.entities))
+        parsed = ParsedQuery(
+            query_type="counterfactual",
+            reasoning="What-if about past.",
+            historical_interventions={evt_id: "never happened"},
+            evidence_node_ids=[ent_id],
+        )
+        result = self._run(
+            "What if Duncan was never murdered?",
+            parsed, "counterfactual", macbeth,
+        )
+        assert result.is_valid
+        assert isinstance(result.query, CounterfactualQuery)
+
+    def test_typed_directive(self, macbeth):
+        parsed = ParsedQuery(
+            query_type="directive",
+            reasoning="Maximise suspense.",
+            target_entity_ids=["ENT_MACBETH"],
+            target_effect="suspense",
+        )
+        result = self._run(
+            "Maximise suspense for Macbeth",
+            parsed, "directive", macbeth,
+        )
+        assert result.is_valid
+        assert isinstance(result.query, DirectiveQuery)
+
+    def test_typed_interrogate(self):
+        parsed = ParsedQuery(
+            query_type="interrogate",
+            reasoning="Pathfinding.",
+            question="Who caused X?",
+        )
+        result = self._run("Who caused X?", parsed, "interrogate")
+        assert result.is_valid
+        assert isinstance(result.query, InterrogationQuery)

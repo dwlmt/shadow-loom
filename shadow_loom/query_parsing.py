@@ -306,9 +306,136 @@ def _collect_all_ids(world_state: WorldStateV1) -> set[str]:
 
 
 # =====================================================================
-# System prompt
+# Valid query type literals
 # =====================================================================
 
+QUERY_TYPES = (
+    "observation", "intervention", "counterfactual",
+    "directive", "interrogate", "general", "manual_edit",
+)
+
+QueryTypeLiteral = Literal[
+    "observation", "intervention", "counterfactual",
+    "directive", "interrogate", "general", "manual_edit",
+]
+
+
+# =====================================================================
+# System prompts — shared preamble + per-type instructions
+# =====================================================================
+
+_PROMPT_PREAMBLE = """\
+You are a query parsing agent for a narrative simulation engine called Shadow Loom.
+
+The user's query type has already been identified as **{query_type}**. \
+Your job is to extract the structured parameters needed to execute that \
+query type from the user's natural-language request.
+
+## ID RESOLUTION RULES
+
+- Entity IDs start with ENT_ (e.g., ENT_MACBETH)
+- Event IDs start with EVT_ (e.g., EVT_DUNCAN_MURDER)
+- Object IDs start with OBJ_ (e.g., OBJ_DAGGER)
+- Location IDs start with LOC_ (e.g., LOC_CASTLE)
+- World Trait IDs start with WORLD_ (e.g., WORLD_SURVEILLANCE_STATE)
+
+When the user mentions a character, place, object, or event by name, resolve it \
+to the correct graph ID from the provided world model summary. If no world model \
+is provided, use reasonable ID conventions (ENT_CHARACTERNAME).
+
+Always populate `resolved_ids` with every entity/event/object/location you resolved.
+Always provide `reasoning` explaining your interpretation of the user's intent.
+Set `query_type` to "{query_type}".
+Only populate the fields relevant to the {query_type} query type. Leave all other fields null.
+"""
+
+_TYPE_INSTRUCTIONS: Dict[str, str] = {
+    "observation": """\
+## OBSERVATION QUERY
+
+Advances time naturally. May condition on observed facts. May lock POV to specific entities.
+The user wants to see what happens, observe a scene, or get a character's POV.
+
+**Fields to populate:**
+- `observations`: Optional dict of {{node_id: observed_state}} pairs — facts to condition on.
+- `focus_entity_ids`: Optional list of entity IDs to lock POV onto (omit for omniscient view).
+""",
+    "intervention": """\
+## INTERVENTION QUERY
+
+Forces variables to specific states (do-operator). Cuts incoming causal edges.
+The user wants to forcibly change something in the present moment.
+
+**Fields to populate:**
+- `interventions`: Required dict of {{node_id: new_value}} pairs.
+  - String values = state changes (e.g. "dead", "healthy")
+  - Dict values = genesis spawns (create new entities/objects)
+  - Number values = trait overrides (e.g. 0.9)
+  - At least one intervention is required.
+""",
+    "counterfactual": """\
+## COUNTERFACTUAL QUERY
+
+Goes back in time, changes past events, conditions on present evidence, re-simulates.
+The user asks "what if" about PAST events.
+
+**Fields to populate:**
+- `historical_interventions`: Required dict of {{event_id: altered_outcome}} — the past events to change.
+- `evidence_node_ids`: List of present-tense node IDs to condition on (recommended but optional).
+""",
+    "directive": """\
+## DIRECTIVE QUERY
+
+Optimises the next event to maximize a specific psychological or epistemic effect.
+The user wants to control the FEELING or EFFECT of the next scene.
+
+**Fields to populate:**
+- `target_entity_ids`: Required list of entities experiencing the effect.
+- `target_effect`: Required — one of: suspense, surprise, mystery, dramatic_irony, grief, rage, joy, regret, love, fear.
+- `target_vector_id`: Optional — the specific trait/edge/event to target.
+- `intensity`: Optional — 0.0 to 1.0 multiplier (default 1.0).
+""",
+    "interrogate": """\
+## INTERROGATION QUERY
+
+Graph pathfinding / RAG query. Does NOT advance time or generate prose.
+The user wants factual answers about the graph structure.
+
+**Fields to populate:**
+- `question`: Required — the question to answer.
+- `require_proof`: Optional bool — whether to require causal proof (default true).
+""",
+    "general": """\
+## GENERAL QUERY
+
+Full-graph Q&A without advancing time. Open-ended question about the world state.
+Use for analytical questions that don't fit other types.
+
+**Fields to populate:**
+- `question`: Required — the question to answer.
+- `include_topology`: Optional bool — include full topology in the response (default true).
+""",
+    "manual_edit": """\
+## MANUAL EDIT QUERY
+
+User-authored prose that bypasses generation. The text is re-extracted into topology.
+The user is providing actual narrative prose to inject into the story.
+
+**Fields to populate:**
+- `edited_prose`: Required — the user's narrative prose text.
+- `edit_description`: Optional description of the changes.
+- `focus_entity_ids`: Optional list of entities most affected by the edit.
+""",
+}
+
+
+def _build_typed_system_prompt(query_type: str) -> str:
+    """Build a focused system prompt for a known query type."""
+    instructions = _TYPE_INSTRUCTIONS.get(query_type, _TYPE_INSTRUCTIONS["general"])
+    return _PROMPT_PREAMBLE.format(query_type=query_type) + "\n" + instructions
+
+
+# Legacy full prompt (used only when no query_type is specified)
 _SYSTEM_PROMPT = """\
 You are a query parsing agent for a narrative simulation engine called Shadow Loom.
 
@@ -780,6 +907,7 @@ def _build_query(parsed: ParsedQuery) -> UserRequest:
 def parse_query(
     natural_language: str,
     *,
+    query_type: Optional[str] = None,
     world_state: Optional[WorldStateV1] = None,
     config: Optional[QueryParsingConfig] = None,
 ) -> QueryParseResult:
@@ -789,6 +917,12 @@ def parse_query(
     ----------
     natural_language : str
         The user's free-form request.
+    query_type : str or None
+        When provided, the query type is fixed (e.g. ``"observation"``,
+        ``"intervention"``) and the LLM only needs to resolve IDs and
+        extract type-specific fields.  Must be one of
+        :data:`QUERY_TYPES`.  When ``None``, the LLM also classifies
+        the query type (legacy behaviour).
     world_state : WorldStateV1 or None
         The current world model. When provided, the agent resolves
         entity/event/object names to graph IDs and validates them.
@@ -804,6 +938,17 @@ def parse_query(
     cfg = config or QueryParsingConfig()
     model = _resolve_model(cfg.model)
 
+    # Select system prompt based on whether query_type is pre-specified
+    if query_type is not None:
+        if query_type not in QUERY_TYPES:
+            raise ValueError(
+                f"Invalid query_type {query_type!r}. "
+                f"Must be one of {QUERY_TYPES}."
+            )
+        system_prompt = _build_typed_system_prompt(query_type)
+    else:
+        system_prompt = _SYSTEM_PROMPT
+
     # Build user message
     user_parts: list[str] = []
     if world_state:
@@ -817,7 +962,7 @@ def parse_query(
 
     agent: Agent[None, ParsedQuery] = Agent(
         model,
-        system_prompt=_SYSTEM_PROMPT,
+        system_prompt=system_prompt,
         output_type=NativeOutput(ParsedQuery),
         retries=cfg.output_retries,
     )
@@ -832,6 +977,14 @@ def parse_query(
         },
     )
     parsed: ParsedQuery = result.output
+
+    # If caller pre-specified the type, override any LLM misclassification
+    if query_type is not None and parsed.query_type != query_type:
+        logger.info(
+            "[QueryParser] Overriding LLM query_type %r → %r",
+            parsed.query_type, query_type,
+        )
+        parsed = parsed.model_copy(update={"query_type": query_type})
 
     # Validate
     errors = _validate_parsed_query(parsed, world_state)
@@ -860,12 +1013,24 @@ def parse_query(
 async def parse_query_async(
     natural_language: str,
     *,
+    query_type: Optional[str] = None,
     world_state: Optional[WorldStateV1] = None,
     config: Optional[QueryParsingConfig] = None,
 ) -> QueryParseResult:
     """Async version of :func:`parse_query`."""
     cfg = config or QueryParsingConfig()
     model = _resolve_model(cfg.model)
+
+    # Select system prompt based on whether query_type is pre-specified
+    if query_type is not None:
+        if query_type not in QUERY_TYPES:
+            raise ValueError(
+                f"Invalid query_type {query_type!r}. "
+                f"Must be one of {QUERY_TYPES}."
+            )
+        system_prompt = _build_typed_system_prompt(query_type)
+    else:
+        system_prompt = _SYSTEM_PROMPT
 
     user_parts: list[str] = []
     if world_state:
@@ -879,7 +1044,7 @@ async def parse_query_async(
 
     agent: Agent[None, ParsedQuery] = Agent(
         model,
-        system_prompt=_SYSTEM_PROMPT,
+        system_prompt=system_prompt,
         output_type=NativeOutput(ParsedQuery),
         retries=cfg.output_retries,
     )
@@ -894,6 +1059,14 @@ async def parse_query_async(
         },
     )
     parsed: ParsedQuery = result.output
+
+    # If caller pre-specified the type, override any LLM misclassification
+    if query_type is not None and parsed.query_type != query_type:
+        logger.info(
+            "[QueryParser] Overriding LLM query_type %r → %r",
+            parsed.query_type, query_type,
+        )
+        parsed = parsed.model_copy(update={"query_type": query_type})
 
     errors = _validate_parsed_query(parsed, world_state)
     has_hard_errors = any(e.severity == "error" for e in errors)

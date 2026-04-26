@@ -45,7 +45,7 @@ from shadow_loom.query_parsing import (
     parse_query, parse_query_async,
     QueryParsingConfig, QueryParseResult, ParsedQuery,
     ResolvedID, ValidationError as QueryValidationError,
-    FallbackInfo,
+    FallbackInfo, QUERY_TYPES,
 )
 from shadow_loom.db import (
     init_db,

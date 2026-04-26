@@ -41,8 +41,9 @@ def build_center_panel(state: AppState) -> None:
 
         try:
             # Run in background thread to not block UI
+            selected_type = query_type_select.value
             result = await asyncio.get_event_loop().run_in_executor(
-                None, state.run_nl_query, text,
+                None, lambda: state.run_nl_query(text, query_type=selected_type),
             )
             _display_result(result)
         except Exception as e:
@@ -429,6 +430,19 @@ def build_center_panel(state: AppState) -> None:
     with ui.column().classes("w-full h-full"):
         # Query input bar
         with ui.row().classes("w-full items-center q-pa-sm gap-2"):
+            query_type_select = ui.select(
+                options={
+                    "observation": "Observation",
+                    "intervention": "Intervention",
+                    "counterfactual": "Counterfactual",
+                    "directive": "Directive",
+                    "interrogate": "Interrogation",
+                    "general": "General",
+                },
+                value="general",
+                label="Type",
+            ).classes("w-40").props("outlined dense")
+
             query_input = ui.input(
                 placeholder="Ask anything about the story... (natural language)",
             ).classes("flex-grow").props('outlined dense')

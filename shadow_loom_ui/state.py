@@ -83,7 +83,7 @@ class AppState:
 
     # ---- Natural language query interface ----
 
-    def run_nl_query(self, natural_language: str) -> NLQueryResult:
+    def run_nl_query(self, natural_language: str, query_type: str = "general") -> NLQueryResult:
         """Parse a natural-language query and run it through the pipeline.
 
         This is the main entry point for the NL interface. It:
@@ -118,6 +118,7 @@ class AppState:
         try:
             parse_result = parse_query(
                 natural_language,
+                query_type=query_type,
                 world_state=self.world_state,
                 config=self.query_parsing_config,
             )
@@ -229,7 +230,7 @@ class AppState:
 
         return result
 
-    async def run_nl_query_async(self, natural_language: str) -> NLQueryResult:
+    async def run_nl_query_async(self, natural_language: str, query_type: str = "general") -> NLQueryResult:
         """Async version of run_nl_query for use in NiceGUI event handlers."""
         if self.world_state is None:
             return NLQueryResult(
@@ -243,6 +244,7 @@ class AppState:
         try:
             parse_result = await parse_query_async(
                 natural_language,
+                query_type=query_type,
                 world_state=self.world_state,
                 config=self.query_parsing_config,
             )

@@ -207,6 +207,7 @@ def _run_and_save(
 @mcp.tool()
 def query_natural_language(
     question: str,
+    query_type: str,
     project_id: Optional[int] = None,
     project_name: Optional[str] = None,
     user_id: str = "anonymous",
@@ -217,11 +218,12 @@ def query_natural_language(
     """Ask anything about the story world in natural language.
 
     This is the primary interface.  Your question is automatically
-    classified into the correct query type and executed through the
-    full pipeline.
+    parsed and executed through the full pipeline.
 
     Args:
         question: Your natural language question or command.
+        query_type: The type of query — one of: observation, intervention,
+                    counterfactual, directive, interrogate, general, manual_edit.
         project_id: Project to query (by ID).
         project_name: Project to query (by name).
         user_id: Identifier for the user.
@@ -241,7 +243,7 @@ def query_natural_language(
         return json.dumps({"error": "No world model found. Use 'ingest_text' first."})
 
     parse_result: QueryParseResult = parse_query(
-        question, world_state=ws, config=QueryParsingConfig(),
+        question, query_type=query_type, world_state=ws, config=QueryParsingConfig(),
     )
 
     if not parse_result.is_valid or parse_result.query is None:
