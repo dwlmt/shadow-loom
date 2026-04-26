@@ -1,0 +1,222 @@
+"""Export tab — export prose/world state, share project, fork, invite collaborators."""
+
+from __future__ import annotations
+
+import json
+import logging
+from typing import TYPE_CHECKING
+
+from nicegui import ui
+
+from shadow_loom_ui import db
+from shadow_loom_ui.state import AppState
+
+if TYPE_CHECKING:
+    pass
+
+logger = logging.getLogger(__name__)
+
+
+def build_export_tab(state: AppState) -> None:
+    """Build the Export tab layout."""
+
+    with ui.column().classes("w-full h-full q-pa-md gap-4"):
+        # ---- Export Prose ----
+        with ui.card().classes("w-full"):
+            with ui.row().classes("items-center gap-2"):
+                ui.icon("article", size="md", color="primary")
+                ui.label("Export Prose").classes("text-h6")
+
+            ui.label("Download all generated prose as Markdown.").classes(
+                "text-body2 text-grey"
+            )
+
+            async def _export_prose():
+                if state.project_id is None:
+                    ui.notify("No project loaded", type="warning")
+                    return
+                prose_list = db.get_all_prose(state.project_id)
+                if not prose_list:
+                    ui.notify("No prose found", type="info")
+                    return
+                md = f"# {state.project_name}\n\n"
+                for i, (version, prose, source) in enumerate(prose_list):
+                    md += f"## Version {version} ({source})\n\n{prose}\n\n---\n\n"
+
+                ui.download(
+                    md.encode("utf-8"),
+                    filename=f"{state.project_name.replace(' ', '_')}_prose.md",
+                )
+                ui.notify("Prose exported!", type="positive")
+
+            ui.button("Download Prose (Markdown)", icon="download", on_click=_export_prose).props(
+                "no-caps color=primary"
+            )
+
+        # ---- Export World State ----
+        with ui.card().classes("w-full"):
+            with ui.row().classes("items-center gap-2"):
+                ui.icon("data_object", size="md", color="primary")
+                ui.label("Export World State").classes("text-h6")
+
+            ui.label("Download the current world model as JSON.").classes(
+                "text-body2 text-grey"
+            )
+
+            def _export_json():
+                if state.world_state is None:
+                    ui.notify("No world model loaded", type="warning")
+                    return
+                data = state.world_state.model_dump_json(indent=2)
+                ui.download(
+                    data.encode("utf-8"),
+                    filename=f"{state.project_name.replace(' ', '_')}_world.json",
+                )
+                ui.notify("World state exported!", type="positive")
+
+            with ui.row().classes("gap-2"):
+                ui.button("Download JSON", icon="download", on_click=_export_json).props(
+                    "no-caps color=primary"
+                )
+
+                # Copy to clipboard
+                def _copy_json():
+                    if state.world_state is None:
+                        ui.notify("No world model", type="warning")
+                        return
+                    data = state.world_state.model_dump_json(indent=2)
+                    ui.run_javascript(
+                        f"navigator.clipboard.writeText({json.dumps(data)})"
+                    )
+                    ui.notify("Copied to clipboard!", type="positive")
+
+                ui.button("Copy to Clipboard", icon="content_copy", on_click=_copy_json).props(
+                    "no-caps outline"
+                )
+
+        # ---- Summary Stats ----
+        if state.world_state:
+            with ui.card().classes("w-full"):
+                ui.label("World Model Summary").classes("text-h6")
+                ws = state.world_state
+                stats = [
+                    ("Entities", len(ws.entities)),
+                    ("Locations", len(ws.locations)),
+                    ("Events", len(ws.events)),
+                    ("Objects", len(getattr(ws, "objects", []))),
+                    ("World Traits", len(getattr(ws, "global_traits", []))),
+                    ("Causal Edges", len(getattr(ws, "causal_topology", []))),
+                    ("Spatial Edges", len(getattr(ws, "spatial_topology", []))),
+                    ("Social Edges", len(getattr(ws, "social_topology", []))),
+                    ("Info Edges", len(getattr(ws, "information_topology", []))),
+                ]
+                with ui.row().classes("gap-4 flex-wrap"):
+                    for label, count in stats:
+                        with ui.column().classes("items-center"):
+                            ui.label(str(count)).classes("text-h5 text-primary")
+                            ui.label(label).classes("text-caption text-grey")
+
+        # ---- Share / Collaborate ----
+        if state.user_id and state.project_id:
+            with ui.card().classes("w-full"):
+                with ui.row().classes("items-center gap-2"):
+                    ui.icon("share", size="md", color="primary")
+                    ui.label("Share & Collaborate").classes("text-h6")
+
+                project = db.get_project(state.project_id)
+                is_owner = project and project.user_id == state.user_id
+
+                if is_owner:
+                    # Visibility toggle
+                    is_public = project.is_public if project else False
+
+                    def _toggle_visibility():
+                        new_val = not is_public
+                        db.update_project(state.project_id, is_public=new_val)
+                        ui.notify(
+                            "Project is now public" if new_val else "Project is now private"
+                        )
+
+                    with ui.row().classes("items-center gap-2"):
+                        ui.label("Visibility:").classes("text-body2")
+                        ui.switch(
+                            "Public",
+                            value=is_public,
+                            on_change=_toggle_visibility,
+                        )
+
+                    # Invite collaborators
+                    ui.separator().classes("q-my-sm")
+                    ui.label("Invite Collaborators").classes("text-subtitle2")
+
+                    with ui.row().classes("items-center gap-2"):
+                        invite_input = ui.input("Username or email").classes("w-64")
+                        role_select = ui.select(
+                            ["viewer", "editor", "admin"],
+                            value="viewer",
+                            label="Role",
+                        ).classes("w-32")
+
+                        def _invite():
+                            username = invite_input.value.strip()
+                            if not username:
+                                return
+                            users = db.search_users(username)
+                            if not users:
+                                ui.notify("User not found", type="warning")
+                                return
+                            target_user = users[0]
+                            db.add_project_member(
+                                state.project_id, target_user.id, role_select.value
+                            )
+                            ui.notify(f"Invited {target_user.username} as {role_select.value}")
+                            invite_input.value = ""
+                            _refresh_members()
+
+                        ui.button("Invite", icon="person_add", on_click=_invite).props(
+                            "no-caps"
+                        )
+
+                    # Current members
+                    members_container = ui.column().classes("w-full q-mt-sm")
+
+                    def _refresh_members():
+                        members_container.clear()
+                        members = db.list_project_members(state.project_id)
+                        if not members:
+                            with members_container:
+                                ui.label("No collaborators yet.").classes("text-caption text-grey")
+                            return
+                        with members_container:
+                            for m in members:
+                                with ui.row().classes("items-center gap-2"):
+                                    ui.label(m.username).classes("text-body2")
+                                    ui.badge(m.role, color="blue-grey").props("dense")
+
+                                    def _remove(uid=m.user_id):
+                                        db.remove_project_member(state.project_id, uid)
+                                        _refresh_members()
+
+                                    ui.button(
+                                        icon="close", on_click=_remove
+                                    ).props("flat dense round size=xs")
+
+                    _refresh_members()
+
+                # Fork project
+                ui.separator().classes("q-my-sm")
+
+                def _fork():
+                    if state.project_id is None:
+                        return
+                    new_proj = db.fork_project(
+                        state.project_id,
+                        state.user_id,
+                        f"{state.project_name} (fork)",
+                    )
+                    ui.notify(f"Forked as '{new_proj.name}'!", type="positive")
+                    ui.navigate.to(f"/project/{new_proj.id}")
+
+                ui.button("Fork Project", icon="call_split", on_click=_fork).props(
+                    "no-caps outline"
+                )

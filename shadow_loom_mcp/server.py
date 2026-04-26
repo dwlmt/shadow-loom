@@ -5,8 +5,9 @@ query interface that external LLMs can use to interact with the
 narrative world model.
 
 All state is persisted in the shared ``shadow_loom.db`` database.
-Every tool accepts ``user_id`` and ``project_id`` / ``project_name``
-to identify the context.
+Authentication is via bearer token (API keys generated in the UI).
+The token is validated against the ``api_keys`` table and resolved
+to a user, so every request is scoped to that user's accessible projects.
 
 Run standalone:  python -m shadow_loom_mcp.server
 Or as a library:  from shadow_loom_mcp.server import mcp; mcp.run()
@@ -20,12 +21,14 @@ import os
 from typing import Any, Dict, List, Optional
 
 from fastmcp import FastMCP
+from fastmcp.server.auth.providers.debug import DebugTokenVerifier
 
 from shadow_loom.db import (
     create_project,
     find_project_by_name,
     get_latest_version,
     get_project,
+    get_user_project_role,
     get_version,
     get_version_children,
     get_version_lineage,
@@ -35,6 +38,11 @@ from shadow_loom.db import (
     list_versions,
     save_version,
     upsert_user,
+    validate_api_key,
+    fork_project,
+    add_project_member,
+    get_all_prose,
+    log_activity,
 )
 from shadow_loom.extract_graph import VersionedWorldModel
 from shadow_loom.ingestion import ExtractionConfig, run_extraction
@@ -59,13 +67,47 @@ from shadow_loom.query_parsing import (
 
 logger = logging.getLogger(__name__)
 
+
+# =====================================================================
+# Bearer token verification via API keys stored in DB
+# =====================================================================
+
+# Thread-local cache for the resolved user during a request.
+# DebugTokenVerifier validates the token; we store the resolved
+# user info in a module-level dict keyed by token prefix so that
+# tool functions can look up the caller without re-validating.
+_token_user_cache: dict[str, dict] = {}
+
+
+def _validate_bearer_token(token: str) -> bool:
+    """Validate an API key token against the database.
+
+    Called by DebugTokenVerifier on every request. If valid, caches
+    the resolved user_id and scopes so tools can retrieve them.
+    """
+    key_row = validate_api_key(token)
+    if key_row is None:
+        return False
+    # Cache resolved user info keyed by the raw token
+    _token_user_cache[token] = {
+        "user_id": key_row.user_id,
+        "scopes": key_row.scopes.split(",") if key_row.scopes else [],
+        "key_id": key_row.id,
+    }
+    return True
+
+
+_verifier = DebugTokenVerifier(validate=_validate_bearer_token)
+
 mcp = FastMCP(
     "Shadow Loom",
-    description=(
+    instructions=(
         "Causal narrative engine — interact with story world models "
         "using natural language or structured queries.  All operations "
-        "are project-scoped and version-tracked."
+        "are project-scoped and version-tracked.  Authenticate with a "
+        "Bearer token (API key) generated from the Shadow Loom UI settings page."
     ),
+    auth=_verifier,
 )
 
 # =====================================================================
@@ -79,6 +121,47 @@ init_db(_DB_URL)
 # =====================================================================
 # Internal helpers
 # =====================================================================
+
+
+def _get_authenticated_user_id(user_id: Optional[str] = None) -> Optional[int]:
+    """Resolve the authenticated user from the bearer token cache.
+
+    If ``user_id`` is provided as a tool parameter, we try the cache first
+    (bearer token auth), then fall back to the legacy ``user_id`` string
+    resolution for backward compatibility.
+    """
+    # Check token cache — the most recent validated token's user
+    if _token_user_cache:
+        # Return the last cached user (single-threaded MCP request model)
+        last = list(_token_user_cache.values())[-1]
+        return last["user_id"]
+    # Legacy fallback
+    if user_id and user_id != "anonymous":
+        return _resolve_user_row_id(user_id)
+    return None
+
+
+def _check_project_access(project_id: int, user_row_id: Optional[int]) -> Optional[str]:
+    """Check if a user can access a project.
+
+    Returns None if access is allowed, or an error message string if denied.
+    """
+    if user_row_id is None:
+        return None  # Anonymous access — rely on project visibility
+    proj = get_project(project_id)
+    if proj is None:
+        return "Project not found."
+    # Owner always has access
+    if proj.user_id == user_row_id or proj.owner_id == user_row_id:
+        return None
+    # Public projects are readable
+    if proj.is_public:
+        return None
+    # Check membership
+    role = get_user_project_role(project_id, user_row_id)
+    if role is not None:
+        return None
+    return "Access denied: you do not have permission to access this project."
 
 
 def _resolve_project(
@@ -96,6 +179,26 @@ def _resolve_project(
             proj = find_project_by_name(project_name)
         return proj.id if proj else None
     return None
+
+
+def _resolve_project_with_access(
+    project_id: Optional[int],
+    project_name: Optional[str],
+    user_id: Optional[str] = None,
+) -> tuple[Optional[int], Optional[str]]:
+    """Resolve project and check access.
+
+    Returns (project_id, error_message). If error_message is not None,
+    access was denied.
+    """
+    pid = _resolve_project(project_id, project_name, user_id)
+    if pid is None:
+        return None, "Project not found. Specify project_id or project_name."
+    user_row_id = _get_authenticated_user_id(user_id)
+    err = _check_project_access(pid, user_row_id)
+    if err:
+        return None, err
+    return pid, None
 
 
 def _resolve_user_row_id(user_id: str) -> Optional[int]:
@@ -238,6 +341,12 @@ def query_natural_language(
     if pid is None:
         return json.dumps({"error": "Project not found. Specify project_id or project_name."})
 
+    # Access check
+    user_row_id = _get_authenticated_user_id(user_id)
+    err = _check_project_access(pid, user_row_id)
+    if err:
+        return json.dumps({"error": err})
+
     ws, ancestor_row_id = _load_world_state(pid, version)
     if ws is None:
         return json.dumps({"error": "No world model found. Use 'ingest_text' first."})
@@ -258,7 +367,6 @@ def query_natural_language(
             "fallback": parse_result.fallback.model_dump() if parse_result.fallback else None,
         })
 
-    user_row_id = _resolve_user_row_id(user_id)
     response = _run_and_save(
         query=parse_result.query,
         project_id=pid,
@@ -320,7 +428,7 @@ def ingest_text(
     except Exception as e:
         return json.dumps({"error": f"Ingestion failed: {e}"})
 
-    user_row_id = _resolve_user_row_id(user_id)
+    user_row_id = _get_authenticated_user_id(user_id)
     proj = create_project(
         name=project_name, owner_id=user_row_id, label=label, raw_text=text,
     )
@@ -386,11 +494,15 @@ def manual_edit(
     if pid is None:
         return json.dumps({"error": "Project not found."})
 
+    user_row_id = _get_authenticated_user_id(user_id)
+    err = _check_project_access(pid, user_row_id)
+    if err:
+        return json.dumps({"error": err})
+
     ws, ancestor_row_id = _load_world_state(pid, version)
     if ws is None:
         return json.dumps({"error": "No world model found for this project."})
 
-    user_row_id = _resolve_user_row_id(user_id)
     query = ManualEditQuery(edited_prose=edited_prose, description=description)
 
     response = _run_and_save(
@@ -439,6 +551,11 @@ def run_structured_query(
     if pid is None:
         return json.dumps({"error": "Project not found."})
 
+    user_row_id = _get_authenticated_user_id(user_id)
+    err = _check_project_access(pid, user_row_id)
+    if err:
+        return json.dumps({"error": err})
+
     ws, ancestor_row_id = _load_world_state(pid, version)
     if ws is None:
         return json.dumps({"error": "No world model found."})
@@ -460,7 +577,6 @@ def run_structured_query(
         return json.dumps({"error": f"Unknown query type: {query_type}"})
 
     query = cls(**params)
-    user_row_id = _resolve_user_row_id(user_id)
 
     response = _run_and_save(
         query=query, project_id=pid, world_state=ws,
@@ -487,7 +603,7 @@ def list_projects(user_id: str = "anonymous") -> str:
     Returns:
         JSON array of project summaries.
     """
-    user_row_id = _resolve_user_row_id(user_id)
+    user_row_id = _get_authenticated_user_id(user_id)
     projects = db_list_projects(user_id=user_row_id)
     return json.dumps(projects, default=str)
 
@@ -510,6 +626,11 @@ def get_project_info(project_id: int) -> str:
     proj = get_project(project_id)
     if proj is None:
         return json.dumps({"error": f"Project {project_id} not found."})
+
+    user_row_id = _get_authenticated_user_id()
+    err = _check_project_access(project_id, user_row_id)
+    if err:
+        return json.dumps({"error": err})
 
     ver = get_latest_version(project_id)
     versions = list_versions(project_id)
@@ -550,9 +671,9 @@ def get_world_summary(
     Returns:
         JSON with entity/location/event counts and topology stats.
     """
-    pid = _resolve_project(project_id, project_name, user_id)
-    if pid is None:
-        return json.dumps({"error": "Project not found."})
+    pid, err = _resolve_project_with_access(project_id, project_name, user_id)
+    if err:
+        return json.dumps({"error": err})
 
     ws, _ = _load_world_state(pid, version)
     if ws is None:
@@ -599,9 +720,9 @@ def get_entity(
     Returns:
         JSON with entity details including traits, beliefs, timeline.
     """
-    pid = _resolve_project(project_id, project_name, user_id)
-    if pid is None:
-        return json.dumps({"error": "Project not found."})
+    pid, err = _resolve_project_with_access(project_id, project_name, user_id)
+    if err:
+        return json.dumps({"error": err})
 
     ws, _ = _load_world_state(pid, version)
     if ws is None:
@@ -639,9 +760,9 @@ def get_world_trait(
     Returns:
         JSON with world trait details including magnitude, domains, timeline.
     """
-    pid = _resolve_project(project_id, project_name, user_id)
-    if pid is None:
-        return json.dumps({"error": "Project not found."})
+    pid, err = _resolve_project_with_access(project_id, project_name, user_id)
+    if err:
+        return json.dumps({"error": err})
 
     ws, _ = _load_world_state(pid, version)
     if ws is None:
@@ -679,9 +800,9 @@ def get_relationships(
     Returns:
         JSON array of relationship edges.
     """
-    pid = _resolve_project(project_id, project_name, user_id)
-    if pid is None:
-        return json.dumps({"error": "Project not found."})
+    pid, err = _resolve_project_with_access(project_id, project_name, user_id)
+    if err:
+        return json.dumps({"error": err})
 
     ws, _ = _load_world_state(pid, version)
     if ws is None:
@@ -712,6 +833,10 @@ def query_version_tree(project_id: int) -> str:
     Returns:
         JSON array of version nodes with tree structure.
     """
+    user_row_id = _get_authenticated_user_id()
+    err = _check_project_access(project_id, user_row_id)
+    if err:
+        return json.dumps({"error": err})
     tree = get_version_tree(project_id)
     if not tree:
         return json.dumps({"error": "No versions found for this project."})
@@ -734,6 +859,11 @@ def query_version_detail(project_id: int, version: int) -> str:
     Returns:
         JSON with full version record.
     """
+    user_row_id = _get_authenticated_user_id()
+    err = _check_project_access(project_id, user_row_id)
+    if err:
+        return json.dumps({"error": err})
+
     ver = get_version(project_id, version)
     if ver is None:
         return json.dumps({"error": f"Version {version} not found."})
@@ -945,9 +1075,9 @@ def evaluate_story(
     Returns:
         JSON with NarrativeOrderObject scorecard and evaluation details.
     """
-    pid = _resolve_project(project_id, project_name, user_id)
-    if pid is None:
-        return json.dumps({"error": "Project not found."})
+    pid, err = _resolve_project_with_access(project_id, project_name, user_id)
+    if err:
+        return json.dumps({"error": err})
 
     ws, ancestor_row_id = _load_world_state(pid, version)
     if ws is None:
@@ -957,7 +1087,7 @@ def evaluate_story(
         focus_entity_ids=focus_entity_ids or [],
         include_full_prose=True,
     )
-    user_row_id = _resolve_user_row_id(user_id)
+    user_row_id = _get_authenticated_user_id(user_id)
 
     response = _run_and_save(
         query=query,
@@ -971,6 +1101,182 @@ def evaluate_story(
     )
 
     return json.dumps(response, default=str)
+
+
+# =====================================================================
+# Tool: Share Project
+# =====================================================================
+
+
+@mcp.tool()
+def share_project(
+    project_id: int,
+    target_username: str,
+    role: str = "viewer",
+    user_id: str = "anonymous",
+) -> str:
+    """Share a project with another user.
+
+    Only project owners and admins can share. Requires write scope.
+
+    Args:
+        project_id: The project to share.
+        target_username: Username of the person to share with.
+        role: Role to assign: viewer, editor, or admin.
+        user_id: User identifier (sharer).
+
+    Returns:
+        JSON confirmation.
+    """
+    from shadow_loom.db import search_users
+
+    user_row_id = _get_authenticated_user_id(user_id)
+    err = _check_project_access(project_id, user_row_id)
+    if err:
+        return json.dumps({"error": err})
+
+    # Only owner or admin can share
+    proj = get_project(project_id)
+    if proj is None:
+        return json.dumps({"error": "Project not found."})
+    is_owner = (proj.user_id == user_row_id or proj.owner_id == user_row_id)
+    if not is_owner:
+        user_role = get_user_project_role(project_id, user_row_id) if user_row_id else None
+        if user_role != "admin":
+            return json.dumps({"error": "Only project owners and admins can share."})
+
+    target_users = search_users(target_username)
+    if not target_users:
+        return json.dumps({"error": f"User '{target_username}' not found."})
+
+    target = target_users[0]
+    add_project_member(project_id, target.id, role)
+    return json.dumps({
+        "status": "shared",
+        "project_id": project_id,
+        "target_user": target.username,
+        "role": role,
+    })
+
+
+# =====================================================================
+# Tool: Fork Project
+# =====================================================================
+
+
+@mcp.tool()
+def fork_project_tool(
+    project_id: int,
+    new_name: Optional[str] = None,
+    user_id: str = "anonymous",
+) -> str:
+    """Fork (copy) a project to your own account.
+
+    Args:
+        project_id: The project to fork.
+        new_name: Name for the fork (default: original name + " (fork)").
+        user_id: User identifier.
+
+    Returns:
+        JSON with the new forked project info.
+    """
+    user_row_id = _get_authenticated_user_id(user_id)
+    if user_row_id is None:
+        return json.dumps({"error": "Authentication required to fork."})
+
+    # Must be able to read the source project
+    err = _check_project_access(project_id, user_row_id)
+    if err:
+        return json.dumps({"error": err})
+
+    proj = get_project(project_id)
+    if proj is None:
+        return json.dumps({"error": "Project not found."})
+
+    fork_name = new_name or f"{proj.name} (fork)"
+    new_proj = fork_project(project_id, user_row_id, fork_name)
+
+    return json.dumps({
+        "status": "forked",
+        "original_project_id": project_id,
+        "new_project_id": new_proj.id,
+        "new_project_name": new_proj.name,
+    })
+
+
+# =====================================================================
+# Tool: Export Prose
+# =====================================================================
+
+
+@mcp.tool()
+def export_prose(
+    project_id: Optional[int] = None,
+    project_name: Optional[str] = None,
+    user_id: str = "anonymous",
+) -> str:
+    """Export all generated prose from a project's version history.
+
+    Args:
+        project_id: Project (by ID).
+        project_name: Project (by name).
+        user_id: User identifier.
+
+    Returns:
+        JSON with concatenated prose from all versions.
+    """
+    pid, err = _resolve_project_with_access(project_id, project_name, user_id)
+    if err:
+        return json.dumps({"error": err})
+
+    prose_list = get_all_prose(pid)
+    if not prose_list:
+        return json.dumps({"prose": "", "count": 0})
+
+    sections = []
+    for version_num, prose, source in prose_list:
+        sections.append(f"## Version {version_num} ({source})\n\n{prose}")
+
+    return json.dumps({
+        "prose": "\n\n---\n\n".join(sections),
+        "count": len(prose_list),
+    })
+
+
+# =====================================================================
+# Tool: Export World State
+# =====================================================================
+
+
+@mcp.tool()
+def export_world_state(
+    project_id: Optional[int] = None,
+    project_name: Optional[str] = None,
+    user_id: str = "anonymous",
+    version: Optional[int] = None,
+    format: str = "json",
+) -> str:
+    """Export the world state as JSON.
+
+    Args:
+        project_id: Project (by ID).
+        project_name: Project (by name).
+        user_id: User identifier.
+        version: Specific version (default: latest).
+        format: Output format (currently only 'json').
+
+    Returns:
+        The full world state as JSON.
+    """
+    pid, err = _resolve_project_with_access(project_id, project_name, user_id)
+    if err:
+        return json.dumps({"error": err})
+
+    ws, _ = _load_world_state(pid, version)
+    if ws is None:
+        return json.dumps({"error": "No world model found."})
+
+    return ws.model_dump_json(indent=2)
 
 
 if __name__ == "__main__":

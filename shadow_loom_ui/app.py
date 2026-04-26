@@ -1,5 +1,11 @@
 """Shadow-Loom NiceGUI web application — main entry point.
 
+Multi-page routing:
+  /login          – Authentication page
+  /               – Dashboard (project gallery)
+  /project/{id}   – Workspace (tabbed work surface)
+  /settings       – Account, API keys, preferences
+
 Run with:  python -m shadow_loom_ui.app
 Or:        nicegui run shadow_loom_ui/app.py
 """
@@ -12,15 +18,6 @@ from nicegui import app, ui
 
 from shadow_loom_ui import config
 from shadow_loom_ui.auth import AuthMiddleware, auth_callback, auth_login, auth_logout
-from shadow_loom_ui.components import (
-    build_center_panel,
-    build_chat_panel,
-    build_explorer,
-    build_ingest_dialog,
-    build_project_dialog,
-    build_topology_drawer,
-    build_version_dialog,
-)
 from shadow_loom_ui.db import init_db
 from shadow_loom_ui.state import AppState
 
@@ -43,7 +40,7 @@ def _on_startup():
 
 app.on_startup(_on_startup)
 
-# Auth middleware (no-op when AUTH_ENABLED=False)
+# Auth middleware
 app.add_middleware(AuthMiddleware)
 
 # Auth routes
@@ -53,116 +50,114 @@ app.add_route("/auth/logout", auth_logout, methods=["GET"])
 
 
 # =====================================================================
-# Main page
+# Helpers
 # =====================================================================
 
-@ui.page("/")
-def main_page():
-    """Render the main 3-panel layout."""
+def _get_session_state() -> AppState:
+    """Return the per-session AppState, creating it if needed.
 
-    # Per-session state
-    state = AppState()
+    Stored in NiceGUI's app.storage.user under ``_state``.
+    """
+    storage = app.storage.user
+    state: AppState | None = storage.get("_state")
+    if state is None:
+        state = AppState()
+        # Populate user info from session if authenticated
+        if storage.get("authenticated"):
+            state.set_user(
+                user_id=storage.get("user_id", 0),
+                username=storage.get("username", ""),
+                display_name=storage.get("display_name", ""),
+                avatar_url=storage.get("avatar_url", ""),
+            )
+        storage["_state"] = state
+    return state
 
-    # Dark mode
-    ui.dark_mode(True)
 
-    # ---- Header ----
+def _build_app_header(state: AppState, *, show_back: bool = False):
+    """Render the shared top navigation bar."""
     with ui.header().classes("items-center justify-between q-pa-sm"):
         with ui.row().classes("items-center gap-2"):
+            if show_back:
+                ui.button(icon="arrow_back", on_click=lambda: ui.navigate.to("/")).props(
+                    "flat dense round"
+                )
             ui.icon("auto_stories", size="md", color="primary")
-            ui.label("Shadow Loom").classes("text-h6")
+            ui.label("Shadow Loom").classes("text-h6 cursor-pointer").on(
+                "click", lambda: ui.navigate.to("/")
+            )
 
             if state.project_name:
                 ui.label(f"— {state.project_name}").classes("text-subtitle1 text-grey")
 
         with ui.row().classes("items-center gap-1"):
-            # Toolbar buttons
-            ingest_dlg = build_ingest_dialog(state)
-            ui.button("Ingest", icon="upload_file", on_click=ingest_dlg.open).props(
-                "flat dense"
-            )
-
-            project_dlg = build_project_dialog(state)
-            ui.button("Projects", icon="folder_open", on_click=project_dlg.open).props(
-                "flat dense"
-            )
-
-            version_dlg = build_version_dialog(state)
-            ui.button("History", icon="history", on_click=version_dlg.open).props(
-                "flat dense"
-            )
-
-            # Save button
-            async def _save():
-                if state.world_state is None or state.project_id is None:
-                    ui.notify("Nothing to save", type="warning")
-                    return
-                from shadow_loom.db import save_version as db_save_version
-                ver = db_save_version(
-                    project_id=state.project_id,
-                    world_state_json=state.to_json(),
-                    ancestor_id=state.current_version_row_id,
-                    source="manual_save",
-                    description="Manual save",
+            storage = app.storage.user
+            if storage.get("authenticated"):
+                avatar = storage.get("avatar_url", "")
+                name = storage.get("display_name") or storage.get("username", "User")
+                if avatar:
+                    ui.avatar().props(f'src="{avatar}"').classes(
+                        "cursor-pointer"
+                    ).on("click", lambda: ui.navigate.to("/settings"))
+                ui.label(name).classes("text-body2 cursor-pointer").on(
+                    "click", lambda: ui.navigate.to("/settings")
                 )
-                state.current_version_row_id = ver.id
-                ui.notify(f"Saved v{ver.version}", type="positive")
+                ui.button(icon="settings", on_click=lambda: ui.navigate.to("/settings")).props(
+                    "flat dense round"
+                )
+                ui.button(icon="logout", on_click=lambda: ui.navigate.to("/auth/logout")).props(
+                    "flat dense round"
+                )
+            elif config.AUTH_ENABLED:
+                ui.button("Sign in", icon="login", on_click=lambda: ui.navigate.to("/login")).props(
+                    "flat dense"
+                )
 
-            ui.button("Save", icon="save", on_click=_save).props("flat dense")
 
-            # Auth display
-            if config.AUTH_ENABLED:
-                storage = app.storage.user
-                if storage.get("authenticated"):
-                    avatar = storage.get("avatar_url", "")
-                    name = storage.get("username", "User")
-                    if avatar:
-                        ui.avatar().props(f'src="{avatar}"').classes("cursor-pointer")
-                    ui.label(name).classes("text-body2")
-                    ui.button("Logout", on_click=lambda: ui.navigate.to("/auth/logout")).props(
-                        "flat dense"
-                    )
-                else:
-                    if config.GITHUB_CLIENT_ID:
-                        ui.button(
-                            "Login with GitHub",
-                            on_click=lambda: ui.navigate.to("/auth/github"),
-                        ).props("flat dense")
-                    if config.GOOGLE_CLIENT_ID:
-                        ui.button(
-                            "Login with Google",
-                            on_click=lambda: ui.navigate.to("/auth/google"),
-                        ).props("flat dense")
+# =====================================================================
+# Pages
+# =====================================================================
 
-    # ---- Main 3-panel layout ----
-    with ui.splitter(value=20).classes("w-full h-full") as main_split:
-        with main_split.before:
-            # Left panel: Explorer
-            with ui.scroll_area().classes("w-full h-full"):
-                build_explorer(state)
+@ui.page("/login")
+def login_page():
+    """Authentication page with OAuth provider buttons."""
+    from shadow_loom_ui.components.login import build_login_page
 
-        with main_split.after:
-            with ui.splitter(value=70).classes("w-full h-full") as right_split:
-                with right_split.before:
-                    # Center panel: Query + Prose + Graph + Audit
-                    with ui.column().classes("w-full h-full"):
-                        build_center_panel(state)
+    ui.dark_mode(True)
+    build_login_page()
 
-                        # Bottom topology drawer
-                        with ui.expansion("Topology Edges", icon="device_hub").classes("w-full"):
-                            build_topology_drawer(state)
 
-                with right_split.after:
-                    # Right panel: Chat
-                    with ui.scroll_area().classes("w-full h-full"):
-                        build_chat_panel(state)
+@ui.page("/")
+def dashboard_page():
+    """Dashboard — project gallery, examples, activity feed."""
+    from shadow_loom_ui.components.dashboard import build_dashboard
 
-    # ---- Footer ----
-    with ui.footer().classes("q-pa-xs items-center"):
-        ui.label("Shadow Loom — Causal Narrative Engine").classes("text-caption text-grey")
-        ui.space()
-        if state.versioned_model:
-            ui.label(f"v{state.versioned_model.version}").classes("text-caption text-grey")
+    state = _get_session_state()
+    ui.dark_mode(True)
+    _build_app_header(state)
+    build_dashboard(state)
+
+
+@ui.page("/project/{project_id}")
+def workspace_page(project_id: int):
+    """Project workspace — tabbed work surface."""
+    from shadow_loom_ui.components.workspace import build_workspace
+
+    state = _get_session_state()
+    ui.dark_mode(True)
+    _build_app_header(state, show_back=True)
+    build_workspace(state, project_id)
+
+
+@ui.page("/settings")
+def settings_page():
+    """Account settings, API keys, preferences."""
+    from shadow_loom_ui.components.settings import build_settings
+
+    state = _get_session_state()
+    ui.dark_mode(True)
+    _build_app_header(state, show_back=True)
+    build_settings(state)
 
 
 # =====================================================================

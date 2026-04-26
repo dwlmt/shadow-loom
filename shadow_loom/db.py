@@ -4,10 +4,10 @@ Used by both the NiceGUI web UI and the MCP server.
 Standalone — no UI imports.  Configure via ``init_db(database_url)``.
 """
 
-from __future__ import annotations
-
+import hashlib
 import json
 import logging
+import secrets
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -48,9 +48,14 @@ class UserRow(SQLModel, table=True):
     provider: str = Field(max_length=32)
     provider_id: str = Field(max_length=256, unique=True)
     username: str = Field(max_length=256)
+    display_name: Optional[str] = Field(default=None, max_length=256)
     email: Optional[str] = Field(default=None, max_length=256)
     avatar_url: Optional[str] = Field(default=None, max_length=512)
+    bio: Optional[str] = Field(default=None, max_length=1024)
     is_example: bool = Field(default=False)
+    is_admin: bool = Field(default=False)
+    preferences_json: Optional[str] = Field(default=None, sa_column=Column(Text))
+    last_login_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime))
     created_at: Optional[datetime] = Field(
         default=None,
         sa_column=Column(DateTime, default=lambda: datetime.now(timezone.utc)),
@@ -66,7 +71,12 @@ class ProjectRow(SQLModel, table=True):
     name: str = Field(max_length=256)
     owner_id: Optional[int] = Field(default=None, foreign_key="users.id")
     label: Optional[str] = Field(default=None, max_length=256)
+    description: Optional[str] = Field(default=None, max_length=1024)
     raw_text: Optional[str] = Field(default=None, sa_column=Column(Text))
+    is_public: bool = Field(default=False)
+    is_template: bool = Field(default=False)
+    forked_from_id: Optional[int] = Field(default=None, foreign_key="projects.id")
+    star_count: int = Field(default=0)
     created_at: Optional[datetime] = Field(
         default=None,
         sa_column=Column(DateTime, default=lambda: datetime.now(timezone.utc)),
@@ -107,6 +117,8 @@ class VersionRow(SQLModel, table=True):
 
     source: str = Field(default="ingestion", max_length=64)
     description: Optional[str] = Field(default=None, max_length=512)
+    label: Optional[str] = Field(default=None, max_length=128)
+    is_bookmarked: bool = Field(default=False)
 
     world_state_json: str = Field(sa_column=Column(Text, nullable=False))
     changeset_json: Optional[str] = Field(default=None, sa_column=Column(Text))
@@ -125,6 +137,79 @@ class VersionRow(SQLModel, table=True):
     project: Optional["ProjectRow"] = Relationship(back_populates="versions")
     parent: Optional["VersionRow"] = Relationship(
         sa_relationship_kwargs={"remote_side": "VersionRow.id", "backref": "children"},
+    )
+
+
+class ProjectMemberRow(SQLModel, table=True):
+    """Project-level access control for collaboration."""
+
+    __tablename__ = "project_members"
+    __table_args__ = (
+        UniqueConstraint("project_id", "user_id", name="uq_project_member"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    project_id: int = Field(foreign_key="projects.id")
+    user_id: int = Field(foreign_key="users.id")
+    role: str = Field(default="viewer", max_length=32)  # viewer | editor | admin
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime, default=lambda: datetime.now(timezone.utc)),
+    )
+
+
+class ProjectStarRow(SQLModel, table=True):
+    """User bookmarks / stars for projects."""
+
+    __tablename__ = "project_stars"
+    __table_args__ = (
+        UniqueConstraint("project_id", "user_id", name="uq_project_star"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    project_id: int = Field(foreign_key="projects.id")
+    user_id: int = Field(foreign_key="users.id")
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime, default=lambda: datetime.now(timezone.utc)),
+    )
+
+
+class ApiKeyRow(SQLModel, table=True):
+    """Per-user bearer tokens for MCP / API access."""
+
+    __tablename__ = "api_keys"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="users.id")
+    name: str = Field(max_length=128)
+    key_hash: str = Field(max_length=128)
+    key_prefix: str = Field(max_length=16)
+    scopes: str = Field(default="read,write", max_length=128)
+    is_active: bool = Field(default=True)
+    last_used_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime))
+    expires_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime))
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime, default=lambda: datetime.now(timezone.utc)),
+    )
+
+
+class ActivityRow(SQLModel, table=True):
+    """Activity feed entries for a project."""
+
+    __tablename__ = "activities"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    project_id: int = Field(foreign_key="projects.id")
+    user_id: Optional[int] = Field(default=None, foreign_key="users.id")
+    action: str = Field(max_length=64)  # ingestion | query | edit | share | fork | star
+    summary: Optional[str] = Field(default=None, max_length=512)
+    detail_json: Optional[str] = Field(default=None, sa_column=Column(Text))
+    version_id: Optional[int] = Field(default=None, foreign_key="versions.id")
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime, default=lambda: datetime.now(timezone.utc)),
     )
 
 
@@ -199,6 +284,7 @@ def upsert_user(
     username: str,
     email: str | None = None,
     avatar_url: str | None = None,
+    display_name: str | None = None,
 ) -> UserRow:
     with get_session() as s:
         row = s.exec(select(UserRow).where(UserRow.provider_id == provider_id)).first()
@@ -209,12 +295,43 @@ def upsert_user(
                 username=username,
                 email=email,
                 avatar_url=avatar_url,
+                display_name=display_name,
             )
             s.add(row)
         else:
             row.username = username
             row.email = email
             row.avatar_url = avatar_url
+            if display_name:
+                row.display_name = display_name
+            row.last_login_at = datetime.now(timezone.utc)
+        s.commit()
+        s.refresh(row)
+        return row
+
+
+def get_user(user_id: int) -> Optional[UserRow]:
+    with get_session() as s:
+        return s.get(UserRow, user_id)
+
+
+def update_user_profile(
+    user_id: int,
+    *,
+    display_name: str | None = None,
+    bio: str | None = None,
+    preferences_json: str | None = None,
+) -> Optional[UserRow]:
+    with get_session() as s:
+        row = s.get(UserRow, user_id)
+        if row is None:
+            return None
+        if display_name is not None:
+            row.display_name = display_name
+        if bio is not None:
+            row.bio = bio
+        if preferences_json is not None:
+            row.preferences_json = preferences_json
         s.commit()
         s.refresh(row)
         return row
@@ -230,6 +347,8 @@ def create_project(
     owner_id: int | None = None,
     label: str | None = None,
     raw_text: str | None = None,
+    description: str | None = None,
+    is_public: bool = False,
 ) -> ProjectRow:
     with get_session() as s:
         row = ProjectRow(
@@ -237,6 +356,8 @@ def create_project(
             owner_id=owner_id,
             label=label,
             raw_text=raw_text,
+            description=description,
+            is_public=is_public,
         )
         s.add(row)
         s.commit()
@@ -264,8 +385,8 @@ def find_project_by_name(
 def list_projects(user_id: int | None = None) -> list[dict]:
     """Return projects visible to *user_id*.
 
-    Includes the user's own projects **plus** all projects owned by the
-    example user (``is_example=True``).
+    Includes the user's own projects, projects shared with them,
+    public projects, and all projects owned by the example user.
     """
     example_id = get_example_user_id()
 
@@ -273,15 +394,24 @@ def list_projects(user_id: int | None = None) -> list[dict]:
         stmt = select(ProjectRow)
 
         if user_id is not None:
+            # IDs of projects shared with this user
+            shared_ids = [
+                m.project_id
+                for m in s.exec(
+                    select(ProjectMemberRow).where(ProjectMemberRow.user_id == user_id)
+                ).all()
+            ]
             owner_ids = [user_id]
             if example_id is not None:
                 owner_ids.append(example_id)
-            stmt = stmt.where(
-                or_(
-                    ProjectRow.owner_id.in_(owner_ids),
-                    ProjectRow.owner_id.is_(None),
-                )
-            )
+            conditions = [
+                ProjectRow.owner_id.in_(owner_ids),
+                ProjectRow.owner_id.is_(None),
+                ProjectRow.is_public.is_(True),
+            ]
+            if shared_ids:
+                conditions.append(ProjectRow.id.in_(shared_ids))
+            stmt = stmt.where(or_(*conditions))
         # else: return all projects (admin / unauthenticated mode)
 
         rows = s.exec(stmt.order_by(ProjectRow.updated_at.desc())).all()
@@ -290,13 +420,393 @@ def list_projects(user_id: int | None = None) -> list[dict]:
                 "id": r.id,
                 "name": r.name,
                 "label": r.label,
+                "description": r.description,
                 "owner_id": r.owner_id,
                 "is_example": (r.owner_id == example_id) if example_id else False,
+                "is_public": r.is_public,
+                "forked_from_id": r.forked_from_id,
+                "star_count": r.star_count,
                 "updated_at": str(r.updated_at),
                 "version_count": len(r.versions),
             }
             for r in rows
         ]
+
+
+# =====================================================================
+# Project management (update, fork)
+# =====================================================================
+
+
+def update_project(
+    project_id: int,
+    *,
+    name: str | None = None,
+    description: str | None = None,
+    label: str | None = None,
+    is_public: bool | None = None,
+) -> Optional[ProjectRow]:
+    with get_session() as s:
+        row = s.get(ProjectRow, project_id)
+        if row is None:
+            return None
+        if name is not None:
+            row.name = name
+        if description is not None:
+            row.description = description
+        if label is not None:
+            row.label = label
+        if is_public is not None:
+            row.is_public = is_public
+        row.updated_at = datetime.now(timezone.utc)
+        s.commit()
+        s.refresh(row)
+        return row
+
+
+def fork_project(
+    source_project_id: int,
+    new_owner_id: int,
+    new_name: str | None = None,
+) -> Optional[ProjectRow]:
+    """Fork a project: copy latest version to a new project owned by new_owner_id."""
+    with get_session() as s:
+        source = s.get(ProjectRow, source_project_id)
+        if source is None:
+            return None
+        latest = s.exec(
+            select(VersionRow)
+            .where(VersionRow.project_id == source_project_id)
+            .order_by(VersionRow.version.desc())
+        ).first()
+        if latest is None:
+            return None
+
+        forked = ProjectRow(
+            name=new_name or f"{source.name} (fork)",
+            owner_id=new_owner_id,
+            label=source.label,
+            description=source.description,
+            raw_text=source.raw_text,
+            forked_from_id=source_project_id,
+        )
+        s.add(forked)
+        s.flush()
+
+        ver = VersionRow(
+            project_id=forked.id,
+            version=0,
+            source="fork",
+            description=f"Forked from project {source_project_id}",
+            world_state_json=latest.world_state_json,
+        )
+        s.add(ver)
+        s.commit()
+        s.refresh(forked)
+        return forked
+
+
+# =====================================================================
+# Project Members (collaboration)
+# =====================================================================
+
+
+def add_project_member(
+    project_id: int,
+    user_id: int,
+    role: str = "viewer",
+) -> ProjectMemberRow:
+    with get_session() as s:
+        existing = s.exec(
+            select(ProjectMemberRow).where(
+                ProjectMemberRow.project_id == project_id,
+                ProjectMemberRow.user_id == user_id,
+            )
+        ).first()
+        if existing:
+            existing.role = role
+            s.commit()
+            s.refresh(existing)
+            return existing
+        row = ProjectMemberRow(project_id=project_id, user_id=user_id, role=role)
+        s.add(row)
+        s.commit()
+        s.refresh(row)
+        return row
+
+
+def remove_project_member(project_id: int, user_id: int) -> bool:
+    with get_session() as s:
+        row = s.exec(
+            select(ProjectMemberRow).where(
+                ProjectMemberRow.project_id == project_id,
+                ProjectMemberRow.user_id == user_id,
+            )
+        ).first()
+        if row is None:
+            return False
+        s.delete(row)
+        s.commit()
+        return True
+
+
+def list_project_members(project_id: int) -> list[dict]:
+    with get_session() as s:
+        rows = s.exec(
+            select(ProjectMemberRow).where(ProjectMemberRow.project_id == project_id)
+        ).all()
+        result = []
+        for m in rows:
+            user = s.get(UserRow, m.user_id)
+            result.append({
+                "user_id": m.user_id,
+                "username": user.username if user else "unknown",
+                "display_name": user.display_name if user else None,
+                "avatar_url": user.avatar_url if user else None,
+                "role": m.role,
+                "created_at": str(m.created_at),
+            })
+        return result
+
+
+def get_user_project_role(project_id: int, user_id: int) -> str | None:
+    """Return the user's role on a project, or None if not a member.
+
+    Owners implicitly have 'admin' role.
+    """
+    with get_session() as s:
+        proj = s.get(ProjectRow, project_id)
+        if proj and proj.owner_id == user_id:
+            return "admin"
+        member = s.exec(
+            select(ProjectMemberRow).where(
+                ProjectMemberRow.project_id == project_id,
+                ProjectMemberRow.user_id == user_id,
+            )
+        ).first()
+        return member.role if member else None
+
+
+# =====================================================================
+# Project Stars
+# =====================================================================
+
+
+def toggle_star(project_id: int, user_id: int) -> bool:
+    """Toggle a star on a project. Returns True if now starred, False if unstarred."""
+    with get_session() as s:
+        existing = s.exec(
+            select(ProjectStarRow).where(
+                ProjectStarRow.project_id == project_id,
+                ProjectStarRow.user_id == user_id,
+            )
+        ).first()
+        proj = s.get(ProjectRow, project_id)
+        if existing:
+            s.delete(existing)
+            if proj:
+                proj.star_count = max(0, proj.star_count - 1)
+            s.commit()
+            return False
+        else:
+            s.add(ProjectStarRow(project_id=project_id, user_id=user_id))
+            if proj:
+                proj.star_count = proj.star_count + 1
+            s.commit()
+            return True
+
+
+def is_starred(project_id: int, user_id: int) -> bool:
+    with get_session() as s:
+        return s.exec(
+            select(ProjectStarRow).where(
+                ProjectStarRow.project_id == project_id,
+                ProjectStarRow.user_id == user_id,
+            )
+        ).first() is not None
+
+
+def list_starred_projects(user_id: int) -> list[int]:
+    """Return project IDs starred by this user."""
+    with get_session() as s:
+        rows = s.exec(
+            select(ProjectStarRow).where(ProjectStarRow.user_id == user_id)
+        ).all()
+        return [r.project_id for r in rows]
+
+
+# =====================================================================
+# API Keys
+# =====================================================================
+
+
+def _hash_api_key(raw_key: str) -> str:
+    """SHA-256 hash for API key storage."""
+    return hashlib.sha256(raw_key.encode()).hexdigest()
+
+
+def create_api_key(
+    user_id: int,
+    name: str,
+    scopes: str = "read,write",
+    expires_at: datetime | None = None,
+) -> tuple[ApiKeyRow, str]:
+    """Create a new API key. Returns (row, raw_key).
+
+    The raw key is only returned once — callers must show it to the user
+    immediately. Only the hash is stored.
+    """
+    raw_key = f"sl_{secrets.token_urlsafe(32)}"
+    key_hash = _hash_api_key(raw_key)
+    key_prefix = raw_key[:12]
+
+    with get_session() as s:
+        row = ApiKeyRow(
+            user_id=user_id,
+            name=name,
+            key_hash=key_hash,
+            key_prefix=key_prefix,
+            scopes=scopes,
+            expires_at=expires_at,
+        )
+        s.add(row)
+        s.commit()
+        s.refresh(row)
+        return row, raw_key
+
+
+def validate_api_key(raw_key: str) -> Optional[ApiKeyRow]:
+    """Validate a bearer token. Returns the ApiKeyRow if valid, None otherwise."""
+    key_hash = _hash_api_key(raw_key)
+    with get_session() as s:
+        row = s.exec(
+            select(ApiKeyRow).where(
+                ApiKeyRow.key_hash == key_hash,
+                ApiKeyRow.is_active.is_(True),
+            )
+        ).first()
+        if row is None:
+            return None
+        if row.expires_at and row.expires_at < datetime.now(timezone.utc):
+            return None
+        row.last_used_at = datetime.now(timezone.utc)
+        s.commit()
+        s.refresh(row)
+        return row
+
+
+def list_api_keys(user_id: int) -> list[dict]:
+    """List API keys for a user (metadata only, not the key itself)."""
+    with get_session() as s:
+        rows = s.exec(
+            select(ApiKeyRow).where(ApiKeyRow.user_id == user_id)
+        ).all()
+        return [
+            {
+                "id": r.id,
+                "name": r.name,
+                "key_prefix": r.key_prefix,
+                "scopes": r.scopes,
+                "is_active": r.is_active,
+                "last_used_at": str(r.last_used_at) if r.last_used_at else None,
+                "expires_at": str(r.expires_at) if r.expires_at else None,
+                "created_at": str(r.created_at),
+            }
+            for r in rows
+        ]
+
+
+def revoke_api_key(key_id: int, user_id: int) -> bool:
+    """Revoke an API key. Returns True if found and revoked."""
+    with get_session() as s:
+        row = s.exec(
+            select(ApiKeyRow).where(
+                ApiKeyRow.id == key_id,
+                ApiKeyRow.user_id == user_id,
+            )
+        ).first()
+        if row is None:
+            return False
+        row.is_active = False
+        s.commit()
+        return True
+
+
+# =====================================================================
+# Activity Feed
+# =====================================================================
+
+
+def log_activity(
+    project_id: int,
+    action: str,
+    *,
+    user_id: int | None = None,
+    summary: str | None = None,
+    detail_json: str | None = None,
+    version_id: int | None = None,
+) -> ActivityRow:
+    with get_session() as s:
+        row = ActivityRow(
+            project_id=project_id,
+            user_id=user_id,
+            action=action,
+            summary=summary,
+            detail_json=detail_json,
+            version_id=version_id,
+        )
+        s.add(row)
+        s.commit()
+        s.refresh(row)
+        return row
+
+
+def get_project_activity(project_id: int, limit: int = 50) -> list[dict]:
+    with get_session() as s:
+        rows = s.exec(
+            select(ActivityRow)
+            .where(ActivityRow.project_id == project_id)
+            .order_by(ActivityRow.created_at.desc())
+            .limit(limit)
+        ).all()
+        result = []
+        for r in rows:
+            user = s.get(UserRow, r.user_id) if r.user_id else None
+            result.append({
+                "id": r.id,
+                "action": r.action,
+                "summary": r.summary,
+                "user_id": r.user_id,
+                "username": user.username if user else None,
+                "avatar_url": user.avatar_url if user else None,
+                "version_id": r.version_id,
+                "created_at": str(r.created_at),
+            })
+        return result
+
+
+def get_user_activity(user_id: int, limit: int = 50) -> list[dict]:
+    """Get recent activity across all projects for a user."""
+    with get_session() as s:
+        rows = s.exec(
+            select(ActivityRow)
+            .where(ActivityRow.user_id == user_id)
+            .order_by(ActivityRow.created_at.desc())
+            .limit(limit)
+        ).all()
+        result = []
+        for r in rows:
+            proj = s.get(ProjectRow, r.project_id)
+            result.append({
+                "id": r.id,
+                "action": r.action,
+                "summary": r.summary,
+                "project_id": r.project_id,
+                "project_name": proj.name if proj else "unknown",
+                "version_id": r.version_id,
+                "created_at": str(r.created_at),
+            })
+        return result
 
 
 # =====================================================================
@@ -329,6 +839,7 @@ def save_version(
     prose: str | None = None,
     user_id: int | None = None,
     version: int | None = None,
+    label: str | None = None,
 ) -> VersionRow:
     """Persist a new version node in the version tree.
 
@@ -345,6 +856,7 @@ def save_version(
             ancestor_id=ancestor_id,
             source=source,
             description=description,
+            label=label,
             world_state_json=world_state_json,
             changeset_json=changeset_json,
             raw_query=raw_query,
@@ -403,6 +915,8 @@ def list_versions(project_id: int) -> list[dict]:
                 "ancestor_id": r.ancestor_id,
                 "source": r.source,
                 "description": r.description,
+                "label": r.label,
+                "is_bookmarked": r.is_bookmarked,
                 "has_prose": r.prose is not None,
                 "has_changeset": r.changeset_json is not None,
                 "user_id": r.user_id,
@@ -440,6 +954,8 @@ def get_version_tree(project_id: int) -> list[dict]:
                     "ancestor_id": r.ancestor_id,
                     "source": r.source,
                     "description": r.description,
+                    "label": r.label,
+                    "is_bookmarked": r.is_bookmarked,
                     "changeset_summary": changeset_summary,
                     "user_id": r.user_id,
                     "created_at": str(r.created_at),
@@ -502,6 +1018,89 @@ def get_version_children(version_row_id: int) -> list[dict]:
                 "source": r.source,
                 "description": r.description,
                 "created_at": str(r.created_at),
+            }
+            for r in rows
+        ]
+
+
+# =====================================================================
+# Version bookmarks, labels, prose export
+# =====================================================================
+
+
+def bookmark_version(version_row_id: int, bookmarked: bool = True) -> bool:
+    """Toggle bookmark on a version."""
+    with get_session() as s:
+        row = s.get(VersionRow, version_row_id)
+        if row is None:
+            return False
+        row.is_bookmarked = bookmarked
+        s.commit()
+        return True
+
+
+def label_version(version_row_id: int, label: str | None) -> bool:
+    """Set or clear a label on a version."""
+    with get_session() as s:
+        row = s.get(VersionRow, version_row_id)
+        if row is None:
+            return False
+        row.label = label
+        s.commit()
+        return True
+
+
+def get_all_prose(project_id: int) -> list[dict]:
+    """Return all versions with prose, ordered by version number.
+
+    Useful for exporting the full story.
+    """
+    with get_session() as s:
+        rows = s.exec(
+            select(VersionRow)
+            .where(
+                VersionRow.project_id == project_id,
+                VersionRow.prose.isnot(None),
+            )
+            .order_by(VersionRow.version.asc())
+        ).all()
+        return [
+            {
+                "version": r.version,
+                "source": r.source,
+                "description": r.description,
+                "prose": r.prose,
+                "created_at": str(r.created_at),
+            }
+            for r in rows
+        ]
+
+
+# =====================================================================
+# User search (for collaboration invites)
+# =====================================================================
+
+
+def search_users(query: str, limit: int = 10) -> list[dict]:
+    """Search users by username or email prefix."""
+    with get_session() as s:
+        rows = s.exec(
+            select(UserRow)
+            .where(
+                or_(
+                    UserRow.username.contains(query),
+                    UserRow.email.contains(query),
+                )
+            )
+            .where(UserRow.is_example.is_(False))
+            .limit(limit)
+        ).all()
+        return [
+            {
+                "id": r.id,
+                "username": r.username,
+                "display_name": r.display_name,
+                "avatar_url": r.avatar_url,
             }
             for r in rows
         ]
