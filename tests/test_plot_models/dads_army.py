@@ -7,6 +7,7 @@ from shadow_loom.models import (
     WorldStateV1, Location, Entity, EventNode, NarrativeObject,
     CausalEdge, SpatialEdge, RelationshipEdge, InformationEdge,
     TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
+    GlobalTrait, WorldTraitSnapshot,
 )
 
 world_state = WorldStateV1(
@@ -319,6 +320,25 @@ world_state = WorldStateV1(
         InformationEdge(source_id="ENT_MAINWARING", target_ids=["ENT_WILSON", "ENT_JONES", "ENT_PIKE"],
                         medium="parade_order", established_at_fabula=100),
     ],
+    # ── WORLD TRAITS ────────────────────────────────────────────────────
+    world_traits={
+        "WORLD_HOME_FRONT": GlobalTrait(
+            id="WORLD_HOME_FRONT",
+            name="Home Front Spirit",
+            description="The Blitz-era civilian determination to defend Britain despite inadequate training, equipment, and the absurdity of elderly volunteers facing a potential Nazi invasion.",
+            category="social_structure",
+            magnitude=TraitVector(value=0.7, inertia=0.6),
+            affected_domains=["social", "psychological"],
+        ),
+        "WORLD_CLASS_COMEDY": GlobalTrait(
+            id="WORLD_CLASS_COMEDY",
+            name="British Class Comedy",
+            description="The platoon is a microcosm of English class tensions — a pompous bank manager commands a spiv, a butcher, and a retired gentleman — all jostling for status.",
+            category="social_structure",
+            magnitude=TraitVector(value=0.8, inertia=0.7),
+            affected_domains=["social"],
+        ),
+    },
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_MAINWARING", target_entity_id="ENT_WILSON",
                          affinity=0.4, fear=0.1, power_dynamic=0.3, inertia=0.5),

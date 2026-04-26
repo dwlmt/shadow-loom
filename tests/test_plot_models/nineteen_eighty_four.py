@@ -3,7 +3,7 @@ from shadow_loom.models import (
     WorldStateV1, Location, Entity, EventNode, NarrativeObject,
     CausalEdge, SpatialEdge, RelationshipEdge, InformationEdge,
     TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
-    GlobalTrait,
+    GlobalTrait, WorldTraitSnapshot,
 )
 
 world_state = WorldStateV1(
@@ -65,7 +65,7 @@ world_state = WorldStateV1(
                     beliefs_invalidated=["ENT_OBRIEN"]),
                 EntityStateSnapshot(fabula_time=800, triggered_by="EVT_ARRESTED",
                     traits={"fear": TraitVector(value=0.9, inertia=0.2), "hope": TraitVector(value=0.2, inertia=0.2)},
-                    new_location_id="LOC_MINISTRY_LOVE"),
+                    location_id="LOC_MINISTRY_LOVE"),
                 EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_ROOM_101",
                     traits={"integrity": TraitVector(value=0.0, inertia=0.1), "rebellion": TraitVector(value=0.0, inertia=0.1)}),
             ]),
@@ -82,7 +82,7 @@ world_state = WorldStateV1(
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=800, triggered_by="EVT_ARRESTED",
-                    new_location_id="LOC_MINISTRY_LOVE"),
+                    location_id="LOC_MINISTRY_LOVE"),
                 EntityStateSnapshot(fabula_time=1100, triggered_by="EVT_JULIA_BROKEN",
                     traits={"rebellion": TraitVector(value=0.0, inertia=0.1)},
                     beliefs_invalidated=["ENT_WINSTON"]),
@@ -116,7 +116,7 @@ world_state = WorldStateV1(
                 Belief(target_id="ENT_BIG_BROTHER", perceived_state="Newspeak will perfect Ingsoc ideology", confidence=0.9, inertia=0.5),
             ],
             state_timeline=[
-                EntityStateSnapshot(fabula_time=500, triggered_by="EVT_SYME_VANISHES", new_status="dead"),
+                EntityStateSnapshot(fabula_time=500, triggered_by="EVT_SYME_VANISHES", status="dead"),
             ]),
         "ENT_PARSONS": Entity(id="ENT_PARSONS", name="Tom Parsons",
             location_id="LOC_VICTORY_MANSIONS", status="healthy",
@@ -283,6 +283,14 @@ world_state = WorldStateV1(
             category="governance",
             magnitude=TraitVector(value=0.95, inertia=0.9),
             affected_domains=["psychological", "epistemic", "social"],
+            state_timeline=[
+                WorldTraitSnapshot(fabula_time=400, triggered_by="EVT_GOLDEN_COUNTRY_MEETING",
+                    magnitude=TraitVector(value=0.85, inertia=0.8),
+                    description="Winston and Julia find a brief gap in surveillance at the Golden Country."),
+                WorldTraitSnapshot(fabula_time=800, triggered_by="EVT_ARRESTED",
+                    magnitude=TraitVector(value=1.0, inertia=0.95),
+                    description="Charrington's betrayal reveals surveillance was total all along."),
+            ],
         ),
         "WORLD_THOUGHT_CONTROL": GlobalTrait(
             id="WORLD_THOUGHT_CONTROL",
@@ -291,6 +299,14 @@ world_state = WorldStateV1(
             category="governance",
             magnitude=TraitVector(value=0.85, inertia=0.85),
             affected_domains=["epistemic", "psychological"],
+            state_timeline=[
+                WorldTraitSnapshot(fabula_time=500, triggered_by="EVT_SYME_VANISHES",
+                    magnitude=TraitVector(value=0.9, inertia=0.9),
+                    description="Syme's vaporization demonstrates that even loyal intellectuals are eliminated."),
+                WorldTraitSnapshot(fabula_time=1200, triggered_by="EVT_WINSTON_LOVES_BB",
+                    magnitude=TraitVector(value=1.0, inertia=0.95),
+                    description="Winston's total capitulation proves doublethink achieves complete cognitive capture."),
+            ],
         ),
         "WORLD_PERPETUAL_WAR": GlobalTrait(
             id="WORLD_PERPETUAL_WAR",
@@ -299,6 +315,10 @@ world_state = WorldStateV1(
             category="economy",
             magnitude=TraitVector(value=0.7, inertia=0.8),
             affected_domains=["social", "psychological"],
+            state_timeline=[
+                WorldTraitSnapshot(fabula_time=700, triggered_by="EVT_GOLDSTEIN_BOOK_READ",
+                    description="Goldstein's book reveals the war is manufactured to consume surplus production."),
+            ],
         ),
     },
     social_topology=[

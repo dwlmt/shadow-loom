@@ -7,6 +7,7 @@ from shadow_loom.models import (
     WorldStateV1, Location, Entity, EventNode, NarrativeObject,
     CausalEdge, SpatialEdge, RelationshipEdge, InformationEdge,
     TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
+    GlobalTrait, WorldTraitSnapshot,
 )
 
 world_state = WorldStateV1(
@@ -86,7 +87,7 @@ world_state = WorldStateV1(
                             "ambition": TraitVector(value=0.7, inertia=0.3)}),
                 EntityStateSnapshot(fabula_time=500, triggered_by="EVT_PIP_TO_LONDON",
                     traits={"snobbery": TraitVector(value=0.5, inertia=0.3)},
-                    new_location_id="LOC_LONDON"),
+                    location_id="LOC_LONDON"),
                 EntityStateSnapshot(fabula_time=900, triggered_by="EVT_MAGWITCH_RETURNS",
                     traits={"shame": TraitVector(value=0.8, inertia=0.3),
                             "snobbery": TraitVector(value=0.3, inertia=0.3)},
@@ -137,7 +138,7 @@ world_state = WorldStateV1(
                     traits={"bitterness": TraitVector(value=0.5, inertia=0.6),
                             "grief": TraitVector(value=0.95, inertia=0.6)}),
                 EntityStateSnapshot(fabula_time=1200, triggered_by="EVT_HAVISHAM_FIRE",
-                    new_status="dead"),
+                    status="dead"),
             ]),
         "ENT_MAGWITCH": Entity(id="ENT_MAGWITCH", name="Abel Magwitch",
             location_id="LOC_MARSHES", status="healthy",
@@ -155,9 +156,9 @@ world_state = WorldStateV1(
             constants=["convict", "transported"],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=900, triggered_by="EVT_MAGWITCH_RETURNS",
-                    new_location_id="LOC_TEMPLE"),
+                    location_id="LOC_TEMPLE"),
                 EntityStateSnapshot(fabula_time=1300, triggered_by="EVT_ESCAPE_FAILS",
-                    new_status="injured",
+                    status="injured",
                     traits={"ferocity": TraitVector(value=0.3, inertia=0.4)}),
             ]),
         "ENT_JOE": Entity(id="ENT_JOE", name="Joe Gargery",
@@ -219,7 +220,7 @@ world_state = WorldStateV1(
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=1300, triggered_by="EVT_ESCAPE_FAILS",
-                    new_status="dead"),
+                    status="dead"),
             ]),
         "ENT_BIDDY": Entity(id="ENT_BIDDY", name="Biddy",
             location_id="LOC_FORGE", status="healthy",
@@ -426,6 +427,38 @@ world_state = WorldStateV1(
         InformationEdge(source_id="ENT_MISS_HAVISHAM", target_ids=["ENT_PIP"],
                         medium="deathbed_confession", established_at_fabula=1200),
     ],
+    # ── WORLD TRAITS ────────────────────────────────────────────────────
+    world_traits={
+        "WORLD_CLASS_MOBILITY": GlobalTrait(
+            id="WORLD_CLASS_MOBILITY",
+            name="Victorian Class Mobility",
+            description="The possibility — and illusion — of rising from poverty to gentility through wealth, connections, or a secret benefactor.",
+            category="social_structure",
+            magnitude=TraitVector(value=0.7, inertia=0.6),
+            affected_domains=["social", "psychological"],
+            state_timeline=[
+                WorldTraitSnapshot(fabula_time=400, triggered_by="EVT_PIP_RECEIVES_FORTUNE",
+                    magnitude=TraitVector(value=0.9, inertia=0.7),
+                    description="Pip's great expectations embody the dream of transcending class through wealth."),
+                WorldTraitSnapshot(fabula_time=1100, triggered_by="EVT_BENEFACTOR_REVEALED",
+                    magnitude=TraitVector(value=0.4, inertia=0.5),
+                    description="Learning Magwitch is his benefactor shatters Pip's genteel self-image."),
+            ],
+        ),
+        "WORLD_CRIMINAL_JUSTICE": GlobalTrait(
+            id="WORLD_CRIMINAL_JUSTICE",
+            name="Transportation and Penal System",
+            description="The brutal 19th-century justice system that transports convicts to Australia, branding them for life regardless of reformation.",
+            category="governance",
+            magnitude=TraitVector(value=0.6, inertia=0.7),
+            affected_domains=["social", "psychological"],
+            state_timeline=[
+                WorldTraitSnapshot(fabula_time=1100, triggered_by="EVT_BENEFACTOR_REVEALED",
+                    magnitude=TraitVector(value=0.8, inertia=0.8),
+                    description="Magwitch's illegal return to England makes Pip's fortune a death-sentence liability."),
+            ],
+        ),
+    },
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_PIP", target_entity_id="ENT_ESTELLA",
                          affinity=0.8, fear=0.1, power_dynamic=-0.4, inertia=0.5),

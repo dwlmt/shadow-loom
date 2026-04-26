@@ -7,6 +7,7 @@ from shadow_loom.models import (
     WorldStateV1, Location, Entity, EventNode, NarrativeObject,
     CausalEdge, SpatialEdge, RelationshipEdge, InformationEdge,
     TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
+    GlobalTrait, WorldTraitSnapshot,
 )
 
 world_state = WorldStateV1(
@@ -106,10 +107,10 @@ world_state = WorldStateV1(
             constants=["amazing_amy", "trust_fund"],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=200, triggered_by="EVT_AMY_DISAPPEARS",
-                    new_location_id="LOC_HIDEOUT_OZARKS"),
+                    location_id="LOC_HIDEOUT_OZARKS"),
                 EntityStateSnapshot(fabula_time=800, triggered_by="EVT_AMY_ROBBED",
                     traits={"control": TraitVector(value=0.7, inertia=0.5)},
-                    new_location_id="LOC_DESI_LAKE_HOUSE"),
+                    location_id="LOC_DESI_LAKE_HOUSE"),
                 EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_AMY_KILLS_DESI",
                     traits={"vindictiveness": TraitVector(value=0.9, inertia=0.5)}),
             ]),
@@ -165,7 +166,7 @@ world_state = WorldStateV1(
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_AMY_KILLS_DESI",
-                    new_status="dead"),
+                    status="dead"),
             ]),
         "ENT_TANNER": Entity(id="ENT_TANNER", name="Tanner Bolt",
             location_id="LOC_POLICE_STATION", status="healthy",
@@ -354,9 +355,39 @@ world_state = WorldStateV1(
         InformationEdge(source_id="ENT_AMY", target_ids=["ENT_NICK"],
                         medium="staged_return", established_at_fabula=1100),
     ],
+    # ── WORLD TRAITS ────────────────────────────────────────────────────
+    world_traits={
+        "WORLD_MEDIA_TRIAL": GlobalTrait(
+            id="WORLD_MEDIA_TRIAL",
+            name="Trial by Media",
+            description="The 24-hour news cycle and social media create a parallel justice system where public opinion is weaponised and truth is irrelevant.",
+            category="social_structure",
+            magnitude=TraitVector(value=0.7, inertia=0.5),
+            affected_domains=["social", "psychological", "epistemic"],
+            state_timeline=[
+                WorldTraitSnapshot(fabula_time=500, triggered_by="EVT_MEDIA_FRENZY",
+                    magnitude=TraitVector(value=0.9, inertia=0.6),
+                    description="Amy's disappearance becomes a national media spectacle that traps Nick."),
+                WorldTraitSnapshot(fabula_time=1100, triggered_by="EVT_AMY_RETURNS",
+                    magnitude=TraitVector(value=1.0, inertia=0.7),
+                    description="Amy's return transforms the media narrative — she controls the story completely."),
+            ],
+        ),
+        "WORLD_SUBURBAN_PERFORMANCE": GlobalTrait(
+            id="WORLD_SUBURBAN_PERFORMANCE",
+            name="Marriage as Performance",
+            description="The expectation that couples perform happiness for neighbours, family, and cameras. Authenticity is sacrificed for appearances.",
+            category="social_structure",
+            magnitude=TraitVector(value=0.8, inertia=0.7),
+            affected_domains=["psychological", "social"],
+            state_timeline=[
+                WorldTraitSnapshot(fabula_time=1200, triggered_by="EVT_NICK_CAPITULATES",
+                    magnitude=TraitVector(value=1.0, inertia=0.9),
+                    description="Nick agrees to stay married and perform the perfect-couple charade indefinitely."),
+            ],
+        ),
+    },
     social_topology=[
-        RelationshipEdge(source_entity_id="ENT_NICK", target_entity_id="ENT_AMY",
-                         affinity=-0.3, fear=0.3, power_dynamic=-0.4, inertia=0.5),
         RelationshipEdge(source_entity_id="ENT_AMY", target_entity_id="ENT_NICK",
                          affinity=-0.3, fear=0.0, power_dynamic=0.6, inertia=0.5),
         RelationshipEdge(source_entity_id="ENT_NICK", target_entity_id="ENT_MARGO",

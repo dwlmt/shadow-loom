@@ -3,6 +3,7 @@ from shadow_loom.models import (
     WorldStateV1, Location, Entity, EventNode, NarrativeObject,
     CausalEdge, SpatialEdge, RelationshipEdge, InformationEdge,
     TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
+    GlobalTrait, WorldTraitSnapshot,
 )
 
 world_state = WorldStateV1(
@@ -65,7 +66,7 @@ world_state = WorldStateV1(
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=300, triggered_by="EVT_HEIST_GOES_WRONG",
-                    traits={"pain": TraitVector(value=0.9, inertia=0.3)}, new_status="injured"),
+                    traits={"pain": TraitVector(value=0.9, inertia=0.3)}, status="injured"),
                 EntityStateSnapshot(fabula_time=700, triggered_by="EVT_ORANGE_REVEALED",
                     traits={"guilt": TraitVector(value=0.9, inertia=0.3)}),
             ]),
@@ -80,7 +81,7 @@ world_state = WorldStateV1(
                 Belief(target_id="ENT_JOE", perceived_state="Joe took care of me; I owe him everything", confidence=0.9, inertia=0.6),
             ],
             state_timeline=[
-                EntityStateSnapshot(fabula_time=600, triggered_by="EVT_ORANGE_KILLS_BLONDE", new_status="dead"),
+                EntityStateSnapshot(fabula_time=600, triggered_by="EVT_ORANGE_KILLS_BLONDE", status="dead"),
             ]),
         "ENT_PINK": Entity(id="ENT_PINK", name="Mr Pink",
             location_id="LOC_WAREHOUSE", status="healthy",
@@ -104,7 +105,7 @@ world_state = WorldStateV1(
                 Belief(target_id="ENT_BLONDE", perceived_state="Blonde is loyal and proved it doing time", confidence=0.8, inertia=0.5),
             ],
             state_timeline=[
-                EntityStateSnapshot(fabula_time=700, triggered_by="EVT_MEXICAN_STANDOFF", new_status="dead"),
+                EntityStateSnapshot(fabula_time=700, triggered_by="EVT_MEXICAN_STANDOFF", status="dead"),
             ]),
         "ENT_EDDIE": Entity(id="ENT_EDDIE", name="Nice Guy Eddie",
             location_id="LOC_JOE_OFFICE", status="healthy",
@@ -116,7 +117,7 @@ world_state = WorldStateV1(
                 Belief(target_id="ENT_JOE", perceived_state="Dad is always right", confidence=0.9, inertia=0.6),
             ],
             state_timeline=[
-                EntityStateSnapshot(fabula_time=700, triggered_by="EVT_MEXICAN_STANDOFF", new_status="dead"),
+                EntityStateSnapshot(fabula_time=700, triggered_by="EVT_MEXICAN_STANDOFF", status="dead"),
             ]),
         "ENT_MARVIN": Entity(id="ENT_MARVIN", name="Officer Marvin Nash",
             location_id="LOC_WAREHOUSE", status="healthy",
@@ -127,7 +128,7 @@ world_state = WorldStateV1(
             beliefs=[],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=500, triggered_by="EVT_BLONDE_TORTURES_COP",
-                    traits={"fear": TraitVector(value=0.95, inertia=0.3)}, new_status="injured"),
+                    traits={"fear": TraitVector(value=0.95, inertia=0.3)}, status="injured"),
             ]),
     },
     events=[
@@ -244,6 +245,35 @@ world_state = WorldStateV1(
         InformationEdge(source_id="ENT_JOE", target_ids=["ENT_EDDIE"], medium="conversation", is_encrypted=True, established_at_fabula=100),
         InformationEdge(source_id="ENT_PINK", target_ids=["ENT_WHITE"], medium="argument", established_at_fabula=400),
     ],
+    # ── WORLD TRAITS ────────────────────────────────────────────────────
+    world_traits={
+        "WORLD_CRIMINAL_CODE": GlobalTrait(
+            id="WORLD_CRIMINAL_CODE",
+            name="Criminal Honour Code",
+            description="The unwritten code among professional criminals: never rat, maintain professionalism, trust the boss. Violation means death.",
+            category="social_structure",
+            magnitude=TraitVector(value=0.8, inertia=0.7),
+            affected_domains=["social", "psychological"],
+            state_timeline=[
+                WorldTraitSnapshot(fabula_time=300, triggered_by="EVT_WAREHOUSE_STANDOFF",
+                    magnitude=TraitVector(value=0.5, inertia=0.4),
+                    description="Mutual suspicion and accusations shatter the criminal honour code."),
+            ],
+        ),
+        "WORLD_POLICE_INFILTRATION": GlobalTrait(
+            id="WORLD_POLICE_INFILTRATION",
+            name="Undercover Infiltration",
+            description="An undercover cop embedded within the crew, poisoning every interaction with hidden knowledge and the threat of exposure.",
+            category="governance",
+            magnitude=TraitVector(value=0.6, inertia=0.8),
+            affected_domains=["epistemic", "psychological"],
+            state_timeline=[
+                WorldTraitSnapshot(fabula_time=600, triggered_by="EVT_ORANGE_REVEALED",
+                    magnitude=TraitVector(value=1.0, inertia=0.9),
+                    description="Orange's identity as a cop is revealed, retroactively reframing every interaction."),
+            ],
+        ),
+    },
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_WHITE", target_entity_id="ENT_ORANGE", affinity=0.7, fear=0.0, power_dynamic=0.3, inertia=0.4),
         RelationshipEdge(source_entity_id="ENT_ORANGE", target_entity_id="ENT_WHITE", affinity=0.5, fear=0.1, power_dynamic=-0.3, inertia=0.3),

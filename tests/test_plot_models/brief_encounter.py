@@ -3,6 +3,7 @@ from shadow_loom.models import (
     WorldStateV1, Location, Entity, EventNode, NarrativeObject,
     CausalEdge, SpatialEdge, RelationshipEdge, InformationEdge,
     TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
+    GlobalTrait, WorldTraitSnapshot,
 )
 
 world_state = WorldStateV1(
@@ -213,6 +214,33 @@ world_state = WorldStateV1(
         InformationEdge(source_id="ENT_ALEC", target_ids=["ENT_LAURA"], medium="conversation", established_at_fabula=200),
         InformationEdge(source_id="ENT_LAURA", target_ids=["ENT_FRED"], medium="confession", established_at_fabula=1000),
     ],
+    # ── WORLD TRAITS ────────────────────────────────────────────────────
+    world_traits={
+        "WORLD_SOCIAL_PROPRIETY": GlobalTrait(
+            id="WORLD_SOCIAL_PROPRIETY",
+            name="Post-War Social Propriety",
+            description="1940s English middle-class respectability constrains desire. Adultery is unthinkable; duty to marriage and children overrides personal happiness.",
+            category="social_structure",
+            magnitude=TraitVector(value=0.85, inertia=0.8),
+            affected_domains=["social", "psychological", "emotional"],
+            state_timeline=[
+                WorldTraitSnapshot(fabula_time=500, triggered_by="EVT_FIRST_LUNCH",
+                    magnitude=TraitVector(value=0.7, inertia=0.7),
+                    description="Laura begins to bend the rules by lunching alone with a man — propriety loosens."),
+                WorldTraitSnapshot(fabula_time=1000, triggered_by="EVT_FINAL_PARTING",
+                    magnitude=TraitVector(value=0.95, inertia=0.9),
+                    description="Propriety wins — Laura chooses duty over desire, ending the affair."),
+            ],
+        ),
+        "WORLD_RAILWAY_LIMINAL": GlobalTrait(
+            id="WORLD_RAILWAY_LIMINAL",
+            name="Railway Station as Liminal Space",
+            description="The Milford Junction refreshment room exists between destinations and identities — a threshold space where forbidden connections form.",
+            category="environment",
+            magnitude=TraitVector(value=0.6, inertia=0.5),
+            affected_domains=["psychological"],
+        ),
+    },
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_LAURA", target_entity_id="ENT_ALEC", affinity=0.7, fear=0.1, power_dynamic=0.0, inertia=0.3),
         RelationshipEdge(source_entity_id="ENT_ALEC", target_entity_id="ENT_LAURA", affinity=0.8, fear=0.0, power_dynamic=0.0, inertia=0.3),

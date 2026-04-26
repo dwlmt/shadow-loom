@@ -7,6 +7,7 @@ from shadow_loom.models import (
     WorldStateV1, Location, Entity, EventNode, NarrativeObject,
     CausalEdge, SpatialEdge, RelationshipEdge, InformationEdge,
     TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
+    GlobalTrait, WorldTraitSnapshot,
 )
 
 world_state = WorldStateV1(
@@ -92,9 +93,9 @@ world_state = WorldStateV1(
                     traits={"devotion": TraitVector(value=0.9, inertia=0.3), "passion": TraitVector(value=0.95, inertia=0.3)}),
                 EntityStateSnapshot(fabula_time=700, triggered_by="EVT_ROMEO_KILLS_TYBALT",
                     traits={"despair": TraitVector(value=0.8, inertia=0.2)},
-                    new_location_id="LOC_MANTUA"),
+                    location_id="LOC_MANTUA"),
                 EntityStateSnapshot(fabula_time=1700, triggered_by="EVT_ROMEO_DRINKS_POISON",
-                    new_status="dead"),
+                    status="dead"),
             ],
         ),
         "ENT_JULIET": Entity(
@@ -115,9 +116,9 @@ world_state = WorldStateV1(
                 EntityStateSnapshot(fabula_time=200, triggered_by="EVT_ROMEO_MEETS_JULIET",
                     traits={"devotion": TraitVector(value=0.9, inertia=0.3), "obedience": TraitVector(value=0.4, inertia=0.4)}),
                 EntityStateSnapshot(fabula_time=1300, triggered_by="EVT_JULIET_TAKES_POTION",
-                    new_status="comatose"),
+                    status="unconscious"),
                 EntityStateSnapshot(fabula_time=1800, triggered_by="EVT_JULIET_STABS_SELF",
-                    new_status="dead"),
+                    status="dead"),
             ],
         ),
         "ENT_TYBALT": Entity(
@@ -135,7 +136,7 @@ world_state = WorldStateV1(
                 EntityStateSnapshot(fabula_time=600, triggered_by="EVT_TYBALT_KILLS_MERCUTIO",
                     traits={"aggression": TraitVector(value=1.0, inertia=0.5)}),
                 EntityStateSnapshot(fabula_time=700, triggered_by="EVT_ROMEO_KILLS_TYBALT",
-                    new_status="dead"),
+                    status="dead"),
             ],
         ),
         "ENT_MERCUTIO": Entity(
@@ -151,7 +152,7 @@ world_state = WorldStateV1(
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=600, triggered_by="EVT_TYBALT_KILLS_MERCUTIO",
-                    new_status="dead"),
+                    status="dead"),
             ],
         ),
         "ENT_FRIAR_LAURENCE": Entity(
@@ -190,7 +191,7 @@ world_state = WorldStateV1(
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=1600, triggered_by="EVT_ROMEO_KILLS_PARIS",
-                    new_status="dead"),
+                    status="dead"),
             ],
         ),
         "ENT_NURSE": Entity(
@@ -327,6 +328,12 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_JULIET_STABS_SELF", target_id="EVT_FAMILIES_RECONCILE",
                    causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
                    causal_force=8.0, fabula_time=1800),
+        CausalEdge(source_id="EVT_ROMEO_EXILED", target_id="EVT_JULIET_CONSUMMATION",
+                   causality_type="chain_reaction", mechanism="emotional", evidence_strength="moderate",
+                   causal_force=5.0, fabula_time=800),
+        CausalEdge(source_id="EVT_ROMEO_LEARNS_JULIET_DEAD", target_id="EVT_ROMEO_KILLS_PARIS",
+                   causality_type="chain_reaction", mechanism="physical", evidence_strength="moderate",
+                   causal_force=5.0, fabula_time=1500),
 
         # ── mutation (Event → Entity trait/status) ──
         CausalEdge(source_id="EVT_ROMEO_MEETS_JULIET", target_id="ENT_ROMEO",
@@ -357,6 +364,18 @@ world_state = WorldStateV1(
                    causality_type="mutation", mechanism="emotional", evidence_strength="strong",
                    causal_force=10.0, fabula_time=1500,
                    trait_target="despair", trait_delta=0.7),
+        CausalEdge(source_id="EVT_ROMEO_EXILED", target_id="ENT_ROMEO",
+                   causality_type="mutation", mechanism="psychological", evidence_strength="strong",
+                   causal_force=7.0, fabula_time=800,
+                   trait_target="despair", trait_delta=0.3),
+        CausalEdge(source_id="EVT_FRIAR_PLAN", target_id="ENT_JULIET",
+                   causality_type="mutation", mechanism="epistemic", evidence_strength="moderate",
+                   causal_force=5.0, fabula_time=1100,
+                   trait_target="courage", trait_delta=0.2),
+        CausalEdge(source_id="EVT_TYBALT_CHALLENGES_ROMEO", target_id="ENT_ROMEO",
+                   causality_type="mutation", mechanism="social", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=500,
+                   trait_target="courage", trait_delta=0.1),
 
         # ── mutation_social (Event → Relationship) ──
         CausalEdge(source_id="EVT_ROMEO_MEETS_JULIET", target_id="ENT_ROMEO",
@@ -423,6 +442,45 @@ world_state = WorldStateV1(
         InformationEdge(source_id="ENT_FRIAR_LAURENCE", target_ids=["ENT_PRINCE_ESCALUS", "ENT_CAPULET"],
                         medium="public_confession", established_at_fabula=1900),
     ],
+
+    # ── WORLD TRAITS ────────────────────────────────────────────────────
+    world_traits={
+        "WORLD_BLOOD_FEUD": GlobalTrait(
+            id="WORLD_BLOOD_FEUD",
+            name="Montague-Capulet Blood Feud",
+            description="Generations-old vendetta between the Montagues and Capulets that poisons all of Verona with violence and hatred.",
+            category="social_structure",
+            magnitude=TraitVector(value=0.9, inertia=0.7),
+            affected_domains=["social", "psychological"],
+            state_timeline=[
+                WorldTraitSnapshot(fabula_time=100, triggered_by="EVT_STREET_BRAWL",
+                    magnitude=TraitVector(value=0.95, inertia=0.7),
+                    description="Renewed street violence intensifies the feud."),
+                WorldTraitSnapshot(fabula_time=700, triggered_by="EVT_ROMEO_KILLS_TYBALT",
+                    magnitude=TraitVector(value=1.0, inertia=0.8),
+                    description="Tybalt's death at Romeo's hand escalates the feud to a lethal peak."),
+                WorldTraitSnapshot(fabula_time=1900, triggered_by="EVT_FAMILIES_RECONCILE",
+                    magnitude=TraitVector(value=0.2, inertia=0.3),
+                    description="The lovers' deaths shock both families into reconciliation."),
+            ],
+        ),
+        "WORLD_FATE_AND_STARS": GlobalTrait(
+            id="WORLD_FATE_AND_STARS",
+            name="Star-Crossed Fate",
+            description="An inescapable current of tragic destiny that dooms the lovers from the start, driven by coincidence, poor timing, and cosmic irony.",
+            category="cosmology",
+            magnitude=TraitVector(value=0.6, inertia=0.8),
+            affected_domains=["psychological", "epistemic"],
+            state_timeline=[
+                WorldTraitSnapshot(fabula_time=1400, triggered_by="EVT_MESSAGE_FAILS",
+                    magnitude=TraitVector(value=0.9, inertia=0.9),
+                    description="The plague quarantine prevents the friar's message — fate closes the last escape route."),
+                WorldTraitSnapshot(fabula_time=1700, triggered_by="EVT_ROMEO_DRINKS_POISON",
+                    magnitude=TraitVector(value=1.0, inertia=1.0),
+                    description="Romeo dies moments before Juliet wakes — tragic timing fulfils the star-crossed prophecy."),
+            ],
+        ),
+    },
 
     # ── SOCIAL TOPOLOGY ─────────────────────────────────────────────────
     social_topology=[

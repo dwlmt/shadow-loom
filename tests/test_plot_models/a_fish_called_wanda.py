@@ -3,6 +3,7 @@ from shadow_loom.models import (
     WorldStateV1, Location, Entity, EventNode, NarrativeObject,
     CausalEdge, SpatialEdge, RelationshipEdge, InformationEdge,
     TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
+    GlobalTrait, WorldTraitSnapshot,
 )
 
 world_state = WorldStateV1(
@@ -231,6 +232,30 @@ world_state = WorldStateV1(
         InformationEdge(source_id="ENT_KEN", target_ids=["ENT_OTTO"], medium="torture", established_at_fabula=750),
         InformationEdge(source_id="ENT_GEORGE", target_ids=["ENT_KEN"], medium="prison_visit", established_at_fabula=300),
     ],
+    # ── WORLD TRAITS ────────────────────────────────────────────────────
+    world_traits={
+        "WORLD_HEIST_HONOUR": GlobalTrait(
+            id="WORLD_HEIST_HONOUR",
+            name="Thieves' Honour",
+            description="The fragile code of loyalty among diamond thieves — easily broken when greed, lust, or self-preservation intervene.",
+            category="social_structure",
+            magnitude=TraitVector(value=0.6, inertia=0.4),
+            affected_domains=["social", "psychological"],
+            state_timeline=[
+                WorldTraitSnapshot(fabula_time=200, triggered_by="EVT_DIAMONDS_HIDDEN",
+                    magnitude=TraitVector(value=0.3, inertia=0.3),
+                    description="Everyone begins scheming to keep the diamonds for themselves — honour disintegrates."),
+            ],
+        ),
+        "WORLD_ANGLO_AMERICAN_CLASH": GlobalTrait(
+            id="WORLD_ANGLO_AMERICAN_CLASH",
+            name="Anglo-American Cultural Clash",
+            description="The collision between brash American confidence (Wanda, Otto) and stiff English propriety (Archie, the legal world) drives the comedy.",
+            category="social_structure",
+            magnitude=TraitVector(value=0.7, inertia=0.6),
+            affected_domains=["social"],
+        ),
+    },
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_WANDA", target_entity_id="ENT_OTTO", affinity=0.1, fear=0.1, power_dynamic=0.3, inertia=0.3),
         RelationshipEdge(source_entity_id="ENT_OTTO", target_entity_id="ENT_WANDA", affinity=0.6, fear=0.0, power_dynamic=-0.2, inertia=0.3),

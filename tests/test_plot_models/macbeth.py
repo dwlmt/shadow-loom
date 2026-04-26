@@ -7,7 +7,7 @@ from shadow_loom.models import (
     WorldStateV1, Location, Entity, EventNode, NarrativeObject,
     CausalEdge, SpatialEdge, RelationshipEdge, InformationEdge,
     TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
-    GlobalTrait,
+    GlobalTrait, WorldTraitSnapshot,
 )
 
 world_state = WorldStateV1(
@@ -100,11 +100,11 @@ world_state = WorldStateV1(
                     traits={"ambition": TraitVector(value=0.8, inertia=0.3), "paranoia": TraitVector(value=0.4, inertia=0.2)}),
                 EntityStateSnapshot(fabula_time=600, triggered_by="EVT_DUNCAN_MURDER",
                     traits={"guilt": TraitVector(value=0.7, inertia=0.2), "paranoia": TraitVector(value=0.6, inertia=0.3), "ruthlessness": TraitVector(value=0.6, inertia=0.3)},
-                    new_location_id="LOC_INVERNESS_CASTLE"),
+                    location_id="LOC_INVERNESS_CASTLE"),
                 EntityStateSnapshot(fabula_time=1100, triggered_by="EVT_BANQUO_MURDERED",
                     traits={"paranoia": TraitVector(value=0.8, inertia=0.3), "guilt": TraitVector(value=0.8, inertia=0.2)}),
                 EntityStateSnapshot(fabula_time=1900, triggered_by="EVT_MACBETH_KILLED",
-                    new_status="dead"),
+                    status="dead"),
             ],
         ),
         "ENT_LADY_MACBETH": Entity(
@@ -125,9 +125,9 @@ world_state = WorldStateV1(
                     traits={"guilt": TraitVector(value=0.3, inertia=0.1), "resolve": TraitVector(value=0.8, inertia=0.3)}),
                 EntityStateSnapshot(fabula_time=1600, triggered_by="EVT_LADY_MACBETH_SLEEPWALKING",
                     traits={"guilt": TraitVector(value=0.95, inertia=0.1), "resolve": TraitVector(value=0.2, inertia=0.3)},
-                    new_status="ill"),
+                    status="ill"),
                 EntityStateSnapshot(fabula_time=1700, triggered_by="EVT_LADY_MACBETH_DEATH",
-                    new_status="dead"),
+                    status="dead"),
             ],
         ),
         "ENT_DUNCAN": Entity(
@@ -141,7 +141,7 @@ world_state = WorldStateV1(
                 Belief(target_id="ENT_MACBETH", perceived_state="Macbeth is my loyal and valiant kinsman", confidence=0.95, inertia=0.7),
             ],
             state_timeline=[
-                EntityStateSnapshot(fabula_time=600, triggered_by="EVT_DUNCAN_MURDER", new_status="dead"),
+                EntityStateSnapshot(fabula_time=600, triggered_by="EVT_DUNCAN_MURDER", status="dead"),
             ],
         ),
         "ENT_BANQUO": Entity(
@@ -157,7 +157,7 @@ world_state = WorldStateV1(
                 Belief(target_id="ENT_MACBETH", perceived_state="Macbeth may have played foully for the crown", confidence=0.6, inertia=0.3, established_at_fabula=900),
             ],
             state_timeline=[
-                EntityStateSnapshot(fabula_time=1100, triggered_by="EVT_BANQUO_MURDERED", new_status="dead"),
+                EntityStateSnapshot(fabula_time=1100, triggered_by="EVT_BANQUO_MURDERED", status="dead"),
             ],
         ),
         "ENT_MACDUFF": Entity(
@@ -176,7 +176,7 @@ world_state = WorldStateV1(
             state_timeline=[
                 EntityStateSnapshot(fabula_time=1400, triggered_by="EVT_MACDUFF_FAMILY_SLAUGHTERED",
                     traits={"grief": TraitVector(value=0.95, inertia=0.2), "vengefulness": TraitVector(value=0.9, inertia=0.3)},
-                    new_location_id="LOC_ENGLAND"),
+                    location_id="LOC_ENGLAND"),
             ],
         ),
         "ENT_MALCOLM": Entity(
@@ -191,7 +191,7 @@ world_state = WorldStateV1(
                 Belief(target_id="ENT_MACBETH", perceived_state="Macbeth may have killed my father", confidence=0.6, inertia=0.4, established_at_fabula=700),
             ],
             state_timeline=[
-                EntityStateSnapshot(fabula_time=700, triggered_by="EVT_SONS_FLEE", new_location_id="LOC_ENGLAND"),
+                EntityStateSnapshot(fabula_time=700, triggered_by="EVT_SONS_FLEE", location_id="LOC_ENGLAND"),
             ],
         ),
         "ENT_WITCHES": Entity(
@@ -331,6 +331,12 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_MACBETH_KILLED", target_id="EVT_MALCOLM_CROWNED",
                    causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
                    causal_force=8.0, fabula_time=1900),
+        CausalEdge(source_id="EVT_SERVANTS_FRAMED", target_id="EVT_MACBETH_KILLS_SERVANTS",
+                   causality_type="chain_reaction", mechanism="psychological", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=650),
+        CausalEdge(source_id="EVT_LADY_MACBETH_SLEEPWALKING", target_id="EVT_LADY_MACBETH_DEATH",
+                   causality_type="chain_reaction", mechanism="psychological", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=1600),
 
         # ── mutation (Event → Entity trait/status) ──
         CausalEdge(source_id="EVT_WITCHES_PROPHECY_1", target_id="ENT_MACBETH",
@@ -365,6 +371,26 @@ world_state = WorldStateV1(
                    causality_type="mutation", mechanism="epistemic", evidence_strength="moderate",
                    causal_force=6.0, fabula_time=1300,
                    trait_target="paranoia", trait_delta=-0.3),
+        CausalEdge(source_id="EVT_CAWDOR_TITLE", target_id="ENT_MACBETH",
+                   causality_type="mutation", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=300,
+                   trait_target="ambition", trait_delta=0.15),
+        CausalEdge(source_id="EVT_LETTER_SENT", target_id="ENT_LADY_MACBETH",
+                   causality_type="mutation", mechanism="epistemic", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=400,
+                   trait_target="ambition", trait_delta=0.1),
+        CausalEdge(source_id="EVT_LADY_MACBETH_PERSUADES", target_id="ENT_MACBETH",
+                   causality_type="mutation", mechanism="psychological", evidence_strength="strong",
+                   causal_force=7.0, fabula_time=500,
+                   trait_target="ruthlessness", trait_delta=0.3),
+        CausalEdge(source_id="EVT_BANQUO_GHOST", target_id="ENT_MACBETH",
+                   causality_type="mutation", mechanism="psychological", evidence_strength="moderate",
+                   causal_force=5.0, fabula_time=1150,
+                   trait_target="guilt", trait_delta=0.1),
+        CausalEdge(source_id="EVT_MACBETH_CROWNED", target_id="ENT_MACBETH",
+                   causality_type="mutation", mechanism="social", evidence_strength="strong",
+                   causal_force=7.0, fabula_time=900,
+                   trait_target="paranoia", trait_delta=0.2),
 
         # ── mutation_social (Event → Relationship) ──
         CausalEdge(source_id="EVT_DUNCAN_MURDER", target_id="ENT_MACBETH",
@@ -440,6 +466,14 @@ world_state = WorldStateV1(
             category="governance",
             magnitude=TraitVector(value=0.8, inertia=0.6),
             affected_domains=["social", "psychological"],
+            state_timeline=[
+                WorldTraitSnapshot(fabula_time=600, triggered_by="EVT_DUNCAN_MURDER",
+                    magnitude=TraitVector(value=0.5, inertia=0.4),
+                    description="Regicide shatters the feudal compact; kingship now seized by treachery."),
+                WorldTraitSnapshot(fabula_time=1900, triggered_by="EVT_MACBETH_KILLED",
+                    magnitude=TraitVector(value=0.7, inertia=0.6),
+                    description="Malcolm's restoration partially rebuilds legitimate feudal order."),
+            ],
         ),
         "WORLD_SUPERNATURAL_PROPHECY": GlobalTrait(
             id="WORLD_SUPERNATURAL_PROPHECY",
@@ -448,6 +482,17 @@ world_state = WorldStateV1(
             category="cosmology",
             magnitude=TraitVector(value=0.5, inertia=0.8),
             affected_domains=["psychological", "epistemic"],
+            state_timeline=[
+                WorldTraitSnapshot(fabula_time=200, triggered_by="EVT_WITCHES_PROPHECY_1",
+                    magnitude=TraitVector(value=0.6, inertia=0.8),
+                    description="First prophecies establish supernatural influence over Macbeth's ambition."),
+                WorldTraitSnapshot(fabula_time=1300, triggered_by="EVT_WITCHES_PROPHECY_2",
+                    magnitude=TraitVector(value=0.8, inertia=0.9),
+                    description="Second prophecies deepen Macbeth's false confidence with riddling assurances."),
+                WorldTraitSnapshot(fabula_time=1800, triggered_by="EVT_BIRNAM_WOOD_MOVES",
+                    magnitude=TraitVector(value=0.9, inertia=0.9),
+                    description="Prophecy fulfilled literally — supernatural fate is inescapable."),
+            ],
         ),
     },
 

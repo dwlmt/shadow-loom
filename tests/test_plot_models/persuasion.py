@@ -3,7 +3,7 @@ from shadow_loom.models import (
     WorldStateV1, Location, Entity, EventNode, NarrativeObject,
     CausalEdge, SpatialEdge, RelationshipEdge, InformationEdge,
     TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
-    GlobalTrait,
+    GlobalTrait, WorldTraitSnapshot,
 )
 
 world_state = WorldStateV1(
@@ -100,7 +100,7 @@ world_state = WorldStateV1(
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=600, triggered_by="EVT_LOUISA_FALLS",
-                    traits={"impetuosity": TraitVector(value=0.3, inertia=0.4)}, new_status="injured"),
+                    traits={"impetuosity": TraitVector(value=0.3, inertia=0.4)}, status="injured"),
             ]),
         "ENT_ELLIOT": Entity(id="ENT_ELLIOT", name="William Elliot",
             location_id="LOC_BATH", status="healthy",
@@ -269,6 +269,11 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.7, inertia=0.75),
             affected_domains=["social", "emotional"],
+            state_timeline=[
+                WorldTraitSnapshot(fabula_time=1200, triggered_by="EVT_WENTWORTH_LETTER",
+                    magnitude=TraitVector(value=0.5, inertia=0.5),
+                    description="Wentworth's letter pierces class constraints — personal feeling overrides rank."),
+            ],
         ),
         "WORLD_NAVAL_MERITOCRACY": GlobalTrait(
             id="WORLD_NAVAL_MERITOCRACY",
@@ -277,6 +282,11 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.5, inertia=0.6),
             affected_domains=["social", "psychological"],
+            state_timeline=[
+                WorldTraitSnapshot(fabula_time=100, triggered_by="EVT_WENTWORTH_RETURNS",
+                    magnitude=TraitVector(value=0.7, inertia=0.7),
+                    description="Wentworth returns wealthy from naval service, proving merit can rival birth."),
+            ],
         ),
     },
     social_topology=[

@@ -3,6 +3,7 @@ from shadow_loom.models import (
     WorldStateV1, Location, Entity, EventNode, NarrativeObject,
     CausalEdge, SpatialEdge, RelationshipEdge, InformationEdge,
     TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
+    GlobalTrait, WorldTraitSnapshot,
 )
 
 world_state = WorldStateV1(
@@ -77,7 +78,7 @@ world_state = WorldStateV1(
                 EntityStateSnapshot(fabula_time=1300, triggered_by="EVT_PLAZA_CONFRONTATION",
                     traits={"self_deception": TraitVector(value=0.5, inertia=0.5), "romanticism": TraitVector(value=0.7, inertia=0.7)}),
                 EntityStateSnapshot(fabula_time=1600, triggered_by="EVT_GATSBY_SHOT",
-                    new_status="dead"),
+                    status="dead"),
             ],
         ),
         "ENT_NICK": Entity(
@@ -149,7 +150,7 @@ world_state = WorldStateV1(
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=1400, triggered_by="EVT_MYRTLE_KILLED",
-                    new_status="dead"),
+                    status="dead"),
             ],
         ),
         "ENT_GEORGE": Entity(
@@ -168,7 +169,7 @@ world_state = WorldStateV1(
                 EntityStateSnapshot(fabula_time=1400, triggered_by="EVT_MYRTLE_KILLED",
                     traits={"despair": TraitVector(value=0.95, inertia=0.1), "meekness": TraitVector(value=0.2, inertia=0.5)}),
                 EntityStateSnapshot(fabula_time=1600, triggered_by="EVT_GATSBY_SHOT",
-                    new_status="dead"),
+                    status="dead"),
             ],
         ),
     },
@@ -334,9 +335,36 @@ world_state = WorldStateV1(
         InformationEdge(source_id="ENT_TOM", target_ids=["ENT_DAISY", "ENT_NICK", "ENT_JORDAN"],
                         medium="public_revelation", established_at_fabula=1300),
     ],
+    # ── WORLD TRAITS ────────────────────────────────────────────────────
+    world_traits={
+        "WORLD_JAZZ_AGE_EXCESS": GlobalTrait(
+            id="WORLD_JAZZ_AGE_EXCESS",
+            name="Jazz Age Excess",
+            description="The Roaring Twenties culture of conspicuous wealth, bootlegging, and decadent parties that masks spiritual emptiness.",
+            category="social_structure",
+            magnitude=TraitVector(value=0.85, inertia=0.6),
+            affected_domains=["social", "psychological"],
+            state_timeline=[
+                WorldTraitSnapshot(fabula_time=1500, triggered_by="EVT_GATSBY_SHOT",
+                    magnitude=TraitVector(value=0.4, inertia=0.3),
+                    description="Gatsby's death exposes the hollowness behind the glamour — the dream collapses."),
+            ],
+        ),
+        "WORLD_CLASS_BARRIER": GlobalTrait(
+            id="WORLD_CLASS_BARRIER",
+            name="Old Money vs New Money",
+            description="The invisible but impenetrable barrier between established East Egg aristocracy and self-made West Egg wealth. No amount of money can buy social legitimacy.",
+            category="social_structure",
+            magnitude=TraitVector(value=0.8, inertia=0.8),
+            affected_domains=["social", "psychological"],
+            state_timeline=[
+                WorldTraitSnapshot(fabula_time=1300, triggered_by="EVT_PLAZA_CONFRONTATION",
+                    magnitude=TraitVector(value=0.95, inertia=0.9),
+                    description="Tom brutally exposes Gatsby's origins, proving class boundaries cannot be crossed."),
+            ],
+        ),
+    },
     social_topology=[
-        RelationshipEdge(source_entity_id="ENT_GATSBY", target_entity_id="ENT_DAISY",
-                         affinity=0.95, fear=0.2, power_dynamic=-0.3, inertia=0.6, evidence_strength="strong"),
         RelationshipEdge(source_entity_id="ENT_DAISY", target_entity_id="ENT_GATSBY",
                          affinity=0.5, fear=0.15, power_dynamic=0.2, inertia=0.4, evidence_strength="moderate"),
         RelationshipEdge(source_entity_id="ENT_TOM", target_entity_id="ENT_DAISY",

@@ -7,6 +7,7 @@ from shadow_loom.models import (
     WorldStateV1, Location, Entity, EventNode, NarrativeObject,
     CausalEdge, SpatialEdge, RelationshipEdge, InformationEdge,
     TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
+    GlobalTrait, WorldTraitSnapshot,
 )
 
 world_state = WorldStateV1(
@@ -79,7 +80,7 @@ world_state = WorldStateV1(
             state_timeline=[
                 EntityStateSnapshot(fabula_time=200, triggered_by="EVT_FEYRE_TAKEN",
                     traits={"fear": TraitVector(value=0.7, inertia=0.2)},
-                    new_location_id="LOC_SPRING_COURT"),
+                    location_id="LOC_SPRING_COURT"),
                 EntityStateSnapshot(fabula_time=500, triggered_by="EVT_FEYRE_FALLS_FOR_TAMLIN",
                     traits={"love": TraitVector(value=0.7, inertia=0.3)},
                     beliefs_invalidated=["ENT_TAMLIN"],
@@ -89,7 +90,7 @@ world_state = WorldStateV1(
                 EntityStateSnapshot(fabula_time=900, triggered_by="EVT_FEYRE_ENTERS_MOUNTAIN",
                     traits={"fear": TraitVector(value=0.9, inertia=0.2),
                             "determination": TraitVector(value=0.9, inertia=0.5)},
-                    new_location_id="LOC_UNDER_THE_MOUNTAIN"),
+                    location_id="LOC_UNDER_THE_MOUNTAIN"),
                 EntityStateSnapshot(fabula_time=1300, triggered_by="EVT_FEYRE_DIES_REBORN",
                     traits={"resilience": TraitVector(value=0.95, inertia=0.5)}),
             ]),
@@ -113,7 +114,7 @@ world_state = WorldStateV1(
                     traits={"vulnerability": TraitVector(value=0.6, inertia=0.3)}),
                 EntityStateSnapshot(fabula_time=700, triggered_by="EVT_TAMLIN_CAPTURED",
                     traits={"vulnerability": TraitVector(value=0.8, inertia=0.3)},
-                    new_location_id="LOC_UNDER_THE_MOUNTAIN"),
+                    location_id="LOC_UNDER_THE_MOUNTAIN"),
             ]),
         "ENT_LUCIEN": Entity(id="ENT_LUCIEN", name="Lucien Vanserra",
             location_id="LOC_SPRING_COURT", status="healthy",
@@ -130,7 +131,7 @@ world_state = WorldStateV1(
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=700, triggered_by="EVT_TAMLIN_CAPTURED",
-                    new_location_id="LOC_UNDER_THE_MOUNTAIN"),
+                    location_id="LOC_UNDER_THE_MOUNTAIN"),
             ]),
         "ENT_AMARANTHA": Entity(id="ENT_AMARANTHA", name="Amarantha",
             location_id="LOC_UNDER_THE_MOUNTAIN", status="healthy",
@@ -149,7 +150,7 @@ world_state = WorldStateV1(
             constants=["high_fae"],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=1300, triggered_by="EVT_FEYRE_DIES_REBORN",
-                    new_status="dead"),
+                    status="dead"),
             ]),
         "ENT_RHYSAND": Entity(id="ENT_RHYSAND", name="Rhysand",
             location_id="LOC_UNDER_THE_MOUNTAIN", status="healthy",
@@ -371,6 +372,35 @@ world_state = WorldStateV1(
         InformationEdge(source_id="ENT_ALIS", target_ids=["ENT_FEYRE"],
                         medium="curse_revelation", established_at_fabula=800),
     ],
+    # ── WORLD TRAITS ────────────────────────────────────────────────────
+    world_traits={
+        "WORLD_AMARANTHAS_CURSE": GlobalTrait(
+            id="WORLD_AMARANTHAS_CURSE",
+            name="Amarantha's Curse",
+            description="Amarantha's curse strips the High Lords of their power and enslaves Prythian Under the Mountain, spreading blight and despair across the fae lands.",
+            category="magic_system",
+            magnitude=TraitVector(value=0.9, inertia=0.7),
+            affected_domains=["social", "psychological"],
+            state_timeline=[
+                WorldTraitSnapshot(fabula_time=1200, triggered_by="EVT_FEYRE_BREAKS_CURSE",
+                    magnitude=TraitVector(value=0.0, inertia=0.1),
+                    description="Feyre's declaration of love breaks the curse, freeing all the courts."),
+            ],
+        ),
+        "WORLD_FAE_MORTAL_WALL": GlobalTrait(
+            id="WORLD_FAE_MORTAL_WALL",
+            name="The Wall Between Fae and Mortal",
+            description="An ancient magical barrier separating the human lands from Prythian. Crossing it transforms identity and allegiance.",
+            category="magic_system",
+            magnitude=TraitVector(value=0.8, inertia=0.8),
+            affected_domains=["social", "epistemic"],
+            state_timeline=[
+                WorldTraitSnapshot(fabula_time=200, triggered_by="EVT_FEYRE_TAKEN",
+                    magnitude=TraitVector(value=0.7, inertia=0.7),
+                    description="Feyre crosses the Wall, beginning her transformation from mortal hunter to fae ally."),
+            ],
+        ),
+    },
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_FEYRE", target_entity_id="ENT_TAMLIN",
                          affinity=0.7, fear=0.1, power_dynamic=-0.3, inertia=0.4),
@@ -403,6 +433,7 @@ from shadow_loom.models import (
     WorldStateV1, Location, Entity, EventNode, NarrativeObject,
     CausalEdge, SpatialEdge, RelationshipEdge, InformationEdge,
     TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
+    GlobalTrait,
 )
 
 world_state = WorldStateV1(
@@ -452,15 +483,15 @@ world_state = WorldStateV1(
             state_timeline=[
                 EntityStateSnapshot(fabula_time=200, triggered_by="EVT_FEYRE_TAKEN",
                     traits={"fear": TraitVector(value=0.7, inertia=0.2)},
-                    new_location_id="LOC_SPRING_COURT"),
+                    location_id="LOC_SPRING_COURT"),
                 EntityStateSnapshot(fabula_time=500, triggered_by="EVT_FEYRE_FALLS_FOR_TAMLIN",
                     traits={"love": TraitVector(value=0.7, inertia=0.3)},
                     beliefs_invalidated=["ENT_TAMLIN"]),
                 EntityStateSnapshot(fabula_time=700, triggered_by="EVT_FEYRE_UNDER_MOUNTAIN",
                     traits={"fear": TraitVector(value=0.9, inertia=0.2), "determination": TraitVector(value=0.9, inertia=0.5)},
-                    new_location_id="LOC_UNDER_THE_MOUNTAIN"),
+                    location_id="LOC_UNDER_THE_MOUNTAIN"),
                 EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_FEYRE_DIES_REBORN",
-                    traits={"resilience": TraitVector(value=0.9, inertia=0.5)}, new_status="transformed"),
+                    traits={"resilience": TraitVector(value=0.9, inertia=0.5)}, status="healthy"),
             ]),
         "ENT_TAMLIN": Entity(id="ENT_TAMLIN", name="Tamlin",
             location_id="LOC_SPRING_COURT", status="healthy",
@@ -477,7 +508,7 @@ world_state = WorldStateV1(
             state_timeline=[
                 EntityStateSnapshot(fabula_time=600, triggered_by="EVT_TAMLIN_CAPTURED",
                     traits={"vulnerability": TraitVector(value=0.8, inertia=0.3)},
-                    new_location_id="LOC_UNDER_THE_MOUNTAIN"),
+                    location_id="LOC_UNDER_THE_MOUNTAIN"),
             ]),
         "ENT_LUCIEN": Entity(id="ENT_LUCIEN", name="Lucien Vanserra",
             location_id="LOC_SPRING_COURT", status="healthy",
@@ -503,7 +534,7 @@ world_state = WorldStateV1(
                 Belief(target_id="ENT_FEYRE", perceived_state="This mortal is no threat to me", confidence=0.7, inertia=0.3),
             ],
             state_timeline=[
-                EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_FEYRE_DIES_REBORN", new_status="dead"),
+                EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_FEYRE_DIES_REBORN", status="dead"),
             ]),
         "ENT_RHYSAND": Entity(id="ENT_RHYSAND", name="Rhysand",
             location_id="LOC_UNDER_THE_MOUNTAIN", status="healthy",

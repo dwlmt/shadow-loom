@@ -7,6 +7,7 @@ from shadow_loom.models import (
     WorldStateV1, Location, Entity, EventNode, NarrativeObject,
     CausalEdge, SpatialEdge, RelationshipEdge, InformationEdge,
     TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
+    GlobalTrait, WorldTraitSnapshot,
 )
 
 world_state = WorldStateV1(
@@ -76,7 +77,7 @@ world_state = WorldStateV1(
             constants=["special_forces", "assassin"],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=100, triggered_by="EVT_MISSION_BRIEFING",
-                    new_location_id="LOC_NHA_TRANG_HQ"),
+                    location_id="LOC_NHA_TRANG_HQ"),
                 EntityStateSnapshot(fabula_time=500, triggered_by="EVT_SAMPAN_MASSACRE",
                     traits={"darkness": TraitVector(value=0.7, inertia=0.3),
                             "empathy": TraitVector(value=0.2, inertia=0.3)}),
@@ -105,7 +106,7 @@ world_state = WorldStateV1(
             constants=["green_beret", "god_king"],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=1200, triggered_by="EVT_WILLARD_KILLS_KURTZ",
-                    new_status="dead"),
+                    status="dead"),
             ]),
         "ENT_KILGORE": Entity(id="ENT_KILGORE", name="Lt Colonel Bill Kilgore",
             location_id="LOC_KILGORE_BEACH", status="healthy",
@@ -137,7 +138,7 @@ world_state = WorldStateV1(
                 EntityStateSnapshot(fabula_time=400, triggered_by="EVT_TIGER_ATTACK",
                     traits={"anxiety": TraitVector(value=0.9, inertia=0.4)}),
                 EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_CHEF_BEHEADED",
-                    new_status="dead"),
+                    status="dead"),
             ]),
         "ENT_CLEAN": Entity(id="ENT_CLEAN", name="Mr Clean (Laurence Fishburne)",
             location_id="LOC_PBR_BOAT", status="healthy",
@@ -151,7 +152,7 @@ world_state = WorldStateV1(
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=700, triggered_by="EVT_CLEAN_KILLED",
-                    new_status="dead"),
+                    status="dead"),
             ]),
         "ENT_CHIEF": Entity(id="ENT_CHIEF", name="Chief Phillips",
             location_id="LOC_PBR_BOAT", status="healthy",
@@ -167,7 +168,7 @@ world_state = WorldStateV1(
                 EntityStateSnapshot(fabula_time=500, triggered_by="EVT_SAMPAN_MASSACRE",
                     traits={"suspicion": TraitVector(value=0.8, inertia=0.4)}),
                 EntityStateSnapshot(fabula_time=800, triggered_by="EVT_CHIEF_KILLED",
-                    new_status="dead"),
+                    status="dead"),
             ]),
         "ENT_LANCE": Entity(id="ENT_LANCE", name="Lance B. Johnson",
             location_id="LOC_PBR_BOAT", status="healthy",
@@ -334,6 +335,38 @@ world_state = WorldStateV1(
         InformationEdge(source_id="ENT_CHIEF", target_ids=["ENT_WILLARD"],
                         medium="argument", established_at_fabula=500),
     ],
+    # ── WORLD TRAITS ────────────────────────────────────────────────────
+    world_traits={
+        "WORLD_JUNGLE_MADNESS": GlobalTrait(
+            id="WORLD_JUNGLE_MADNESS",
+            name="Jungle Madness",
+            description="The deeper the patrol boat travels upriver, the more the veneer of civilisation dissolves — replaced by primal violence and moral disintegration.",
+            category="environment",
+            magnitude=TraitVector(value=0.5, inertia=0.4),
+            affected_domains=["psychological", "social"],
+            state_timeline=[
+                WorldTraitSnapshot(fabula_time=600, triggered_by="EVT_DO_LUNG_BRIDGE",
+                    magnitude=TraitVector(value=0.8, inertia=0.6),
+                    description="Do Lung Bridge — last Army outpost — is leaderless chaos, signalling total institutional collapse."),
+                WorldTraitSnapshot(fabula_time=900, triggered_by="EVT_KURTZ_COMPOUND",
+                    magnitude=TraitVector(value=1.0, inertia=0.9),
+                    description="Kurtz's compound is civilisation's endpoint — severed heads, ritual worship, absolute madness."),
+            ],
+        ),
+        "WORLD_AMERICAN_IMPERIALISM": GlobalTrait(
+            id="WORLD_AMERICAN_IMPERIALISM",
+            name="American Military Imperialism",
+            description="The US military machine projects overwhelming firepower with no coherent moral framework, creating destruction that consumes its own soldiers.",
+            category="governance",
+            magnitude=TraitVector(value=0.8, inertia=0.7),
+            affected_domains=["social", "psychological"],
+            state_timeline=[
+                WorldTraitSnapshot(fabula_time=400, triggered_by="EVT_KILGORE_NAPALM",
+                    magnitude=TraitVector(value=0.95, inertia=0.8),
+                    description="Kilgore's surfing-while-napalming epitomises the obscene detachment of imperial violence."),
+            ],
+        ),
+    },
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_WILLARD", target_entity_id="ENT_KURTZ",
                          affinity=-0.2, fear=0.3, power_dynamic=-0.3, inertia=0.3),

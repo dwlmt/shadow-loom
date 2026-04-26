@@ -3,6 +3,7 @@ from shadow_loom.models import (
     WorldStateV1, Location, Entity, EventNode, NarrativeObject,
     CausalEdge, SpatialEdge, RelationshipEdge, InformationEdge,
     TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
+    GlobalTrait, WorldTraitSnapshot,
 )
 
 world_state = WorldStateV1(
@@ -101,7 +102,7 @@ world_state = WorldStateV1(
                 Belief(target_id="ENT_JACQUELINE", perceived_state="Jacqueline is a nuisance but not dangerous", confidence=0.6, inertia=0.4),
             ],
             state_timeline=[
-                EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_LINNET_MURDERED", new_status="dead"),
+                EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_LINNET_MURDERED", status="dead"),
             ],
         ),
         "ENT_SIMON": Entity(
@@ -119,7 +120,7 @@ world_state = WorldStateV1(
                 Belief(target_id="ENT_JACQUELINE", perceived_state="Jacqueline and I will be together once this is done", confidence=0.85, inertia=0.6),
             ],
             state_timeline=[
-                EntityStateSnapshot(fabula_time=1900, triggered_by="EVT_MURDER_SUICIDE", new_status="dead"),
+                EntityStateSnapshot(fabula_time=1900, triggered_by="EVT_MURDER_SUICIDE", status="dead"),
             ],
         ),
         "ENT_JACQUELINE": Entity(
@@ -138,7 +139,7 @@ world_state = WorldStateV1(
             state_timeline=[
                 EntityStateSnapshot(fabula_time=800, triggered_by="EVT_STAGED_SHOOTING",
                     traits={"ruthlessness": TraitVector(value=0.8, inertia=0.3)}),
-                EntityStateSnapshot(fabula_time=1900, triggered_by="EVT_MURDER_SUICIDE", new_status="dead"),
+                EntityStateSnapshot(fabula_time=1900, triggered_by="EVT_MURDER_SUICIDE", status="dead"),
             ],
         ),
         "ENT_PENNINGTON": Entity(
@@ -163,7 +164,7 @@ world_state = WorldStateV1(
                 Belief(target_id="ENT_SIMON", perceived_state="I saw Simon enter Linnet\'s cabin — he will pay to keep me quiet", confidence=0.9, inertia=0.6, established_at_fabula=1000),
             ],
             state_timeline=[
-                EntityStateSnapshot(fabula_time=1200, triggered_by="EVT_LOUISE_MURDERED", new_status="dead"),
+                EntityStateSnapshot(fabula_time=1200, triggered_by="EVT_LOUISE_MURDERED", status="dead"),
             ],
         ),
         "ENT_MRS_OTTERBOURNE": Entity(
@@ -175,7 +176,7 @@ world_state = WorldStateV1(
             },
             beliefs=[],
             state_timeline=[
-                EntityStateSnapshot(fabula_time=1300, triggered_by="EVT_OTTERBOURNE_MURDERED", new_status="dead"),
+                EntityStateSnapshot(fabula_time=1300, triggered_by="EVT_OTTERBOURNE_MURDERED", status="dead"),
             ],
         ),
         "ENT_TIM": Entity(
@@ -362,6 +363,35 @@ world_state = WorldStateV1(
         InformationEdge(source_id="ENT_SIMON", target_ids=["ENT_JACQUELINE"],
                         medium="signal_shout", established_at_fabula=800),
     ],
+    # ── WORLD TRAITS ────────────────────────────────────────────────────
+    world_traits={
+        "WORLD_CLOSED_ENVIRONMENT": GlobalTrait(
+            id="WORLD_CLOSED_ENVIRONMENT",
+            name="Closed-Room Steamer",
+            description="The SS Karnak traps all suspects in close quarters on the Nile, making escape impossible and every passenger a potential witness or accomplice.",
+            category="environment",
+            magnitude=TraitVector(value=0.9, inertia=0.8),
+            affected_domains=["epistemic", "psychological"],
+            state_timeline=[
+                WorldTraitSnapshot(fabula_time=1000, triggered_by="EVT_LINNET_MURDERED",
+                    magnitude=TraitVector(value=1.0, inertia=0.9),
+                    description="Murder aboard turns the luxury cruise into a sealed crime scene."),
+            ],
+        ),
+        "WORLD_WEALTH_AND_JEALOUSY": GlobalTrait(
+            id="WORLD_WEALTH_AND_JEALOUSY",
+            name="Wealth-Fuelled Jealousy",
+            description="Linnet's enormous inherited fortune creates a web of envy, resentment, and financial motive among the passengers.",
+            category="economy",
+            magnitude=TraitVector(value=0.8, inertia=0.7),
+            affected_domains=["social", "psychological"],
+            state_timeline=[
+                WorldTraitSnapshot(fabula_time=800, triggered_by="EVT_SIMON_MARRIES_LINNET",
+                    magnitude=TraitVector(value=0.9, inertia=0.8),
+                    description="Simon's marriage to Linnet concentrates motive — Jackie's jealousy and Simon's greed converge."),
+            ],
+        ),
+    },
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_LINNET", target_entity_id="ENT_SIMON",
                          affinity=0.8, fear=0.1, power_dynamic=0.4, inertia=0.5, evidence_strength="strong"),

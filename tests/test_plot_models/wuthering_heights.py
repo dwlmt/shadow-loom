@@ -7,6 +7,7 @@ from shadow_loom.models import (
     WorldStateV1, Location, Entity, EventNode, NarrativeObject,
     CausalEdge, SpatialEdge, RelationshipEdge, InformationEdge,
     TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
+    GlobalTrait, WorldTraitSnapshot,
 )
 
 world_state = WorldStateV1(
@@ -82,7 +83,7 @@ world_state = WorldStateV1(
                 EntityStateSnapshot(fabula_time=1100, triggered_by="EVT_CATHERINE_DIES",
                     traits={"cruelty": TraitVector(value=0.8, inertia=0.4)}),
                 EntityStateSnapshot(fabula_time=1600, triggered_by="EVT_HEATHCLIFF_DIES",
-                    new_status="dead"),
+                    status="dead"),
             ]),
         "ENT_CATHERINE": Entity(id="ENT_CATHERINE", name="Catherine Earnshaw",
             location_id="LOC_WUTHERING_HEIGHTS", status="healthy",
@@ -102,11 +103,11 @@ world_state = WorldStateV1(
             state_timeline=[
                 EntityStateSnapshot(fabula_time=600, triggered_by="EVT_CATHERINE_CHOOSES_EDGAR",
                     traits={"vanity": TraitVector(value=0.7, inertia=0.3)},
-                    new_location_id="LOC_THRUSHCROSS_GRANGE"),
+                    location_id="LOC_THRUSHCROSS_GRANGE"),
                 EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_CONFRONTATION",
                     traits={"self_destruction": TraitVector(value=0.8, inertia=0.3)}),
                 EntityStateSnapshot(fabula_time=1100, triggered_by="EVT_CATHERINE_DIES",
-                    new_status="dead"),
+                    status="dead"),
             ]),
         "ENT_EDGAR": Entity(id="ENT_EDGAR", name="Edgar Linton",
             location_id="LOC_THRUSHCROSS_GRANGE", status="healthy",
@@ -143,7 +144,7 @@ world_state = WorldStateV1(
                 EntityStateSnapshot(fabula_time=500, triggered_by="EVT_HEATHCLIFF_DEGRADED",
                     traits={"alcoholism": TraitVector(value=0.7, inertia=0.3)}),
                 EntityStateSnapshot(fabula_time=1200, triggered_by="EVT_HINDLEY_DIES",
-                    new_status="dead"),
+                    status="dead"),
             ]),
         "ENT_NELLY": Entity(id="ENT_NELLY", name="Nelly Dean",
             location_id="LOC_THRUSHCROSS_GRANGE", status="healthy",
@@ -176,7 +177,7 @@ world_state = WorldStateV1(
             state_timeline=[
                 EntityStateSnapshot(fabula_time=900, triggered_by="EVT_ISABELLA_ELOPES",
                     traits={"naivety": TraitVector(value=0.3, inertia=0.4)},
-                    new_location_id="LOC_WUTHERING_HEIGHTS",
+                    location_id="LOC_WUTHERING_HEIGHTS",
                     beliefs_invalidated=["ENT_HEATHCLIFF"],
                     beliefs_added=[Belief(target_id="ENT_HEATHCLIFF",
                         perceived_state="Heathcliff is a monster who trapped me",
@@ -402,6 +403,35 @@ world_state = WorldStateV1(
         InformationEdge(source_id="OBJ_DIARY", target_ids=["ENT_LOCKWOOD"],
                         medium="reading", established_at_fabula=100),
     ],
+    # ── WORLD TRAITS ────────────────────────────────────────────────────
+    world_traits={
+        "WORLD_MOOR_ISOLATION": GlobalTrait(
+            id="WORLD_MOOR_ISOLATION",
+            name="Yorkshire Moor Isolation",
+            description="The remote, wind-blasted moorland traps characters in claustrophobic proximity, intensifying passions and grudges across generations.",
+            category="environment",
+            magnitude=TraitVector(value=0.85, inertia=0.8),
+            affected_domains=["psychological", "social"],
+            state_timeline=[
+                WorldTraitSnapshot(fabula_time=600, triggered_by="EVT_HEATHCLIFF_RETURNS",
+                    magnitude=TraitVector(value=0.9, inertia=0.85),
+                    description="Heathcliff's return to the moor reactivates old obsessions in the confined landscape."),
+            ],
+        ),
+        "WORLD_CLASS_BRUTALITY": GlobalTrait(
+            id="WORLD_CLASS_BRUTALITY",
+            name="Class-Based Cruelty",
+            description="The rigid class system of Georgian-Victorian England enables the systematic degradation of those without property or name.",
+            category="social_structure",
+            magnitude=TraitVector(value=0.8, inertia=0.7),
+            affected_domains=["social", "psychological"],
+            state_timeline=[
+                WorldTraitSnapshot(fabula_time=300, triggered_by="EVT_HINDLEY_DEGRADES_HEATHCLIFF",
+                    magnitude=TraitVector(value=0.9, inertia=0.8),
+                    description="Hindley strips Heathcliff of education and status, planting the seeds of revenge."),
+            ],
+        ),
+    },
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_HEATHCLIFF", target_entity_id="ENT_CATHERINE",
                          affinity=0.95, fear=0.0, power_dynamic=0.0, inertia=0.7),

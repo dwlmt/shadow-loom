@@ -7,6 +7,7 @@ from shadow_loom.models import (
     WorldStateV1, Location, Entity, EventNode, NarrativeObject,
     CausalEdge, SpatialEdge, RelationshipEdge, InformationEdge,
     TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
+    GlobalTrait, WorldTraitSnapshot,
 )
 
 world_state = WorldStateV1(
@@ -80,14 +81,14 @@ world_state = WorldStateV1(
                 EntityStateSnapshot(fabula_time=300, triggered_by="EVT_CREATION",
                     traits={"guilt": TraitVector(value=0.6, inertia=0.3),
                             "fear": TraitVector(value=0.7, inertia=0.3)},
-                    new_location_id="LOC_LABORATORY"),
+                    location_id="LOC_LABORATORY"),
                 EntityStateSnapshot(fabula_time=700, triggered_by="EVT_CREATURE_DEMANDS_MATE",
                     traits={"guilt": TraitVector(value=0.8, inertia=0.4)}),
                 EntityStateSnapshot(fabula_time=1100, triggered_by="EVT_ELIZABETH_MURDERED",
                     traits={"obsession": TraitVector(value=0.9, inertia=0.5),
                             "isolation": TraitVector(value=0.8, inertia=0.4)}),
                 EntityStateSnapshot(fabula_time=1300, triggered_by="EVT_VICTOR_DIES",
-                    new_status="dead"),
+                    status="dead"),
             ]),
         "ENT_CREATURE": Entity(id="ENT_CREATURE", name="The Creature",
             location_id="LOC_LABORATORY", status="healthy",
@@ -109,7 +110,7 @@ world_state = WorldStateV1(
                 EntityStateSnapshot(fabula_time=500, triggered_by="EVT_CREATURE_LEARNS",
                     traits={"eloquence": TraitVector(value=0.7, inertia=0.3),
                             "intelligence": TraitVector(value=0.8, inertia=0.4)},
-                    new_location_id="LOC_DELACEY_COTTAGE"),
+                    location_id="LOC_DELACEY_COTTAGE"),
                 EntityStateSnapshot(fabula_time=600, triggered_by="EVT_CREATURE_REJECTED",
                     traits={"rage": TraitVector(value=0.6, inertia=0.3),
                             "loneliness": TraitVector(value=0.8, inertia=0.3),
@@ -135,7 +136,7 @@ world_state = WorldStateV1(
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=1100, triggered_by="EVT_ELIZABETH_MURDERED",
-                    new_status="dead"),
+                    status="dead"),
             ]),
         "ENT_CLERVAL": Entity(id="ENT_CLERVAL", name="Henry Clerval",
             location_id="LOC_INGOLSTADT", status="healthy",
@@ -149,7 +150,7 @@ world_state = WorldStateV1(
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_CLERVAL_MURDERED",
-                    new_status="dead"),
+                    status="dead"),
             ]),
         "ENT_WILLIAM": Entity(id="ENT_WILLIAM", name="William Frankenstein",
             location_id="LOC_GENEVA", status="healthy",
@@ -159,7 +160,7 @@ world_state = WorldStateV1(
             beliefs=[],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=400, triggered_by="EVT_WILLIAM_MURDERED",
-                    new_status="dead"),
+                    status="dead"),
             ]),
         "ENT_JUSTINE": Entity(id="ENT_JUSTINE", name="Justine Moritz",
             location_id="LOC_GENEVA", status="healthy",
@@ -173,7 +174,7 @@ world_state = WorldStateV1(
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=450, triggered_by="EVT_JUSTINE_EXECUTED",
-                    new_status="dead"),
+                    status="dead"),
             ]),
         "ENT_DELACEY": Entity(id="ENT_DELACEY", name="Old De Lacey",
             location_id="LOC_DELACEY_COTTAGE", status="healthy",
@@ -359,9 +360,39 @@ world_state = WorldStateV1(
         InformationEdge(source_id="ENT_ELIZABETH", target_ids=["ENT_VICTOR"],
                         medium="letter", established_at_fabula=400),
     ],
+    # ── WORLD TRAITS ────────────────────────────────────────────────────
+    world_traits={
+        "WORLD_SCIENTIFIC_HUBRIS": GlobalTrait(
+            id="WORLD_SCIENTIFIC_HUBRIS",
+            name="Promethean Scientific Hubris",
+            description="The Enlightenment-era belief that natural laws can be transcended through science, without moral consequence.",
+            category="technology",
+            magnitude=TraitVector(value=0.8, inertia=0.6),
+            affected_domains=["psychological", "social"],
+            state_timeline=[
+                WorldTraitSnapshot(fabula_time=300, triggered_by="EVT_CREATURE_ANIMATED",
+                    magnitude=TraitVector(value=1.0, inertia=0.7),
+                    description="Victor's success in creating life represents the pinnacle of unchecked scientific ambition."),
+                WorldTraitSnapshot(fabula_time=1200, triggered_by="EVT_VICTOR_DIES",
+                    magnitude=TraitVector(value=0.3, inertia=0.4),
+                    description="Victor's death vindicates nature over hubris."),
+            ],
+        ),
+        "WORLD_SOCIAL_REJECTION": GlobalTrait(
+            id="WORLD_SOCIAL_REJECTION",
+            name="Monstrous Otherness",
+            description="Society's reflexive rejection of the physically grotesque, regardless of inner virtue or capacity for feeling.",
+            category="social_structure",
+            magnitude=TraitVector(value=0.9, inertia=0.8),
+            affected_domains=["social", "psychological"],
+            state_timeline=[
+                WorldTraitSnapshot(fabula_time=550, triggered_by="EVT_DELACEY_REJECTION",
+                    magnitude=TraitVector(value=1.0, inertia=0.9),
+                    description="Even the blind man's family attacks the Creature — society's rejection is absolute."),
+            ],
+        ),
+    },
     social_topology=[
-        RelationshipEdge(source_entity_id="ENT_VICTOR", target_entity_id="ENT_CREATURE",
-                         affinity=-0.7, fear=0.6, power_dynamic=0.2, inertia=0.4),
         RelationshipEdge(source_entity_id="ENT_CREATURE", target_entity_id="ENT_VICTOR",
                          affinity=-0.5, fear=0.0, power_dynamic=-0.2, inertia=0.4),
         RelationshipEdge(source_entity_id="ENT_VICTOR", target_entity_id="ENT_ELIZABETH",
