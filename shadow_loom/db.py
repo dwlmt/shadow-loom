@@ -1,4 +1,4 @@
-"""Shared SQLAlchemy persistence layer for Shadow-Loom.
+"""Shared SQLModel persistence layer for Shadow-Loom.
 
 Used by both the NiceGUI web UI and the MCP server.
 Standalone — no UI imports.  Configure via ``init_db(database_url)``.
@@ -9,25 +9,20 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Optional
 
-from sqlalchemy import (
-    Boolean,
+from sqlmodel import (
     Column,
     DateTime,
-    ForeignKey,
-    Integer,
-    String,
+    Field,
+    Relationship,
+    Session,
+    SQLModel,
     Text,
     UniqueConstraint,
     create_engine,
     or_,
-)
-from sqlalchemy.orm import (
-    DeclarativeBase,
-    Session,
-    relationship,
-    sessionmaker,
+    select,
 )
 
 logger = logging.getLogger(__name__)
@@ -38,9 +33,7 @@ logger = logging.getLogger(__name__)
 
 EXAMPLE_USER_PROVIDER_ID = "local:example"
 
-
-class Base(DeclarativeBase):
-    pass
+Base = SQLModel
 
 
 # =====================================================================
@@ -48,45 +41,53 @@ class Base(DeclarativeBase):
 # =====================================================================
 
 
-class UserRow(Base):
+class UserRow(SQLModel, table=True):
     __tablename__ = "users"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    provider = Column(String(32), nullable=False)
-    provider_id = Column(String(256), nullable=False, unique=True)
-    username = Column(String(256), nullable=False)
-    email = Column(String(256), nullable=True)
-    avatar_url = Column(String(512), nullable=True)
-    is_example = Column(Boolean, nullable=False, default=False)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    id: Optional[int] = Field(default=None, primary_key=True)
+    provider: str = Field(max_length=32)
+    provider_id: str = Field(max_length=256, unique=True)
+    username: str = Field(max_length=256)
+    email: Optional[str] = Field(default=None, max_length=256)
+    avatar_url: Optional[str] = Field(default=None, max_length=512)
+    is_example: bool = Field(default=False)
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime, default=lambda: datetime.now(timezone.utc)),
+    )
 
-    projects = relationship("ProjectRow", back_populates="owner")
+    projects: list["ProjectRow"] = Relationship(back_populates="owner")
 
 
-class ProjectRow(Base):
+class ProjectRow(SQLModel, table=True):
     __tablename__ = "projects"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    name = Column(String(256), nullable=False)
-    owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    label = Column(String(256), nullable=True)
-    raw_text = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(
-        DateTime,
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(max_length=256)
+    owner_id: Optional[int] = Field(default=None, foreign_key="users.id")
+    label: Optional[str] = Field(default=None, max_length=256)
+    raw_text: Optional[str] = Field(default=None, sa_column=Column(Text))
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime, default=lambda: datetime.now(timezone.utc)),
+    )
+    updated_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(
+            DateTime,
+            default=lambda: datetime.now(timezone.utc),
+            onupdate=lambda: datetime.now(timezone.utc),
+        ),
     )
 
-    owner = relationship("UserRow", back_populates="projects")
-    versions = relationship(
-        "VersionRow",
+    owner: Optional[UserRow] = Relationship(back_populates="projects")
+    versions: list["VersionRow"] = Relationship(
         back_populates="project",
-        order_by="VersionRow.version",
+        sa_relationship_kwargs={"order_by": "VersionRow.version"},
     )
 
 
-class VersionRow(Base):
+class VersionRow(SQLModel, table=True):
     """A single node in the version tree for a project.
 
     ``ancestor_id`` points to the *parent* version row (not version
@@ -99,31 +100,32 @@ class VersionRow(Base):
         UniqueConstraint("project_id", "version", name="uq_project_version"),
     )
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
-    version = Column(Integer, nullable=False, default=0)
-    ancestor_id = Column(Integer, ForeignKey("versions.id"), nullable=True)
+    id: Optional[int] = Field(default=None, primary_key=True)
+    project_id: int = Field(foreign_key="projects.id")
+    version: int = Field(default=0)
+    ancestor_id: Optional[int] = Field(default=None, foreign_key="versions.id")
 
-    source = Column(
-        String(64),
-        nullable=False,
-        default="ingestion",
-    )
-    description = Column(String(512), nullable=True)
+    source: str = Field(default="ingestion", max_length=64)
+    description: Optional[str] = Field(default=None, max_length=512)
 
-    world_state_json = Column(Text, nullable=False)
-    changeset_json = Column(Text, nullable=True)
+    world_state_json: str = Field(sa_column=Column(Text, nullable=False))
+    changeset_json: Optional[str] = Field(default=None, sa_column=Column(Text))
 
     # Provenance fields
-    raw_query = Column(Text, nullable=True)
-    parsed_query_json = Column(Text, nullable=True)
-    prose = Column(Text, nullable=True)
+    raw_query: Optional[str] = Field(default=None, sa_column=Column(Text))
+    parsed_query_json: Optional[str] = Field(default=None, sa_column=Column(Text))
+    prose: Optional[str] = Field(default=None, sa_column=Column(Text))
 
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    user_id: Optional[int] = Field(default=None, foreign_key="users.id")
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime, default=lambda: datetime.now(timezone.utc)),
+    )
 
-    project = relationship("ProjectRow", back_populates="versions")
-    parent = relationship("VersionRow", remote_side=[id], backref="children")
+    project: Optional["ProjectRow"] = Relationship(back_populates="versions")
+    parent: Optional["VersionRow"] = Relationship(
+        sa_relationship_kwargs={"remote_side": "VersionRow.id", "backref": "children"},
+    )
 
 
 # =====================================================================
@@ -131,7 +133,6 @@ class VersionRow(Base):
 # =====================================================================
 
 _engine = None
-_SessionFactory = None
 
 
 def get_engine():
@@ -142,18 +143,14 @@ def get_engine():
 
 
 def get_session() -> Session:
-    global _SessionFactory
-    if _SessionFactory is None:
-        _SessionFactory = sessionmaker(bind=get_engine())
-    return _SessionFactory()
+    return Session(get_engine())
 
 
 def init_db(database_url: str = "sqlite:///shadow_loom.db") -> None:
     """Create the engine, all tables, and seed the example user."""
-    global _engine, _SessionFactory
+    global _engine
     _engine = create_engine(database_url, echo=False)
-    _SessionFactory = sessionmaker(bind=_engine)
-    Base.metadata.create_all(_engine)
+    SQLModel.metadata.create_all(_engine)
     ensure_example_user()
     logger.info("[DB] Tables initialised on %s", database_url)
 
@@ -170,7 +167,7 @@ def ensure_example_user() -> UserRow:
     ``list_projects()``.
     """
     with get_session() as s:
-        row = s.query(UserRow).filter_by(provider_id=EXAMPLE_USER_PROVIDER_ID).first()
+        row = s.exec(select(UserRow).where(UserRow.provider_id == EXAMPLE_USER_PROVIDER_ID)).first()
         if row is None:
             row = UserRow(
                 provider="local",
@@ -187,7 +184,7 @@ def ensure_example_user() -> UserRow:
 def get_example_user_id() -> Optional[int]:
     """Return the example user's row id, or None if not yet created."""
     with get_session() as s:
-        row = s.query(UserRow).filter_by(provider_id=EXAMPLE_USER_PROVIDER_ID).first()
+        row = s.exec(select(UserRow).where(UserRow.provider_id == EXAMPLE_USER_PROVIDER_ID)).first()
         return row.id if row else None
 
 
@@ -204,7 +201,7 @@ def upsert_user(
     avatar_url: str | None = None,
 ) -> UserRow:
     with get_session() as s:
-        row = s.query(UserRow).filter_by(provider_id=provider_id).first()
+        row = s.exec(select(UserRow).where(UserRow.provider_id == provider_id)).first()
         if row is None:
             row = UserRow(
                 provider=provider,
@@ -249,7 +246,7 @@ def create_project(
 
 def get_project(project_id: int) -> Optional[ProjectRow]:
     with get_session() as s:
-        return s.query(ProjectRow).get(project_id)
+        return s.get(ProjectRow, project_id)
 
 
 def find_project_by_name(
@@ -258,10 +255,10 @@ def find_project_by_name(
 ) -> Optional[ProjectRow]:
     """Find a project by name, optionally scoped to an owner."""
     with get_session() as s:
-        q = s.query(ProjectRow).filter_by(name=name)
+        stmt = select(ProjectRow).where(ProjectRow.name == name)
         if owner_id is not None:
-            q = q.filter_by(owner_id=owner_id)
-        return q.first()
+            stmt = stmt.where(ProjectRow.owner_id == owner_id)
+        return s.exec(stmt).first()
 
 
 def list_projects(user_id: int | None = None) -> list[dict]:
@@ -273,13 +270,13 @@ def list_projects(user_id: int | None = None) -> list[dict]:
     example_id = get_example_user_id()
 
     with get_session() as s:
-        q = s.query(ProjectRow)
+        stmt = select(ProjectRow)
 
         if user_id is not None:
             owner_ids = [user_id]
             if example_id is not None:
                 owner_ids.append(example_id)
-            q = q.filter(
+            stmt = stmt.where(
                 or_(
                     ProjectRow.owner_id.in_(owner_ids),
                     ProjectRow.owner_id.is_(None),
@@ -287,7 +284,7 @@ def list_projects(user_id: int | None = None) -> list[dict]:
             )
         # else: return all projects (admin / unauthenticated mode)
 
-        rows = q.order_by(ProjectRow.updated_at.desc()).all()
+        rows = s.exec(stmt.order_by(ProjectRow.updated_at.desc())).all()
         return [
             {
                 "id": r.id,
@@ -309,13 +306,13 @@ def list_projects(user_id: int | None = None) -> list[dict]:
 
 def _next_version_number(s: Session, project_id: int) -> int:
     """Return the next monotonic version number for a project."""
-    from sqlalchemy import func
+    from sqlmodel import func
 
-    result = (
-        s.query(func.max(VersionRow.version))
-        .filter_by(project_id=project_id)
-        .scalar()
-    )
+    result = s.exec(
+        select(func.max(VersionRow.version)).where(
+            VersionRow.project_id == project_id
+        )
+    ).first()
     return (result or 0) + 1 if result is not None else 0
 
 
@@ -358,7 +355,7 @@ def save_version(
         s.add(row)
 
         # Touch project updated_at
-        proj = s.query(ProjectRow).get(project_id)
+        proj = s.get(ProjectRow, project_id)
         if proj:
             proj.updated_at = datetime.now(timezone.utc)
 
@@ -369,37 +366,36 @@ def save_version(
 
 def get_version(project_id: int, version: int) -> Optional[VersionRow]:
     with get_session() as s:
-        return (
-            s.query(VersionRow)
-            .filter_by(project_id=project_id, version=version)
-            .first()
-        )
+        return s.exec(
+            select(VersionRow).where(
+                VersionRow.project_id == project_id,
+                VersionRow.version == version,
+            )
+        ).first()
 
 
 def get_version_by_id(version_row_id: int) -> Optional[VersionRow]:
     with get_session() as s:
-        return s.query(VersionRow).get(version_row_id)
+        return s.get(VersionRow, version_row_id)
 
 
 def get_latest_version(project_id: int) -> Optional[VersionRow]:
     with get_session() as s:
-        return (
-            s.query(VersionRow)
-            .filter_by(project_id=project_id)
+        return s.exec(
+            select(VersionRow)
+            .where(VersionRow.project_id == project_id)
             .order_by(VersionRow.version.desc())
-            .first()
-        )
+        ).first()
 
 
 def list_versions(project_id: int) -> list[dict]:
     """Return all versions for a project (flat list, tree info included)."""
     with get_session() as s:
-        rows = (
-            s.query(VersionRow)
-            .filter_by(project_id=project_id)
+        rows = s.exec(
+            select(VersionRow)
+            .where(VersionRow.project_id == project_id)
             .order_by(VersionRow.version.asc())
-            .all()
-        )
+        ).all()
         return [
             {
                 "id": r.id,
@@ -419,12 +415,11 @@ def list_versions(project_id: int) -> list[dict]:
 def get_version_tree(project_id: int) -> list[dict]:
     """Return the version tree structure with changeset summaries."""
     with get_session() as s:
-        rows = (
-            s.query(VersionRow)
-            .filter_by(project_id=project_id)
+        rows = s.exec(
+            select(VersionRow)
+            .where(VersionRow.project_id == project_id)
             .order_by(VersionRow.version.asc())
-            .all()
-        )
+        ).all()
         result = []
         for r in rows:
             changeset_summary = None
@@ -460,11 +455,9 @@ def get_version_lineage(project_id: int, version: int) -> list[dict]:
     """
     with get_session() as s:
         # Build a lookup of all versions by row id
-        rows = (
-            s.query(VersionRow)
-            .filter_by(project_id=project_id)
-            .all()
-        )
+        rows = s.exec(
+            select(VersionRow).where(VersionRow.project_id == project_id)
+        ).all()
         by_id: dict[int, VersionRow] = {r.id: r for r in rows}
         by_version: dict[int, VersionRow] = {r.version: r for r in rows}
 
@@ -497,12 +490,11 @@ def get_version_lineage(project_id: int, version: int) -> list[dict]:
 def get_version_children(version_row_id: int) -> list[dict]:
     """Return direct child versions branching from a given version row."""
     with get_session() as s:
-        rows = (
-            s.query(VersionRow)
-            .filter_by(ancestor_id=version_row_id)
+        rows = s.exec(
+            select(VersionRow)
+            .where(VersionRow.ancestor_id == version_row_id)
             .order_by(VersionRow.version.asc())
-            .all()
-        )
+        ).all()
         return [
             {
                 "id": r.id,
