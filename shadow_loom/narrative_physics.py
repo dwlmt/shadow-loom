@@ -250,6 +250,33 @@ def calculate_narrative_physics(
             "include_topology": request.include_topology,
         }
 
+    # ==========================================
+    # MANUAL EDIT (user-authored prose — no simulation)
+    # ==========================================
+    elif request.query_type == "manual_edit":
+        logger.info("[ManualEdit] User-authored prose (%d chars)", len(request.edited_prose))
+        full_state = extract_full_world_state(global_world_state, temporal_anchor)
+
+        return {
+            "status": "manual_edit",
+            "query_type": "manual_edit",
+            "physics_state": full_state,
+            "edited_prose": request.edited_prose,
+        }
+
+    # ==========================================
+    # EVALUATION (full-story quality audit)
+    # ==========================================
+    elif request.query_type == "evaluate":
+        logger.info("[Evaluate] Full-story evaluation requested")
+        full_state = extract_full_world_state(global_world_state, temporal_anchor)
+
+        return {
+            "status": "success",
+            "query_type": "evaluate",
+            "physics_state": full_state,
+        }
+
     # Fallback
     raise ValueError(f"Unknown Query Type: {request.query_type}")
 
@@ -728,6 +755,16 @@ def _apply_forward_cascade(
                 if not src_data:
                     continue
 
+                # WorldTrait domain filtering (mirrors CausalPhysicsEngine.propagate)
+                if src_data.get("node_type") == "WorldTrait":
+                    affected = src_data.get("affected_domains", [])
+                    if affected and mechanism not in affected:
+                        logger.debug(
+                            "[ForwardCascade] %s→%s: mechanism=%s not in affected_domains %s, applying fallback",
+                            src, node_id, mechanism, affected,
+                        )
+                        w *= _MECHANISM_FALLBACK_FACTOR
+
                 if src_data.get("node_type") == "Entity":
                     src_trait = src_data.get("traits", {}).get(trait_name)
                     if isinstance(src_trait, dict) and "value" in src_trait:
@@ -742,6 +779,11 @@ def _apply_forward_cascade(
                             and traversable.has_node(tgt_loc)):
                         if not nx.has_path(traversable, src_loc, tgt_loc):
                             spatial_ok = False
+                elif src_data.get("node_type") == "WorldTrait":
+                    # Magnitude-scaled impulse (mirrors CausalPhysicsEngine.propagate)
+                    mag = src_data.get("magnitude", {})
+                    mag_value = mag.get("value", 0.5) if isinstance(mag, dict) else 0.5
+                    total_impact += mag_value * w
                 else:
                     total_impact += w
 

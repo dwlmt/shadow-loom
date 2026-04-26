@@ -11,6 +11,7 @@ from shadow_loom.models import (
     EntityStateSnapshot,
     WorldStateV1,
     reconstruct_entity_at,
+    reconstruct_world_trait_at,
 )
 
 if TYPE_CHECKING:
@@ -32,6 +33,7 @@ class EgoGraphPayload(BaseModel):
     relevant_spatial_edges: List[dict]
     relevant_information_edges: List[dict]
     recent_memory: List[dict]
+    world_traits: List[dict] = Field(default_factory=list)
 
 # ==========================================
 # 2. THE IN-MEMORY EXTRACTION FUNCTION
@@ -198,12 +200,15 @@ def extract_ego_graph_from_memory(
         relevant_information_edges.append(ie.model_dump())
 
     # 7. The Causal Filter (CausalEdges where both endpoints are in the scene)
+    # Include WORLD_ IDs so causal edges from world traits pass the filter
+    world_trait_ids = set(world_state.world_traits.keys())
     scene_node_ids = (
         focus_id_set
         | present_entity_ids
         | all_location_ids
         | {obj["id"] for obj in present_objects}
         | {evt["id"] for evt in recent_memory}
+        | world_trait_ids
     )
     relevant_causal_edges = []
     for edge in world_state.causal_topology:
@@ -212,6 +217,16 @@ def extract_ego_graph_from_memory(
             if temporal_anchor is not None and edge.fabula_time > temporal_anchor:
                 continue
             relevant_causal_edges.append(edge.model_dump())
+
+    # 8. World Traits (always include ALL — they are global, no spatial filtering)
+    world_traits_payload: List[dict] = []
+    for wt_id, wt in world_state.world_traits.items():
+        wt_data = wt.model_dump()
+        if temporal_anchor is not None and wt.state_timeline:
+            reconstructed = reconstruct_world_trait_at(wt, temporal_anchor)
+            wt_data["magnitude"] = reconstructed["magnitude"]
+            wt_data["description"] = reconstructed["description"]
+        world_traits_payload.append(wt_data)
 
     payload = EgoGraphPayload(
         focus_entities=focus_entities,
@@ -222,7 +237,8 @@ def extract_ego_graph_from_memory(
         relevant_causal_edges=relevant_causal_edges,
         relevant_spatial_edges=relevant_spatial_edges,
         relevant_information_edges=relevant_information_edges,
-        recent_memory=recent_memory
+        recent_memory=recent_memory,
+        world_traits=world_traits_payload,
     )
 
     logger.info("Multi-Ego GraphRAG complete — %d focus, %d locations, %d co-present, %d objects, %d relationships, %d causal, %d spatial, %d info, %d memory",
@@ -311,6 +327,7 @@ def extract_topology_from_prose(
         locations=world_state.locations,
         objects=world_state.objects,
         entities=world_state.entities,
+        world_traits=world_state.world_traits,
     )
 
     empty_scaffold = SocraticScaffold(qa_pairs=[])

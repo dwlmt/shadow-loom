@@ -28,6 +28,7 @@ from shadow_loom.query_models import (
     GeneralQuery,
     InterrogationQuery,
     InterventionQuery,
+    ManualEditQuery,
     ObservationQuery,
     UserRequest,
 )
@@ -77,7 +78,7 @@ class ParsedQuery(BaseModel):
 
     query_type: Literal[
         "observation", "intervention", "counterfactual",
-        "directive", "interrogate", "general",
+        "directive", "interrogate", "general", "manual_edit",
     ] = Field(description="The best-matching query type.")
 
     reasoning: str = Field(
@@ -140,6 +141,16 @@ class ParsedQuery(BaseModel):
     include_topology: Optional[bool] = Field(
         default=None,
         description="For general: whether to include full topology.",
+    )
+
+    # --- Manual Edit ---
+    edited_prose: Optional[str] = Field(
+        default=None,
+        description="For manual_edit: the user's written/edited narrative prose.",
+    )
+    edit_description: Optional[str] = Field(
+        default=None,
+        description="For manual_edit: optional description of the changes.",
     )
 
     # --- Resolved IDs ---
@@ -270,6 +281,16 @@ def _build_graph_summary(world_state: WorldStateV1) -> str:
                 f"power={rel.power_dynamic:.2f}"
             )
 
+    # World Traits
+    if world_state.world_traits:
+        sections.append("WORLD TRAITS:")
+        for wid, wt in world_state.world_traits.items():
+            domains = ", ".join(wt.affected_domains)
+            sections.append(
+                f"  {wid}: {wt.name} | mag={wt.magnitude.value:.2f} | "
+                f"domains=[{domains}] — {wt.description[:80]}"
+            )
+
     return "\n".join(sections)
 
 
@@ -279,6 +300,7 @@ def _collect_all_ids(world_state: WorldStateV1) -> set[str]:
     ids.update(world_state.entities.keys())
     ids.update(world_state.locations.keys())
     ids.update(world_state.objects.keys())
+    ids.update(world_state.world_traits.keys())
     ids.update(e.id for e in world_state.events)
     return ids
 
@@ -322,12 +344,19 @@ parameters needed to execute that query.
    Full-graph Q&A without advancing time.
    Use when: the question doesn't fit the other types, or asks broad analytical questions.
 
+7. **manual_edit** — "I want to write that X happens" / "Edit: Macbeth draws his dagger..."
+   User-authored prose that bypasses generation. The text is re-extracted into topology.
+   Use when: the user provides actual narrative prose they want to inject into the story,
+   or explicitly says they want to write/edit the text themselves.
+   The `edited_prose` field must contain the user's prose text.
+
 ## ID RESOLUTION RULES
 
 - Entity IDs start with ENT_ (e.g., ENT_MACBETH)
 - Event IDs start with EVT_ (e.g., EVT_DUNCAN_MURDER)
 - Object IDs start with OBJ_ (e.g., OBJ_DAGGER)
 - Location IDs start with LOC_ (e.g., LOC_CASTLE)
+- World Trait IDs start with WORLD_ (e.g., WORLD_SURVEILLANCE_STATE)
 
 When the user mentions a character, place, object, or event by name, resolve it \
 to the correct graph ID from the provided world model summary. If no world model \
@@ -458,6 +487,15 @@ def _validate_parsed_query(
                 message="General query requires a question.",
             ))
 
+    elif qt == "manual_edit":
+        if not parsed.edited_prose:
+            errors.append(ValidationError(
+                field="edited_prose",
+                message="Manual edit query requires edited_prose.",
+            ))
+        if parsed.focus_entity_ids:
+            _check_ids(parsed.focus_entity_ids, "focus_entity_ids")
+
     # Check resolved IDs
     for rid in parsed.resolved_ids:
         _check_id(rid.resolved_id, f"resolved_ids[{rid.natural_name}]")
@@ -472,7 +510,7 @@ def _validate_parsed_query(
 def _normalise_id_name(raw: str) -> str:
     """Lowercase, strip prefixes, collapse non-alphanumeric to underscores."""
     s = raw.strip().upper()
-    for prefix in ("ENT_", "EVT_", "OBJ_", "LOC_"):
+    for prefix in ("ENT_", "EVT_", "OBJ_", "LOC_", "WORLD_"):
         if s.startswith(prefix):
             s = s[len(prefix):]
     return re.sub(r"[^A-Z0-9]+", "_", s).strip("_")
@@ -501,6 +539,10 @@ def _build_name_index(world_state: WorldStateV1) -> Dict[str, str]:
     for evt in world_state.events:
         index[_normalise_id_name(evt.id)] = evt.id
         index[_normalise_id_name(evt.description[:60])] = evt.id
+
+    for wid, wt in world_state.world_traits.items():
+        index[_normalise_id_name(wid)] = wid
+        index[_normalise_id_name(wt.name)] = wid
 
     return index
 
@@ -715,6 +757,13 @@ def _build_query(parsed: ParsedQuery) -> UserRequest:
         return InterrogationQuery(
             question=parsed.question or "",
             require_proof=parsed.require_proof if parsed.require_proof is not None else True,
+        )
+
+    if qt == "manual_edit":
+        return ManualEditQuery(
+            edited_prose=parsed.edited_prose or "",
+            description=parsed.edit_description or "",
+            focus_entity_ids=parsed.focus_entity_ids or [],
         )
 
     # general

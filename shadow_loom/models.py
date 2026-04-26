@@ -62,6 +62,57 @@ class EntityStateSnapshot(BaseModel):
         default=None, description="New location if entity moved, else null.",
     )
 
+
+class WorldTraitSnapshot(BaseModel):
+    """A point-in-time snapshot of a world trait's mutable state.
+
+    Stored on ``GlobalTrait.state_timeline`` in fabula_time order.
+    Only *changed* fields need be populated — reconstruction merges
+    each snapshot atop the previous accumulated state.
+    """
+    fabula_time: int = Field(description="fabula_time this snapshot is valid from.")
+    triggered_by: Optional[str] = Field(default=None, description="EVT_ ID that caused this world change.")
+    magnitude: Optional["TraitVector"] = Field(
+        default=None,
+        description="Updated magnitude (value + inertia) if changed, else null.",
+    )
+    description: Optional[str] = Field(
+        default=None,
+        description="Updated prose description if the nature of the trait changed, else null.",
+    )
+
+
+class GlobalTrait(AMWNNode):
+    """A world-level fact, law, or condition that constrains or enables characters.
+
+    Represents Greimas' 'Power' actant — an abstract force that determines
+    whether subjects can achieve their goals. Examples: surveillance state,
+    magic system rules, wartime economy, social class rigidity.
+    """
+    id: str = Field(description="Unique ID with WORLD_ prefix, e.g., WORLD_SURVEILLANCE_STATE")
+    name: str = Field(description="Human-readable name, e.g., 'Totalitarian Surveillance'")
+    description: str = Field(description="Prose description of the world-level fact and its narrative role.")
+    category: str = Field(
+        description="Category of world trait: 'governance', 'magic_system', 'environment', "
+                    "'social_structure', 'technology', 'ecology', 'economy', 'cosmology'."
+    )
+    magnitude: TraitVector = Field(
+        description="value = intensity (0.0–1.0, how strongly this constrains characters), "
+                    "inertia = resistance to change (0.0–1.0, how hard to shift this world fact. "
+                    "Physics laws ~0.95, political situations ~0.4)."
+    )
+    affected_domains: List[str] = Field(
+        description="Which causal mechanism categories this trait influences. "
+                    "Keys from MECHANISM_TRAIT_MAP: 'physical', 'psychological', "
+                    "'epistemic', 'social', 'emotional', 'informational', 'betrayal'."
+    )
+    state_timeline: List[WorldTraitSnapshot] = Field(
+        default_factory=list,
+        description="Chronological snapshots of state changes through the story. "
+                    "Empty = trait unchanged throughout narrative.",
+    )
+
+
 # --- 2. THE NODES (The Nouns) ---
 class Location(AMWNNode):
     node_type: Literal["Location"] = "Location"
@@ -139,7 +190,7 @@ class CausalEdge(AMWNEdge):
       - ambient_propagation:   State → State   (background physics without events)
     """
     source_id: str = Field(
-        description="The cause. Can be an EVT_ (Event), ENT_ (Trait/State), LOC_ (Ambient State), or OBJ_ (Affordance)."
+        description="The cause. Can be an EVT_ (Event), ENT_ (Trait/State), LOC_ (Ambient State), OBJ_ (Affordance), or WORLD_ (Global Trait)."
     )
     target_id: str = Field(
         description="The effect. The node that is triggered or mutated."
@@ -207,6 +258,7 @@ class CausalEdge(AMWNEdge):
     @model_validator(mode="after")
     def _check_causality_type_matches_ids(self) -> "CausalEdge":
         src_is_event = self.source_id.startswith("EVT_")
+        src_is_world = self.source_id.startswith("WORLD_")
         tgt_is_event = self.target_id.startswith("EVT_")
         ct = self.causality_type
 
@@ -215,10 +267,16 @@ class CausalEdge(AMWNEdge):
                 f"source_id '{self.source_id}' is an event — causality_type must be "
                 f"'chain_reaction', 'mutation', or 'mutation_social', got '{ct}'."
             )
-        if not src_is_event and ct not in ("affordance_gate", "ambient_propagation"):
+        # WORLD_ nodes are state-like: allow affordance_gate and ambient_propagation
+        if not src_is_event and not src_is_world and ct not in ("affordance_gate", "ambient_propagation"):
             raise ValueError(
                 f"source_id '{self.source_id}' is a state node — causality_type must be "
                 f"'affordance_gate' or 'ambient_propagation', got '{ct}'."
+            )
+        if src_is_world and ct not in ("affordance_gate", "ambient_propagation", "mutation", "chain_reaction"):
+            raise ValueError(
+                f"source_id '{self.source_id}' is a world trait — causality_type must be "
+                f"'affordance_gate', 'ambient_propagation', 'mutation', or 'chain_reaction', got '{ct}'."
             )
         if tgt_is_event and ct not in ("chain_reaction", "affordance_gate"):
             raise ValueError(
@@ -341,12 +399,42 @@ def reconstruct_entity_at(entity: "Entity", fabula_time: int) -> dict:
     }
 
 
+def reconstruct_world_trait_at(trait: "GlobalTrait", fabula_time: int) -> dict:
+    """Reconstruct a world trait's state at a given fabula_time.
+
+    Starts from the GlobalTrait's initial magnitude and replays
+    WorldTraitSnapshots up to *fabula_time* inclusive.
+
+    Returns a dict with keys: magnitude, description.
+    magnitude is a dict ``{"value": float, "inertia": float}``.
+    """
+    magnitude = {"value": trait.magnitude.value, "inertia": trait.magnitude.inertia}
+    description = trait.description
+
+    for snap in sorted(trait.state_timeline, key=lambda s: s.fabula_time):
+        if snap.fabula_time > fabula_time:
+            break
+        if snap.magnitude is not None:
+            magnitude = {"value": snap.magnitude.value, "inertia": snap.magnitude.inertia}
+        if snap.description is not None:
+            description = snap.description
+
+    return {
+        "magnitude": magnitude,
+        "description": description,
+    }
+
+
 # --- 5. THE MASTER STATE (The Database Payload for Narrative structure) ---
 class WorldStateV1(BaseModel):
     locations: Dict[str, Location]
     objects: Dict[str, NarrativeObject]
     entities: Dict[str, Entity]
     events: List[EventNode]
+    world_traits: Dict[str, "GlobalTrait"] = Field(
+        default_factory=dict,
+        description="World-level facts, laws, and conditions. Keyed by WORLD_ ID.",
+    )
     causal_topology: List[CausalEdge]
     spatial_topology: List[SpatialEdge] = Field(default_factory=list)
     information_topology: List[InformationEdge] = Field(default_factory=list)

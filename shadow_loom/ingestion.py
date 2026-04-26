@@ -10,6 +10,7 @@ Five-step LLM extraction using PydanticAI + Ollama:
   Step 3 — Decomposed Topology Extraction (Physics Agent + Social Agent per chunk)
   Step 4 — Pydantic Propose-Critique-Repair (per-chunk result validation)
   Step 5 — Global Assembly + Mathematical Sorting + Validation + Correction
+  Step 5b — Post-Assembly World Trait Timeline Extraction (single focused LLM pass)
 
 All LLM system prompts are loaded from external markdown files
 in the ``prompts/`` directory inside the package.
@@ -33,6 +34,7 @@ from shadow_loom.models import (
     Entity,
     EntityStateSnapshot,
     EventNode,
+    GlobalTrait,
     InformationEdge,
     Location,
     NarrativeObject,
@@ -40,6 +42,7 @@ from shadow_loom.models import (
     SpatialEdge,
     TraitVector,
     WorldStateV1,
+    WorldTraitSnapshot,
 )
 
 logger = logging.getLogger(__name__)
@@ -92,6 +95,10 @@ class GlobalRegister(BaseModel):
     entities: Dict[str, Entity] = Field(
         description="All unique entities (characters, groups) keyed by ENT_ IDs (e.g. ENT_MACBETH).",
     )
+    world_traits: Dict[str, GlobalTrait] = Field(
+        default_factory=dict,
+        description="World-level facts, laws, and conditions keyed by WORLD_ IDs.",
+    )
 
 
 class LocationRegister(BaseModel):
@@ -112,6 +119,13 @@ class EntityRegister(BaseModel):
     """Step 1c output: all unique entities (characters, groups) extracted from the narrative."""
     entities: Dict[str, Entity] = Field(
         description="All unique entities (characters, groups) keyed by ENT_ IDs (e.g. ENT_MACBETH).",
+    )
+
+
+class WorldTraitsRegister(BaseModel):
+    """Step 1d output: world-level facts, laws, and conditions."""
+    world_traits: Dict[str, GlobalTrait] = Field(
+        description="All world-level traits keyed by WORLD_ IDs (e.g. WORLD_SURVEILLANCE_STATE).",
     )
 
 
@@ -180,6 +194,18 @@ class EntityUpdate(BaseModel):
 # Resolve forward references now that EntityUpdate is defined
 ChunkTopology.model_rebuild()
 PhysicsExtraction.model_rebuild()
+
+
+class WorldTraitTimelineExtraction(BaseModel):
+    """Post-assembly Step 5 output: inflection points for world traits."""
+    timelines: Dict[str, List[WorldTraitSnapshot]] = Field(
+        default_factory=dict,
+        description=(
+            "Mapping of WORLD_ ID → list of WorldTraitSnapshot entries. "
+            "Each snapshot marks a moment where the world trait fundamentally "
+            "changed (e.g., a war ends, a law is repealed, a regime falls)."
+        ),
+    )
 
 
 class ValidationIssue(BaseModel):
@@ -433,6 +459,18 @@ def _build_entity_agent(config: ExtractionConfig) -> Agent[_EntityDeps, EntityRe
     return agent
 
 
+# --- Step 1d: World Traits extraction (no dependencies) ---
+
+def _build_world_traits_agent(config: ExtractionConfig) -> Agent[None, WorldTraitsRegister]:
+    """Construct the Step 1d World Traits Agent."""
+    return Agent(
+        _resolve_model(config.model),
+        output_type=NativeOutput(WorldTraitsRegister),
+        system_prompt=_load_prompt("ontology_world_traits.md"),
+        retries=config.output_retries,
+    )
+
+
 # --- Legacy single-pass agent (kept for backward compatibility) ---
 
 def _build_ontology_agent(config: ExtractionConfig) -> Agent[None, GlobalRegister]:
@@ -546,6 +584,18 @@ def extract_ontology(text: str, config: ExtractionConfig | None = None) -> Globa
         ent_register = ent_result.output
     logger.info("[Step 1c] Extracted %d entities.", len(ent_register.entities))
 
+    # --- Step 1d: World Traits (no dependencies) ---
+    world_traits_agent = _build_world_traits_agent(config)
+    logger.info("[Step 1d] Extracting world traits with %s …", config.model)
+    try:
+        wt_result = world_traits_agent.run_sync(text)
+        wt_register = wt_result.output
+    except Exception:
+        logger.exception("[Step 1d] World traits extraction failed — retrying once …")
+        wt_result = world_traits_agent.run_sync(text)
+        wt_register = wt_result.output
+    logger.info("[Step 1d] Extracted %d world traits.", len(wt_register.world_traits))
+
     # --- Resolve object owner_ids to ENT_ IDs ---
     resolved_objects = _resolve_object_owner_ids(obj_register.objects, ent_register.entities)
 
@@ -554,10 +604,12 @@ def extract_ontology(text: str, config: ExtractionConfig | None = None) -> Globa
         locations=loc_register.locations,
         objects=resolved_objects,
         entities=ent_register.entities,
+        world_traits=wt_register.world_traits,
     )
     logger.info(
-        "[Step 1] Ontology extracted — %d locations, %d objects, %d entities.",
+        "[Step 1] Ontology extracted — %d locations, %d objects, %d entities, %d world traits.",
         len(register.locations), len(register.objects), len(register.entities),
+        len(register.world_traits),
     )
     return register
 
@@ -619,11 +671,23 @@ async def extract_ontology_async(
             ent_result = await entity_agent.run(text, deps=ent_deps)
             return ent_result.output
 
-    obj_register, ent_register = await asyncio.gather(
-        _extract_objects(), _extract_entities()
+    async def _extract_world_traits() -> WorldTraitsRegister:
+        world_traits_agent = _build_world_traits_agent(config)
+        logger.info("[Step 1d] Extracting world traits with %s …", config.model)
+        try:
+            wt_result = await world_traits_agent.run(text)
+            return wt_result.output
+        except Exception:
+            logger.exception("[Step 1d] World traits extraction failed — retrying once …")
+            wt_result = await world_traits_agent.run(text)
+            return wt_result.output
+
+    obj_register, ent_register, wt_register = await asyncio.gather(
+        _extract_objects(), _extract_entities(), _extract_world_traits()
     )
     logger.info("[Step 1b] Extracted %d objects.", len(obj_register.objects))
     logger.info("[Step 1c] Extracted %d entities.", len(ent_register.entities))
+    logger.info("[Step 1d] Extracted %d world traits.", len(wt_register.world_traits))
 
     # --- Resolve object owner_ids to ENT_ IDs (needs both registers) ---
     resolved_objects = _resolve_object_owner_ids(obj_register.objects, ent_register.entities)
@@ -632,10 +696,12 @@ async def extract_ontology_async(
         locations=loc_register.locations,
         objects=resolved_objects,
         entities=ent_register.entities,
+        world_traits=wt_register.world_traits,
     )
     logger.info(
-        "[Step 1] Ontology extracted — %d locations, %d objects, %d entities.",
+        "[Step 1] Ontology extracted — %d locations, %d objects, %d entities, %d world traits.",
         len(register.locations), len(register.objects), len(register.entities),
+        len(register.world_traits),
     )
     return register
 
@@ -718,6 +784,7 @@ def _build_valid_id_set(reg: GlobalRegister, event_ids: List[str] | None = None)
         set(reg.entities.keys())
         | set(reg.locations.keys())
         | set(reg.objects.keys())
+        | set(reg.world_traits.keys())
     )
     if event_ids:
         valid |= set(event_ids)
@@ -746,7 +813,7 @@ def _fuzzy_resolve_id(candidate: str, valid_ids: set[str]) -> Optional[str]:
 
     # Determine prefix
     prefix = ""
-    for p in ("EVT_", "ENT_", "LOC_", "OBJ_"):
+    for p in ("EVT_", "ENT_", "LOC_", "OBJ_", "WORLD_"):
         if candidate.startswith(p):
             prefix = p
             break
@@ -832,11 +899,12 @@ def _build_physics_agent(config: ExtractionConfig) -> Agent[_PhysicsDeps, Physic
             f"ENTITY NAMES: {entity_names}\n"
             f"LOCATION IDs: {location_ids}\n"
             f"OBJECT IDs: {object_ids}\n"
+            f"WORLD TRAIT IDs: {list(ctx.deps.global_register.world_traits.keys())}\n"
             f"PREVIOUSLY EXTRACTED EVENT IDs: {ctx.deps.previous_event_ids}\n"
             "\n"
-            "You MUST ONLY use ENT_, LOC_, OBJ_ IDs from the lists above.\n"
+            "You MUST ONLY use ENT_, LOC_, OBJ_, WORLD_ IDs from the lists above.\n"
             "You MAY create new EVT_ IDs for events discovered in this chunk.\n"
-            "Do NOT invent new ENT_, LOC_, or OBJ_ IDs.\n"
+            "Do NOT invent new ENT_, LOC_, OBJ_, or WORLD_ IDs.\n"
             "\n"
             "=== ENTITY BASELINES (initial trait values — use for entity_updates) ===\n"
             f"{baselines_block}\n"
@@ -1733,11 +1801,21 @@ def _normalize_fabula_times(ws: WorldStateV1, spacing: int = 1000) -> WorldState
         len(unique_times), median_diff, spacing,
     )
 
+    # Remap world trait snapshot fabula_times
+    new_world_traits = {}
+    for wid, wt in ws.world_traits.items():
+        new_wt_timeline = [
+            snap.model_copy(update={"fabula_time": _map(snap.fabula_time) or snap.fabula_time})
+            for snap in wt.state_timeline
+        ]
+        new_world_traits[wid] = wt.model_copy(update={"state_timeline": new_wt_timeline})
+
     return WorldStateV1(
         locations=ws.locations,
         objects=ws.objects,
         entities=new_entities,
         events=new_events,
+        world_traits=new_world_traits,
         causal_topology=new_causal,
         spatial_topology=new_spatial,
         information_topology=new_info,
@@ -1880,6 +1958,7 @@ def assemble_world_state(
             )
             for eid, ent in register.entities.items()
         },
+        world_traits=register.world_traits,
         events=events,
         causal_topology=causal_topology,
         spatial_topology=spatial_topology,
@@ -1888,9 +1967,10 @@ def assemble_world_state(
     )
     logger.info(
         "[Step 3] Assembled WorldStateV1 — %d events, %d causal, %d social, "
-        "%d spatial, %d info edges.",
+        "%d spatial, %d info edges, %d world traits.",
         len(ws.events), len(ws.causal_topology), len(ws.social_topology),
         len(ws.spatial_topology), len(ws.information_topology),
+        len(ws.world_traits),
     )
     return ws
 
@@ -1914,6 +1994,7 @@ def _auto_repair(ws: WorldStateV1) -> Tuple[WorldStateV1, List[str]]:
         set(ws.locations.keys())
         | set(ws.objects.keys())
         | set(ws.entities.keys())
+        | set(ws.world_traits.keys())
         | {e.id for e in ws.events}
     )
     event_ids = {e.id for e in ws.events}
@@ -2010,6 +2091,7 @@ def _auto_repair(ws: WorldStateV1) -> Tuple[WorldStateV1, List[str]]:
             objects=ws.objects,
             entities=ws.entities,
             events=clean_events,
+            world_traits=ws.world_traits,
             causal_topology=clean_causal,
             spatial_topology=clean_spatial,
             information_topology=clean_info,
@@ -2028,6 +2110,7 @@ def _programmatic_validation(ws: WorldStateV1) -> List[ValidationIssue]:
         set(ws.locations.keys())
         | set(ws.objects.keys())
         | set(ws.entities.keys())
+        | set(ws.world_traits.keys())
         | {e.id for e in ws.events}
     )
 
@@ -2128,7 +2211,8 @@ def _programmatic_validation(ws: WorldStateV1) -> List[ValidationIssue]:
     # Check entity belief target_id references
     all_valid_belief_targets = (
         set(ws.locations.keys()) | set(ws.objects.keys())
-        | set(ws.entities.keys()) | {e.id for e in ws.events}
+        | set(ws.entities.keys()) | set(ws.world_traits.keys())
+        | {e.id for e in ws.events}
     )
     for eid, ent in ws.entities.items():
         for belief in ent.beliefs:
@@ -2429,6 +2513,221 @@ def _build_correction_agent(config: ExtractionConfig) -> Agent[None, WorldStateV
     )
 
 
+# =====================================================================
+# Step 5 — Post-Assembly World Trait Timeline Extraction
+# =====================================================================
+
+
+class _WorldTraitTimelineDeps(BaseModel):
+    """Dependencies for Step 5 — world trait timeline extraction."""
+    model_config = {"protected_namespaces": ()}
+    world_traits: Dict[str, GlobalTrait]
+    events: List[EventNode]
+
+
+def _build_world_trait_timeline_agent(
+    config: ExtractionConfig,
+) -> Agent[_WorldTraitTimelineDeps, WorldTraitTimelineExtraction]:
+    """Construct the Step 5 World Trait Timeline agent."""
+    agent: Agent[_WorldTraitTimelineDeps, WorldTraitTimelineExtraction] = Agent(
+        _resolve_model(config.model),
+        deps_type=_WorldTraitTimelineDeps,
+        output_type=NativeOutput(WorldTraitTimelineExtraction),
+        system_prompt=_load_prompt("world_trait_timeline.md"),
+        retries=config.output_retries,
+    )
+
+    @agent.system_prompt
+    def inject_world_traits_and_events(ctx: RunContext[_WorldTraitTimelineDeps]) -> str:
+        # Format world traits
+        trait_lines: List[str] = []
+        for wid, wt in ctx.deps.world_traits.items():
+            trait_lines.append(
+                f"  {wid} ({wt.name}): category={wt.category}, "
+                f"magnitude={wt.magnitude.value:.2f}, inertia={wt.magnitude.inertia:.2f}\n"
+                f"    Description: {wt.description}"
+            )
+        traits_block = "\n".join(trait_lines) if trait_lines else "(No world traits.)"
+
+        # Format event timeline (compact)
+        event_lines: List[str] = []
+        for evt in ctx.deps.events:
+            actors = ", ".join(evt.actor_ids) if evt.actor_ids else "none"
+            event_lines.append(
+                f"  {evt.id} (fabula={evt.fabula_time}, type={evt.event_type}, "
+                f"actors=[{actors}]): {evt.description}"
+            )
+        events_block = "\n".join(event_lines) if event_lines else "(No events.)"
+
+        return (
+            "=== WORLD TRAITS (from Step 1d) ===\n"
+            f"WORLD TRAIT IDs: {sorted(ctx.deps.world_traits.keys())}\n\n"
+            f"{traits_block}\n\n"
+            "=== COMPLETE EVENT TIMELINE (from Steps 2-4) ===\n"
+            f"{events_block}\n\n"
+            "Identify inflection points where the above world traits change "
+            "due to specific events. Only include traits that actually change."
+        )
+
+    @agent.output_validator
+    def validate_world_trait_timeline(
+        ctx: RunContext[_WorldTraitTimelineDeps],
+        result: WorldTraitTimelineExtraction,
+    ) -> WorldTraitTimelineExtraction:
+        """Validate that all referenced IDs are valid."""
+        valid_world_ids = set(ctx.deps.world_traits.keys())
+        valid_event_ids = {e.id for e in ctx.deps.events}
+        event_fabula_map = {e.id: e.fabula_time for e in ctx.deps.events}
+        bad: List[str] = []
+
+        for wid, snapshots in result.timelines.items():
+            if wid not in valid_world_ids:
+                bad.append(f"World trait ID '{wid}' is not in the register.")
+                continue
+            for snap in snapshots:
+                if snap.triggered_by and snap.triggered_by not in valid_event_ids:
+                    bad.append(
+                        f"WorldTraitSnapshot for '{wid}' references "
+                        f"unknown event '{snap.triggered_by}'."
+                    )
+                if snap.triggered_by and snap.triggered_by in event_fabula_map:
+                    expected_ft = event_fabula_map[snap.triggered_by]
+                    if snap.fabula_time != expected_ft:
+                        bad.append(
+                            f"WorldTraitSnapshot for '{wid}' has fabula_time={snap.fabula_time} "
+                            f"but triggered_by event '{snap.triggered_by}' has "
+                            f"fabula_time={expected_ft}. They must match."
+                        )
+
+        if bad:
+            raise ModelRetry(
+                "The following issues were found in the world trait timeline. "
+                "Fix them:\n" + "\n".join(bad)
+            )
+        return result
+
+    return agent
+
+
+def extract_world_trait_timelines(
+    ws: WorldStateV1,
+    config: ExtractionConfig | None = None,
+) -> WorldStateV1:
+    """Step 5: Post-assembly world trait timeline extraction.
+
+    Given a fully assembled ``WorldStateV1`` with all events resolved,
+    runs a single focused LLM call to identify inflection points where
+    world traits changed due to specific events.
+
+    Returns the world state with ``state_timeline`` populated on each
+    ``GlobalTrait`` that experienced changes.
+    """
+    config = config or ExtractionConfig()
+
+    if not ws.world_traits:
+        logger.info("[Step 5] No world traits — skipping timeline extraction.")
+        return ws
+
+    agent = _build_world_trait_timeline_agent(config)
+    deps = _WorldTraitTimelineDeps(
+        world_traits=ws.world_traits,
+        events=ws.events,
+    )
+
+    logger.info(
+        "[Step 5] Extracting world trait timelines (%d traits, %d events) …",
+        len(ws.world_traits), len(ws.events),
+    )
+
+    try:
+        result = agent.run_sync(
+            f"Analyze the following {len(ws.world_traits)} world trait(s) against "
+            f"{len(ws.events)} events and identify any inflection points.",
+            deps=deps,
+        )
+        extraction = result.output
+    except Exception:
+        logger.exception("[Step 5] World trait timeline extraction FAILED — skipping.")
+        return ws
+
+    # Apply timelines to the world state
+    updated_traits: Dict[str, GlobalTrait] = {}
+    changes_applied = 0
+    for wid, wt in ws.world_traits.items():
+        if wid in extraction.timelines and extraction.timelines[wid]:
+            sorted_timeline = sorted(extraction.timelines[wid], key=lambda s: s.fabula_time)
+            updated_traits[wid] = wt.model_copy(update={"state_timeline": sorted_timeline})
+            changes_applied += 1
+            logger.info(
+                "[Step 5] %s: %d inflection point(s) identified.",
+                wid, len(sorted_timeline),
+            )
+        else:
+            updated_traits[wid] = wt
+
+    ws = ws.model_copy(update={"world_traits": updated_traits})
+    logger.info(
+        "[Step 5] World trait timeline extraction complete — %d/%d traits changed.",
+        changes_applied, len(ws.world_traits),
+    )
+    return ws
+
+
+async def extract_world_trait_timelines_async(
+    ws: WorldStateV1,
+    config: ExtractionConfig | None = None,
+) -> WorldStateV1:
+    """Async variant of :func:`extract_world_trait_timelines`."""
+    config = config or ExtractionConfig()
+
+    if not ws.world_traits:
+        logger.info("[Step 5·Async] No world traits — skipping timeline extraction.")
+        return ws
+
+    agent = _build_world_trait_timeline_agent(config)
+    deps = _WorldTraitTimelineDeps(
+        world_traits=ws.world_traits,
+        events=ws.events,
+    )
+
+    logger.info(
+        "[Step 5·Async] Extracting world trait timelines (%d traits, %d events) …",
+        len(ws.world_traits), len(ws.events),
+    )
+
+    try:
+        result = await agent.run(
+            f"Analyze the following {len(ws.world_traits)} world trait(s) against "
+            f"{len(ws.events)} events and identify any inflection points.",
+            deps=deps,
+        )
+        extraction = result.output
+    except Exception:
+        logger.exception("[Step 5·Async] World trait timeline extraction FAILED — skipping.")
+        return ws
+
+    updated_traits: Dict[str, GlobalTrait] = {}
+    changes_applied = 0
+    for wid, wt in ws.world_traits.items():
+        if wid in extraction.timelines and extraction.timelines[wid]:
+            sorted_timeline = sorted(extraction.timelines[wid], key=lambda s: s.fabula_time)
+            updated_traits[wid] = wt.model_copy(update={"state_timeline": sorted_timeline})
+            changes_applied += 1
+            logger.info(
+                "[Step 5·Async] %s: %d inflection point(s) identified.",
+                wid, len(sorted_timeline),
+            )
+        else:
+            updated_traits[wid] = wt
+
+    ws = ws.model_copy(update={"world_traits": updated_traits})
+    logger.info(
+        "[Step 5·Async] World trait timeline extraction complete — %d/%d traits changed.",
+        changes_applied, len(ws.world_traits),
+    )
+    return ws
+
+
 def validate_world_state(
     ws: WorldStateV1,
     config: ExtractionConfig | None = None,
@@ -2535,6 +2834,9 @@ def run_extraction(
     if repairs:
         logger.info("[Pipeline] Auto-repaired %d issues before validation.", len(repairs))
 
+    # Step 5: Post-assembly world trait timeline extraction
+    world_state = extract_world_trait_timelines(world_state, config)
+
     report = validate_world_state(world_state, config)
 
     # --- Correction retry loop ---
@@ -2615,6 +2917,9 @@ async def run_extraction_async(
     world_state, repairs = _auto_repair(world_state)
     if repairs:
         logger.info("[Pipeline·Async] Auto-repaired %d issues before validation.", len(repairs))
+
+    # Step 5: Post-assembly world trait timeline extraction
+    world_state = await extract_world_trait_timelines_async(world_state, config)
 
     report = validate_world_state(world_state, config)
 

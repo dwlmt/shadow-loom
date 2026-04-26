@@ -40,11 +40,12 @@ Universal causal links between **any** AMWN nodes — events, entities, objects,
 **Do not just link verbs to verbs.** If a character's anger (State) causes them to strike someone (Event), draw a CausalEdge from the character to the event with `causality_type: "affordance_gate"`. If an event changes how one character feels about another, draw a `mutation_social` edge — e.g. a betrayal event mutates the betrayed character's affinity toward the betrayer.
 
 Fields:
-- `source_id` (str): The cause. Can be an `EVT_`, `ENT_`, `OBJ_`, or `LOC_` ID.
+- `source_id` (str): The cause. Can be an `EVT_`, `ENT_`, `OBJ_`, `LOC_`, or `WORLD_` ID.
 - `target_id` (str): The effect. The node that is triggered or mutated. Can be an `EVT_`, `ENT_`, `OBJ_`, or `LOC_` ID.
 - `causality_type` (str): One of `"chain_reaction"`, `"mutation"`, `"mutation_social"`, `"affordance_gate"`, `"ambient_propagation"`. **Must match the ID prefixes:**
   - Source is `EVT_` → `"chain_reaction"` (if target is `EVT_`), `"mutation"` (if target is `ENT_`/`OBJ_`/`LOC_` and the change is a trait/status), or `"mutation_social"` (if target is `ENT_` and the change is a relationship metric).
   - Source is `ENT_`/`OBJ_`/`LOC_` → `"affordance_gate"` (if target is `EVT_`) or `"ambient_propagation"` (if target is `ENT_`/`OBJ_`/`LOC_`).
+  - Source is `WORLD_` → `"chain_reaction"` (if target is `EVT_`), `"mutation"` (if target is `ENT_`), `"affordance_gate"` (if target is `EVT_`), or `"ambient_propagation"` (if target is `ENT_`/`LOC_`).
 - `causal_force` (float): 0.0 to 10.0. The **Impact** magnitude this cause applies to the target. Use:
   - 1.0–3.0: Subtle influence (ambient mood, mild encouragement)
   - 4.0–6.0: Moderate force (persuasion, moderate physical action, emotional revelation)
@@ -119,7 +120,7 @@ If Macbeth murders Duncan (EVT_DUNCAN_MURDER at fabula_time 300):
 
 ## Rules
 
-1. **Use ONLY the entity, location, and object IDs from the Global Register** injected into this prompt. If a character appears who is not in the register, use the closest matching ID or omit the event.
+1. **Use ONLY the entity, location, object, and world trait IDs from the Global Register** injected into this prompt. If a character appears who is not in the register, use the closest matching ID or omit the event.
 2. **You MAY create new `EVT_` IDs** for events discovered in this chunk. Use descriptive UPPER_SNAKE_CASE names.
 3. **fabula_time uses the spacing from the user message.** The user message gives you `fabula_time_base` and `fabula_time_spacing`. Start from `fabula_time_base` and increment by `fabula_time_spacing` for each new chronological beat. If a flashback/memory describes something earlier, assign a fabula_time EARLIER than the base (it happened in the past). Leave gaps so interstitial events can be inserted later.
 4. **syuzhet_index** starts from the offset provided in the user message and increments by 1 for each event in text order. syuzhet_index tracks **narration order**, fabula_time tracks **chronological order** — they CAN differ.
@@ -139,3 +140,4 @@ If Macbeth murders Duncan (EVT_DUNCAN_MURDER at fabula_time 300):
     - **Implicit resolve/determination** when a character commits to a difficult plan.
     - **Implicit belief formation** from witnessing events — if Character A is PRESENT when Event X occurs, A now holds a belief about X. Emit it as a `new_beliefs` entry in entity_updates. If A is ABSENT, they do NOT learn about X unless told (information edge in social extraction).
 14. **mutation edges MUST have trait_target and trait_delta.** When you create a `mutation` CausalEdge (EVT→ENT), always fill `trait_target` with the specific trait name (e.g. `"guilt"`, `"courage"`, `"paranoia"`) and `trait_delta` with the signed change magnitude (-1.0 to 1.0). The physics engine uses these for precision propagation. Without them, the engine falls back to coarse mechanism-based estimation.
+15. **WORLD_ edges are for specific, dramatic moments only.** The engine auto-generates weak ambient pressure from world traits to all entities — you do NOT need to author edges for passive background influence. Author explicit `WORLD_` edges only when a world condition **directly triggers an event or sharply shifts a character trait** in this chunk. E.g. `WORLD_SURVEILLANCE_STATE` → `EVT_THOUGHT_CRIME_DISCOVERED` (chain_reaction), `WORLD_SOCIAL_RIGIDITY` → `ENT_ANNE` (mutation, trait_target="rebelliousness", trait_delta=-0.3).

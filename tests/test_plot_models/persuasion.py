@@ -3,6 +3,7 @@ from shadow_loom.models import (
     WorldStateV1, Location, Entity, EventNode, NarrativeObject,
     CausalEdge, SpatialEdge, RelationshipEdge, InformationEdge,
     TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
+    GlobalTrait,
 )
 
 world_state = WorldStateV1(
@@ -260,6 +261,24 @@ world_state = WorldStateV1(
         InformationEdge(source_id="ENT_LADY_RUSSELL", target_ids=["ENT_ANNE"], medium="conversation", established_at_fabula=100),
         InformationEdge(source_id="ENT_ANNE", target_ids=["ENT_WENTWORTH"], medium="overheard_conversation", established_at_fabula=900),
     ],
+    world_traits={
+        "WORLD_SOCIAL_RIGIDITY": GlobalTrait(
+            id="WORLD_SOCIAL_RIGIDITY",
+            name="Regency Social Class Rigidity",
+            description="Regency-era class expectations constrain marriage, social interaction, and personal autonomy. Rank and connections determine life prospects.",
+            category="social_structure",
+            magnitude=TraitVector(value=0.7, inertia=0.75),
+            affected_domains=["social", "emotional"],
+        ),
+        "WORLD_NAVAL_MERITOCRACY": GlobalTrait(
+            id="WORLD_NAVAL_MERITOCRACY",
+            name="Naval Meritocracy",
+            description="The Navy offers an alternative social ladder based on merit and service rather than birth. Self-made men like Wentworth can rise.",
+            category="social_structure",
+            magnitude=TraitVector(value=0.5, inertia=0.6),
+            affected_domains=["social", "psychological"],
+        ),
+    },
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_ANNE", target_entity_id="ENT_WENTWORTH", affinity=0.8, fear=0.1, power_dynamic=-0.2, inertia=0.5),
         RelationshipEdge(source_entity_id="ENT_WENTWORTH", target_entity_id="ENT_ANNE", affinity=0.3, fear=0.0, power_dynamic=0.2, inertia=0.4),

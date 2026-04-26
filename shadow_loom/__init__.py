@@ -16,6 +16,7 @@ from shadow_loom.generation import (
 from shadow_loom.auditor import (
     AuditResult, AuditViolation, AuditCycleSnapshot,
     AuditorConfig, FeedbackLoopResult, VersionedGraph,
+    ChangeImpactMetrics,
     run_audit, run_feedback_loop, render_and_audit,
     assemble_audit_prompt,
 )
@@ -25,6 +26,7 @@ from shadow_loom.ingestion import (
     extract_topology, extract_topology_async,
     assemble_world_state, validate_world_state,
     GlobalRegister, LocationRegister, ObjectRegister, EntityRegister,
+    WorldTraitsRegister,
     ChunkTopology, QAPair, SocraticScaffold,
     PhysicsExtraction, SocialExtraction, EntityUpdate,
     ValidationReport, ExtractionConfig,
@@ -38,11 +40,24 @@ from shadow_loom.extract_graph import (
 from shadow_loom.pipeline import (
     run_pipeline, run_pipeline_async, PipelineConfig, PipelineResult, PipelineHistory,
 )
+from shadow_loom.query_models import ManualEditQuery
 from shadow_loom.query_parsing import (
     parse_query, parse_query_async,
     QueryParsingConfig, QueryParseResult, ParsedQuery,
     ResolvedID, ValidationError as QueryValidationError,
     FallbackInfo,
+)
+from shadow_loom.db import (
+    init_db,
+    ensure_example_user,
+    upsert_user as db_upsert_user,
+    create_project as db_create_project,
+    list_projects as db_list_projects,
+    save_version as db_save_version,
+    get_version as db_get_version,
+    get_latest_version as db_get_latest_version,
+    get_version_tree as db_get_version_tree,
+    get_version_lineage as db_get_version_lineage,
 )
 
 __all__ = [
@@ -81,6 +96,7 @@ __all__ = [
     "LocationRegister",
     "ObjectRegister",
     "EntityRegister",
+    "WorldTraitsRegister",
     "ChunkTopology",
     "QAPair",
     "SocraticScaffold",
@@ -122,4 +138,15 @@ __all__ = [
     "ResolvedID",
     "QueryValidationError",
     "FallbackInfo",
+    "ManualEditQuery",
+    "init_db",
+    "ensure_example_user",
+    "db_upsert_user",
+    "db_create_project",
+    "db_list_projects",
+    "db_save_version",
+    "db_get_version",
+    "db_get_latest_version",
+    "db_get_version_tree",
+    "db_get_version_lineage",
 ]

@@ -150,6 +150,10 @@ class CausalPhysicsEngine:
             return
 
         for eid in evidence_node_ids:
+            # Skip WORLD_ nodes — they are structural, not observable evidence.
+            if eid.startswith("WORLD_"):
+                logger.debug("[CausalPhysics·Abduction] Skipping WORLD_ node: %s", eid)
+                continue
             # Case 1 — Evidence is an Entity
             if eid in self.world_state.entities and self.sandbox.has_node(eid):
                 factual = self.world_state.entities[eid]
@@ -393,6 +397,15 @@ class CausalPhysicsEngine:
                     if not src_data:
                         continue
 
+                    # Domain filtering for WORLD_ sources: if edge mechanism
+                    # is not in the world trait's affected_domains, apply fallback.
+                    if src_data.get("node_type") == "WorldTrait":
+                        affected = src_data.get("affected_domains", [])
+                        if affected and mechanism not in affected:
+                            logger.debug("[CausalPhysics·Propagate] WORLD_ domain filter: %s→%s mechanism=%s not in %s, w %.3f→%.3f",
+                                         src, node_id, mechanism, affected, w, w * MECHANISM_FALLBACK_FACTOR)
+                            w *= MECHANISM_FALLBACK_FACTOR
+
                     if src_data.get("node_type") == "Entity":
                         src_trait = src_data.get("traits", {}).get(trait_name)
                         if isinstance(src_trait, dict) and "value" in src_trait:
@@ -400,6 +413,11 @@ class CausalPhysicsEngine:
                             total_impact += (src_trait["value"] - current_val) * w
                         else:
                             total_impact += w
+                    elif src_data.get("node_type") == "WorldTrait":
+                        # World trait: scale impulse by magnitude intensity
+                        mag = src_data.get("magnitude", {})
+                        mag_value = mag.get("value", 0.5) if isinstance(mag, dict) else 0.5
+                        total_impact += mag_value * w
                     else:
                         # EventNode or other — fixed impulse from edge weight
                         total_impact += w

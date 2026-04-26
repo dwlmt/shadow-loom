@@ -98,6 +98,68 @@ class GeneralQuery(BaseModel):
     )
 
 # ==========================================
+# 7. MANUAL EDIT (User-authored prose)
+# ==========================================
+class ManualEditQuery(BaseModel):
+    """User-supplied prose that bypasses generation.
+
+    The engine skips physics simulation and LLM rendering.  Instead the
+    user's text is treated as ground truth, re-extracted into topology,
+    and merged into the world model.
+    """
+    query_type: Literal["manual_edit"] = "manual_edit"
+    edited_prose: str = Field(
+        description="The user's manually written or edited narrative prose.",
+    )
+    description: str = Field(
+        default="",
+        description="Optional human-readable description of the changes.",
+    )
+    focus_entity_ids: List[str] = Field(
+        default_factory=list,
+        description="Entities most affected by the edit (for ego-graph scoping).",
+    )
+
+# ==========================================
+# 8. EVALUATION (Full-story quality audit)
+# ==========================================
+class EvaluationQuery(BaseModel):
+    """Runs a full-story evaluation using the NarrativeOrderObject scorecard.
+
+    Collects all prose across versions, computes engine metrics from
+    causal physics and directive assembly, and produces a structured
+    quality report combining quantitative metrics with LLM literary critique.
+    """
+    query_type: Literal["evaluate"] = "evaluate"
+    focus_entity_ids: List[str] = Field(
+        default_factory=list,
+        description="Entities to focus the evaluation on (empty = all).",
+    )
+    include_full_prose: bool = Field(
+        default=True,
+        description="Include the full reconstructed prose in the evaluation.",
+    )
+
+
+class EvaluationResult(BaseModel):
+    """User-facing evaluation report for a full story."""
+    narrative_order: Any = Field(
+        description=(
+            "The NarrativeOrderObject scorecard (CausalPhysicsFeedback + "
+            "AffectiveStateFeedback + StoryQualitySynthesis + overall_pass)."
+        ),
+    )
+    story_prose_evaluated: str = Field(
+        default="",
+        description="The full prose that was evaluated.",
+    )
+    version_count: int = Field(
+        default=0,
+        description="Number of versions whose prose was combined.",
+    )
+
+
+# ==========================================
 # THE MASTER ROUTER
 # ==========================================
 UserRequest = Union[
@@ -107,4 +169,6 @@ UserRequest = Union[
     DirectiveQuery, 
     InterrogationQuery,
     GeneralQuery,
+    ManualEditQuery,
+    EvaluationQuery,
 ]

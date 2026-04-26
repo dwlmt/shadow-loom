@@ -60,6 +60,19 @@ class AMWNInstantiator:
         for evt in ego_payload.get("recent_memory", []):
             add_amwn_node(evt, "EventNode")
 
+        # World Trait nodes (always global — no spatial filtering)
+        world_trait_ids = set()
+        for wt in ego_payload.get("world_traits", []):
+            add_amwn_node(wt, "WorldTrait")
+            if wt.get("id"):
+                world_trait_ids.add(wt["id"])
+
+        # Collect all entity IDs in the sandbox for ambient edge generation
+        all_entity_ids = set(focus_entity_ids)
+        for ent in ego_payload.get("present_entities", []):
+            if ent.get("id"):
+                all_entity_ids.add(ent["id"])
+
         # 2. WEAVE THE TOPOLOGY (The Edges)
         
         # A. Spatial & Inventory Edges
@@ -189,6 +202,37 @@ class AMWNInstantiator:
                     sandbox.add_edge(src, node_id, edge_type="eavesdropped_by",
                                      medium=cdata.get("medium", "unknown"),
                                      world_id=target_world_id)
+
+        # H. Auto-generated Ambient Propagation Edges (WORLD_ → Entity)
+        # Weak baseline pressure from world-level facts to all entities in the scene.
+        # These are runtime-only (not persisted in causal_topology).
+        max_ft = 0
+        for evt in ego_payload.get("recent_memory", []):
+            ft = evt.get("fabula_time", 0)
+            if ft > max_ft:
+                max_ft = ft
+
+        for wt_id in world_trait_ids:
+            wt_node = sandbox.nodes.get(wt_id, {})
+            mag = wt_node.get("magnitude", {})
+            mag_value = mag.get("value", 0.5) if isinstance(mag, dict) else 0.5
+            domains = wt_node.get("affected_domains", [])
+            mechanism = domains[0] if domains else "psychological"
+            ambient_force = mag_value * 2.0  # weak baseline, max 2.0/10.0
+
+            for ent_id in all_entity_ids:
+                if sandbox.has_node(ent_id):
+                    sandbox.add_edge(
+                        wt_id, ent_id,
+                        edge_type="causal",
+                        causality_type="ambient_propagation",
+                        causal_force=ambient_force,
+                        mechanism=mechanism,
+                        evidence_strength="moderate",
+                        propagation_delay=0,
+                        fabula_time=max_ft,
+                        world_id=target_world_id,
+                    )
 
         return sandbox
 

@@ -29,9 +29,12 @@ from pydantic import BaseModel, Field
 from shadow_loom.auditor import (
     AuditorConfig,
     FeedbackLoopResult,
+    compute_causal_feedback,
+    compute_affective_feedback,
+    _finalize_narrative_order,
     render_and_audit,
 )
-from shadow_loom.directive_assembly import CreativeBrief
+from shadow_loom.directive_assembly import CreativeBrief, DirectiveAssembler
 from shadow_loom.extract_graph import (
     VersionedWorldModel,
     WorldModelVersion,
@@ -45,7 +48,7 @@ from shadow_loom.generation import (
 from shadow_loom.ingestion import ExtractionConfig, ValidationReport, run_extraction, run_extraction_async
 from shadow_loom.models import WorldStateV1
 from shadow_loom.narrative_physics import calculate_narrative_physics
-from shadow_loom.query_models import UserRequest
+from shadow_loom.query_models import UserRequest, EvaluationQuery, EvaluationResult
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +204,12 @@ class PipelineResult(BaseModel):
         description="Full audit loop result (None if skipped/not applicable).",
     )
 
+    # --- Evaluation ---
+    evaluation_result: Optional[EvaluationResult] = Field(
+        default=None,
+        description="Full-story evaluation result (None if not an evaluate query).",
+    )
+
     # --- World model ---
     world_model: Optional[VersionedWorldModel] = Field(
         default=None,
@@ -344,6 +353,137 @@ def run_pipeline(
         return result
 
     # =================================================================
+    # Evaluation query — full-story quality audit
+    # =================================================================
+    if query.query_type == "evaluate":
+        logger.info("[Pipeline] Evaluation query — running full-story quality audit.")
+        # Collect all prose from versioned model history
+        all_prose_parts: list[str] = []
+        if vwm.history:
+            for entry in vwm.history:
+                if hasattr(entry, 'prose') and entry.prose:
+                    all_prose_parts.append(entry.prose)
+        # If no history prose, try to generate a summary from events
+        if not all_prose_parts:
+            events_summary = "; ".join(
+                f"[{e.id}] {e.description}" for e in ws.events[:50]
+            )
+            all_prose_parts.append(
+                f"Story events summary: {events_summary}"
+            )
+        full_prose = "\n\n---\n\n".join(all_prose_parts)
+
+        # Build an assembler for affective scoring
+        from shadow_loom.extract_graph import extract_ego_graph_from_memory
+        focus_ids = (
+            query.focus_entity_ids
+            if query.focus_entity_ids
+            else list(ws.entities.keys())[:5]
+        )
+        ego_graph = extract_ego_graph_from_memory(ws, focus_ids)
+        eval_assembler = DirectiveAssembler(
+            sandbox=None, ego_payload=ego_graph.model_dump(), world_state=ws,
+        )
+
+        # Build a minimal brief for the evaluation
+        eval_brief = CreativeBrief(
+            target_effect="observation",
+            target_entities=focus_ids,
+            scene_context=physics_result.get("physics_state", {}),
+        )
+        # Populate analytics on the brief
+        eval_brief.epistemic_gaps = eval_assembler.compute_epistemic_gaps(focus_ids)
+        eval_brief.narrative_tensions = eval_assembler.compute_narrative_tension()
+        eval_brief.trait_trajectories = eval_assembler.compute_trait_trajectories(focus_ids)
+
+        # Compute engine metrics
+        causal_fb = compute_causal_feedback(None, eval_brief, ws)
+        affective_fb = compute_affective_feedback(eval_brief, eval_assembler, focus_ids)
+
+        # Run LLM evaluation
+        from shadow_loom.auditor import AuditorConfig as _AC
+        eval_cfg = cfg.auditor_config or _AC()
+        narrative_order = _finalize_narrative_order(
+            prose=full_prose,
+            brief=eval_brief,
+            causal_feedback=causal_fb,
+            affective_feedback=affective_fb,
+            config=eval_cfg,
+        )
+
+        eval_result = EvaluationResult(
+            narrative_order=narrative_order.model_dump(),
+            story_prose_evaluated=full_prose if query.include_full_prose else "",
+            version_count=len(all_prose_parts),
+        )
+        result.evaluation_result = eval_result
+        result.prose = full_prose
+
+        history.record("evaluation", {
+            "overall_pass": narrative_order.overall_pass,
+            "foreshadowing_score": narrative_order.causal_feedback.foreshadowing_payoff_score,
+            "affective_loss": narrative_order.affective_feedback.affective_loss_mse,
+            "miracle_steps": len(narrative_order.causal_feedback.miracle_steps_detected),
+        })
+
+        return result
+
+    # =================================================================
+    # Manual edit: skip physics/generation/audit — prose is user-supplied
+    # =================================================================
+    if query.query_type == "manual_edit":
+        logger.info("[Pipeline] Manual edit — skipping generation, running re-extraction.")
+        result.prose = query.edited_prose
+
+        # Create a minimal GeneratedScene wrapper for consistency
+        from shadow_loom.generation import GeneratedScene
+        result.scene = GeneratedScene(
+            prose=query.edited_prose,
+            scene_summary=query.description or "Manual edit",
+        )
+        history.record("generation", GenerationStepRecord(
+            scene=result.scene,
+            brief=None,
+        ))
+
+        # Always run re-extraction for manual edits (the whole point)
+        logger.info("[Pipeline] Extracting topology from manually edited prose.")
+        try:
+            topology = extract_topology_from_prose(
+                prose=result.prose,
+                world_state=ws,
+                config=cfg.extraction_config,
+            )
+            description = (
+                f"Manual edit: {query.description}"
+                if query.description
+                else "Manual edit"
+            )
+            vwm_next = vwm.merge(
+                topology,
+                source="manual_edit",
+                description=description,
+            )
+            changeset = vwm_next.history[-1].changeset
+            history.record("reextraction_merge", ReextractionStepRecord(
+                events_added=changeset.events_added if changeset else 0,
+                causal_edges_added=changeset.causal_edges_added if changeset else 0,
+                entity_updates_applied=changeset.entity_updates_applied if changeset else 0,
+                entity_updates_skipped=changeset.entity_updates_skipped if changeset else [],
+                new_version=vwm_next.version,
+            ))
+            result.world_model = vwm_next
+            logger.info(
+                "[Pipeline] Manual edit merge complete — v%d → v%d.",
+                vwm.version, vwm_next.version,
+            )
+        except Exception:
+            logger.exception("[Pipeline] Manual edit re-extraction/merge failed.")
+            history.record("reextraction_merge", {"error": "extraction_or_merge_failed"})
+
+        return result
+
+    # =================================================================
     # Step 3–4: Brief Assembly + Generation
     # =================================================================
     physics_state = physics_result.get("physics_state", {})
@@ -375,6 +515,18 @@ def run_pipeline(
 
         if brief is not None:
             # Directive with pre-built brief — use render_and_audit
+            # Try to reconstruct the assembler for engine metrics
+            _assembler = None
+            if query.query_type == "directive":
+                try:
+                    from shadow_loom.extract_graph import extract_ego_graph_from_memory
+                    _ego = extract_ego_graph_from_memory(ws, brief.target_entities)
+                    _assembler = DirectiveAssembler(
+                        sandbox=None, ego_payload=_ego.model_dump(), world_state=ws,
+                    )
+                except Exception:
+                    logger.debug("[Pipeline] Could not build assembler for engine metrics.")
+
             feedback = render_and_audit(
                 brief=brief,
                 world_state=ws,
@@ -382,6 +534,7 @@ def run_pipeline(
                 generation_config=cfg.generation_config,
                 query_type=query.query_type,
                 physics_state=physics_state,
+                assembler=_assembler,
             )
         else:
             # Non-directive: render first, then audit
@@ -536,6 +689,36 @@ async def run_pipeline_async(
     ))
 
     if query.query_type in ("interrogate", "general"):
+        return result
+
+    # Manual edit: same as sync path
+    if query.query_type == "manual_edit":
+        logger.info("[Pipeline·Async] Manual edit — skipping generation, running re-extraction.")
+        result.prose = query.edited_prose
+        from shadow_loom.generation import GeneratedScene
+        result.scene = GeneratedScene(
+            prose=query.edited_prose,
+            scene_summary=query.description or "Manual edit",
+        )
+        history.record("generation", GenerationStepRecord(scene=result.scene, brief=None))
+        try:
+            topology = extract_topology_from_prose(
+                prose=result.prose, world_state=ws, config=cfg.extraction_config,
+            )
+            description = f"Manual edit: {query.description}" if query.description else "Manual edit"
+            vwm_next = vwm.merge(topology, source="manual_edit", description=description)
+            changeset = vwm_next.history[-1].changeset
+            history.record("reextraction_merge", ReextractionStepRecord(
+                events_added=changeset.events_added if changeset else 0,
+                causal_edges_added=changeset.causal_edges_added if changeset else 0,
+                entity_updates_applied=changeset.entity_updates_applied if changeset else 0,
+                entity_updates_skipped=changeset.entity_updates_skipped if changeset else [],
+                new_version=vwm_next.version,
+            ))
+            result.world_model = vwm_next
+        except Exception:
+            logger.exception("[Pipeline·Async] Manual edit re-extraction/merge failed.")
+            history.record("reextraction_merge", {"error": "extraction_or_merge_failed"})
         return result
 
     # Steps 3–4: Brief + Generation (same as sync)

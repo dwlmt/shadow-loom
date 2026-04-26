@@ -277,6 +277,18 @@ def _format_scene_context(ctx: Dict[str, Any]) -> str:
         desc = evt.get("description", "")
         lines.append(f"  Recent: {eid} — {desc}")
 
+    # World traits (structural constraints)
+    for wt in ctx.get("world_traits", []):
+        wid = wt.get("id", "?")
+        name = wt.get("name", wid)
+        desc = wt.get("description", "")
+        mag = wt.get("magnitude", {})
+        mag_val = mag.get("value", 0.5) if isinstance(mag, dict) else 0.5
+        domains = ", ".join(wt.get("affected_domains", []))
+        lines.append(f"  World: {name} ({wid}) — mag={mag_val:.2f}, domains=[{domains}]")
+        if desc:
+            lines.append(f"    {desc[:120]}")
+
     if not lines:
         return "(No scene context available.)"
     return "\n".join(lines)

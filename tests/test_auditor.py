@@ -726,3 +726,433 @@ class TestAuditResultFailedOpen:
         )
         assert real.passed == fallback.passed
         assert real.failed_open != fallback.failed_open
+
+
+# =====================================================================
+# NarrativeOrderObject & Structured Feedback Models
+# =====================================================================
+
+from shadow_loom.auditor import (
+    CausalPhysicsFeedback,
+    AffectiveStateFeedback,
+    StoryQualitySynthesis,
+    NarrativeOrderObject,
+    ChangeImpactMetrics,
+    compute_causal_feedback,
+    compute_affective_feedback,
+    compute_overall_pass,
+    assemble_evaluation_prompt,
+)
+from shadow_loom.causal_physics import CausalPhysicsResult, BlockedPropagation, TraitMutation
+from shadow_loom.directive_assembly import NarrativeTension
+
+
+class TestCausalPhysicsFeedback:
+    """Unit tests for CausalPhysicsFeedback model."""
+
+    def test_defaults(self):
+        fb = CausalPhysicsFeedback()
+        assert fb.miracle_steps_detected == []
+        assert fb.foreshadowing_payoff_score == 0.0
+        assert fb.cognitive_plausibility_score == 1.0
+        assert fb.cognitive_plausibility_details == ""
+
+    def test_round_trip(self):
+        fb = CausalPhysicsFeedback(
+            miracle_steps_detected=["ENT_A.guilt: impact=0.3 < inertia=0.5 (inertia)"],
+            foreshadowing_payoff_score=0.75,
+            cognitive_plausibility_score=0.9,
+            cognitive_plausibility_details="1 contradicted belief",
+        )
+        rebuilt = CausalPhysicsFeedback.model_validate_json(fb.model_dump_json())
+        assert rebuilt.miracle_steps_detected == fb.miracle_steps_detected
+        assert rebuilt.foreshadowing_payoff_score == fb.foreshadowing_payoff_score
+
+    def test_score_clamping(self):
+        with pytest.raises(Exception):
+            CausalPhysicsFeedback(foreshadowing_payoff_score=1.5)
+        with pytest.raises(Exception):
+            CausalPhysicsFeedback(cognitive_plausibility_score=-0.1)
+
+
+class TestAffectiveStateFeedback:
+    """Unit tests for AffectiveStateFeedback model."""
+
+    def test_defaults(self):
+        fb = AffectiveStateFeedback()
+        assert fb.emotional_trajectory_scores == {}
+        assert fb.kl_divergence_prediction_error is None
+        assert fb.affective_loss_mse == 0.0
+
+    def test_round_trip(self):
+        fb = AffectiveStateFeedback(
+            emotional_trajectory_scores={"suspense": 0.8, "mystery": 0.6},
+            kl_divergence_prediction_error=0.42,
+            affective_loss_mse=0.15,
+        )
+        rebuilt = AffectiveStateFeedback.model_validate_json(fb.model_dump_json())
+        assert rebuilt.emotional_trajectory_scores == fb.emotional_trajectory_scores
+        assert rebuilt.kl_divergence_prediction_error == pytest.approx(0.42)
+
+
+class TestStoryQualitySynthesis:
+    """Unit tests for StoryQualitySynthesis model."""
+
+    def test_defaults(self):
+        sq = StoryQualitySynthesis()
+        assert sq.coherence_and_consistency_review == ""
+        assert sq.reward_hacking_diagnostics is None
+        assert sq.actionable_rewrite_directives == []
+
+    def test_round_trip(self):
+        sq = StoryQualitySynthesis(
+            coherence_and_consistency_review="Good coherence.",
+            reward_hacking_diagnostics="Minor emotional inflation detected.",
+            actionable_rewrite_directives=["Tone down the joy in paragraph 3."],
+        )
+        rebuilt = StoryQualitySynthesis.model_validate_json(sq.model_dump_json())
+        assert rebuilt.actionable_rewrite_directives == sq.actionable_rewrite_directives
+
+
+class TestNarrativeOrderObject:
+    """Unit tests for NarrativeOrderObject model."""
+
+    def test_defaults(self):
+        noo = NarrativeOrderObject()
+        assert noo.overall_pass is False
+        assert noo.causal_feedback.miracle_steps_detected == []
+        assert noo.affective_feedback.affective_loss_mse == 0.0
+
+    def test_round_trip(self):
+        noo = NarrativeOrderObject(
+            causal_feedback=CausalPhysicsFeedback(foreshadowing_payoff_score=0.9),
+            affective_feedback=AffectiveStateFeedback(affective_loss_mse=0.1),
+            quality_synthesis=StoryQualitySynthesis(
+                coherence_and_consistency_review="Great."
+            ),
+            overall_pass=True,
+        )
+        rebuilt = NarrativeOrderObject.model_validate_json(noo.model_dump_json())
+        assert rebuilt.overall_pass is True
+        assert rebuilt.causal_feedback.foreshadowing_payoff_score == pytest.approx(0.9)
+
+    def test_audit_result_backward_compat(self):
+        """AuditResult without change_impact still works."""
+        ar = AuditResult(passed=True, violations=[], audit_summary="OK")
+        assert ar.change_impact is None
+
+    def test_audit_result_with_change_impact(self):
+        """AuditResult can carry a ChangeImpactMetrics."""
+        ci = ChangeImpactMetrics(
+            causal_feedback=CausalPhysicsFeedback(foreshadowing_payoff_score=0.8),
+            affective_feedback=AffectiveStateFeedback(affective_loss_mse=0.1),
+        )
+        ar = AuditResult(
+            passed=True, violations=[], audit_summary="OK",
+            change_impact=ci,
+        )
+        assert ar.change_impact is not None
+        assert ar.change_impact.causal_feedback.foreshadowing_payoff_score == pytest.approx(0.8)
+
+    def test_feedback_loop_result_backward_compat(self):
+        """FeedbackLoopResult without change_impact still works."""
+        flr = FeedbackLoopResult(
+            final_scene=_make_scene(),
+            converged=True,
+            iterations=1,
+            final_graph_version=0,
+        )
+        assert flr.change_impact is None
+
+    def test_cycle_snapshot_backward_compat(self):
+        """AuditCycleSnapshot without change_impact still works."""
+        snap = AuditCycleSnapshot(
+            iteration=0,
+            prose="test",
+            audit_result=AuditResult(passed=True, violations=[]),
+            graph_version=0,
+        )
+        assert snap.change_impact is None
+
+
+class TestChangeImpactMetrics:
+    """Unit tests for ChangeImpactMetrics model (per-cycle delta)."""
+
+    def test_defaults(self):
+        ci = ChangeImpactMetrics()
+        assert ci.causal_feedback.miracle_steps_detected == []
+        assert ci.affective_feedback.affective_loss_mse == 0.0
+
+    def test_round_trip(self):
+        ci = ChangeImpactMetrics(
+            causal_feedback=CausalPhysicsFeedback(foreshadowing_payoff_score=0.7),
+            affective_feedback=AffectiveStateFeedback(
+                emotional_trajectory_scores={"suspense": 0.9},
+                affective_loss_mse=0.2,
+            ),
+        )
+        rebuilt = ChangeImpactMetrics.model_validate_json(ci.model_dump_json())
+        assert rebuilt.causal_feedback.foreshadowing_payoff_score == pytest.approx(0.7)
+        assert rebuilt.affective_feedback.emotional_trajectory_scores == {"suspense": 0.9}
+
+    def test_no_quality_synthesis(self):
+        """ChangeImpactMetrics does NOT have quality_synthesis or overall_pass."""
+        ci = ChangeImpactMetrics()
+        assert not hasattr(ci, "quality_synthesis")
+        assert not hasattr(ci, "overall_pass")
+
+    def test_distinct_from_narrative_order(self):
+        """ChangeImpactMetrics and NarrativeOrderObject are distinct types."""
+        ci = ChangeImpactMetrics()
+        noo = NarrativeOrderObject()
+        assert type(ci) is not type(noo)
+        assert hasattr(noo, "quality_synthesis")
+        assert hasattr(noo, "overall_pass")
+        assert not hasattr(ci, "quality_synthesis")
+
+
+class TestComputeCausalFeedback:
+    """Tests for compute_causal_feedback engine metric function."""
+
+    def test_no_physics_result(self):
+        brief = _make_brief()
+        fb = compute_causal_feedback(None, brief)
+        assert fb.miracle_steps_detected == []
+        assert fb.foreshadowing_payoff_score == 1.0  # no tensions = perfect
+
+    def test_blocked_propagations_become_miracle_steps(self):
+        physics = CausalPhysicsResult(
+            sandbox_data={},
+            blocked=[
+                BlockedPropagation(
+                    node_id="ENT_MACBETH", trait="guilt",
+                    impact=0.3, inertia=0.5, reason="inertia",
+                ),
+                BlockedPropagation(
+                    node_id="ENT_MACBETH", trait="ambition",
+                    impact=0.2, inertia=0.8, reason="spatial_affordance",
+                ),
+            ],
+        )
+        brief = _make_brief()
+        fb = compute_causal_feedback(physics, brief)
+        assert len(fb.miracle_steps_detected) == 2
+        assert "ENT_MACBETH.guilt" in fb.miracle_steps_detected[0]
+
+    def test_epistemic_gaps_affect_cognitive_plausibility(self):
+        brief = _make_brief(
+            epistemic_gaps=[
+                EpistemicGap(
+                    entity_id="ENT_A", belief_target_id="OBJ_X",
+                    believed_state="safe", actual_state="poisoned",
+                    gap_type="contradicted", gap_magnitude=1.0,
+                ),
+                EpistemicGap(
+                    entity_id="ENT_B", belief_target_id="OBJ_Y",
+                    believed_state="locked", actual_state="locked",
+                    gap_type="confirmed", gap_magnitude=0.0,
+                ),
+            ],
+        )
+        fb = compute_causal_feedback(None, brief)
+        assert fb.cognitive_plausibility_score == pytest.approx(0.5)
+        assert "1/2" in fb.cognitive_plausibility_details
+
+    def test_foreshadowing_with_narrative_tensions(self):
+        """Withheld causes with matching chain_reaction edges score higher."""
+        brief = _make_brief()
+        brief.narrative_tensions = [
+            NarrativeTension(
+                event_id="EVT_SECRET",
+                fabula_time=100,
+                syuzhet_index=500,
+                description="The secret murder",
+                displacement=0.8,
+                tension_type="withheld_cause",
+            ),
+        ]
+        ws = macbeth_ws
+        fb = compute_causal_feedback(None, brief, ws)
+        # Score depends on whether EVT_SECRET has downstream chain_reaction edges
+        assert 0.0 <= fb.foreshadowing_payoff_score <= 1.0
+
+    def test_macbeth_blocked_propagations(self):
+        """Macbeth world state with physics engine produces meaningful feedback."""
+        from shadow_loom.extract_graph import extract_ego_graph_from_memory
+        from shadow_loom.instantiator import AMWNInstantiator
+        from shadow_loom.causal_physics import CausalPhysicsEngine
+
+        ws = macbeth_ws
+        ego = extract_ego_graph_from_memory(ws, ["ENT_MACBETH"])
+        sandbox = AMWNInstantiator.create_sandbox(ego.model_dump(), "observation")
+        engine = CausalPhysicsEngine(sandbox, ws)
+        result = engine.execute(rung=2, interventions={})
+        brief = _make_brief(entities=["ENT_MACBETH"])
+
+        fb = compute_causal_feedback(result, brief, ws)
+        # Just verify it runs and returns valid structure
+        assert isinstance(fb.miracle_steps_detected, list)
+        assert 0.0 <= fb.foreshadowing_payoff_score <= 1.0
+        assert 0.0 <= fb.cognitive_plausibility_score <= 1.0
+
+
+class TestComputeAffectiveFeedback:
+    """Tests for compute_affective_feedback engine metric function."""
+
+    def test_no_assembler(self):
+        brief = _make_brief()
+        fb = compute_affective_feedback(brief, None)
+        assert fb.emotional_trajectory_scores == {}
+        assert fb.kl_divergence_prediction_error is None
+        assert fb.affective_loss_mse == 0.0
+
+    def test_with_assembler_on_macbeth(self):
+        ws = macbeth_ws
+        ego = extract_ego_graph_from_memory(ws, ["ENT_MACBETH"])
+        assembler = DirectiveAssembler(
+            sandbox=None, ego_payload=ego.model_dump(), world_state=ws,
+        )
+        brief = _make_brief(effect="suspense", entities=["ENT_MACBETH"])
+        fb = compute_affective_feedback(brief, assembler, ["ENT_MACBETH"])
+
+        # Should have computed at least some structural scores
+        assert isinstance(fb.emotional_trajectory_scores, dict)
+        assert isinstance(fb.affective_loss_mse, float)
+
+
+class TestComputeOverallPass:
+    """Tests for the threshold-based overall_pass logic."""
+
+    def test_all_good_passes(self):
+        noo = NarrativeOrderObject(
+            causal_feedback=CausalPhysicsFeedback(
+                foreshadowing_payoff_score=0.8,
+                cognitive_plausibility_score=0.9,
+            ),
+            affective_feedback=AffectiveStateFeedback(
+                affective_loss_mse=0.1,
+            ),
+        )
+        config = AuditorConfig()
+        assert compute_overall_pass(noo, config) is True
+
+    def test_low_foreshadowing_fails(self):
+        noo = NarrativeOrderObject(
+            causal_feedback=CausalPhysicsFeedback(
+                foreshadowing_payoff_score=0.3,
+                cognitive_plausibility_score=0.9,
+            ),
+            affective_feedback=AffectiveStateFeedback(affective_loss_mse=0.1),
+        )
+        config = AuditorConfig()
+        assert compute_overall_pass(noo, config) is False
+
+    def test_miracle_steps_fail(self):
+        noo = NarrativeOrderObject(
+            causal_feedback=CausalPhysicsFeedback(
+                miracle_steps_detected=["ENT_A.guilt: impact blocked"],
+                foreshadowing_payoff_score=0.9,
+                cognitive_plausibility_score=0.9,
+            ),
+            affective_feedback=AffectiveStateFeedback(affective_loss_mse=0.1),
+        )
+        config = AuditorConfig()
+        assert compute_overall_pass(noo, config) is False
+
+    def test_high_affective_loss_fails(self):
+        noo = NarrativeOrderObject(
+            causal_feedback=CausalPhysicsFeedback(
+                foreshadowing_payoff_score=0.9,
+                cognitive_plausibility_score=0.9,
+            ),
+            affective_feedback=AffectiveStateFeedback(affective_loss_mse=0.5),
+        )
+        config = AuditorConfig()
+        assert compute_overall_pass(noo, config) is False
+
+    def test_custom_thresholds(self):
+        noo = NarrativeOrderObject(
+            causal_feedback=CausalPhysicsFeedback(
+                foreshadowing_payoff_score=0.4,
+                cognitive_plausibility_score=0.5,
+            ),
+            affective_feedback=AffectiveStateFeedback(affective_loss_mse=0.4),
+        )
+        # Relaxed thresholds — should pass
+        config = AuditorConfig(
+            min_foreshadowing_score=0.3,
+            max_affective_loss=0.5,
+            min_cognitive_plausibility=0.4,
+        )
+        assert compute_overall_pass(noo, config) is True
+
+    def test_low_cognitive_plausibility_fails(self):
+        noo = NarrativeOrderObject(
+            causal_feedback=CausalPhysicsFeedback(
+                foreshadowing_payoff_score=0.9,
+                cognitive_plausibility_score=0.5,
+            ),
+            affective_feedback=AffectiveStateFeedback(affective_loss_mse=0.1),
+        )
+        config = AuditorConfig()
+        assert compute_overall_pass(noo, config) is False
+
+
+class TestEvaluationPromptAssembly:
+    """Tests for assemble_evaluation_prompt."""
+
+    def test_basic_prompt_structure(self):
+        brief = _make_brief()
+        prompt = assemble_evaluation_prompt("Test prose.", brief)
+        assert "PROSE TO EVALUATE" in prompt
+        assert "Test prose." in prompt
+        assert "MYSTERY" in prompt
+        assert "TASK" in prompt
+
+    def test_engine_metrics_in_prompt(self):
+        brief = _make_brief()
+        causal = CausalPhysicsFeedback(
+            miracle_steps_detected=["ENT_A.guilt: blocked"],
+            foreshadowing_payoff_score=0.75,
+        )
+        affective = AffectiveStateFeedback(
+            emotional_trajectory_scores={"suspense": 0.8},
+            affective_loss_mse=0.2,
+        )
+        prompt = assemble_evaluation_prompt(
+            "Test prose.", brief,
+            causal_feedback=causal,
+            affective_feedback=affective,
+        )
+        assert "CAUSAL PHYSICS METRICS" in prompt
+        assert "AFFECTIVE METRICS" in prompt
+        assert "ENT_A.guilt: blocked" in prompt
+        assert "suspense" in prompt
+
+
+class TestEvaluationQuery:
+    """Tests for the EvaluationQuery model."""
+
+    def test_defaults(self):
+        from shadow_loom.query_models import EvaluationQuery
+        q = EvaluationQuery()
+        assert q.query_type == "evaluate"
+        assert q.focus_entity_ids == []
+        assert q.include_full_prose is True
+
+    def test_in_user_request_union(self):
+        from shadow_loom.query_models import UserRequest, EvaluationQuery
+        import json
+        q = EvaluationQuery(focus_entity_ids=["ENT_A"])
+        # Should be serializable as part of the union
+        data = q.model_dump()
+        assert data["query_type"] == "evaluate"
+
+    def test_evaluation_result_model(self):
+        from shadow_loom.query_models import EvaluationResult
+        er = EvaluationResult(
+            narrative_order={"overall_pass": True},
+            story_prose_evaluated="Test",
+            version_count=3,
+        )
+        assert er.version_count == 3

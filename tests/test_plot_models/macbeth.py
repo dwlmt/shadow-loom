@@ -7,6 +7,7 @@ from shadow_loom.models import (
     WorldStateV1, Location, Entity, EventNode, NarrativeObject,
     CausalEdge, SpatialEdge, RelationshipEdge, InformationEdge,
     TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
+    GlobalTrait,
 )
 
 world_state = WorldStateV1(
@@ -429,6 +430,26 @@ world_state = WorldStateV1(
                         medium="whisper", is_encrypted=True,
                         established_at_fabula=1200),
     ],
+
+    # ── WORLD TRAITS ────────────────────────────────────────────────────
+    world_traits={
+        "WORLD_FEUDAL_HIERARCHY": GlobalTrait(
+            id="WORLD_FEUDAL_HIERARCHY",
+            name="Feudal Power Structure",
+            description="Scotland's feudal hierarchy where thanes compete for royal favor through violence and loyalty. Kingship is earned through bloodshed.",
+            category="governance",
+            magnitude=TraitVector(value=0.8, inertia=0.6),
+            affected_domains=["social", "psychological"],
+        ),
+        "WORLD_SUPERNATURAL_PROPHECY": GlobalTrait(
+            id="WORLD_SUPERNATURAL_PROPHECY",
+            name="Supernatural Prophecy",
+            description="The witches' prophecies create an ambiguous supernatural backdrop that blurs the line between fate and free will.",
+            category="cosmology",
+            magnitude=TraitVector(value=0.5, inertia=0.8),
+            affected_domains=["psychological", "epistemic"],
+        ),
+    },
 
     # ── SOCIAL TOPOLOGY ─────────────────────────────────────────────────
     social_topology=[

@@ -3,6 +3,7 @@ from shadow_loom.models import (
     WorldStateV1, Location, Entity, EventNode, NarrativeObject,
     CausalEdge, SpatialEdge, RelationshipEdge, InformationEdge,
     TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
+    GlobalTrait,
 )
 
 world_state = WorldStateV1(
@@ -274,6 +275,32 @@ world_state = WorldStateV1(
         InformationEdge(source_id="ENT_CHARRINGTON", target_ids=["ENT_OBRIEN"], medium="surveillance", established_at_fabula=400),
         InformationEdge(source_id="ENT_OBRIEN", target_ids=["ENT_WINSTON"], medium="torture_interrogation", established_at_fabula=900),
     ],
+    world_traits={
+        "WORLD_SURVEILLANCE_STATE": GlobalTrait(
+            id="WORLD_SURVEILLANCE_STATE",
+            name="Totalitarian Surveillance",
+            description="The Party monitors all citizens through telescreens, microphones, informants, and the Thought Police. Privacy is functionally impossible.",
+            category="governance",
+            magnitude=TraitVector(value=0.95, inertia=0.9),
+            affected_domains=["psychological", "epistemic", "social"],
+        ),
+        "WORLD_THOUGHT_CONTROL": GlobalTrait(
+            id="WORLD_THOUGHT_CONTROL",
+            name="Newspeak and Doublethink",
+            description="Systematic reduction of language and cognitive freedom through Newspeak and doublethink. Limits what citizens can think and express.",
+            category="governance",
+            magnitude=TraitVector(value=0.85, inertia=0.85),
+            affected_domains=["epistemic", "psychological"],
+        ),
+        "WORLD_PERPETUAL_WAR": GlobalTrait(
+            id="WORLD_PERPETUAL_WAR",
+            name="Perpetual War Economy",
+            description="Oceania is perpetually at war (with Eurasia or Eastasia). War justifies scarcity, nationalism, and the Party's absolute authority.",
+            category="economy",
+            magnitude=TraitVector(value=0.7, inertia=0.8),
+            affected_domains=["social", "psychological"],
+        ),
+    },
     social_topology=[
         RelationshipEdge(source_entity_id="ENT_WINSTON", target_entity_id="ENT_JULIA", affinity=0.8, fear=0.1, power_dynamic=0.0, inertia=0.3),
         RelationshipEdge(source_entity_id="ENT_JULIA", target_entity_id="ENT_WINSTON", affinity=0.7, fear=0.1, power_dynamic=0.0, inertia=0.3),
