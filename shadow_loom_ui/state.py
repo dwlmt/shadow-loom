@@ -45,6 +45,9 @@ class StateEvent(Enum):
     PIPELINE_RESULT = "pipeline_result"
     PROJECT_LOADED = "project_loaded"
     VERSION_CHANGED = "version_changed"
+    NODE_SELECTED = "node_selected"
+    QUERY_STARTED = "query_started"
+    QUERY_COMPLETE = "query_complete"
 
 
 @dataclass
@@ -101,12 +104,12 @@ class AppState:
     last_result: Optional[PipelineResult] = None
     last_parse: Optional[QueryParseResult] = None
 
+    # Currently selected node (for cross-component inspector sync)
+    selected_node_id: Optional[str] = None
+    selected_node_type: Optional[str] = None
+
     # Event bus: multiple listeners per event
     _listeners: Dict[StateEvent, List[Callable]] = field(default_factory=dict)
-
-    # Legacy callbacks (kept for backward compat during migration)
-    on_world_state_changed: Optional[Callable] = None
-    on_pipeline_result: Optional[Callable] = None
 
     # ---- Event bus ----
 
@@ -222,11 +225,7 @@ class AppState:
         if pipeline_result.world_model is not None:
             self.versioned_model = pipeline_result.world_model
             self.world_state = pipeline_result.world_model.current
-            # Notify via event bus
             self.emit(StateEvent.WORLD_STATE_CHANGED)
-            # Legacy callback
-            if self.on_world_state_changed:
-                self.on_world_state_changed()
 
         self.last_result = pipeline_result
 
@@ -261,11 +260,8 @@ class AppState:
         )
         self.query_history.append(result)
 
-        # Notify via event bus
         self.emit(StateEvent.PIPELINE_RESULT, result=result)
-        # Legacy callback
-        if self.on_pipeline_result:
-            self.on_pipeline_result(result)
+        self.emit(StateEvent.QUERY_COMPLETE, result=result)
 
         return result
 
@@ -389,8 +385,6 @@ class AppState:
             ws, max_snapshots=max_snapshots,
         )
         self.emit(StateEvent.WORLD_STATE_CHANGED)
-        if self.on_world_state_changed:
-            self.on_world_state_changed()
 
     def load_project(
         self,
@@ -419,14 +413,18 @@ class AppState:
         self.world_state = self.versioned_model.current
         self.emit(StateEvent.WORLD_STATE_CHANGED)
         self.emit(StateEvent.VERSION_CHANGED, version=version)
-        if self.on_world_state_changed:
-            self.on_world_state_changed()
 
     def to_json(self) -> str:
         """Serialize the current world state to JSON for persistence."""
         if self.world_state is None:
             return "{}"
         return self.world_state.model_dump_json(indent=2)
+
+    def select_node(self, node_id: str | None, node_type: str | None = None) -> None:
+        """Select a node for cross-component inspector sync."""
+        self.selected_node_id = node_id
+        self.selected_node_type = node_type
+        self.emit(StateEvent.NODE_SELECTED, node_id=node_id, node_type=node_type)
 
     @staticmethod
     def from_json(data: str) -> WorldStateV1:

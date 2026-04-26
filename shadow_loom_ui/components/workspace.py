@@ -1,7 +1,12 @@
-"""Project workspace — tabbed work surface with left navigation rail.
+"""Project workspace — left panel + tabbed canvas + bottom chat drawer.
 
-Loads a project from the DB and renders 5 tabs:
-Story | World | Timeline | Audit | Export
+Layout:
+  ┌──────┬────────────────────────────────────────────┐
+  │ Left │  Story │ World │ Causality │ Audit │ Export │
+  │ Panel│  (tab content — full canvas)               │
+  │      ├────────────────────────────────────────────┤
+  │      │  Bottom Drawer: Chat / Query Bar           │
+  └──────┴────────────────────────────────────────────┘
 """
 
 from __future__ import annotations
@@ -24,14 +29,14 @@ logger = logging.getLogger(__name__)
 _TABS = [
     ("story", "menu_book", "Story"),
     ("world", "hub", "World"),
-    ("timeline", "timeline", "Timeline"),
+    ("causality", "device_hub", "Causality"),
     ("audit", "fact_check", "Audit"),
     ("export", "ios_share", "Export"),
 ]
 
 
 def build_workspace(state: AppState, project_id: int) -> None:
-    """Load a project and render the tabbed workspace."""
+    """Load a project and render the workspace."""
 
     # ---- Load project from DB ----
     project = db.get_project(project_id)
@@ -90,6 +95,7 @@ def build_workspace(state: AppState, project_id: int) -> None:
                 user_id=state.user_id,
             )
             state.current_version_row_id = ver.id
+            state.emit(StateEvent.VERSION_CHANGED, version=ver.version)
             ui.notify(f"Saved v{ver.version}", type="positive")
 
         ui.button("Save", icon="save", on_click=_save).props("flat dense")
@@ -107,29 +113,48 @@ def build_workspace(state: AppState, project_id: int) -> None:
 
             star_btn.on("click", _toggle_star)
 
-    # ---- Tabbed layout ----
-    with ui.tabs().classes("w-full") as tabs:
-        tab_refs = {}
-        for key, icon, label in _TABS:
-            tab_refs[key] = ui.tab(key, label=label, icon=icon)
+    # ---- Main layout: left panel + tabbed canvas ----
+    with ui.splitter(value=18).classes("w-full").style(
+        "height: calc(100vh - 140px)"
+    ) as main_split:
+        # Left panel
+        with main_split.before:
+            with ui.scroll_area().classes("w-full h-full"):
+                from shadow_loom_ui.components.left_panel import build_left_panel
+                build_left_panel(state)
 
-    with ui.tab_panels(tabs, value="story").classes("w-full flex-grow"):
-        with ui.tab_panel("story").classes("q-pa-none"):
-            from shadow_loom_ui.components.story_tab import build_story_tab
-            build_story_tab(state)
+        # Right: tabs + bottom drawer
+        with main_split.after:
+            with ui.column().classes("w-full h-full gap-0"):
+                # Tab bar
+                with ui.tabs().classes("w-full") as tabs:
+                    for key, icon, label in _TABS:
+                        ui.tab(key, label=label, icon=icon)
 
-        with ui.tab_panel("world").classes("q-pa-none"):
-            from shadow_loom_ui.components.world_tab import build_world_tab
-            build_world_tab(state)
+                # Tab panels
+                with ui.tab_panels(tabs, value="story").classes(
+                    "w-full flex-grow"
+                ).style("overflow: auto"):
+                    with ui.tab_panel("story").classes("q-pa-none h-full"):
+                        from shadow_loom_ui.components.story_tab import build_story_tab
+                        build_story_tab(state)
 
-        with ui.tab_panel("timeline").classes("q-pa-none"):
-            from shadow_loom_ui.components.timeline_tab import build_timeline_tab
-            build_timeline_tab(state)
+                    with ui.tab_panel("world").classes("q-pa-none h-full"):
+                        from shadow_loom_ui.components.world_tab import build_world_tab
+                        build_world_tab(state)
 
-        with ui.tab_panel("audit").classes("q-pa-none"):
-            from shadow_loom_ui.components.audit_tab import build_audit_tab
-            build_audit_tab(state)
+                    with ui.tab_panel("causality").classes("q-pa-none h-full"):
+                        from shadow_loom_ui.components.causality_tab import build_causality_tab
+                        build_causality_tab(state)
 
-        with ui.tab_panel("export").classes("q-pa-none"):
-            from shadow_loom_ui.components.export_tab import build_export_tab
-            build_export_tab(state)
+                    with ui.tab_panel("audit").classes("q-pa-none h-full"):
+                        from shadow_loom_ui.components.audit_tab import build_audit_tab
+                        build_audit_tab(state)
+
+                    with ui.tab_panel("export").classes("q-pa-none h-full"):
+                        from shadow_loom_ui.components.export_tab import build_export_tab
+                        build_export_tab(state)
+
+                # Bottom chat drawer
+                from shadow_loom_ui.components.chat import build_chat_drawer
+                build_chat_drawer(state)

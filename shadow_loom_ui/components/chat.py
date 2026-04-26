@@ -1,4 +1,8 @@
-"""Right panel: chat interface for interrogation and general queries."""
+"""Bottom chat drawer — persistent query bar across all workspace tabs.
+
+Provides query type chips, chat history, typing indicator, and
+routes results to appropriate pipeline paths.
+"""
 
 from __future__ import annotations
 
@@ -8,156 +12,186 @@ from typing import TYPE_CHECKING, List
 
 from nicegui import ui
 
+from shadow_loom_ui.state import AppState, NLQueryResult, StateEvent
+
 if TYPE_CHECKING:
-    from shadow_loom_ui.state import AppState, NLQueryResult
+    pass
 
 logger = logging.getLogger(__name__)
 
+_QUERY_TYPES = [
+    ("general", "General"),
+    ("observation", "Observe"),
+    ("intervention", "Intervene"),
+    ("counterfactual", "Counterfactual"),
+    ("directive", "Directive"),
+    ("interrogate", "Interrogate"),
+    ("evaluate", "Evaluate"),
+]
+
+
+def build_chat_drawer(state: AppState) -> None:
+    """Build a collapsible bottom chat drawer."""
+
+    with ui.expansion("Chat", icon="chat", value=False).classes(
+        "w-full"
+    ).props("dense").style("border-top: 1px solid #333"):
+        _build_chat_content(state)
+
 
 def build_chat_panel(state: AppState) -> None:
-    """Build the right-panel chat interface."""
+    """Legacy alias — builds chat content inline (no drawer wrapper)."""
+    _build_chat_content(state)
+
+
+def _build_chat_content(state: AppState) -> None:
+    """Chat content: message history + input bar."""
 
     messages: List[dict] = []
-    chat_container = None
-    input_field = None
 
-    async def _send_message():
-        text = input_field.value.strip()
-        if not text:
-            return
-        input_field.value = ""
+    # Message display area
+    scroll = ui.scroll_area().classes("w-full").style("max-height: 250px")
+    with scroll:
+        chat_container = ui.column().classes("w-full q-pa-xs gap-1")
 
-        # Add user message
-        messages.append({"role": "user", "text": text})
-        _render_messages()
+    # Typing indicator
+    typing_row = ui.row().classes("w-full q-px-sm items-center gap-2")
+    typing_row.set_visibility(False)
+    with typing_row:
+        ui.spinner("dots", size="sm")
+        ui.label("Processing...").classes("text-caption text-grey")
 
-        if state.world_state is None:
-            messages.append({
-                "role": "assistant",
-                "text": "No world model loaded. Please ingest a story first.",
-            })
-            _render_messages()
-            return
+    # Input area
+    selected_type = {"value": "general"}
+    manual_mode = {"active": False}
 
-        # Show typing indicator
-        messages.append({"role": "assistant", "text": "...", "loading": True})
-        _render_messages()
+    with ui.row().classes("w-full items-end q-pa-xs gap-1"):
+        # Query type chips
+        with ui.row().classes("gap-1 flex-wrap"):
+            chip_refs = {}
+            for key, label in _QUERY_TYPES:
+                chip = ui.chip(
+                    label,
+                    selectable=True,
+                    selected=(key == "general"),
+                    on_click=lambda k=key: _select_type(k),
+                ).props("dense outline size=sm")
+                chip_refs[key] = chip
 
-        try:
-            # Detect manual edit intent
-            lower = text.lower()
-            if lower.startswith("edit:") or lower.startswith("write:"):
-                prose = text.split(":", 1)[1].strip()
-                result = await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: state.run_manual_edit(prose, description="Chat edit"),
-                )
+            edit_chip = ui.chip(
+                "Edit",
+                icon="edit",
+                selectable=True,
+                on_click=lambda: _toggle_manual(),
+            ).props("dense outline size=sm")
+
+        def _select_type(key: str):
+            selected_type["value"] = key
+            manual_mode["active"] = False
+            for k, c in chip_refs.items():
+                c.set_selected(k == key)
+            edit_chip.set_selected(False)
+
+        def _toggle_manual():
+            manual_mode["active"] = not manual_mode["active"]
+            if manual_mode["active"]:
+                for c in chip_refs.values():
+                    c.set_selected(False)
             else:
-                selected_type = chat_type_select.value
-                result = await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: state.run_nl_query(text, query_type=selected_type),
-                )
-            # Remove typing indicator
-            messages.pop()
-            _format_chat_response(result)
-        except Exception as e:
-            messages.pop()
-            messages.append({"role": "assistant", "text": f"Error: {e}"})
-            logger.exception("Chat query failed")
+                _select_type(selected_type["value"])
 
-        _render_messages()
+        text_input = ui.textarea(
+            placeholder="Ask about your story or write prose...",
+        ).classes("flex-grow").props("rows=1 autogrow outlined dense")
 
-    def _format_chat_response(result: NLQueryResult):
-        """Format pipeline result as chat messages."""
-        pr = result.parse_result
-        parts = []
+        async def _send():
+            text = text_input.value.strip()
+            if not text:
+                return
+            text_input.value = ""
 
-        # Show what was parsed
-        if pr and pr.parsed:
-            parts.append(f"**Query type:** {pr.parsed.query_type}")
-            if pr.fallback:
-                parts.append(f"*(Fallback: {pr.fallback.strategy})*")
+            # Add user message
+            messages.append({"role": "user", "text": text})
+            _render_messages(chat_container, messages)
 
-        # Show the answer
-        if result.error:
-            parts.append(f"\n{result.error}")
-        elif result.pipeline_result:
-            pip = result.pipeline_result
-            if pip.prose:
-                parts.append(f"\n{pip.prose}")
-            elif pip.query_type in ("interrogate", "general"):
-                physics = pip.physics_result
-                answer = physics.get("answer") or physics.get("physics_state", {})
-                if isinstance(answer, str):
-                    parts.append(f"\n{answer}")
-                elif isinstance(answer, dict):
-                    # Summarise key points
-                    for k, v in list(answer.items())[:10]:
-                        if isinstance(v, str):
-                            parts.append(f"**{k}:** {v}")
-                        elif isinstance(v, (int, float)):
-                            parts.append(f"**{k}:** {v}")
+            if state.world_state is None:
+                messages.append({
+                    "role": "assistant",
+                    "text": "No world model loaded. Ingest a story first.",
+                })
+                _render_messages(chat_container, messages)
+                return
 
-            # World model version
-            if pip.world_model:
-                parts.append(f"\n*World model v{pip.world_model.version}*")
+            typing_row.set_visibility(True)
+            state.emit(StateEvent.QUERY_STARTED)
 
-        messages.append({"role": "assistant", "text": "\n".join(parts) or "Done."})
+            try:
+                if manual_mode["active"]:
+                    result = await asyncio.get_event_loop().run_in_executor(
+                        None, lambda: state.run_manual_edit(text),
+                    )
+                else:
+                    result = await state.run_nl_query_async(
+                        text, query_type=selected_type["value"]
+                    )
+                _append_result(messages, result)
+            except Exception as e:
+                logger.exception("Chat query failed")
+                messages.append({"role": "assistant", "text": f"Error: {e}"})
+            finally:
+                typing_row.set_visibility(False)
 
-    def _render_messages():
-        """Re-render all chat messages."""
-        if chat_container is None:
-            return
-        chat_container.clear()
-        with chat_container:
-            for msg in messages:
-                is_user = msg["role"] == "user"
-                loading = msg.get("loading", False)
+            _render_messages(chat_container, messages)
 
-                with ui.chat_message(
-                    sent=is_user,
-                    text_html=False,
-                ).classes("w-full"):
-                    if loading:
-                        ui.spinner("dots", size="sm")
-                    else:
-                        ui.markdown(msg["text"])
+        ui.button(icon="send", on_click=_send).props("round dense color=primary")
 
-            # Auto-scroll to bottom
-            ui.run_javascript("window.scrollTo(0, document.body.scrollHeight)")
+    text_input.on(
+        "keydown.enter",
+        lambda e: _send() if not getattr(e, "args", {}).get("shiftKey") else None,
+    )
 
-    # ---- Build the UI ----
 
-    with ui.column().classes("w-full h-full"):
-        ui.label("Chat").classes("text-h6 q-pa-sm")
-        ui.label(
-            "Ask questions in natural language. Interrogation and general "
-            "queries work best here."
-        ).classes("text-caption text-grey q-px-sm")
+def _render_messages(container, messages: List[dict]) -> None:
+    """Re-render chat messages."""
+    container.clear()
+    with container:
+        for msg in messages[-20:]:  # Keep last 20 visible
+            is_user = msg["role"] == "user"
+            with ui.chat_message(
+                sent=is_user,
+                name="You" if is_user else "Shadow Loom",
+            ).classes("w-full"):
+                ui.markdown(msg["text"])
 
-        ui.separator()
 
-        chat_container = ui.column().classes(
-            "w-full flex-grow overflow-auto q-pa-sm"
-        ).style("max-height: calc(100vh - 250px)")
+def _append_result(messages: List[dict], result: NLQueryResult) -> None:
+    """Format a pipeline result as a chat message."""
+    parts = []
 
-        # Input area
-        with ui.row().classes("w-full items-center q-pa-sm gap-2"):
-            chat_type_select = ui.select(
-                options={
-                    "observation": "Observation",
-                    "intervention": "Intervention",
-                    "counterfactual": "Counterfactual",
-                    "directive": "Directive",
-                    "interrogate": "Interrogation",
-                    "general": "General",
-                },
-                value="general",
-                label="Type",
-            ).classes("w-36").props("outlined dense")
+    if result.error:
+        parts.append(f"**Error:** {result.error}")
+    else:
+        pr = result.pipeline_result
+        if pr is not None:
+            parts.append(f"*{pr.query_type}*")
+            if pr.prose:
+                parts.append(pr.prose[:1000])
+                if len(pr.prose) > 1000:
+                    parts.append("*(truncated — see Story tab for full text)*")
+            if pr.physics_state and not pr.prose:
+                parts.append(f"```json\n{pr.physics_state[:800]}\n```")
+            if pr.converged is not None:
+                status = "converged" if pr.converged else "did not converge"
+                parts.append(f"*Audit: {status} ({pr.audit_iterations} iters)*")
+            if pr.world_model:
+                parts.append(f"*World model v{pr.world_model.version}*")
 
-            input_field = ui.input(
-                placeholder="Ask about the story world...",
-            ).classes("flex-grow").props("outlined dense")
-            input_field.on("keydown.enter", _send_message)
+        if not parts:
+            parse = result.parse_result
+            if parse and parse.parsed:
+                parts.append(f"**Reasoning:** {parse.parsed.reasoning}")
 
-            ui.button(icon="send", on_click=_send_message).props("flat dense color=primary")
+    messages.append({
+        "role": "assistant",
+        "text": "\n\n".join(parts) if parts else (result.summary or "Done."),
+    })

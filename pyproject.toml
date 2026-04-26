@@ -16,7 +16,6 @@ dependencies = [
     "transformers>=5.5.4",
     # UI
     "nicegui>=2.0",
-    "pyvis>=0.3",
     "sqlalchemy>=2.0",
     "authlib>=1.4",
     "httpx>=0.28",
