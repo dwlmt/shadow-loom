@@ -923,8 +923,8 @@ class TestResolveModel:
 
     def test_non_ollama_passthrough(self):
         from shadow_loom.query_parsing import _resolve_model
-        model = _resolve_model("openai:gpt-4o")
-        assert model == "openai:gpt-4o"
+        model = _resolve_model("anthropic:claude-3-sonnet")
+        assert model == "anthropic:claude-3-sonnet"
 
 
 # =====================================================================

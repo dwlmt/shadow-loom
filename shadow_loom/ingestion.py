@@ -26,9 +26,8 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field, model_validator
 from pydantic_ai import Agent, ModelRetry, NativeOutput, RunContext
-from pydantic_ai.providers.ollama import OllamaProvider
 
-from shadow_loom.settings import get_settings as _get_settings
+from shadow_loom.settings import get_settings as _get_settings, resolve_model as _resolve_model
 
 from shadow_loom.models import (
     Belief,
@@ -61,20 +60,6 @@ def _load_prompt(filename: str) -> str:
     if not path.exists():
         raise FileNotFoundError(f"Prompt file not found: {path}")
     return path.read_text(encoding="utf-8")
-
-
-def _resolve_model(model_str: str):
-    """
-    Resolve a PydanticAI model string. For Ollama models, construct
-    the provider with the local base URL so ``OLLAMA_BASE_URL`` doesn't
-    need to be set as an environment variable.
-    """
-    if model_str.startswith("ollama:"):
-        base_url = _get_settings().core.ollama_base_url
-        model_name = model_str.split(":", 1)[1]
-        from pydantic_ai.models.ollama import OllamaModel
-        return OllamaModel(model_name, provider=OllamaProvider(base_url=base_url))
-    return model_str
 
 
 # =====================================================================

@@ -54,9 +54,25 @@ class CoreSettings(BaseSettings):
         default="http://localhost:11434/v1/",
         description="Base URL for the local Ollama API (OpenAI-compat).",
     )
+    openrouter_base_url: str = Field(
+        default="https://openrouter.ai/api/v1",
+        description="Base URL for the OpenRouter API.",
+    )
+    openrouter_api_key: str = Field(
+        default="",
+        description="API key for OpenRouter. Required when using 'openrouter:' model prefix.",
+    )
+    openai_api_key: str = Field(
+        default="",
+        description="API key for OpenAI. Required when using 'openai:' model prefix.",
+    )
     default_model: str = Field(
         default="ollama:qwen3.6:27b",
-        description="Fallback PydanticAI model string when a stage-specific model is not set.",
+        description=(
+            "Fallback PydanticAI model string when a stage-specific model "
+            "is not set. Prefix determines provider: 'ollama:', 'openrouter:', "
+            "'openai:', or any PydanticAI model string."
+        ),
     )
 
 
@@ -363,3 +379,59 @@ class Settings:
             "skip_reextraction": self.pipeline.skip_reextraction,
             "max_snapshots": self.pipeline.max_snapshots,
         }
+
+
+# =====================================================================
+# Shared model resolver
+# =====================================================================
+
+def resolve_model(model_str: str):
+    """Resolve a model string to a PydanticAI model instance.
+
+    Prefixes:
+      ``ollama:<name>``      → OllamaModel with configured base URL
+      ``openrouter:<name>``  → OpenAIChatModel via OpenRouter (OpenAI-compat)
+      ``openai:<name>``      → OpenAIChatModel via OpenAI directly
+      anything else          → returned as-is for PydanticAI native resolution
+    """
+    core = get_settings().core
+
+    if model_str.startswith("ollama:"):
+        model_name = model_str.split(":", 1)[1]
+        from pydantic_ai.models.ollama import OllamaModel
+        from pydantic_ai.providers.ollama import OllamaProvider
+        return OllamaModel(model_name, provider=OllamaProvider(base_url=core.ollama_base_url))
+
+    if model_str.startswith("openrouter:"):
+        if not core.openrouter_api_key:
+            raise ValueError(
+                "OPENROUTER_API_KEY must be set to use 'openrouter:' models. "
+                "Set it in config.env, .env, or as an environment variable."
+            )
+        model_name = model_str.split(":", 1)[1]
+        from pydantic_ai.models.openai import OpenAIChatModel
+        from pydantic_ai.providers.openai import OpenAIProvider
+        return OpenAIChatModel(
+            model_name,
+            provider=OpenAIProvider(
+                base_url=core.openrouter_base_url,
+                api_key=core.openrouter_api_key,
+            ),
+        )
+
+    if model_str.startswith("openai:"):
+        if not core.openai_api_key:
+            raise ValueError(
+                "OPENAI_API_KEY must be set to use 'openai:' models. "
+                "Set it in config.env, .env, or as an environment variable."
+            )
+        model_name = model_str.split(":", 1)[1]
+        from pydantic_ai.models.openai import OpenAIChatModel
+        from pydantic_ai.providers.openai import OpenAIProvider
+        return OpenAIChatModel(
+            model_name,
+            provider=OpenAIProvider(api_key=core.openai_api_key),
+        )
+
+    # Fallback: pass through for PydanticAI native model resolution
+    return model_str

@@ -139,13 +139,25 @@ class TestResolveModel:
         assert not isinstance(model, str)
 
     def test_non_ollama_passthrough(self):
-        """Non-ollama strings are returned as-is."""
-        model = _resolve_model("openai:gpt-4")
-        assert model == "openai:gpt-4"
+        """Non-ollama strings without recognized prefix are returned as-is."""
+        model = _resolve_model("anthropic:claude-3-sonnet")
+        assert model == "anthropic:claude-3-sonnet"
 
     def test_non_ollama_plain_string(self):
         model = _resolve_model("test-model")
         assert model == "test-model"
+
+    def test_openai_prefix_requires_key(self):
+        """openai: prefix should raise ValueError without an API key."""
+        import pytest
+        with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+            _resolve_model("openai:gpt-4")
+
+    def test_openrouter_prefix_requires_key(self):
+        """openrouter: prefix should raise ValueError without an API key."""
+        import pytest
+        with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
+            _resolve_model("openrouter:google/gemini-2.0-flash")
 
 
 # =====================================================================

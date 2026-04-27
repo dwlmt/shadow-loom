@@ -34,13 +34,9 @@ from shadow_loom.query_models import (
     UserRequest,
 )
 
-from shadow_loom.settings import get_settings as _get_settings
+from shadow_loom.settings import get_settings as _get_settings, resolve_model as _resolve_model
 
 logger = logging.getLogger(__name__)
-
-
-def _ollama_base_url() -> str:
-    return _get_settings().core.ollama_base_url
 
 
 # =====================================================================
@@ -519,21 +515,6 @@ is provided, use reasonable ID conventions (ENT_CHARACTERNAME).
 - Always populate `resolved_ids` with every entity/event/object/location you resolved.
 - Always provide `reasoning` explaining your classification.
 """
-
-
-# =====================================================================
-# Model resolution (shared with generation.py)
-# =====================================================================
-
-def _resolve_model(model_str: str):
-    """Resolve a model string to a PydanticAI model instance."""
-    if model_str.startswith("ollama:"):
-        base_url = _ollama_base_url()
-        model_name = model_str.split(":", 1)[1]
-        from pydantic_ai.models.ollama import OllamaModel
-        from pydantic_ai.providers.ollama import OllamaProvider
-        return OllamaModel(model_name, provider=OllamaProvider(base_url=base_url))
-    return model_str
 
 
 # =====================================================================
