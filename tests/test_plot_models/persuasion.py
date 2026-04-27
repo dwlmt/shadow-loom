@@ -130,6 +130,51 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_ELLIOT", perceived_state="Mr Elliot is a scheming deceiver", confidence=0.9, inertia=0.6),
             ]),
+        "ENT_MARY": Entity(id="ENT_MARY", name="Mary Musgrove",
+            location_id="LOC_UPPERCROSS", status="healthy",
+            traits={
+                "querulousness": TraitVector(value=0.85, inertia=0.6),
+                "self_pity": TraitVector(value=0.8, inertia=0.6),
+                "status_anxiety": TraitVector(value=0.7, inertia=0.5),
+            },
+            beliefs=[
+                Belief(target_id="ENT_ANNE", perceived_state="Anne exists to attend to my complaints",
+                       confidence=0.8, inertia=0.5),
+            ]),
+        "ENT_CHARLES": Entity(id="ENT_CHARLES", name="Charles Musgrove",
+            location_id="LOC_UPPERCROSS", status="healthy",
+            traits={
+                "amiability": TraitVector(value=0.7, inertia=0.5),
+                "passivity": TraitVector(value=0.6, inertia=0.5),
+                "sportsmanship": TraitVector(value=0.7, inertia=0.5),
+            },
+            beliefs=[
+                Belief(target_id="ENT_ANNE", perceived_state="Anne should have been my wife",
+                       confidence=0.6, inertia=0.4),
+            ]),
+        "ENT_MRS_CROFT": Entity(id="ENT_MRS_CROFT", name="Sophia Croft",
+            location_id="LOC_KELLYNCH", status="healthy",
+            traits={
+                "good_sense": TraitVector(value=0.85, inertia=0.7),
+                "warmth": TraitVector(value=0.8, inertia=0.6),
+                "independence": TraitVector(value=0.8, inertia=0.6),
+            },
+            beliefs=[
+                Belief(target_id="ENT_WENTWORTH", perceived_state="My brother is the finest man afloat",
+                       confidence=0.9, inertia=0.7),
+            ],
+            constants=["wentworth_sister"]),
+        "ENT_MRS_CLAY": Entity(id="ENT_MRS_CLAY", name="Mrs Clay",
+            location_id="LOC_CAMDEN_PLACE", status="healthy",
+            traits={
+                "flattery": TraitVector(value=0.85, inertia=0.5),
+                "ambition": TraitVector(value=0.8, inertia=0.5),
+                "calculation": TraitVector(value=0.75, inertia=0.5),
+            },
+            beliefs=[
+                Belief(target_id="ENT_SIR_WALTER", perceived_state="Sir Walter is vain enough to marry beneath himself",
+                       confidence=0.7, inertia=0.5),
+            ]),
     },
     events=[
         EventNode(id="EVT_KELLYNCH_LET", fabula_time=100, syuzhet_index=1, event_type="outcome",
@@ -260,6 +305,15 @@ world_state = WorldStateV1(
         InformationEdge(source_id="ENT_MRS_SMITH", target_ids=["ENT_ANNE"], medium="conversation", established_at_fabula=950),
         InformationEdge(source_id="ENT_LADY_RUSSELL", target_ids=["ENT_ANNE"], medium="conversation", established_at_fabula=100),
         InformationEdge(source_id="ENT_ANNE", target_ids=["ENT_WENTWORTH"], medium="overheard_conversation", established_at_fabula=900),
+        InformationEdge(source_id="ENT_LOUISA", target_ids=["ENT_WENTWORTH"],
+                        medium="conversation_overheard_by_anne", is_encrypted=False,
+                        established_at_fabula=400),
+        InformationEdge(source_id="ENT_MRS_CROFT", target_ids=["ENT_WENTWORTH"],
+                        medium="sisterly_counsel", established_at_fabula=200),
+        InformationEdge(source_id="ENT_MARY", target_ids=["ENT_ANNE"],
+                        medium="complaining_letters", established_at_fabula=200),
+        InformationEdge(source_id="ENT_MRS_CLAY", target_ids=["ENT_SIR_WALTER", "ENT_ELLIOT"],
+                        medium="flattery", is_encrypted=False, established_at_fabula=700),
     ],
     world_traits={
         "WORLD_SOCIAL_RIGIDITY": GlobalTrait(
@@ -270,7 +324,7 @@ world_state = WorldStateV1(
             magnitude=TraitVector(value=0.7, inertia=0.75),
             affected_domains=["social", "emotional"],
             state_timeline=[
-                WorldTraitSnapshot(fabula_time=1200, triggered_by="EVT_WENTWORTH_LETTER",
+                WorldTraitSnapshot(fabula_time=1000, triggered_by="EVT_LETTER_RECEIVED",
                     magnitude=TraitVector(value=0.5, inertia=0.5),
                     description="Wentworth's letter pierces class constraints — personal feeling overrides rank."),
             ],
@@ -283,7 +337,7 @@ world_state = WorldStateV1(
             magnitude=TraitVector(value=0.5, inertia=0.6),
             affected_domains=["social", "psychological"],
             state_timeline=[
-                WorldTraitSnapshot(fabula_time=100, triggered_by="EVT_WENTWORTH_RETURNS",
+                WorldTraitSnapshot(fabula_time=300, triggered_by="EVT_WENTWORTH_ARRIVES",
                     magnitude=TraitVector(value=0.7, inertia=0.7),
                     description="Wentworth returns wealthy from naval service, proving merit can rival birth."),
             ],
@@ -300,5 +354,12 @@ world_state = WorldStateV1(
         RelationshipEdge(source_entity_id="ENT_LOUISA", target_entity_id="ENT_WENTWORTH", affinity=0.7, fear=0.0, power_dynamic=-0.3, inertia=0.3),
         RelationshipEdge(source_entity_id="ENT_SIR_WALTER", target_entity_id="ENT_ANNE", affinity=0.2, fear=0.0, power_dynamic=0.4, inertia=0.4),
         RelationshipEdge(source_entity_id="ENT_MRS_SMITH", target_entity_id="ENT_ANNE", affinity=0.7, fear=0.0, power_dynamic=-0.1, inertia=0.4),
+        RelationshipEdge(source_entity_id="ENT_MARY", target_entity_id="ENT_ANNE", affinity=0.4, fear=0.0, power_dynamic=0.2, inertia=0.5),
+        RelationshipEdge(source_entity_id="ENT_ANNE", target_entity_id="ENT_MARY", affinity=0.4, fear=0.0, power_dynamic=-0.2, inertia=0.5),
+        RelationshipEdge(source_entity_id="ENT_CHARLES", target_entity_id="ENT_ANNE", affinity=0.6, fear=0.0, power_dynamic=0.1, inertia=0.4),
+        RelationshipEdge(source_entity_id="ENT_MRS_CROFT", target_entity_id="ENT_WENTWORTH", affinity=0.8, fear=0.0, power_dynamic=0.1, inertia=0.7),
+        RelationshipEdge(source_entity_id="ENT_MRS_CROFT", target_entity_id="ENT_ANNE", affinity=0.6, fear=0.0, power_dynamic=0.1, inertia=0.4),
+        RelationshipEdge(source_entity_id="ENT_MRS_CLAY", target_entity_id="ENT_SIR_WALTER", affinity=0.5, fear=0.0, power_dynamic=-0.4, inertia=0.4),
+        RelationshipEdge(source_entity_id="ENT_SIR_WALTER", target_entity_id="ENT_MRS_CLAY", affinity=0.6, fear=0.0, power_dynamic=0.4, inertia=0.4),
     ],
 )

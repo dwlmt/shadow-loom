@@ -156,7 +156,7 @@ class ExtractionSettings(BaseSettings):
     min_chunk_chars: int = Field(default=1500)
     chunk_overlap_chars: int = Field(default=300)
     max_correction_retries: int = Field(default=3)
-    max_concurrent_chunks: int = Field(default=4)
+    max_concurrent_chunks: int = Field(default=8)
     estimated_events_per_chunk: int = Field(default=10)
 
 

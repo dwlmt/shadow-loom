@@ -197,6 +197,61 @@ world_state = WorldStateV1(
             },
             beliefs=[],
         ),
+        "ENT_BESSNER": Entity(
+            id="ENT_BESSNER", name="Dr Bessner",
+            location_id="LOC_BESSNER_CABIN", status="healthy",
+            traits={
+                "competence": TraitVector(value=0.85, inertia=0.7),
+                "pomposity": TraitVector(value=0.6, inertia=0.5),
+                "discretion": TraitVector(value=0.7, inertia=0.6),
+            },
+            beliefs=[
+                Belief(target_id="ENT_SIMON", perceived_state="Simon's leg wound is genuine and incapacitating",
+                       confidence=0.85, inertia=0.5, established_at_fabula=850),
+            ],
+            constants=["physician"],
+        ),
+        "ENT_CORNELIA": Entity(
+            id="ENT_CORNELIA", name="Cornelia Robson",
+            location_id="LOC_KARNAK_DECK", status="healthy",
+            traits={
+                "kindness": TraitVector(value=0.85, inertia=0.6),
+                "naivety": TraitVector(value=0.7, inertia=0.5),
+                "loyalty": TraitVector(value=0.7, inertia=0.5),
+            },
+            beliefs=[
+                Belief(target_id="ENT_JACQUELINE", perceived_state="Jacqueline is a tortured romantic, not a killer",
+                       confidence=0.6, inertia=0.4),
+            ],
+        ),
+        "ENT_BOWERS": Entity(
+            id="ENT_BOWERS", name="Miss Bowers",
+            location_id="LOC_KARNAK_DECK", status="healthy",
+            traits={
+                "professionalism": TraitVector(value=0.85, inertia=0.7),
+                "observation": TraitVector(value=0.8, inertia=0.6),
+                "reserve": TraitVector(value=0.8, inertia=0.6),
+            },
+            beliefs=[
+                Belief(target_id="ENT_LINNET", perceived_state="Linnet's pearls were taken and replaced by an imitation",
+                       confidence=0.9, inertia=0.6, established_at_fabula=1100),
+            ],
+            constants=["private_nurse"],
+        ),
+        "ENT_FANTHORP": Entity(
+            id="ENT_FANTHORP", name="Mr Fanthorp",
+            location_id="LOC_KARNAK_DECK", status="healthy",
+            traits={
+                "discretion": TraitVector(value=0.85, inertia=0.7),
+                "vigilance": TraitVector(value=0.8, inertia=0.6),
+                "reserve": TraitVector(value=0.85, inertia=0.6),
+            },
+            beliefs=[
+                Belief(target_id="ENT_PENNINGTON", perceived_state="Pennington is trying to defraud Linnet",
+                       confidence=0.85, inertia=0.6),
+            ],
+            constants=["undercover_solicitor"],
+        ),
     },
     events=[
         EventNode(id="EVT_LINNET_SEDUCES_SIMON", fabula_time=100, syuzhet_index=1,
@@ -362,6 +417,16 @@ world_state = WorldStateV1(
                         medium="deductive_reconstruction", established_at_fabula=1600),
         InformationEdge(source_id="ENT_SIMON", target_ids=["ENT_JACQUELINE"],
                         medium="signal_shout", established_at_fabula=800),
+        InformationEdge(source_id="ENT_BOWERS", target_ids=["ENT_POIROT"],
+                        medium="discreet_disclosure", is_encrypted=True,
+                        established_at_fabula=1500),
+        InformationEdge(source_id="ENT_FANTHORP", target_ids=["ENT_POIROT"],
+                        medium="observed_overhearing", is_encrypted=True,
+                        established_at_fabula=1400),
+        InformationEdge(source_id="ENT_BESSNER", target_ids=["ENT_POIROT", "ENT_RACE"],
+                        medium="medical_certification", established_at_fabula=900),
+        InformationEdge(source_id="ENT_CORNELIA", target_ids=["ENT_POIROT"],
+                        medium="naive_anecdote", established_at_fabula=1100),
     ],
     # ── WORLD TRAITS ────────────────────────────────────────────────────
     world_traits={
@@ -386,7 +451,7 @@ world_state = WorldStateV1(
             magnitude=TraitVector(value=0.8, inertia=0.7),
             affected_domains=["social", "psychological"],
             state_timeline=[
-                WorldTraitSnapshot(fabula_time=800, triggered_by="EVT_SIMON_MARRIES_LINNET",
+                WorldTraitSnapshot(fabula_time=200, triggered_by="EVT_DOYLES_MARRY",
                     magnitude=TraitVector(value=0.9, inertia=0.8),
                     description="Simon's marriage to Linnet concentrates motive — Jackie's jealousy and Simon's greed converge."),
             ],
@@ -411,5 +476,15 @@ world_state = WorldStateV1(
                          affinity=-0.2, fear=0.3, power_dynamic=-0.2, inertia=0.3, evidence_strength="moderate"),
         RelationshipEdge(source_entity_id="ENT_POIROT", target_entity_id="ENT_RACE",
                          affinity=0.7, fear=0.0, power_dynamic=0.0, inertia=0.5, evidence_strength="strong"),
+        RelationshipEdge(source_entity_id="ENT_BESSNER", target_entity_id="ENT_SIMON",
+                         affinity=0.4, fear=0.0, power_dynamic=0.4, inertia=0.4, evidence_strength="moderate"),
+        RelationshipEdge(source_entity_id="ENT_BOWERS", target_entity_id="ENT_POIROT",
+                         affinity=0.5, fear=0.0, power_dynamic=-0.1, inertia=0.4, evidence_strength="moderate"),
+        RelationshipEdge(source_entity_id="ENT_FANTHORP", target_entity_id="ENT_PENNINGTON",
+                         affinity=-0.4, fear=0.0, power_dynamic=0.2, inertia=0.4, evidence_strength="moderate"),
+        RelationshipEdge(source_entity_id="ENT_CORNELIA", target_entity_id="ENT_JACQUELINE",
+                         affinity=0.5, fear=0.2, power_dynamic=-0.2, inertia=0.3, evidence_strength="weak"),
+        RelationshipEdge(source_entity_id="ENT_CORNELIA", target_entity_id="ENT_BESSNER",
+                         affinity=0.6, fear=0.0, power_dynamic=-0.3, inertia=0.3, evidence_strength="weak"),
     ],
 )

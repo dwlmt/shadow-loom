@@ -94,6 +94,17 @@ world_state = WorldStateV1(
                 "authority": TraitVector(value=0.6, inertia=0.4),
             },
             beliefs=[]),
+        "ENT_STEPHEN": Entity(id="ENT_STEPHEN", name="Stephen Lynn",
+            location_id="LOC_STEPHENS_FLAT", status="healthy",
+            traits={
+                "perceptiveness": TraitVector(value=0.8, inertia=0.6),
+                "disapproval": TraitVector(value=0.7, inertia=0.5),
+                "discretion": TraitVector(value=0.7, inertia=0.5),
+            },
+            beliefs=[
+                Belief(target_id="ENT_ALEC", perceived_state="Alec is risking his marriage and his reputation",
+                       confidence=0.85, inertia=0.5, established_at_fabula=600),
+            ]),
     },
     events=[
         EventNode(id="EVT_ROUTINE_THURSDAYS", fabula_time=100, syuzhet_index=3, event_type="outcome",
@@ -213,6 +224,16 @@ world_state = WorldStateV1(
     information_topology=[
         InformationEdge(source_id="ENT_ALEC", target_ids=["ENT_LAURA"], medium="conversation", established_at_fabula=200),
         InformationEdge(source_id="ENT_LAURA", target_ids=["ENT_FRED"], medium="confession", established_at_fabula=1000),
+        InformationEdge(source_id="ENT_STEPHEN", target_ids=["ENT_ALEC"],
+                        medium="overheard_intrusion", is_encrypted=False,
+                        established_at_fabula=600, terminated_at_fabula=600),
+        InformationEdge(source_id="ENT_DOLLY", target_ids=["ENT_LAURA", "ENT_ALEC"],
+                        medium="chatter", is_encrypted=False,
+                        established_at_fabula=900, terminated_at_fabula=900),
+        InformationEdge(source_id="ENT_MYRTLE", target_ids=["ENT_LAURA"],
+                        medium="prim_observation", established_at_fabula=400),
+        InformationEdge(source_id="ENT_FRED", target_ids=["ENT_LAURA"],
+                        medium="quiet_acknowledgement", established_at_fabula=1000),
     ],
     # ── WORLD TRAITS ────────────────────────────────────────────────────
     world_traits={
@@ -224,10 +245,10 @@ world_state = WorldStateV1(
             magnitude=TraitVector(value=0.85, inertia=0.8),
             affected_domains=["social", "psychological", "emotional"],
             state_timeline=[
-                WorldTraitSnapshot(fabula_time=500, triggered_by="EVT_FIRST_LUNCH",
+                WorldTraitSnapshot(fabula_time=300, triggered_by="EVT_CINEMA_DATE",
                     magnitude=TraitVector(value=0.7, inertia=0.7),
-                    description="Laura begins to bend the rules by lunching alone with a man — propriety loosens."),
-                WorldTraitSnapshot(fabula_time=1000, triggered_by="EVT_FINAL_PARTING",
+                    description="Laura begins to bend the rules by going to the cinema alone with a man — propriety loosens."),
+                WorldTraitSnapshot(fabula_time=900, triggered_by="EVT_FINAL_MEETING",
                     magnitude=TraitVector(value=0.95, inertia=0.9),
                     description="Propriety wins — Laura chooses duty over desire, ending the affair."),
             ],
@@ -248,5 +269,12 @@ world_state = WorldStateV1(
         RelationshipEdge(source_entity_id="ENT_FRED", target_entity_id="ENT_LAURA", affinity=0.7, fear=0.0, power_dynamic=0.1, inertia=0.6),
         RelationshipEdge(source_entity_id="ENT_LAURA", target_entity_id="ENT_DOLLY", affinity=0.2, fear=0.0, power_dynamic=0.0, inertia=0.3),
         RelationshipEdge(source_entity_id="ENT_DOLLY", target_entity_id="ENT_LAURA", affinity=0.5, fear=0.0, power_dynamic=0.0, inertia=0.3),
+        RelationshipEdge(source_entity_id="ENT_STEPHEN", target_entity_id="ENT_ALEC",
+                         affinity=0.4, fear=0.0, power_dynamic=0.2, inertia=0.5),
+        RelationshipEdge(source_entity_id="ENT_ALEC", target_entity_id="ENT_STEPHEN",
+                         affinity=0.5, fear=0.1, power_dynamic=-0.1, inertia=0.5,
+                         last_updated_fabula=600),
+        RelationshipEdge(source_entity_id="ENT_MYRTLE", target_entity_id="ENT_DOLLY",
+                         affinity=0.3, fear=0.0, power_dynamic=0.1, inertia=0.4),
     ],
 )
