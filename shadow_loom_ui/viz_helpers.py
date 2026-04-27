@@ -478,7 +478,7 @@ def entity_state_timeline_data(
         for tn in trait_names:
             tv = snapshot.get("traits", {}).get(tn)
             if tv is not None:
-                series[tn].append(round(tv.value if hasattr(tv, "value") else tv, 3))
+                series[tn].append(round(tv["value"] if isinstance(tv, dict) else tv, 3))
             else:
                 series[tn].append(round(ent.traits[tn].value, 3))
 
@@ -753,7 +753,7 @@ def ws_to_theme_river_data(
             for tn in trait_names:
                 tv = snapshot.get("traits", {}).get(tn)
                 if tv is not None:
-                    val = tv.value if hasattr(tv, "value") else tv
+                    val = tv["value"] if isinstance(tv, dict) else tv
                 else:
                     val = ent.traits[tn].value if tn in ent.traits else 0.5
                 # ThemeRiver needs positive values; shift from [0,1] to [0.1, 1.1]

@@ -191,7 +191,7 @@ def _render_explorer(state: AppState, container) -> None:
                         f"Events ({len(filtered_evts)})", icon="bolt"
                     ).classes("w-full").props("dense"):
                         for evt in filtered_evts[:30]:
-                            label = f"t{evt.fabula_time}: {evt.description[:40]}"
+                            label = f"t{evt.fabula_time}: {(evt.description or '')[:40]}"
                             ui.button(
                                 label,
                                 on_click=lambda ev_id=evt.id: state.select_node(ev_id, "EventNode"),

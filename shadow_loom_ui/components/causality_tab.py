@@ -218,9 +218,10 @@ def _render_whatif_result(container, result: NLQueryResult) -> None:
                                 f"counterfactual={hd.get('counterfactual', '?'):.2f}"
                             ).classes("text-caption")
 
-            if pr.physics_state and not pr.prose:
+            if pr.physics_result and not pr.prose:
                 with ui.expansion("Raw Physics", icon="data_object").props("dense"):
-                    ui.code(pr.physics_state[:1500], language="json")
+                    import json as _json
+                    ui.code(_json.dumps(pr.physics_result, default=str)[:1500], language="json")
 
 
 # =====================================================================

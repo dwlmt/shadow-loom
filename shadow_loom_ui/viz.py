@@ -802,14 +802,36 @@ def render_event_gantt(
     if not items:
         return ui.label("No actor events for swim lanes.").classes("text-grey q-pa-md")
 
-    # Build custom series data
-    render_data = []
+    # Build horizontal bar series per event type (stacked = swim lanes)
+    # Group items by event_type for separate series
+    event_types: dict[str, list] = {}
     for item in items:
-        color = EVENT_TYPE_COLORS.get(item["event_type"], "#607D8B")
-        render_data.append({
-            "value": [item["start"], item["actor_idx"], item["end"], item["event_type"]],
-            "itemStyle": {"color": color},
-            "name": item["description"],
+        et = item["event_type"]
+        if et not in event_types:
+            event_types[et] = []
+        event_types[et].append(item)
+
+    # For horizontal bars: each bar needs [start, end] on x-axis
+    # Use multiple bar series with category y-axis
+    series = []
+    for et, et_items in event_types.items():
+        color = EVENT_TYPE_COLORS.get(et, "#607D8B")
+        # Build sparse data: one entry per actor row, None for others
+        bar_data = [None] * len(actor_names)
+        for item in et_items:
+            idx = item["actor_idx"]
+            duration = max(item["end"] - item["start"], 5)
+            bar_data[idx] = {
+                "value": duration,
+                "name": item["description"],
+                "itemStyle": {"color": color},
+            }
+        series.append({
+            "type": "bar",
+            "name": et,
+            "stack": "gantt",
+            "data": bar_data,
+            "barWidth": "60%",
         })
 
     chart = ui.echart({
@@ -817,11 +839,17 @@ def render_event_gantt(
         "tooltip": {
             **_DARK_TOOLTIP,
             "trigger": "item",
+            ":formatter": "params => params.name || params.seriesName",
         },
-        "grid": {"top": 30, "bottom": 40, "left": 120, "right": 30},
+        "legend": {
+            "data": list(event_types.keys()),
+            "textStyle": {"color": _DARK_TEXT},
+            "top": 5,
+        },
+        "grid": {"top": 35, "bottom": 40, "left": 120, "right": 30},
         "xAxis": {
             "type": "value",
-            "name": "Fabula Time",
+            "name": "Duration",
             "nameTextStyle": {"color": _DARK_TEXT},
             "axisLabel": {"color": _DARK_TEXT},
             "splitLine": {"lineStyle": {"color": "#333"}},
@@ -832,21 +860,7 @@ def render_event_gantt(
             "axisLabel": {"color": _DARK_TEXT, "fontSize": 10},
             "axisLine": {"lineStyle": {"color": "#555"}},
         },
-        "series": [{
-            "type": "custom",
-            "renderItem": """function(params, api) {
-                var start = api.coord([api.value(0), api.value(1)]);
-                var end = api.coord([api.value(2), api.value(1)]);
-                var height = api.size([0, 1])[1] * 0.6;
-                return {
-                    type: 'rect',
-                    shape: {x: start[0], y: start[1] - height/2, width: Math.max(end[0]-start[0], 8), height: height},
-                    style: api.style()
-                };
-            }""",
-            "encode": {"x": [0, 2], "y": 1},
-            "data": render_data,
-        }],
+        "series": series,
     }).classes("w-full").style(f"height:{height}")
 
     if on_click:

@@ -305,8 +305,10 @@ class AppState:
             self.query_history.append(result)
             return result
 
-        # Pipeline is sync — run in executor
-        return self.run_structured_query(parse_result.query, parse_result=parse_result)
+        # Pipeline is sync — run in executor to avoid blocking NiceGUI event loop
+        return await asyncio.to_thread(
+            self.run_structured_query, parse_result.query, parse_result,
+        )
 
     # ---- Manual edit ----
 

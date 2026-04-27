@@ -69,10 +69,9 @@ def build_dashboard(state: AppState) -> None:
                     for act in activities[:10]:
                         with ui.item():
                             with ui.item_section():
-                                ui.item_label(act.summary or act.action)
+                                ui.item_label(act["summary"] or act["action"])
                                 ui.item_label(
-                                    act.created_at.strftime("%Y-%m-%d %H:%M")
-                                    if act.created_at else ""
+                                    str(act["created_at"])[:16] if act["created_at"] else ""
                                 ).props("caption")
 
 
@@ -114,17 +113,21 @@ def _render_project_cards(state: AppState, container: ui.row) -> None:
                         ui.badge("example", color="blue-grey").props("dense")
 
 
-def _render_starred_cards(starred: list, container: ui.row) -> None:
+def _render_starred_cards(starred_ids: list[int], container: ui.row) -> None:
     """Render starred project cards."""
     container.clear()
+    # starred_ids is a list of project IDs — fetch each project
     with container:
-        for p in starred:
+        for pid in starred_ids:
+            proj = db.get_project(pid)
+            if proj is None:
+                continue
             with ui.card().classes("w-72 cursor-pointer hover:shadow-lg transition-shadow").on(
-                "click", lambda pid=p.id: ui.navigate.to(f"/project/{pid}")
+                "click", lambda p_id=pid: ui.navigate.to(f"/project/{p_id}")
             ):
                 with ui.row().classes("items-center gap-2"):
                     ui.icon("star", color="amber")
-                    ui.label(p.name).classes("text-subtitle1 ellipsis")
+                    ui.label(proj.name).classes("text-subtitle1 ellipsis")
 
 
 # =====================================================================
@@ -144,8 +147,8 @@ def _example_chip(state: AppState, sample_file: Path, title: str) -> None:
                 output_retries=5,
                 max_correction_retries=1,
             )
-            ws, report = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: run_extraction(text, cfg),
+            ws, report = await asyncio.to_thread(
+                run_extraction, text, cfg,
             )
             proj = db.create_project(
                 name=title,
@@ -248,8 +251,8 @@ def _build_ingest_dialog(state: AppState) -> ui.dialog:
                         max_correction_retries=1,
                     )
 
-                    ws, report = await asyncio.get_event_loop().run_in_executor(
-                        None, lambda: run_extraction(text, cfg),
+                    ws, report = await asyncio.to_thread(
+                        run_extraction, text, cfg,
                     )
                     progress.value = 0.8
 

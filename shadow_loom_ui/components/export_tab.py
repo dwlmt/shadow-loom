@@ -40,8 +40,8 @@ def build_export_tab(state: AppState) -> None:
                     ui.notify("No prose found", type="info")
                     return
                 md = f"# {state.project_name}\n\n"
-                for i, (version, prose, source) in enumerate(prose_list):
-                    md += f"## Version {version} ({source})\n\n{prose}\n\n---\n\n"
+                for i, entry in enumerate(prose_list):
+                    md += f"## Version {entry['version']} ({entry['source']})\n\n{entry['prose']}\n\n---\n\n"
 
                 ui.download(
                     md.encode("utf-8"),
@@ -133,7 +133,7 @@ def build_export_tab(state: AppState) -> None:
                     ui.label("Share & Collaborate").classes("text-h6")
 
                 project = db.get_project(state.project_id)
-                is_owner = project and project.user_id == state.user_id
+                is_owner = project and project.owner_id == state.user_id
 
                 if is_owner:
                     # Visibility toggle
@@ -178,9 +178,9 @@ def build_export_tab(state: AppState) -> None:
                                 return
                             target_user = users[0]
                             db.add_project_member(
-                                state.project_id, target_user.id, role_select.value
+                                state.project_id, target_user["id"], role_select.value
                             )
-                            ui.notify(f"Invited {target_user.username} as {role_select.value}")
+                            ui.notify(f"Invited {target_user['username']} as {role_select.value}")
                             invite_input.value = ""
                             _refresh_members()
 
@@ -201,10 +201,10 @@ def build_export_tab(state: AppState) -> None:
                         with members_container:
                             for m in members:
                                 with ui.row().classes("items-center gap-2"):
-                                    ui.label(m.username).classes("text-body2")
-                                    ui.badge(m.role, color="blue-grey").props("dense")
+                                    ui.label(m["username"]).classes("text-body2")
+                                    ui.badge(m["role"], color="blue-grey").props("dense")
 
-                                    def _remove(uid=m.user_id):
+                                    def _remove(uid=m["user_id"]):
                                         db.remove_project_member(state.project_id, uid)
                                         _refresh_members()
 
@@ -225,6 +225,9 @@ def build_export_tab(state: AppState) -> None:
                         state.user_id,
                         f"{state.project_name} (fork)",
                     )
+                    if new_proj is None:
+                        ui.notify("Fork failed — source not found", type="negative")
+                        return
                     ui.notify(f"Forked as '{new_proj.name}'!", type="positive")
                     ui.navigate.to(f"/project/{new_proj.id}")
 

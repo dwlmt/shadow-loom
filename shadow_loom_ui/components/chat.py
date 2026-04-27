@@ -139,10 +139,15 @@ def _build_command_bar(state: AppState) -> None:
         )
 
         # ── Send logic ────────────────────────────────────────────
+        _is_running = {"v": False}
+
         async def _send():
+            if _is_running["v"]:
+                return
             text = text_input.value.strip()
             if not text:
                 return
+            _is_running["v"] = True
             text_input.value = ""
 
             # Add user message
@@ -164,8 +169,8 @@ def _build_command_bar(state: AppState) -> None:
 
             try:
                 if manual_mode["active"]:
-                    result = await asyncio.get_event_loop().run_in_executor(
-                        None, lambda: state.run_manual_edit(text),
+                    result = await asyncio.to_thread(
+                        state.run_manual_edit, text,
                     )
                 else:
                     qtype = selected_type["value"] or "general"
@@ -177,6 +182,7 @@ def _build_command_bar(state: AppState) -> None:
             finally:
                 typing_row.set_visibility(False)
                 send_btn.props(remove="loading")
+                _is_running["v"] = False
 
             _render_messages(chat_container, messages)
             # Update suggestions after result
@@ -316,9 +322,17 @@ def _append_result(messages: List[dict], result: NLQueryResult) -> None:
                 if len(pr.prose) > 800:
                     excerpt += "\n\n*…see Story tab for full text*"
                 parts.append(excerpt)
-            if pr.physics_state and not pr.prose:
+            if pr.physics_result and not pr.prose:
                 # For interrogate/general — show structured answer
-                parts.append(f"```json\n{pr.physics_state[:600]}\n```")
+                import json as _json
+                parts.append(f"```json\n{_json.dumps(pr.physics_result, default=str)[:600]}\n```")
+            if pr.evaluation_result:
+                noo = getattr(pr.evaluation_result, "narrative_order", None)
+                if noo:
+                    overall = getattr(noo, "overall_pass", None)
+                    if overall is not None:
+                        parts.append(f"{'✓' if overall else '✗'} **Overall: {'PASS' if overall else 'FAIL'}**")
+                    parts.append("*See Audit tab for full scorecard.*")
             if pr.converged is not None:
                 icon = "✓" if pr.converged else "⚠"
                 status = "converged" if pr.converged else "did not converge"

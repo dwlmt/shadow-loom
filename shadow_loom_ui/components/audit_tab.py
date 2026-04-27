@@ -79,8 +79,8 @@ def build_audit_tab(state: AppState) -> None:
                 try:
                     from shadow_loom.query_models import EvaluationQuery
                     query = EvaluationQuery()
-                    result = await asyncio.get_event_loop().run_in_executor(
-                        None, lambda: state.run_structured_query(query),
+                    result = await asyncio.to_thread(
+                        state.run_structured_query, query,
                     )
                     eval_status.set_text("")
                     _render_evaluation_result(eval_container, result)
@@ -113,6 +113,7 @@ def build_audit_tab(state: AppState) -> None:
 
             _refresh_history()
             state.on(StateEvent.PIPELINE_RESULT, _refresh_history)
+            state.on(StateEvent.PROJECT_LOADED, _refresh_history)
 
 
 # =====================================================================
@@ -269,26 +270,33 @@ def _render_query_audit_entry(index: int, result: NLQueryResult) -> None:
             # Audit loop replay (if feedback_result has cycles)
             feedback = getattr(pr, "feedback_result", None)
             if feedback and hasattr(feedback, "cycles") and feedback.cycles:
+                # Collect all violations from audit cycles
+                all_violations = []
+                for cycle in feedback.cycles:
+                    audit = getattr(cycle, "audit_result", None)
+                    if audit:
+                        all_violations.extend(getattr(audit, "violations", []))
+
                 with ui.expansion(
                     f"Audit Loop ({len(feedback.cycles)} iterations)", icon="replay"
                 ).props("dense"):
                     for cycle in feedback.cycles:
                         _render_audit_cycle(cycle)
 
-            # Violations
-            if hasattr(pr, "violations") and pr.violations:
-                with ui.expansion(f"Violations ({len(pr.violations)})").props("dense"):
-                    for v in pr.violations:
-                        severity_color = {
-                            "critical": "negative",
-                            "major": "warning",
-                            "minor": "info",
-                        }.get(getattr(v, "severity", ""), "grey")
-                        with ui.row().classes("items-center gap-2"):
-                            ui.badge(
-                                getattr(v, "severity", ""), color=severity_color
-                            ).props("dense")
-                            ui.label(getattr(v, "message", str(v))).classes("text-caption")
+                # Violations summary from audit cycles
+                if all_violations:
+                    with ui.expansion(f"Violations ({len(all_violations)})").props("dense"):
+                        for v in all_violations:
+                            severity_color = {
+                                "critical": "negative",
+                                "major": "warning",
+                                "minor": "info",
+                            }.get(getattr(v, "severity", ""), "grey")
+                            with ui.row().classes("items-center gap-2"):
+                                ui.badge(
+                                    getattr(v, "severity", ""), color=severity_color
+                                ).props("dense")
+                                ui.label(getattr(v, "message", str(v))).classes("text-caption")
 
         # Parse info
         if result.parse_result and result.parse_result.parsed:
