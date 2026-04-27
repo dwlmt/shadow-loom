@@ -7,7 +7,7 @@ from shadow_loom.models import WorldStateV1, reconstruct_entity_at
 from shadow_loom.query_models import UserRequest
 from shadow_loom.extract_graph import EgoGraphPayload, extract_ego_graph_from_memory, extract_full_world_state
 from shadow_loom.instantiator import AMWNInstantiator
-from shadow_loom.causal_physics import CausalPhysicsEngine
+from shadow_loom.causal_physics import CausalPhysicsEngine, CausalPhysicsResult
 from shadow_loom.directive_assembly import DirectiveAssembler
 
 logger = logging.getLogger(__name__)
@@ -32,6 +32,114 @@ def _get_delay_target_ft(
     if world_state.events:
         return max(e.fabula_time for e in world_state.events)
     return 0
+
+
+def _check_intervention_plausibility(
+    interventions: Dict[str, Any],
+    ws: WorldStateV1,
+) -> Optional[Dict[str, Any]]:
+    """Decide whether a Rung-2/3 intervention set can be applied at all.
+
+    Returns ``None`` when at least one target resolves to a known node
+    (or is a ``.spawn`` genesis), meaning the engine has *something* to
+    operate on.  Otherwise returns a diagnostics dict describing why the
+    request is implausible — used by the pipeline to short-circuit
+    generation and avoid mutating the world model.
+    """
+    if not interventions:
+        return {
+            "reason": "Empty intervention set — nothing to apply.",
+            "unresolved_targets": [],
+        }
+
+    valid_ids = (
+        set(ws.entities.keys())
+        | {e.id for e in ws.events}
+        | set(ws.objects.keys())
+        | set(ws.locations.keys())
+        | set(getattr(ws, "world_traits", {}).keys())
+    )
+
+    unresolved: List[Dict[str, str]] = []
+    non_spawn_total = 0
+    for key in interventions:
+        if "." not in key:
+            unresolved.append({"target": key, "reason": "malformed key (missing '.')"})
+            non_spawn_total += 1
+            continue
+        node_id, prop = key.split(".", 1)
+        if prop == "spawn":
+            continue  # genesis: node doesn't need to exist yet
+        non_spawn_total += 1
+        if node_id not in valid_ids:
+            unresolved.append({"target": key, "reason": f"unknown node id '{node_id}'"})
+
+    # If every non-spawn target failed to resolve, the request is implausible.
+    if unresolved and len(unresolved) >= non_spawn_total:
+        return {
+            "reason": (
+                f"None of the {len(interventions)} intervention target(s) "
+                "could be resolved against the current world state."
+            ),
+            "unresolved_targets": unresolved,
+        }
+    return None
+
+
+def _check_engine_vacuity(
+    physics_result: CausalPhysicsResult,
+    *,
+    rung: int,
+    interventions: Dict[str, Any],
+    evidence_node_ids: Optional[List[str]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Tier-2 implausibility: the engine ran but produced no causal effect.
+
+    A counterfactual or intervention is engine-implausible when *all* of:
+
+      • the do-operator could not bind to any sandbox node (``intervened_nodes`` empty);
+      • forward propagation produced no trait mutations;
+      • social propagation produced no relationship mutations;
+      • (rung 3 only) abduction produced no hidden_deltas.
+
+    This means the requested change has no representable consequences in
+    the AMWN — the shadow physics engine can simulate the surgery but the
+    world does not actually move.  We surface that as implausible so the
+    pipeline can either explain (default) or force generation anyway.
+    """
+    if physics_result.intervened_nodes:
+        return None
+    if physics_result.mutations or physics_result.social_mutations:
+        return None
+    if rung == 3 and physics_result.hidden_deltas:
+        return None
+
+    blocked_count = len(physics_result.blocked)
+    if rung == 3:
+        reason = (
+            "Rung-3 abduction is impossible: the requested historical "
+            "interventions could not bind to any node in the shadow "
+            "sandbox, and the present-day evidence produced no latent "
+            "deltas, so the counterfactual has no representable effect "
+            "on the world."
+        )
+    else:
+        reason = (
+            "Rung-2 intervention is impossible: the do-operator could "
+            "not bind to any node in the shadow sandbox and propagation "
+            "produced no downstream trait or relationship change."
+        )
+    return {
+        "reason": reason,
+        "tier": 2,
+        "rung": rung,
+        "unresolved_targets": [
+            {"target": k, "reason": "did not bind to any sandbox node"}
+            for k in interventions
+        ],
+        "evidence_node_ids": list(evidence_node_ids or []),
+        "blocked_propagations": blocked_count,
+    }
 
 
 def calculate_narrative_physics(
@@ -83,6 +191,25 @@ def calculate_narrative_physics(
     # RUNG 2: INTERVENTION (do-calculus)
     # ==========================================
     elif request.query_type == "intervention":
+        # --- Plausibility gate ---
+        bad = _check_intervention_plausibility(request.interventions, global_world_state)
+        if bad is not None:
+            if not getattr(request, "force_implausible", False):
+                logger.warning("[Intervention] Implausible request: %s", bad["reason"])
+                return {
+                    "status": "implausible",
+                    "query_type": "intervention",
+                    "physics_state": {},
+                    "implausibility_reason": bad["reason"],
+                    "implausibility_details": bad,
+                }
+            logger.warning(
+                "[Intervention] Forced past implausibility gate: %s", bad["reason"]
+            )
+            _forced_warning = bad
+        else:
+            _forced_warning = None
+
         # Collect ALL affected entities from the intervention keys
         focus_ids = _resolve_focus_entities(request.interventions, global_world_state)
         logger.info("[Intervention] Resolved focus entities: %s from %d interventions", focus_ids, len(request.interventions))
@@ -98,6 +225,28 @@ def calculate_narrative_physics(
         if use_causal_engine:
             engine = CausalPhysicsEngine(shadow_graph, global_world_state)
             physics_result = engine.execute(rung=2, interventions=request.interventions)
+
+            # Tier-2 vacuity check (after engine ran)
+            vacuous = _check_engine_vacuity(
+                physics_result, rung=2,
+                interventions=request.interventions,
+            )
+            if vacuous is not None and not getattr(request, "force_implausible", False):
+                logger.warning("[Intervention] Engine vacuity: %s", vacuous["reason"])
+                return {
+                    "status": "implausible",
+                    "query_type": "intervention",
+                    "physics_state": physics_result.sandbox_data,
+                    "implausibility_reason": vacuous["reason"],
+                    "implausibility_details": vacuous,
+                }
+            if vacuous is not None:
+                logger.warning(
+                    "[Intervention] Forced past engine vacuity: %s",
+                    vacuous["reason"],
+                )
+                _forced_warning = vacuous
+
             result = {
                 "status": "success",
                 "query_type": "intervention",
@@ -124,14 +273,69 @@ def calculate_narrative_physics(
         if physics_override:
             result["physics_override"] = physics_override
 
+        if _forced_warning is not None:
+            result["implausibility_warning"] = _forced_warning["reason"]
+            result["implausibility_details"] = _forced_warning
+
         return result
 
     # ==========================================
     # RUNG 3: COUNTERFACTUAL
     # ==========================================
     elif request.query_type == "counterfactual":
+        # --- Plausibility gate ---
+        bad = _check_intervention_plausibility(request.historical_interventions, global_world_state)
+        forced = getattr(request, "force_implausible", False)
+        if bad is not None and not forced:
+            logger.warning("[Counterfactual] Implausible request: %s", bad["reason"])
+            return {
+                "status": "implausible",
+                "query_type": "counterfactual",
+                "physics_state": {},
+                "implausibility_reason": bad["reason"],
+                "implausibility_details": bad,
+            }
+        _forced_warning: Optional[Dict[str, Any]] = bad if (bad is not None and forced) else None
+        if _forced_warning is not None:
+            logger.warning(
+                "[Counterfactual] Forced past implausibility gate: %s",
+                _forced_warning["reason"],
+            )
+
         # Determine the historical anchor point from the requested interventions
-        past_anchor = _calculate_past_anchor(request.historical_interventions, global_world_state)
+        try:
+            past_anchor = _calculate_past_anchor(request.historical_interventions, global_world_state)
+        except ValueError as exc:
+            if not forced:
+                logger.warning("[Counterfactual] Temporal paradox: %s", exc)
+                return {
+                    "status": "implausible",
+                    "query_type": "counterfactual",
+                    "physics_state": {},
+                    "implausibility_reason": str(exc),
+                    "implausibility_details": {
+                        "reason": str(exc),
+                        "unresolved_targets": [
+                            {"target": k, "reason": "no historical anchor (target absent from event timeline)"}
+                            for k in request.historical_interventions
+                        ],
+                    },
+                }
+            # Forced: fall back to the simulation horizon (current 'now')
+            past_anchor = int(
+                max((e.fabula_time for e in global_world_state.events), default=0)
+            )
+            logger.warning(
+                "[Counterfactual] Forced past temporal paradox — anchoring at horizon %d",
+                past_anchor,
+            )
+            _forced_warning = _forced_warning or {
+                "reason": str(exc),
+                "unresolved_targets": [
+                    {"target": k, "reason": "no historical anchor"}
+                    for k in request.historical_interventions
+                ],
+            }
 
         focus_ids = _resolve_focus_entities(request.historical_interventions, global_world_state)
         logger.info("[Counterfactual] Point of Divergence: T=%d | Focus: %s", past_anchor, focus_ids)
@@ -147,6 +351,29 @@ def calculate_narrative_physics(
                 interventions=request.historical_interventions,
                 evidence_node_ids=request.evidence_node_ids,
             )
+
+            # Tier-2 vacuity check: did the abductive simulation produce anything?
+            vacuous = _check_engine_vacuity(
+                physics_result, rung=3,
+                interventions=request.historical_interventions,
+                evidence_node_ids=request.evidence_node_ids,
+            )
+            if vacuous is not None and not forced:
+                logger.warning("[Counterfactual] Engine vacuity: %s", vacuous["reason"])
+                return {
+                    "status": "implausible",
+                    "query_type": "counterfactual",
+                    "physics_state": physics_result.sandbox_data,
+                    "implausibility_reason": vacuous["reason"],
+                    "implausibility_details": vacuous,
+                }
+            if vacuous is not None:
+                logger.warning(
+                    "[Counterfactual] Forced past engine vacuity: %s",
+                    vacuous["reason"],
+                )
+                _forced_warning = _forced_warning or vacuous
+
             result = {
                 "status": "success",
                 "query_type": "counterfactual",
@@ -182,6 +409,10 @@ def calculate_narrative_physics(
         if physics_override:
             result["physics_override"] = physics_override
 
+        if _forced_warning is not None:
+            result["implausibility_warning"] = _forced_warning["reason"]
+            result["implausibility_details"] = _forced_warning
+
         return result
 
     # ==========================================
@@ -190,7 +421,47 @@ def calculate_narrative_physics(
     elif request.query_type == "directive":
         logger.info("[Directive] Target entities: %s | Effect: %s | Intensity: %.2f",
                      request.target_entity_ids, request.target_effect, request.intensity)
-        ego_graph = extract_ego_graph_from_memory(global_world_state, request.target_entity_ids, temporal_anchor)
+
+        # --- Plausibility gate ---
+        unknown = [eid for eid in request.target_entity_ids if eid not in global_world_state.entities]
+        directive_warning: Optional[Dict[str, Any]] = None
+        target_entity_ids = list(request.target_entity_ids)
+        if request.target_entity_ids and len(unknown) == len(request.target_entity_ids):
+            if not getattr(request, "force_implausible", False):
+                logger.warning("[Directive] Implausible: no target entities exist: %s", unknown)
+                return {
+                    "status": "implausible",
+                    "query_type": "directive",
+                    "physics_state": {},
+                    "implausibility_reason": (
+                        "None of the directive target entities exist in the current world state."
+                    ),
+                    "implausibility_details": {
+                        "reason": "unknown target entities",
+                        "unresolved_targets": [
+                            {"target": eid, "reason": "unknown entity id"} for eid in unknown
+                        ],
+                    },
+                }
+            # Forced: fall back to the first known entity (if any) as POV.
+            fallback = next(iter(global_world_state.entities), None)
+            directive_warning = {
+                "reason": (
+                    "None of the directive target entities exist in the current "
+                    "world state."
+                ),
+                "unresolved_targets": [
+                    {"target": eid, "reason": "unknown entity id"} for eid in unknown
+                ],
+                "fallback_pov": fallback,
+            }
+            target_entity_ids = [fallback] if fallback else []
+            logger.warning(
+                "[Directive] Forced past implausibility gate \u2014 fallback POV %s",
+                fallback,
+            )
+
+        ego_graph = extract_ego_graph_from_memory(global_world_state, target_entity_ids, temporal_anchor)
         ego_dump = ego_graph.model_dump()
 
         if use_causal_engine:
@@ -198,13 +469,17 @@ def calculate_narrative_physics(
                 sandbox=None, ego_payload=ego_dump, world_state=global_world_state,
             )
             brief = assembler.assemble(request, syuzhet_anchor=syuzhet_anchor)
-            return {
+            result = {
                 "status": "success",
                 "query_type": "directive",
                 "physics_state": ego_dump,
                 "creative_brief": brief.model_dump(),
                 "target_effect": request.target_effect,
             }
+            if directive_warning is not None:
+                result["implausibility_warning"] = directive_warning["reason"]
+                result["implausibility_details"] = directive_warning
+            return result
 
         injection_rules = _generate_directive_rules(
             ego_dump,
@@ -212,13 +487,17 @@ def calculate_narrative_physics(
             request.intensity
         )
 
-        return {
+        result = {
             "status": "success",
             "query_type": "directive",
             "physics_state": ego_dump,
             "directives": injection_rules,
             "target_effect": request.target_effect
         }
+        if directive_warning is not None:
+            result["implausibility_warning"] = directive_warning["reason"]
+            result["implausibility_details"] = directive_warning
+        return result
 
     # ==========================================
     # GRAPH RAG: INTERROGATION

@@ -13,6 +13,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
+import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
@@ -49,6 +51,28 @@ class StateEvent(Enum):
     NODE_SELECTED = "node_selected"
     QUERY_STARTED = "query_started"
     QUERY_COMPLETE = "query_complete"
+    TASKS_CHANGED = "tasks_changed"
+
+
+@dataclass
+class BackgroundTask:
+    """A long-running operation tracked for UI progress + notifications."""
+    id: str
+    label: str
+    kind: str  # "ingestion" | "query" | "manual_edit" | "save" | ...
+    status: str = "running"  # "running" | "complete" | "failed"
+    message: str = ""
+    started_at: float = field(default_factory=time.time)
+    finished_at: Optional[float] = None
+    result_summary: str = ""
+    error: Optional[str] = None
+    # Optional metadata (e.g., project_id to navigate to on completion)
+    meta: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def elapsed(self) -> float:
+        end = self.finished_at if self.finished_at is not None else time.time()
+        return max(0.0, end - self.started_at)
 
 
 @dataclass
@@ -109,6 +133,10 @@ class AppState:
     selected_node_id: Optional[str] = None
     selected_node_type: Optional[str] = None
 
+    # Background task registry (in-flight + recently completed)
+    background_tasks: List[BackgroundTask] = field(default_factory=list)
+    _max_completed_tasks: int = 20
+
     # Event bus: multiple listeners per event
     _listeners: Dict[StateEvent, List[Callable]] = field(default_factory=dict)
 
@@ -132,6 +160,59 @@ class AppState:
             except Exception:
                 logger.exception("[AppState] Listener error for %s", event.value)
 
+    # ---- Background task registry ----
+
+    def start_task(self, label: str, kind: str = "generic", **meta) -> BackgroundTask:
+        """Register a new in-flight task and notify listeners."""
+        task = BackgroundTask(
+            id=uuid.uuid4().hex[:8],
+            label=label,
+            kind=kind,
+            meta=meta,
+        )
+        self.background_tasks.append(task)
+        self.emit(StateEvent.TASKS_CHANGED, task=task, change="started")
+        return task
+
+    def update_task(self, task: BackgroundTask, message: str) -> None:
+        """Update a task's progress message."""
+        if task.status != "running":
+            return
+        task.message = message
+        self.emit(StateEvent.TASKS_CHANGED, task=task, change="updated")
+
+    def finish_task(
+        self,
+        task: BackgroundTask,
+        result_summary: str = "",
+        error: Optional[str] = None,
+    ) -> None:
+        """Mark a task as complete or failed and trim the history."""
+        task.status = "failed" if error else "complete"
+        task.finished_at = time.time()
+        task.result_summary = result_summary
+        task.error = error
+        # Trim completed tasks beyond the cap (keep all running ones)
+        completed = [t for t in self.background_tasks if t.status != "running"]
+        if len(completed) > self._max_completed_tasks:
+            keep = set(t.id for t in completed[-self._max_completed_tasks:])
+            self.background_tasks = [
+                t for t in self.background_tasks
+                if t.status == "running" or t.id in keep
+            ]
+        self.emit(StateEvent.TASKS_CHANGED, task=task, change="finished")
+
+    def clear_completed_tasks(self) -> None:
+        """Remove all non-running tasks from the registry."""
+        self.background_tasks = [
+            t for t in self.background_tasks if t.status == "running"
+        ]
+        self.emit(StateEvent.TASKS_CHANGED, change="cleared")
+
+    @property
+    def running_task_count(self) -> int:
+        return sum(1 for t in self.background_tasks if t.status == "running")
+
     # ---- Session setup ----
 
     def set_user(self, user_id: int, username: str, display_name: str = "", avatar_url: str = "") -> None:
@@ -143,7 +224,12 @@ class AppState:
 
     # ---- Natural language query interface ----
 
-    def run_nl_query(self, natural_language: str, query_type: str = "general") -> NLQueryResult:
+    def run_nl_query(
+        self,
+        natural_language: str,
+        query_type: str = "general",
+        force_implausible: bool = False,
+    ) -> NLQueryResult:
         """Parse a natural-language query and run it through the pipeline."""
         if self.world_state is None:
             return NLQueryResult(
@@ -186,14 +272,21 @@ class AppState:
             self.query_history.append(result)
             return result
 
-        return self.run_structured_query(parse_result.query, parse_result=parse_result)
+        return self.run_structured_query(
+            parse_result.query,
+            parse_result=parse_result,
+            force_implausible=force_implausible,
+        )
 
     def run_structured_query(
         self,
         query: UserRequest,
         parse_result: Optional[QueryParseResult] = None,
+        force_implausible: bool = False,
     ) -> NLQueryResult:
         """Execute a pre-built structured query through the pipeline."""
+        if force_implausible and hasattr(query, "force_implausible"):
+            query = query.model_copy(update={"force_implausible": True})
         if self.world_state is None:
             return NLQueryResult(
                 parse_result=parse_result or QueryParseResult(
@@ -222,6 +315,13 @@ class AppState:
             self.query_history.append(result)
             return result
 
+        # Capture the *previous* version before we overwrite ``self.versioned_model``
+        # — needed below to detect engine short-circuits where the pipeline
+        # produced an explanation but did not actually advance the world model.
+        prev_version = (
+            self.versioned_model.version if self.versioned_model is not None else None
+        )
+
         # Update world model if pipeline produced a new versioned model
         if pipeline_result.world_model is not None:
             self.versioned_model = pipeline_result.world_model
@@ -230,15 +330,24 @@ class AppState:
 
         self.last_result = pipeline_result
 
-        # Persist version to DB
-        self._save_version_to_db(
-            pipeline_result=pipeline_result,
-            raw_query=getattr(query, 'edited_prose', None) or (
-                parse_result.parsed.reasoning if parse_result and parse_result.parsed else None
-            ),
-            parsed_query_json=query.model_dump_json() if query else None,
-            source=query.query_type,
+        # Persist version to DB \u2014 but skip when the engine short-circuited
+        # an implausible query (no world-state advancement, just an explanation).
+        short_circuited = bool(
+            pipeline_result.implausible
+            and pipeline_result.world_model is not None
+            and prev_version is not None
+            and pipeline_result.world_model.version == prev_version
+            and not pipeline_result.feedback_result
         )
+        if not short_circuited:
+            self._save_version_to_db(
+                pipeline_result=pipeline_result,
+                raw_query=getattr(query, 'edited_prose', None) or (
+                    parse_result.parsed.reasoning if parse_result and parse_result.parsed else None
+                ),
+                parsed_query_json=query.model_dump_json() if query else None,
+                source=query.query_type,
+            )
 
         # Build summary
         summary_parts = [f"Query type: {pipeline_result.query_type}"]
@@ -266,7 +375,12 @@ class AppState:
 
         return result
 
-    async def run_nl_query_async(self, natural_language: str, query_type: str = "general") -> NLQueryResult:
+    async def run_nl_query_async(
+        self,
+        natural_language: str,
+        query_type: str = "general",
+        force_implausible: bool = False,
+    ) -> NLQueryResult:
         """Async version of run_nl_query for use in NiceGUI event handlers."""
         if self.world_state is None:
             return NLQueryResult(
@@ -308,7 +422,10 @@ class AppState:
 
         # Pipeline is sync — run in executor to avoid blocking NiceGUI event loop
         return await asyncio.to_thread(
-            self.run_structured_query, parse_result.query, parse_result,
+            self.run_structured_query,
+            parse_result.query,
+            parse_result,
+            force_implausible,
         )
 
     # ---- Manual edit ----

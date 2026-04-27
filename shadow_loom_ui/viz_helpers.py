@@ -503,7 +503,6 @@ def ws_to_causal_force_data(
         {"name": "Object"},
         {"name": "WorldTrait"},
     ]
-    cat_idx = {"Event": 0, "Entity": 1, "Location": 2, "Object": 3, "WorldTrait": 4}
     seen: set[str] = set()
 
     def _ensure(nid: str) -> None:

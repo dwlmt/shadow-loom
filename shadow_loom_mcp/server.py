@@ -906,6 +906,7 @@ async def narrate(
     mode: Optional[str] = None,
     version: Optional[int] = None,
     skip_audit: bool = _settings.mcp.skip_audit,
+    force_implausible: bool = False,
 ) -> dict:
     """Generate prose and advance the story using natural language.
 
@@ -919,6 +920,9 @@ async def narrate(
         mode: Force a query type — 'observe', 'intervene', 'counterfactual',
               or None for auto-detect.
         skip_audit: Skip the audit loop for faster results (default True).
+        force_implausible: For Rung-2/3 queries, generate prose even when the
+            engine cannot resolve the requested targets against the world
+            (the implausibility reason is still reported on the response).
 
     Reports progress via MCP progress notifications.
     """
@@ -961,6 +965,12 @@ async def narrate(
             ],
         }
 
+    # Apply force_implausible override on supported query types.
+    if force_implausible and hasattr(parse_result.query, "force_implausible"):
+        parse_result.query = parse_result.query.model_copy(
+            update={"force_implausible": True}
+        )
+
     # Stage 2–4: Pipeline
     await ctx.report_progress(2, 4, "Running physics simulation...")
 
@@ -997,6 +1007,7 @@ async def direct(
     intensity: float = 0.8,
     version: Optional[int] = None,
     skip_audit: bool = _settings.mcp.skip_audit,
+    force_implausible: bool = False,
 ) -> dict:
     """Generate a scene optimized for a specific emotional effect.
 
@@ -1008,6 +1019,8 @@ async def direct(
         entity_ids: Entities to focus on (default: all).
         intensity: Effect intensity 0.0–1.0 (default 0.8).
         skip_audit: Skip the audit loop (default True).
+        force_implausible: Generate prose even when none of ``entity_ids``
+            exist in the world (a fallback POV is used).
     """
     err = require_scope(ctx, "write")
     if err:
@@ -1034,6 +1047,7 @@ async def direct(
         target_entity_ids=entity_ids or [],
         target_effect=target_effect,
         intensity=intensity,
+        force_implausible=force_implausible,
     )
 
     await ctx.report_progress(1, 3, f"Assembling {target_effect} directive...")

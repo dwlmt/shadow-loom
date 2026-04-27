@@ -235,6 +235,23 @@ class PipelineResult(BaseModel):
     # --- Query metadata ---
     query_type: str = ""
 
+    # --- Plausibility ---
+    implausible: bool = Field(
+        default=False,
+        description="True when the query (typically Rung 2/3 or directive) "
+        "could not be applied because its targets do not resolve against "
+        "the current world state.  When True, the world model is left "
+        "unchanged and ``prose`` contains a human-readable explanation.",
+    )
+    implausibility_reason: Optional[str] = Field(
+        default=None,
+        description="Short reason why the query was deemed implausible.",
+    )
+    implausibility_details: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Structured diagnostics: unresolved_targets list, etc.",
+    )
+
 
 # =====================================================================
 # The pipeline
@@ -353,6 +370,32 @@ def run_pipeline(
     ))
 
     # =================================================================
+    # Implausibility short-circuit — explain, don't mutate.
+    # =================================================================
+    if physics_result.get("status") == "implausible":
+        _apply_implausibility_short_circuit(
+            query=query, physics_result=physics_result,
+            vwm=vwm, result=result, history=history,
+            log_prefix="[Pipeline]",
+        )
+        return result
+
+    # Forced-past-implausibility — still flag the result so callers can warn.
+    if "implausibility_warning" in physics_result:
+        result.implausible = True
+        result.implausibility_reason = physics_result.get("implausibility_warning")
+        result.implausibility_details = physics_result.get("implausibility_details", {}) or {}
+        history.record("implausibility", {
+            "forced": True,
+            "reason": result.implausibility_reason,
+            "details": result.implausibility_details,
+        })
+        logger.warning(
+            "[Pipeline] Forced past implausibility gate — generating prose anyway: %s",
+            result.implausibility_reason,
+        )
+
+    # =================================================================
     # Non-prose queries stop here
     # =================================================================
     if query.query_type in ("interrogate", "general"):
@@ -366,76 +409,10 @@ def run_pipeline(
     # Evaluation query — full-story quality audit
     # =================================================================
     if query.query_type == "evaluate":
-        logger.info("[Pipeline] Evaluation query — running full-story quality audit.")
-        # Collect all prose from versioned model history
-        all_prose_parts: list[str] = []
-        if vwm.history:
-            for entry in vwm.history:
-                if hasattr(entry, 'prose') and entry.prose:
-                    all_prose_parts.append(entry.prose)
-        # If no history prose, try to generate a summary from events
-        if not all_prose_parts:
-            events_summary = "; ".join(
-                f"[{e.id}] {e.description}" for e in ws.events[:50]
-            )
-            all_prose_parts.append(
-                f"Story events summary: {events_summary}"
-            )
-        full_prose = "\n\n---\n\n".join(all_prose_parts)
-
-        # Build an assembler for affective scoring
-        from shadow_loom.extract_graph import extract_ego_graph_from_memory
-        focus_ids = (
-            query.focus_entity_ids
-            if query.focus_entity_ids
-            else list(ws.entities.keys())[:5]
+        _run_evaluation_branch(
+            query=query, ws=ws, vwm=vwm, cfg=cfg,
+            physics_result=physics_result, result=result, history=history,
         )
-        ego_graph = extract_ego_graph_from_memory(ws, focus_ids)
-        eval_assembler = DirectiveAssembler(
-            sandbox=None, ego_payload=ego_graph.model_dump(), world_state=ws,
-        )
-
-        # Build a minimal brief for the evaluation
-        eval_brief = CreativeBrief(
-            target_effect="observation",
-            target_entities=focus_ids,
-            scene_context=physics_result.get("physics_state", {}),
-        )
-        # Populate analytics on the brief
-        eval_brief.epistemic_gaps = eval_assembler.compute_epistemic_gaps(focus_ids)
-        eval_brief.narrative_tensions = eval_assembler.compute_narrative_tension()
-        eval_brief.trait_trajectories = eval_assembler.compute_trait_trajectories(focus_ids)
-
-        # Compute engine metrics
-        causal_fb = compute_causal_feedback(None, eval_brief, ws)
-        affective_fb = compute_affective_feedback(eval_brief, eval_assembler, focus_ids)
-
-        # Run LLM evaluation
-        from shadow_loom.auditor import AuditorConfig as _AC
-        eval_cfg = cfg.auditor_config or _AC()
-        narrative_order = _finalize_narrative_order(
-            prose=full_prose,
-            brief=eval_brief,
-            causal_feedback=causal_fb,
-            affective_feedback=affective_fb,
-            config=eval_cfg,
-        )
-
-        eval_result = EvaluationResult(
-            narrative_order=narrative_order.model_dump(),
-            story_prose_evaluated=full_prose if query.include_full_prose else "",
-            version_count=len(all_prose_parts),
-        )
-        result.evaluation_result = eval_result
-        result.prose = full_prose
-
-        history.record("evaluation", {
-            "overall_pass": narrative_order.overall_pass,
-            "foreshadowing_score": narrative_order.causal_feedback.foreshadowing_payoff_score,
-            "affective_loss": narrative_order.affective_feedback.affective_loss_mse,
-            "miracle_steps": len(narrative_order.causal_feedback.miracle_steps_detected),
-        })
-
         return result
 
     # =================================================================
@@ -445,11 +422,13 @@ def run_pipeline(
         logger.info("[Pipeline] Manual edit — skipping generation, running re-extraction.")
         result.prose = query.edited_prose
 
-        # Create a minimal GeneratedScene wrapper for consistency
+        # Create a minimal GeneratedScene wrapper for consistency.
+        # Note: GeneratedScene has no scene_summary field; the user
+        # description is captured in the merge description below.
         from shadow_loom.generation import GeneratedScene
         result.scene = GeneratedScene(
             prose=query.edited_prose,
-            scene_summary=query.description or "Manual edit",
+            rendering_mode="manual_edit",
         )
         history.record("generation", GenerationStepRecord(
             scene=result.scene,
@@ -473,6 +452,7 @@ def run_pipeline(
                 topology,
                 source="manual_edit",
                 description=description,
+                prose=result.prose,
             )
             changeset = vwm_next.history[-1].changeset
             history.record("reextraction_merge", ReextractionStepRecord(
@@ -598,6 +578,7 @@ def run_pipeline(
                 topology,
                 source="pipeline",
                 description=description,
+                prose=result.prose,
             )
             # Record the changeset
             changeset = vwm_next.history[-1].changeset
@@ -698,7 +679,38 @@ async def run_pipeline_async(
         extra=extras,
     ))
 
+    # Implausibility short-circuit (mirrors sync pipeline)
+    if physics_result.get("status") == "implausible":
+        _apply_implausibility_short_circuit(
+            query=query, physics_result=physics_result,
+            vwm=vwm, result=result, history=history,
+            log_prefix="[Pipeline·Async]",
+        )
+        return result
+
+    if "implausibility_warning" in physics_result:
+        result.implausible = True
+        result.implausibility_reason = physics_result.get("implausibility_warning")
+        result.implausibility_details = physics_result.get("implausibility_details", {}) or {}
+        history.record("implausibility", {
+            "forced": True,
+            "reason": result.implausibility_reason,
+            "details": result.implausibility_details,
+        })
+        logger.warning(
+            "[Pipeline·Async] Forced past implausibility gate — generating prose anyway: %s",
+            result.implausibility_reason,
+        )
+
     if query.query_type in ("interrogate", "general"):
+        return result
+
+    # Evaluation: full-story quality audit (delegates to shared sync helper)
+    if query.query_type == "evaluate":
+        _run_evaluation_branch(
+            query=query, ws=ws, vwm=vwm, cfg=cfg,
+            physics_result=physics_result, result=result, history=history,
+        )
         return result
 
     # Manual edit: same as sync path
@@ -708,7 +720,7 @@ async def run_pipeline_async(
         from shadow_loom.generation import GeneratedScene
         result.scene = GeneratedScene(
             prose=query.edited_prose,
-            scene_summary=query.description or "Manual edit",
+            rendering_mode="manual_edit",
         )
         history.record("generation", GenerationStepRecord(scene=result.scene, brief=None))
         try:
@@ -716,7 +728,7 @@ async def run_pipeline_async(
                 prose=result.prose, world_state=ws, config=cfg.extraction_config,
             )
             description = f"Manual edit: {query.description}" if query.description else "Manual edit"
-            vwm_next = vwm.merge(topology, source="manual_edit", description=description)
+            vwm_next = vwm.merge(topology, source="manual_edit", description=description, prose=result.prose)
             changeset = vwm_next.history[-1].changeset
             history.record("reextraction_merge", ReextractionStepRecord(
                 events_added=changeset.events_added if changeset else 0,
@@ -786,7 +798,7 @@ async def run_pipeline_async(
                 f"Pipeline merge after {query.query_type} query"
                 f" (audit={'converged' if result.converged else 'skipped/failed'})"
             )
-            vwm_next = vwm.merge(topology, source="pipeline", description=description)
+            vwm_next = vwm.merge(topology, source="pipeline", description=description, prose=result.prose)
             changeset = vwm_next.history[-1].changeset
             history.record("reextraction_merge", ReextractionStepRecord(
                 events_added=changeset.events_added if changeset else 0,
@@ -803,6 +815,86 @@ async def run_pipeline_async(
     logger.info("[Pipeline·Async] Complete — query_type=%s, prose=%s.",
                 query.query_type, "yes" if result.prose else "no")
     return result
+
+
+# =====================================================================
+# Internal: full-story evaluation branch (shared by sync + async pipelines)
+# =====================================================================
+
+def _run_evaluation_branch(
+    *,
+    query: "EvaluationQuery",
+    ws: WorldStateV1,
+    vwm: "VersionedWorldModel",
+    cfg: "PipelineConfig",
+    physics_result: Dict[str, Any],
+    result: "PipelineResult",
+    history: "PipelineHistory",
+) -> None:
+    """Run a full-story quality audit and populate ``result.evaluation_result``."""
+    logger.info("[Pipeline] Evaluation query — running full-story quality audit.")
+    # Collect all prose from versioned model history
+    all_prose_parts: list[str] = []
+    if vwm.history:
+        for entry in vwm.history:
+            entry_prose = getattr(entry, "prose", None)
+            if entry_prose:
+                all_prose_parts.append(entry_prose)
+    # If no history prose, fall back to event-summary text
+    if not all_prose_parts:
+        events_summary = "; ".join(
+            f"[{e.id}] {e.description}" for e in ws.events[:50]
+        )
+        all_prose_parts.append(f"Story events summary: {events_summary}")
+    full_prose = "\n\n---\n\n".join(all_prose_parts)
+
+    from shadow_loom.extract_graph import extract_ego_graph_from_memory
+    focus_ids = (
+        query.focus_entity_ids
+        if query.focus_entity_ids
+        else list(ws.entities.keys())[:5]
+    )
+    ego_graph = extract_ego_graph_from_memory(ws, focus_ids)
+    eval_assembler = DirectiveAssembler(
+        sandbox=None, ego_payload=ego_graph.model_dump(), world_state=ws,
+    )
+
+    eval_brief = CreativeBrief(
+        target_effect="observation",
+        target_entities=focus_ids,
+        scene_context=physics_result.get("physics_state", {}),
+    )
+    eval_brief.epistemic_gaps = eval_assembler.compute_epistemic_gaps(focus_ids)
+    eval_brief.narrative_tensions = eval_assembler.compute_narrative_tension()
+    eval_brief.trait_trajectories = eval_assembler.compute_trait_trajectories(focus_ids)
+
+    causal_fb = compute_causal_feedback(None, eval_brief, ws)
+    affective_fb = compute_affective_feedback(eval_brief, eval_assembler, focus_ids)
+
+    from shadow_loom.auditor import AuditorConfig as _AC
+    eval_cfg = cfg.auditor_config or _AC()
+    narrative_order = _finalize_narrative_order(
+        prose=full_prose,
+        brief=eval_brief,
+        causal_feedback=causal_fb,
+        affective_feedback=affective_fb,
+        config=eval_cfg,
+    )
+
+    eval_result = EvaluationResult(
+        narrative_order=narrative_order,
+        story_prose_evaluated=full_prose if query.include_full_prose else "",
+        version_count=len(all_prose_parts),
+    )
+    result.evaluation_result = eval_result
+    result.prose = full_prose
+
+    history.record("evaluation", {
+        "overall_pass": narrative_order.overall_pass,
+        "foreshadowing_score": narrative_order.causal_feedback.foreshadowing_payoff_score,
+        "affective_loss": narrative_order.affective_feedback.affective_loss_mse,
+        "miracle_steps": len(narrative_order.causal_feedback.miracle_steps_detected),
+    })
 
 
 # =====================================================================
@@ -843,3 +935,80 @@ def _build_brief_for_query(
             target_entities=[],
             scene_context=physics_state,
         )
+
+
+# =====================================================================
+# Internal: implausibility short-circuit
+# =====================================================================
+
+def _format_implausibility_explanation(
+    query: UserRequest,
+    physics_result: Dict[str, Any],
+) -> str:
+    """Render a human-readable explanation when the engine deemed the
+    query implausible.  No LLM call — purely template-based so the
+    behaviour is deterministic, fast, and free of side-effects."""
+    reason = physics_result.get("implausibility_reason", "Unknown reason.")
+    details = physics_result.get("implausibility_details", {}) or {}
+    unresolved = details.get("unresolved_targets", []) or []
+
+    lines: List[str] = [
+        f"The requested {query.query_type} could not be applied to the "
+        "current world state, so the story, world model, and graph have "
+        "been left unchanged.",
+        "",
+        f"Reason: {reason}",
+    ]
+    if unresolved:
+        lines.append("")
+        lines.append("Unresolved targets:")
+        for item in unresolved:
+            tgt = item.get("target", "?")
+            why = item.get("reason", "unspecified")
+            lines.append(f"  - {tgt}: {why}")
+    lines.append("")
+    lines.append(
+        "Please revise the query so it references entities, events, "
+        "objects, locations, or world traits that exist in the current "
+        "state, then submit it again."
+    )
+    return "\n".join(lines)
+
+
+def _apply_implausibility_short_circuit(
+    *,
+    query: UserRequest,
+    physics_result: Dict[str, Any],
+    vwm: VersionedWorldModel,
+    result: PipelineResult,
+    history: PipelineHistory,
+    log_prefix: str,
+) -> None:
+    """Populate ``result`` with an explanation and bail out cleanly.
+
+    Skips generation, audit, re-extraction, and merge.  The world model
+    is left exactly as supplied (``vwm`` is *not* advanced).
+    """
+    from shadow_loom.generation import GeneratedScene
+
+    explanation = _format_implausibility_explanation(query, physics_result)
+    result.prose = explanation
+    result.scene = GeneratedScene(
+        prose=explanation,
+        rendering_mode="implausible",
+        constraints_violated=["implausible_query"],
+    )
+    result.implausible = True
+    result.implausibility_reason = physics_result.get("implausibility_reason")
+    result.implausibility_details = physics_result.get("implausibility_details", {}) or {}
+    result.world_model = vwm  # explicitly unchanged
+
+    history.record("generation", GenerationStepRecord(scene=result.scene, brief=None))
+    history.record("implausibility", {
+        "reason": result.implausibility_reason,
+        "details": result.implausibility_details,
+    })
+    logger.info(
+        "%s Implausible query — short-circuited (world model left at v%d).",
+        log_prefix, vwm.version,
+    )

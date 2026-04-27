@@ -210,8 +210,9 @@ class QueryParseResult(BaseModel):
         default=None,
         description="The fully constructed query, or None if validation failed.",
     )
-    parsed: ParsedQuery = Field(
-        description="The raw LLM classification output.",
+    parsed: Optional[ParsedQuery] = Field(
+        default=None,
+        description="The raw LLM classification output, or None if parsing failed before completion.",
     )
     validation_errors: List[ValidationError] = Field(
         default_factory=list,
@@ -324,12 +325,12 @@ def _collect_all_ids(world_state: WorldStateV1) -> set[str]:
 
 QUERY_TYPES = (
     "observation", "intervention", "counterfactual",
-    "directive", "interrogate", "general", "manual_edit",
+    "directive", "interrogate", "general", "manual_edit", "evaluate",
 )
 
 QueryTypeLiteral = Literal[
     "observation", "intervention", "counterfactual",
-    "directive", "interrogate", "general", "manual_edit",
+    "directive", "interrogate", "general", "manual_edit", "evaluate",
 ]
 
 
@@ -438,6 +439,16 @@ The user is providing actual narrative prose to inject into the story.
 - `edited_prose`: Required — the user's narrative prose text.
 - `edit_description`: Optional description of the changes.
 - `focus_entity_ids`: Optional list of entities most affected by the edit.
+""",
+    "evaluate": """\
+## EVALUATION QUERY
+
+Runs a full-story narrative quality audit. Does NOT advance time or generate new prose.
+The user wants a comprehensive scorecard of the existing story (causal soundness,
+affective trajectory, miracle-step detection, etc.).
+
+**Fields to populate:**
+- `focus_entity_ids`: Optional list of entities to focus the evaluation on (omit to use all).
 """,
 }
 

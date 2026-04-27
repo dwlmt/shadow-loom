@@ -48,42 +48,82 @@ verifier = DebugTokenVerifier(validate=_validate_bearer_token)
 
 # ── User resolution from Context ─────────────────────────────────
 
+def _open_mode_enabled() -> bool:
+    """Return True if the MCP server is in open (dev/test) mode."""
+    try:
+        from shadow_loom.settings import get_settings
+        return bool(getattr(get_settings().mcp, "allow_open_mode", False))
+    except Exception:
+        return False
+
+
+def _last_cached_entry() -> Optional[dict]:
+    """Return the most recently inserted token cache entry, or None."""
+    if not _token_user_cache:
+        return None
+    # dict preserves insertion order in CPython 3.7+
+    last_token = next(reversed(_token_user_cache))
+    return _token_user_cache[last_token]
+
+
 def get_user_id(ctx: Context) -> Optional[int]:
-    """Resolve the authenticated user_id from the bearer token in Context."""
+    """Resolve the authenticated user_id from the bearer token in Context.
+
+    Fail-closed in production: if the token cannot be resolved from the
+    active request context, return ``None``. In open mode (dev/test only),
+    fall back to the most recently cached token entry so MagicMock-based
+    tests can drive the tools without simulating a full transport layer.
+    """
     rc = ctx.request_context
-    if rc is not None:
-        token_info = getattr(rc, "access_token", None)
-        if token_info is not None:
-            raw_token = getattr(token_info, "claims", {}).get("token")
-            if raw_token and raw_token in _token_user_cache:
-                return _token_user_cache[raw_token]["user_id"]
-    # Fallback: return last cached user (single-request model)
-    if _token_user_cache:
-        return list(_token_user_cache.values())[-1]["user_id"]
+    if rc is None:
+        if _open_mode_enabled():
+            entry = _last_cached_entry()
+            return entry["user_id"] if entry else None
+        return None
+    token_info = getattr(rc, "access_token", None)
+    if token_info is None:
+        return None
+    raw_token = getattr(token_info, "claims", {}).get("token")
+    if raw_token and raw_token in _token_user_cache:
+        return _token_user_cache[raw_token]["user_id"]
     return None
 
 
 def get_scopes(ctx: Context) -> set[str]:
-    """Get the scopes for the authenticated user."""
+    """Get the scopes for the authenticated user. Fail-closed (empty set).
+
+    In open mode (dev/test only), fall back to the most recently cached
+    token entry's scopes — see ``get_user_id`` for rationale.
+    """
     rc = ctx.request_context
-    if rc is not None:
-        token_info = getattr(rc, "access_token", None)
-        if token_info is not None:
-            raw_token = getattr(token_info, "claims", {}).get("token")
-            if raw_token and raw_token in _token_user_cache:
-                return _token_user_cache[raw_token]["scopes"]
-    if _token_user_cache:
-        return list(_token_user_cache.values())[-1]["scopes"]
+    if rc is None:
+        if _open_mode_enabled():
+            entry = _last_cached_entry()
+            return set(entry["scopes"]) if entry else set()
+        return set()
+    token_info = getattr(rc, "access_token", None)
+    if token_info is None:
+        return set()
+    raw_token = getattr(token_info, "claims", {}).get("token")
+    if raw_token and raw_token in _token_user_cache:
+        return _token_user_cache[raw_token]["scopes"]
     return set()
 
 
 # ── Scope enforcement ─────────────────────────────────────────────
 
 def require_scope(ctx: Context, scope: str) -> Optional[str]:
-    """Check the authenticated user has *scope*. Returns error string or None."""
+    """Check the authenticated user has *scope*. Returns error string or None.
+
+    Fail-closed: if no scopes are resolved, deny access unless the MCP
+    server has been explicitly placed in open mode via
+    ``MCP_ALLOW_OPEN_MODE=true`` (development only).
+    """
     scopes = get_scopes(ctx)
     if not scopes:
-        return None  # No auth configured — allow (open mode)
+        if _open_mode_enabled():
+            return None  # Explicit dev override
+        return f"Access denied: scope '{scope}' required (no auth context)."
     if scope not in scopes:
         return f"Access denied: scope '{scope}' required."
     return None

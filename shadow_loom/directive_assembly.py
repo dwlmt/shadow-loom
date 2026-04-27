@@ -2064,7 +2064,6 @@ class DirectiveAssembler:
                 continue
 
             affinity = rel.get("affinity", 0.0)
-            fear = rel.get("fear", 0.0)
             if affinity <= 0.3:
                 continue  # Not a love-candidate
 

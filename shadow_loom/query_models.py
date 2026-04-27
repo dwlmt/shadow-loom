@@ -31,6 +31,12 @@ class InterventionQuery(BaseModel):
     interventions: Dict[str, Any] = Field(
         description="A dictionary of do-operator targets. Values are strings for state changes, or dicts for genesis spawns."
     )
+    force_implausible: bool = Field(
+        default=False,
+        description="If True, generate prose even when the engine cannot resolve any "
+        "intervention targets against the current world state. The implausibility "
+        "reason is still reported on the result so the caller can warn the user.",
+    )
 
 # ==========================================
 # 3. THE COUNTERFACTUAL (Rung 3: Abduction)
@@ -46,6 +52,12 @@ class CounterfactualQuery(BaseModel):
     )
     evidence_node_ids: List[str] = Field(
         description="The facts from the present we must condition on to calculate latent traits."
+    )
+    force_implausible: bool = Field(
+        default=False,
+        description="If True, generate prose even when no historical anchor can be "
+        "located for the requested interventions. The implausibility reason is still "
+        "surfaced on the result.",
     )
 
 # ==========================================
@@ -66,6 +78,12 @@ class DirectiveQuery(BaseModel):
         description="If suspense: the Objective Node ID they are blind to. If emotion: the Trait/Edge ID to shatter."
     )
     intensity: float = Field(default=1.0, description="0.0 to 1.0 multiplier for the Prompt injection.")
+    force_implausible: bool = Field(
+        default=False,
+        description="If True, generate prose even when none of the target entities "
+        "exist in the current world state (a fallback POV is used and the implausibility "
+        "reason is reported on the result).",
+    )
 
 # ==========================================
 # 5. THE INTERROGATOR (Graph RAG)

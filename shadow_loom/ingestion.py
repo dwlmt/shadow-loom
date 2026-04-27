@@ -313,7 +313,6 @@ def chunk_text(text: str, strategy: str = "act_headings", min_chunk_chars: int =
         Non-empty text chunks in document order.
     """
     if strategy == "act_headings":
-        splits = _HEADING_RE.split(text)
         # Re-attach heading lines to their bodies
         matches = list(_HEADING_RE.finditer(text))
         if matches:
@@ -1992,7 +1991,6 @@ def _auto_repair(ws: WorldStateV1) -> Tuple[WorldStateV1, List[str]]:
         | set(ws.world_traits.keys())
         | {e.id for e in ws.events}
     )
-    event_ids = {e.id for e in ws.events}
     entity_ids = set(ws.entities.keys())
     location_ids = set(ws.locations.keys())
     node_ids = entity_ids | set(ws.objects.keys())

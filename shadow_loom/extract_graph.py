@@ -401,6 +401,10 @@ class WorldModelVersion(BaseModel):
         default=None,
         description="Detailed counts of what was added. None for version 0 (original).",
     )
+    prose: Optional[str] = Field(
+        default=None,
+        description="Generated/edited prose associated with this version, if any.",
+    )
 
 
 class WorldSnapshot(BaseModel):
@@ -545,6 +549,7 @@ class VersionedWorldModel(BaseModel):
         *,
         source: str = "merge_topology",
         description: str = "",
+        prose: Optional[str] = None,
     ) -> "VersionedWorldModel":
         """Merge a topology into the world model, returning a **new** VersionedWorldModel.
 
@@ -634,6 +639,7 @@ class VersionedWorldModel(BaseModel):
                 source=source,
                 description=description or f"Merged topology: +{changeset.events_added} events.",
                 changeset=changeset,
+                prose=prose,
             ),
         ]
 

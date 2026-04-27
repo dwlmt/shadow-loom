@@ -45,13 +45,18 @@ def build_workspace(state: AppState, project_id: int) -> None:
         ui.button("Back to Dashboard", on_click=lambda: ui.navigate.to("/"))
         return
 
-    # Check access (basic: owner or member)
-    if state.user_id:
+    # Check access. Fail-closed when no user_id is present \u2014 only public
+    # projects (or projects in fully-open dev mode) are reachable anonymously.
+    if state.user_id is not None:
         role = db.get_user_project_role(project_id, state.user_id)
         if role is None and not project.is_public and project.owner_id != state.user_id:
             ui.label("Access denied.").classes("text-h5 text-negative q-pa-lg")
             ui.button("Back to Dashboard", on_click=lambda: ui.navigate.to("/"))
             return
+    elif not project.is_public:
+        ui.label("Access denied.").classes("text-h5 text-negative q-pa-lg")
+        ui.button("Back to Dashboard", on_click=lambda: ui.navigate.to("/"))
+        return
 
     # Load latest version
     latest = db.get_latest_version(project_id)

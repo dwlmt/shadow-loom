@@ -825,3 +825,142 @@ class TestPipelineResultStructure:
         assert isinstance(d, dict)
         assert "query_type" in d
         assert "history" in d
+
+
+# =========================================================================
+# Test: Implausibility short-circuit (Rung 2/3 + directive)
+# =========================================================================
+
+class TestImplausibilityShortCircuit:
+    """When the engine cannot apply a Rung-2/3 (or directive) query
+    because its targets do not exist, the pipeline must explain rather
+    than fail, and must NOT mutate the world model."""
+
+    def _assert_no_mutation(self, result, ws_before_dump):
+        # World model is left at v0 and the underlying state is identical.
+        assert result.world_model.version == 0
+        assert result.world_model.current.model_dump() == ws_before_dump
+
+    def test_intervention_unknown_target_short_circuits(self):
+        ws_before = _deep_snapshot(macbeth_ws)
+        query = InterventionQuery(
+            interventions={"ENT_DOES_NOT_EXIST.status": "dead"}
+        )
+        result = run_pipeline(query, world_state=macbeth_ws)
+
+        assert result.implausible is True
+        assert result.implausibility_reason
+        assert result.prose is not None
+        assert "could not be applied" in result.prose
+        assert "ENT_DOES_NOT_EXIST.status" in result.prose
+        assert result.scene is not None
+        assert result.scene.rendering_mode == "implausible"
+        # No generation/audit/extraction LLM calls should have been needed.
+        assert result.converged is None
+        assert result.audit_iterations is None
+        assert result.feedback_result is None
+        self._assert_no_mutation(result, ws_before)
+        # History records the implausibility.
+        steps = [s["step"] for s in result.history.steps]
+        assert "implausibility" in steps
+        assert "reextraction_merge" not in steps
+
+    def test_counterfactual_unknown_target_short_circuits(self):
+        ws_before = _deep_snapshot(macbeth_ws)
+        query = CounterfactualQuery(
+            historical_interventions={"FAKE_NODE.status": "alive"},
+            evidence_node_ids=[],
+        )
+        result = run_pipeline(query, world_state=macbeth_ws)
+
+        assert result.implausible is True
+        assert result.prose is not None
+        assert "FAKE_NODE.status" in result.prose
+        self._assert_no_mutation(result, ws_before)
+
+    def test_directive_unknown_target_short_circuits(self):
+        ws_before = _deep_snapshot(macbeth_ws)
+        query = DirectiveQuery(
+            target_entity_ids=["ENT_NO_SUCH_PERSON"],
+            target_effect="grief",
+        )
+        result = run_pipeline(query, world_state=macbeth_ws)
+
+        assert result.implausible is True
+        assert "ENT_NO_SUCH_PERSON" in result.prose
+        self._assert_no_mutation(result, ws_before)
+
+    def test_plausible_intervention_not_flagged(self):
+        """A well-formed intervention against a real entity is not flagged."""
+        first_ent = next(iter(macbeth_ws.entities))
+        query = InterventionQuery(
+            interventions={f"{first_ent}.status": "altered"}
+        )
+        cfg = PipelineConfig(skip_audit=True, skip_reextraction=True)
+        with patch("shadow_loom.generation._build_generation_agent") as mock_gen_builder:
+            mock_agent = MagicMock()
+            mock_agent.run_sync.return_value = _mock_run_sync(_mock_scene())
+            mock_gen_builder.return_value = mock_agent
+            result = run_pipeline(query, world_state=macbeth_ws, config=cfg)
+        assert result.implausible is False
+        assert result.implausibility_reason is None
+
+
+# =========================================================================
+# Test: force_implausible override
+# =========================================================================
+
+class TestForceImplausibleOverride:
+    """When ``force_implausible=True`` the engine still detects the
+    problem but proceeds with degraded best-effort generation, and the
+    pipeline reports the warning on the result."""
+
+    def test_intervention_force_generates_prose(self):
+        query = InterventionQuery(
+            interventions={"ENT_DOES_NOT_EXIST.status": "dead"},
+            force_implausible=True,
+        )
+        cfg = PipelineConfig(skip_audit=True, skip_reextraction=True)
+        with patch("shadow_loom.generation._build_generation_agent") as mock_gen_builder:
+            mock_agent = MagicMock()
+            mock_agent.run_sync.return_value = _mock_run_sync(_mock_scene("Forced prose."))
+            mock_gen_builder.return_value = mock_agent
+            result = run_pipeline(query, world_state=macbeth_ws, config=cfg)
+        # Flagged as implausible but prose was still generated.
+        assert result.implausible is True
+        assert result.implausibility_reason
+        assert result.prose == "Forced prose."
+        # History records the forced step.
+        steps = [s for s in result.history.steps if s["step"] == "implausibility"]
+        assert steps and steps[0].get("forced") is True
+
+    def test_counterfactual_force_anchors_at_horizon(self):
+        query = CounterfactualQuery(
+            historical_interventions={"FAKE_NODE.status": "alive"},
+            evidence_node_ids=[],
+            force_implausible=True,
+        )
+        cfg = PipelineConfig(skip_audit=True, skip_reextraction=True)
+        with patch("shadow_loom.generation._build_generation_agent") as mock_gen_builder:
+            mock_agent = MagicMock()
+            mock_agent.run_sync.return_value = _mock_run_sync(_mock_scene("Forced cf."))
+            mock_gen_builder.return_value = mock_agent
+            result = run_pipeline(query, world_state=macbeth_ws, config=cfg)
+        assert result.implausible is True
+        assert result.prose == "Forced cf."
+
+    def test_directive_force_uses_fallback_pov(self):
+        query = DirectiveQuery(
+            target_entity_ids=["ENT_NO_SUCH_PERSON"],
+            target_effect="grief",
+            force_implausible=True,
+        )
+        cfg = PipelineConfig(skip_audit=True, skip_reextraction=True)
+        with patch("shadow_loom.generation._build_generation_agent") as mock_gen_builder:
+            mock_agent = MagicMock()
+            mock_agent.run_sync.return_value = _mock_run_sync(_mock_scene("Forced directive."))
+            mock_gen_builder.return_value = mock_agent
+            result = run_pipeline(query, world_state=macbeth_ws, config=cfg)
+        assert result.implausible is True
+        assert result.implausibility_details.get("fallback_pov") in macbeth_ws.entities
+        assert result.prose == "Forced directive."

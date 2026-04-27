@@ -11,6 +11,8 @@ from nicegui import ui
 
 from shadow_loom.ingestion import ExtractionConfig, run_extraction
 from shadow_loom_ui import db
+from shadow_loom_ui.state import StateEvent
+from shadow_loom_ui.task_helpers import capture_logs_to_task, notify_task_complete
 
 if TYPE_CHECKING:
     from shadow_loom_ui.state import AppState
@@ -53,18 +55,26 @@ def build_ingest_dialog(state: AppState) -> ui.dialog:
         if sample_dir.exists():
             sample_files = sorted(sample_dir.glob("*.txt"))
             if sample_files:
+                # Build an explicit allow-list keyed by the str(path) we hand
+                # to the client; we never trust the value we get back without
+                # checking it against this map (defends against arbitrary
+                # file reads via crafted select payloads).
+                sample_allowlist = {str(f): f for f in sample_files}
                 ui.label("Or load a sample plot:").classes("text-caption q-mt-sm")
                 sample_select = ui.select(
-                    options={str(f): f.stem.replace("_", " ").title()
-                             for f in sample_files},
+                    options={k: v.stem.replace("_", " ").title()
+                             for k, v in sample_allowlist.items()},
                     label="Sample",
                 ).classes("w-64")
 
                 def _load_sample():
-                    path = sample_select.value
-                    if path:
-                        text_area.value = Path(path).read_text(encoding="utf-8")
-                        project_name.value = Path(path).stem.replace("_", " ").title()
+                    chosen = sample_select.value
+                    safe_path = sample_allowlist.get(chosen)
+                    if safe_path is None:
+                        ui.notify("Invalid sample selection", type="warning")
+                        return
+                    text_area.value = safe_path.read_text(encoding="utf-8")
+                    project_name.value = safe_path.stem.replace("_", " ").title()
 
                 sample_select.on("update:model-value", _load_sample)
 
@@ -72,35 +82,71 @@ def build_ingest_dialog(state: AppState) -> ui.dialog:
         progress = ui.linear_progress(value=0, show_value=False).classes("w-full")
         progress.set_visibility(False)
 
-        with ui.row().classes("w-full justify-end gap-2 q-mt-md"):
-            ui.button("Cancel", on_click=dialog.close).props("flat")
+        # Track the currently running ingestion task (for progress updates + cancel-safe close).
+        current = {"task": None, "asyncio_task": None}
 
-            async def _run_ingestion():
-                text = text_area.value.strip()
-                if not text:
-                    ui.notify("Enter some text first", type="warning")
-                    return
+        # Subscribe to TASKS_CHANGED so dialog progress mirrors the registry
+        # while the dialog is open. We unbind on close.
+        def _on_tasks_changed(**kwargs):
+            t = current["task"]
+            if t is None:
+                return
+            if kwargs.get("task") is not None and kwargs["task"].id != t.id:
+                return
+            if t.status == "running":
+                status.set_text(t.message or "Working…")
 
-                status.set_text("Extracting world model from text...")
-                progress.set_visibility(True)
-                progress.value = 0.1
+        state.on(StateEvent.TASKS_CHANGED, _on_tasks_changed)
 
+        button_row = ui.row().classes("w-full justify-end gap-2 q-mt-md")
+        with button_row:
+            cancel_btn = ui.button("Cancel", on_click=lambda: dialog.close()).props("flat")
+            background_btn = ui.button(
+                "Run in background",
+                icon="visibility_off",
+                on_click=lambda: dialog.close(),
+            ).props("flat color=primary")
+            background_btn.set_visibility(False)
+            ingest_btn = ui.button(
+                "Ingest", icon="auto_fix_high",
+            ).props("color=primary")
+
+        async def _run_ingestion():
+            text = text_area.value.strip()
+            if not text:
+                ui.notify("Enter some text first", type="warning")
+                return
+
+            pname = (project_name.value or "Untitled").strip()
+            task = state.start_task(
+                label=f"Ingest: {pname}",
+                kind="ingestion",
+            )
+            current["task"] = task
+
+            status.set_text("Starting ingestion…")
+            progress.set_visibility(True)
+            progress.props("indeterminate")
+            ingest_btn.props("loading")
+            background_btn.set_visibility(True)
+            cancel_btn.props("disable")
+
+            extraction_config = ExtractionConfig(
+                chunk_strategy="act_headings",
+                fabula_time_spacing=100,
+                output_retries=5,
+                max_correction_retries=1,
+            )
+
+            async def _do_work():
                 try:
-                    config = ExtractionConfig(
-                        chunk_strategy="act_headings",
-                        fabula_time_spacing=100,
-                        output_retries=5,
-                        max_correction_retries=1,
-                    )
+                    with capture_logs_to_task(state, task):
+                        ws, report = await asyncio.to_thread(
+                            run_extraction, text, extraction_config,
+                        )
 
-                    ws, report = await asyncio.to_thread(
-                        run_extraction, text, config,
-                    )
-                    progress.value = 0.8
-
-                    # Save to DB
                     proj = db.create_project(
-                        name=project_name.value or "Untitled",
+                        name=pname,
                         raw_text=text,
                         owner_id=state.user_id,
                     )
@@ -112,8 +158,6 @@ def build_ingest_dialog(state: AppState) -> ui.dialog:
                         description="Initial ingestion",
                         user_id=state.user_id,
                     )
-
-                    # Load into state via proper load path
                     state.load_project(
                         project_id=proj.id,
                         project_name=proj.name,
@@ -121,27 +165,50 @@ def build_ingest_dialog(state: AppState) -> ui.dialog:
                         raw_text=text,
                     )
 
-                    progress.value = 1.0
-                    status.set_text(
-                        f"Done! {len(ws.entities)} entities, {len(ws.events)} events, "
-                        f"{len(ws.locations)} locations. "
-                        f"Validation: {'PASS' if report.is_valid else 'FAIL'}"
+                    summary = (
+                        f"{len(ws.entities)} entities, {len(ws.events)} events, "
+                        f"{len(ws.locations)} locations · "
+                        f"validation {'PASS' if report.is_valid else 'FAIL'}"
+                    )
+                    state.finish_task(task, result_summary=summary)
+
+                    # Notification works even if the dialog has been closed.
+                    notify_task_complete(
+                        task,
+                        on_open=lambda _: ui.navigate.to(f"/project/{proj.id}"),
+                        open_label="Open project",
                     )
 
-                    ui.notify("World model created!", type="positive")
-                    await asyncio.sleep(1)
-                    dialog.close()
-
+                    if dialog.value:  # still open
+                        status.set_text(f"Done! {summary}")
+                        progress.props(remove="indeterminate")
+                        progress.value = 1.0
+                        await asyncio.sleep(0.5)
+                        dialog.close()
                 except Exception as e:
                     logger.exception("Ingestion failed")
-                    status.set_text(f"Error: {e}")
-                    ui.notify(f"Ingestion failed: {e}", type="negative")
+                    state.finish_task(task, error=str(e))
+                    notify_task_complete(task)
+                    if dialog.value:
+                        status.set_text(f"Error: {e}")
                 finally:
-                    progress.set_visibility(False)
+                    if dialog.value:
+                        progress.set_visibility(False)
+                        ingest_btn.props(remove="loading")
+                        background_btn.set_visibility(False)
+                        cancel_btn.props(remove="disable")
+                    current["task"] = None
+                    current["asyncio_task"] = None
 
-            ui.button("Ingest", on_click=_run_ingestion, icon="auto_fix_high").props(
-                "color=primary"
-            )
+            current["asyncio_task"] = asyncio.create_task(_do_work())
+
+        ingest_btn.on("click", _run_ingestion)
+
+        # Detach the listener when the dialog disappears so we don't leak callbacks.
+        def _on_dialog_hide():
+            state.off(StateEvent.TASKS_CHANGED, _on_tasks_changed)
+
+        dialog.on("hide", _on_dialog_hide)
 
     return dialog
 
@@ -158,7 +225,13 @@ def build_project_dialog(state: AppState) -> ui.dialog:
 
         def _refresh_projects():
             project_list.clear()
-            projects = db.list_projects()
+            # Only list projects this user is allowed to see. When
+            # ``state.user_id`` is None we fall back to public/example
+            # projects only via the helper below \u2014 avoid exposing
+            # private projects to anonymous sessions.
+            projects = db.list_projects(user_id=state.user_id)
+            if state.user_id is None:
+                projects = [p for p in projects if p.get("is_public") or p.get("is_example")]
             if not projects:
                 with project_list:
                     ui.label("No projects yet").classes("text-grey")
@@ -177,6 +250,23 @@ def build_project_dialog(state: AppState) -> ui.dialog:
                         ui.label(p["updated_at"]).classes("text-caption text-grey")
 
                         async def _load(pid=p["id"], pname=p["name"]):
+                            # Re-check access at load time \u2014 defends
+                            # against stale UI state and tampered ids.
+                            proj_row = db.get_project(pid)
+                            if proj_row is None:
+                                ui.notify("Project not found", type="warning")
+                                return
+                            allowed = (
+                                proj_row.is_public
+                                or (state.user_id is not None and proj_row.owner_id == state.user_id)
+                                or (
+                                    state.user_id is not None
+                                    and db.get_user_project_role(pid, state.user_id) is not None
+                                )
+                            )
+                            if not allowed:
+                                ui.notify("Access denied", type="negative")
+                                return
                             snap = db.load_latest_snapshot(pid)
                             if snap is None:
                                 ui.notify("No versions found", type="warning")

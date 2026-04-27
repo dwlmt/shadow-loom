@@ -139,6 +139,13 @@ def _render_explorer(state: AppState, container) -> None:
     stats = ws_stats(ws)
 
     with container:
+        # Summary header
+        ui.label(
+            f"{stats.get('entities', 0)} entities · {stats.get('events', 0)} events · "
+            f"{stats.get('locations', 0)} locations · {stats.get('objects', 0)} objects · "
+            f"{stats.get('world_traits', 0)} traits"
+        ).classes("text-caption text-grey q-mb-xs")
+
         # Search/filter input
         search = ui.input(
             placeholder="Filter…",

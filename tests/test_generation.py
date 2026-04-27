@@ -149,13 +149,11 @@ class TestResolveModel:
 
     def test_openai_prefix_requires_key(self):
         """openai: prefix should raise ValueError without an API key."""
-        import pytest
         with pytest.raises(ValueError, match="OPENAI_API_KEY"):
             _resolve_model("openai:gpt-4")
 
     def test_openrouter_prefix_requires_key(self):
         """openrouter: prefix should raise ValueError without an API key."""
-        import pytest
         with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
             _resolve_model("openrouter:google/gemini-2.0-flash")
 

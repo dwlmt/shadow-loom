@@ -90,7 +90,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
         auth_header = request.headers.get("authorization", "")
         if auth_header.startswith("Bearer "):
             token = auth_header[7:]
-            key_row = validate_api_key(token)
+            # validate_api_key hits the DB synchronously \u2014 offload so we
+            # do not stall the event loop under concurrent API traffic.
+            import asyncio as _asyncio
+            key_row = await _asyncio.to_thread(validate_api_key, token)
             if key_row is not None:
                 # Attach user info to request state for downstream use
                 request.state.api_user_id = key_row.user_id

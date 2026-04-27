@@ -153,7 +153,7 @@ world_state = WorldStateV1(
                        confidence=0.6, inertia=0.4),
             ]),
         "ENT_MRS_CROFT": Entity(id="ENT_MRS_CROFT", name="Sophia Croft",
-            location_id="LOC_KELLYNCH", status="healthy",
+            location_id="LOC_KELLYNCH_HALL", status="healthy",
             traits={
                 "good_sense": TraitVector(value=0.85, inertia=0.7),
                 "warmth": TraitVector(value=0.8, inertia=0.6),

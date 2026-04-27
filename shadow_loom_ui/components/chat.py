@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, List
 from nicegui import ui
 
 from shadow_loom_ui.state import AppState, NLQueryResult, StateEvent
+from shadow_loom_ui.task_helpers import capture_logs_to_task, notify_task_complete
 
 if TYPE_CHECKING:
     pass
@@ -57,6 +58,7 @@ def _build_command_bar(state: AppState) -> None:
     messages: List[dict] = []
     selected_type = {"value": ""}  # Empty = auto-detect
     manual_mode = {"active": False}
+    last_request = {"text": "", "qtype": "", "manual": False, "forced": False}
 
     with ui.column().classes("w-full").style(
         "border-top: 2px solid #444; background: #1a1a2e;"
@@ -76,6 +78,10 @@ def _build_command_bar(state: AppState) -> None:
         with typing_row:
             ui.spinner("dots", size="sm", color="primary")
             typing_label = ui.label("Processing…").classes("text-caption text-grey")
+
+        # ── Implausibility action row (shown after a flagged result) ──
+        implausible_row = ui.row().classes("w-full q-px-md items-center gap-2")
+        implausible_row.set_visibility(False)
 
         # ── Context suggestions row ──────────────────────────────
         suggestions_row = ui.row().classes("w-full q-px-md gap-1 flex-wrap")
@@ -141,50 +147,119 @@ def _build_command_bar(state: AppState) -> None:
         # ── Send logic ────────────────────────────────────────────
         _is_running = {"v": False}
 
-        async def _send():
+        def _refresh_implausible_row(result: NLQueryResult | None) -> None:
+            implausible_row.clear()
+            pr = result.pipeline_result if result else None
+            if not pr or not pr.implausible or last_request["forced"] or last_request["manual"]:
+                implausible_row.set_visibility(False)
+                return
+            with implausible_row:
+                ui.icon("warning", color="amber").classes("text-amber")
+                ui.label(
+                    "Engine deemed this query implausible "
+                    "\u2014 the world model was not changed."
+                ).classes("text-caption text-grey")
+                ui.button(
+                    "Force generate anyway",
+                    icon="bolt",
+                    on_click=lambda: _send(force=True),
+                ).props("dense outline color=amber size=sm")
+            implausible_row.set_visibility(True)
+
+        async def _send(force: bool = False):
             if _is_running["v"]:
                 return
-            text = text_input.value.strip()
-            if not text:
-                return
+            if force:
+                # Re-use the last user message verbatim.
+                text = last_request["text"]
+                qtype_for_run = last_request["qtype"]
+                use_manual = last_request["manual"]
+                if not text:
+                    return
+            else:
+                text = text_input.value.strip()
+                if not text:
+                    return
+                qtype_for_run = selected_type["value"] or "general"
+                use_manual = manual_mode["active"]
+                last_request.update({
+                    "text": text,
+                    "qtype": qtype_for_run,
+                    "manual": use_manual,
+                    "forced": False,
+                })
+
             _is_running["v"] = True
-            text_input.value = ""
+            if not force:
+                text_input.value = ""
 
             # Add user message
-            messages.append({"role": "user", "text": text})
+            user_text = text + ("  *(forced)*" if force else "")
+            messages.append({"role": "user", "text": user_text})
             _render_messages(chat_container, messages)
             history_expansion.value = True  # Show history when sending
 
             if state.world_state is None:
                 messages.append({
                     "role": "assistant",
-                    "text": "⚠️ No world model loaded. Ingest a story first.",
+                    "text": "\u26a0\ufe0f No world model loaded. Ingest a story first.",
                 })
                 _render_messages(chat_container, messages)
+                _is_running["v"] = False
                 return
 
+            implausible_row.set_visibility(False)
             typing_row.set_visibility(True)
             send_btn.props("loading")
             state.emit(StateEvent.QUERY_STARTED)
 
+            # Register this query as a tracked background task so it shows up
+            # in the header tasks indicator and produces a sticky completion
+            # notification (users may navigate to other tabs while it runs).
+            task_label = (
+                f"{'Manual edit' if use_manual else qtype_for_run.title()}: "
+                f"{text[:40]}{'…' if len(text) > 40 else ''}"
+            )
+            task = state.start_task(
+                label=task_label,
+                kind="manual_edit" if use_manual else "query",
+            )
+
+            result: NLQueryResult | None = None
             try:
-                if manual_mode["active"]:
-                    result = await asyncio.to_thread(
-                        state.run_manual_edit, text,
-                    )
-                else:
-                    qtype = selected_type["value"] or "general"
-                    result = await state.run_nl_query_async(text, query_type=qtype)
+                with capture_logs_to_task(state, task):
+                    if use_manual:
+                        result = await asyncio.to_thread(
+                            state.run_manual_edit, text,
+                        )
+                    else:
+                        result = await state.run_nl_query_async(
+                            text, query_type=qtype_for_run,
+                            force_implausible=force,
+                        )
+                if force:
+                    last_request["forced"] = True
                 _append_result(messages, result)
+
+                # Build a short summary for the task + notification
+                if result and result.error:
+                    state.finish_task(task, error=result.error)
+                else:
+                    summary = (result.summary if result else "") or "Done"
+                    state.finish_task(task, result_summary=summary[:120])
+                notify_task_complete(task)
             except Exception as e:
                 logger.exception("Command bar query failed")
-                messages.append({"role": "assistant", "text": f"❌ Error: {e}"})
+                messages.append({"role": "assistant", "text": f"\u274c Error: {e}"})
+                state.finish_task(task, error=str(e))
+                notify_task_complete(task)
             finally:
                 typing_row.set_visibility(False)
                 send_btn.props(remove="loading")
                 _is_running["v"] = False
 
             _render_messages(chat_container, messages)
+            _refresh_implausible_row(result)
             # Update suggestions after result
             _build_context_suggestions(state, suggestions_row)
 
@@ -317,10 +392,25 @@ def _append_result(messages: List[dict], result: NLQueryResult) -> None:
         pr = result.pipeline_result
         if pr is not None:
             parts.append(f"**{pr.query_type}**")
+            if pr.implausible:
+                # Show prominent warning regardless of whether prose was generated.
+                icon = "\u26a0\ufe0f"
+                parts.append(
+                    f"{icon} **Implausible request:** {pr.implausibility_reason or 'unspecified'}"
+                )
+                unresolved = (pr.implausibility_details or {}).get(
+                    "unresolved_targets", []
+                )
+                if unresolved:
+                    bullets = "\n".join(
+                        f"- `{u.get('target','?')}`: {u.get('reason','?')}"
+                        for u in unresolved
+                    )
+                    parts.append(bullets)
             if pr.prose:
                 excerpt = pr.prose[:800]
                 if len(pr.prose) > 800:
-                    excerpt += "\n\n*…see Story tab for full text*"
+                    excerpt += "\n\n*\u2026see Story tab for full text*"
                 parts.append(excerpt)
             if pr.physics_result and not pr.prose:
                 # For interrogate/general — show structured answer

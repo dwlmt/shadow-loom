@@ -20,6 +20,9 @@ import pytest
 # The server module calls init_db() at import time, so we pre-init
 # with an in-memory SQLite DB.
 os.environ["DATABASE_URL"] = "sqlite://"
+# Enable open mode so require_scope() permits the test MagicMock contexts
+# (which have request_context=None and therefore yield empty scopes).
+os.environ["MCP_ALLOW_OPEN_MODE"] = "true"
 
 from shadow_loom.db import (
     create_project,

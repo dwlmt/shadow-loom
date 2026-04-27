@@ -207,6 +207,9 @@ class MCPSettings(BaseSettings):
     skip_audit: bool = Field(default=True)
     ingest_fabula_time_spacing: int = Field(default=100)
     ingest_max_correction_retries: int = Field(default=1)
+    # When True, scope checks pass when no scopes are resolved (dev/local mode).
+    # In production this MUST stay False so that misconfigured auth fails closed.
+    allow_open_mode: bool = Field(default=False)
 
 
 # =====================================================================

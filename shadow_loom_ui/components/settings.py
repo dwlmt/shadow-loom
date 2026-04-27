@@ -103,7 +103,7 @@ def build_settings(state: AppState) -> None:
                     if not name:
                         ui.notify("Enter a key name", type="warning")
                         return
-                    raw_key = db.create_api_key(
+                    _row, raw_key = db.create_api_key(
                         user_id=state.user_id,
                         name=name,
                         scopes=scope_select.value,
@@ -134,31 +134,32 @@ def build_settings(state: AppState) -> None:
                             with ui.item():
                                 with ui.item_section():
                                     with ui.row().classes("items-center gap-2"):
-                                        ui.item_label(key.name).classes("text-bold")
-                                        ui.badge(key.key_prefix, color="blue-grey").props(
+                                        ui.item_label(key["name"]).classes("text-bold")
+                                        ui.badge(key["key_prefix"], color="blue-grey").props(
                                             "dense"
                                         )
-                                        for scope in key.scopes.split(","):
-                                            ui.badge(scope, color="teal").props("dense outline")
-                                        if not key.is_active:
+                                        for scope in (key["scopes"] or "").split(","):
+                                            if scope:
+                                                ui.badge(scope, color="teal").props("dense outline")
+                                        if not key["is_active"]:
                                             ui.badge("revoked", color="negative").props("dense")
 
                                     meta_parts = []
-                                    if key.created_at:
+                                    if key.get("created_at"):
                                         meta_parts.append(
-                                            f"Created: {key.created_at.strftime('%Y-%m-%d')}"
+                                            f"Created: {str(key['created_at'])[:10]}"
                                         )
-                                    if key.last_used_at:
+                                    if key.get("last_used_at"):
                                         meta_parts.append(
-                                            f"Last used: {key.last_used_at.strftime('%Y-%m-%d')}"
+                                            f"Last used: {str(key['last_used_at'])[:10]}"
                                         )
                                     if meta_parts:
                                         ui.item_label(" · ".join(meta_parts)).props("caption")
 
                                 with ui.item_section().props("side"):
-                                    if key.is_active:
-                                        def _revoke(kid=key.id):
-                                            db.revoke_api_key(kid)
+                                    if key["is_active"]:
+                                        def _revoke(kid=key["id"]):
+                                            db.revoke_api_key(kid, state.user_id)
                                             _refresh_keys()
                                             ui.notify("Key revoked")
 

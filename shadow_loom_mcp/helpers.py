@@ -94,33 +94,52 @@ def run_and_save(
         logger.exception("Pipeline failed")
         return {"error": f"Pipeline failed: {e}"}
 
-    new_ws = result.world_model.current if result.world_model else world_state
-
-    changeset_json = None
-    if result.world_model and result.world_model.history:
-        last = result.world_model.history[-1]
-        if last.changeset:
-            changeset_json = last.changeset.model_dump_json()
-
-    ver = save_version(
-        project_id=project_id,
-        world_state_json=new_ws.model_dump_json(),
-        ancestor_id=ancestor_row_id,
-        source=query.query_type,
-        description=f"{query.query_type} query",
-        changeset_json=changeset_json,
-        raw_query=raw_query,
-        parsed_query_json=query.model_dump_json(),
-        prose=result.prose,
-        user_id=user_row_id,
+    # If the engine deemed the request implausible AND the caller did NOT
+    # ask to force generation, we explicitly skip persisting a new version
+    # \u2014 the world state was not advanced, only an explanation was produced.
+    short_circuited = bool(
+        result.implausible
+        and (result.world_model is None or result.world_model.version == vwm.version)
+        and not result.feedback_result
     )
+
+    new_ws = result.world_model.current if result.world_model else world_state
 
     response: dict[str, Any] = {
         "project_id": project_id,
-        "version": ver.version,
-        "version_row_id": ver.id,
         "query_type": query.query_type,
     }
+
+    if not short_circuited:
+        changeset_json = None
+        if result.world_model and result.world_model.history:
+            last = result.world_model.history[-1]
+            if last.changeset:
+                changeset_json = last.changeset.model_dump_json()
+
+        ver = save_version(
+            project_id=project_id,
+            world_state_json=new_ws.model_dump_json(),
+            ancestor_id=ancestor_row_id,
+            source=query.query_type,
+            description=f"{query.query_type} query",
+            changeset_json=changeset_json,
+            raw_query=raw_query,
+            parsed_query_json=query.model_dump_json(),
+            prose=result.prose,
+            user_id=user_row_id,
+        )
+        response["version"] = ver.version
+        response["version_row_id"] = ver.id
+    else:
+        # Surface that no version was created.
+        response["version_skipped"] = True
+
+    if result.implausible:
+        response["implausible"] = True
+        response["implausibility_reason"] = result.implausibility_reason
+        if result.implausibility_details:
+            response["implausibility_details"] = result.implausibility_details
     if result.prose:
         response["prose"] = result.prose
     if result.physics_result:

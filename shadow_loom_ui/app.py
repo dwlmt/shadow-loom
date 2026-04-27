@@ -96,6 +96,10 @@ def _build_app_header(state: AppState, *, show_back: bool = False):
         with ui.row().classes("items-center gap-1"):
             storage = app.storage.user
             if storage.get("authenticated"):
+                # Background tasks indicator
+                from shadow_loom_ui.components.tasks_indicator import build_tasks_indicator
+                build_tasks_indicator(state)
+
                 avatar = storage.get("avatar_url", "")
                 name = storage.get("display_name") or storage.get("username", "User")
                 if avatar:

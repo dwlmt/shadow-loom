@@ -475,13 +475,18 @@ def render_entity_state_timeline(
 
     return ui.echart({
         "backgroundColor": _DARK_BG,
+        "title": {
+            "text": title,
+            "left": "center",
+            "textStyle": {"color": _DARK_TEXT, "fontSize": 12},
+        },
         "tooltip": {**_DARK_TOOLTIP, "trigger": "axis"},
         "legend": {
             "data": list(data["series"].keys()),
             "textStyle": {"color": _DARK_TEXT},
-            "top": 0,
+            "top": 24,
         },
-        "grid": {"top": 40, "bottom": 30, "left": 50, "right": 20},
+        "grid": {"top": 64, "bottom": 30, "left": 50, "right": 20},
         "xAxis": {
             "type": "category",
             "data": [str(t) for t in data["times"]],

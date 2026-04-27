@@ -2018,14 +2018,21 @@ class TestResolveFocusEntities:
 class TestCalculatePastAnchor:
     """_calculate_past_anchor edge cases."""
 
-    def test_no_anchor_raises_temporal_paradox(self):
-        """Intervention targeting a non-existent node must raise ValueError."""
+    def test_no_anchor_returns_implausible(self):
+        """Counterfactual targeting a non-existent node now returns
+        an implausible status instead of raising — the pipeline can
+        explain rather than crash."""
         query = CounterfactualQuery(
             historical_interventions={"FAKE_NODE.status": "alive"},
             evidence_node_ids=[],
         )
-        with pytest.raises(ValueError, match="Temporal Paradox"):
-            calculate_narrative_physics(query, macbeth_ws)
+        result = calculate_narrative_physics(query, macbeth_ws)
+        assert result["status"] == "implausible"
+        assert "implausibility_reason" in result
+        assert any(
+            t.get("target") == "FAKE_NODE.status"
+            for t in result["implausibility_details"]["unresolved_targets"]
+        )
 
 
 # =====================================================================
@@ -2188,3 +2195,154 @@ class TestExtractGraphEdgeCases:
         ego = extract_ego_graph_from_memory(ws, ["ENT_MACBETH"], temporal_anchor=5)
         # terminated_at_fabula=5 == anchor=5 → must be excluded
         assert len(ego.relevant_information_edges) == 0
+
+
+
+# =====================================================================
+# TIER-2 ENGINE-LEVEL IMPLAUSIBILITY (Rung 2 / Rung 3 vacuity)
+# =====================================================================
+class TestEngineVacuityImplausibility:
+    """When tier-1 (target resolution) passes but the causal physics
+    engine itself produces no effect, the request is flagged as
+    tier-2 implausible — unless ``force_implausible=True``."""
+
+    def _build_vacuous_result(self, rung):
+        from shadow_loom.causal_physics import CausalPhysicsResult
+        return CausalPhysicsResult(
+            sandbox_data={},
+            mutations=[],
+            social_mutations=[],
+            blocked=[],
+            intervened_nodes=[],
+            hidden_deltas={},
+        )
+
+    def test_vacuity_helper_flags_empty_rung3(self):
+        from shadow_loom.narrative_physics import _check_engine_vacuity
+        v = _check_engine_vacuity(
+            self._build_vacuous_result(3),
+            rung=3,
+            interventions={"FOO.bar": 1},
+            evidence_node_ids=["ENT_X"],
+        )
+        assert v is not None
+        assert v["tier"] == 2
+        assert v["rung"] == 3
+        assert any(t["target"] == "FOO.bar" for t in v["unresolved_targets"])
+
+    def test_vacuity_helper_flags_empty_rung2(self):
+        from shadow_loom.narrative_physics import _check_engine_vacuity
+        v = _check_engine_vacuity(
+            self._build_vacuous_result(2),
+            rung=2,
+            interventions={"FOO.bar": 1},
+        )
+        assert v is not None
+        assert v["tier"] == 2
+        assert v["rung"] == 2
+
+    def test_vacuity_helper_passes_when_intervened(self):
+        from shadow_loom.causal_physics import CausalPhysicsResult
+        from shadow_loom.narrative_physics import _check_engine_vacuity
+        result = CausalPhysicsResult(
+            sandbox_data={},
+            mutations=[],
+            social_mutations=[],
+            blocked=[],
+            intervened_nodes=["ENT_MACBETH"],
+            hidden_deltas={},
+        )
+        assert _check_engine_vacuity(result, rung=2, interventions={}) is None
+
+    def test_vacuity_helper_passes_when_hidden_deltas(self):
+        from shadow_loom.causal_physics import CausalPhysicsResult
+        from shadow_loom.narrative_physics import _check_engine_vacuity
+        result = CausalPhysicsResult(
+            sandbox_data={},
+            mutations=[],
+            social_mutations=[],
+            blocked=[],
+            intervened_nodes=[],
+            hidden_deltas={"ENT_X": {"guilt": 0.2}},
+        )
+        # rung 3 with hidden_deltas is NOT vacuous
+        assert _check_engine_vacuity(result, rung=3, interventions={}) is None
+        # but the same situation under rung 2 IS vacuous (hidden_deltas don't exist there)
+        assert _check_engine_vacuity(result, rung=2, interventions={}) is not None
+
+    def test_counterfactual_engine_vacuity_short_circuits(self, monkeypatch):
+        """Force the engine to return an empty result and verify the
+        counterfactual branch reports tier-2 implausibility."""
+        from shadow_loom.causal_physics import CausalPhysicsResult
+        import shadow_loom.narrative_physics as np_mod
+
+        class _FakeEngine:
+            def __init__(self, *a, **kw): pass
+            def execute(self, *a, **kw):
+                return CausalPhysicsResult(
+                    sandbox_data={"nodes": [], "links": []},
+                    mutations=[], social_mutations=[], blocked=[],
+                    intervened_nodes=[], hidden_deltas={},
+                )
+
+        monkeypatch.setattr(np_mod, "CausalPhysicsEngine", _FakeEngine)
+
+        first_event = macbeth_ws.events[0]
+        query = CounterfactualQuery(
+            historical_interventions={f"{first_event.id}.event_type": "outcome"},
+            evidence_node_ids=[],
+        )
+        result = calculate_narrative_physics(query, macbeth_ws, use_causal_engine=True)
+        assert result["status"] == "implausible"
+        assert result["implausibility_details"]["tier"] == 2
+        assert result["implausibility_details"]["rung"] == 3
+
+    def test_counterfactual_engine_vacuity_force_proceeds(self, monkeypatch):
+        from shadow_loom.causal_physics import CausalPhysicsResult
+        import shadow_loom.narrative_physics as np_mod
+
+        class _FakeEngine:
+            def __init__(self, *a, **kw): pass
+            def execute(self, *a, **kw):
+                return CausalPhysicsResult(
+                    sandbox_data={"nodes": [], "links": []},
+                    mutations=[], social_mutations=[], blocked=[],
+                    intervened_nodes=[], hidden_deltas={},
+                )
+
+        monkeypatch.setattr(np_mod, "CausalPhysicsEngine", _FakeEngine)
+
+        first_event = macbeth_ws.events[0]
+        query = CounterfactualQuery(
+            historical_interventions={f"{first_event.id}.event_type": "outcome"},
+            evidence_node_ids=[],
+            force_implausible=True,
+        )
+        result = calculate_narrative_physics(query, macbeth_ws, use_causal_engine=True)
+        assert result["status"] == "success"
+        assert result["implausibility_warning"]
+        assert result["implausibility_details"]["tier"] == 2
+
+    def test_intervention_engine_vacuity_short_circuits(self, monkeypatch):
+        from shadow_loom.causal_physics import CausalPhysicsResult
+        import shadow_loom.narrative_physics as np_mod
+
+        class _FakeEngine:
+            def __init__(self, *a, **kw): pass
+            def execute(self, *a, **kw):
+                return CausalPhysicsResult(
+                    sandbox_data={"nodes": [], "links": []},
+                    mutations=[], social_mutations=[], blocked=[],
+                    intervened_nodes=[], hidden_deltas={},
+                )
+
+        monkeypatch.setattr(np_mod, "CausalPhysicsEngine", _FakeEngine)
+
+        first_ent = next(iter(macbeth_ws.entities))
+        query = InterventionQuery(
+            interventions={f"{first_ent}.status": "altered"},
+        )
+        result = calculate_narrative_physics(query, macbeth_ws, use_causal_engine=True)
+        assert result["status"] == "implausible"
+        assert result["implausibility_details"]["tier"] == 2
+        assert result["implausibility_details"]["rung"] == 2
