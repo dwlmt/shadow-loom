@@ -24,7 +24,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_ai import Agent, NativeOutput, RunContext
 
 from shadow_loom.directive_assembly import (
@@ -47,15 +47,24 @@ from shadow_loom.query_models import (
     UserRequest,
 )
 
+from shadow_loom.settings import get_settings as _get_settings
+
 logger = logging.getLogger(__name__)
 
 _PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
-_OLLAMA_BASE_URL = "http://localhost:11434/v1/"
+
+
+def _ollama_base_url() -> str:
+    return _get_settings().core.ollama_base_url
 
 
 # =====================================================================
 # Configuration
 # =====================================================================
+
+def _gen_defaults() -> dict:
+    return _get_settings().generation_config()
+
 
 class GenerationConfig(BaseModel):
     """Runtime configuration for the generation step."""
@@ -75,6 +84,14 @@ class GenerationConfig(BaseModel):
         default=0.7,
         description="Sampling temperature for creative prose.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fill_from_settings(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            for k, v in _gen_defaults().items():
+                data.setdefault(k, v)
+        return data
 
 
 # =====================================================================
@@ -132,7 +149,7 @@ def _load_prompt(filename: str) -> str:
 
 def _resolve_model(model_str: str):
     if model_str.startswith("ollama:"):
-        base_url = os.environ.get("OLLAMA_BASE_URL", _OLLAMA_BASE_URL)
+        base_url = _ollama_base_url()
         model_name = model_str.split(":", 1)[1]
         from pydantic_ai.models.ollama import OllamaModel
         from pydantic_ai.providers.ollama import OllamaProvider

@@ -18,7 +18,7 @@ import re
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_ai import Agent, NativeOutput
 
 from shadow_loom.models import WorldStateV1
@@ -34,14 +34,22 @@ from shadow_loom.query_models import (
     UserRequest,
 )
 
+from shadow_loom.settings import get_settings as _get_settings
+
 logger = logging.getLogger(__name__)
 
-_OLLAMA_BASE_URL = "http://localhost:11434/v1/"
+
+def _ollama_base_url() -> str:
+    return _get_settings().core.ollama_base_url
 
 
 # =====================================================================
 # Configuration
 # =====================================================================
+
+def _qp_defaults() -> dict:
+    return _get_settings().query_parsing_config()
+
 
 class QueryParsingConfig(BaseModel):
     """Runtime configuration for the query parsing agent."""
@@ -61,6 +69,14 @@ class QueryParsingConfig(BaseModel):
         default=0.1,
         description="Low temperature for deterministic classification.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fill_from_settings(cls, data):
+        if isinstance(data, dict):
+            for k, v in _qp_defaults().items():
+                data.setdefault(k, v)
+        return data
 
 
 # =====================================================================
@@ -512,7 +528,7 @@ is provided, use reasonable ID conventions (ENT_CHARACTERNAME).
 def _resolve_model(model_str: str):
     """Resolve a model string to a PydanticAI model instance."""
     if model_str.startswith("ollama:"):
-        base_url = os.environ.get("OLLAMA_BASE_URL", _OLLAMA_BASE_URL)
+        base_url = _ollama_base_url()
         model_name = model_str.split(":", 1)[1]
         from pydantic_ai.models.ollama import OllamaModel
         from pydantic_ai.providers.ollama import OllamaProvider

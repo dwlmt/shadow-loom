@@ -1,11 +1,11 @@
 """Allow running as: python -m shadow_loom_ui"""
-from shadow_loom_ui.app import config, ui  # noqa: F401
+from shadow_loom_ui.app import config, ui, _ui_settings  # noqa: F401
 
 ui.run(
-    host="0.0.0.0",
-    port=7860,
-    title="Shadow Loom",
+    host=_ui_settings.host,
+    port=_ui_settings.port,
+    title=_ui_settings.title,
     storage_secret=config.STORAGE_SECRET,
-    dark=True,
-    reload=False,
+    dark=_ui_settings.dark_mode,
+    reload=_ui_settings.reload,
 )

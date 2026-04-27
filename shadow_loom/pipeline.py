@@ -24,7 +24,9 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from shadow_loom.settings import get_settings as _get_settings
 
 from shadow_loom.auditor import (
     AuditorConfig,
@@ -113,6 +115,14 @@ class PipelineConfig(BaseModel):
         description="Maximum number of full world-state snapshots to retain "
         "in the VersionedWorldModel history (last-K).",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fill_from_settings(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            for k, v in _get_settings().pipeline_config_kwargs().items():
+                data.setdefault(k, v)
+        return data
 
 
 # =====================================================================

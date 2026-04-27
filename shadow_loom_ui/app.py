@@ -20,12 +20,15 @@ from shadow_loom_ui import config
 from shadow_loom_ui.auth import AuthMiddleware, auth_callback, auth_login, auth_logout
 from shadow_loom_ui.db import init_db
 from shadow_loom_ui.state import AppState
+from shadow_loom.settings import get_settings as _get_settings
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+_ui_settings = _get_settings().ui
 
 
 # =====================================================================
@@ -35,7 +38,7 @@ logger = logging.getLogger(__name__)
 def _on_startup():
     """Initialise database and auth on app startup."""
     init_db(config.DATABASE_URL)
-    logger.info("[App] Shadow-Loom UI starting on port 7860")
+    logger.info("[App] Shadow-Loom UI starting on port %s", _ui_settings.port)
 
 
 app.on_startup(_on_startup)
@@ -123,7 +126,7 @@ def login_page():
     """Authentication page with OAuth provider buttons."""
     from shadow_loom_ui.components.login import build_login_page
 
-    ui.dark_mode(True)
+    ui.dark_mode(_ui_settings.dark_mode)
     build_login_page()
 
 
@@ -133,7 +136,7 @@ def dashboard_page():
     from shadow_loom_ui.components.dashboard import build_dashboard
 
     state = _get_session_state()
-    ui.dark_mode(True)
+    ui.dark_mode(_ui_settings.dark_mode)
     _build_app_header(state)
     build_dashboard(state)
 
@@ -144,7 +147,7 @@ def workspace_page(project_id: int):
     from shadow_loom_ui.components.workspace import build_workspace
 
     state = _get_session_state()
-    ui.dark_mode(True)
+    ui.dark_mode(_ui_settings.dark_mode)
     _build_app_header(state, show_back=True)
     build_workspace(state, project_id)
 
@@ -155,7 +158,7 @@ def settings_page():
     from shadow_loom_ui.components.settings import build_settings
 
     state = _get_session_state()
-    ui.dark_mode(True)
+    ui.dark_mode(_ui_settings.dark_mode)
     _build_app_header(state, show_back=True)
     build_settings(state)
 
@@ -166,10 +169,10 @@ def settings_page():
 
 if __name__ in {"__main__", "__mp_main__"}:
     ui.run(
-        host="0.0.0.0",
-        port=7860,
-        title="Shadow Loom",
+        host=_ui_settings.host,
+        port=_ui_settings.port,
+        title=_ui_settings.title,
         storage_secret=config.STORAGE_SECRET,
-        dark=True,
-        reload=False,
+        dark=_ui_settings.dark_mode,
+        reload=_ui_settings.reload,
     )

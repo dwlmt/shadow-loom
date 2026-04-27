@@ -26,7 +26,6 @@ import json
 import functools
 import inspect as _inspect
 import logging
-import os
 from difflib import SequenceMatcher
 from typing import Any, List, Optional
 
@@ -79,12 +78,17 @@ from shadow_loom_mcp.auth import (
 )
 from shadow_loom_mcp.helpers import load_world_state, resolve_project, run_and_save
 
+from shadow_loom.settings import get_settings as _get_settings
+
 logger = logging.getLogger(__name__)
+
+# ── Settings ──────────────────────────────────────────────────────
+
+_settings = _get_settings()
 
 # ── DB init ───────────────────────────────────────────────────────
 
-_DB_URL = os.environ.get("DATABASE_URL", "sqlite:///shadow_loom.db")
-init_db(_DB_URL)
+init_db(_settings.core.database_url)
 
 # ── Server ────────────────────────────────────────────────────────
 
@@ -901,7 +905,7 @@ async def narrate(
     project_name: Optional[str] = None,
     mode: Optional[str] = None,
     version: Optional[int] = None,
-    skip_audit: bool = True,
+    skip_audit: bool = _settings.mcp.skip_audit,
 ) -> dict:
     """Generate prose and advance the story using natural language.
 
@@ -992,7 +996,7 @@ async def direct(
     entity_ids: Optional[List[str]] = None,
     intensity: float = 0.8,
     version: Optional[int] = None,
-    skip_audit: bool = True,
+    skip_audit: bool = _settings.mcp.skip_audit,
 ) -> dict:
     """Generate a scene optimized for a specific emotional effect.
 
@@ -1115,10 +1119,8 @@ async def ingest(
     user_row_id = get_user_id(ctx)
 
     config = ExtractionConfig(
-        chunk_strategy="act_headings",
-        fabula_time_spacing=100,
-        output_retries=5,
-        max_correction_retries=1,
+        fabula_time_spacing=_settings.mcp.ingest_fabula_time_spacing,
+        max_correction_retries=_settings.mcp.ingest_max_correction_retries,
     )
 
     await ctx.report_progress(1, 3, "Extracting ontology and topology...")

@@ -22,11 +22,13 @@ import asyncio
 import logging
 import re
 from pathlib import Path
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_ai import Agent, ModelRetry, NativeOutput, RunContext
 from pydantic_ai.providers.ollama import OllamaProvider
+
+from shadow_loom.settings import get_settings as _get_settings
 
 from shadow_loom.models import (
     Belief,
@@ -52,9 +54,6 @@ logger = logging.getLogger(__name__)
 # =====================================================================
 _PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 
-# Default Ollama base URL for local inference
-_OLLAMA_BASE_URL = "http://localhost:11434/v1/"
-
 
 def _load_prompt(filename: str) -> str:
     """Read a markdown prompt file from the ``prompts/`` directory."""
@@ -70,9 +69,8 @@ def _resolve_model(model_str: str):
     the provider with the local base URL so ``OLLAMA_BASE_URL`` doesn't
     need to be set as an environment variable.
     """
-    import os
     if model_str.startswith("ollama:"):
-        base_url = os.environ.get("OLLAMA_BASE_URL", _OLLAMA_BASE_URL)
+        base_url = _get_settings().core.ollama_base_url
         model_name = model_str.split(":", 1)[1]
         from pydantic_ai.models.ollama import OllamaModel
         return OllamaModel(model_name, provider=OllamaProvider(base_url=base_url))
@@ -232,6 +230,10 @@ class ValidationReport(BaseModel):
     )
 
 
+def _ext_defaults() -> dict:
+    return _get_settings().extraction_config()
+
+
 class ExtractionConfig(BaseModel):
     """Runtime configuration for the extraction pipeline."""
     model: str = Field(
@@ -277,6 +279,14 @@ class ExtractionConfig(BaseModel):
         description="Estimated events per chunk — used to pre-allocate syuzhet "
         "and fabula_time ranges for parallel extraction.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fill_from_settings(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            for k, v in _ext_defaults().items():
+                data.setdefault(k, v)
+        return data
 
 
 # =====================================================================

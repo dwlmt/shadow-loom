@@ -24,12 +24,17 @@ from pydantic import BaseModel, Field
 
 from shadow_loom.instantiator import AMWNInstantiator
 from shadow_loom.models import WorldStateV1, reconstruct_entity_at
+from shadow_loom.settings import get_settings as _get_settings
 
 logger = logging.getLogger(__name__)
 
 # =====================================================================
 # Result Model
 # =====================================================================
+
+def _physics_settings():
+    return _get_settings().physics
+
 
 STRENGTH_MULTIPLIER: Dict[str, float] = {
     "weak": 0.25,
