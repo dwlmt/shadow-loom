@@ -93,8 +93,8 @@ def build_ingest_dialog(state: AppState) -> ui.dialog:
                         max_correction_retries=1,
                     )
 
-                    ws, report = await asyncio.get_event_loop().run_in_executor(
-                        None, lambda: run_extraction(text, config),
+                    ws, report = await asyncio.to_thread(
+                        run_extraction, text, config,
                     )
                     progress.value = 0.8
 
@@ -102,19 +102,24 @@ def build_ingest_dialog(state: AppState) -> ui.dialog:
                     proj = db.create_project(
                         name=project_name.value or "Untitled",
                         raw_text=text,
+                        owner_id=state.user_id,
                     )
-                    db.save_snapshot(
+                    db.save_version(
                         project_id=proj.id,
-                        version=0,
                         world_state_json=ws.model_dump_json(),
+                        version=0,
+                        source="ingestion",
                         description="Initial ingestion",
+                        user_id=state.user_id,
                     )
 
-                    # Load into state
-                    state.project_id = proj.id
-                    state.project_name = proj.name
-                    state.raw_text = text
-                    state.load_world_state(ws)
+                    # Load into state via proper load path
+                    state.load_project(
+                        project_id=proj.id,
+                        project_name=proj.name,
+                        world_state=ws,
+                        raw_text=text,
+                    )
 
                     progress.value = 1.0
                     status.set_text(

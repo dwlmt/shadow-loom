@@ -10,6 +10,7 @@ to state changes without overwriting each other's callbacks.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, field

@@ -304,7 +304,7 @@ def _inspect_entity(ws: WorldStateV1, eid: str) -> None:
             if snap.status:
                 parts.append(f"→ {snap.status}")
             if snap.traits:
-                trait_strs = [f"{k}={v:.2f}" for k, v in snap.traits.items()]
+                trait_strs = [f"{k}={v.value:.2f}" for k, v in snap.traits.items()]
                 parts.append(", ".join(trait_strs[:3]))
             ui.label(" | ".join(parts)).classes("text-caption q-px-sm")
 
@@ -403,7 +403,7 @@ def _inspect_world_trait(ws: WorldStateV1, wid: str) -> None:
         for snap in wt.state_timeline[-5:]:
             parts = [f"t={snap.fabula_time}"]
             if snap.magnitude is not None:
-                parts.append(f"mag={snap.magnitude:.2f}")
+                parts.append(f"mag={snap.magnitude.value:.2f}")
             if snap.description:
                 parts.append(snap.description[:40])
             ui.label(" | ".join(parts)).classes("text-caption q-px-sm")

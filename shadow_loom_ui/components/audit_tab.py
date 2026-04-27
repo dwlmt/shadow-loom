@@ -267,20 +267,20 @@ def _render_query_audit_entry(index: int, result: NLQueryResult) -> None:
                 with ui.expansion("Prose", icon="article").props("dense"):
                     ui.markdown(pr.prose[:500] + ("…" if len(pr.prose) > 500 else ""))
 
-            # Audit loop replay (if feedback_result has cycles)
+            # Audit loop replay (if feedback_result has history)
             feedback = getattr(pr, "feedback_result", None)
-            if feedback and hasattr(feedback, "cycles") and feedback.cycles:
+            if feedback and hasattr(feedback, "history") and feedback.history:
                 # Collect all violations from audit cycles
                 all_violations = []
-                for cycle in feedback.cycles:
+                for cycle in feedback.history:
                     audit = getattr(cycle, "audit_result", None)
                     if audit:
                         all_violations.extend(getattr(audit, "violations", []))
 
                 with ui.expansion(
-                    f"Audit Loop ({len(feedback.cycles)} iterations)", icon="replay"
+                    f"Audit Loop ({len(feedback.history)} iterations)", icon="replay"
                 ).props("dense"):
-                    for cycle in feedback.cycles:
+                    for cycle in feedback.history:
                         _render_audit_cycle(cycle)
 
                 # Violations summary from audit cycles
@@ -296,7 +296,7 @@ def _render_query_audit_entry(index: int, result: NLQueryResult) -> None:
                                 ui.badge(
                                     getattr(v, "severity", ""), color=severity_color
                                 ).props("dense")
-                                ui.label(getattr(v, "message", str(v))).classes("text-caption")
+                                ui.label(getattr(v, "description", str(v))).classes("text-caption")
 
         # Parse info
         if result.parse_result and result.parse_result.parsed:
@@ -331,5 +331,5 @@ def _render_audit_cycle(cycle) -> None:
                     with ui.row().classes("items-center gap-1"):
                         ui.icon("error_outline", size="xs", color="warning")
                         ui.label(
-                            getattr(v, "message", str(v))[:100]
+                            getattr(v, "description", str(v))[:100]
                         ).classes("text-caption text-grey")

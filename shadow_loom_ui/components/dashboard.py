@@ -153,7 +153,7 @@ def _example_chip(state: AppState, sample_file: Path, title: str) -> None:
             proj = db.create_project(
                 name=title,
                 raw_text=text,
-                user_id=state.user_id,
+                owner_id=state.user_id,
                 is_public=False,
             )
             db.save_version(
@@ -260,7 +260,7 @@ def _build_ingest_dialog(state: AppState) -> ui.dialog:
                         name=project_name.value or "Untitled",
                         raw_text=text,
                         description=project_desc.value or None,
-                        user_id=state.user_id,
+                        owner_id=state.user_id,
                     )
                     ver = db.save_version(
                         project_id=proj.id,

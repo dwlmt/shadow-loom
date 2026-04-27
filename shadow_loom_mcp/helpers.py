@@ -1,0 +1,141 @@
+"""Shared helpers for Shadow-Loom MCP tools — project resolution, world loading."""
+
+from __future__ import annotations
+
+import json
+import logging
+from typing import Any, Optional
+
+from fastmcp import Context
+
+from shadow_loom.db import (
+    find_project_by_name,
+    get_latest_version,
+    get_project,
+    get_version,
+    save_version,
+)
+from shadow_loom.extract_graph import VersionedWorldModel
+from shadow_loom.models import WorldStateV1
+from shadow_loom.pipeline import PipelineConfig, PipelineResult, run_pipeline
+from shadow_loom.query_models import UserRequest
+
+from shadow_loom_mcp.auth import check_project_access, get_user_id
+
+logger = logging.getLogger(__name__)
+
+
+# ── Project resolution ────────────────────────────────────────────
+
+def resolve_project(
+    project_id: int | None,
+    project_name: str | None,
+    ctx: Context,
+) -> tuple[int | None, str | None]:
+    """Resolve a project by ID or name. Returns (project_id, error)."""
+    if project_id is not None:
+        err = check_project_access(project_id, ctx)
+        if err:
+            return None, err
+        return project_id, None
+
+    if project_name:
+        user_id = get_user_id(ctx)
+        proj = find_project_by_name(project_name, owner_id=user_id)
+        if proj is None:
+            proj = find_project_by_name(project_name)
+        if proj is None:
+            return None, f"Project '{project_name}' not found."
+        err = check_project_access(proj.id, ctx)
+        if err:
+            return None, err
+        return proj.id, None
+
+    return None, "Specify project_id or project_name."
+
+
+# ── World state loading ──────────────────────────────────────────
+
+def load_world_state(
+    project_id: int,
+    version: int | None = None,
+) -> tuple[WorldStateV1 | None, int | None]:
+    """Load a world state from DB. Returns (ws, version_row_id) or (None, None)."""
+    ver = get_version(project_id, version) if version is not None else get_latest_version(project_id)
+    if ver is None:
+        return None, None
+    ws = WorldStateV1.model_validate_json(ver.world_state_json)
+    return ws, ver.id
+
+
+# ── Pipeline run + save ──────────────────────────────────────────
+
+def run_and_save(
+    query: UserRequest,
+    project_id: int,
+    world_state: WorldStateV1,
+    ancestor_row_id: int | None,
+    user_row_id: int | None,
+    raw_query: str | None,
+    *,
+    skip_audit: bool = True,
+    skip_reextraction: bool = True,
+) -> dict[str, Any]:
+    """Run pipeline, save new version, return response dict."""
+    vwm = VersionedWorldModel.from_world_state(world_state)
+    cfg = PipelineConfig(
+        skip_audit=skip_audit,
+        skip_reextraction=skip_reextraction,
+    )
+
+    try:
+        result: PipelineResult = run_pipeline(query, versioned_model=vwm, config=cfg)
+    except Exception as e:
+        logger.exception("Pipeline failed")
+        return {"error": f"Pipeline failed: {e}"}
+
+    new_ws = result.world_model.current if result.world_model else world_state
+
+    changeset_json = None
+    if result.world_model and result.world_model.history:
+        last = result.world_model.history[-1]
+        if last.changeset:
+            changeset_json = last.changeset.model_dump_json()
+
+    ver = save_version(
+        project_id=project_id,
+        world_state_json=new_ws.model_dump_json(),
+        ancestor_id=ancestor_row_id,
+        source=query.query_type,
+        description=f"{query.query_type} query",
+        changeset_json=changeset_json,
+        raw_query=raw_query,
+        parsed_query_json=query.model_dump_json(),
+        prose=result.prose,
+        user_id=user_row_id,
+    )
+
+    response: dict[str, Any] = {
+        "project_id": project_id,
+        "version": ver.version,
+        "version_row_id": ver.id,
+        "query_type": query.query_type,
+    }
+    if result.prose:
+        response["prose"] = result.prose
+    if result.physics_result:
+        response["physics_status"] = result.physics_result.get("status", "unknown")
+        answer = result.physics_result.get("answer")
+        if answer:
+            response["answer"] = answer
+    if result.converged is not None:
+        response["audit_converged"] = result.converged
+        response["audit_iterations"] = result.audit_iterations
+    if result.feedback_result and result.feedback_result.change_impact:
+        response["change_impact"] = result.feedback_result.change_impact.model_dump()
+    if result.evaluation_result:
+        response["evaluation"] = result.evaluation_result.model_dump()
+    if result.world_model:
+        response["world_model_version"] = result.world_model.version
+
+    return response
