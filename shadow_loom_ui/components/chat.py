@@ -170,10 +170,18 @@ def _build_command_bar(state: AppState) -> None:
             if _is_running["v"]:
                 return
             if force:
-                # Re-use the last user message verbatim.
-                text = last_request["text"]
-                qtype_for_run = last_request["qtype"]
-                use_manual = last_request["manual"]
+                # Prefer the current textarea contents if the user has
+                # edited them since the last submission; otherwise fall
+                # back to replaying last_request verbatim.
+                edited = text_input.value.strip() if text_input.value else ""
+                if edited:
+                    text = edited
+                    qtype_for_run = selected_type["value"] or "general"
+                    use_manual = manual_mode["active"]
+                else:
+                    text = last_request["text"]
+                    qtype_for_run = last_request["qtype"]
+                    use_manual = last_request["manual"]
                 if not text:
                     return
             else:

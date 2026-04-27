@@ -105,6 +105,16 @@ def run_and_save(
 
     new_ws = result.world_model.current if result.world_model else world_state
 
+    # Detect whether the world model actually advanced. When the caller
+    # opted into ``skip_reextraction`` (the default for narrate/direct)
+    # the new version row stores prose against the *unchanged* world
+    # graph \u2014 callers must know this to avoid building further turns
+    # on the assumption that prose became canon.
+    world_model_unchanged = bool(
+        result.world_model is None
+        or result.world_model.version == vwm.version
+    )
+
     response: dict[str, Any] = {
         "project_id": project_id,
         "query_type": query.query_type,
@@ -117,12 +127,19 @@ def run_and_save(
             if last.changeset:
                 changeset_json = last.changeset.model_dump_json()
 
+        if world_model_unchanged and result.prose:
+            description = (
+                f"{query.query_type} query (prose only \u2014 world model not re-extracted)"
+            )
+        else:
+            description = f"{query.query_type} query"
+
         ver = save_version(
             project_id=project_id,
             world_state_json=new_ws.model_dump_json(),
             ancestor_id=ancestor_row_id,
             source=query.query_type,
-            description=f"{query.query_type} query",
+            description=description,
             changeset_json=changeset_json,
             raw_query=raw_query,
             parsed_query_json=query.model_dump_json(),
@@ -131,9 +148,18 @@ def run_and_save(
         )
         response["version"] = ver.version
         response["version_row_id"] = ver.id
+        if world_model_unchanged and result.prose:
+            response["world_model_unchanged"] = True
     else:
         # Surface that no version was created.
         response["version_skipped"] = True
+
+    if result.reextraction_failed:
+        # Prose was generated but Step 6\u20137 raised \u2014 caller must
+        # not treat the new version as a canonical advancement.
+        response["reextraction_failed"] = True
+        if result.reextraction_error:
+            response["reextraction_error"] = result.reextraction_error
 
     if result.implausible:
         response["implausible"] = True

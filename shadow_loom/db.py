@@ -24,6 +24,7 @@ from sqlmodel import (
     or_,
     select,
 )
+from sqlalchemy.exc import IntegrityError
 
 logger = logging.getLogger(__name__)
 
@@ -415,6 +416,20 @@ def list_projects(user_id: int | None = None) -> list[dict]:
         # else: return all projects (admin / unauthenticated mode)
 
         rows = s.exec(stmt.order_by(ProjectRow.updated_at.desc())).all()
+
+        # Single grouped query for version counts \u2014 avoids N+1 lazy
+        # ``len(r.versions)`` hits when many projects are listed.
+        from sqlmodel import func
+        proj_ids = [r.id for r in rows]
+        version_counts: dict[int, int] = {}
+        if proj_ids:
+            count_rows = s.exec(
+                select(VersionRow.project_id, func.count(VersionRow.id))
+                .where(VersionRow.project_id.in_(proj_ids))
+                .group_by(VersionRow.project_id)
+            ).all()
+            version_counts = {pid: cnt for pid, cnt in count_rows}
+
         return [
             {
                 "id": r.id,
@@ -427,7 +442,7 @@ def list_projects(user_id: int | None = None) -> list[dict]:
                 "forked_from_id": r.forked_from_id,
                 "star_count": r.star_count,
                 "updated_at": str(r.updated_at),
-                "version_count": len(r.versions),
+                "version_count": version_counts.get(r.id, 0),
             }
             for r in rows
         ]
@@ -844,36 +859,57 @@ def save_version(
     """Persist a new version node in the version tree.
 
     If *version* is None it is auto-assigned as the next monotonic
-    integer for the project.
+    integer for the project.  Auto-assignment is retried up to a few
+    times on ``IntegrityError`` to absorb concurrent writers racing on
+    the (project_id, version) unique constraint.
     """
-    with get_session() as s:
-        if version is None:
-            version = _next_version_number(s, project_id)
+    # When an explicit version is supplied we honour it (single attempt).
+    max_attempts = 1 if version is not None else 5
+    last_err: Exception | None = None
+    for attempt in range(max_attempts):
+        with get_session() as s:
+            assigned_version = (
+                version if version is not None else _next_version_number(s, project_id)
+            )
 
-        row = VersionRow(
-            project_id=project_id,
-            version=version,
-            ancestor_id=ancestor_id,
-            source=source,
-            description=description,
-            label=label,
-            world_state_json=world_state_json,
-            changeset_json=changeset_json,
-            raw_query=raw_query,
-            parsed_query_json=parsed_query_json,
-            prose=prose,
-            user_id=user_id,
-        )
-        s.add(row)
+            row = VersionRow(
+                project_id=project_id,
+                version=assigned_version,
+                ancestor_id=ancestor_id,
+                source=source,
+                description=description,
+                label=label,
+                world_state_json=world_state_json,
+                changeset_json=changeset_json,
+                raw_query=raw_query,
+                parsed_query_json=parsed_query_json,
+                prose=prose,
+                user_id=user_id,
+            )
+            s.add(row)
 
-        # Touch project updated_at
-        proj = s.get(ProjectRow, project_id)
-        if proj:
-            proj.updated_at = datetime.now(timezone.utc)
+            # Touch project updated_at
+            proj = s.get(ProjectRow, project_id)
+            if proj:
+                proj.updated_at = datetime.now(timezone.utc)
 
-        s.commit()
-        s.refresh(row)
-        return row
+            try:
+                s.commit()
+            except IntegrityError as e:
+                s.rollback()
+                last_err = e
+                logger.warning(
+                    "[db.save_version] IntegrityError on project %s v%s (attempt %d/%d) \u2014 retrying with fresh version.",
+                    project_id, assigned_version, attempt + 1, max_attempts,
+                )
+                continue
+            s.refresh(row)
+            return row
+
+    # Exhausted retries
+    raise RuntimeError(
+        f"save_version failed after {max_attempts} attempts for project {project_id}"
+    ) from last_err
 
 
 def get_version(project_id: int, version: int) -> Optional[VersionRow]:

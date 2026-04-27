@@ -1858,16 +1858,19 @@ def _deduplicate_causal(edges: List[CausalEdge]) -> List[CausalEdge]:
 def _deduplicate_info(edges: List[InformationEdge]) -> List[InformationEdge]:
     """Deduplicate information edges by (source, targets, medium, established_at).
 
-    Keeps the first occurrence when duplicates are found.
+    When two edges share the same key, keeps the one with the later
+    ``discovered_at_syuzhet`` so that subsequent re-extractions which
+    update ``terminated_at_fabula`` (or other late-discovered fields)
+    overwrite earlier records of the same channel rather than being
+    silently dropped.
     """
-    seen: set[tuple] = set()
-    deduped: List[InformationEdge] = []
+    best: dict[tuple, InformationEdge] = {}
     for e in edges:
         key = (e.source_id, tuple(sorted(e.target_ids)), e.medium, e.established_at_fabula)
-        if key not in seen:
-            seen.add(key)
-            deduped.append(e)
-    return deduped
+        existing = best.get(key)
+        if existing is None or e.discovered_at_syuzhet >= existing.discovered_at_syuzhet:
+            best[key] = e
+    return list(best.values())
 
 
 # Public aliases for reuse outside the ingestion pipeline

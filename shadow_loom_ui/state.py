@@ -339,7 +339,10 @@ class AppState:
             and pipeline_result.world_model.version == prev_version
             and not pipeline_result.feedback_result
         )
-        if not short_circuited:
+        # Also skip when re-extraction failed: prose is present but the world
+        # model was *not* advanced to reflect that prose. Persisting would
+        # store divergent prose/world state under the same version row.
+        if not short_circuited and not pipeline_result.reextraction_failed:
             self._save_version_to_db(
                 pipeline_result=pipeline_result,
                 raw_query=getattr(query, 'edited_prose', None) or (

@@ -252,6 +252,23 @@ class PipelineResult(BaseModel):
         description="Structured diagnostics: unresolved_targets list, etc.",
     )
 
+    # --- Re-extraction status ---
+    reextraction_failed: bool = Field(
+        default=False,
+        description=(
+            "True when prose generation succeeded but Step 6\u20137 "
+            "(re-extraction + merge into the world model) raised an "
+            "exception.  When True, ``prose`` is present but "
+            "``world_model`` is the *unmerged* prior version \u2014 callers "
+            "MUST NOT persist this as a new canonical version, since prose "
+            "and world state are out of sync."
+        ),
+    )
+    reextraction_error: Optional[str] = Field(
+        default=None,
+        description="Short error message when reextraction_failed is True.",
+    )
+
 
 # =====================================================================
 # The pipeline
@@ -467,9 +484,11 @@ def run_pipeline(
                 "[Pipeline] Manual edit merge complete — v%d → v%d.",
                 vwm.version, vwm_next.version,
             )
-        except Exception:
+        except Exception as _e:
             logger.exception("[Pipeline] Manual edit re-extraction/merge failed.")
             history.record("reextraction_merge", {"error": "extraction_or_merge_failed"})
+            result.reextraction_failed = True
+            result.reextraction_error = str(_e)
 
         return result
 
@@ -595,9 +614,11 @@ def run_pipeline(
                 vwm.version, vwm_next.version,
                 changeset.events_added if changeset else 0,
             )
-        except Exception:
+        except Exception as _e:
             logger.exception("[Pipeline] Re-extraction/merge failed — returning unmerged model.")
             history.record("reextraction_merge", {"error": "extraction_or_merge_failed"})
+            result.reextraction_failed = True
+            result.reextraction_error = str(_e)
 
     logger.info("[Pipeline] Complete — query_type=%s, prose=%s.",
                 query.query_type, "yes" if result.prose else "no")
@@ -738,9 +759,11 @@ async def run_pipeline_async(
                 new_version=vwm_next.version,
             ))
             result.world_model = vwm_next
-        except Exception:
+        except Exception as _e:
             logger.exception("[Pipeline·Async] Manual edit re-extraction/merge failed.")
             history.record("reextraction_merge", {"error": "extraction_or_merge_failed"})
+            result.reextraction_failed = True
+            result.reextraction_error = str(_e)
         return result
 
     # Steps 3–4: Brief + Generation (same as sync)
@@ -808,9 +831,11 @@ async def run_pipeline_async(
                 new_version=vwm_next.version,
             ))
             result.world_model = vwm_next
-        except Exception:
+        except Exception as _e:
             logger.exception("[Pipeline·Async] Re-extraction/merge failed.")
             history.record("reextraction_merge", {"error": "extraction_or_merge_failed"})
+            result.reextraction_failed = True
+            result.reextraction_error = str(_e)
 
     logger.info("[Pipeline·Async] Complete — query_type=%s, prose=%s.",
                 query.query_type, "yes" if result.prose else "no")

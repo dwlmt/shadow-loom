@@ -131,6 +131,11 @@ class CausalPhysicsEngine:
         self._mutations: List[TraitMutation] = []
         self._social_mutations: List[SocialMutation] = []
         self._blocked: List[BlockedPropagation] = []
+        # Event IDs already applied via Rung-3 abduction Case 2.
+        # propagate() must skip edges whose source is in this set so that the
+        # same evidence event does not contribute to a target trait twice
+        # (once via abduction, once via forward propagation).
+        self._abducted_event_evidence: set[str] = set()
 
     def _simulation_horizon(self) -> float:
         """Return the maximum fabula_time across all events (the 'now' of the story)."""
@@ -216,6 +221,9 @@ class CausalPhysicsEngine:
             elif self.sandbox.has_node(eid):
                 node_data = self.sandbox.nodes[eid]
                 if node_data.get("node_type") == "EventNode":
+                    # Mark this event so propagate() skips its outgoing edges
+                    # — we have just applied them directly during abduction.
+                    self._abducted_event_evidence.add(eid)
                     for ce in self.world_state.causal_topology:
                         if ce.source_id != eid:
                             continue
@@ -296,6 +304,13 @@ class CausalPhysicsEngine:
         horizon = self._simulation_horizon()
         for u, v, d in self.sandbox.edges(data=True):
             if d.get("edge_type") == "causal":
+                # Skip edges whose source event has already been applied via
+                # Rung-3 abduction \u2014 prevents double-counting the same
+                # evidence (once during abduction, once during propagation).
+                if u in self._abducted_event_evidence:
+                    logger.debug("[CausalPhysics\u00b7Propagate] Skipping edge %s\u2192%s: source already applied via abduction.",
+                                 u, v)
+                    continue
                 # Respect propagation_delay: skip edges whose effect hasn't manifested yet
                 delay = d.get("propagation_delay", 0)
                 edge_ft = d.get("fabula_time", 0)

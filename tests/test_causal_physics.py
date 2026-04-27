@@ -598,6 +598,56 @@ class TestAbductionEventEvidence:
         # Should not raise
         engine.abduction_update(["EVT_NONEXISTENT"])
 
+    def test_event_evidence_not_double_applied(self):
+        """Regression: abduction Case 2 must not be re-applied by propagate().
+
+        For an evidence event whose mutation edge has explicit
+        ``trait_target``/``trait_delta``, ``execute(rung=3)`` must produce
+        the same trait shift as ``abduction_update`` alone — propagate()
+        should *not* add a second contribution from the same edge.
+        """
+        from shadow_loom.models import (
+            WorldStateV1, Location, Entity, EventNode, CausalEdge, TraitVector,
+        )
+        ws = WorldStateV1(
+            locations={"LOC_A": Location(name="A", description="", ambient_state={})},
+            objects={},
+            entities={
+                "ENT_BOB": Entity(
+                    id="ENT_BOB", name="Bob", location_id="LOC_A", status="healthy",
+                    traits={"courage": TraitVector(value=0.3, inertia=0.0)},
+                ),
+            },
+            events=[
+                EventNode(id="EVT_X", fabula_time=1, syuzhet_index=1,
+                          event_type="choice", actor_ids=[], target_ids=["ENT_BOB"],
+                          description="shock"),
+            ],
+            causal_topology=[
+                CausalEdge(source_id="EVT_X", target_id="ENT_BOB",
+                           causality_type="mutation", causal_force=10.0,
+                           mechanism="psychological", evidence_strength="strong",
+                           trait_target="courage", trait_delta=0.3, fabula_time=1),
+            ],
+        )
+
+        def _build():
+            ego = extract_ego_graph_from_memory(ws, ["ENT_BOB"])
+            return AMWNInstantiator.create_sandbox(ego.model_dump(), "counterfactual")
+
+        sb_abd = _build()
+        CausalPhysicsEngine(sb_abd, ws).abduction_update(["EVT_X"])
+        abd_only = sb_abd.nodes["ENT_BOB"]["traits"]["courage"]["value"]
+
+        sb_full = _build()
+        CausalPhysicsEngine(sb_full, ws).execute(rung=3, evidence_node_ids=["EVT_X"])
+        full_run = sb_full.nodes["ENT_BOB"]["traits"]["courage"]["value"]
+
+        assert abs(full_run - abd_only) < 1e-6, (
+            f"Rung-3 double-application: abduction={abd_only:.4f}, "
+            f"full execute={full_run:.4f}"
+        )
+
 
 # =====================================================================
 # RUNG VALIDATION
