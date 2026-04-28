@@ -280,7 +280,10 @@ class TestCausalPhysicsEnvelopeIntegration:
         sandbox, _ = _build_sandbox(ws, ["ENT_ALICE", "ENT_BOB"])
 
         engine = CausalPhysicsEngine(sandbox, ws)
-        result = engine.execute(rung=2)
+        # Trigger the explosion event so its causal edges fire.
+        result = engine.execute(rung=2, interventions={
+            "EVT_TRIGGER.event_type": "outcome",
+        })
 
         # Check blocked: courage (inertia=0.9) should be blocked
         courage_blocked = [

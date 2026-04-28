@@ -329,6 +329,8 @@ class TestSpatialAffordanceBlocking:
                          mechanism="physical")
 
         engine = CausalPhysicsEngine(sandbox, ws)
+        # Manually mark Alice as triggered so her outgoing causal edge fires.
+        engine._intervened_nodes.add("ENT_ALICE")
         engine.propagate()
 
         blocked_spatial = [
@@ -476,6 +478,12 @@ class TestMechanismTraitMap:
         ws = self._make_mechanism_world("psychological")
         sandbox = _build_sandbox(ws, ["ENT_ALICE"])
         engine = CausalPhysicsEngine(sandbox, ws)
+        # Mark all event nodes as intervened so canonical edges fire under the
+        # active-source gating (this test pre-dates the gating but still wants
+        # to exercise mechanism math).
+        for nid, ndata in sandbox.nodes(data=True):
+            if ndata.get("node_type") == "EventNode":
+                engine._intervened_nodes.add(nid)
         engine.propagate()
 
         # Check that any mutations or blocked entries reflect mechanism gating
@@ -525,6 +533,7 @@ class TestSignedDeltaPropagation:
                          edge_type="causal", evidence_strength="strong",
                          mechanism="physical")
         engine = CausalPhysicsEngine(sandbox, ws)
+        engine._intervened_nodes.add("ENT_SRC")
         engine.propagate()
 
         mutations = [m for m in engine._mutations
@@ -562,6 +571,7 @@ class TestSignedDeltaPropagation:
                          edge_type="causal", evidence_strength="strong",
                          mechanism="physical")
         engine = CausalPhysicsEngine(sandbox, ws)
+        engine._intervened_nodes.add("ENT_SRC")
         engine.propagate()
 
         mutations = [m for m in engine._mutations
@@ -901,6 +911,7 @@ class TestMutationSocialPropagation:
         ws = self._make_social_world()
         sandbox = _build_sandbox(ws, ["ENT_ALICE", "ENT_BOB"])
         engine = CausalPhysicsEngine(sandbox, ws)
+        engine._intervened_nodes.add("EVT_BETRAYAL")
         engine.propagate_social()
 
         assert len(engine._social_mutations) == 1
@@ -920,6 +931,7 @@ class TestMutationSocialPropagation:
         )
         sandbox = _build_sandbox(ws, ["ENT_ALICE", "ENT_BOB"])
         engine = CausalPhysicsEngine(sandbox, ws)
+        engine._intervened_nodes.add("EVT_BETRAYAL")
         engine.propagate_social()
 
         # Should be blocked by inertia
@@ -933,6 +945,7 @@ class TestMutationSocialPropagation:
         ws.social_topology = []  # Remove existing relationship
         sandbox = _build_sandbox(ws, ["ENT_ALICE", "ENT_BOB"])
         engine = CausalPhysicsEngine(sandbox, ws)
+        engine._intervened_nodes.add("EVT_BETRAYAL")
         engine.propagate_social()
 
         assert len(engine._social_mutations) == 1
@@ -947,6 +960,7 @@ class TestMutationSocialPropagation:
         # raw_delta = 0.5, so scaled = 0.5 * 0.75 * 0.8 = 0.3
         sandbox = _build_sandbox(ws, ["ENT_ALICE", "ENT_BOB"])
         engine = CausalPhysicsEngine(sandbox, ws)
+        engine._intervened_nodes.add("EVT_BETRAYAL")
         engine.propagate_social()
 
         sm = engine._social_mutations[0]
@@ -970,6 +984,7 @@ class TestMutationSocialPropagation:
         )
         sandbox = _build_sandbox(ws, ["ENT_ALICE", "ENT_BOB"])
         engine = CausalPhysicsEngine(sandbox, ws)
+        engine._intervened_nodes.add("EVT_BETRAYAL")
         engine.propagate_social()
 
         sm = engine._social_mutations[0]
@@ -988,6 +1003,7 @@ class TestMutationSocialPropagation:
         )
         sandbox = _build_sandbox(ws, ["ENT_ALICE", "ENT_BOB"])
         engine = CausalPhysicsEngine(sandbox, ws)
+        engine._intervened_nodes.add("EVT_BETRAYAL")
         engine.propagate_social()
 
         sm = engine._social_mutations[0]

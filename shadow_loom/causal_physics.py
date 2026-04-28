@@ -154,6 +154,10 @@ class CausalPhysicsEngine:
         self._mutations: List[TraitMutation] = []
         self._social_mutations: List[SocialMutation] = []
         self._blocked: List[BlockedPropagation] = []
+        # Set of node IDs whose outgoing causal edges are eligible to fire
+        # in the next propagation step. Populated by _seed_active_sources()
+        # at the start of propagate(); also consumed by propagate_social().
+        self._active_sources: set[str] = set()
         # Event IDs already applied via Rung-3 abduction Case 2.
         # propagate() must skip edges whose source is in this set so that the
         # same evidence event does not contribute to a target trait twice
@@ -317,6 +321,40 @@ class CausalPhysicsEngine:
     # ------------------------------------------------------------------
     # Forward Propagation (the new physics)
     # ------------------------------------------------------------------
+    def _seed_active_sources(self) -> set[str]:
+        """Return the initial set of nodes whose outgoing causal edges fire.
+
+        A canonical event's effects are already realised in each entity's
+        ``state_timeline`` and baked into the sandbox via
+        ``reconstruct_entity_at(temporal_anchor)``. Re-firing those events
+        in propagate() would either double-count (mutation on top of a
+        saturated trait) or produce false-positive blocks (impulse < inertia
+        once the trait is already at the post-event value).
+
+        To avoid that, only sources that were actually *triggered* this
+        simulation step contribute impact:
+
+          • Nodes the user surgically intervened on (Rung 2)
+          • Nodes whose state was changed via abduction (Rung 3)
+          • Persistent ambient/affordance sources (WorldTrait / Location /
+            NarrativeObject) — these are continuous pressure, not consumed
+            by being recorded in a snapshot
+
+        Targets that get mutated during propagation are added to the active
+        set incrementally so cascading effects propagate further downstream.
+        """
+        active: set[str] = set(self._intervened_nodes)
+        # Abducted entities: their sandbox state was mutated in
+        # abduction_update() and their hidden_deltas are now visible to
+        # downstream propagation.
+        active.update(self._hidden_deltas.keys())
+        # Persistent ambient sources are always on.
+        for nid, ndata in self.sandbox.nodes(data=True):
+            nt = ndata.get("node_type")
+            if nt in ("WorldTrait", "Location", "NarrativeObject"):
+                active.add(nid)
+        return active
+
     def propagate(self) -> None:
         """
         Walk the causal sub-graph in topological order and propagate trait
@@ -378,6 +416,12 @@ class CausalPhysicsEngine:
             logger.warning("[CausalPhysics·Propagate] Cyclic causal graph — falling back to node order.")
             execution_order = list(causal_graph.nodes())
 
+        # 2b. Seed the active-source set. Edges only fire when their source
+        #     is in this set; downstream targets get added as they mutate.
+        self._active_sources = self._seed_active_sources()
+        logger.debug("[CausalPhysics·Propagate] Active sources seeded: %d nodes (intervened=%d, abducted=%d)",
+                     len(self._active_sources), len(self._intervened_nodes), len(self._hidden_deltas))
+
         # 3. Propagate
         for node_id in execution_order:
             if node_id in self._intervened_nodes:
@@ -413,6 +457,14 @@ class CausalPhysicsEngine:
                 spatial_ok = True
 
                 for src, _, edata in incoming:
+                    if src not in self._active_sources:
+                        # Source wasn't triggered this step — its canonical
+                        # effect is already realised in the entity's
+                        # state_timeline (and thus in current_val). Re-firing
+                        # would double-count or produce a false block.
+                        logger.debug("[CausalPhysics·Propagate] Skipping inactive source %s→%s.%s",
+                                     src, node_id, trait_name)
+                        continue
                     w = edata.get("weight", 0.5)
                     mechanism = edata.get("mechanism", "physical")
                     edge_ctype = edata.get("causality_type", "chain_reaction")
@@ -487,6 +539,10 @@ class CausalPhysicsEngine:
                     continue
 
                 if abs(total_impact) <= trait_inertia + _inertia_epsilon():
+                    if total_impact == 0.0:
+                        # No active source contributed any impulse this step —
+                        # not a block, just nothing happened. Skip silently.
+                        continue
                     logger.debug("[CausalPhysics·Propagate] BLOCKED inertia: %s.%s |impact|=%.3f <= inertia=%.3f",
                                  node_id, trait_name, abs(total_impact), trait_inertia)
                     self._blocked.append(BlockedPropagation(
@@ -509,6 +565,9 @@ class CausalPhysicsEngine:
                     impact=total_impact, inertia=trait_inertia,
                 ))
                 trait_data["value"] = new_val
+                # Cascade: this target is now an active source for any
+                # downstream edges processed later in topo order.
+                self._active_sources.add(node_id)
 
         logger.info(
             "[CausalPhysics·Propagate] %d mutations applied, %d blocked.",
@@ -536,6 +595,11 @@ class CausalPhysicsEngine:
         Uses the ``evidence_strength × (causal_force / 10)`` weight formula
         to scale the delta, matching the trait propagation convention.
         """
+        # If propagate() didn't seed (e.g. no causal edges existed), seed now
+        # so we still have intervened/abducted/ambient sources available.
+        if not self._active_sources:
+            self._active_sources = self._seed_active_sources()
+
         for u, v, d in self.sandbox.edges(data=True):
             if d.get("edge_type") != "causal":
                 continue
@@ -547,6 +611,15 @@ class CausalPhysicsEngine:
             counterpart_id = d.get("rel_counterpart_id")
             metric = d.get("trait_target")
             raw_delta = d.get("trait_delta", 0.0)
+
+            # Active-source gating: only fire if the triggering event was
+            # actually invoked this step (intervention or cascade). Canonical
+            # event effects are already realised in the relationship edge's
+            # current values.
+            if source_id not in self._active_sources:
+                logger.debug("[CausalPhysics·SocialProp] Skipping inactive source %s→%s (%s)",
+                             source_id, target_id, metric)
+                continue
 
             if not counterpart_id or not metric:
                 logger.warning("[CausalPhysics·SocialProp] Incomplete mutation_social edge %s→%s: "
