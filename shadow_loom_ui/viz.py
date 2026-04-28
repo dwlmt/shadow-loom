@@ -16,6 +16,7 @@ from shadow_loom.models import WorldStateV1
 from shadow_loom_ui.theme import CHART_COLORS, chart_theme
 from shadow_loom_ui.viz_helpers import (
     CATEGORIES,
+    EDGE_COLORS,
     NODE_COLORS,
     audit_passrate_data,
     entity_state_timeline_data,
@@ -2201,7 +2202,7 @@ def render_calendar_graph_overlay(
                 "symbolSize": 10,
                 "label": {"show": False},
                 "lineStyle": {
-                    "color": EDGE_COLORS["causal"] if False else "#D8334A",
+                    "color": EDGE_COLORS["causal"],
                     "opacity": 0.55,
                     "curveness": 0.25,
                     "width": 1.4,
@@ -2217,10 +2218,7 @@ def render_calendar_graph_overlay(
     return chart
 
 
-# Note: EDGE_COLORS imported lazily inside the function above — the
-# top-level import only ships NODE_COLORS / CATEGORIES. We re-import
-# here for the calendar overlay.
-from shadow_loom_ui.viz_helpers import EDGE_COLORS  # noqa: E402
+# Note: EDGE_COLORS is imported in the top-level import block.
 
 
 # ── #12 Multi-snapshot trait radar overlay ────────────────────────

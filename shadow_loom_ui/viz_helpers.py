@@ -1930,34 +1930,55 @@ def mutations_to_propagation_rows(
     mutations: list[dict],
     blocked: list[dict] | None = None,
 ) -> list[dict]:
-    """Tabular companion for ``mutations_to_propagation_graph``."""
+    """Tabular companion for ``mutations_to_propagation_graph``.
+
+    Row schema (matches the table wired in causality_tab.py):
+        step, entity, trait, delta, from_value, to_value, reason, blocked
+    """
     out: list[dict] = []
     for i, m in enumerate(mutations or []):
+        delta = 0.0
+        try:
+            delta = float(m.get("delta") or m.get("trait_delta") or 0.0)
+        except (TypeError, ValueError):
+            pass
+        from_v = m.get("from_value")
+        to_v = m.get("to_value")
+        if from_v is None and to_v is None and "old" in m:
+            from_v, to_v = m.get("old"), m.get("new")
         out.append({
             "step": i + 1,
-            "kind": "mutation",
-            "source": m.get("source", ""),
-            "target": (
+            "entity": (
                 m.get("entity") or m.get("target") or m.get("name") or ""
             ),
             "trait": m.get("trait") or m.get("trait_target") or "",
-            "delta": round(float(
-                m.get("delta") or m.get("trait_delta") or 0.0
-            ), 3),
-            "mechanism": m.get("mechanism", ""),
+            "delta": round(delta, 3),
+            "from_value": (
+                round(float(from_v), 3)
+                if isinstance(from_v, (int, float))
+                else (from_v if from_v is not None else "")
+            ),
+            "to_value": (
+                round(float(to_v), 3)
+                if isinstance(to_v, (int, float))
+                else (to_v if to_v is not None else "")
+            ),
+            "reason": m.get("reason") or m.get("mechanism", ""),
+            "blocked": False,
         })
     base = len(out)
     for j, b in enumerate(blocked or []):
         out.append({
             "step": base + j + 1,
-            "kind": "blocked",
-            "source": b.get("source") or b.get("blocked_by", ""),
-            "target": (
+            "entity": (
                 b.get("entity") or b.get("target") or b.get("name") or ""
             ),
             "trait": b.get("trait") or b.get("trait_target") or "",
             "delta": 0,
-            "mechanism": b.get("reason") or b.get("mechanism", ""),
+            "from_value": "",
+            "to_value": "",
+            "reason": b.get("reason") or b.get("mechanism", ""),
+            "blocked": True,
         })
     return out
 
@@ -2049,7 +2070,11 @@ def ws_to_calendar_graph_rows(
     *,
     bucket_count: int = 24,
 ) -> list[dict]:
-    """Tabular companion: events listed by bucket index."""
+    """Tabular companion for ``ws_to_calendar_graph_data``.
+
+    Row schema (matches the table wired in causality_tab.py):
+        event, bucket, fabula_time, type, actor, stack
+    """
     if not ws.events:
         return []
     f_vals = [e.fabula_time for e in ws.events]
@@ -2060,14 +2085,23 @@ def ws_to_calendar_graph_rows(
     def _bucket(t: int) -> int:
         return min(bucket_count - 1, int((t - f_min) / width))
 
-    rows = []
+    bucket_stack: dict[int, int] = {}
+    rows: list[dict] = []
     for evt in sorted(ws.events, key=lambda e: (e.fabula_time, e.syuzhet_index)):
+        b = _bucket(evt.fabula_time)
+        slot = bucket_stack.get(b, 0)
+        bucket_stack[b] = slot + 1
+        actor = ""
+        if evt.actor_ids:
+            first = evt.actor_ids[0]
+            actor = ws.entities[first].name if first in ws.entities else first
         rows.append({
-            "bucket": _bucket(evt.fabula_time),
+            "event": evt.id,
+            "bucket": b,
             "fabula_time": evt.fabula_time,
-            "id": evt.id,
             "type": evt.event_type,
-            "description": evt.description[:80],
+            "actor": actor,
+            "stack": slot,
         })
     return rows
 
@@ -2125,8 +2159,6 @@ def entity_radar_compare_rows(
     if not data["indicator"]:
         return []
     rows: list[dict] = []
-    for ind, *_ in zip(data["indicator"]):
-        pass
     trait_names = [d["name"] for d in data["indicator"]]
     for ti, s in enumerate(data["series"]):
         for i, k in enumerate(trait_names):
