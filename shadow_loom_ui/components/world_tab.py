@@ -15,7 +15,6 @@ from nicegui import ui
 
 from shadow_loom_ui.state import AppState, StateEvent
 from shadow_loom_ui.viz import (
-    render_chord_diagram,
     render_comparison_view,
     render_ego_graph,
     render_entity_lifelines,
@@ -33,6 +32,7 @@ from shadow_loom_ui.viz import (
     with_expand,
 )
 from shadow_loom_ui.viz_helpers import (
+    _set_slider_bounds,
     fabula_time_bounds,
     snapshot_world_at,
     ws_to_causal_rows,
@@ -120,6 +120,17 @@ def build_world_tab(state: AppState) -> None:
                 value="force",
             ).props("dense no-caps").tooltip("Social graph layout")
             social_layout.set_visibility(False)
+            social_metric = ui.toggle(
+                {
+                    "affinity": "Affinity",
+                    "fear": "Fear",
+                    "power_dynamic": "Power",
+                },
+                value="affinity",
+            ).props("dense no-caps").tooltip(
+                "Which relationship metric the heatmap shows"
+            )
+            social_metric.set_visibility(False)
             spatial_animated = ui.checkbox("Animated", value=True).tooltip(
                 "Animate location nodes (rippleEffect)"
             )
@@ -132,11 +143,13 @@ def build_world_tab(state: AppState) -> None:
                 epistemic_select.set_visibility(mode == "epistemic")
                 compare_select.set_visibility(mode == "comparison")
                 social_layout.set_visibility(mode == "social")
+                social_metric.set_visibility(mode == "social")
                 spatial_animated.set_visibility(mode == "spatial")
                 _refresh()
 
             view_mode.on("update:model-value", _on_mode_change)
             social_layout.on("update:model-value", lambda _e: _refresh())
+            social_metric.on("update:model-value", lambda _e: _refresh())
             spatial_animated.on("update:model-value", lambda _e: _refresh())
 
         # ── Fabula timeline slider ────────────────────────────────
@@ -230,7 +243,7 @@ def build_world_tab(state: AppState) -> None:
                 slider_row.set_visibility(False)
                 return
             slider_row.set_visibility(True)
-            time_slider.props(f"min={tmin} max={tmax}")
+            _set_slider_bounds(time_slider, tmin, tmax)
             if state.fabula_cursor is None:
                 desired = tmax
                 label_text = "live"
@@ -314,6 +327,13 @@ def build_world_tab(state: AppState) -> None:
                             title="World graph \u2014 overview",
                         )
                     elif mode == "social":
+                        # One social graph (relationship topology) on
+                        # the left, one heatmap on the right whose
+                        # metric is chosen from the toolbar toggle.
+                        # Affinity / Fear / Power_dynamic each get
+                        # their own selectable heatmap rather than
+                        # being collapsed into a single ambiguous one.
+                        chosen_metric = social_metric.value or "affinity"
                         with ui.row().classes("w-full gap-2"):
                             with ui.column().classes("flex-grow"):
                                 with_expand(
@@ -325,20 +345,23 @@ def build_world_tab(state: AppState) -> None:
                                             layout=lay,
                                         )
                                     ),
-                                    title="Social graph",
-                                    height="50%",
-                                )
-                                with_expand(
-                                    lambda h: render_chord_diagram(ws, height=h),
-                                    title="Relationship chord diagram",
-                                    height="50%",
+                                    title="Social graph (relationships)",
                                 )
                             with ui.column().classes("w-1/3"):
+                                _metric_titles = {
+                                    "affinity": "Affinity heatmap (–1 hate ↔ +1 love)",
+                                    "fear": "Fear heatmap (0 calm → 1 terrified)",
+                                    "power_dynamic": "Power dynamic (–1 subservient ↔ +1 dominant)",
+                                }
                                 with_expand(
-                                    lambda h: render_relationship_heatmap(
-                                        ws, height=h
+                                    lambda h, m=chosen_metric: (
+                                        render_relationship_heatmap(
+                                            ws, metric=m, height=h,
+                                        )
                                     ),
-                                    title="Relationship heatmap",
+                                    title=_metric_titles.get(
+                                        chosen_metric, "Relationship heatmap",
+                                    ),
                                 )
                     elif mode == "spatial":
                         with_expand(

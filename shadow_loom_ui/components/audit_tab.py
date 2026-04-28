@@ -16,6 +16,11 @@ from nicegui import ui
 
 from shadow_loom_ui.state import AppState, NLQueryResult, StateEvent
 from shadow_loom_ui.task_helpers import run_query_as_task
+from shadow_loom_ui.reasoning_helpers import (
+    directive_for_violation,
+    violation_explanation,
+)
+from shadow_loom_ui.reasoning_viz import render_convergence_trajectory
 from shadow_loom_ui.viz import (
     render_audit_passrate_pictorial,
     render_emotional_gauges,
@@ -128,7 +133,7 @@ def build_audit_tab(state: AppState) -> None:
 
                 with history_container:
                     for i, result in enumerate(reversed(state.query_history)):
-                        _render_query_audit_entry(i, result)
+                        _render_query_audit_entry(i, result, state)
 
             _refresh_history()
             state.on(StateEvent.PIPELINE_RESULT, _refresh_history)
@@ -291,7 +296,7 @@ def _render_scorecard(container, eval_result) -> None:
 # Per-query audit entry with loop replay
 # =====================================================================
 
-def _render_query_audit_entry(index: int, result: NLQueryResult) -> None:
+def _render_query_audit_entry(index: int, result: NLQueryResult, state: AppState) -> None:
     """Render a single query's audit information with iteration replay."""
     pr = result.pipeline_result
     query_type = pr.query_type if pr else "unknown"
@@ -391,22 +396,20 @@ def _render_query_audit_entry(index: int, result: NLQueryResult) -> None:
                     for cycle in feedback.history:
                         _render_audit_cycle(cycle)
 
+                    # Convergence trajectory line chart
+                    with_expand(
+                        lambda h, fb=feedback: render_convergence_trajectory(
+                            fb, height=h,
+                        ),
+                        title="Convergence trajectory",
+                        height="240px",
+                    )
+
                 # Violations summary from audit cycles
                 if all_violations:
                     with ui.expansion(f"Violations ({len(all_violations)})").props("dense"):
                         for v in all_violations:
-                            severity_color = {
-                                "critical": "negative",
-                                "major": "warning",
-                                "minor": "info",
-                            }.get(getattr(v, "severity", ""), "grey")
-                            with ui.row().classes("items-center gap-2"):
-                                ui.badge(
-                                    getattr(v, "severity", ""), color=severity_color
-                                ).props("dense")
-                                ui.label(getattr(v, "description", str(v))).classes(
-                                    "text-xs text-slate-600"
-                                )
+                            _render_violation(v, state=state)
 
         # Parse info
         if result.parse_result and result.parse_result.parsed:
@@ -446,8 +449,72 @@ def _render_audit_cycle(cycle) -> None:
             violations = getattr(audit, "violations", [])
             if violations:
                 for v in violations[:3]:
-                    with ui.row().classes("items-center gap-1"):
-                        ui.icon("error_outline", size="xs", color="warning")
-                        ui.label(
-                            getattr(v, "description", str(v))[:100]
-                        ).classes("text-xs text-slate-500")
+                    _render_violation(v, state=None, compact=True)
+
+
+def _render_violation(v, *, state: "AppState | None" = None, compact: bool = False) -> None:
+    """Render one :class:`AuditViolation` with type, plain-English explanation,
+    and (when applicable) a one-click directive chip that pre-fills a
+    corrective query in the command bar.
+
+    When ``state`` is provided, the "Fix this" button emits
+    ``StateEvent.QUERY_STARTED`` so the chat command bar pre-fills the
+    suggested directive. When ``state`` is None (e.g. inside the audit
+    cycle compact view) the chip is omitted.
+    """
+    severity = getattr(v, "severity", "")
+    severity_color = {
+        "critical": "negative",
+        "major": "warning",
+        "minor": "info",
+    }.get(severity, "grey")
+    vtype = getattr(v, "violation_type", "")
+    description = getattr(v, "description", str(v))
+    feedback = getattr(v, "feedback", "")
+    explanation = violation_explanation(vtype) if vtype else ""
+
+    card_classes = (
+        "w-full p-2 mb-1 bg-white border border-slate-200 rounded-md"
+        if not compact
+        else "w-full p-1 mb-1 bg-slate-50 rounded"
+    )
+    with ui.card().classes(card_classes):
+        with ui.row().classes("items-center gap-2 flex-wrap"):
+            if severity:
+                ui.badge(severity, color=severity_color).props("dense")
+            if vtype:
+                ui.badge(vtype, color="grey").props("dense outline")
+            ui.label(description[:200] if compact else description).classes(
+                "text-xs text-slate-700"
+            )
+        if explanation and not compact:
+            ui.label(explanation).classes(
+                "text-[11px] text-slate-500 italic mt-1"
+            )
+        if not compact:
+            template = directive_for_violation(vtype) if vtype else None
+            with ui.row().classes("items-center gap-2 mt-1"):
+                if template is not None and state is not None:
+                    prompt_text, qtype = template
+
+                    def _on_fix(p=prompt_text, q=qtype, s=state):
+                        s.emit(
+                            StateEvent.QUERY_STARTED,
+                            suggestion=p,
+                            query_type=q,
+                        )
+                        ui.notify(
+                            "Pre-filled corrective directive in command bar.",
+                            type="positive",
+                        )
+
+                    ui.button(
+                        "Fix this", icon="auto_fix_high", on_click=_on_fix,
+                    ).props(
+                        "dense outline color=primary size=sm no-caps"
+                    ).tooltip(prompt_text)
+                if feedback:
+                    with ui.expansion(
+                        "Auditor's rewrite instruction", icon="edit_note",
+                    ).props("dense").classes("w-full"):
+                        ui.markdown(feedback)

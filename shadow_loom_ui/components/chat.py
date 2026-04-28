@@ -307,7 +307,14 @@ def _render_messages(container, messages: List[dict]) -> None:
 
 
 def _append_result(messages: List[dict], result: NLQueryResult) -> None:
-    """Format a pipeline result as a chat message."""
+    """Format a pipeline result as a chat message.
+
+    Interrogate/general queries (which don't produce prose) render as
+    a *structured response card* (claim → evidence → confidence →
+    caveats) rather than a raw JSON dump. Rung-2/rung-3 queries get a
+    one-line reasoning-trace summary that hyperlinks the user to the
+    Reasoning tab for the full breakdown.
+    """
     parts = []
 
     if result.error:
@@ -337,9 +344,41 @@ def _append_result(messages: List[dict], result: NLQueryResult) -> None:
                     excerpt += "\n\n*\u2026see Story tab for full text*"
                 parts.append(excerpt)
             if pr.physics_result and not pr.prose:
-                # For interrogate/general — show structured answer
-                import json as _json
-                parts.append(f"```json\n{_json.dumps(pr.physics_result, default=str)[:600]}\n```")
+                # Structured response card replaces raw JSON dump.
+                from shadow_loom_ui.reasoning_helpers import (
+                    structured_response_data,
+                )
+                # We don't have direct access to ws here (only the
+                # pipeline result) — labels will fall back to ids,
+                # which is fine for the chat preview. Full label
+                # resolution happens in the Reasoning tab.
+                card = structured_response_data(pr.physics_result)
+                claim_md = card["claim"] or "(no claim returned)"
+                conf_pct = int(card["confidence"] * 100)
+                parts.append(f"**Claim:** {claim_md}")
+                parts.append(f"*Confidence: {conf_pct}%*")
+                if card["evidence"]:
+                    ev_lines = "\n".join(
+                        f"- `{e['node_id']}` ({e['kind']})"
+                        for e in card["evidence"][:8]
+                    )
+                    parts.append(f"**Evidence:**\n{ev_lines}")
+                if card["caveats"]:
+                    cav_lines = "\n".join(f"- {c}" for c in card["caveats"])
+                    parts.append(f"**Caveats:**\n{cav_lines}")
+            # Rung-2/rung-3 trace summary
+            if pr.query_type in ("intervention", "counterfactual") and pr.physics_result:
+                from shadow_loom_ui.reasoning_helpers import (
+                    extract_reasoning_trace,
+                    reasoning_trace_summary,
+                )
+                trace = extract_reasoning_trace(pr.physics_result)
+                summary = reasoning_trace_summary(trace)
+                if summary and summary != "no reasoning trace":
+                    parts.append(
+                        f"\U0001F9E0 *Reasoning trace: {summary}.*  "
+                        "*(Open Reasoning tab for the full breakdown.)*"
+                    )
             if pr.evaluation_result:
                 noo = getattr(pr.evaluation_result, "narrative_order", None)
                 if noo:

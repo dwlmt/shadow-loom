@@ -164,7 +164,11 @@ def build_causality_tab(state: AppState) -> None:
 def _build_causal_topology(state: AppState) -> None:
     """Sankey diagram + causal force graph with aspect/force/time filters."""
 
-    from shadow_loom_ui.viz_helpers import SANKEY_ASPECTS, fabula_time_bounds
+    from shadow_loom_ui.viz_helpers import (
+        SANKEY_ASPECTS,
+        _set_slider_bounds,
+        fabula_time_bounds,
+    )
 
     with ui.column().classes("w-full h-full gap-3"):
         # ── Top row: view & aspect ──────────────────────────────
@@ -255,7 +259,13 @@ def _build_causal_topology(state: AppState) -> None:
             tmin, tmax = fabula_time_bounds(ws)
             if tmax <= tmin:
                 return
-            time_slider.props(f"min={tmin} max={tmax}")
+            # Quasar's <q-slider> requires numeric min/max props. Passing
+            # the props via the string parser (``time_slider.props(...)``)
+            # stores them as *strings*, which the slider silently rejects
+            # — the thumb appears to render but won't drag past the
+            # original construction-time bounds. Write numeric values
+            # straight into the props dict instead.
+            _set_slider_bounds(time_slider, tmin, tmax)
             cur = state.fabula_cursor
             desired = tmax if cur is None else max(tmin, min(tmax, cur))
             if not _slider_state["local_origin_t"]:
@@ -470,6 +480,7 @@ def _build_evolution_panel(state: AppState) -> None:
     """How characters, relationships, and world traits change over the story."""
 
     from shadow_loom_ui.viz_helpers import (
+        _set_slider_bounds,
         list_relationship_pairs,
         list_world_traits,
     )
@@ -722,7 +733,7 @@ def _build_evolution_panel(state: AppState) -> None:
                         t = tmax
                     else:
                         causal_slider_row.set_visibility(True)
-                        causal_slider.props(f"min={tmin} max={tmax}")
+                        _set_slider_bounds(causal_slider, tmin, tmax)
                         # Source of truth: AppState.fabula_cursor
                         cur = state.fabula_cursor
                         if cur is None or cur < tmin or cur > tmax:
@@ -1316,6 +1327,7 @@ def _build_affective_dashboard(state: AppState) -> None:
         snapshot_world_at,
         snapshot_world_at_syuzhet,
         syuzhet_time_bounds,
+        _set_slider_bounds,
         _top_entity_ids_by_event_degree,
     )
 
@@ -1543,7 +1555,7 @@ def _build_affective_dashboard(state: AppState) -> None:
                 # which used to re-enter ``_refresh`` *after* the in-flight
                 # ``_suppress`` window had already closed — freezing the UI
                 # mid-drag. We compare-then-set to break that loop.
-                time_slider.props(f"min={tmin} max={tmax}")
+                _set_slider_bounds(time_slider, tmin, tmax)
                 if cursor is None:
                     desired = tmax
                     label_text = "live"

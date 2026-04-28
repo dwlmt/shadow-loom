@@ -580,10 +580,30 @@ def render_relationship_heatmap(
     on_click: OnClick = None,
     height: str = "100%",
 ) -> ui.echart:
-    """Entity × entity heatmap colored by a relationship metric."""
+    """Entity × entity heatmap colored by a relationship metric.
+
+    The colour scale and value range adapt to ``metric``:
+      * ``affinity`` and ``power_dynamic`` are signed in [-1, 1] and
+        use a red→grey→green ramp (negative → neutral → positive).
+      * ``fear`` is unsigned in [0, 1] and uses a single-hue ramp
+        (calm → terrified) so a grey midpoint isn't misread as "no
+        signal".
+    """
     names, data = ws_to_heatmap_data(ws, metric=metric)
     if not names:
-        return ui.label("No relationship data.").classes("text-grey q-pa-md")
+        return ui.label(
+            f"No {metric} data — no social edges between entities."
+        ).classes("text-grey q-pa-md")
+
+    if metric == "fear":
+        vmin, vmax = 0.0, 1.0
+        ramp = ["#0F2233", "#3A7BD5", "#F5B43C", "#D8334A"]
+    elif metric == "power_dynamic":
+        vmin, vmax = -1.0, 1.0
+        ramp = ["#3A7BD5", "#94a3b8", "#F5B43C"]
+    else:  # affinity (default)
+        vmin, vmax = -1.0, 1.0
+        ramp = ["#D8334A", "#94a3b8", "#6FBF3A"]
 
     chart = ui.echart({
         "backgroundColor": _CHART_BG,
@@ -602,19 +622,18 @@ def render_relationship_heatmap(
             "splitArea": {"show": True},
         },
         "visualMap": {
-            "min": -1,
-            "max": 1,
+            "min": vmin,
+            "max": vmax,
             "calculable": True,
             "orient": "horizontal",
             "left": "center",
             "bottom": 0,
-            "inRange": {
-                "color": ["#D8334A", "#94a3b8", "#6FBF3A"],
-            },
+            "inRange": {"color": ramp},
             "textStyle": {"color": _CHART_TEXT},
         },
         "series": [{
             "type": "heatmap",
+            "name": metric,
             "data": data,
             "label": {"show": True, "fontSize": 9, "color": "#eee"},
             "emphasis": {"itemStyle": {"shadowBlur": 10, "shadowColor": "rgba(0,0,0,0.5)"}},

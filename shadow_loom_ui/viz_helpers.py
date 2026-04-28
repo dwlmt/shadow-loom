@@ -230,6 +230,24 @@ EDGE_COLORS: dict[str, str] = {
     "connected_to": "#3A7BD5",      # Sapphire
     "communicating_with": "#F5B43C",# Amber
     "eavesdropped_by": "#D8334A",   # Crimson
+    "actor_of": "#6FBF3A",          # Spring Green — entity acted in event
+    "target_of": "#FF6B6B",         # Soft Red    — entity/object was acted upon
+    "used_in": "#FFB84D",           # Light Amber — object used in event
+    "governs": "#8A5CF0",           # Iris        — world trait constrains event
+}
+
+# World-trait domains that match causal-edge mechanism strings.
+# A WorldTrait whose ``affected_domains`` contains any of these keys
+# is considered to govern an event whose incoming CausalEdges carry a
+# matching mechanism substring.
+_DOMAIN_MECHANISM_HINTS: dict[str, tuple[str, ...]] = {
+    "physical":      ("physical", "kinetic", "chemical", "force"),
+    "psychological": ("psychological", "trauma", "cognitive"),
+    "epistemic":     ("epistemic", "revelation", "deception", "discovery"),
+    "social":        ("social", "coercion", "alliance", "shaming"),
+    "emotional":     ("emotional", "fear", "love", "anger"),
+    "informational": ("informational", "broadcast", "leak", "communication"),
+    "betrayal":      ("betrayal", "treachery"),
 }
 
 NODE_SYMBOLS: dict[str, str] = {
@@ -368,6 +386,56 @@ def ws_to_graph_data(
     for ie in ws.information_topology:
         for tid in ie.target_ids:
             _link(ie.source_id, tid, "communicating_with", dash="dashed")
+
+    # ── Event participation edges ──
+    # These were missing from the overview, so events appeared
+    # disconnected from the very characters and objects that acted in
+    # them (the only path between an entity and an event was via an
+    # explicit ``CausalEdge``, which most authored worlds don't carry
+    # for every actor/target pair). Without them the overview can't
+    # answer "who is involved in what?" at a glance.
+    for evt in ws.events:
+        for aid in evt.actor_ids:
+            _link(aid, evt.id, "actor_of", width=1.5)
+        for tid in evt.target_ids:
+            # Distinguish entity-target vs object/location-target so
+            # the legend reads cleanly.
+            etype = "target_of" if tid in ws.entities else "used_in"
+            _link(evt.id, tid, etype, width=1.5)
+
+    # ── World-trait → Event "governs" edges ──
+    # If an event has any incoming CausalEdge whose mechanism falls
+    # in a WorldTrait's ``affected_domains``, draw a soft governance
+    # edge from the trait to the event. This makes the "constraint
+    # field" of the world legible without needing the author to wire
+    # an explicit WORLD_→EVT_ causal edge for every interaction.
+    if ws.world_traits and ws.events:
+        # Per-event mechanism set
+        evt_mechs: dict[str, set[str]] = {evt.id: set() for evt in ws.events}
+        for ce in ws.causal_topology:
+            if ce.target_id in evt_mechs:
+                evt_mechs[ce.target_id].add((ce.mechanism or "").lower())
+
+        for wid, wt in ws.world_traits.items():
+            domain_hints: set[str] = set()
+            for d in (wt.affected_domains or []):
+                domain_hints.update(_DOMAIN_MECHANISM_HINTS.get(d, (d,)))
+            if not domain_hints:
+                continue
+            for evt in ws.events:
+                mechs = evt_mechs.get(evt.id, set())
+                if any(
+                    any(h in m for h in domain_hints) for m in mechs if m
+                ):
+                    # Avoid double-linking if an explicit WORLD→EVT
+                    # CausalEdge already exists.
+                    already = any(
+                        ce.source_id == wid and ce.target_id == evt.id
+                        for ce in ws.causal_topology
+                    )
+                    if not already:
+                        _link(wid, evt.id, "governs", dash="dotted",
+                              width=1.0)
 
     return nodes, links, list(CATEGORIES)
 
@@ -1687,6 +1755,42 @@ def fabula_time_bounds(ws: WorldStateV1) -> tuple[int, int]:
         return (0, 0)
     times = [evt.fabula_time for evt in ws.events]
     return (min(times), max(times))
+
+
+def _set_slider_bounds(slider, tmin: int, tmax: int) -> None:
+    """Update a NiceGUI slider's ``min``/``max`` props with numeric values.
+
+    Calling ``slider.props(f"min={tmin} max={tmax}")`` routes the values
+    through Quasar's whitespace-prop parser, which stores them as
+    *strings* (``"0"``, ``"5000"``). Quasar's ``<q-slider>`` requires
+    numeric ``min``/``max`` \u2014 with strings the thumb renders but
+    drag/keyboard input is silently clamped to the original construction-
+    time range, so the slider appears frozen. Writing numeric values
+    directly into the props dict triggers a single websocket update with
+    the correct types.
+    """
+    tmin_i = int(tmin)
+    tmax_i = int(tmax)
+    props = slider.props
+    changed = False
+    if props.get("min") != tmin_i:
+        with props.suspend_updates():
+            props["min"] = tmin_i
+        changed = True
+    if props.get("max") != tmax_i:
+        with props.suspend_updates():
+            props["max"] = tmax_i
+        changed = True
+    if changed:
+        # The slider may have been removed from the DOM between when a
+        # debounced refresh fired and now (e.g. user switched tabs or
+        # the panel was rebuilt). ``element.update()`` walks up to the
+        # parent slot and raises ``RuntimeError`` if that slot was
+        # cleared. Swallow that single, expected race.
+        try:
+            slider.update()
+        except RuntimeError:
+            return
 
 
 def syuzhet_time_bounds(ws: WorldStateV1) -> tuple[int, int]:

@@ -38,6 +38,7 @@ _TABS = [
     ("explorer", "travel_explore", "Explorer"),
     ("world", "hub", "World"),
     ("causality", "account_tree", "Causality"),
+    ("reasoning", "psychology", "Reasoning"),
     ("audit", "fact_check", "Audit"),
     ("export", "ios_share", "Export"),
 ]
@@ -254,6 +255,12 @@ def build_workspace(state: AppState, project_id: int) -> None:
                     with ui.tab_panel("causality").classes("q-pa-none h-full"):
                         from shadow_loom_ui.components.causality_tab import build_causality_tab
                         build_causality_tab(state)
+
+                    with ui.tab_panel("reasoning").classes("q-pa-none h-full"):
+                        from shadow_loom_ui.components.reasoning_tab import (
+                            build_reasoning_tab,
+                        )
+                        build_reasoning_tab(state)
 
                     with ui.tab_panel("audit").classes("q-pa-none h-full"):
                         from shadow_loom_ui.components.audit_tab import build_audit_tab
