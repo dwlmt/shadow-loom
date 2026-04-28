@@ -628,55 +628,430 @@ def render_relationship_heatmap(
 
 # ── Emotional / narrative gauges ──────────────────────────────────
 
+def _gauge_grid_columns(n: int) -> int:
+    """Choose how many gauges to put on each grid row.
+
+    Single ECharts ``gauge`` series sharing a chart container always
+    overlap unless we manually tile them with non-overlapping ``center``
+    values, which is fragile across heights. Instead we render each
+    gauge as its own ``ui.echart`` and let CSS grid place them.
+    """
+    if n <= 1:
+        return 1
+    if n == 2:
+        return 2
+    if n <= 4:
+        return 2
+    if n <= 6:
+        return 3
+    return 4
+
+
+def _build_gauge_series(name: str, val: float, *, graded: bool) -> dict:
+    """Build one ECharts ``gauge`` series dict centered in its own chart."""
+    common = {
+        "type": "gauge",
+        "center": ["50%", "58%"],
+        "radius": "78%",
+        "startAngle": 200,
+        "endAngle": -20,
+        "min": 0,
+        "max": 1,
+        "splitNumber": 5,
+        "data": [{"value": round(float(val), 2), "name": name}],
+        "pointer": {"width": 4},
+        "axisTick": {"lineStyle": {"color": "#777"}},
+        "splitLine": {"lineStyle": {"color": "#777"}},
+        "title": {
+            "color": _CHART_TEXT,
+            "fontSize": 11,
+            "offsetCenter": [0, "92%"],
+        },
+    }
+    if graded:
+        common["axisLine"] = {
+            "lineStyle": {
+                "width": 14,
+                "color": [
+                    [0.2, "#94a3b8"],
+                    [0.4, "#6FBF3A"],
+                    [0.6, "#F5B43C"],
+                    [0.8, "#FF8C42"],
+                    [1, "#D8334A"],
+                ],
+            },
+        }
+        common["axisLabel"] = {
+            "color": _CHART_TEXT,
+            "fontSize": 9,
+            "distance": 14,
+            ":formatter": (
+                "function (v) {"
+                "  if (v <= 0.2) return 'v.low';"
+                "  if (v <= 0.4) return 'low';"
+                "  if (v <= 0.6) return 'mod';"
+                "  if (v <= 0.8) return 'high';"
+                "  return 'v.high';"
+                "}"
+            ),
+        }
+        common["detail"] = {
+            "valueAnimation": True,
+            "color": _CHART_TEXT,
+            "fontSize": 13,
+            "offsetCenter": [0, "62%"],
+            ":formatter": (
+                "function (v) {"
+                "  var label;"
+                "  if (v <= 0.2) label = 'very low';"
+                "  else if (v <= 0.4) label = 'low';"
+                "  else if (v <= 0.6) label = 'moderate';"
+                "  else if (v <= 0.8) label = 'high';"
+                "  else label = 'very high';"
+                "  return label + '\\n' + v.toFixed(2);"
+                "}"
+            ),
+        }
+    else:
+        common["axisLine"] = {
+            "lineStyle": {
+                "width": 12,
+                "color": [
+                    [0.3, "#6FBF3A"],
+                    [0.7, "#F5B43C"],
+                    [1, "#D8334A"],
+                ],
+            },
+        }
+        common["axisLabel"] = {
+            "color": _CHART_TEXT,
+            "fontSize": 9,
+            "distance": 14,
+        }
+        common["detail"] = {
+            "valueAnimation": True,
+            "formatter": "{value}",
+            "color": _CHART_TEXT,
+            "fontSize": 14,
+            "offsetCenter": [0, "62%"],
+        }
+    return common
+
+
+def _render_single_gauge(
+    name: str,
+    val: float,
+    *,
+    height: str,
+    graded: bool,
+) -> ui.echart:
+    return ui.echart({
+        "backgroundColor": _CHART_BG,
+        "series": [_build_gauge_series(name, val, graded=graded)],
+    }).classes("w-full").style(f"height:{height}")
+
+
+def _render_gauge_grid(
+    items: list[tuple[str, float]],
+    *,
+    height: str,
+    selected: str | None,
+    graded: bool,
+) -> ui.element:
+    if selected is not None:
+        return _render_single_gauge(
+            selected, dict(items).get(selected, 0.0),
+            height=height, graded=graded,
+        )
+    if len(items) == 1:
+        name, val = items[0]
+        return _render_single_gauge(name, val, height=height, graded=graded)
+
+    cols = _gauge_grid_columns(len(items))
+    grid = ui.grid(columns=cols).classes("w-full gap-3")
+    with grid:
+        for name, val in items:
+            _render_single_gauge(name, val, height=height, graded=graded)
+    return grid
+
+
 def render_emotional_gauges(
     scores: dict[str, float],
     *,
     height: str = "200px",
-) -> ui.echart:
-    """Row of gauge dials for emotional/narrative scores (0–1 scale)."""
+    selected: str | None = None,
+) -> ui.element:
+    """Grid of gauge dials for emotional/narrative scores (0–1 scale).
+
+    Each metric becomes its own ``ui.echart`` widget arranged in a
+    CSS grid so titles / detail labels never overlap (which they did
+    when packing multiple gauge series into a single chart). Pass
+    ``selected`` to render only one gauge (used by the affective
+    dashboard dropdown).
+    """
     if not scores:
         return ui.label("No scores available.").classes("text-grey text-caption")
+    items = list(scores.items())
+    return _render_gauge_grid(
+        items, height=height, selected=selected, graded=False,
+    )
 
-    n = len(scores)
-    gauge_data = []
-    for i, (name, val) in enumerate(scores.items()):
-        gauge_data.append({
-            "value": round(val, 2),
-            "name": name,
+
+# ── Affective metrics over fabula time ────────────────────────────
+
+_AFFECT_COLORS = {
+    "mystery": "#8E44AD",
+    "narrative_tension": "#D8334A",
+    "conflict": "#E67E22",
+    "danger": "#C0392B",
+    "causal_density": "#3A7BD5",
+    # Engine-grade structural affects (DirectiveAssembly).
+    "suspense": "#4A148C",
+    "surprise": "#FFB300",
+    "dramatic_irony": "#00838F",
+}
+
+
+def render_affective_timeseries(
+    ws: WorldStateV1,
+    *,
+    samples: int = 12,
+    height: str = "260px",
+    fabula_cursor: int | None = None,
+    syuzhet_cursor: int | None = None,
+    entity_ids: list[str] | None = None,
+    axis: str = "fabula",
+) -> ui.echart:
+    """Multi-line chart of affective scores over fabula or syuzhet time.
+
+    Snapshots the world at evenly-spaced cursors (via
+    :func:`viz_helpers.affective_timeseries` or its syuzhet variant)
+    and plots each metric as a separate line band. When
+    ``entity_ids`` is supplied the engine-grade suspense / surprise /
+    dramatic-irony / canonical mystery curves are included.
+    Pass ``axis="syuzhet"`` to sample along reading order; the
+    ``syuzhet_cursor`` becomes the active needle.
+    """
+    opts = affective_timeseries_options(
+        ws,
+        samples=samples,
+        fabula_cursor=fabula_cursor,
+        syuzhet_cursor=syuzhet_cursor,
+        entity_ids=entity_ids,
+        axis=axis,
+    )
+    if opts is None:
+        return ui.label("No affective signal yet.").classes(
+            "text-grey text-caption"
+        )
+    return ui.echart(opts).classes("w-full").style(f"height:{height}")
+
+
+def affective_timeseries_options(
+    ws: WorldStateV1,
+    *,
+    samples: int = 12,
+    fabula_cursor: int | None = None,
+    syuzhet_cursor: int | None = None,
+    entity_ids: list[str] | None = None,
+    axis: str = "fabula",
+) -> dict | None:
+    """Pure options builder for :func:`render_affective_timeseries`.
+
+    Returns ``None`` when there's no signal to plot. Splitting the
+    options dict from the ECharts element creation lets callers reuse
+    a stable :class:`ui.echart` and patch ``chart.options`` in place
+    instead of tearing down the DOM on every cursor scrub.
+    """
+    from shadow_loom_ui.viz_helpers import (
+        affective_timeseries,
+        affective_timeseries_syuzhet,
+    )
+
+    is_syuzhet = axis == "syuzhet"
+    if is_syuzhet:
+        times, series = affective_timeseries_syuzhet(
+            ws, samples=samples, entity_ids=entity_ids,
+        )
+        x_name = "syuzhet index"
+        cursor = syuzhet_cursor
+        cursor_label = (
+            f"s={syuzhet_cursor}" if syuzhet_cursor is not None else None
+        )
+    else:
+        times, series = affective_timeseries(
+            ws, samples=samples, entity_ids=entity_ids,
+        )
+        x_name = "fabula time"
+        cursor = fabula_cursor
+        cursor_label = (
+            f"t={fabula_cursor}" if fabula_cursor is not None else None
+        )
+    if not times or not series:
+        return None
+
+    plot_series = []
+    for name, values in series.items():
+        plot_series.append({
+            "name": name.replace("_", " "),
+            "type": "line",
+            "smooth": True,
+            "showSymbol": False,
+            "lineStyle": {"width": 2},
+            "areaStyle": {"opacity": 0.10},
+            "color": _AFFECT_COLORS.get(name, "#3A7BD5"),
+            "itemStyle": {"color": _AFFECT_COLORS.get(name, "#3A7BD5")},
+            "data": [[t, v] for t, v in zip(times, values)],
         })
+
+    mark_lines = []
+    if cursor is not None and cursor_label is not None:
+        mark_lines.append({
+            "xAxis": cursor,
+            "label": {"formatter": cursor_label, "color": "#D8334A"},
+            "lineStyle": {"color": "#D8334A", "type": "dashed", "width": 1},
+        })
+    if mark_lines:
+        plot_series[0]["markLine"] = {"symbol": "none", "data": mark_lines}
+
+    return {
+        "backgroundColor": _CHART_BG,
+        "tooltip": {
+            **_CHART_TOOLTIP,
+            "trigger": "axis",
+            "axisPointer": {"type": "cross"},
+        },
+        "legend": {
+            "data": [s["name"] for s in plot_series],
+            "textStyle": {"color": _CHART_TEXT},
+            "top": 0,
+        },
+        "grid": {"top": 40, "bottom": 40, "left": 50, "right": 20},
+        "xAxis": {
+            "type": "value",
+            "name": x_name,
+            "nameLocation": "middle",
+            "nameGap": 25,
+            "nameTextStyle": {"color": _CHART_TEXT},
+            "axisLabel": {"color": _CHART_TEXT},
+            "splitLine": {"lineStyle": {"color": "#e2e8f0"}},
+        },
+        "yAxis": {
+            "type": "value",
+            "min": 0,
+            "max": 1,
+            "name": "score",
+            "nameTextStyle": {"color": _CHART_TEXT},
+            "axisLabel": {"color": _CHART_TEXT},
+            "splitLine": {"lineStyle": {"color": "#e2e8f0"}},
+        },
+        "series": plot_series,
+    }
+
+
+def update_chart_options(chart: ui.echart, options: dict) -> None:
+    """Patch ``chart.options`` in place and re-render.
+
+    Avoids the full DOM teardown of ``container.clear()`` +
+    rebuilding the chart element. Use for slider-driven panels where
+    only the data + cursor markers change between renders.
+    """
+    chart.options.clear()
+    chart.options.update(options)
+    chart.update()
+
+
+# ── Physics trajectory (structural scalars over fabula time) ──────
+
+def render_physics_trajectory(
+    ws: WorldStateV1,
+    focus_entity_ids: list[str] | None = None,
+    *,
+    samples: int = 12,
+    height: str = "300px",
+    fabula_cursor: int | None = None,
+) -> ui.echart:
+    """Multi-line chart of structural physics scalars over fabula_time.
+
+    Backed by :func:`viz_helpers.physics_trajectory`, which calls the
+    structural ``calculate_narrative_physics`` engine at evenly-spaced
+    anchors with an ``ObservationQuery``. Pure graph math; no LLM
+    invocations.
+    """
+    from shadow_loom_ui.viz_helpers import (
+        PHYSICS_METRIC_COLORS,
+        physics_trajectory,
+    )
+
+    times, series = physics_trajectory(
+        ws, focus_entity_ids, samples=samples,
+    )
+    if not times or not series:
+        return ui.label("No physics signal yet.").classes(
+            "text-grey text-caption"
+        )
+
+    plot_series = []
+    for name, values in series.items():
+        if not any(values):
+            continue
+        plot_series.append({
+            "name": name.replace("_", " "),
+            "type": "line",
+            "smooth": True,
+            "showSymbol": False,
+            "lineStyle": {"width": 2},
+            "color": PHYSICS_METRIC_COLORS.get(name, "#3A7BD5"),
+            "itemStyle": {"color": PHYSICS_METRIC_COLORS.get(name, "#3A7BD5")},
+            "data": [[t, v] for t, v in zip(times, values)],
+        })
+
+    if not plot_series:
+        return ui.label("No physics signal yet.").classes(
+            "text-grey text-caption"
+        )
+
+    mark_lines = []
+    if fabula_cursor is not None:
+        mark_lines.append({
+            "xAxis": fabula_cursor,
+            "label": {"formatter": f"t={fabula_cursor}", "color": "#D8334A"},
+            "lineStyle": {"color": "#D8334A", "type": "dashed", "width": 1},
+        })
+    if mark_lines:
+        plot_series[0]["markLine"] = {"symbol": "none", "data": mark_lines}
 
     return ui.echart({
         "backgroundColor": _CHART_BG,
-        "series": [{
-            "type": "gauge",
-            "startAngle": 200,
-            "endAngle": -20,
-            "min": 0,
-            "max": 1,
-            "splitNumber": 5,
-            "data": gauge_data,
-            "axisLine": {
-                "lineStyle": {
-                    "width": 15,
-                    "color": [
-                        [0.3, "#6FBF3A"],
-                        [0.7, "#F5B43C"],
-                        [1, "#D8334A"],
-                    ],
-                },
-            },
-            "pointer": {"width": 4},
-            "axisTick": {"lineStyle": {"color": "#777"}},
-            "splitLine": {"lineStyle": {"color": "#777"}},
-            "axisLabel": {"color": _CHART_TEXT, "fontSize": 9},
-            "detail": {
-                "valueAnimation": True,
-                "formatter": "{value}",
-                "color": _CHART_TEXT,
-                "fontSize": 14,
-            },
-            "title": {"color": _CHART_TEXT, "fontSize": 11},
-        }],
+        "tooltip": {
+            **_CHART_TOOLTIP,
+            "trigger": "axis",
+            "axisPointer": {"type": "cross"},
+        },
+        "legend": {
+            "data": [s["name"] for s in plot_series],
+            "textStyle": {"color": _CHART_TEXT},
+            "top": 0,
+            "type": "scroll",
+        },
+        "grid": {"top": 50, "bottom": 40, "left": 50, "right": 20},
+        "xAxis": {
+            "type": "value",
+            "name": "fabula time",
+            "nameLocation": "middle",
+            "nameGap": 25,
+            "nameTextStyle": {"color": _CHART_TEXT},
+            "axisLabel": {"color": _CHART_TEXT},
+            "splitLine": {"lineStyle": {"color": "#e2e8f0"}},
+        },
+        "yAxis": {
+            "type": "value",
+            "name": "value",
+            "nameTextStyle": {"color": _CHART_TEXT},
+            "axisLabel": {"color": _CHART_TEXT},
+            "splitLine": {"lineStyle": {"color": "#e2e8f0"}},
+        },
+        "series": plot_series,
     }).classes("w-full").style(f"height:{height}")
 
 
@@ -704,9 +1079,42 @@ def render_event_timeline(
     brush so users can focus a fabula range. The selected window is
     forwarded to ``on_brush`` (if given) as ``{"start": x0, "end": x1}``.
     """
+    opts = event_timeline_options(
+        ws,
+        fabula_cursor=fabula_cursor,
+        syuzhet_cursor=syuzhet_cursor,
+        enable_brush=enable_brush,
+        pulse_cursor=pulse_cursor,
+    )
+    if opts is None:
+        return ui.label("No events.").classes("text-grey text-caption")
+    chart = ui.echart(opts).classes("w-full").style(f"height:{height}")
+    if on_click:
+        chart.on("click", on_click)
+    if enable_brush and on_brush:
+        # ECharts emits ``datazoom`` with start/end as percentages of
+        # the axis range. We forward the raw event so callers can
+        # translate it back to fabula values themselves.
+        chart.on("datazoom", on_brush)
+    return chart
+
+
+def event_timeline_options(
+    ws: WorldStateV1,
+    *,
+    fabula_cursor: int | None = None,
+    syuzhet_cursor: int | None = None,
+    enable_brush: bool = False,
+    pulse_cursor: bool = True,
+) -> dict | None:
+    """Pure options builder for :func:`render_event_timeline`.
+
+    Returns ``None`` if there are no events. See
+    :func:`update_chart_options` for in-place patching.
+    """
     scatter_data = ws_to_timeline_data(ws)
     if not scatter_data:
-        return ui.label("No events.").classes("text-grey text-caption")
+        return None
 
     mark_lines: list[dict] = []
     if fabula_cursor is not None:
@@ -737,10 +1145,7 @@ def render_event_timeline(
             "silent": True,
         }
 
-    # Pulsing needle: an effectScatter point at the cursor intersection.
     if pulse_cursor and (fabula_cursor is not None or syuzhet_cursor is not None):
-        # Use median syuzhet/fabula as the orthogonal coordinate when
-        # the user only set one axis.
         ys = sorted(d["value"][1] for d in scatter_data)
         xs = sorted(d["value"][0] for d in scatter_data)
         med_y = ys[len(ys) // 2]
@@ -780,13 +1185,18 @@ def render_event_timeline(
             },
         ]
 
-    chart = ui.echart({
+    return {
         "backgroundColor": _CHART_BG,
         "tooltip": {
             **_CHART_TOOLTIP,
             "trigger": "item",
         },
-        "grid": {"top": 40, "bottom": 60 if enable_brush else 40, "left": 60, "right": 30},
+        "grid": {
+            "top": 40,
+            "bottom": 60 if enable_brush else 40,
+            "left": 60,
+            "right": 30,
+        },
         "xAxis": {
             "type": "value",
             "name": "Fabula Time",
@@ -803,16 +1213,7 @@ def render_event_timeline(
         },
         "series": series,
         **extra,
-    }).classes("w-full").style(f"height:{height}")
-
-    if on_click:
-        chart.on("click", on_click)
-    if enable_brush and on_brush:
-        # ECharts emits ``datazoom`` with start/end as percentages of
-        # the axis range. We forward the raw event so callers can
-        # translate it back to fabula values themselves.
-        chart.on("datazoom", on_brush)
-    return chart
+    }
 
 
 # ── Fabula↔Syuzhet displacement bars ───────────────────────────────
@@ -1183,6 +1584,7 @@ def render_causal_force_graph(
     on_click: OnClick = None,
     height: str = "100%",
     layout: str = "force",
+    highlight_edge_ids: set[str] | None = None,
 ) -> ui.echart:
     """Force-directed graph of causal edges, thickness = causal_force.
 
@@ -1198,11 +1600,22 @@ def render_causal_force_graph(
     if layout == "cartesian":
         return _render_causal_cartesian(
             ws, on_click=on_click, height=height,
+            highlight_edge_ids=highlight_edge_ids,
         )
 
     nodes, links, cats = ws_to_causal_force_data(ws)
     if not nodes:
         return ui.label("No causal topology.").classes("text-grey q-pa-md")
+
+    if highlight_edge_ids:
+        for lk in links:
+            eid = f"{lk.get('source')}->{lk.get('target')}"
+            if eid in highlight_edge_ids:
+                ls = dict(lk.get("lineStyle", {}))
+                ls["color"] = "#FF3D00"
+                ls["width"] = max(float(ls.get("width", 2)) + 2, 4)
+                ls["opacity"] = 1.0
+                lk["lineStyle"] = ls
 
     n = len(nodes)
     if layout == "circular":
@@ -1265,6 +1678,7 @@ def _render_causal_cartesian(
     *,
     on_click: OnClick = None,
     height: str = "100%",
+    highlight_edge_ids: set[str] | None = None,
 ) -> ui.echart:
     """Causal graph anchored on (fabula_time, syuzhet_index) axes.
 
@@ -1275,6 +1689,16 @@ def _render_causal_cartesian(
     nodes, links = ws_to_causal_cartesian_data(ws)
     if not nodes:
         return ui.label("No causal topology.").classes("text-grey q-pa-md")
+
+    if highlight_edge_ids:
+        for lk in links:
+            eid = f"{lk.get('source')}->{lk.get('target')}"
+            if eid in highlight_edge_ids:
+                ls = dict(lk.get("lineStyle", {}))
+                ls["color"] = "#FF3D00"
+                ls["width"] = max(float(ls.get("width", 2)) + 2, 4)
+                ls["opacity"] = 1.0
+                lk["lineStyle"] = ls
 
     chart = ui.echart({
         "backgroundColor": _CHART_BG,
@@ -1369,6 +1793,168 @@ def render_epistemic_map(
     if on_click:
         chart.on("click", on_click)
     return chart
+
+
+def render_entity_belief_chart(
+    ws: WorldStateV1,
+    entity_id: str,
+    *,
+    height: str = "260px",
+) -> ui.element:
+    """One character's beliefs as a textual card list.
+
+    A bar chart hid the most important part — the actual claim. This
+    renders each belief as a row containing:
+
+      • the **perceived_state** text (the *what*, prominent),
+      • a small badge for the **target** (the *who/what about*),
+      • a confidence bar coloured by conviction band (grey → blue →
+        green) with the numeric value,
+      • an inertia chip (how stubborn the belief is),
+      • the fabula tick the belief was established at.
+
+    Designed to be tiled in :func:`render_epistemic_grid` — each card
+    becomes one believer's panel.
+    """
+    from shadow_loom_ui.viz_helpers import ws_to_entity_belief_rows
+
+    rows = ws_to_entity_belief_rows(ws, entity_id)
+    ent = ws.entities.get(entity_id)
+    title = ent.name if ent else entity_id
+
+    # Conviction colour bands.
+    def _band(c: float) -> str:
+        if c < 0.34:
+            return "#94a3b8"   # grey — uncertain
+        if c < 0.67:
+            return "#3A7BD5"   # blue — moderate
+        return "#6FBF3A"       # green — strong
+
+    def _band_label(c: float) -> str:
+        if c < 0.34:
+            return "uncertain"
+        if c < 0.67:
+            return "moderate"
+        return "convinced"
+
+    container = ui.column().classes(
+            "w-full bg-white"
+        ).style(f"min-height:{height}")
+    with container:
+        # Header strip — name + belief count + "live" status hint.
+        with ui.row().classes(
+            "w-full items-baseline justify-between px-3 py-2 "
+            "border-b border-slate-200 bg-slate-50"
+        ):
+            ui.label(title).classes("text-sm font-semibold text-slate-800")
+            ui.label(
+                f"{len(rows)} belief{'s' if len(rows) != 1 else ''}"
+            ).classes("text-xs text-slate-500")
+
+        if not rows:
+            ui.label("No beliefs.").classes(
+                "text-xs text-slate-400 italic px-3 py-3"
+            )
+            return container
+
+        # Scrollable belief list — bounded so tall card grids don't
+        # explode vertically.
+        with ui.column().classes(
+            "w-full gap-2 px-3 py-2 overflow-y-auto"
+        ).style("max-height: 360px"):
+            for r in rows:
+                conf = float(r["confidence"])
+                inertia = float(r["inertia"])
+                color = _band(conf)
+                with ui.column().classes(
+                    "w-full gap-1 p-2 rounded-lg border border-slate-200 "
+                    "bg-slate-50/60 hover:bg-slate-100/60 transition-colors"
+                ):
+                    # Top line: perceived_state — the actual claim.
+                    ui.label(
+                        f"\u201C{r['perceived_state']}\u201D"
+                    ).classes(
+                        "text-sm text-slate-800 leading-snug"
+                    )
+                    # Meta row: target + conviction + inertia + established
+                    with ui.row().classes(
+                        "w-full items-center gap-2 text-xs"
+                    ):
+                        ui.label(
+                            f"about {r['target_name']}"
+                        ).classes(
+                            "text-slate-500 italic truncate flex-grow"
+                        )
+                        ui.label(_band_label(conf)).classes(
+                            "px-2 py-0.5 rounded-full text-white font-mono"
+                        ).style(f"background-color: {color}")
+                        ui.label(
+                            f"conf {conf:.2f}"
+                        ).classes(
+                            "px-2 py-0.5 rounded-full bg-slate-200 "
+                            "text-slate-700 font-mono"
+                        )
+                        ui.label(
+                            f"inertia {inertia:.2f}"
+                        ).classes(
+                            "px-2 py-0.5 rounded-full bg-slate-200 "
+                            "text-slate-700 font-mono"
+                        )
+                        if r["established"]:
+                            ui.label(
+                                f"t={r['established']}"
+                            ).classes(
+                                "px-2 py-0.5 rounded-full bg-slate-200 "
+                                "text-slate-600 font-mono"
+                            )
+                    # Confidence bar — visual reinforcement of the band.
+                    with ui.element("div").classes(
+                        "w-full h-1.5 rounded-full bg-slate-200 overflow-hidden"
+                    ):
+                        ui.element("div").classes("h-full rounded-full").style(
+                            f"width: {int(conf * 100)}%; background-color: {color}"
+                        )
+    return container
+
+
+def render_epistemic_grid(
+    ws: WorldStateV1,
+    *,
+    selected_ids: list[str] | None = None,
+    chart_height: str = "260px",
+) -> ui.element:
+    """Tiled grid of per-character belief charts.
+
+    Renders one ``render_entity_belief_chart`` per believer, two-up on
+    medium screens and three-up on wide screens. ``selected_ids``
+    filters which believers to show (None = all).
+    """
+    from shadow_loom_ui.viz_helpers import list_believers
+
+    believers = list_believers(ws)
+    if selected_ids:
+        sel = set(selected_ids)
+        believers = [b for b in believers if b[0] in sel]
+
+    container = ui.column().classes("w-full gap-3")
+    with container:
+        if not believers:
+            ui.label(
+                "No characters hold beliefs in this world model."
+            ).classes("text-sm text-slate-500 italic q-pa-lg")
+            return container
+        # CSS grid: responsive 1/2/3 columns.
+        grid = ui.element("div").classes(
+            "w-full grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3"
+        )
+        with grid:
+            for eid, _name, _count in believers:
+                with ui.element("div").classes(
+                    "border border-slate-200 rounded-xl bg-white shadow-sm "
+                    "overflow-hidden"
+                ):
+                    render_entity_belief_chart(ws, eid, height=chart_height)
+    return container
 
 
 # ── ThemeRiver (multi-entity trait evolution) ─────────────────────
@@ -2077,6 +2663,387 @@ def render_trait_boxplot(
     return chart
 
 
+# ── Entity lifelines (status / location / event ribbons) ─────────
+
+def render_entity_lifelines(
+    ws: WorldStateV1,
+    *,
+    on_click: OnClick = None,
+    height: str = "320px",
+) -> ui.echart:
+    """Per-entity lifelines: status segments + location moves + events.
+
+    Each character occupies one horizontal lane along fabula time.
+    Coloured bars show ``status`` over time (green=healthy, amber=
+    injured, blue=unconscious, near-black=dead). Diamond markers flag
+    every location change with the new place name in the tooltip.
+    Small dots render every event the character actor'd in, coloured
+    by ``event_type``.
+
+    This replaces the previous single-entity stepped trait line as the
+    "Temporal" top diagram because the lifeline view answers "who is
+    where, doing what, when" at a glance — the old chart only spoke
+    when the user pre-selected an entity.
+    """
+    from shadow_loom_ui.viz_helpers import ws_to_lifeline_data, _STATUS_COLORS
+
+    data = ws_to_lifeline_data(ws)
+    if not data["entities"]:
+        return ui.label("No entities to show.").classes("text-grey q-pa-md")
+
+    names = [n for _eid, n in data["entities"]]
+    tmin, tmax = data["tmin"], data["tmax"]
+
+    # Status segments → custom series rendering [start, end, row].
+    segment_data = [
+        [
+            seg["row"],
+            seg["start"],
+            seg["end"],
+            seg["status"] or "unknown",
+            seg["status_color"],
+            seg["location_name"],
+        ]
+        for seg in data["segments"]
+    ]
+
+    # The custom renderer draws a rounded bar between the two x ticks
+    # for the row's y position. We use a JS function string here
+    # because ECharts custom series accept JS bodies via NiceGUI's
+    # ``:fn`` magic on ``ui.echart`` option strings — but that
+    # complicates serialisation. To keep this pure-Python we model the
+    # segments as a stacked bar series instead, which renders the
+    # same visual without needing a custom JS renderer.
+
+    # Build per-row stacked bar lengths: each row gets its segments as
+    # individual data points with explicit colour.
+    bar_series: list[dict] = []
+    # Collapse to one bar series per status so the legend reads cleanly.
+    by_status: dict[str, list[list]] = {}
+    for seg in data["segments"]:
+        by_status.setdefault(seg["status"] or "unknown", []).append([
+            seg["row"], seg["start"], seg["end"], seg["location_name"],
+        ])
+    # We render each segment as a horizontal bar via ``custom`` series
+    # with a small JS-free trick: an inverted ``bar`` series with
+    # ``data: [{value: [end-start], coord:[start,row]}]`` doesn't exist
+    # in ECharts. Instead we use ``custom`` series with rectShape pieces
+    # built server-side (no JS needed).
+    pieces_data = []
+    pieces_meta = []
+    for seg in data["segments"]:
+        pieces_data.append([seg["row"], seg["start"], seg["end"]])
+        pieces_meta.append({
+            "status": seg["status"] or "unknown",
+            "color": seg["status_color"],
+            "location": seg["location_name"],
+        })
+
+    # ECharts ``heatmap`` on a category-y, value-x grid with one cell
+    # per integer (start..end-1) is the cleanest pure-JSON approach.
+    heat_data: list[list] = []
+    for seg in data["segments"]:
+        for t in range(int(seg["start"]), max(int(seg["start"]) + 1, int(seg["end"]))):
+            heat_data.append([t, seg["row"], 1, seg["status_color"]])
+
+    # Pull color out into per-cell itemStyle via "value" tuple +
+    # visualMap mapping by 4th dim — we instead provide direct itemStyle
+    # by using ``data: [{value: [...], itemStyle: {color: ...}}]``.
+    cells = [
+        {
+            "value": [t, row],
+            "itemStyle": {"color": color},
+        }
+        for t, row, _, color in heat_data
+    ]
+
+    # Location-move markers
+    move_points = [
+        [m["time"], m["row"], m["location_name"]]
+        for m in data["moves"]
+    ]
+
+    # Event markers
+    event_points = [
+        {
+            "value": [e["time"], e["row"]],
+            "itemStyle": {"color": e["color"]},
+            "_event_id": e["event_id"],
+            "_desc": e["description"],
+            "_type": e["event_type"],
+        }
+        for e in data["events"]
+    ]
+
+    # Status legend
+    status_legend = [
+        {"name": s, "icon": "rect", "itemStyle": {"color": c}}
+        for s, c in _STATUS_COLORS.items()
+    ]
+
+    chart = ui.echart({
+        "backgroundColor": _CHART_BG,
+        "tooltip": {
+            **_CHART_TOOLTIP,
+            "trigger": "item",
+        },
+        "legend": [
+            {
+                "data": [s["name"] for s in status_legend],
+                "top": 0,
+                "left": "center",
+                "textStyle": {"color": _CHART_TEXT, "fontSize": 10},
+                "itemWidth": 14,
+                "itemHeight": 8,
+            },
+        ],
+        "grid": {"top": 36, "bottom": 30, "left": 110, "right": 20},
+        "xAxis": {
+            "type": "value",
+            "min": tmin,
+            "max": tmax,
+            "name": "Fabula time",
+            "nameGap": 18,
+            "nameTextStyle": {"color": _CHART_TEXT, "fontSize": 10},
+            "axisLabel": {"color": _CHART_TEXT, "fontSize": 9},
+            "splitLine": {"lineStyle": {"color": "#e2e8f0"}},
+        },
+        "yAxis": {
+            "type": "category",
+            "data": names,
+            "axisLabel": {"color": _CHART_TEXT, "fontSize": 10},
+            "axisTick": {"show": False},
+            "axisLine": {"lineStyle": {"color": "#cbd5e1"}},
+        },
+        "series": [
+            # Status ribbon — one cell per integer fabula tick.
+            {
+                "name": "status",
+                "type": "scatter",
+                "symbol": "rect",
+                "symbolSize": [10, 18],
+                "data": cells,
+                "z": 1,
+                "tooltip": {"show": False},
+            },
+            # Location-change markers
+            {
+                "name": "location change",
+                "type": "scatter",
+                "symbol": "diamond",
+                "symbolSize": 12,
+                "data": [
+                    {
+                        "value": [m[0], m[1]],
+                        "_loc": m[2],
+                    }
+                    for m in move_points
+                ],
+                "itemStyle": {
+                    "color": "#ffffff",
+                    "borderColor": "#1e2a3a",
+                    "borderWidth": 1.5,
+                },
+                "z": 3,
+                "tooltip": {
+                    "formatter": "Moved → {@[2]}"
+                    # NB: ECharts can't read custom keys; this is a
+                    # best-effort label; falls back to raw value.
+                },
+            },
+            # Event markers (small coloured dots)
+            {
+                "name": "events",
+                "type": "scatter",
+                "symbol": "circle",
+                "symbolSize": 7,
+                "data": event_points,
+                "z": 2,
+            },
+        ]
+        + [
+            # Hidden series purely to populate the status legend with
+            # the canonical colour swatch for each status.
+            {
+                "name": s["name"],
+                "type": "scatter",
+                "data": [],
+                "itemStyle": s["itemStyle"],
+                "symbol": "rect",
+                "symbolSize": 10,
+            }
+            for s in status_legend
+        ],
+    }).classes("w-full").style(f"height:{height}")
+
+    if on_click:
+        chart.on("click", on_click)
+    return chart
+
+
+# ── Multi-entity comparison view (radar overlay + ranking) ───────
+
+def render_comparison_view(
+    ws: WorldStateV1,
+    *,
+    entity_ids: list[str] | None = None,
+    height: str = "440px",
+) -> ui.element:
+    """Side-by-side trait comparison for a small set of characters.
+
+    Layout:
+      • **Top:** radar chart overlaying each entity's trait profile on
+        the same axes — quick visual gestalt of who is similar / who
+        is opposite.
+      • **Bottom:** per-trait ranking strip — for each trait, a small
+        horizontal bar chart ranking the chosen entities along that
+        dimension. Replaces the old parallel-coordinates + boxplot
+        pair which read as spaghetti once more than two characters
+        were present.
+    """
+    from shadow_loom_ui.viz_helpers import ws_to_comparison_data
+
+    data = ws_to_comparison_data(ws, entity_ids=entity_ids)
+    container = ui.column().classes("w-full gap-3")
+    with container:
+        if not data["entity_names"]:
+            ui.label(
+                "Pick entities to compare from the toolbar above."
+            ).classes("text-sm text-slate-500 italic q-pa-lg")
+            return container
+        if not data["trait_names"]:
+            ui.label(
+                "Selected entities share no traits to compare."
+            ).classes("text-sm text-slate-500 italic q-pa-lg")
+            return container
+
+        names = data["entity_names"]
+        traits = data["trait_names"]
+        matrix = data["matrix"]
+        colors = CHART_COLORS
+
+        # ── Radar overlay ─────────────────────────────────────────
+        radar_indicators = [{"name": t, "max": 1.0} for t in traits]
+        radar_series_data = [
+            {
+                "value": matrix[i],
+                "name": names[i],
+                "lineStyle": {"width": 2, "color": colors[i % len(colors)]},
+                "areaStyle": {"opacity": 0.15, "color": colors[i % len(colors)]},
+                "itemStyle": {"color": colors[i % len(colors)]},
+            }
+            for i in range(len(names))
+        ]
+        with ui.element("div").classes(
+            "w-full border border-slate-200 rounded-xl bg-white shadow-sm "
+            "overflow-hidden"
+        ):
+            ui.echart({
+                "backgroundColor": _CHART_BG,
+                "tooltip": _CHART_TOOLTIP,
+                "legend": {
+                    "data": names,
+                    "top": 4,
+                    "left": "center",
+                    "textStyle": {"color": _CHART_TEXT, "fontSize": 11},
+                },
+                "radar": {
+                    "indicator": radar_indicators,
+                    "shape": "polygon",
+                    "splitNumber": 4,
+                    "axisName": {"color": _CHART_TEXT, "fontSize": 10},
+                    "splitArea": {
+                        "areaStyle": {
+                            "color": ["rgba(241,245,249,0.4)", "rgba(255,255,255,0.4)"],
+                        },
+                    },
+                    "splitLine": {"lineStyle": {"color": "#cbd5e1"}},
+                    "axisLine": {"lineStyle": {"color": "#cbd5e1"}},
+                },
+                "series": [{
+                    "type": "radar",
+                    "data": radar_series_data,
+                    "symbol": "circle",
+                    "symbolSize": 5,
+                }],
+            }).classes("w-full").style(f"height:{height}")
+
+        # ── Per-trait ranking strips ─────────────────────────────
+        with ui.element("div").classes(
+            "w-full border border-slate-200 rounded-xl bg-white shadow-sm p-3"
+        ):
+            ui.label("Trait ranking (per dimension)").classes(
+                "text-sm font-semibold text-slate-700 mb-2"
+            )
+            grid = ui.element("div").classes(
+                "grid grid-cols-1 md:grid-cols-2 gap-2"
+            )
+            with grid:
+                # Stable colour per entity name across all strips.
+                color_for = {
+                    n: colors[i % len(colors)] for i, n in enumerate(names)
+                }
+                for trait_name, ranked in data["ranking"]:
+                    cats = [n for n, _v in ranked]
+                    vals = [
+                        {"value": v, "itemStyle": {"color": color_for[n]}}
+                        for n, v in ranked
+                    ]
+                    ui.echart({
+                        "backgroundColor": _CHART_BG,
+                        "title": {
+                            "text": trait_name,
+                            "left": 8,
+                            "top": 4,
+                            "textStyle": {
+                                "color": _CHART_TEXT,
+                                "fontSize": 11,
+                                "fontWeight": "600",
+                            },
+                        },
+                        "tooltip": {
+                            **_CHART_TOOLTIP,
+                            "trigger": "axis",
+                            "axisPointer": {"type": "shadow"},
+                        },
+                        "grid": {"top": 28, "bottom": 18, "left": 90, "right": 30},
+                        "xAxis": {
+                            "type": "value",
+                            "min": 0, "max": 1,
+                            "axisLabel": {"color": _CHART_TEXT, "fontSize": 9},
+                            "splitLine": {"lineStyle": {"color": "#e2e8f0"}},
+                        },
+                        "yAxis": {
+                            "type": "category",
+                            "data": cats,
+                            "inverse": True,
+                            "axisTick": {"show": False},
+                            "axisLine": {"lineStyle": {"color": "#cbd5e1"}},
+                            "axisLabel": {
+                                "color": _CHART_TEXT,
+                                "fontSize": 10,
+                                "width": 80,
+                                "overflow": "truncate",
+                            },
+                        },
+                        "series": [{
+                            "type": "bar",
+                            "data": vals,
+                            "barWidth": 12,
+                            "label": {
+                                "show": True,
+                                "position": "right",
+                                "formatter": "{c}",
+                                "fontSize": 9,
+                                "color": _CHART_TEXT,
+                            },
+                        }],
+                    }).classes("w-full").style(
+                        f"height:{max(80, 22 * len(cats) + 50)}px"
+                    )
+    return container
+
+
 # =====================================================================
 # NEW RENDERERS — added for the ECharts gallery-inspired charts.
 # =====================================================================
@@ -2289,78 +3256,22 @@ def render_emotional_gauges_graded(
     scores: dict[str, float],
     *,
     height: str = "220px",
-) -> ui.echart:
+    selected: str | None = None,
+) -> ui.element:
     """Graded variant of ``render_emotional_gauges``.
 
     Replaces the bare 0–1 detail with a qualitative label
     (``very low`` → ``very high``) so non-numeric users get an
     immediate qualitative sense without losing the precise value.
+    Each metric is rendered as its own gauge in a CSS grid so labels
+    never overlap.
     """
     if not scores:
         return ui.label("No scores available.").classes("text-grey text-caption")
-
-    gauge_data = [
-        {"value": round(val, 2), "name": name}
-        for name, val in scores.items()
-    ]
-
-    return ui.echart({
-        "backgroundColor": _CHART_BG,
-        "series": [{
-            "type": "gauge",
-            "startAngle": 200,
-            "endAngle": -20,
-            "min": 0,
-            "max": 1,
-            "splitNumber": 5,
-            "data": gauge_data,
-            "axisLine": {
-                "lineStyle": {
-                    "width": 18,
-                    "color": [
-                        [0.2, "#94a3b8"],
-                        [0.4, "#6FBF3A"],
-                        [0.6, "#F5B43C"],
-                        [0.8, "#FF8C42"],
-                        [1, "#D8334A"],
-                    ],
-                },
-            },
-            "pointer": {"width": 4},
-            "axisTick": {"lineStyle": {"color": "#777"}},
-            "splitLine": {"lineStyle": {"color": "#777"}},
-            "axisLabel": {
-                "color": _CHART_TEXT,
-                "fontSize": 9,
-                ":formatter": (
-                    "function (v) {"
-                    "  if (v <= 0.2) return 'very low';"
-                    "  if (v <= 0.4) return 'low';"
-                    "  if (v <= 0.6) return 'mod';"
-                    "  if (v <= 0.8) return 'high';"
-                    "  return 'v.high';"
-                    "}"
-                ),
-            },
-            "detail": {
-                "valueAnimation": True,
-                "color": _CHART_TEXT,
-                "fontSize": 12,
-                ":formatter": (
-                    "function (v) {"
-                    "  var label;"
-                    "  if (v <= 0.2) label = 'very low';"
-                    "  else if (v <= 0.4) label = 'low';"
-                    "  else if (v <= 0.6) label = 'moderate';"
-                    "  else if (v <= 0.8) label = 'high';"
-                    "  else label = 'very high';"
-                    "  return label + '\\n' + v.toFixed(2);"
-                    "}"
-                ),
-            },
-            "title": {"color": _CHART_TEXT, "fontSize": 11},
-        }],
-    }).classes("w-full").style(f"height:{height}")
+    items = list(scores.items())
+    return _render_gauge_grid(
+        items, height=height, selected=selected, graded=True,
+    )
 
 
 # ── #18 Audit pass-rate pictorial ─────────────────────────────────

@@ -298,8 +298,13 @@ def build_project_dialog(state: AppState) -> ui.dialog:
                             ws = state.from_json(snap.world_state_json)
                             state.project_id = pid
                             state.project_name = pname
-                            state.load_world_state(ws)
-                            state.current_version_row_id = snap.id
+                            # ``load_db_version`` resets cursors + emits
+                            # WORLD_STATE_CHANGED / VERSION_CHANGED in lockstep
+                            # so every panel snaps to the new project cleanly.
+                            state.load_db_version(
+                                ws, snap.id, version_number=snap.version,
+                            )
+                            state.emit(StateEvent.PROJECT_LOADED, project_id=pid)
                             ui.notify(f"Loaded {pname} (v{snap.version})")
                             dialog.close()
 
@@ -376,8 +381,9 @@ def build_version_dialog(state: AppState) -> ui.dialog:
                                     ui.notify("Version not found", type="warning")
                                     return
                                 ws = state.from_json(ver.world_state_json)
-                                state.load_world_state(ws)
-                                state.current_version_row_id = ver.id
+                                state.load_db_version(
+                                    ws, ver.id, version_number=v,
+                                )
                                 ui.notify(f"Loaded v{v}")
 
                             ui.button("Load", on_click=_load_version).props(

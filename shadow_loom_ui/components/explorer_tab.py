@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 from nicegui import ui
 
 from shadow_loom_ui.state import AppState, StateEvent
-from shadow_loom_ui.viz import render_trait_radar
+from shadow_loom_ui.viz import render_trait_radar, with_expand
 from shadow_loom_ui.viz_helpers import ws_stats
 
 if TYPE_CHECKING:
@@ -278,7 +278,11 @@ def _inspect_entity(ws: "WorldStateV1", eid: str) -> None:
             ).props("dense")
 
     if ent.traits:
-        render_trait_radar(eid, ws, height="260px")
+        with_expand(
+            lambda h, e=eid: render_trait_radar(e, ws, height=h),
+            title=f"Trait radar — {ent.name}",
+            height="260px",
+        )
 
     if ent.constants:
         ui.label("Constants").classes(

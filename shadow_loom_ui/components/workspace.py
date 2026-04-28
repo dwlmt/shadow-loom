@@ -222,6 +222,17 @@ def build_workspace(state: AppState, project_id: int) -> None:
                     for key, icon_name, label in _TABS:
                         ui.tab(key, label=label, icon=icon_name)
 
+                # Track which top-level tab is visible so component
+                # panels can skip refreshing when they're off-screen.
+                state.set_active_path("story")
+
+                def _on_top_tab(e):
+                    val = getattr(e, "args", None)
+                    if isinstance(val, str):
+                        state.set_active_path(val)
+
+                tabs.on("update:model-value", _on_top_tab)
+
                 # Tab panels
                 with ui.tab_panels(tabs, value="story").classes(
                     "w-full flex-grow bg-slate-50"

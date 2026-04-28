@@ -55,6 +55,12 @@ class StateEvent(Enum):
     TASKS_CHANGED = "tasks_changed"
     FABULA_CURSOR_CHANGED = "fabula_cursor_changed"
     SYUZHET_CURSOR_CHANGED = "syuzhet_cursor_changed"
+    ACTIVE_PATH_CHANGED = "active_path_changed"
+
+
+# Debounce window (seconds) for cursor emit fan-out. Coalesces bursty
+# slider drags / keyboard repeats so subscribers don't see every tick.
+_CURSOR_DEBOUNCE_S = 0.12
 
 
 @dataclass
@@ -152,6 +158,19 @@ class AppState:
     # us cancel everything cleanly on session shutdown.
     _async_tasks: "set[asyncio.Task]" = field(default_factory=set)
 
+    # Per-panel task slots: each panel id maps to its in-flight refresh
+    # task. Spawning a new task for a panel cancels the previous one,
+    # so rapid cursor scrubs collapse to the latest render only.
+    _panel_tasks: "Dict[str, asyncio.Task]" = field(default_factory=dict)
+
+    # Debounce timers for cursor emits (one per axis).
+    _cursor_emit_tasks: "Dict[str, asyncio.Task]" = field(default_factory=dict)
+
+    # Active tab path, e.g. ``"causality.affective"``. Panels gate
+    # their refreshes on this so off-screen tabs don't burn CPU on
+    # every cursor / world-state change.
+    active_path: str = ""
+
     # Event bus: multiple listeners per event
     _listeners: Dict[StateEvent, List[Callable]] = field(default_factory=dict)
 
@@ -176,7 +195,25 @@ class AppState:
         subsequent emission. Other exceptions are logged but the
         listener is kept registered — only dead-client failures are
         treated as terminal.
+
+        For :data:`StateEvent.WORLD_STATE_CHANGED` the snapshot and
+        physics caches in :mod:`shadow_loom_ui.viz_helpers` are
+        invalidated *before* listeners run, so every panel sees fresh
+        data without each one having to remember to call
+        ``invalidate_snapshot_cache``.
         """
+        if event == StateEvent.WORLD_STATE_CHANGED:
+            try:
+                from shadow_loom_ui.viz_helpers import (
+                    invalidate_physics_trajectory_cache,
+                    invalidate_snapshot_cache,
+                )
+                invalidate_snapshot_cache()
+                invalidate_physics_trajectory_cache()
+            except Exception:
+                logger.debug(
+                    "[AppState] cache invalidation failed", exc_info=True,
+                )
         listeners = self._listeners.get(event, [])
         dead: list[Callable] = []
         for cb in list(listeners):
@@ -678,8 +715,46 @@ class AppState:
             raise ValueError("No versioned model to rollback.")
         self.versioned_model = self.versioned_model.rollback(version)
         self.world_state = self.versioned_model.current
+        # A version swap repositions the world; previously-active
+        # cursors point into a different timeline and would render
+        # garbage on the new one. Reset both so every time-aware panel
+        # snaps back to "live" until the user scrubs again.
+        self.fabula_cursor = None
+        self.syuzhet_cursor = None
         self.emit(StateEvent.WORLD_STATE_CHANGED)
+        self.emit(StateEvent.FABULA_CURSOR_CHANGED, cursor=None)
+        self.emit(StateEvent.SYUZHET_CURSOR_CHANGED, cursor=None)
         self.emit(StateEvent.VERSION_CHANGED, version=version)
+
+    def load_db_version(
+        self,
+        ws: WorldStateV1,
+        version_row_id: int,
+        version_number: int | None = None,
+    ) -> None:
+        """Replace the live world with a DB-loaded version snapshot.
+
+        Use this from version-load UI paths (sidebar, dialogs, story
+        re-ingest) instead of writing ``world_state``/
+        ``current_version_row_id`` directly. Centralising the swap
+        keeps three invariants intact:
+
+        * cursors are reset so we don't render the new world through
+          the previous version's timeline;
+        * ``WORLD_STATE_CHANGED`` and ``VERSION_CHANGED`` fire in
+          lockstep so subscribers (Story / Audit / Sidebar) update
+          atomically;
+        * snapshot/physics caches are flushed via the existing
+          ``WORLD_STATE_CHANGED`` invalidation hook.
+        """
+        self.fabula_cursor = None
+        self.syuzhet_cursor = None
+        self.load_world_state(ws)
+        self.current_version_row_id = version_row_id
+        self.emit(StateEvent.FABULA_CURSOR_CHANGED, cursor=None)
+        self.emit(StateEvent.SYUZHET_CURSOR_CHANGED, cursor=None)
+        if version_number is not None:
+            self.emit(StateEvent.VERSION_CHANGED, version=version_number)
 
     def to_json(self) -> str:
         """Serialize the current world state to JSON for persistence."""
@@ -692,6 +767,114 @@ class AppState:
         self.selected_node_id = node_id
         self.selected_node_type = node_type
         self.emit(StateEvent.NODE_SELECTED, node_id=node_id, node_type=node_type)
+
+    def set_fabula_cursor(self, t: int | None, *, immediate: bool = False) -> None:
+        """Set the global fabula cursor (None = live).
+
+        The cursor field updates immediately (so any synchronous
+        reader sees the latest value), but the
+        :data:`StateEvent.FABULA_CURSOR_CHANGED` emit is debounced by
+        ``_CURSOR_DEBOUNCE_S`` to coalesce bursty drags / keyboard
+        repeats into a single fan-out. Pass ``immediate=True`` to
+        bypass the debounce (e.g. on programmatic hydration).
+        """
+        if self.fabula_cursor == t:
+            return
+        self.fabula_cursor = t
+        self._schedule_cursor_emit(
+            "fabula", StateEvent.FABULA_CURSOR_CHANGED, t,
+            immediate=immediate,
+        )
+
+    def set_syuzhet_cursor(self, s: int | None, *, immediate: bool = False) -> None:
+        """Set the global syuzhet cursor (None = live). Debounced; see
+        :meth:`set_fabula_cursor`."""
+        if self.syuzhet_cursor == s:
+            return
+        self.syuzhet_cursor = s
+        self._schedule_cursor_emit(
+            "syuzhet", StateEvent.SYUZHET_CURSOR_CHANGED, s,
+            immediate=immediate,
+        )
+
+    def _schedule_cursor_emit(
+        self, axis: str, event: "StateEvent", value: int | None,
+        *, immediate: bool,
+    ) -> None:
+        prev = self._cursor_emit_tasks.pop(axis, None)
+        if prev is not None and not prev.done():
+            prev.cancel()
+        if immediate:
+            self.emit(event, cursor=value)
+            return
+
+        # Probe for a running loop *before* creating the coroutine; if
+        # there is no loop (e.g. in unit tests) we emit synchronously
+        # and never instantiate ``_delayed()`` \u2014 avoids the
+        # ``coroutine was never awaited`` RuntimeWarning.
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            self.emit(event, cursor=value)
+            return
+
+        async def _delayed():
+            try:
+                await asyncio.sleep(_CURSOR_DEBOUNCE_S)
+            except asyncio.CancelledError:
+                return
+            self.emit(event, cursor=value)
+
+        task = asyncio.create_task(_delayed(), name=f"cursor-{axis}")
+        self._cursor_emit_tasks[axis] = task
+        self._async_tasks.add(task)
+        task.add_done_callback(self._async_tasks.discard)
+
+    def set_active_path(self, path: str) -> None:
+        """Record the currently visible tab path (e.g. ``"causality.affective"``).
+
+        Emits :data:`StateEvent.ACTIVE_PATH_CHANGED` so panels that
+        deferred work while hidden can refresh exactly once on
+        becoming visible.
+        """
+        if self.active_path == path:
+            return
+        self.active_path = path
+        self.emit(StateEvent.ACTIVE_PATH_CHANGED, path=path)
+
+    def is_path_visible(self, path: str) -> bool:
+        """True iff the given dotted tab path is the active one (or its
+        parent). An empty ``active_path`` (initial state) is treated as
+        visible so first-paint isn't deferred."""
+        if not self.active_path:
+            return True
+        return self.active_path == path or self.active_path.startswith(path + ".")
+
+    def spawn_panel_task(
+        self, panel_id: str, coro, *, name: str | None = None,
+    ) -> "asyncio.Task":
+        """Schedule ``coro`` for a named panel, cancelling any prior
+        in-flight task for the same panel id.
+
+        Use this for slider/cursor-driven refreshes so rapid scrubs
+        collapse to the latest render only — the previous half-built
+        snapshot is cancelled before the next one starts.
+        """
+        prev = self._panel_tasks.pop(panel_id, None)
+        if prev is not None and not prev.done():
+            prev.cancel()
+        task = asyncio.create_task(coro, name=name or f"panel:{panel_id}")
+        self._panel_tasks[panel_id] = task
+        self._async_tasks.add(task)
+
+        def _cleanup(t: asyncio.Task) -> None:
+            self._async_tasks.discard(t)
+            # Only remove from the slot if we're still the latest task.
+            if self._panel_tasks.get(panel_id) is t:
+                self._panel_tasks.pop(panel_id, None)
+
+        task.add_done_callback(_cleanup)
+        return task
 
     @staticmethod
     def from_json(data: str) -> WorldStateV1:

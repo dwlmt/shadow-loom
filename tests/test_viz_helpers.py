@@ -267,3 +267,122 @@ def test_trait_stats_rows_quartile_monotonic():
     for r in rows:
         assert r["min"] <= r["q1"] <= r["median"] <= r["q3"] <= r["max"]
         assert r["outliers"] >= 0
+
+
+# ── Engine-grade affective scores (suspense / surprise / dramatic_irony) ──
+
+def test_compute_affective_scores_no_entities_keeps_heuristic_only():
+    """Backward-compat: omitting entity_ids must not call DirectiveAssembly."""
+    from shadow_loom_ui.viz_helpers import compute_affective_scores
+
+    scores = compute_affective_scores(macbeth_ws)
+    # Engine-grade structural keys should NOT appear without entity_ids.
+    assert "suspense" not in scores
+    assert "surprise" not in scores
+    assert "dramatic_irony" not in scores
+    # Heuristic keys still present.
+    assert "narrative_tension" in scores or "causal_density" in scores
+
+
+def test_compute_affective_scores_with_entities_adds_engine_metrics():
+    """When entity_ids are provided, the four engine metrics appear."""
+    from shadow_loom_ui.viz_helpers import (
+        _top_entity_ids_by_event_degree,
+        compute_affective_scores,
+    )
+
+    eids = _top_entity_ids_by_event_degree(macbeth_ws, limit=10)
+    assert eids, "macbeth fixture should have entities"
+    scores = compute_affective_scores(macbeth_ws, entity_ids=eids)
+    for key in ("mystery", "dramatic_irony", "suspense", "surprise"):
+        assert key in scores, f"missing engine metric: {key}"
+        assert 0.0 <= scores[key] <= 1.0
+
+
+def test_affective_timeseries_syuzhet_returns_engine_curves():
+    from shadow_loom_ui.viz_helpers import (
+        _top_entity_ids_by_event_degree,
+        affective_timeseries_syuzhet,
+    )
+
+    eids = _top_entity_ids_by_event_degree(macbeth_ws, limit=10)
+    indices, series = affective_timeseries_syuzhet(
+        macbeth_ws, samples=4, entity_ids=eids,
+    )
+    assert len(indices) >= 2
+    # Suspense / surprise should be sampled and aligned to indices.
+    for key in ("suspense", "surprise"):
+        assert key in series
+        assert len(series[key]) == len(indices)
+
+
+# ── Snapshot cache hygiene (revision-stamped keys) ───────────────────
+
+def test_invalidate_snapshot_cache_bumps_revision_and_invalidates():
+    """A cache invalidation must drop entries *and* bump the revision so a
+    stale read against a recycled ``id(ws)`` cannot succeed."""
+    from shadow_loom_ui import viz_helpers as vh
+
+    snap = vh.snapshot_world_at(macbeth_ws, fabula_time_bounds(macbeth_ws)[0])
+    # Cache was populated by the call above.
+    assert vh._SNAPSHOT_CACHE, "snapshot_world_at should populate the cache"
+    pre_rev = vh._SNAPSHOT_REVISION
+    vh.invalidate_snapshot_cache()
+    assert not vh._SNAPSHOT_CACHE
+    assert vh._SNAPSHOT_REVISION == pre_rev + 1
+    # Direct lookup with the old key shape (no revision) cannot succeed.
+    assert vh._snapshot_cache_get(macbeth_ws, 0) is None
+    # And the snapshot still works post-invalidation.
+    snap2 = vh.snapshot_world_at(
+        macbeth_ws, fabula_time_bounds(macbeth_ws)[0],
+    )
+    assert snap2 is not None
+    # Belt-and-braces: keep a reference so ``snap`` isn't optimised out.
+    assert snap is not None
+
+
+# ── Cursor plumbing regression guards ───────────────────────────────
+
+def test_appstate_set_fabula_cursor_emits_event_once():
+    """Slider plumbing relies on ``set_fabula_cursor`` emitting exactly one
+    ``FABULA_CURSOR_CHANGED`` per distinct value and zero for repeats."""
+    from shadow_loom_ui.state import AppState, StateEvent
+
+    state = AppState()
+    received: list[int | None] = []
+    state.on(
+        StateEvent.FABULA_CURSOR_CHANGED,
+        lambda **kw: received.append(kw.get("cursor")),
+    )
+
+    state.set_fabula_cursor(5)
+    state.set_fabula_cursor(5)  # de-duplicated
+    state.set_fabula_cursor(None)
+    state.set_syuzhet_cursor(3)  # different event, must not appear
+    assert received == [5, None]
+
+
+def test_world_tab_routes_slider_through_setter():
+    """Regression guard: ``world_tab._on_slider_change`` and ``_set_live``
+    must call the official ``state.set_fabula_cursor`` API instead of
+    writing ``state.fabula_cursor`` directly. Direct writes bypass the
+    event bus and desync every other time-aware panel."""
+    from pathlib import Path
+
+    src = Path(
+        "shadow_loom_ui/components/world_tab.py"
+    ).read_text(encoding="utf-8")
+    assert "state.set_fabula_cursor(" in src, (
+        "world_tab must route slider changes through state.set_fabula_cursor"
+    )
+    # No bare attribute write to ``state.fabula_cursor`` (would bypass the bus).
+    import re
+
+    assign_pattern = re.compile(r"\bstate\.fabula_cursor\s*=(?!=)")
+    for line in src.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        assert not assign_pattern.search(stripped), (
+            f"world_tab must not assign state.fabula_cursor directly: {line!r}"
+        )

@@ -231,8 +231,11 @@ def _start_reingest(state: AppState, edited_text: str) -> None:
             )
 
             state.raw_text = edited_text
-            state.load_world_state(ws)
-            state.current_version_row_id = new_ver.id
+            # Atomic version swap: resets cursors + emits the matching
+            # WORLD_STATE_CHANGED / VERSION_CHANGED so every panel
+            # picks up the freshly re-ingested world without scrubbing
+            # the previous version's cursor onto it.
+            state.load_db_version(ws, new_ver.id, version_number=new_ver.version)
             # Mirror into the active-version pointer so MCP defaults
             # to the freshly re-ingested version.
             if user_id is not None:
@@ -242,7 +245,6 @@ def _start_reingest(state: AppState, edited_text: str) -> None:
                     logger.exception(
                         "Failed to update active-version pointer after re-ingest"
                     )
-            state.emit(StateEvent.VERSION_CHANGED, version=new_ver.version)
 
             summary = (
                 f"v{new_ver.version}: {len(ws.entities)} entities, "

@@ -15,7 +15,12 @@ from typing import TYPE_CHECKING
 from nicegui import ui
 
 from shadow_loom_ui.state import AppState, NLQueryResult, StateEvent
-from shadow_loom_ui.viz import render_emotional_gauges, render_audit_passrate_pictorial
+from shadow_loom_ui.task_helpers import run_query_as_task
+from shadow_loom_ui.viz import (
+    render_audit_passrate_pictorial,
+    render_emotional_gauges,
+    with_expand,
+)
 from shadow_loom_ui.viz_helpers import audit_passrate_data
 
 if TYPE_CHECKING:
@@ -84,15 +89,20 @@ def build_audit_tab(state: AppState) -> None:
                 try:
                     from shadow_loom.query_models import EvaluationQuery
                     query = EvaluationQuery()
-                    result = await asyncio.to_thread(
-                        state.run_structured_query, query,
+                    result, _task = await run_query_as_task(
+                        state,
+                        label="Full-story evaluation",
+                        kind="evaluate",
+                        runner=lambda: asyncio.to_thread(
+                            state.run_structured_query, query,
+                        ),
+                        summary_fn=lambda r: (r.summary if r else "") or "Done",
                     )
                     eval_status.set_text("")
                     _render_evaluation_result(eval_container, result)
                 except Exception as e:
                     logger.exception("Evaluation failed")
                     eval_status.set_text(f"Error: {e}")
-                    ui.notify(f"Evaluation failed: {e}", type="negative")
 
             ui.button(
                 "Run Evaluation", icon="play_arrow", on_click=_run_evaluation
@@ -210,7 +220,13 @@ def _render_scorecard(container, eval_result) -> None:
                 if hasattr(causal, "cognitive_plausibility_score"):
                     scores["Plausibility"] = causal.cognitive_plausibility_score
                 if scores:
-                    render_emotional_gauges(scores, height="150px")
+                    with_expand(
+                        lambda h, s=scores: render_emotional_gauges(
+                            s, height=h
+                        ),
+                        title="Causal metrics",
+                        height="150px",
+                    )
 
                 # Miracle steps
                 miracles = getattr(causal, "miracle_steps_detected", [])
@@ -238,7 +254,13 @@ def _render_scorecard(container, eval_result) -> None:
                 if hasattr(affective, "affective_loss_mse"):
                     scores["Affective Loss"] = affective.affective_loss_mse
                 if scores:
-                    render_emotional_gauges(scores, height="150px")
+                    with_expand(
+                        lambda h, s=scores: render_emotional_gauges(
+                            s, height=h
+                        ),
+                        title="Affective metrics",
+                        height="150px",
+                    )
 
                 if hasattr(affective, "kl_divergence_prediction_error"):
                     ui.label(
@@ -341,7 +363,15 @@ def _render_query_audit_entry(index: int, result: NLQueryResult) -> None:
                         })
 
                     if history_rows:
-                        render_audit_passrate_pictorial(history_rows, height="220px")
+                        with_expand(
+                            lambda h, hr=history_rows: (
+                                render_audit_passrate_pictorial(
+                                    hr, height=h
+                                )
+                            ),
+                            title="Audit pass-rate per iteration",
+                            height="220px",
+                        )
                         _, _, table_rows = audit_passrate_data(history_rows)
                         with ui.expansion(
                             "Pass-rate table", icon="table_view",

@@ -7,6 +7,7 @@ No NiceGUI imports — this module is purely data-oriented.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable, Iterable, Optional
 
 from shadow_loom.models import (
@@ -15,6 +16,198 @@ from shadow_loom.models import (
     reconstruct_entity_at,
     reconstruct_world_trait_at,
 )
+
+logger = logging.getLogger(__name__)
+
+
+# ── Causal-physics-aware state reconstruction ─────────────────────
+#
+# The model-level ``reconstruct_*_at`` functions in ``shadow_loom.models``
+# only replay authored ``state_timeline`` snapshots. The helpers below
+# layer ``CausalEdge`` mutations on top so every time-evolution view in
+# the UI reflects how the causal graph actually moves traits and world
+# magnitudes — using snapshots as authoritative overrides when present.
+
+def reconstruct_entity_with_causal(
+    ws: WorldStateV1,
+    entity_id: str,
+    fabula_time: int,
+) -> dict:
+    """Reconstruct an entity at ``fabula_time`` using both causal physics
+    and authored snapshots.
+
+    1. Seed traits from ``Entity.traits`` (pre-story baseline).
+    2. Replay every ``mutation`` :class:`CausalEdge` whose ``target_id``
+       is this entity and whose ``fabula_time <= fabula_time``,
+       accumulating signed ``trait_delta`` per ``trait_target`` (clamped
+       to ``[-1, 1]``).
+    3. Apply the model-level ``reconstruct_entity_at`` snapshot replay
+       on top — explicit snapshots override running causal values at
+       their tick (status, location, beliefs, and any trait values).
+
+    Returns the same shape as :func:`reconstruct_entity_at`.
+    """
+    ent = ws.entities.get(entity_id)
+    if ent is None:
+        return {"traits": {}, "beliefs": [], "status": "healthy", "location_id": ""}
+
+    # Causal replay
+    running: dict[str, dict] = {
+        k: {"value": v.value, "inertia": v.inertia}
+        for k, v in ent.traits.items()
+    }
+    mutations = sorted(
+        (
+            ce for ce in ws.causal_topology
+            if ce.causality_type == "mutation"
+            and ce.target_id == entity_id
+            and ce.trait_target
+            and ce.trait_delta is not None
+            and ce.fabula_time <= fabula_time
+        ),
+        key=lambda c: c.fabula_time,
+    )
+    for ce in mutations:
+        cur = running.get(ce.trait_target, {"value": 0.0, "inertia": 0.5})
+        new_val = max(-1.0, min(1.0, cur["value"] + (ce.trait_delta or 0.0)))
+        running[ce.trait_target] = {"value": new_val, "inertia": cur["inertia"]}
+
+    # Snapshot overlay (authoritative)
+    snap = reconstruct_entity_at(ent, fabula_time)
+    for tn, tv in snap.get("traits", {}).items():
+        if tn in ent.traits or tn in running:
+            # Snapshots take precedence at their tick — replace running
+            # value with the authored one so any later causal edges
+            # accumulate from the corrected base on subsequent ticks.
+            running[tn] = tv if isinstance(tv, dict) else {"value": float(tv), "inertia": 0.5}
+
+    return {
+        "traits": running,
+        "beliefs": snap["beliefs"],
+        "status": snap["status"],
+        "location_id": snap["location_id"],
+    }
+
+
+def reconstruct_world_trait_with_causal(
+    ws: WorldStateV1,
+    world_id: str,
+    fabula_time: int,
+) -> dict:
+    """Reconstruct a :class:`GlobalTrait` at ``fabula_time`` using both
+    causal physics and authored snapshots.
+
+    World traits can be moved by ``mutation`` causal edges (Event →
+    WORLD_*, allowed by :class:`CausalEdge`'s validator). We replay
+    those signed ``trait_delta`` values onto the baseline ``magnitude``,
+    then let any :class:`WorldTraitSnapshot` override at its tick.
+
+    Returns the same shape as :func:`reconstruct_world_trait_at`.
+    """
+    wt = ws.world_traits.get(world_id)
+    if wt is None:
+        return {"magnitude": {"value": 0.0, "inertia": 0.0}, "description": ""}
+
+    value = wt.magnitude.value
+    inertia = wt.magnitude.inertia
+    mutations = sorted(
+        (
+            ce for ce in ws.causal_topology
+            if ce.causality_type == "mutation"
+            and ce.target_id == world_id
+            and ce.trait_delta is not None
+            and ce.fabula_time <= fabula_time
+        ),
+        key=lambda c: c.fabula_time,
+    )
+    for ce in mutations:
+        value = max(0.0, min(1.0, value + (ce.trait_delta or 0.0)))
+
+    snap = reconstruct_world_trait_at(wt, fabula_time)
+    # Snapshot magnitude wins when explicitly set.
+    snap_mag = snap.get("magnitude") or {}
+    if snap_mag and (
+        snap_mag.get("value") != wt.magnitude.value
+        or snap_mag.get("inertia") != wt.magnitude.inertia
+    ):
+        value = snap_mag.get("value", value)
+        inertia = snap_mag.get("inertia", inertia)
+
+    return {
+        "magnitude": {"value": value, "inertia": inertia},
+        "description": snap.get("description", wt.description),
+    }
+
+
+def reconstruct_relationship_with_causal(
+    ws: WorldStateV1,
+    source_entity_id: str,
+    target_entity_id: str,
+    fabula_time: int,
+) -> dict | None:
+    """Reconstruct relationship metrics for ``(source, target)`` at ``t``.
+
+    Walks all ``mutation_social`` causal edges that target this dyad
+    (in either direction, since :class:`RelationshipEdge` is logically
+    undirected for affinity / fear / power_dynamic), summing their
+    signed ``trait_delta`` per metric on top of the edge's baseline
+    values.
+
+    Returns ``None`` if no :class:`RelationshipEdge` exists for the
+    pair, otherwise a dict matching the shape of a serialised edge
+    with reconstructed ``affinity``, ``fear``, ``power_dynamic``.
+
+    NB: clamping is per-metric — affinity/power_dynamic in [-1, 1],
+    fear in [0, 1] — matching the model documentation.
+    """
+    base = next(
+        (
+            r for r in ws.social_topology
+            if (r.source_entity_id == source_entity_id
+                and r.target_entity_id == target_entity_id)
+            or (r.source_entity_id == target_entity_id
+                and r.target_entity_id == source_entity_id)
+        ),
+        None,
+    )
+    if base is None:
+        return None
+
+    affinity = base.affinity
+    fear = base.fear
+    power = base.power_dynamic
+
+    # Only count mutations established at or before the edge's own
+    # last_updated_fabula — later mutations belong to future state.
+    cutoff = min(fabula_time, base.last_updated_fabula or fabula_time)
+    pair = {source_entity_id, target_entity_id}
+    mutations = sorted(
+        (
+            ce for ce in ws.causal_topology
+            if ce.causality_type == "mutation_social"
+            and ce.target_id in pair
+            and ce.trait_target
+            and ce.trait_delta is not None
+            and ce.fabula_time <= cutoff
+        ),
+        key=lambda c: c.fabula_time,
+    )
+    for ce in mutations:
+        delta = float(ce.trait_delta or 0.0)
+        metric = (ce.trait_target or "").lower()
+        if metric == "affinity":
+            affinity = max(-1.0, min(1.0, affinity + delta))
+        elif metric == "fear":
+            fear = max(0.0, min(1.0, fear + delta))
+        elif metric in ("power_dynamic", "power"):
+            power = max(-1.0, min(1.0, power + delta))
+
+    out = base.model_dump()
+    out["affinity"] = affinity
+    out["fear"] = fear
+    out["power_dynamic"] = power
+    return out
+
 
 # ── Visual constants ────────────────────────────────────────────────
 
@@ -614,28 +807,61 @@ def entity_state_timeline_data(
 ) -> dict:
     """Build line-chart data for an entity's trait evolution over fabula_time.
 
+    Trait values come from causal physics in conjunction with the
+    authored world model: at each sample point we call
+    :func:`reconstruct_entity_with_causal`, which seeds from
+    ``Entity.traits``, replays every ``mutation`` :class:`CausalEdge`
+    targeting the entity in fabula order, and lets any explicit
+    :class:`EntityStateSnapshot` override the running value.
+
+    Sample points are the union of all event fabula_times,
+    mutation-edge fabula_times, and snapshot fabula_times.
+
     Returns ``{"times": [...], "series": {trait_name: [values]}}``.
     """
     ent = ws.entities.get(entity_id)
     if ent is None:
         return {"times": [], "series": {}}
 
-    # Collect all fabula_times from events + entity's own state_timeline
-    times: list[int] = sorted({evt.fabula_time for evt in ws.events})
-    if not times:
+    # ── Collect mutation edges targeting this entity ──────────────
+    mutations = sorted(
+        (
+            ce for ce in ws.causal_topology
+            if ce.causality_type == "mutation"
+            and ce.target_id == entity_id
+            and ce.trait_target
+            and ce.trait_delta is not None
+        ),
+        key=lambda c: c.fabula_time,
+    )
+
+    # ── Build the universe of trait names (initial + ever-mutated) ─
+    trait_names: list[str] = list(ent.traits.keys())
+    for ce in mutations:
+        if ce.trait_target and ce.trait_target not in trait_names:
+            trait_names.append(ce.trait_target)
+
+    # ── Sample points ─────────────────────────────────────────────
+    sample_set: set[int] = {evt.fabula_time for evt in ws.events}
+    sample_set.update(ce.fabula_time for ce in mutations)
+    sample_set.update(snap.fabula_time for snap in ent.state_timeline)
+    if not sample_set:
         return {"times": [], "series": {}}
+    times = sorted(sample_set)
 
-    trait_names = list(ent.traits.keys())
-    series: dict[str, list[float]] = {t: [] for t in trait_names}
-
+    series: dict[str, list[float]] = {tn: [] for tn in trait_names}
     for t in times:
-        snapshot = reconstruct_entity_at(ent, t)
+        snap_state = reconstruct_entity_with_causal(ws, entity_id, t)
+        snap_traits = snap_state.get("traits", {}) or {}
         for tn in trait_names:
-            tv = snapshot.get("traits", {}).get(tn)
-            if tv is not None:
-                series[tn].append(round(tv["value"] if isinstance(tv, dict) else tv, 3))
+            tv = snap_traits.get(tn)
+            if tv is None:
+                # Trait not yet introduced — fall back to baseline.
+                base = ent.traits.get(tn)
+                series[tn].append(round(base.value if base else 0.0, 3))
             else:
-                series[tn].append(round(ent.traits[tn].value, 3))
+                val = tv["value"] if isinstance(tv, dict) else tv
+                series[tn].append(round(float(val), 3))
 
     return {"times": times, "series": series}
 
@@ -813,6 +1039,60 @@ def ws_to_epistemic_data(
     return ent_names, target_names, data
 
 
+def list_believers(ws: WorldStateV1) -> list[tuple[str, str, int]]:
+    """Return ``(entity_id, name, belief_count)`` for entities with beliefs.
+
+    Sorted by belief_count descending so the most epistemically active
+    characters surface first.
+    """
+    rows: list[tuple[str, str, int]] = []
+    for eid, ent in ws.entities.items():
+        if ent.beliefs:
+            rows.append((eid, ent.name, len(ent.beliefs)))
+    rows.sort(key=lambda r: (-r[2], r[1]))
+    return rows
+
+
+def ws_to_entity_belief_rows(
+    ws: WorldStateV1,
+    entity_id: str,
+) -> list[dict]:
+    """Build per-belief rows for one believer's belief panel.
+
+    Each row has ``target_name``, ``perceived_state``, ``confidence``,
+    ``inertia``, ``established`` (fabula time), and ``correct``
+    (heuristic: ``True`` iff the perceived state is consistent with the
+    target's actual current state). Used by ``render_entity_belief_chart``
+    to render a horizontal bar per belief.
+    """
+    ent = ws.entities.get(entity_id)
+    if ent is None or not ent.beliefs:
+        return []
+
+    rows: list[dict] = []
+    for b in ent.beliefs:
+        target = ws.entities.get(b.target_id)
+        if target is not None:
+            target_name = target.name
+        elif b.target_id in ws.objects:
+            target_name = ws.objects[b.target_id].name
+        elif b.target_id in ws.locations:
+            target_name = ws.locations[b.target_id].name
+        else:
+            target_name = b.target_id
+        rows.append({
+            "target_id": b.target_id,
+            "target_name": target_name,
+            "perceived_state": b.perceived_state,
+            "confidence": round(float(b.confidence), 2),
+            "inertia": round(float(b.inertia), 2),
+            "established": int(getattr(b, "established_at_fabula", 0) or 0),
+        })
+    # Sort by confidence desc so high-conviction beliefs are visually salient.
+    rows.sort(key=lambda r: (-r["confidence"], r["target_name"]))
+    return rows
+
+
 # ── Topology table rows (correct field names) ────────────────────
 
 def ws_to_causal_rows(ws: WorldStateV1) -> list[dict]:
@@ -903,7 +1183,7 @@ def ws_to_theme_river_data(
     for t in times:
         for eid in ent_ids:
             ent = ws.entities[eid]
-            snapshot = reconstruct_entity_at(ent, t)
+            snapshot = reconstruct_entity_with_causal(ws, eid, t)
             for tn in trait_names:
                 tv = snapshot.get("traits", {}).get(tn)
                 if tv is not None:
@@ -1004,6 +1284,230 @@ def ws_to_gantt_data(
                 })
 
     return actor_names, items
+
+
+# ── Entity lifelines (status / location / event ribbons) ─────────
+
+# Status colours mirror narrative weight: alive states are green-ish,
+# distress states warm, terminal states near-black.
+_STATUS_COLORS: dict[str, str] = {
+    "healthy": "#6FBF3A",
+    "injured": "#F5B43C",
+    "ill": "#E0A030",
+    "unconscious": "#3A7BD5",
+    "dead": "#1e2a3a",
+}
+
+
+def ws_to_lifeline_data(ws: WorldStateV1) -> dict:
+    """Build per-entity lifeline segments for ``render_entity_lifelines``.
+
+    Each entity gets a chronological list of ``(start, end, status,
+    location_id)`` segments derived from its ``state_timeline`` and
+    initial state. Status changes drive segment colour; location
+    changes are emitted separately as point markers so the lifeline
+    "kinks" visibly at every move.
+
+    Returns ``{"entities": [(eid, name)],
+              "segments": [{"row", "start", "end", "status",
+                            "status_color", "location_name"}],
+              "moves":    [{"row", "time", "location_name"}],
+              "events":   [{"row", "time", "event_type", "description",
+                            "event_id", "color"}],
+              "tmin": int, "tmax": int}``.
+    """
+    if not ws.entities:
+        return {
+            "entities": [], "segments": [], "moves": [],
+            "events": [], "tmin": 0, "tmax": 0,
+        }
+
+    # Time bounds from snapshots + events; fall back to a unit range.
+    times: set[int] = set()
+    for ent in ws.entities.values():
+        for snap in ent.state_timeline:
+            times.add(int(snap.fabula_time))
+    for evt in ws.events:
+        times.add(int(evt.fabula_time))
+    if not times:
+        tmin, tmax = 0, 1
+    else:
+        tmin, tmax = min(times), max(times)
+        if tmax == tmin:
+            tmax = tmin + 1
+
+    entities: list[tuple[str, str]] = [
+        (eid, ent.name) for eid, ent in ws.entities.items()
+    ]
+    row_for = {eid: i for i, (eid, _) in enumerate(entities)}
+
+    segments: list[dict] = []
+    moves: list[dict] = []
+
+    def _loc_name(lid: str | None) -> str:
+        if not lid:
+            return ""
+        loc = ws.locations.get(lid)
+        return loc.name if loc else lid
+
+    for eid, ent in ws.entities.items():
+        row = row_for[eid]
+        snaps = sorted(ent.state_timeline, key=lambda s: s.fabula_time)
+        cur_status = ent.status
+        cur_loc = ent.location_id
+        seg_start = tmin
+        # Walk snapshots, emitting a segment whenever status changes.
+        for snap in snaps:
+            t = int(snap.fabula_time)
+            new_status = snap.status if snap.status is not None else cur_status
+            new_loc = snap.location_id if snap.location_id is not None else cur_loc
+            if new_status != cur_status and t > seg_start:
+                segments.append({
+                    "row": row,
+                    "start": seg_start,
+                    "end": t,
+                    "status": cur_status,
+                    "status_color": _STATUS_COLORS.get(cur_status, "#94a3b8"),
+                    "location_name": _loc_name(cur_loc),
+                })
+                seg_start = t
+                cur_status = new_status
+            else:
+                cur_status = new_status
+            if new_loc != cur_loc:
+                moves.append({
+                    "row": row,
+                    "time": t,
+                    "location_name": _loc_name(new_loc),
+                })
+                cur_loc = new_loc
+        # Final segment to tmax.
+        if seg_start <= tmax:
+            segments.append({
+                "row": row,
+                "start": seg_start,
+                "end": tmax,
+                "status": cur_status,
+                "status_color": _STATUS_COLORS.get(cur_status, "#94a3b8"),
+                "location_name": _loc_name(cur_loc),
+            })
+
+    # Event markers per actor row.
+    events: list[dict] = []
+    for evt in sorted(ws.events, key=lambda e: e.fabula_time):
+        for aid in (evt.actor_ids or []):
+            row = row_for.get(aid)
+            if row is None:
+                continue
+            events.append({
+                "row": row,
+                "time": int(evt.fabula_time),
+                "event_type": evt.event_type,
+                "description": (evt.description or evt.id)[:80],
+                "event_id": evt.id,
+                "color": EVENT_TYPE_COLORS.get(evt.event_type, "#94a3b8"),
+            })
+
+    return {
+        "entities": entities,
+        "segments": segments,
+        "moves": moves,
+        "events": events,
+        "tmin": tmin,
+        "tmax": tmax,
+    }
+
+
+# ── Multi-entity comparison data (radar + grouped bars + ranking) ──
+
+def ws_to_comparison_data(
+    ws: WorldStateV1,
+    entity_ids: list[str] | None = None,
+    *,
+    max_traits: int = 8,
+) -> dict:
+    """Pick the most informative shared traits across selected entities
+    and return a structure that drives radar + grouped bars + ranking.
+
+    ``entity_ids=None`` (or empty) auto-picks the top entities by
+    number of traits. Trait selection prefers traits where the chosen
+    entities differ the most (max - min spread), so the comparison
+    actually highlights distinguishing axes rather than ones where
+    everyone scores the same.
+
+    Returns::
+
+        {
+          "entity_names": [str, ...],
+          "trait_names":  [str, ...],
+          "matrix":       [[float per trait, ...], per entity, ...],
+          "ranking":      [(trait_name, [(entity_name, value), ...
+                            sorted desc])]
+        }
+    """
+    all_ents = list(ws.entities.items())
+    if not all_ents:
+        return {"entity_names": [], "trait_names": [], "matrix": [], "ranking": []}
+
+    if entity_ids:
+        chosen = [(eid, ws.entities[eid]) for eid in entity_ids if eid in ws.entities]
+    else:
+        chosen = sorted(all_ents, key=lambda kv: -len(kv[1].traits))[:4]
+    if not chosen:
+        return {"entity_names": [], "trait_names": [], "matrix": [], "ranking": []}
+
+    # Universe of traits any chosen entity has.
+    trait_universe: set[str] = set()
+    for _eid, ent in chosen:
+        trait_universe |= set(ent.traits.keys())
+    if not trait_universe:
+        return {
+            "entity_names": [ent.name for _eid, ent in chosen],
+            "trait_names": [], "matrix": [], "ranking": [],
+        }
+
+    # Score each trait by (a) coverage across chosen entities and
+    # (b) value spread, so we rank "differentiating" traits highest.
+    def _score(tn: str) -> tuple[float, float]:
+        vals = []
+        for _eid, ent in chosen:
+            if tn in ent.traits:
+                vals.append(ent.traits[tn].value)
+        if not vals:
+            return (-1.0, 0.0)
+        coverage = len(vals) / len(chosen)
+        spread = max(vals) - min(vals) if len(vals) > 1 else 0.0
+        return (coverage, spread)
+
+    trait_names = sorted(
+        trait_universe,
+        key=lambda tn: (_score(tn)[0] + _score(tn)[1] * 1.5),
+        reverse=True,
+    )[:max_traits]
+    trait_names.sort()  # stable display order alphabetically
+
+    entity_names = [ent.name for _eid, ent in chosen]
+    matrix: list[list[float]] = []
+    for _eid, ent in chosen:
+        row = []
+        for tn in trait_names:
+            tv = ent.traits.get(tn)
+            row.append(round(float(tv.value), 3) if tv else 0.0)
+        matrix.append(row)
+
+    # Per-trait ranking across the chosen entities.
+    ranking: list[tuple[str, list[tuple[str, float]]]] = []
+    for j, tn in enumerate(trait_names):
+        col = [(entity_names[i], matrix[i][j]) for i in range(len(entity_names))]
+        col.sort(key=lambda kv: -kv[1])
+        ranking.append((tn, col))
+
+    return {
+        "entity_names": entity_names,
+        "trait_names": trait_names,
+        "matrix": matrix,
+        "ranking": ranking,
+    }
 
 
 # ── Propagation waterfall (causal chain impact) ──────────────────
@@ -1117,14 +1621,32 @@ def ws_to_sunburst_data(ws: WorldStateV1) -> dict:
 
 # ── Fabula timeline helpers ───────────────────────────────────────
 
-# Snapshot cache: keyed by (id(ws), t). Bounded to keep memory predictable;
-# call ``invalidate_snapshot_cache()`` whenever the WorldState changes.
-_SNAPSHOT_CACHE: "dict[tuple[int, int], WorldStateV1]" = {}
+# Snapshot cache: keyed by (id(ws), revision, t). Bounded to keep memory
+# predictable; ``invalidate_snapshot_cache()`` clears the cache *and*
+# bumps the monotonic revision so any cache key built from a stale
+# revision can never collide with a fresh one even if the same
+# ``id(ws)`` happens to be reused (Python may recycle ids of GC'd
+# WorldStateV1 instances). This is defence-in-depth: in-place
+# mutations that forget to emit ``WORLD_STATE_CHANGED`` will still
+# return stale data, but at least re-loading a different project into
+# the same memory slot can't.
+_SNAPSHOT_CACHE: "dict[tuple[int, int, int], WorldStateV1]" = {}
 _SNAPSHOT_CACHE_MAX = 64
+_SNAPSHOT_REVISION: int = 0
+
+# Affect caches — keyed on (id(ws), revision, ...). Cursor scrubbing
+# repeatedly calls compute_affective_scores and affective_timeseries
+# with the same world model; without these caches the engine scorers
+# (suspense / surprise / dramatic_irony / mystery — each O(events ·
+# entities · traits)) ran on every slider release and froze the UI.
+# Bounded to keep memory predictable.
+_AFFECT_SCORE_CACHE: "dict[tuple, dict[str, float]]" = {}
+_AFFECT_TIMESERIES_CACHE: "dict[tuple, tuple[list[int], dict[str, list[float]]]]" = {}
+_AFFECT_CACHE_MAX = 256
 
 
 def _snapshot_cache_get(ws: WorldStateV1, t: int) -> Optional[WorldStateV1]:
-    return _SNAPSHOT_CACHE.get((id(ws), t))
+    return _SNAPSHOT_CACHE.get((id(ws), _SNAPSHOT_REVISION, t))
 
 
 def _snapshot_cache_put(ws: WorldStateV1, t: int, snap: WorldStateV1) -> None:
@@ -1132,12 +1654,27 @@ def _snapshot_cache_put(ws: WorldStateV1, t: int, snap: WorldStateV1) -> None:
         # Drop an arbitrary entry — slider scrubbing is sequential so the
         # working set is small and FIFO eviction is fine.
         _SNAPSHOT_CACHE.pop(next(iter(_SNAPSHOT_CACHE)))
-    _SNAPSHOT_CACHE[(id(ws), t)] = snap
+    _SNAPSHOT_CACHE[(id(ws), _SNAPSHOT_REVISION, t)] = snap
 
 
 def invalidate_snapshot_cache() -> None:
-    """Drop all cached fabula-time snapshots (call on WORLD_STATE_CHANGED)."""
+    """Drop all cached fabula-time snapshots and bump the cache revision.
+
+    Called from :meth:`AppState.emit` for ``WORLD_STATE_CHANGED`` so
+    every panel's snapshot cache is reset whenever the world model is
+    replaced or mutated. The revision bump means that any code path
+    still holding a stale cache key (e.g. a stack frame mid-render
+    when the world flipped underneath it) is guaranteed to miss the
+    cache and recompute against the live data.
+    """
+    global _SNAPSHOT_REVISION
     _SNAPSHOT_CACHE.clear()
+    _SNAPSHOT_REVISION += 1
+    # The affect caches are keyed on the same revision, so bumping the
+    # revision logically invalidates them. We also clear them to keep
+    # memory predictable when projects are swapped frequently.
+    _AFFECT_SCORE_CACHE.clear()
+    _AFFECT_TIMESERIES_CACHE.clear()
 
 
 def fabula_time_bounds(ws: WorldStateV1) -> tuple[int, int]:
@@ -1312,6 +1849,12 @@ def world_trait_timeline_data(
 ) -> dict:
     """Build line data for a world trait's magnitude over fabula_time.
 
+    Uses :func:`reconstruct_world_trait_with_causal` so the curve
+    reflects both authored :class:`WorldTraitSnapshot` entries *and*
+    any ``mutation`` :class:`CausalEdge` whose ``target_id`` is this
+    world trait — they accumulate signed ``trait_delta`` onto the
+    baseline magnitude.
+
     Returns ``{"times": [...], "value": [...], "inertia": [...]}``.
     """
     wt = ws.world_traits.get(world_id)
@@ -1319,16 +1862,24 @@ def world_trait_timeline_data(
         return {"times": [], "value": [], "inertia": []}
 
     tmin, tmax = fabula_time_bounds(ws)
-    # Sample at every snapshot fabula_time plus the bounds.
+    # Sample at every snapshot fabula_time, every mutation-edge tick
+    # targeting this trait, plus the bounds.
     sample_times: set[int] = {tmin, tmax}
     for snap in wt.state_timeline:
         sample_times.add(snap.fabula_time)
+    for ce in ws.causal_topology:
+        if (
+            ce.causality_type == "mutation"
+            and ce.target_id == world_id
+            and ce.trait_delta is not None
+        ):
+            sample_times.add(ce.fabula_time)
     times = sorted(t for t in sample_times if tmin <= t <= tmax) or [0]
 
     values: list[float] = []
     inertias: list[float] = []
     for t in times:
-        snap = reconstruct_world_trait_at(wt, t)
+        snap = reconstruct_world_trait_with_causal(ws, world_id, t)
         mag = snap["magnitude"]
         values.append(round(mag["value"], 3))
         inertias.append(round(mag["inertia"], 3))
@@ -1347,17 +1898,31 @@ def snapshot_world_at(ws: WorldStateV1, t: int) -> WorldStateV1:
     """Return a shallow copy of ``ws`` reconstructed to fabula_time ``t``.
 
     Each :class:`Entity` has its mutable fields (traits, beliefs,
-    status, location_id) replayed via :func:`reconstruct_entity_at`,
-    each :class:`GlobalTrait` via :func:`reconstruct_world_trait_at`,
-    and the events list is filtered to those with
-    ``fabula_time <= t``.
+    status, location_id) replayed via
+    :func:`reconstruct_entity_with_causal` — i.e. baseline traits +
+    every ``mutation`` :class:`CausalEdge` up to ``t`` + authored
+    :class:`EntityStateSnapshot` overrides. Each :class:`GlobalTrait`
+    is replayed via :func:`reconstruct_world_trait_with_causal` so
+    causal edges targeting ``WORLD_*`` ids also move world magnitudes.
+    The events list is filtered to ``fabula_time <= t``.
 
-    Topology edges are kept intact since they encode structural
-    relationships, not state. ``NarrativeObject`` instances are also
-    left untouched: the model has no per-object state timeline, so
-    object ``location_id`` / ``owner_id`` always reflect the latest
-    snapshot. Renderers that show objects on a historical cursor
-    should treat object placement as approximate.
+    Topology edges are also time-sliced to mirror the canonical
+    :func:`shadow_loom.extract_graph.extract_ego_graph_from_memory`
+    rules so ego-graph / evolution views show the network *as it was*
+    at ``t`` rather than the final-frame topology:
+
+      * ``causal_topology``: ``fabula_time <= t``
+      * ``social_topology``: ``last_updated_fabula <= t`` (relationship
+        metric values reflect their last update; later-updated edges
+        are dropped, matching the ego-graph extractor)
+      * ``spatial_topology``: established by ``t`` and not yet
+        destroyed at ``t``
+      * ``information_topology``: established by ``t`` and not yet
+        terminated at ``t``
+
+    ``NarrativeObject`` instances are left untouched: the model has no
+    per-object state timeline, so object ``location_id`` / ``owner_id``
+    always reflect the latest snapshot.
 
     The returned model is suitable to re-feed into existing renderers
     without further changes.
@@ -1368,32 +1933,379 @@ def snapshot_world_at(ws: WorldStateV1, t: int) -> WorldStateV1:
 
     new = ws.model_copy(deep=True)
 
+    # Local imports avoid a top-level cycle with shadow_loom.models.
+    from shadow_loom.models import Belief, TraitVector
+
     for eid, ent in new.entities.items():
-        snap = reconstruct_entity_at(ent, t)
-        # Replay traits
-        from shadow_loom.models import TraitVector  # local import avoids cycles
+        # NB: pass the *original* ws — its causal_topology is the
+        # ground truth and identical to ``new.causal_topology`` since
+        # we just deep-copied; reading from ws keeps the helper API
+        # (which expects a ``WorldStateV1``) consistent with callers.
+        snap = reconstruct_entity_with_causal(ws, eid, t)
         ent.traits = {
             k: TraitVector(value=v["value"], inertia=v["inertia"])
             for k, v in snap["traits"].items()
         }
-        # Status / location
         ent.status = snap["status"]
         ent.location_id = snap["location_id"]
-        # Beliefs: snap returns dicts -> reuse pydantic validators
-        from shadow_loom.models import Belief
         ent.beliefs = [Belief(**b) for b in snap["beliefs"]]
 
     for wid, wt in new.world_traits.items():
-        snap = reconstruct_world_trait_at(wt, t)
-        from shadow_loom.models import TraitVector
+        snap = reconstruct_world_trait_with_causal(ws, wid, t)
         mag = snap["magnitude"]
         wt.magnitude = TraitVector(value=mag["value"], inertia=mag["inertia"])
         if snap.get("description") is not None:
             wt.description = snap["description"]
 
     new.events = [evt for evt in new.events if evt.fabula_time <= t]
+
+    # Topology time-slice (canonical rules from extract_ego_graph_from_memory).
+    new.causal_topology = [
+        ce for ce in new.causal_topology if ce.fabula_time <= t
+    ]
+    new.social_topology = [
+        rel for rel in new.social_topology if rel.last_updated_fabula <= t
+    ]
+    # Replay mutation_social causal edges so affinity / fear / power
+    # values reflect their state at ``t`` rather than the final-frame
+    # numbers stored on the edge.
+    for rel in new.social_topology:
+        snap = reconstruct_relationship_with_causal(
+            ws, rel.source_entity_id, rel.target_entity_id, t,
+        )
+        if snap is not None:
+            rel.affinity = snap.get("affinity", rel.affinity)
+            rel.fear = snap.get("fear", rel.fear)
+            rel.power_dynamic = snap.get("power_dynamic", rel.power_dynamic)
+    new.spatial_topology = [
+        se for se in new.spatial_topology
+        if se.established_at_fabula <= t
+        and (se.destroyed_at_fabula is None or se.destroyed_at_fabula > t)
+    ]
+    new.information_topology = [
+        ie for ie in new.information_topology
+        if ie.established_at_fabula <= t
+        and (ie.terminated_at_fabula is None or ie.terminated_at_fabula > t)
+    ]
+
     _snapshot_cache_put(ws, t, new)
     return new
+
+
+# ── Affective scores (single snapshot + over-time series) ─────────
+
+def _top_entity_ids_by_event_degree(
+    ws: WorldStateV1, limit: int = 20,
+) -> list[str]:
+    """Return up to ``limit`` entity IDs ranked by event participation.
+
+    Used to bound the cost of engine affective scorers (notably
+    ``compute_surprise_score`` which is O(traits × incoming edges)) on
+    large worlds. Falls back to insertion order when an entity has no
+    event participation so we still surface *something*.
+    """
+    if not ws.entities:
+        return []
+    degree: dict[str, int] = {eid: 0 for eid in ws.entities}
+    for evt in ws.events:
+        for eid in (*evt.actor_ids, *evt.target_ids):
+            if eid in degree:
+                degree[eid] += 1
+    ranked = sorted(degree.items(), key=lambda kv: (-kv[1], kv[0]))
+    return [eid for eid, _ in ranked[:max(1, limit)]]
+
+
+def _engine_structural_scores(
+    ws: WorldStateV1,
+    entity_ids: list[str],
+    syuzhet_anchor: int | None,
+) -> dict[str, float]:
+    """Run :class:`DirectiveAssembly`'s four structural affect scorers.
+
+    Returns a dict keyed by ``mystery``, ``dramatic_irony``,
+    ``suspense``, ``surprise``. Failures are swallowed (logged at
+    debug) so a single broken metric never wipes the whole gauge row.
+    """
+    out: dict[str, float] = {}
+    if not entity_ids or not ws.events:
+        return out
+    try:
+        # Local import — avoids importing the full directive-assembly
+        # graph stack at module load (it depends on networkx + the
+        # whole shadow_loom package which is heavy for unit tests).
+        from shadow_loom.directive_assembly import DirectiveAssembler
+    except Exception:  # pragma: no cover - defensive
+        logger.debug("DirectiveAssembler unavailable", exc_info=True)
+        return out
+    try:
+        assembler = DirectiveAssembler(
+            sandbox=None, ego_payload={}, world_state=ws,
+        )
+    except Exception:
+        logger.debug("DirectiveAssembler init failed", exc_info=True)
+        return out
+    metric_calls = (
+        ("mystery", assembler.compute_mystery_score),
+        ("dramatic_irony", assembler.compute_dramatic_irony_score),
+        ("suspense", assembler.compute_suspense_score),
+        ("surprise", assembler.compute_surprise_score),
+    )
+    for name, fn in metric_calls:
+        try:
+            out[name] = float(fn(entity_ids, syuzhet_anchor))
+        except Exception:
+            logger.debug("affective metric %s failed", name, exc_info=True)
+    return out
+
+
+def compute_affective_scores(
+    ws: WorldStateV1,
+    *,
+    entity_ids: list[str] | None = None,
+    syuzhet_anchor: int | None = None,
+) -> dict[str, float]:
+    """Cached wrapper around :func:`_compute_affective_scores_uncached`.
+
+    Slider scrubbing repeatedly asks for scores on the same cached
+    snapshot; recomputing the engine scorers every time froze the UI.
+    Cached on ``(id(ws), revision, entity_ids, syuzhet_anchor)`` so a
+    return visit to a previously-seen snapshot is O(1).
+    """
+    eids_key = tuple(entity_ids) if entity_ids else ()
+    cache_key = (id(ws), _SNAPSHOT_REVISION, eids_key, syuzhet_anchor)
+    cached = _AFFECT_SCORE_CACHE.get(cache_key)
+    if cached is not None:
+        return dict(cached)
+    result = _compute_affective_scores_uncached(
+        ws, entity_ids=entity_ids, syuzhet_anchor=syuzhet_anchor,
+    )
+    if len(_AFFECT_SCORE_CACHE) >= _AFFECT_CACHE_MAX:
+        _AFFECT_SCORE_CACHE.pop(next(iter(_AFFECT_SCORE_CACHE)))
+    _AFFECT_SCORE_CACHE[cache_key] = dict(result)
+    return result
+
+
+def _compute_affective_scores_uncached(
+    ws: WorldStateV1,
+    *,
+    entity_ids: list[str] | None = None,
+    syuzhet_anchor: int | None = None,
+) -> dict[str, float]:
+    """Compute basic affective/narrative scores from a world snapshot.
+
+    All scores are normalised to ``[0, 1]``. Missing source data
+    (e.g. no information topology) simply omits that key.
+
+    When ``entity_ids`` is supplied, the four engine-grade structural
+    affects from :class:`shadow_loom.directive_assembly.DirectiveAssembly`
+    are also computed and *override* the heuristic ``mystery`` key with
+    the canonical graph-walk version. ``syuzhet_anchor`` defaults to
+    "reader has seen everything" (i.e. uses the snapshot's max syuzhet
+    index) so suspense / surprise / dramatic-irony are non-zero even
+    when the caller doesn't track a separate reader cursor.
+
+    Definitions:
+      * **mystery** — (heuristic) fraction of information edges whose
+        ``discovered_at_syuzhet >= 1``. Replaced with the engine's
+        ratio of hidden causal ancestors when entity_ids are given.
+      * **dramatic_irony** — (engine, requires entity_ids) information
+        asymmetry where the reader knows more than the character.
+      * **suspense** — (engine, requires entity_ids) probabilistic
+        valence between unrevealed threat vs hope outcomes.
+      * **surprise** — (engine, requires entity_ids) KL divergence
+        between the reader's prior and the actual trait state.
+      * **narrative_tension** — composite of (a) mean negative
+        affinity magnitude, (b) mean fear, (c) fraction of recent
+        events with destructive types.
+      * **conflict** — fraction of relationships with affinity < 0.
+      * **danger** — mean fear across active relationships.
+      * **causal_density** — observed edges per event vs. an empirical
+        max of ``3``; values above ``3`` clamp to 1.0.
+    """
+    scores: dict[str, float] = {}
+    if not ws.events:
+        return scores
+
+    if ws.information_topology:
+        late = sum(
+            1 for ie in ws.information_topology
+            if ie.discovered_at_syuzhet and ie.discovered_at_syuzhet >= 1
+        )
+        scores["mystery"] = min(
+            1.0, late / max(1, len(ws.information_topology))
+        )
+
+    rels = ws.social_topology
+    if rels:
+        negative = sum(1 for r in rels if r.affinity < 0)
+        scores["conflict"] = min(1.0, negative / len(rels))
+        avg_fear = sum(r.fear for r in rels) / len(rels)
+        scores["danger"] = min(1.0, max(0.0, avg_fear))
+
+    # Composite narrative tension.
+    if rels or ws.events:
+        avg_neg_affinity = (
+            sum(max(0.0, -r.affinity) for r in rels) / len(rels)
+            if rels else 0.0
+        )
+        avg_fear_t = (
+            sum(r.fear for r in rels) / len(rels) if rels else 0.0
+        )
+        # High-force causal edges are a proxy for high-stakes mutations.
+        # ``causal_force`` is on a 0-10 scale; treat >= 7 as "high stakes".
+        if ws.causal_topology:
+            high_force = sum(
+                1 for ce in ws.causal_topology if ce.causal_force >= 7
+            )
+            high_force_share = high_force / len(ws.causal_topology)
+        else:
+            high_force_share = 0.0
+        # Weighted sum with weights summing to 1.0 — keeps result in [0, 1].
+        tension = (
+            0.40 * avg_neg_affinity
+            + 0.35 * avg_fear_t
+            + 0.25 * high_force_share
+        )
+        scores["narrative_tension"] = min(1.0, max(0.0, tension))
+
+    # Causal density: edges per event, empirical max of 3 edges/event.
+    if ws.events:
+        density = len(ws.causal_topology) / max(1, len(ws.events))
+        scores["causal_density"] = min(1.0, density / 3.0)
+
+    # Engine-grade structural affects — only computed when the caller
+    # supplies a focus set (typically the world's top-N entities). The
+    # ``mystery`` key from DirectiveAssembly takes precedence over the
+    # heuristic above because it is the one the directive-assembly
+    # optimiser actually targets.
+    if entity_ids:
+        if syuzhet_anchor is None:
+            # Default: reader has seen everything in this snapshot
+            # so suspense/surprise still reflect the full unrevealed
+            # tail rather than collapsing to zero.
+            syuzhet_anchor = max(
+                (e.syuzhet_index for e in ws.events), default=None
+            )
+        engine = _engine_structural_scores(ws, entity_ids, syuzhet_anchor)
+        scores.update(engine)
+    return scores
+
+
+def affective_timeseries(
+    ws: WorldStateV1,
+    *,
+    samples: int = 12,
+    entity_ids: list[str] | None = None,
+) -> tuple[list[int], dict[str, list[float]]]:
+    """Sample :func:`compute_affective_scores` at ``samples`` evenly-spaced
+    fabula_time cursors across the story.
+
+    Returns ``(times, series)`` where ``series`` maps each affective
+    metric name to a list of values aligned to ``times``. Snapshots
+    are taken via :func:`snapshot_world_at` so the cache is shared
+    with the slider-driven views. When ``entity_ids`` is supplied the
+    engine-grade structural affects (suspense, surprise, dramatic_irony,
+    canonical mystery) are sampled too.
+
+    The result is cached on ``(id(ws), revision, samples, entity_ids)``
+    so that scrubbing the timeline cursor — which only moves the chart's
+    needle, not the underlying data — doesn't trigger a full 12-sample
+    re-snapshot + engine rescore on every release.
+    """
+    eids_key = tuple(entity_ids) if entity_ids else ()
+    cache_key = ("fabula", id(ws), _SNAPSHOT_REVISION, int(samples), eids_key)
+    cached = _AFFECT_TIMESERIES_CACHE.get(cache_key)
+    if cached is not None:
+        times_c, series_c = cached
+        return list(times_c), {k: list(v) for k, v in series_c.items()}
+
+    tmin, tmax = fabula_time_bounds(ws)
+    if tmax <= tmin:
+        scores = compute_affective_scores(ws, entity_ids=entity_ids)
+        return [tmin], {k: [v] for k, v in scores.items()}
+
+    samples = max(2, int(samples))
+    step = max(1, (tmax - tmin) // (samples - 1))
+    times = list(range(tmin, tmax + 1, step))
+    if times[-1] != tmax:
+        times.append(tmax)
+
+    series: dict[str, list[float]] = {}
+    for i, t in enumerate(times):
+        snap = snapshot_world_at(ws, t)
+        scores = compute_affective_scores(snap, entity_ids=entity_ids)
+        # Back-pad any newly-discovered metric so its column lines up
+        # with previous time samples (missing = 0.0).
+        for k in scores:
+            if k not in series:
+                series[k] = [0.0] * i
+        # Append this sample's value (or 0.0) to every active series so
+        # all lists stay length i+1.
+        for k in series:
+            series[k].append(round(float(scores.get(k, 0.0)), 3))
+    if len(_AFFECT_TIMESERIES_CACHE) >= _AFFECT_CACHE_MAX:
+        _AFFECT_TIMESERIES_CACHE.pop(next(iter(_AFFECT_TIMESERIES_CACHE)))
+    _AFFECT_TIMESERIES_CACHE[cache_key] = (
+        list(times), {k: list(v) for k, v in series.items()},
+    )
+    return times, series
+
+
+def affective_timeseries_syuzhet(
+    ws: WorldStateV1,
+    *,
+    samples: int = 12,
+    entity_ids: list[str] | None = None,
+) -> tuple[list[int], dict[str, list[float]]]:
+    """Sample affective scores along the **syuzhet** (reader) axis.
+
+    Mirrors :func:`affective_timeseries` but anchors against
+    ``syuzhet_index`` so the resulting curves show how mystery,
+    suspense, dramatic irony and surprise rise and fall *as the reader
+    progresses through the text*. Internally each sample uses the full
+    ``ws`` and a per-sample ``syuzhet_anchor`` — the engine scorers
+    walk ``_revealed_event_ids(syuzhet_anchor)`` themselves, so we must
+    not pre-trim with ``snapshot_world_at_syuzhet`` (which would also
+    hide the unrevealed tail that suspense depends on).
+
+    Cached on the same key shape as :func:`affective_timeseries`.
+    """
+    eids_key = tuple(entity_ids) if entity_ids else ()
+    cache_key = ("syuzhet", id(ws), _SNAPSHOT_REVISION, int(samples), eids_key)
+    cached = _AFFECT_TIMESERIES_CACHE.get(cache_key)
+    if cached is not None:
+        times_c, series_c = cached
+        return list(times_c), {k: list(v) for k, v in series_c.items()}
+
+    smin, smax = syuzhet_time_bounds(ws)
+    if smax <= smin:
+        scores = compute_affective_scores(
+            ws, entity_ids=entity_ids, syuzhet_anchor=smin,
+        )
+        return [smin], {k: [v] for k, v in scores.items()}
+
+    samples = max(2, int(samples))
+    step = max(1, (smax - smin) // (samples - 1))
+    indices = list(range(smin, smax + 1, step))
+    if indices[-1] != smax:
+        indices.append(smax)
+
+    series: dict[str, list[float]] = {}
+    for i, s in enumerate(indices):
+        scores = compute_affective_scores(
+            ws, entity_ids=entity_ids, syuzhet_anchor=s,
+        )
+        for k in scores:
+            if k not in series:
+                series[k] = [0.0] * i
+        for k in series:
+            series[k].append(round(float(scores.get(k, 0.0)), 3))
+    if len(_AFFECT_TIMESERIES_CACHE) >= _AFFECT_CACHE_MAX:
+        _AFFECT_TIMESERIES_CACHE.pop(next(iter(_AFFECT_TIMESERIES_CACHE)))
+    _AFFECT_TIMESERIES_CACHE[cache_key] = (
+        list(indices), {k: list(v) for k, v in series.items()},
+    )
+    return indices, series
 
 
 # ── Calendar heatmap (event density over fabula time) ──────────────
@@ -2126,7 +3038,7 @@ def entity_to_radar_compare_data(
     snapshots: list[tuple[int, dict]] = []
     for t in sorted(set(times)):
         try:
-            snap = reconstruct_entity_at(ent, t)
+            snap = reconstruct_entity_with_causal(ws, entity_id, t)
             snapshots.append((t, snap))
             for k in snap.get("traits", {}).keys():
                 if k not in trait_names:
@@ -2300,3 +3212,146 @@ def ws_to_gantt_status_marks(
                 })
                 last_status = snap.status
     return out
+
+
+# ── Physics trajectory (scalar metrics over fabula time) ──────────
+
+# Metric keys plotted in the Physics Trajectory panel. Order is the
+# rendering legend order; values are ECharts colours.
+PHYSICS_METRIC_COLORS: dict[str, str] = {
+    "present_entities": "#3A7BD5",
+    "active_relationships": "#8E44AD",
+    "avg_affinity": "#16A085",
+    "avg_fear": "#C0392B",
+    "causal_edges_in_scope": "#E67E22",
+    "info_edges_in_scope": "#2C7BB6",
+    "spatial_edges_in_scope": "#7F8C8D",
+}
+
+
+def _physics_metrics_from_payload(payload: dict) -> dict[str, float]:
+    """Reduce a single physics payload to scalar metrics.
+
+    Handles both shapes returned by ``calculate_narrative_physics`` for
+    observation queries:
+
+      * Ego-graph payload (focus entities supplied) — uses
+        ``present_entities`` / ``relevant_*`` lists.
+      * Omniscient world dump (no focus entities) — uses
+        ``entities`` and the full topology lists.
+    """
+    if "present_entities" in payload or "relevant_relationships" in payload:
+        rels = payload.get("relevant_relationships", []) or []
+        present = payload.get("present_entities", []) or []
+        causal = payload.get("relevant_causal_edges", []) or []
+        info = payload.get("relevant_information_edges", []) or []
+        spatial = payload.get("relevant_spatial_edges", []) or []
+    else:
+        rels = list((payload.get("social_topology") or []))
+        present = list((payload.get("entities") or {}).values()) \
+            if isinstance(payload.get("entities"), dict) \
+            else list(payload.get("entities") or [])
+        causal = payload.get("causal_topology", []) or []
+        info = payload.get("information_topology", []) or []
+        spatial = payload.get("spatial_topology", []) or []
+
+    affinities = [r.get("affinity", 0.0) for r in rels]
+    fears = [r.get("fear", 0.0) for r in rels]
+    return {
+        "present_entities": float(len(present)),
+        "active_relationships": float(len(rels)),
+        "avg_affinity": (
+            float(sum(affinities)) / len(affinities) if affinities else 0.0
+        ),
+        "avg_fear": (
+            float(sum(fears)) / len(fears) if fears else 0.0
+        ),
+        "causal_edges_in_scope": float(len(causal)),
+        "info_edges_in_scope": float(len(info)),
+        "spatial_edges_in_scope": float(len(spatial)),
+    }
+
+
+def physics_trajectory(
+    ws: WorldStateV1,
+    focus_entity_ids: list[str] | None = None,
+    *,
+    samples: int = 12,
+) -> tuple[list[int], dict[str, list[float]]]:
+    """Sample structural physics scalars at ``samples`` fabula anchors.
+
+    For each anchor the helper invokes
+    :func:`shadow_loom.narrative_physics.calculate_narrative_physics`
+    with an :class:`ObservationQuery` (no LLM, pure structural) and
+    extracts a fixed set of scalars from the resulting ego-graph
+    payload. Use this to plot a "physics over time" view in the UI
+    without re-running the full NL pipeline at each anchor.
+
+    Results are cached per ``(id(ws), focus, samples)`` and the cache
+    is cleared by :func:`invalidate_physics_trajectory_cache` (called
+    automatically by ``AppState.emit(WORLD_STATE_CHANGED)``).
+
+    Returns ``(times, series)`` where ``series`` keys are the metric
+    names listed in :data:`PHYSICS_METRIC_COLORS`.
+    """
+    samples = max(2, int(samples))
+    cache_key = (
+        id(ws), tuple(sorted(focus_entity_ids or [])), samples,
+    )
+    cached = _PHYSICS_TRAJECTORY_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    # Local imports to avoid pulling the physics engine into module
+    # import time (it transitively imports the LLM client).
+    from shadow_loom.narrative_physics import calculate_narrative_physics
+    from shadow_loom.query_models import ObservationQuery
+
+    tmin, tmax = fabula_time_bounds(ws)
+    request = ObservationQuery(focus_entity_ids=focus_entity_ids or [])
+
+    if tmax <= tmin:
+        result = calculate_narrative_physics(
+            request, ws, temporal_anchor=tmin,
+        )
+        metrics = _physics_metrics_from_payload(
+            result.get("physics_state", {}) or {}
+        )
+        out = ([tmin], {k: [v] for k, v in metrics.items()})
+        if len(_PHYSICS_TRAJECTORY_CACHE) >= _PHYSICS_TRAJECTORY_CACHE_MAX:
+            _PHYSICS_TRAJECTORY_CACHE.pop(next(iter(_PHYSICS_TRAJECTORY_CACHE)))
+        _PHYSICS_TRAJECTORY_CACHE[cache_key] = out
+        return out
+
+    step = max(1, (tmax - tmin) // (samples - 1))
+    times = list(range(tmin, tmax + 1, step))
+    if times[-1] != tmax:
+        times.append(tmax)
+
+    series: dict[str, list[float]] = {k: [] for k in PHYSICS_METRIC_COLORS}
+    for t in times:
+        result = calculate_narrative_physics(
+            request, ws, temporal_anchor=t,
+        )
+        metrics = _physics_metrics_from_payload(
+            result.get("physics_state", {}) or {}
+        )
+        for k in series:
+            series[k].append(round(float(metrics.get(k, 0.0)), 3))
+    out = (times, series)
+    if len(_PHYSICS_TRAJECTORY_CACHE) >= _PHYSICS_TRAJECTORY_CACHE_MAX:
+        _PHYSICS_TRAJECTORY_CACHE.pop(next(iter(_PHYSICS_TRAJECTORY_CACHE)))
+    _PHYSICS_TRAJECTORY_CACHE[cache_key] = out
+    return out
+
+
+# Module-level physics trajectory cache. Keyed by
+# ``(id(ws), tuple(sorted(focus)), samples)``; cleared on
+# ``WORLD_STATE_CHANGED`` via ``invalidate_physics_trajectory_cache``.
+_PHYSICS_TRAJECTORY_CACHE: "dict[tuple, tuple[list[int], dict[str, list[float]]]]" = {}
+_PHYSICS_TRAJECTORY_CACHE_MAX = 16
+
+
+def invalidate_physics_trajectory_cache() -> None:
+    """Drop all cached physics trajectories."""
+    _PHYSICS_TRAJECTORY_CACHE.clear()

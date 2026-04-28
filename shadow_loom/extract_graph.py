@@ -44,6 +44,7 @@ def extract_ego_graph_from_memory(
     temporal_anchor: Optional[int] = None,
     memory_limit: int = 5
 ) -> EgoGraphPayload:
+    
     """
     Calculates the union of localized Ego-Graphs for multiple entities.
     """
@@ -257,25 +258,63 @@ def extract_full_world_state(
 ) -> dict:
     """
     Serialises the entire WorldStateV1 as a dictionary, optionally
-    time-sliced to only include events at or before *temporal_anchor*.
+    time-sliced to only include events / topology valid at or before
+    *temporal_anchor*.
+
+    The slicing rules mirror those in :func:`extract_ego_graph_from_memory`
+    so omniscient and ego views remain consistent at the same anchor:
+
+      * ``events``: ``fabula_time <= t``
+      * ``causal_topology``: ``fabula_time <= t``
+      * ``social_topology``: ``last_updated_fabula <= t``
+      * ``spatial_topology``: established by ``t`` and not yet destroyed at ``t``
+      * ``information_topology``: established by ``t`` and not yet terminated at ``t``
+
+    Without an anchor, only dead/terminated information edges are pruned;
+    every other list comes through untouched.
     """
     dump = world_state.model_dump()
 
     if temporal_anchor is not None:
+        t = temporal_anchor
         pre_count = len(dump["events"])
         dump["events"] = [
-            evt for evt in dump["events"]
-            if evt["fabula_time"] <= temporal_anchor
+            evt for evt in dump["events"] if evt["fabula_time"] <= t
         ]
-        # Time-slice information_topology: exclude future and terminated comms
+        dump["causal_topology"] = [
+            ce for ce in dump.get("causal_topology", [])
+            if ce.get("fabula_time", 0) <= t
+        ]
+        dump["social_topology"] = [
+            rel for rel in dump.get("social_topology", [])
+            if rel.get("last_updated_fabula", 0) <= t
+        ]
+        dump["spatial_topology"] = [
+            se for se in dump.get("spatial_topology", [])
+            if se.get("established_at_fabula", 0) <= t
+            and (
+                se.get("destroyed_at_fabula") is None
+                or se["destroyed_at_fabula"] > t
+            )
+        ]
         dump["information_topology"] = [
             ie for ie in dump.get("information_topology", [])
-            if ie["established_at_fabula"] <= temporal_anchor
-            and (ie.get("terminated_at_fabula") is None or ie["terminated_at_fabula"] > temporal_anchor)
+            if ie.get("established_at_fabula", 0) <= t
+            and (
+                ie.get("terminated_at_fabula") is None
+                or ie["terminated_at_fabula"] > t
+            )
         ]
-        logger.info("Omniscient Graph extracted — %d entities, %d locations, %d/%d events (anchor T=%d)",
-                     len(dump["entities"]), len(dump["locations"]),
-                     len(dump["events"]), pre_count, temporal_anchor)
+        logger.info(
+            "Omniscient Graph extracted — %d entities, %d locations, "
+            "%d/%d events, %d causal, %d social, %d spatial, %d info "
+            "(anchor T=%d)",
+            len(dump["entities"]), len(dump["locations"]),
+            len(dump["events"]), pre_count,
+            len(dump["causal_topology"]), len(dump["social_topology"]),
+            len(dump["spatial_topology"]), len(dump["information_topology"]),
+            t,
+        )
     else:
         # Without an anchor, exclude terminated comms (they are dead links)
         dump["information_topology"] = [

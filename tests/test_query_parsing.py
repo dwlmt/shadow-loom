@@ -1144,3 +1144,271 @@ class TestTypedQueryParsing:
         result = self._run("Who caused X?", parsed, "interrogate")
         assert result.is_valid
         assert isinstance(result.query, InterrogationQuery)
+
+
+# =====================================================================
+# Constrained dynamic-output models
+# =====================================================================
+
+from shadow_loom.query_parsing import (
+    _CONSTRAINED_QUERY_TYPES,
+    _build_counterfactual_dynamic_model,
+    _build_directive_dynamic_model,
+    _build_interrogation_dynamic_model,
+    _build_intervention_dynamic_model,
+    _collect_typed_ids,
+    _format_valid_ids_section,
+    _items_to_dotted_dict,
+    _normalise_dynamic_to_parsed,
+    _select_output_model,
+)
+
+
+class TestCollectTypedIds:
+    def test_buckets_present(self, macbeth):
+        typed = _collect_typed_ids(macbeth)
+        assert "ENT_MACBETH" in typed["entity_ids"]
+        assert all(eid.startswith("EVT_") for eid in typed["event_ids"])
+        assert set(typed["location_ids"]) == set(macbeth.locations.keys())
+
+
+class TestFormatValidIdsSection:
+    def test_lists_categorised_ids(self, macbeth):
+        text = _format_valid_ids_section(macbeth)
+        assert "VALID GRAPH IDS" in text
+        assert "Entities" in text
+        assert "ENT_MACBETH" in text
+
+
+class TestDynamicInterventionModel:
+    def test_target_id_is_constrained(self, macbeth):
+        Model = _build_intervention_dynamic_model(macbeth)
+        # Valid item should construct cleanly.
+        ok = Model(
+            reasoning="kill macbeth",
+            interventions=[{
+                "target_id": "ENT_MACBETH",
+                "property": "status",
+                "value": "dead",
+            }],
+        )
+        assert ok.interventions[0].target_id == "ENT_MACBETH"
+
+    def test_invalid_target_id_rejected(self, macbeth):
+        Model = _build_intervention_dynamic_model(macbeth)
+        with pytest.raises(Exception):
+            Model(
+                reasoning="bad",
+                interventions=[{
+                    "target_id": "ENT_NOPE",
+                    "property": "status",
+                    "value": "dead",
+                }],
+            )
+
+    def test_min_length_enforced(self, macbeth):
+        Model = _build_intervention_dynamic_model(macbeth)
+        with pytest.raises(Exception):
+            Model(reasoning="empty", interventions=[])
+
+
+class TestDynamicCounterfactualModel:
+    def test_only_event_ids_allowed(self, macbeth):
+        Model = _build_counterfactual_dynamic_model(macbeth)
+        evt_id = macbeth.events[0].id
+        ok = Model(
+            reasoning="what if",
+            historical_interventions=[{
+                "target_id": evt_id,
+                "property": "event_type",
+                "value": "prevented",
+            }],
+            evidence_node_ids=["ENT_MACBETH"],
+        )
+        assert ok.historical_interventions[0].target_id == evt_id
+
+    def test_entity_id_rejected_in_historical(self, macbeth):
+        Model = _build_counterfactual_dynamic_model(macbeth)
+        with pytest.raises(Exception):
+            Model(
+                reasoning="bad",
+                historical_interventions=[{
+                    "target_id": "ENT_MACBETH",  # not an event
+                    "property": "status",
+                    "value": "dead",
+                }],
+            )
+
+
+class TestDynamicDirectiveModel:
+    def test_target_entity_must_be_entity_id(self, macbeth):
+        Model = _build_directive_dynamic_model(macbeth)
+        ok = Model(
+            reasoning="r",
+            target_entity_ids=["ENT_MACBETH"],
+            target_effect="suspense",
+        )
+        assert ok.target_entity_ids == ["ENT_MACBETH"]
+
+    def test_non_entity_id_rejected(self, macbeth):
+        Model = _build_directive_dynamic_model(macbeth)
+        loc_id = next(iter(macbeth.locations))
+        with pytest.raises(Exception):
+            Model(
+                reasoning="r",
+                target_entity_ids=[loc_id],  # location, not entity
+                target_effect="suspense",
+            )
+
+    def test_intensity_bounded(self, macbeth):
+        Model = _build_directive_dynamic_model(macbeth)
+        with pytest.raises(Exception):
+            Model(
+                reasoning="r",
+                target_entity_ids=["ENT_MACBETH"],
+                target_effect="fear",
+                intensity=1.5,
+            )
+
+
+class TestDynamicInterrogationModel:
+    def test_referenced_node_ids_constrained(self, macbeth):
+        Model = _build_interrogation_dynamic_model(macbeth)
+        ok = Model(
+            reasoning="r",
+            question="Can Macbeth reach the courtyard?",
+            referenced_node_ids=["ENT_MACBETH"],
+        )
+        assert "ENT_MACBETH" in ok.referenced_node_ids
+
+    def test_unknown_referenced_id_rejected(self, macbeth):
+        Model = _build_interrogation_dynamic_model(macbeth)
+        with pytest.raises(Exception):
+            Model(
+                reasoning="r",
+                question="?",
+                referenced_node_ids=["ENT_GHOST_NOT_THERE"],
+            )
+
+
+class TestNormaliseDynamicToParsed:
+    def test_intervention_collapses_to_dotted_dict(self, macbeth):
+        Model = _build_intervention_dynamic_model(macbeth)
+        instance = Model(
+            reasoning="r",
+            interventions=[
+                {"target_id": "ENT_MACBETH", "property": "status", "value": "dead"},
+                {"target_id": "ENT_MACBETH", "property": "traits.guilt", "value": 0.9},
+            ],
+        )
+        parsed = _normalise_dynamic_to_parsed(instance, "intervention")
+        assert parsed.query_type == "intervention"
+        assert parsed.interventions == {
+            "ENT_MACBETH.status": "dead",
+            "ENT_MACBETH.traits.guilt": 0.9,
+        }
+
+    def test_directive_subpath_appended(self, macbeth):
+        Model = _build_directive_dynamic_model(macbeth)
+        instance = Model(
+            reasoning="r",
+            target_entity_ids=["ENT_MACBETH"],
+            target_effect="grief",
+            target_vector_id="ENT_MACBETH",
+            target_vector_subpath="traits.guilt",
+        )
+        parsed = _normalise_dynamic_to_parsed(instance, "directive")
+        assert parsed.target_vector_id == "ENT_MACBETH.traits.guilt"
+
+    def test_interrogation_folds_referenced_into_resolved(self, macbeth):
+        Model = _build_interrogation_dynamic_model(macbeth)
+        instance = Model(
+            reasoning="r",
+            question="?",
+            referenced_node_ids=["ENT_MACBETH"],
+        )
+        parsed = _normalise_dynamic_to_parsed(instance, "interrogate")
+        assert any(r.resolved_id == "ENT_MACBETH" for r in parsed.resolved_ids)
+
+    def test_counterfactual_evidence_passes_through(self, macbeth):
+        Model = _build_counterfactual_dynamic_model(macbeth)
+        evt_id = macbeth.events[0].id
+        instance = Model(
+            reasoning="r",
+            historical_interventions=[{
+                "target_id": evt_id, "property": "event_type", "value": "prevented",
+            }],
+            evidence_node_ids=["ENT_MACBETH"],
+        )
+        parsed = _normalise_dynamic_to_parsed(instance, "counterfactual")
+        assert parsed.historical_interventions == {
+            f"{evt_id}.event_type": "prevented"
+        }
+        assert parsed.evidence_node_ids == ["ENT_MACBETH"]
+
+
+class TestSelectOutputModel:
+    def test_constrained_for_supported_types(self, macbeth):
+        for qt in _CONSTRAINED_QUERY_TYPES:
+            model_cls, constrained = _select_output_model(qt, macbeth)
+            assert constrained is True
+            assert model_cls is not ParsedQuery
+
+    def test_unconstrained_without_world_state(self):
+        model_cls, constrained = _select_output_model("intervention", None)
+        assert constrained is False
+        assert model_cls is ParsedQuery
+
+    def test_unconstrained_for_observation(self, macbeth):
+        model_cls, constrained = _select_output_model("observation", macbeth)
+        assert constrained is False
+        assert model_cls is ParsedQuery
+
+    def test_unconstrained_when_no_query_type(self, macbeth):
+        model_cls, constrained = _select_output_model(None, macbeth)
+        assert constrained is False
+
+
+class TestParseQueryWithConstrainedAgent:
+    """Mocked end-to-end: agent returns a dynamic-model instance,
+    parse_query normalises it into a valid concrete query."""
+
+    def test_intervention_via_dynamic_output(self, macbeth):
+        Model = _build_intervention_dynamic_model(macbeth)
+        dyn = Model(
+            reasoning="kill",
+            interventions=[{
+                "target_id": "ENT_MACBETH",
+                "property": "status",
+                "value": "dead",
+            }],
+        )
+        mock_result = _make_mock_result(dyn)
+        with patch("shadow_loom.query_parsing.Agent") as MockAgent:
+            instance = MockAgent.return_value
+            instance.run_sync.return_value = mock_result
+            result = parse_query(
+                "Kill Macbeth", query_type="intervention", world_state=macbeth,
+            )
+        assert result.is_valid
+        assert isinstance(result.query, InterventionQuery)
+        assert result.query.interventions == {"ENT_MACBETH.status": "dead"}
+
+    def test_valid_ids_section_in_prompt(self, macbeth):
+        Model = _build_intervention_dynamic_model(macbeth)
+        dyn = Model(
+            reasoning="r",
+            interventions=[{
+                "target_id": "ENT_MACBETH", "property": "status", "value": "dead",
+            }],
+        )
+        mock_result = _make_mock_result(dyn)
+        with patch("shadow_loom.query_parsing.Agent") as MockAgent:
+            instance = MockAgent.return_value
+            instance.run_sync.return_value = mock_result
+            parse_query(
+                "Kill Macbeth", query_type="intervention", world_state=macbeth,
+            )
+            user_message = instance.run_sync.call_args.args[0]
+            assert "VALID GRAPH IDS" in user_message
+

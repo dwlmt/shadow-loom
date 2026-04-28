@@ -16,20 +16,21 @@ from nicegui import ui
 from shadow_loom_ui.state import AppState, StateEvent
 from shadow_loom_ui.viz import (
     render_chord_diagram,
+    render_comparison_view,
     render_ego_graph,
+    render_entity_lifelines,
     render_entity_state_timeline,
-    render_epistemic_map,
+    render_epistemic_grid,
     render_event_gantt,
     render_event_timeline,
-    render_parallel_coords,
     render_relationship_heatmap,
     render_social_graph,
     render_spatial_map,
     render_sunburst,
     render_theme_river,
-    render_trait_boxplot,
     render_world_graph,
     render_world_treemap,
+    with_expand,
 )
 from shadow_loom_ui.viz_helpers import (
     fabula_time_bounds,
@@ -88,6 +89,28 @@ def build_world_tab(state: AppState) -> None:
             ).classes("w-48")
             temporal_select.set_visibility(False)
 
+            # Epistemic believer filter (multi-select)
+            epistemic_select = ui.select(
+                options=[],
+                label="Believers",
+                multiple=True,
+            ).classes("w-64").props("use-chips clearable")
+            epistemic_select.set_visibility(False)
+            epistemic_select.tooltip(
+                "Filter which characters' belief panels are shown"
+            )
+
+            # Comparison entity multi-select
+            compare_select = ui.select(
+                options=[],
+                label="Compare entities",
+                multiple=True,
+            ).classes("w-72").props("use-chips clearable")
+            compare_select.set_visibility(False)
+            compare_select.tooltip(
+                "Pick 2–6 characters to compare side-by-side"
+            )
+
             ui.button("Refresh", icon="refresh", on_click=lambda: _refresh()).props(
                 "flat dense"
             )
@@ -106,6 +129,8 @@ def build_world_tab(state: AppState) -> None:
                 mode = view_mode.value
                 ego_select.set_visibility(mode == "ego")
                 temporal_select.set_visibility(mode == "temporal")
+                epistemic_select.set_visibility(mode == "epistemic")
+                compare_select.set_visibility(mode == "comparison")
                 social_layout.set_visibility(mode == "social")
                 spatial_animated.set_visibility(mode == "spatial")
                 _refresh()
@@ -115,6 +140,23 @@ def build_world_tab(state: AppState) -> None:
             spatial_animated.on("update:model-value", lambda _e: _refresh())
 
         # ── Fabula timeline slider ────────────────────────────────
+        # Two independent guards (see _sync_slider_widget /
+        # _on_slider_change below):
+        #   ``local_origin`` — True iff the most recent cursor change
+        #     was emitted by this slider, so the FABULA_CURSOR_CHANGED
+        #     listener knows to skip writing the slider value back
+        #     (which is what was causing the freeze: write-back fired a
+        #     second async ``update:model-value``, which the heavy
+        #     ``_refresh`` was racing with).
+        #   ``rendering`` — True while a chart render is in flight; a
+        #     second slider tick during that window queues a single
+        #     follow-up render instead of stacking them.
+        _slider_state = {
+            "local_origin": False,
+            "rendering": False,
+            "pending": False,
+        }
+
         slider_row = ui.row().classes(
             "w-full items-center q-px-md q-pb-sm gap-3 "
             "bg-slate-50 border-b border-slate-200"
@@ -133,20 +175,26 @@ def build_world_tab(state: AppState) -> None:
             ).props("flat dense no-caps color=secondary")
 
         def _set_live():
-            state.fabula_cursor = None
-            time_label.text = "live"
-            _refresh()
+            # Route through the official setter so every other panel
+            # subscribed to FABULA_CURSOR_CHANGED re-renders in lockstep.
+            _slider_state["local_origin"] = False
+            state.set_fabula_cursor(None)
 
         def _on_slider_change():
             try:
                 t = int(time_slider.value)
             except (TypeError, ValueError):
                 return
-            state.fabula_cursor = t
-            time_label.text = f"t={t}"
-            _refresh()
+            if state.fabula_cursor == t:
+                return
+            # Mark this change as ours so the FABULA_CURSOR_CHANGED
+            # listener doesn't bounce the slider value back at us.
+            _slider_state["local_origin"] = True
+            state.set_fabula_cursor(t)
 
-        time_slider.on("update:model-value", lambda: _on_slider_change())
+        # Release-only: Quasar's ``change`` event fires once when the
+        # user lets go of the thumb.
+        time_slider.on("change", lambda: _on_slider_change())
 
         # ── Graph container ───────────────────────────────────────
         graph_container = ui.column().classes(
@@ -168,8 +216,60 @@ def build_world_tab(state: AppState) -> None:
             if node_id and node_type:
                 state.select_node(node_id, node_type)
 
+        # ── Slider widget sync (kept distinct from chart refresh) ──
+        def _sync_slider_widget(ws) -> None:
+            """Push current world bounds + cursor into the slider widget.
+
+            Only mutates the slider's ``value`` when (a) the change did
+            *not* originate from this slider and (b) the value actually
+            differs. This avoids the write-back echo loop that froze the
+            UI on every drag.
+            """
+            tmin, tmax = fabula_time_bounds(ws)
+            if tmax <= tmin:
+                slider_row.set_visibility(False)
+                return
+            slider_row.set_visibility(True)
+            time_slider.props(f"min={tmin} max={tmax}")
+            if state.fabula_cursor is None:
+                desired = tmax
+                label_text = "live"
+            else:
+                desired = max(tmin, min(tmax, state.fabula_cursor))
+                label_text = f"t={desired}"
+            if not _slider_state["local_origin"]:
+                try:
+                    cur = int(time_slider.value or 0)
+                except (TypeError, ValueError):
+                    cur = -1
+                if cur != desired:
+                    time_slider.value = desired
+            if time_label.text != label_text:
+                time_label.text = label_text
+            # Reset for next tick — once we've consumed the local-origin
+            # flag, subsequent external cursor changes should sync.
+            _slider_state["local_origin"] = False
+
         # ── Render function ───────────────────────────────────────
         def _refresh(**kw):
+            # Coalesce overlapping renders. If a refresh is already in
+            # flight, mark "pending" and let it re-run once when done
+            # — this prevents the dragged-slider freeze where every
+            # tick clear()'d a half-rendered ECharts canvas.
+            if _slider_state["rendering"]:
+                _slider_state["pending"] = True
+                return
+            _slider_state["rendering"] = True
+            try:
+                _do_refresh(**kw)
+            finally:
+                _slider_state["rendering"] = False
+            if _slider_state["pending"]:
+                _slider_state["pending"] = False
+                # Run again on next tick so the latest cursor lands.
+                ui.timer(0.01, lambda: _refresh(), once=True)
+
+        def _do_refresh(**kw):
             graph_container.clear()
             ws = state.world_state
             if ws is None:
@@ -180,23 +280,11 @@ def build_world_tab(state: AppState) -> None:
                     )
                 return
 
-            # Update slider bounds
-            tmin, tmax = fabula_time_bounds(ws)
-            if tmax > tmin:
-                slider_row.set_visibility(True)
-                time_slider.props(f"min={tmin} max={tmax}")
-                if state.fabula_cursor is None:
-                    time_slider.value = tmax
-                    time_label.text = "live"
-                else:
-                    capped = max(tmin, min(tmax, state.fabula_cursor))
-                    time_slider.value = capped
-                    time_label.text = f"t={capped}"
-            else:
-                slider_row.set_visibility(False)
+            _sync_slider_widget(ws)
+            _, tmax = fabula_time_bounds(ws)
 
             # Snapshot the world model if a cursor is active
-            if state.fabula_cursor is not None and tmax > tmin:
+            if state.fabula_cursor is not None and tmax > 0:
                 try:
                     ws = snapshot_world_at(ws, state.fabula_cursor)
                 except Exception:
@@ -206,69 +294,193 @@ def build_world_tab(state: AppState) -> None:
             entity_opts = {eid: ent.name for eid, ent in ws.entities.items()}
             ego_select.options = entity_opts
             temporal_select.options = entity_opts
+            compare_select.options = entity_opts
+            # Epistemic believer options: only entities that hold beliefs.
+            believer_opts = {
+                eid: ent.name
+                for eid, ent in ws.entities.items()
+                if ent.beliefs
+            }
+            epistemic_select.options = believer_opts
 
             mode = view_mode.value
             with graph_container:
                 try:
                     if mode == "overview":
-                        render_world_graph(ws, on_click=_on_graph_click, height="100%")
+                        with_expand(
+                            lambda h: render_world_graph(
+                                ws, on_click=_on_graph_click, height=h
+                            ),
+                            title="World graph \u2014 overview",
+                        )
                     elif mode == "social":
                         with ui.row().classes("w-full gap-2"):
                             with ui.column().classes("flex-grow"):
-                                render_social_graph(
+                                with_expand(
+                                    lambda h, lay=social_layout.value or "force": (
+                                        render_social_graph(
+                                            ws,
+                                            on_click=_on_graph_click,
+                                            height=h,
+                                            layout=lay,
+                                        )
+                                    ),
+                                    title="Social graph",
+                                    height="50%",
+                                )
+                                with_expand(
+                                    lambda h: render_chord_diagram(ws, height=h),
+                                    title="Relationship chord diagram",
+                                    height="50%",
+                                )
+                            with ui.column().classes("w-1/3"):
+                                with_expand(
+                                    lambda h: render_relationship_heatmap(
+                                        ws, height=h
+                                    ),
+                                    title="Relationship heatmap",
+                                )
+                    elif mode == "spatial":
+                        with_expand(
+                            lambda h, an=bool(spatial_animated.value): (
+                                render_spatial_map(
                                     ws,
                                     on_click=_on_graph_click,
-                                    height="50%",
-                                    layout=social_layout.value or "force",
+                                    height=h,
+                                    animated=an,
                                 )
-                                render_chord_diagram(ws, height="50%")
-                            with ui.column().classes("w-1/3"):
-                                render_relationship_heatmap(ws, height="100%")
-                    elif mode == "spatial":
-                        render_spatial_map(
-                            ws,
-                            on_click=_on_graph_click,
-                            height="100%",
-                            animated=bool(spatial_animated.value),
+                            ),
+                            title="Spatial map",
                         )
                     elif mode == "ego":
                         focus = ego_select.value
                         if focus:
                             ids = focus if isinstance(focus, list) else [focus]
-                            render_ego_graph(ws, ids, on_click=_on_graph_click, height="100%")
+                            with_expand(
+                                lambda h, ids=ids: render_ego_graph(
+                                    ws, ids,
+                                    on_click=_on_graph_click,
+                                    height=h,
+                                ),
+                                title=f"Ego graph \u2014 {', '.join(ids)}",
+                            )
                         else:
                             ui.label("Select focus entities above.").classes(
                                 "text-sm text-slate-500"
                             )
                     elif mode == "temporal":
+                        # Top: Entity Lifelines — status/location/event
+                        # ribbons for every character. Replaces the old
+                        # single-entity trait line which read as noise
+                        # without an entity selected.
+                        with_expand(
+                            lambda h: render_entity_lifelines(
+                                ws, on_click=_on_graph_click, height=h,
+                            ),
+                            title="Entity lifelines (status, location, events)",
+                            height="280px",
+                        )
                         eid = temporal_select.value
                         if eid:
-                            render_entity_state_timeline(eid, ws, height="250px")
+                            with_expand(
+                                lambda h, eid=eid: (
+                                    render_entity_state_timeline(
+                                        eid, ws, height=h
+                                    )
+                                ),
+                                title="Entity trait timeline",
+                                height="250px",
+                            )
                         # ThemeRiver for multi-entity trait flow
-                        render_theme_river(ws, height="300px")
+                        with_expand(
+                            lambda h: render_theme_river(ws, height=h),
+                            title="Trait theme river",
+                            height="260px",
+                        )
                         # Event swim lanes
-                        render_event_gantt(ws, on_click=_on_graph_click, height="250px")
+                        with_expand(
+                            lambda h: render_event_gantt(
+                                ws, on_click=_on_graph_click, height=h
+                            ),
+                            title="Event swim-lanes (Gantt)",
+                            height="250px",
+                        )
                     elif mode == "composition":
                         with ui.row().classes("w-full gap-2 h-full"):
                             with ui.column().classes("flex-grow h-full"):
-                                render_sunburst(ws, on_click=_on_graph_click, height="100%")
+                                with_expand(
+                                    lambda h: render_sunburst(
+                                        ws, on_click=_on_graph_click, height=h
+                                    ),
+                                    title="World composition sunburst",
+                                )
                             with ui.column().classes("w-1/2 h-full"):
-                                render_world_treemap(ws, on_click=_on_graph_click, height="100%")
+                                with_expand(
+                                    lambda h: render_world_treemap(
+                                        ws, on_click=_on_graph_click, height=h
+                                    ),
+                                    title="World treemap",
+                                )
                     elif mode == "epistemic":
-                        render_epistemic_map(ws, height="100%")
+                        # Per-character belief panels (one tile per
+                        # believer) — reads more naturally than the old
+                        # single who-knows-what heatmap because each
+                        # character's worldview can be inspected on its
+                        # own, with the actual ``perceived_state`` text.
+                        sel = epistemic_select.value
+                        sel_ids: list[str] | None
+                        if isinstance(sel, list) and sel:
+                            sel_ids = list(sel)
+                        else:
+                            sel_ids = None
+                        render_epistemic_grid(ws, selected_ids=sel_ids)
                     elif mode == "comparison":
-                        with ui.column().classes("w-full gap-2"):
-                            render_parallel_coords(ws, height="320px")
-                            render_trait_boxplot(ws, height="280px")
+                        # Side-by-side multi-entity comparison: radar
+                        # overlay + grouped trait bars + ranked table.
+                        # Far clearer than the old parallel-coords +
+                        # boxplot pair which just showed spaghetti.
+                        sel = compare_select.value
+                        if isinstance(sel, list) and sel:
+                            chosen = list(sel)[:6]
+                        else:
+                            chosen = []
+                        render_comparison_view(ws, entity_ids=chosen)
                 except Exception as e:
                     logger.exception("Graph rendering failed")
                     ui.label(f"Render error: {e}").classes("text-negative")
 
         # Initial render + subscriptions
         _refresh()
-        ego_select.on("update:model-value", lambda: _refresh())
-        temporal_select.on("update:model-value", lambda: _refresh())
-        state.on(StateEvent.WORLD_STATE_CHANGED, _refresh)
+
+        # Visibility gating so the World tab doesn't rebuild its graph
+        # on every cursor scrub from the Causality / Affective tabs.
+        _WORLD_PATH = "world"
+        _world_dirty = {"on": False}
+        _refresh_sync_world = _refresh
+
+        def _world_gated(*args, **kw):
+            if not state.is_path_visible(_WORLD_PATH):
+                _world_dirty["on"] = True
+                return
+            _world_dirty["on"] = False
+            _refresh_sync_world()
+
+        def _on_world_path(**kw):
+            if _world_dirty["on"] and state.is_path_visible(_WORLD_PATH):
+                _world_dirty["on"] = False
+                _refresh_sync_world()
+
+        ego_select.on("update:model-value", lambda: _refresh_sync_world())
+        temporal_select.on("update:model-value", lambda: _refresh_sync_world())
+        epistemic_select.on("update:model-value", lambda: _refresh_sync_world())
+        compare_select.on("update:model-value", lambda: _refresh_sync_world())
+        state.on(StateEvent.WORLD_STATE_CHANGED, _world_gated)
+        state.on(StateEvent.ACTIVE_PATH_CHANGED, _on_world_path)
+        # Cross-tab cursor sync: when any other panel moves the global
+        # fabula cursor (Causality Sankey, Affective Dashboard, Causal
+        # Graph snapshot, URL hydration) the World view re-snapshots to
+        # match. Without this the slider thumbs would appear stuck.
+        state.on(StateEvent.FABULA_CURSOR_CHANGED, _world_gated)
 
 
 # =====================================================================

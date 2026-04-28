@@ -18,7 +18,7 @@ import re
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, create_model, model_validator
 from pydantic_ai import Agent, NativeOutput
 
 from shadow_loom.models import WorldStateV1
@@ -319,6 +319,420 @@ def _collect_all_ids(world_state: WorldStateV1) -> set[str]:
     return ids
 
 
+def _collect_typed_ids(world_state: WorldStateV1) -> Dict[str, list[str]]:
+    """Collect all IDs from the world model bucketed by node type.
+
+    Used to drive both the categorised "VALID GRAPH IDS" prompt block
+    and the dynamic ``Literal[...]`` constraints applied to structured
+    output schemas.
+    """
+    return {
+        "entity_ids": list(world_state.entities.keys()),
+        "object_ids": list(world_state.objects.keys()),
+        "location_ids": list(world_state.locations.keys()),
+        "event_ids": [e.id for e in world_state.events],
+        "world_trait_ids": list(world_state.world_traits.keys()),
+    }
+
+
+def _format_valid_ids_section(world_state: WorldStateV1) -> str:
+    """Render a compact "VALID GRAPH IDS" prompt block grouped by node type.
+
+    Listed alongside the full graph summary so the LLM has an explicit
+    enumeration of every ID it is allowed to emit. Matches the
+    ``Literal[...]`` enum the dynamic structured-output schema enforces.
+    """
+    lines = [
+        "## VALID GRAPH IDS (use these EXACTLY — structured output is constrained to these enums)",
+    ]
+
+    if world_state.entities:
+        lines.append(f"Entities ({len(world_state.entities)}):")
+        for eid, ent in world_state.entities.items():
+            lines.append(f"  - {eid}  ({ent.name})")
+
+    if world_state.objects:
+        lines.append(f"Objects ({len(world_state.objects)}):")
+        for oid, obj in world_state.objects.items():
+            lines.append(f"  - {oid}  ({obj.name})")
+
+    if world_state.locations:
+        lines.append(f"Locations ({len(world_state.locations)}):")
+        for lid, loc in world_state.locations.items():
+            lines.append(f"  - {lid}  ({loc.name})")
+
+    if world_state.events:
+        lines.append(f"Events ({len(world_state.events)}):")
+        for evt in sorted(world_state.events, key=lambda e: e.fabula_time):
+            lines.append(
+                f"  - {evt.id}  (t={evt.fabula_time}, {evt.event_type}: "
+                f"{evt.description[:60]})"
+            )
+
+    if world_state.world_traits:
+        lines.append(f"World Traits ({len(world_state.world_traits)}):")
+        for wid, wt in world_state.world_traits.items():
+            lines.append(f"  - {wid}  ({wt.name})")
+
+    return "\n".join(lines)
+
+
+# =====================================================================
+# Dynamic, ID-constrained structured output schemas
+# =====================================================================
+#
+# For the four query types whose semantics require *exact* matches
+# against the world model — intervention (rung 2), counterfactual
+# (rung 3), directive, and interrogation — we generate a fresh
+# Pydantic model per call whose ID-bearing fields are typed as
+# ``Literal[<valid IDs>]``. NativeOutput then forces the LLM to emit
+# only IDs that exist in the graph.
+#
+# The dynamic output is normalised back into the static
+# :class:`ParsedQuery` shape so all downstream validation, fallback,
+# and query-construction code keeps working unchanged.
+
+#: Query types that benefit from constrained structured output.
+_CONSTRAINED_QUERY_TYPES: set[str] = {
+    "intervention", "counterfactual", "directive", "interrogate",
+}
+
+#: Allowed property roots per node prefix, advertised to the LLM via the
+#: prompt and (loosely) validated by ``_validate_property_path``. Keep
+#: in sync with ``_VALID_PROPERTY_ROOTS`` further down.
+_PROPERTIES_BY_PREFIX: Dict[str, list[str]] = {
+    "ENT": ["status", "location_id", "traits", "beliefs", "constants", "spawn"],
+    "OBJ": ["owner_id", "location_id", "properties", "affordances", "spawn"],
+    "LOC": ["ambient_state", "description", "spawn"],
+    "EVT": ["event_type", "description", "actor_ids", "target_ids", "outcome", "spawn"],
+    "WORLD": ["magnitude", "description", "affected_domains", "spawn"],
+}
+
+
+def _make_id_literal(ids: list[str]):
+    """Build a ``Literal[id1, id2, ...]`` type from a list of IDs.
+
+    Returns plain ``str`` when the list is empty so that
+    ``create_model`` doesn't choke on an empty enum (the surrounding
+    ``parse_query`` will simply skip the constrained code path when no
+    IDs of the relevant type exist in the world).
+    """
+    if not ids:
+        return str
+    # ``Literal[tuple(ids)]`` works because PEP 604 / typing subscript
+    # accepts a tuple in the same way as ``Literal[id1, id2, ...]``.
+    return Literal[tuple(ids)]  # type: ignore[valid-type]
+
+
+def _properties_help_block() -> str:
+    """Plain-text reference of allowed `<id>.<property>` roots per prefix."""
+    lines = ["Allowed `property` values per node-ID prefix:"]
+    for prefix, props in _PROPERTIES_BY_PREFIX.items():
+        lines.append(f"  - {prefix}_*: {', '.join(props)}")
+    lines.append(
+        "Use sub-paths after a dot for nested mutations, e.g. "
+        "`traits.guilt`, `beliefs.B_FOO`, `properties.locked`."
+    )
+    return "\n".join(lines)
+
+
+def _build_intervention_dynamic_model(world_state: WorldStateV1):
+    """Create a per-call Pydantic model for the *intervention* query type.
+
+    The output is a list of ``InterventionItem`` records. Each item's
+    ``target_id`` is constrained to a ``Literal`` of all valid graph
+    IDs in the world; ``property`` and ``value`` are free-form strings
+    / Any so the LLM can express the full mutation surface.
+    """
+    typed = _collect_typed_ids(world_state)
+    all_ids = (
+        typed["entity_ids"] + typed["object_ids"] + typed["location_ids"]
+        + typed["event_ids"] + typed["world_trait_ids"]
+    )
+    target_lit = _make_id_literal(all_ids)
+
+    Item = create_model(
+        "InterventionItem",
+        target_id=(
+            target_lit,
+            Field(..., description="Graph node ID to mutate. MUST be an exact match."),
+        ),
+        property=(
+            str,
+            Field(
+                ...,
+                description=(
+                    "Property path on the target node, e.g. 'status', "
+                    "'location_id', 'traits.guilt', 'event_type', 'spawn'. "
+                    + _properties_help_block()
+                ),
+            ),
+        ),
+        value=(
+            Any,
+            Field(
+                ...,
+                description="New value: string for state, number for trait, dict for spawn.",
+            ),
+        ),
+        __base__=BaseModel,
+    )
+
+    return create_model(
+        "DynamicInterventionOutput",
+        reasoning=(str, Field(..., description="Why this interpretation.")),
+        interventions=(
+            List[Item],
+            Field(
+                ...,
+                min_length=1,
+                description="One or more constrained intervention items.",
+            ),
+        ),
+        resolved_ids=(
+            List[ResolvedID],
+            Field(default_factory=list, description="Auxiliary name→ID resolutions."),
+        ),
+        __base__=BaseModel,
+    )
+
+
+def _build_counterfactual_dynamic_model(world_state: WorldStateV1):
+    """Per-call model for *counterfactual*: historical_interventions
+    are constrained to events; evidence_node_ids to any valid ID."""
+    typed = _collect_typed_ids(world_state)
+    event_lit = _make_id_literal(typed["event_ids"])
+    all_ids = (
+        typed["entity_ids"] + typed["object_ids"] + typed["location_ids"]
+        + typed["event_ids"] + typed["world_trait_ids"]
+    )
+    all_lit = _make_id_literal(all_ids)
+
+    HistoricalItem = create_model(
+        "HistoricalInterventionItem",
+        target_id=(
+            event_lit,
+            Field(..., description="Event ID (EVT_*) to alter. MUST be exact."),
+        ),
+        property=(
+            str,
+            Field(
+                ...,
+                description=(
+                    "Event property to mutate. Common: 'event_type', "
+                    "'description', 'outcome', 'actor_ids', 'target_ids'."
+                ),
+            ),
+        ),
+        value=(Any, Field(..., description="New value.")),
+        __base__=BaseModel,
+    )
+
+    return create_model(
+        "DynamicCounterfactualOutput",
+        reasoning=(str, Field(..., description="Why this interpretation.")),
+        historical_interventions=(
+            List[HistoricalItem],
+            Field(
+                ...,
+                min_length=1,
+                description="Past events to alter, with constrained event IDs.",
+            ),
+        ),
+        evidence_node_ids=(
+            List[all_lit],
+            Field(
+                default_factory=list,
+                description="Present-tense node IDs to condition on.",
+            ),
+        ),
+        resolved_ids=(
+            List[ResolvedID],
+            Field(default_factory=list),
+        ),
+        __base__=BaseModel,
+    )
+
+
+def _build_directive_dynamic_model(world_state: WorldStateV1):
+    """Per-call model for *directive*: target_entity_ids constrained to
+    entities; target_vector_id constrained to any valid graph ID
+    (sub-paths like ``ENT_X.traits.guilt`` use the optional
+    ``target_vector_subpath`` field)."""
+    typed = _collect_typed_ids(world_state)
+    ent_lit = _make_id_literal(typed["entity_ids"])
+    all_ids = (
+        typed["entity_ids"] + typed["object_ids"] + typed["location_ids"]
+        + typed["event_ids"] + typed["world_trait_ids"]
+    )
+    all_lit_optional = _make_id_literal(all_ids)
+
+    EffectLit = Literal[
+        "suspense", "surprise", "mystery", "dramatic_irony",
+        "grief", "rage", "joy", "regret", "love", "fear",
+    ]
+
+    return create_model(
+        "DynamicDirectiveOutput",
+        reasoning=(str, Field(..., description="Why this interpretation.")),
+        target_entity_ids=(
+            List[ent_lit],
+            Field(
+                ...,
+                min_length=1,
+                description="Entities experiencing the effect. Must be exact ENT_ IDs.",
+            ),
+        ),
+        target_effect=(
+            EffectLit,
+            Field(..., description="The narrative effect to maximise."),
+        ),
+        target_vector_id=(
+            Optional[all_lit_optional],
+            Field(
+                default=None,
+                description=(
+                    "Optional base node ID this directive targets "
+                    "(trait/edge/event). Must be an exact graph ID."
+                ),
+            ),
+        ),
+        target_vector_subpath=(
+            Optional[str],
+            Field(
+                default=None,
+                description=(
+                    "Optional dotted sub-path appended to target_vector_id "
+                    "(e.g. 'traits.guilt' or 'relationships.ENT_X.affinity')."
+                ),
+            ),
+        ),
+        intensity=(
+            Optional[float],
+            Field(default=1.0, ge=0.0, le=1.0, description="0.0–1.0 multiplier."),
+        ),
+        resolved_ids=(
+            List[ResolvedID],
+            Field(default_factory=list),
+        ),
+        __base__=BaseModel,
+    )
+
+
+def _build_interrogation_dynamic_model(world_state: WorldStateV1):
+    """Per-call model for *interrogate*: free-form question plus a
+    constrained ``referenced_node_ids`` enum so any IDs the LLM
+    surfaces from the question are guaranteed to exist."""
+    typed = _collect_typed_ids(world_state)
+    all_ids = (
+        typed["entity_ids"] + typed["object_ids"] + typed["location_ids"]
+        + typed["event_ids"] + typed["world_trait_ids"]
+    )
+    all_lit = _make_id_literal(all_ids)
+
+    return create_model(
+        "DynamicInterrogationOutput",
+        reasoning=(str, Field(..., description="Why this interpretation.")),
+        question=(str, Field(..., description="The question to answer.")),
+        require_proof=(bool, Field(default=True)),
+        referenced_node_ids=(
+            List[all_lit],
+            Field(
+                default_factory=list,
+                description=(
+                    "Every graph node ID the question refers to. Must be "
+                    "exact — used by the pathfinder to scope the search."
+                ),
+            ),
+        ),
+        resolved_ids=(
+            List[ResolvedID],
+            Field(default_factory=list),
+        ),
+        __base__=BaseModel,
+    )
+
+
+_DYNAMIC_MODEL_BUILDERS = {
+    "intervention": _build_intervention_dynamic_model,
+    "counterfactual": _build_counterfactual_dynamic_model,
+    "directive": _build_directive_dynamic_model,
+    "interrogate": _build_interrogation_dynamic_model,
+}
+
+
+def _items_to_dotted_dict(items: list[Any]) -> Dict[str, Any]:
+    """Collapse a list of {target_id, property, value} dicts/objects
+    back into the dotted-key dict shape ``ParsedQuery`` expects."""
+    out: Dict[str, Any] = {}
+    for item in items:
+        data = item if isinstance(item, dict) else item.model_dump()
+        target = data.get("target_id")
+        prop = (data.get("property") or "").strip()
+        if not target:
+            continue
+        key = f"{target}.{prop}" if prop else target
+        out[key] = data.get("value")
+    return out
+
+
+def _normalise_dynamic_to_parsed(dynamic_output: Any, query_type: str) -> ParsedQuery:
+    """Convert a constrained dynamic-model instance into a ``ParsedQuery``."""
+    data = dynamic_output.model_dump()
+    base = dict(
+        query_type=query_type,
+        reasoning=data.get("reasoning", ""),
+        resolved_ids=data.get("resolved_ids", []),
+    )
+
+    if query_type == "intervention":
+        return ParsedQuery(
+            **base,
+            interventions=_items_to_dotted_dict(data.get("interventions") or []),
+        )
+
+    if query_type == "counterfactual":
+        return ParsedQuery(
+            **base,
+            historical_interventions=_items_to_dotted_dict(
+                data.get("historical_interventions") or []
+            ),
+            evidence_node_ids=list(data.get("evidence_node_ids") or []),
+        )
+
+    if query_type == "directive":
+        target_vector_id = data.get("target_vector_id")
+        subpath = (data.get("target_vector_subpath") or "").strip()
+        if target_vector_id and subpath:
+            target_vector_id = f"{target_vector_id}.{subpath}"
+        return ParsedQuery(
+            **base,
+            target_entity_ids=list(data.get("target_entity_ids") or []),
+            target_effect=data.get("target_effect"),
+            target_vector_id=target_vector_id,
+            intensity=data.get("intensity"),
+        )
+
+    if query_type == "interrogate":
+        # ``referenced_node_ids`` isn't part of ParsedQuery; fold it
+        # into ``resolved_ids`` so downstream validators still see it.
+        ref_ids = list(data.get("referenced_node_ids") or [])
+        existing = list(base["resolved_ids"])
+        existing_ids = {r.resolved_id if isinstance(r, ResolvedID) else r.get("resolved_id") for r in existing}
+        for rid in ref_ids:
+            if rid not in existing_ids:
+                existing.append(ResolvedID(natural_name=rid, resolved_id=rid))
+        base["resolved_ids"] = existing
+        return ParsedQuery(
+            **base,
+            question=data.get("question"),
+            require_proof=data.get("require_proof", True),
+        )
+
+    # Should never happen given the dispatch table, but stay safe.
+    return ParsedQuery(**base)
+
+
 # =====================================================================
 # Valid query type literals
 # =====================================================================
@@ -599,6 +1013,12 @@ def _validate_parsed_query(
                 # the base node ID, not the full key.
                 base_id = key.split(".", 1)[0] if "." in key else key
                 _check_id(base_id, "interventions")
+                # Catch property/type mismatches like ``EVT_X.traits.guilt``
+                # — events don't have traits, so the engine would silently
+                # no-op or crash. Surface it here for a clean error.
+                prop_err = _validate_property_path(key, "interventions")
+                if prop_err is not None:
+                    errors.append(prop_err)
 
     elif qt == "counterfactual":
         if not parsed.historical_interventions:
@@ -610,6 +1030,11 @@ def _validate_parsed_query(
             for key in parsed.historical_interventions:
                 base_id = key.split(".", 1)[0] if "." in key else key
                 _check_id(base_id, "historical_interventions")
+                prop_err = _validate_property_path(
+                    key, "historical_interventions",
+                )
+                if prop_err is not None:
+                    errors.append(prop_err)
         if not parsed.evidence_node_ids:
             errors.append(ValidationError(
                 field="evidence_node_ids",
@@ -683,33 +1108,102 @@ def _normalise_id_name(raw: str) -> str:
     return re.sub(r"[^A-Z0-9]+", "_", s).strip("_")
 
 
+# Stop-words that should never be treated as standalone aliases — they
+# appear inside many entity/location names but matching them would
+# wrongly resolve generic prose like "the heath" or "of England".
+_ALIAS_STOPWORDS: set[str] = {
+    "the", "a", "an", "of", "and", "or", "to", "in", "on", "at",
+    "for", "with", "by", "from", "lady", "lord", "sir", "king",
+    "queen", "thane", "duke", "earl", "his", "her", "their",
+}
+
+
+def _name_aliases(display_name: str) -> list[str]:
+    """Return alternative phrasings of ``display_name`` for indexing.
+
+    A character entry like ``"Macbeth (Thane of Glamis)"`` should resolve
+    from any of: full string, ``"Macbeth"``, ``"Thane of Glamis"``. A
+    name like ``"Lady Macbeth"`` should also resolve from the bare
+    ``"Lady Macbeth"`` token even when the user writes ``"lady-macbeth"``.
+
+    Aliases are de-duplicated, stripped of empty/short entries, and
+    filtered against a stop-word set so common words like ``"the"`` /
+    ``"of"`` don't end up pointing at random entities and triggering
+    false-positive pre-resolutions.
+    """
+    out: set[str] = set()
+    base = display_name.strip()
+    if not base:
+        return []
+    out.add(base)
+    # Pull "Macbeth" out of "Macbeth (Thane of Glamis)" and the parenthetical.
+    paren = re.match(r"^(.+?)\s*\(([^)]+)\)\s*$", base)
+    if paren:
+        head, tail = paren.group(1).strip(), paren.group(2).strip()
+        if head:
+            out.add(head)
+        if tail:
+            out.add(tail)
+    # First name / last name when the display is multi-word. Strip
+    # surrounding punctuation from each token so a name like
+    # "Macbeth (Thane of Glamis)" doesn't yield "Glamis)".
+    parts = [p.strip("()[]{}.,;:!?\"'") for p in re.split(r"[\s,;:/]+", base) if p]
+    if len(parts) > 1:
+        out.update(p for p in parts if p)
+    # Drop very short aliases (≤ 2 chars) and stop-words to keep the
+    # mention scanner from latching onto common English words.
+    return [
+        a for a in out
+        if len(a) > 2 and a.lower() not in _ALIAS_STOPWORDS
+    ]
+
+
 def _build_name_index(world_state: WorldStateV1) -> Dict[str, str]:
     """Build a normalised-name → graph-ID lookup from the world model.
 
     Also indexes entity/object/location display names so the fuzzy
-    matcher can resolve "Macbeth" → "ENT_MACBETH".
+    matcher can resolve "Macbeth" → "ENT_MACBETH". Honours
+    :func:`_name_aliases` so parenthetical titles, first / last names,
+    and slash-separated alternates all resolve to the same ID.
     """
     index: Dict[str, str] = {}
 
+    def _add(key: str, real_id: str) -> None:
+        norm = _normalise_id_name(key)
+        if not norm:
+            return
+        # First-write-wins: if two different IDs claim the same alias,
+        # keep the first registration so order-of-iteration controls
+        # tiebreaks rather than silent overwrites.
+        index.setdefault(norm, real_id)
+
     for eid, ent in world_state.entities.items():
-        index[_normalise_id_name(eid)] = eid
-        index[_normalise_id_name(ent.name)] = eid
+        _add(eid, eid)
+        for alias in _name_aliases(ent.name):
+            _add(alias, eid)
 
     for lid, loc in world_state.locations.items():
-        index[_normalise_id_name(lid)] = lid
-        index[_normalise_id_name(loc.name)] = lid
+        _add(lid, lid)
+        for alias in _name_aliases(loc.name):
+            _add(alias, lid)
 
     for oid, obj in world_state.objects.items():
-        index[_normalise_id_name(oid)] = oid
-        index[_normalise_id_name(obj.name)] = oid
+        _add(oid, oid)
+        for alias in _name_aliases(obj.name):
+            _add(alias, oid)
 
     for evt in world_state.events:
-        index[_normalise_id_name(evt.id)] = evt.id
-        index[_normalise_id_name(evt.description[:60])] = evt.id
+        _add(evt.id, evt.id)
+        # Index the event description as an alias so "the murder of
+        # Duncan" can fuzzy-match EVT_DUNCAN_MURDER even when the
+        # user never says the ID.
+        if evt.description:
+            _add(evt.description[:60], evt.id)
 
     for wid, wt in world_state.world_traits.items():
-        index[_normalise_id_name(wid)] = wid
-        index[_normalise_id_name(wt.name)] = wid
+        _add(wid, wid)
+        for alias in _name_aliases(wt.name):
+            _add(alias, wid)
 
     return index
 
@@ -737,6 +1231,206 @@ def _fuzzy_resolve_id(
             best_score = score
             best_id = real_id
     return best_id if best_score >= threshold else None
+
+
+# =====================================================================
+# Pre-resolution: scan user text for mentions before calling the LLM
+# =====================================================================
+
+# Tokens that look like ID prefixes — used to skip them during alias
+# scanning so we don't double-add them.
+_ID_PREFIXES = ("ENT_", "EVT_", "OBJ_", "LOC_", "WORLD_")
+
+
+def _extract_mentioned_ids(
+    natural_language: str,
+    world_state: WorldStateV1,
+    *,
+    max_mentions: int = 12,
+) -> List[Tuple[str, str]]:
+    """Find graph IDs whose name/aliases appear (case-insensitive) in the user text.
+
+    Returns up to ``max_mentions`` ``(mention_text, resolved_id)``
+    tuples in the order they first occur in ``natural_language``. Used
+    to inject a "MENTIONED IN QUERY" hints block into the LLM prompt
+    so the agent doesn't have to invent IDs from prose alone.
+
+    Strategy:
+      • Build an alias → ID map from entities, locations, objects,
+        events, world traits.
+      • For each alias of length ≥ 3, look for a whole-word match in
+        the user text (case-insensitive).
+      • Deduplicate by resolved ID, keeping the longest matched alias
+        (so ``"Lady Macbeth"`` wins over ``"Macbeth"`` when both fit).
+      • Also catch literal ID mentions (``ENT_FOO``) the user typed
+        directly.
+    """
+    if not natural_language or world_state is None:
+        return []
+
+    text = natural_language
+    text_lower = text.lower()
+
+    # Build (alias, resolved_id) pairs for every aliasable node.
+    alias_pairs: list[tuple[str, str]] = []
+    for eid, ent in world_state.entities.items():
+        for alias in _name_aliases(ent.name):
+            alias_pairs.append((alias, eid))
+    for lid, loc in world_state.locations.items():
+        for alias in _name_aliases(loc.name):
+            alias_pairs.append((alias, lid))
+    for oid, obj in world_state.objects.items():
+        for alias in _name_aliases(obj.name):
+            alias_pairs.append((alias, oid))
+    for wid, wt in world_state.world_traits.items():
+        for alias in _name_aliases(wt.name):
+            alias_pairs.append((alias, wid))
+
+    # Sort by alias length DESC so "Lady Macbeth" is checked before "Macbeth"
+    # — guarantees the longer match wins for overlapping aliases.
+    alias_pairs.sort(key=lambda kv: -len(kv[0]))
+
+    # Track which IDs have already been claimed and which character
+    # spans have been consumed (to avoid double-counting overlaps).
+    claimed_ids: set[str] = set()
+    consumed_spans: list[tuple[int, int]] = []
+    hits: list[tuple[int, str, str]] = []  # (position, mention, id)
+
+    def _span_overlaps(start: int, end: int) -> bool:
+        for s, e in consumed_spans:
+            if start < e and end > s:
+                return True
+        return False
+
+    # Whole-word matching via regex word boundaries; lowercased on both sides.
+    for alias, real_id in alias_pairs:
+        if real_id in claimed_ids:
+            continue
+        if len(alias) < 3:
+            continue
+        pattern = r"\b" + re.escape(alias.lower()) + r"\b"
+        m = re.search(pattern, text_lower)
+        if m and not _span_overlaps(m.start(), m.end()):
+            hits.append((m.start(), text[m.start():m.end()], real_id))
+            claimed_ids.add(real_id)
+            consumed_spans.append((m.start(), m.end()))
+
+    # Also pick up literal ID mentions the user typed (``ENT_FOO``) so
+    # the prompt confirms them as valid.
+    valid_ids = _collect_all_ids(world_state)
+    for prefix in _ID_PREFIXES:
+        for m in re.finditer(rf"\b{prefix}[A-Za-z0-9_]+\b", text):
+            tok = m.group(0)
+            if tok in valid_ids and tok not in claimed_ids:
+                hits.append((m.start(), tok, tok))
+                claimed_ids.add(tok)
+
+    hits.sort(key=lambda h: h[0])
+    return [(mention, real_id) for _pos, mention, real_id in hits[:max_mentions]]
+
+
+def _format_mentions_hint(
+    mentions: List[Tuple[str, str]],
+    world_state: WorldStateV1,
+) -> str:
+    """Render a compact "MENTIONED IN QUERY" block for the LLM prompt.
+
+    Includes the resolved ID, node type, and a short descriptor so the
+    LLM can confirm rather than reinvent. Returns an empty string when
+    no mentions were extracted.
+    """
+    if not mentions:
+        return ""
+    lines = ["## MENTIONED IN QUERY (auto-resolved hints)"]
+    for mention, real_id in mentions:
+        descriptor: str
+        if real_id in world_state.entities:
+            ent = world_state.entities[real_id]
+            descriptor = f"entity, name={ent.name!r}, status={ent.status}"
+        elif real_id in world_state.locations:
+            loc = world_state.locations[real_id]
+            descriptor = f"location, name={loc.name!r}"
+        elif real_id in world_state.objects:
+            obj = world_state.objects[real_id]
+            descriptor = f"object, name={obj.name!r}"
+        elif real_id in world_state.world_traits:
+            wt = world_state.world_traits[real_id]
+            descriptor = f"world trait, name={wt.name!r}"
+        else:
+            # Event lookup
+            evt = next((e for e in world_state.events if e.id == real_id), None)
+            if evt is not None:
+                descriptor = (
+                    f"event, t={evt.fabula_time}, type={evt.event_type}, "
+                    f"desc={evt.description[:60]!r}"
+                )
+            else:
+                descriptor = "unknown node"
+        lines.append(f"  {mention!r} → {real_id} ({descriptor})")
+    lines.append(
+        "Use these IDs verbatim in resolved_ids and any ID-bearing fields."
+    )
+    return "\n".join(lines)
+
+
+# =====================================================================
+# Property-path validation for intervention / counterfactual keys
+# =====================================================================
+
+# Per-node-prefix whitelist of property roots that the engine will
+# accept on the LHS of a ``<id>.<property>`` intervention key.
+# ``spawn`` is always permitted because genesis spawns are valid for
+# every node type.
+_VALID_PROPERTY_ROOTS: Dict[str, set[str]] = {
+    "ENT": {
+        "status", "location_id", "traits", "beliefs", "constants",
+        "spawn",
+    },
+    "OBJ": {
+        "owner_id", "location_id", "properties", "affordances", "spawn",
+    },
+    "LOC": {"ambient_state", "description", "spawn"},
+    "EVT": {
+        "event_type", "description", "actor_ids", "target_ids",
+        "outcome", "spawn",
+    },
+    "WORLD": {"magnitude", "description", "affected_domains", "spawn"},
+}
+
+
+def _validate_property_path(
+    key: str,
+    field_name: str,
+) -> Optional[ValidationError]:
+    """Return a ValidationError if ``key`` targets an invalid property.
+
+    Accepts dotted keys of the form ``<ID>.<root>[.<sub>...]``. Only
+    the *root* property is checked — sub-paths (e.g. ``traits.guilt``)
+    are passed through to the engine, which knows how to interpret
+    them. Bare keys without a dot are caught earlier by
+    :func:`_normalise_intervention_keys`; this validator focuses on
+    "wrong property for this node type" mistakes.
+    """
+    if "." not in key:
+        return None  # Handled by other validation.
+    base_id, rest = key.split(".", 1)
+    if "_" not in base_id:
+        return None  # Unknown prefix — let _check_id handle it.
+    prefix = base_id.split("_", 1)[0]
+    allowed = _VALID_PROPERTY_ROOTS.get(prefix)
+    if allowed is None:
+        return None  # Unrecognised prefix; out of our jurisdiction.
+    root = rest.split(".", 1)[0]
+    if root not in allowed:
+        return ValidationError(
+            field=field_name,
+            message=(
+                f"Property {root!r} is not valid for {prefix}_ nodes. "
+                f"Allowed: {sorted(allowed)}. "
+                f"(Full key was {key!r}.)"
+            ),
+        )
+    return None
 
 
 def _try_fuzzy_repair(
@@ -1027,6 +1721,124 @@ def _build_query(parsed: ParsedQuery) -> UserRequest:
 # Main entry point
 # =====================================================================
 
+def _resolve_system_prompt(query_type: Optional[str]) -> str:
+    if query_type is not None:
+        if query_type not in QUERY_TYPES:
+            raise ValueError(
+                f"Invalid query_type {query_type!r}. "
+                f"Must be one of {QUERY_TYPES}."
+            )
+        return _build_typed_system_prompt(query_type)
+    return _SYSTEM_PROMPT
+
+
+def _build_user_message(
+    natural_language: str,
+    world_state: Optional[WorldStateV1],
+    *,
+    constrained: bool,
+) -> str:
+    """Compose the user-message body (graph dump + mention hints + request).
+
+    When ``constrained=True`` we additionally emit the categorised
+    "VALID GRAPH IDS" block so the LLM sees the exact enum its
+    structured output will be validated against.
+    """
+    user_parts: list[str] = []
+    if world_state:
+        user_parts.append("## WORLD MODEL\n")
+        user_parts.append(_build_graph_summary(world_state))
+        user_parts.append("\n")
+        if constrained:
+            user_parts.append(_format_valid_ids_section(world_state))
+            user_parts.append("\n")
+        mentions = _extract_mentioned_ids(natural_language, world_state)
+        hint = _format_mentions_hint(mentions, world_state)
+        if hint:
+            user_parts.append(hint)
+            user_parts.append("\n")
+    user_parts.append("## USER REQUEST\n")
+    user_parts.append(natural_language)
+    return "\n".join(user_parts)
+
+
+def _select_output_model(
+    query_type: Optional[str],
+    world_state: Optional[WorldStateV1],
+) -> Tuple[type[BaseModel], bool]:
+    """Pick the structured-output schema.
+
+    Returns ``(model_cls, is_constrained)``. Constrained dynamic
+    schemas are only used when *both* the query type belongs to the
+    constrained set *and* a non-empty world state is available — the
+    ``Literal`` enums need at least some IDs to enumerate over.
+    """
+    if (
+        query_type in _CONSTRAINED_QUERY_TYPES
+        and world_state is not None
+        and _collect_all_ids(world_state)
+    ):
+        builder = _DYNAMIC_MODEL_BUILDERS[query_type]
+        return builder(world_state), True
+    return ParsedQuery, False
+
+
+def _interpret_agent_output(
+    raw_output: Any,
+    *,
+    query_type: Optional[str],
+    constrained: bool,
+) -> ParsedQuery:
+    """Normalise the agent's structured output into a ``ParsedQuery``.
+
+    Handles three cases:
+      • Constrained dynamic model → fold into ParsedQuery via
+        :func:`_normalise_dynamic_to_parsed` (also forces query_type).
+      • Plain ParsedQuery from a typed prompt → optionally override
+        query_type if the LLM misclassified despite the system prompt.
+      • Plain ParsedQuery from the legacy auto-classify path → return
+        as-is.
+    """
+    if constrained and query_type is not None and not isinstance(raw_output, ParsedQuery):
+        return _normalise_dynamic_to_parsed(raw_output, query_type)
+
+    parsed: ParsedQuery = raw_output
+    if query_type is not None and parsed.query_type != query_type:
+        logger.info(
+            "[QueryParser] Overriding LLM query_type %r → %r",
+            parsed.query_type, query_type,
+        )
+        parsed = parsed.model_copy(update={"query_type": query_type})
+    return parsed
+
+
+def _finalise_parse(
+    natural_language: str,
+    parsed: ParsedQuery,
+    world_state: Optional[WorldStateV1],
+) -> QueryParseResult:
+    """Run validation + fallback + concrete query construction."""
+    errors = _validate_parsed_query(parsed, world_state)
+    has_hard_errors = any(e.severity == "error" for e in errors)
+
+    if has_hard_errors:
+        logger.warning(
+            "[QueryParser] Validation failed with %d error(s) — attempting fallback: %s",
+            len(errors),
+            "; ".join(e.message for e in errors),
+        )
+        return _apply_fallback(natural_language, parsed, errors, world_state)
+
+    query = _build_query(parsed)
+    logger.info("[QueryParser] Resolved to %s query", parsed.query_type)
+    return QueryParseResult(
+        query=query,
+        parsed=parsed,
+        validation_errors=errors,  # may contain warnings
+        is_valid=True,
+    )
+
+
 def parse_query(
     natural_language: str,
     *,
@@ -1043,9 +1855,16 @@ def parse_query(
     query_type : str or None
         When provided, the query type is fixed (e.g. ``"observation"``,
         ``"intervention"``) and the LLM only needs to resolve IDs and
-        extract type-specific fields.  Must be one of
-        :data:`QUERY_TYPES`.  When ``None``, the LLM also classifies
+        extract type-specific fields. Must be one of
+        :data:`QUERY_TYPES`. When ``None``, the LLM also classifies
         the query type (legacy behaviour).
+
+        For the four "graph-binding" query types (``intervention``,
+        ``counterfactual``, ``directive``, ``interrogate``), passing
+        a ``world_state`` switches the structured output schema to a
+        per-call dynamic Pydantic model whose ID-bearing fields are
+        constrained to ``Literal[<valid IDs>]``. This forces the LLM
+        to emit only IDs that exist in the graph.
     world_state : WorldStateV1 or None
         The current world model. When provided, the agent resolves
         entity/event/object names to graph IDs and validates them.
@@ -1061,36 +1880,23 @@ def parse_query(
     cfg = config or QueryParsingConfig()
     model = _resolve_model(cfg.model)
 
-    # Select system prompt based on whether query_type is pre-specified
-    if query_type is not None:
-        if query_type not in QUERY_TYPES:
-            raise ValueError(
-                f"Invalid query_type {query_type!r}. "
-                f"Must be one of {QUERY_TYPES}."
-            )
-        system_prompt = _build_typed_system_prompt(query_type)
-    else:
-        system_prompt = _SYSTEM_PROMPT
+    system_prompt = _resolve_system_prompt(query_type)
+    output_model, constrained = _select_output_model(query_type, world_state)
+    user_message = _build_user_message(
+        natural_language, world_state, constrained=constrained,
+    )
 
-    # Build user message
-    user_parts: list[str] = []
-    if world_state:
-        user_parts.append("## WORLD MODEL\n")
-        user_parts.append(_build_graph_summary(world_state))
-        user_parts.append("\n")
-    user_parts.append("## USER REQUEST\n")
-    user_parts.append(natural_language)
-
-    user_message = "\n".join(user_parts)
-
-    agent: Agent[None, ParsedQuery] = Agent(
+    agent: Agent[None, Any] = Agent(
         model,
         system_prompt=system_prompt,
-        output_type=NativeOutput(ParsedQuery),
+        output_type=NativeOutput(output_model),
         retries=cfg.output_retries,
     )
 
-    logger.info("[QueryParser] Classifying: %s", natural_language[:120])
+    logger.info(
+        "[QueryParser] Classifying (constrained=%s, type=%s): %s",
+        constrained, query_type, natural_language[:120],
+    )
 
     result = agent.run_sync(
         user_message,
@@ -1099,38 +1905,10 @@ def parse_query(
             "temperature": cfg.temperature,
         },
     )
-    parsed: ParsedQuery = result.output
-
-    # If caller pre-specified the type, override any LLM misclassification
-    if query_type is not None and parsed.query_type != query_type:
-        logger.info(
-            "[QueryParser] Overriding LLM query_type %r → %r",
-            parsed.query_type, query_type,
-        )
-        parsed = parsed.model_copy(update={"query_type": query_type})
-
-    # Validate
-    errors = _validate_parsed_query(parsed, world_state)
-    has_hard_errors = any(e.severity == "error" for e in errors)
-
-    if has_hard_errors:
-        logger.warning(
-            "[QueryParser] Validation failed with %d error(s) — attempting fallback: %s",
-            len(errors),
-            "; ".join(e.message for e in errors),
-        )
-        return _apply_fallback(natural_language, parsed, errors, world_state)
-
-    # Build the concrete query
-    query = _build_query(parsed)
-    logger.info("[QueryParser] Resolved to %s query", parsed.query_type)
-
-    return QueryParseResult(
-        query=query,
-        parsed=parsed,
-        validation_errors=errors,  # may contain warnings
-        is_valid=True,
+    parsed = _interpret_agent_output(
+        result.output, query_type=query_type, constrained=constrained,
     )
+    return _finalise_parse(natural_language, parsed, world_state)
 
 
 async def parse_query_async(
@@ -1144,35 +1922,23 @@ async def parse_query_async(
     cfg = config or QueryParsingConfig()
     model = _resolve_model(cfg.model)
 
-    # Select system prompt based on whether query_type is pre-specified
-    if query_type is not None:
-        if query_type not in QUERY_TYPES:
-            raise ValueError(
-                f"Invalid query_type {query_type!r}. "
-                f"Must be one of {QUERY_TYPES}."
-            )
-        system_prompt = _build_typed_system_prompt(query_type)
-    else:
-        system_prompt = _SYSTEM_PROMPT
+    system_prompt = _resolve_system_prompt(query_type)
+    output_model, constrained = _select_output_model(query_type, world_state)
+    user_message = _build_user_message(
+        natural_language, world_state, constrained=constrained,
+    )
 
-    user_parts: list[str] = []
-    if world_state:
-        user_parts.append("## WORLD MODEL\n")
-        user_parts.append(_build_graph_summary(world_state))
-        user_parts.append("\n")
-    user_parts.append("## USER REQUEST\n")
-    user_parts.append(natural_language)
-
-    user_message = "\n".join(user_parts)
-
-    agent: Agent[None, ParsedQuery] = Agent(
+    agent: Agent[None, Any] = Agent(
         model,
         system_prompt=system_prompt,
-        output_type=NativeOutput(ParsedQuery),
+        output_type=NativeOutput(output_model),
         retries=cfg.output_retries,
     )
 
-    logger.info("[QueryParser] Classifying (async): %s", natural_language[:120])
+    logger.info(
+        "[QueryParser] Classifying async (constrained=%s, type=%s): %s",
+        constrained, query_type, natural_language[:120],
+    )
 
     result = await agent.run(
         user_message,
@@ -1181,33 +1947,7 @@ async def parse_query_async(
             "temperature": cfg.temperature,
         },
     )
-    parsed: ParsedQuery = result.output
-
-    # If caller pre-specified the type, override any LLM misclassification
-    if query_type is not None and parsed.query_type != query_type:
-        logger.info(
-            "[QueryParser] Overriding LLM query_type %r → %r",
-            parsed.query_type, query_type,
-        )
-        parsed = parsed.model_copy(update={"query_type": query_type})
-
-    errors = _validate_parsed_query(parsed, world_state)
-    has_hard_errors = any(e.severity == "error" for e in errors)
-
-    if has_hard_errors:
-        logger.warning(
-            "[QueryParser] Validation failed with %d error(s) — attempting fallback: %s",
-            len(errors),
-            "; ".join(e.message for e in errors),
-        )
-        return _apply_fallback(natural_language, parsed, errors, world_state)
-
-    query = _build_query(parsed)
-    logger.info("[QueryParser] Resolved to %s query", parsed.query_type)
-
-    return QueryParseResult(
-        query=query,
-        parsed=parsed,
-        validation_errors=errors,
-        is_valid=True,
+    parsed = _interpret_agent_output(
+        result.output, query_type=query_type, constrained=constrained,
     )
+    return _finalise_parse(natural_language, parsed, world_state)

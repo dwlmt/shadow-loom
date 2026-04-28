@@ -148,8 +148,9 @@ def _load_version(state: AppState, v: dict) -> None:
         return
     try:
         ws = WorldStateV1.model_validate_json(ver.world_state_json)
-        state.load_world_state(ws)
-        state.current_version_row_id = v["id"]
+        # Atomic swap: resets cursors, emits WORLD_STATE_CHANGED +
+        # VERSION_CHANGED + cursor-reset events in lockstep.
+        state.load_db_version(ws, v["id"], version_number=v["version"])
 
         # Mirror the selection into the MCP active-version pointer so
         # subsequent agent tool calls default to the same version.
@@ -161,7 +162,6 @@ def _load_version(state: AppState, v: dict) -> None:
             except Exception:
                 logger.exception("Failed to update active-version pointer")
 
-        state.emit(StateEvent.VERSION_CHANGED, version=v["version"])
         ui.notify(f"Loaded v{v['version']}")
     except Exception as e:
         ui.notify(f"Load failed: {e}", type="negative")
@@ -259,8 +259,10 @@ def _do_delete_version(
                 ws = WorldStateV1.model_validate_json(
                     fallback_ver.world_state_json
                 )
-                state.load_world_state(ws)
-                state.current_version_row_id = fallback_ver.id
+                state.load_db_version(
+                    ws, fallback_ver.id,
+                    version_number=fallback_ver.version,
+                )
                 if state.user_id is not None and state.project_id is not None:
                     try:
                         db.set_active_version(
@@ -270,9 +272,6 @@ def _do_delete_version(
                         logger.exception(
                             "Failed to update active-version pointer after delete"
                         )
-                state.emit(
-                    StateEvent.VERSION_CHANGED, version=fallback_ver.version,
-                )
             except Exception:
                 logger.exception(
                     "Failed to load fallback world state after delete"
