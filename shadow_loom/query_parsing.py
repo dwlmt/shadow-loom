@@ -35,6 +35,7 @@ from shadow_loom.query_models import (
 )
 
 from shadow_loom.settings import get_settings as _get_settings, resolve_model as _resolve_model
+from shadow_loom._agent_logging import log_agent_output
 
 logger = logging.getLogger(__name__)
 
@@ -1990,6 +1991,7 @@ def parse_query(
             "temperature": cfg.temperature,
         },
     )
+    log_agent_output(logger, "QueryParser", result.output)
     parsed = _interpret_agent_output(
         result.output, query_type=query_type, constrained=constrained,
     )
@@ -2039,6 +2041,7 @@ async def parse_query_async(
             "temperature": cfg.temperature,
         },
     )
+    log_agent_output(logger, "QueryParser", result.output)
     parsed = _interpret_agent_output(
         result.output, query_type=query_type, constrained=constrained,
     )

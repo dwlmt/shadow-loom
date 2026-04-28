@@ -43,6 +43,7 @@ from shadow_loom.generation import (
 from shadow_loom.models import WorldStateV1
 
 from shadow_loom.settings import get_settings as _get_settings, resolve_model as _resolve_model
+from shadow_loom._agent_logging import log_agent_output
 
 logger = logging.getLogger(__name__)
 
@@ -362,11 +363,11 @@ class AuditorConfig(BaseModel):
         description="Creative temperature for prose re-generation.",
     )
     max_tokens_audit: int = Field(
-        default=2048,
+        default=4092,
         description="Max tokens for auditor response.",
     )
     max_tokens_generation: int = Field(
-        default=4096,
+        default=64000,
         description="Max tokens for generation response.",
     )
     # --- Pass/fail thresholds for NarrativeOrderObject ---
@@ -381,6 +382,20 @@ class AuditorConfig(BaseModel):
     min_cognitive_plausibility: float = Field(
         default=0.7,
         description="Minimum cognitive plausibility ratio to pass.",
+    )
+    max_miracle_steps: int = Field(
+        default=0,
+        description=(
+            "Maximum number of tolerated miracle steps before failing. "
+            "0 preserves strict behavior."
+        ),
+    )
+    ignore_spatial_blocks: bool = Field(
+        default=False,
+        description=(
+            "When true, blocked propagations tagged as spatial_affordance "
+            "do not count toward miracle-step failure."
+        ),
     )
 
     @model_validator(mode="before")
@@ -492,12 +507,14 @@ def compute_causal_feedback(
                 f"All {total} tracked beliefs are consistent with reality."
             )
 
-    return CausalPhysicsFeedback(
+    feedback = CausalPhysicsFeedback(
         miracle_steps_detected=miracle_steps,
         foreshadowing_payoff_score=round(foreshadowing_score, 4),
         cognitive_plausibility_score=cog_plausibility_score,
         cognitive_plausibility_details=cog_details,
     )
+    log_agent_output(logger, "CausalPhysicsFeedback", feedback)
+    return feedback
 
 
 def compute_affective_feedback(
@@ -553,11 +570,17 @@ def compute_affective_feedback(
     if "surprise" in trajectory_scores:
         kl_divergence = trajectory_scores["surprise"]
 
-    return AffectiveStateFeedback(
+    feedback = AffectiveStateFeedback(
         emotional_trajectory_scores=trajectory_scores,
         kl_divergence_prediction_error=kl_divergence,
         affective_loss_mse=round(affective_loss, 4),
     )
+    log_agent_output(
+        logger,
+        f"AffectiveStateFeedback[target={brief.target_effect}, entities={eids}]",
+        feedback,
+    )
+    return feedback
 
 
 def compute_overall_pass(
@@ -574,9 +597,25 @@ def compute_overall_pass(
         return False
     if af.affective_loss_mse > config.max_affective_loss:
         return False
-    if cf.miracle_steps_detected:
+    if _count_miracle_step_failures(
+        cf.miracle_steps_detected,
+        ignore_spatial_blocks=config.ignore_spatial_blocks,
+    ) > config.max_miracle_steps:
         return False
     return True
+
+
+def _count_miracle_step_failures(
+    miracle_steps: List[str],
+    *,
+    ignore_spatial_blocks: bool,
+) -> int:
+    """Count miracle-step failures under configurable filtering rules."""
+    if not miracle_steps:
+        return 0
+    if not ignore_spatial_blocks:
+        return len(miracle_steps)
+    return sum(1 for s in miracle_steps if "(spatial_affordance)" not in s)
 
 
 def _engine_thresholds_check(
@@ -615,9 +654,16 @@ def _engine_thresholds_check(
                 f"cognitive_plausibility_score={cf.cognitive_plausibility_score:.2f} "
                 f"< min={config.min_cognitive_plausibility:.2f}"
             )
-        if cf.miracle_steps_detected:
+        miracle_failures = _count_miracle_step_failures(
+            cf.miracle_steps_detected,
+            ignore_spatial_blocks=config.ignore_spatial_blocks,
+        )
+        if miracle_failures > config.max_miracle_steps:
             failures.append(
-                f"miracle_steps_detected={list(cf.miracle_steps_detected)}"
+                "miracle_steps_detected="
+                f"{list(cf.miracle_steps_detected)} "
+                f"(counted={miracle_failures}, allowed={config.max_miracle_steps}, "
+                f"ignore_spatial_blocks={config.ignore_spatial_blocks})"
             )
 
     if af is not None:
@@ -1103,6 +1149,7 @@ def run_evaluation(
         )
 
     synthesis = result.output
+    log_agent_output(logger, "Evaluation", synthesis)
     logger.info(
         "[Evaluation] Quality synthesis complete: %d rewrite directives.",
         len(synthesis.actionable_rewrite_directives),
@@ -1198,6 +1245,7 @@ def run_audit(
         )
 
     audit = result.output
+    log_agent_output(logger, "Auditor", audit)
     logger.info(
         "[Auditor] Audit complete: passed=%s violations=%d summary=%s",
         audit.passed, len(audit.violations), audit.audit_summary,
@@ -1481,6 +1529,7 @@ def run_feedback_loop(
                 model_settings=model_settings if model_settings else None,
             )
             current_scene = result.output
+            log_agent_output(logger, "Refinement", current_scene)
         except Exception as exc:
             logger.error(
                 "[FeedbackLoop] Re-generation LLM call failed: %s. "

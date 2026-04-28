@@ -17,6 +17,8 @@ from shadow_loom.models import (
 if TYPE_CHECKING:
     from shadow_loom.ingestion import ChunkTopology, ExtractionConfig
 
+from shadow_loom._agent_logging import log_agent_output
+
 logger = logging.getLogger(__name__)
 
 # ==========================================
@@ -381,6 +383,7 @@ def extract_topology_from_prose(
     physics_result: PhysicsExtraction = physics_agent.run_sync(
         prose, deps=physics_deps,
     ).output
+    log_agent_output(logger, "PhysicsExtraction", physics_result)
 
     # --- Social extraction (information + relationship edges) ---
     social_agent = _build_social_agent(config)
@@ -393,6 +396,7 @@ def extract_topology_from_prose(
     social_result: SocialExtraction = social_agent.run_sync(
         prose, deps=social_deps,
     ).output
+    log_agent_output(logger, "SocialExtraction", social_result)
 
     topology = ChunkTopology(
         events=physics_result.events,

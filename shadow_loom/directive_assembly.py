@@ -1663,7 +1663,7 @@ class DirectiveAssembler:
                 ],
             )
 
-        return CreativeBrief(
+        brief = CreativeBrief(
             target_effect=effect,
             target_entities=entity_ids,
             original_query=getattr(directive, "original_query", None),
@@ -1681,6 +1681,8 @@ class DirectiveAssembler:
             causal_attribution=causal_attribution,
             entanglement_pairs=entanglement_pairs,
         )
+        _log_creative_brief(brief)
+        return brief
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -2177,3 +2179,97 @@ class DirectiveAssembler:
             "[PHYSICS OVERRIDE]: Characters span multiple locations. "
             "Constrain physical interaction to co-located characters only."
         )
+
+
+# =====================================================================
+# Readable summary logger for CreativeBrief
+# =====================================================================
+
+def _log_creative_brief(brief: "CreativeBrief", *, max_items: int = 10) -> None:
+    """Emit a multi-line, human-readable INFO summary of a CreativeBrief."""
+    if not logger.isEnabledFor(logging.INFO):
+        return
+
+    lines: list[str] = []
+    lines.append(
+        f"[DirectiveAssembly·CreativeBrief] effect={brief.target_effect} "
+        f"entities={brief.target_entities}"
+    )
+    if brief.original_query:
+        lines.append(f"  Original query: {brief.original_query}")
+
+    if brief.constraints:
+        lines.append("  Constraints:")
+        for c in brief.constraints[:max_items]:
+            lines.append(f"    - {c}")
+        if len(brief.constraints) > max_items:
+            lines.append(f"    … (+{len(brief.constraints) - max_items} more)")
+
+    if brief.epistemic_gaps:
+        lines.append(f"  Epistemic gaps ({len(brief.epistemic_gaps)}):")
+        for g in brief.epistemic_gaps[:max_items]:
+            lines.append(f"    · {g}")
+        if len(brief.epistemic_gaps) > max_items:
+            lines.append(
+                f"    … (+{len(brief.epistemic_gaps) - max_items} more)"
+            )
+
+    if brief.narrative_tensions:
+        lines.append(f"  Narrative tensions ({len(brief.narrative_tensions)}):")
+        for t in brief.narrative_tensions[:max_items]:
+            lines.append(f"    · {t}")
+        if len(brief.narrative_tensions) > max_items:
+            lines.append(
+                f"    … (+{len(brief.narrative_tensions) - max_items} more)"
+            )
+
+    if brief.hidden_channels:
+        lines.append(f"  Hidden channels ({len(brief.hidden_channels)}):")
+        for h in brief.hidden_channels[:max_items]:
+            lines.append(f"    · {h}")
+
+    if brief.trait_trajectories:
+        lines.append(
+            f"  Trait trajectories ({len(brief.trait_trajectories)}):"
+        )
+        for tr in brief.trait_trajectories[:max_items]:
+            lines.append(f"    · {tr}")
+
+    if brief.relationship_tensions:
+        lines.append(
+            f"  Relationship tensions ({len(brief.relationship_tensions)}):"
+        )
+        for rt in brief.relationship_tensions[:max_items]:
+            lines.append(f"    · {rt}")
+
+    if brief.physics_override:
+        lines.append(f"  Physics override: {brief.physics_override}")
+
+    if brief.counterfactual_branch:
+        lines.append(
+            f"  Counterfactual branch: {brief.counterfactual_branch}"
+        )
+
+    if brief.threat_proximity:
+        lines.append(f"  Threat proximity: {brief.threat_proximity}")
+
+    if brief.causal_attribution:
+        lines.append(f"  Causal attribution: {brief.causal_attribution}")
+
+    if brief.entanglement_pairs:
+        lines.append(
+            f"  Entanglement pairs ({len(brief.entanglement_pairs)}):"
+        )
+        for ep in brief.entanglement_pairs[:max_items]:
+            lines.append(f"    · {ep}")
+
+    if brief.rendering:
+        lines.append("  Rendering directives:")
+        for r in brief.rendering[:max_items]:
+            lines.append(f"    → {r}")
+        if len(brief.rendering) > max_items:
+            lines.append(
+                f"    … (+{len(brief.rendering) - max_items} more)"
+            )
+
+    logger.info("\n".join(lines))

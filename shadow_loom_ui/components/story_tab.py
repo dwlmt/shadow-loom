@@ -16,7 +16,6 @@ from nicegui import ui
 from shadow_loom_ui import db
 from shadow_loom_ui.state import AppState, StateEvent
 from shadow_loom_ui.task_helpers import capture_logs_to_task, notify_task_complete
-from shadow_loom_ui.theme import feather
 
 if TYPE_CHECKING:
     pass
@@ -295,19 +294,6 @@ def _render_prose(state: AppState, container) -> None:
             session_prose_set.add(key)
 
     if not prose_entries:
-        with container:
-            with ui.card().classes(
-                "w-full items-center bg-white border border-slate-200 "
-                "rounded-xl shadow-sm p-12 gap-2"
-            ):
-                feather("book-open", size="xl", color="#94a3b8")
-                ui.label("No prose generated yet").classes(
-                    "text-base font-medium text-slate-600"
-                )
-                ui.label(
-                    "Use the prompt starters above or the command bar below to "
-                    "ask questions, run directives, or write continuations."
-                ).classes("text-sm text-slate-400 text-center max-w-md")
         return
 
     with container:

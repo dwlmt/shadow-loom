@@ -36,11 +36,37 @@ def _physics_settings():
     return _get_settings().physics
 
 
-STRENGTH_MULTIPLIER: Dict[str, float] = {
-    "weak": 0.25,
-    "moderate": 0.5,
-    "strong": 0.75,
-}
+def _strength_multiplier() -> Dict[str, float]:
+    return _physics_settings().strength_multiplier
+
+
+def _strength_weight(label: str) -> float:
+    settings = _physics_settings()
+    return settings.strength_multiplier.get(label, settings.strength_moderate)
+
+
+def _force_scale(causal_force: float) -> float:
+    settings = _physics_settings()
+    if settings.causal_force_scaling == 0:
+        return 0.0
+    return causal_force / settings.causal_force_scaling
+
+
+def _mechanism_fallback_factor() -> float:
+    return _physics_settings().mechanism_fallback_factor
+
+
+def _relationship_inertia_default() -> float:
+    return _physics_settings().relationship_inertia_default
+
+
+def _inertia_epsilon() -> float:
+    return _physics_settings().inertia_epsilon
+
+
+# Backward-compatible exports used by tests and downstream imports.
+STRENGTH_MULTIPLIER: Dict[str, float] = _strength_multiplier()
+MECHANISM_FALLBACK_FACTOR: float = _mechanism_fallback_factor()
 
 # Mechanism → trait affinity mapping.  When an event's causal mechanism
 # is known, only traits in the corresponding list receive the full impulse.
@@ -57,9 +83,6 @@ MECHANISM_TRAIT_MAP: Dict[str, List[str]] = {
     "informational": ["suspicion", "curiosity", "paranoia"],
     "betrayal": ["anger", "grief", "fear", "loyalty", "affinity"],
 }
-
-MECHANISM_FALLBACK_FACTOR: float = 0.2
-
 
 class TraitMutation(BaseModel):
     """Record of a single trait change applied during propagation."""
@@ -238,8 +261,8 @@ class CausalPhysicsEngine:
                                 logger.debug("[CausalPhysics·Abduction] Skipping edge %s→%s: delay=%d not elapsed.",
                                              ce.source_id, ce.target_id, ce.propagation_delay)
                                 continue
-                        mult = STRENGTH_MULTIPLIER.get(ce.evidence_strength, 0.5)
-                        force_scale = ce.causal_force / 10.0
+                        mult = _strength_weight(ce.evidence_strength)
+                        force_scale = _force_scale(ce.causal_force)
                         target_node = self.sandbox.nodes.get(ce.target_id)
                         if target_node and target_node.get("node_type") == "Entity":
                             traits = target_node.get("traits", {})
@@ -264,7 +287,7 @@ class CausalPhysicsEngine:
                                     logger.debug("[CausalPhysics·Abduction] Event %s → %s.%s: mechanism=%s matched, old=%.3f new=%.3f",
                                                  eid, ce.target_id, trait_name, ce.mechanism, old_val, trait_data["value"])
                                 else:
-                                    trait_data["value"] = max(0.0, min(1.0, old_val + mult * force_scale * MECHANISM_FALLBACK_FACTOR))
+                                    trait_data["value"] = max(0.0, min(1.0, old_val + mult * force_scale * _mechanism_fallback_factor()))
                                     logger.debug("[CausalPhysics·Abduction] Event %s → %s.%s: mechanism=%s fallback, old=%.3f new=%.3f",
                                                  eid, ce.target_id, trait_name, ce.mechanism, old_val, trait_data["value"])
                     logger.info("[CausalPhysics·Abduction] Propagated evidence from event %s.", eid)
@@ -323,8 +346,8 @@ class CausalPhysicsEngine:
                                      u, v, delay, edge_ft, target_ft)
                         continue
 
-                evidence_w = STRENGTH_MULTIPLIER.get(d.get("evidence_strength", "moderate"), 0.5)
-                force_scale = d.get("causal_force", 5.0) / 10.0
+                evidence_w = _strength_weight(d.get("evidence_strength", "moderate"))
+                force_scale = _force_scale(d.get("causal_force", 5.0))
                 weight = evidence_w * force_scale
                 # DiGraph only keeps one edge per (u,v), take the max weight
                 mechanism = d.get("mechanism", "physical")
@@ -409,9 +432,10 @@ class CausalPhysicsEngine:
 
                     # Mechanism-targeted gating: reduce weight for non-matching traits
                     if relevant_traits is not None and trait_name not in relevant_traits:
+                        fallback = _mechanism_fallback_factor()
                         logger.debug("[CausalPhysics·Propagate] %s→%s trait=%s: mechanism=%s not in target list, w %.3f→%.3f",
-                                     src, node_id, trait_name, mechanism, w, w * MECHANISM_FALLBACK_FACTOR)
-                        w *= MECHANISM_FALLBACK_FACTOR
+                                         src, node_id, trait_name, mechanism, w, w * fallback)
+                        w *= fallback
 
                     src_data = self.sandbox.nodes.get(src)
                     if not src_data:
@@ -422,9 +446,10 @@ class CausalPhysicsEngine:
                     if src_data.get("node_type") == "WorldTrait":
                         affected = src_data.get("affected_domains", [])
                         if affected and mechanism not in affected:
+                            fallback = _mechanism_fallback_factor()
                             logger.debug("[CausalPhysics·Propagate] WORLD_ domain filter: %s→%s mechanism=%s not in %s, w %.3f→%.3f",
-                                         src, node_id, mechanism, affected, w, w * MECHANISM_FALLBACK_FACTOR)
-                            w *= MECHANISM_FALLBACK_FACTOR
+                                     src, node_id, mechanism, affected, w, w * fallback)
+                            w *= fallback
 
                     if src_data.get("node_type") == "Entity":
                         src_trait = src_data.get("traits", {}).get(trait_name)
@@ -461,7 +486,7 @@ class CausalPhysicsEngine:
                     ))
                     continue
 
-                if abs(total_impact) <= trait_inertia:
+                if abs(total_impact) <= trait_inertia + _inertia_epsilon():
                     logger.debug("[CausalPhysics·Propagate] BLOCKED inertia: %s.%s |impact|=%.3f <= inertia=%.3f",
                                  node_id, trait_name, abs(total_impact), trait_inertia)
                     self._blocked.append(BlockedPropagation(
@@ -534,8 +559,8 @@ class CausalPhysicsEngine:
                 continue
 
             # Scale delta by evidence_strength × causal_force
-            evidence_w = STRENGTH_MULTIPLIER.get(d.get("evidence_strength", "moderate"), 0.5)
-            force_scale = d.get("causal_force", 5.0) / 10.0
+            evidence_w = _strength_weight(d.get("evidence_strength", "moderate"))
+            force_scale = _force_scale(d.get("causal_force", 5.0))
             scaled_delta = raw_delta * evidence_w * force_scale
 
             # Find the relationship edge target_id → counterpart_id
@@ -546,10 +571,10 @@ class CausalPhysicsEngine:
                     current_val = rdata.get(metric, 0.0)
                     if not isinstance(current_val, (int, float)):
                         current_val = 0.0
-                    rel_inertia = rdata.get("inertia", 0.3)
+                    rel_inertia = rdata.get("inertia", _relationship_inertia_default())
 
                     # Impact > Inertia gating
-                    if abs(scaled_delta) <= rel_inertia:
+                    if abs(scaled_delta) <= rel_inertia + _inertia_epsilon():
                         logger.debug("[CausalPhysics·SocialProp] Inertia blocked: %s→%s %s |delta|=%.3f <= inertia=%.3f",
                                      target_id, counterpart_id, metric, abs(scaled_delta), rel_inertia)
                         self._blocked.append(BlockedPropagation(
@@ -591,7 +616,7 @@ class CausalPhysicsEngine:
                     "affinity": 0.0,
                     "fear": 0.0,
                     "power_dynamic": 0.0,
-                    "inertia": 0.3,
+                    "inertia": _relationship_inertia_default(),
                     "evidence_strength": "weak",
                     "last_updated_fabula": d.get("fabula_time", 0),
                     "world_id": "shadow",
@@ -609,7 +634,7 @@ class CausalPhysicsEngine:
                     old_value=0.0,
                     new_value=edge_attrs[metric],
                     impact=scaled_delta,
-                    inertia=0.3,
+                    inertia=_relationship_inertia_default(),
                     triggered_by=source_id,
                 ))
                 logger.info("[CausalPhysics·SocialProp] Created relationship %s→%s with %s=%.3f (trigger=%s)",
@@ -702,7 +727,7 @@ class CausalPhysicsEngine:
         # Step D — Social propagation (mutation_social edges)
         self.propagate_social()
 
-        return CausalPhysicsResult(
+        result = CausalPhysicsResult(
             sandbox_data=nx.node_link_data(self.sandbox),
             mutations=self._mutations,
             social_mutations=self._social_mutations,
@@ -710,3 +735,145 @@ class CausalPhysicsEngine:
             intervened_nodes=sorted(self._intervened_nodes),
             hidden_deltas=self._hidden_deltas,
         )
+        _log_physics_result(rung, interventions, evidence_node_ids, result)
+        return result
+
+
+# =====================================================================
+# Readable summary logger
+# =====================================================================
+
+_RUNG_NAMES = {
+    1: "Rung 1 (Observation)",
+    2: "Rung 2 (Intervention / do-operator)",
+    3: "Rung 3 (Counterfactual / abduction)",
+}
+
+
+def _log_physics_result(
+    rung: int,
+    interventions: Dict[str, Any] | None,
+    evidence_node_ids: List[str] | None,
+    result: CausalPhysicsResult,
+    *,
+    max_lines_per_section: int = 12,
+) -> None:
+    """Emit a multi-line, human-readable INFO summary of an engine run.
+
+    The full structured payload is too large to dump verbatim
+    (``sandbox_data`` alone is the entire NetworkX graph). Instead this
+    helper prints just the parts a human cares about: how the engine was
+    invoked, what was intervened on, what mutations happened, what was
+    blocked, and what hidden counterfactual deltas were inferred — each
+    truncated to a sensible cap.
+    """
+    if not logger.isEnabledFor(logging.INFO):
+        return
+
+    lines: list[str] = []
+    label = _RUNG_NAMES.get(rung, f"Rung {rung}")
+    lines.append(
+        f"[CausalPhysics·Result] {label} — "
+        f"{len(result.mutations)} mutations, "
+        f"{len(result.social_mutations)} social mutations, "
+        f"{len(result.blocked)} blocked, "
+        f"{len(result.intervened_nodes)} intervened, "
+        f"{len(result.hidden_deltas)} hidden-delta nodes"
+    )
+
+    if interventions:
+        ivs = list(interventions.items())[:max_lines_per_section]
+        lines.append("  Interventions (do-operator):")
+        for nid, payload in ivs:
+            lines.append(f"    - {nid} ← {payload}")
+        if len(interventions) > max_lines_per_section:
+            lines.append(
+                f"    … (+{len(interventions) - max_lines_per_section} more)"
+            )
+
+    if evidence_node_ids:
+        ev_preview = ", ".join(evidence_node_ids[:max_lines_per_section])
+        more = (
+            f" (+{len(evidence_node_ids) - max_lines_per_section} more)"
+            if len(evidence_node_ids) > max_lines_per_section else ""
+        )
+        lines.append(f"  Abduction evidence: {ev_preview}{more}")
+
+    if result.intervened_nodes:
+        nodes = ", ".join(result.intervened_nodes[:max_lines_per_section])
+        more = (
+            f" (+{len(result.intervened_nodes) - max_lines_per_section} more)"
+            if len(result.intervened_nodes) > max_lines_per_section else ""
+        )
+        lines.append(f"  Intervened nodes: {nodes}{more}")
+
+    if result.mutations:
+        # Sort by absolute shift descending so the most consequential
+        # changes come first.
+        sorted_muts = sorted(
+            result.mutations,
+            key=lambda m: abs(m.new_value - m.old_value),
+            reverse=True,
+        )
+        lines.append("  Trait mutations (largest first):")
+        for m in sorted_muts[:max_lines_per_section]:
+            shift = m.new_value - m.old_value
+            arrow = "↑" if shift > 0 else ("↓" if shift < 0 else "·")
+            lines.append(
+                f"    {arrow} {m.node_id}.{m.trait}: "
+                f"{m.old_value:.3f} → {m.new_value:.3f} "
+                f"(Δ={shift:+.3f}, impact={m.impact:.3f}, "
+                f"inertia={m.inertia:.3f})"
+            )
+        if len(sorted_muts) > max_lines_per_section:
+            lines.append(
+                f"    … (+{len(sorted_muts) - max_lines_per_section} more)"
+            )
+
+    if result.social_mutations:
+        lines.append("  Social mutations (relationships):")
+        sorted_socs = sorted(
+            result.social_mutations,
+            key=lambda s: abs(s.new_value - s.old_value),
+            reverse=True,
+        )
+        for s in sorted_socs[:max_lines_per_section]:
+            shift = s.new_value - s.old_value
+            arrow = "↑" if shift > 0 else ("↓" if shift < 0 else "·")
+            lines.append(
+                f"    {arrow} {s.source_entity_id}↔{s.target_entity_id}.{s.metric}: "
+                f"{s.old_value:.3f} → {s.new_value:.3f} "
+                f"(Δ={shift:+.3f}, via {s.triggered_by})"
+            )
+        if len(sorted_socs) > max_lines_per_section:
+            lines.append(
+                f"    … (+{len(sorted_socs) - max_lines_per_section} more)"
+            )
+
+    if result.blocked:
+        lines.append("  Blocked propagations:")
+        for b in result.blocked[:max_lines_per_section]:
+            lines.append(
+                f"    × {b.node_id}.{b.trait}: "
+                f"impact={b.impact:.3f} ≤ inertia={b.inertia:.3f} "
+                f"({b.reason})"
+            )
+        if len(result.blocked) > max_lines_per_section:
+            lines.append(
+                f"    … (+{len(result.blocked) - max_lines_per_section} more)"
+            )
+
+    if result.hidden_deltas:
+        lines.append("  Hidden counterfactual deltas (abduction inferred):")
+        items = list(result.hidden_deltas.items())[:max_lines_per_section]
+        for nid, deltas in items:
+            d_str = ", ".join(
+                f"{t}{v:+.3f}" for t, v in list(deltas.items())[:6]
+            )
+            lines.append(f"    {nid}: {d_str}")
+        if len(result.hidden_deltas) > max_lines_per_section:
+            lines.append(
+                f"    … (+{len(result.hidden_deltas) - max_lines_per_section} more)"
+            )
+
+    logger.info("\n".join(lines))

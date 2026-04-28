@@ -19,6 +19,7 @@ dependencies = [
     "sqlalchemy>=2.0",
     "authlib>=1.4",
     "httpx>=0.28",
+    "langfuse>=2.60.2",
     # MCP
     "fastmcp>=3.0",
 ]

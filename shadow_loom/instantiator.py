@@ -2,7 +2,25 @@ import logging
 import networkx as nx
 from typing import Dict, Any
 
+from shadow_loom.settings import get_settings as _get_settings
+
 logger = logging.getLogger(__name__)
+
+
+def _physics_settings():
+    return _get_settings().physics
+
+
+def _relationship_inertia_default() -> float:
+    return _physics_settings().relationship_inertia_default
+
+
+def _ambient_force_multiplier() -> float:
+    return _physics_settings().ambient_force_multiplier
+
+
+def _inertia_epsilon() -> float:
+    return _physics_settings().inertia_epsilon
 
 class AMWNInstantiator:
     """
@@ -218,7 +236,7 @@ class AMWNInstantiator:
             mag_value = mag.get("value", 0.5) if isinstance(mag, dict) else 0.5
             domains = wt_node.get("affected_domains", [])
             mechanism = domains[0] if domains else "psychological"
-            ambient_force = mag_value * 2.0  # weak baseline, max 2.0/10.0
+            ambient_force = mag_value * _ambient_force_multiplier()
 
             for ent_id in all_entity_ids:
                 if sandbox.has_node(ent_id):
@@ -412,10 +430,10 @@ class AMWNInstantiator:
                 current_val = data.get(metric, 0.0)
                 if not isinstance(current_val, (int, float)):
                     current_val = 0.0
-                rel_inertia = data.get("inertia", 0.3)
+                rel_inertia = data.get("inertia", _relationship_inertia_default())
                 desired_shift = float(new_value) - current_val
 
-                if abs(desired_shift) <= rel_inertia:
+                if abs(desired_shift) <= rel_inertia + _inertia_epsilon():
                     logger.info("[Surgery] Relationship inertia blocked: %s->%s %s shift=%.2f <= inertia=%.2f. No change.",
                                  source_id, target_id, metric, abs(desired_shift), rel_inertia)
                     return
@@ -441,7 +459,7 @@ class AMWNInstantiator:
                 "affinity": 0.0,
                 "fear": 0.0,
                 "power_dynamic": 0.0,
-                "inertia": 0.3,
+                "inertia": _relationship_inertia_default(),
                 "evidence_strength": "weak",
                 "last_updated_fabula": 0,
                 "world_id": "shadow",
@@ -485,7 +503,7 @@ class AMWNInstantiator:
                     target_val = None
                 if target_val is not None:
                     desired_shift = target_val - current_val
-                    if abs(desired_shift) <= trait_inertia:
+                    if abs(desired_shift) <= trait_inertia + _inertia_epsilon():
                         logger.info("[Surgery] Inertia blocked: %s.%s shift=%.2f <= inertia=%.2f. No change.",
                                      node_id, path, abs(desired_shift), trait_inertia)
                         return  # Trait resists — do NOT sever edges

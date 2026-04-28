@@ -48,6 +48,7 @@ from shadow_loom.query_models import (
 )
 
 from shadow_loom.settings import get_settings as _get_settings, resolve_model as _resolve_model
+from shadow_loom._agent_logging import log_agent_output
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,7 @@ class GenerationConfig(BaseModel):
         description="Max retries for output validation.",
     )
     max_tokens: int = Field(
-        default=4096,
+        default=64000,
         description="Maximum tokens in the generated prose.",
     )
     temperature: float = Field(
@@ -783,6 +784,7 @@ def render_scene(
             model_settings=model_settings if model_settings else None,
         )
         scene = result.output
+        log_agent_output(logger, "Generation", scene)
     except Exception as exc:
         logger.error("[Generation] LLM call failed: %s. Returning fallback scene.", exc)
         return GeneratedScene(

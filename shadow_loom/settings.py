@@ -66,6 +66,18 @@ class CoreSettings(BaseSettings):
         default="",
         description="API key for OpenAI. Required when using 'openai:' model prefix.",
     )
+    langfuse_secret_key: str = Field(
+        default="",
+        description="Secret key for Langfuse tracing.",
+    )
+    langfuse_public_key: str = Field(
+        default="",
+        description="Public key for Langfuse tracing.",
+    )
+    langfuse_base_url: str = Field(
+        default="",
+        description="Base URL for Langfuse API. Example: https://cloud.langfuse.com",
+    )
     default_model: str = Field(
         default="ollama:qwen3.6:27b",
         description=(
@@ -135,6 +147,8 @@ class AuditorSettings(BaseSettings):
     min_foreshadowing_score: float = Field(default=0.6)
     max_affective_loss: float = Field(default=0.3)
     min_cognitive_plausibility: float = Field(default=0.7)
+    max_miracle_steps: int = Field(default=0)
+    ignore_spatial_blocks: bool = Field(default=False)
 
 
 # =====================================================================
@@ -181,6 +195,7 @@ class CausalPhysicsSettings(BaseSettings):
     causal_force_scaling: float = Field(default=10.0)
     relationship_inertia_default: float = Field(default=0.3)
     ambient_force_multiplier: float = Field(default=2.0)
+    inertia_epsilon: float = Field(default=0.0)
     ego_memory_limit: int = Field(default=5)
 
     @property
@@ -358,6 +373,8 @@ class Settings:
             "min_foreshadowing_score": self.auditor.min_foreshadowing_score,
             "max_affective_loss": self.auditor.max_affective_loss,
             "min_cognitive_plausibility": self.auditor.min_cognitive_plausibility,
+            "max_miracle_steps": self.auditor.max_miracle_steps,
+            "ignore_spatial_blocks": self.auditor.ignore_spatial_blocks,
         }
 
     def extraction_config(self) -> dict:

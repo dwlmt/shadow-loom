@@ -45,6 +45,7 @@ from shadow_loom.models import (
     WorldStateV1,
     WorldTraitSnapshot,
 )
+from shadow_loom._agent_logging import log_agent_output
 
 logger = logging.getLogger(__name__)
 
@@ -550,6 +551,7 @@ def extract_ontology(text: str, config: ExtractionConfig | None = None) -> Globa
         logger.exception("[Step 1a] Location extraction failed — retrying once …")
         loc_result = location_agent.run_sync(text)
         loc_register = loc_result.output
+    log_agent_output(logger, "LocationOntology", loc_register)
     logger.info("[Step 1a] Extracted %d locations.", len(loc_register.locations))
 
     # --- Step 1b: Objects (with location context) ---
@@ -563,6 +565,7 @@ def extract_ontology(text: str, config: ExtractionConfig | None = None) -> Globa
         logger.exception("[Step 1b] Object extraction failed — retrying once …")
         obj_result = object_agent.run_sync(text, deps=obj_deps)
         obj_register = obj_result.output
+    log_agent_output(logger, "ObjectOntology", obj_register)
     logger.info("[Step 1b] Extracted %d objects.", len(obj_register.objects))
 
     # --- Step 1c: Entities (with location + object context) ---
@@ -576,6 +579,7 @@ def extract_ontology(text: str, config: ExtractionConfig | None = None) -> Globa
         logger.exception("[Step 1c] Entity extraction failed — retrying once …")
         ent_result = entity_agent.run_sync(text, deps=ent_deps)
         ent_register = ent_result.output
+    log_agent_output(logger, "EntityOntology", ent_register)
     logger.info("[Step 1c] Extracted %d entities.", len(ent_register.entities))
 
     # --- Step 1d: World Traits (no dependencies) ---
@@ -588,6 +592,7 @@ def extract_ontology(text: str, config: ExtractionConfig | None = None) -> Globa
         logger.exception("[Step 1d] World traits extraction failed — retrying once …")
         wt_result = world_traits_agent.run_sync(text)
         wt_register = wt_result.output
+    log_agent_output(logger, "WorldTraitsOntology", wt_register)
     logger.info("[Step 1d] Extracted %d world traits.", len(wt_register.world_traits))
 
     # --- Resolve object owner_ids to ENT_ IDs ---
@@ -1172,6 +1177,7 @@ def extract_topology(
         try:
             scaffold_result = socratic_agent.run_sync(socratic_msg, deps=socratic_deps)
             scaffold = scaffold_result.output
+            log_agent_output(logger, f"Socratic[chunk={i + 1}]", scaffold)
         except Exception:
             logger.exception("[Step 2] Chunk %d scaffolding FAILED — using empty scaffold.", i + 1)
             scaffold = SocraticScaffold()
@@ -1195,6 +1201,7 @@ def extract_topology(
         try:
             physics_result = physics_agent.run_sync(physics_msg, deps=physics_deps)
             physics = physics_result.output
+            log_agent_output(logger, f"PhysicsExtraction[chunk={i + 1}]", physics)
         except Exception:
             logger.exception("[Step 3a] Chunk %d FAILED — returning empty physics.", i + 1)
             physics = PhysicsExtraction()
@@ -1212,6 +1219,7 @@ def extract_topology(
             try:
                 physics_result = physics_agent.run_sync(retry_msg, deps=physics_deps)
                 physics = physics_result.output
+                log_agent_output(logger, f"PhysicsExtraction[chunk={i + 1},retry]", physics)
             except Exception:
                 logger.exception("[Step 3a] Chunk %d retry FAILED.", i + 1)
 
@@ -1250,6 +1258,7 @@ def extract_topology(
             try:
                 social_result = social_agent.run_sync(social_msg, deps=social_deps)
                 social = social_result.output
+                log_agent_output(logger, f"SocialExtraction[chunk={i + 1}]", social)
             except Exception:
                 logger.exception("[Step 3b] Chunk %d FAILED — returning empty social.", i + 1)
 
@@ -1266,6 +1275,7 @@ def extract_topology(
                 try:
                     retry_result = social_agent.run_sync(retry_social_msg, deps=social_deps)
                     retry_social = retry_result.output
+                    log_agent_output(logger, f"SocialExtraction[chunk={i + 1},retry]", retry_social)
                     if retry_social.information_topology:
                         # Merge: keep original social, take retry's info
                         social = SocialExtraction(
@@ -2642,6 +2652,7 @@ def extract_world_trait_timelines(
             deps=deps,
         )
         extraction = result.output
+        log_agent_output(logger, "WorldTraitTimeline", extraction)
     except Exception:
         logger.exception("[Step 5] World trait timeline extraction FAILED — skipping.")
         return ws
