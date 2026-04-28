@@ -1,4 +1,10 @@
 from shadow_loom.causal_physics import CausalPhysicsEngine, CausalPhysicsResult, SocialMutation
+from shadow_loom.amwn import (
+    CounterfactualVar, CtfCalculusReport,
+    build_causal_diagram, build_amwn,
+    check_consistency, check_ctf_independence, check_exclusion,
+    apply_ctf_calculus,
+)
 from shadow_loom.directive_assembly import (
     DirectiveAssembler, CreativeBrief, NarrativeTension,
     HiddenInformationChannel, CandidateResult,
@@ -64,6 +70,14 @@ __all__ = [
     "CausalPhysicsEngine",
     "CausalPhysicsResult",
     "SocialMutation",
+    "CounterfactualVar",
+    "CtfCalculusReport",
+    "build_causal_diagram",
+    "build_amwn",
+    "check_consistency",
+    "check_ctf_independence",
+    "check_exclusion",
+    "apply_ctf_calculus",
     "DirectiveAssembler",
     "CreativeBrief",
     "NarrativeTension",

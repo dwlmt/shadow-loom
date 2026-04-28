@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 import networkx as nx
 from pydantic import BaseModel, Field
 
+from shadow_loom.amwn import CtfCalculusReport, apply_ctf_calculus
 from shadow_loom.instantiator import AMWNInstantiator
 from shadow_loom.models import WorldStateV1, reconstruct_entity_at
 from shadow_loom.settings import get_settings as _get_settings
@@ -125,6 +126,23 @@ class CausalPhysicsResult(BaseModel):
     hidden_deltas: Dict[str, Dict[str, float]] = Field(
         default_factory=dict,
         description="node_id → {trait_name: delta} computed during abduction",
+    )
+    # ctf-calculus pre-flight pruning (Correa & Bareinboim, ICML 2025).
+    rule3_pruned_interventions: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Intervention keys excluded by Rule 3 (Exclusion): the target "
+            "node has no directed path to any evidence/target variable in "
+            "the mutilated diagram, so the do-surgery is provably vacuous."
+        ),
+    )
+    rule2_redundant_evidence: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Evidence node IDs flagged by Rule 2 (Independence): the node "
+            "is d-separated from the intervened variables on the AMWN, so "
+            "abduction on it cannot change the counterfactual distribution."
+        ),
     )
 
 
@@ -763,6 +781,42 @@ class CausalPhysicsEngine:
         return reachable
 
     # ------------------------------------------------------------------
+    # ctf-calculus pre-flight (Correa & Bareinboim, ICML 2025)
+    # ------------------------------------------------------------------
+    def _apply_ctf_calculus_preflight(
+        self,
+        *,
+        rung: int,
+        interventions: Dict[str, Any],
+        evidence_node_ids: List[str],
+    ) -> CtfCalculusReport:
+        """Run the static AMWN d-separation checks before simulation.
+
+        Rule 3 (Exclusion) prunes intervention keys whose target node has
+        no directed path to any evidence/target variable in the mutilated
+        diagram. Rule 2 (Independence) flags evidence nodes that are
+        d-separated from every intervened variable on the AMWN.
+
+        The report is purely diagnostic at this layer; the engine still
+        executes the requested surgery so the heuristic narrative
+        physics layer remains unaffected.
+        """
+        if not interventions:
+            return CtfCalculusReport()
+        try:
+            return apply_ctf_calculus(
+                self.world_state,
+                interventions=interventions,
+                evidence_node_ids=evidence_node_ids,
+                # Without explicit query targets, Rule 3 has nothing to
+                # test against — pass None to disable that branch.
+                target_node_ids=None,
+            )
+        except Exception:  # pragma: no cover - defensive
+            logger.exception("[CausalPhysics\u00b7ctf-calculus] Pre-flight failed; skipping report.")
+            return CtfCalculusReport()
+
+    # ------------------------------------------------------------------
     # Main orchestrator
     # ------------------------------------------------------------------
     def execute(
@@ -786,6 +840,19 @@ class CausalPhysicsEngine:
         if rung not in (2, 3):
             raise ValueError(f"Invalid rung={rung}. Must be 2 (intervention) or 3 (counterfactual).")
 
+        # Step 0 — ctf-calculus pre-flight (Rules 2 & 3).
+        # Static graphical reasoning on the AMWN: prune interventions that
+        # are *provably* vacuous (Rule 3) and flag evidence that is
+        # d-separated from every intervention (Rule 2). The simulation
+        # below still runs on the unpruned set so heuristic narrative
+        # propagation is preserved — the report is informational and the
+        # pipeline can decide whether to short-circuit.
+        ctf_report = self._apply_ctf_calculus_preflight(
+            rung=rung,
+            interventions=interventions or {},
+            evidence_node_ids=evidence_node_ids or [],
+        )
+
         # Step A — Abduction (Rung 3 only)
         if rung == 3 and evidence_node_ids:
             self.abduction_update(evidence_node_ids)
@@ -807,6 +874,8 @@ class CausalPhysicsEngine:
             blocked=self._blocked,
             intervened_nodes=sorted(self._intervened_nodes),
             hidden_deltas=self._hidden_deltas,
+            rule3_pruned_interventions=ctf_report.rule3_pruned,
+            rule2_redundant_evidence=ctf_report.rule2_redundant_evidence,
         )
         _log_physics_result(rung, interventions, evidence_node_ids, result)
         return result
@@ -948,5 +1017,14 @@ def _log_physics_result(
             lines.append(
                 f"    … (+{len(result.hidden_deltas) - max_lines_per_section} more)"
             )
+
+    if result.rule3_pruned_interventions:
+        lines.append("  ctf-calculus Rule 3 pruned (vacuous interventions):")
+        for k in result.rule3_pruned_interventions[:max_lines_per_section]:
+            lines.append(f"    × {k}")
+    if result.rule2_redundant_evidence:
+        lines.append("  ctf-calculus Rule 2 redundant evidence (d-separated):")
+        for k in result.rule2_redundant_evidence[:max_lines_per_section]:
+            lines.append(f"    × {k}")
 
     logger.info("\n".join(lines))
