@@ -37,8 +37,8 @@ from shadow_loom.extract_graph import extract_ego_graph_from_memory
 from shadow_loom.query_models import DirectiveQuery
 
 # ── Reuse plots ──
-from tests.test_plot_models.macbeth import world_state as macbeth_ws
-from tests.test_plot_models.gone_girl import world_state as gone_girl_ws
+from example_worlds.macbeth import world_state as macbeth_ws
+from example_worlds.gone_girl import world_state as gone_girl_ws
 
 
 # =====================================================================

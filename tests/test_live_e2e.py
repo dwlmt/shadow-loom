@@ -2,7 +2,7 @@
 Live end-to-end integration tests for the full Shadow-Loom pipeline.
 
 These tests run real LLM calls via Ollama against pre-built plot fixtures
-from ``tests.test_plot_models``.  They exercise every query type through
+from ``example_worlds``.  They exercise every query type through
 the complete pipeline: narrative physics → generation → audit/feedback →
 re-extraction → versioned merge.
 
@@ -34,8 +34,8 @@ from shadow_loom.query_models import (
 )
 
 # -- Plot model fixtures --------------------------------------------------
-from tests.test_plot_models.macbeth import world_state as macbeth_ws
-from tests.test_plot_models.gone_girl import world_state as gone_girl_ws
+from example_worlds.macbeth import world_state as macbeth_ws
+from example_worlds.gone_girl import world_state as gone_girl_ws
 
 # =========================================================================
 # Skip if Ollama is not reachable

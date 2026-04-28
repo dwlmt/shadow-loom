@@ -9,6 +9,12 @@ from nicegui import app, ui
 
 from shadow_loom_ui import config, db
 from shadow_loom_ui.state import AppState
+from shadow_loom_ui.theme import (
+    CARD_CLS,
+    PAGE_TITLE_CLS,
+    SECTION_TITLE_CLS,
+    feather,
+)
 
 if TYPE_CHECKING:
     pass
@@ -20,29 +26,37 @@ def build_settings(state: AppState) -> None:
     """Build the settings page layout."""
 
     if not state.user_id:
-        ui.label("Sign in to access settings.").classes("text-h5 q-pa-lg text-grey")
+        ui.label("Sign in to access settings.").classes(
+            "text-2xl text-slate-500 q-pa-lg"
+        )
         return
 
     user = db.get_user(state.user_id)
     if user is None:
-        ui.label("User not found.").classes("text-h5 q-pa-lg text-negative")
+        ui.label("User not found.").classes(
+            "text-2xl text-negative q-pa-lg"
+        )
         return
 
-    with ui.column().classes("w-full max-w-3xl mx-auto q-pa-lg gap-6"):
-        ui.label("Settings").classes("text-h4")
+    with ui.column().classes("w-full max-w-3xl mx-auto p-6 md:p-8 gap-6"):
+        ui.label("Settings").classes(PAGE_TITLE_CLS)
 
         # ---- Profile ----
-        with ui.card().classes("w-full"):
-            ui.label("Profile").classes("text-h6")
+        with ui.card().classes("w-full " + CARD_CLS):
+            ui.label("Profile").classes(SECTION_TITLE_CLS)
 
             with ui.row().classes("items-center gap-4 q-mb-md"):
                 if user.avatar_url:
                     ui.avatar(size="xl").props(f'src="{user.avatar_url}"')
                 with ui.column():
-                    ui.label(user.username).classes("text-subtitle1")
-                    ui.label(user.email or "").classes("text-caption text-grey")
+                    ui.label(user.username).classes(
+                        "text-base font-semibold text-slate-800"
+                    )
+                    ui.label(user.email or "").classes(
+                        "text-xs text-slate-500"
+                    )
                     if user.provider:
-                        ui.badge(f"via {user.provider}", color="blue-grey").props("dense")
+                        ui.badge(f"via {user.provider}", color="secondary").props("dense")
 
             display_name_input = ui.input(
                 "Display Name", value=user.display_name or ""
@@ -60,32 +74,37 @@ def build_settings(state: AppState) -> None:
                 storage["display_name"] = state.display_name
                 ui.notify("Profile saved!", type="positive")
 
-            ui.button("Save Profile", icon="save", on_click=_save_profile).props(
-                "color=primary no-caps"
-            )
+            with ui.button(on_click=_save_profile).props(
+                "unelevated color=primary no-caps"
+            ).classes("rounded-lg shadow-sm"):
+                with ui.row().classes("items-center gap-2"):
+                    feather("save")
+                    ui.label("Save Profile")
 
         # ---- Connected Accounts ----
-        with ui.card().classes("w-full"):
-            ui.label("Connected Accounts").classes("text-h6")
+        with ui.card().classes("w-full " + CARD_CLS):
+            ui.label("Connected Accounts").classes(SECTION_TITLE_CLS)
             ui.label(
                 "Your account is linked to the provider you signed in with. "
                 "Additional provider linking is not yet available."
-            ).classes("text-body2 text-grey")
+            ).classes("text-sm text-slate-500")
 
             with ui.row().classes("gap-2"):
                 if user.provider:
-                    ui.chip(user.provider.title(), icon="link").props("color=primary")
+                    ui.chip(user.provider.title(), icon="link").props(
+                        "color=primary outline"
+                    )
 
         # ---- API Keys ----
-        with ui.card().classes("w-full"):
+        with ui.card().classes("w-full " + CARD_CLS):
             with ui.row().classes("items-center gap-2"):
-                ui.icon("vpn_key", size="md", color="primary")
-                ui.label("API Keys").classes("text-h6")
+                feather("key", size="lg", color="#C68661")
+                ui.label("API Keys").classes(SECTION_TITLE_CLS)
 
             ui.label(
                 "API keys allow external tools and MCP clients to access your projects "
                 "via Bearer token authentication."
-            ).classes("text-body2 text-grey q-mb-md")
+            ).classes("text-sm text-slate-500 mb-4")
 
             # Create new key
             with ui.row().classes("items-center gap-2"):
@@ -113,9 +132,12 @@ def build_settings(state: AppState) -> None:
                     _show_new_key_dialog(raw_key)
                     _refresh_keys()
 
-                ui.button("Generate Key", icon="add", on_click=_create_key).props(
-                    "no-caps color=primary"
-                )
+                with ui.button(on_click=_create_key).props(
+                    "unelevated color=primary no-caps"
+                ).classes("rounded-lg shadow-sm"):
+                    with ui.row().classes("items-center gap-2"):
+                        feather("plus")
+                        ui.label("Generate Key")
 
             # Key list
             keys_container = ui.column().classes("w-full q-mt-md")
@@ -125,7 +147,9 @@ def build_settings(state: AppState) -> None:
                 keys = db.list_api_keys(state.user_id)
                 if not keys:
                     with keys_container:
-                        ui.label("No API keys yet.").classes("text-body2 text-grey")
+                        ui.label("No API keys yet.").classes(
+                            "text-sm text-slate-400 italic"
+                        )
                     return
 
                 with keys_container:
@@ -134,13 +158,17 @@ def build_settings(state: AppState) -> None:
                             with ui.item():
                                 with ui.item_section():
                                     with ui.row().classes("items-center gap-2"):
-                                        ui.item_label(key["name"]).classes("text-bold")
-                                        ui.badge(key["key_prefix"], color="blue-grey").props(
+                                        ui.item_label(key["name"]).classes(
+                                            "text-bold text-slate-800"
+                                        )
+                                        ui.badge(key["key_prefix"], color="secondary").props(
                                             "dense"
                                         )
                                         for scope in (key["scopes"] or "").split(","):
                                             if scope:
-                                                ui.badge(scope, color="teal").props("dense outline")
+                                                ui.badge(scope, color="primary").props(
+                                                    "dense outline"
+                                                )
                                         if not key["is_active"]:
                                             ui.badge("revoked", color="negative").props("dense")
 
@@ -163,30 +191,37 @@ def build_settings(state: AppState) -> None:
                                             _refresh_keys()
                                             ui.notify("Key revoked")
 
-                                        ui.button(
-                                            "Revoke", icon="delete", on_click=_revoke
-                                        ).props("flat dense color=negative")
+                                        with ui.button(on_click=_revoke).props(
+                                            "flat dense color=negative no-caps"
+                                        ):
+                                            with ui.row().classes("items-center gap-1"):
+                                                feather("trash-2", size="sm")
+                                                ui.label("Revoke").classes("text-xs")
 
             _refresh_keys()
 
         # ---- Preferences ----
-        with ui.card().classes("w-full"):
-            ui.label("Preferences").classes("text-h6")
-            ui.label("Coming soon: default model, theme, pipeline configuration.").classes(
-                "text-body2 text-grey"
-            )
+        with ui.card().classes("w-full " + CARD_CLS):
+            ui.label("Preferences").classes(SECTION_TITLE_CLS)
+            ui.label(
+                "Coming soon: default model, theme, pipeline configuration."
+            ).classes("text-sm text-slate-500")
 
 
 def _show_new_key_dialog(raw_key: str) -> None:
     """Show a dialog with the newly created API key (shown only once)."""
-    with ui.dialog() as dlg, ui.card().classes("w-96"):
-        ui.label("API Key Created").classes("text-h6")
+    with ui.dialog() as dlg, ui.card().classes(
+        "w-96 bg-white border border-slate-200 rounded-xl shadow-sm p-6"
+    ):
+        ui.label("API Key Created").classes("text-lg font-semibold text-slate-800")
         ui.label(
-            "Copy this key now — it will not be shown again."
-        ).classes("text-body2 text-warning q-mb-sm")
+            "Copy this key now \u2014 it will not be shown again."
+        ).classes("text-sm text-warning mb-3")
 
         with ui.row().classes("items-center gap-2 w-full"):
-            key_field = ui.input(value=raw_key).classes("flex-grow").props("readonly outlined dense")
+            key_field = ui.input(value=raw_key).classes("flex-grow").props(
+                "readonly outlined dense"
+            )
 
             def _copy():
                 import json as _json
@@ -195,8 +230,11 @@ def _show_new_key_dialog(raw_key: str) -> None:
                 )
                 ui.notify("Copied!", type="positive")
 
-            ui.button(icon="content_copy", on_click=_copy).props("flat dense")
+            with ui.button(on_click=_copy).props("flat dense color=secondary"):
+                feather("copy")
 
-        ui.button("Done", on_click=dlg.close).props("flat").classes("q-mt-sm")
+        ui.button("Done", on_click=dlg.close).props(
+            "unelevated color=primary no-caps"
+        ).classes("rounded-lg mt-3")
 
     dlg.open()

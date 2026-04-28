@@ -29,7 +29,7 @@ from shadow_loom.narrative_physics import calculate_narrative_physics
 from shadow_loom.query_models import InterventionQuery, CounterfactualQuery
 
 # ── Reuse a plot for integration tests ──
-from tests.test_plot_models.macbeth import world_state as macbeth_ws
+from example_worlds.macbeth import world_state as macbeth_ws
 
 
 # =====================================================================

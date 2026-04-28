@@ -26,7 +26,7 @@ from shadow_loom.query_models import (
     CounterfactualQuery,
 )
 from shadow_loom.extract_graph import extract_ego_graph_from_memory
-from tests.test_plot_models.macbeth import world_state as macbeth_ws
+from example_worlds.macbeth import world_state as macbeth_ws
 
 
 # =====================================================================

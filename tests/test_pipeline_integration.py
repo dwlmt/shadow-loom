@@ -44,10 +44,10 @@ from shadow_loom.query_models import (
 )
 
 # ── Reuse enriched plots ──
-from tests.test_plot_models.macbeth import world_state as macbeth_ws
-from tests.test_plot_models.nineteen_eighty_four import world_state as orwell_ws
-from tests.test_plot_models.gone_girl import world_state as gone_girl_ws
-from tests.test_plot_models.brief_encounter import world_state as brief_encounter_ws
+from example_worlds.macbeth import world_state as macbeth_ws
+from example_worlds.nineteen_eighty_four import world_state as orwell_ws
+from example_worlds.gone_girl import world_state as gone_girl_ws
+from example_worlds.brief_encounter import world_state as brief_encounter_ws
 
 
 # =====================================================================

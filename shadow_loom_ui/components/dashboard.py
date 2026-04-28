@@ -11,6 +11,13 @@ from nicegui import app, ui
 
 from shadow_loom.ingestion import ExtractionConfig, run_extraction
 from shadow_loom_ui import config, db
+from shadow_loom_ui.theme import (
+    CARD_CLS,
+    CARD_TIGHT_CLS,
+    PAGE_TITLE_CLS,
+    SECTION_TITLE_CLS,
+    feather,
+)
 
 if TYPE_CHECKING:
     from shadow_loom_ui.state import AppState
@@ -27,18 +34,21 @@ _SAMPLE_DIR = Path(__file__).resolve().parent.parent.parent / "sample_plots"
 def build_dashboard(state: AppState) -> None:
     """Build the main dashboard layout."""
 
-    with ui.column().classes("w-full max-w-6xl mx-auto q-pa-lg gap-6"):
+    with ui.column().classes("w-full max-w-6xl mx-auto p-6 md:p-8 gap-6"):
         # ---- Quick actions ----
-        with ui.row().classes("w-full items-center justify-between"):
-            ui.label("Dashboard").classes("text-h4")
+        with ui.row().classes("w-full items-center justify-between mb-2"):
+            ui.label("Dashboard").classes(PAGE_TITLE_CLS)
             with ui.row().classes("gap-2"):
                 ingest_dlg = _build_ingest_dialog(state)
-                ui.button("New Project", icon="add", on_click=ingest_dlg.open).props(
-                    "color=primary no-caps"
-                )
+                with ui.button(on_click=ingest_dlg.open).props(
+                    "unelevated color=primary no-caps"
+                ).classes("rounded-lg shadow-sm"):
+                    with ui.row().classes("items-center gap-2"):
+                        feather("plus")
+                        ui.label("New Project")
 
         # ---- My Projects ----
-        ui.label("My Projects").classes("text-h6")
+        ui.label("My Projects").classes(SECTION_TITLE_CLS)
         projects_container = ui.row().classes("w-full gap-4 flex-wrap")
         _render_project_cards(state, projects_container)
 
@@ -46,33 +56,49 @@ def build_dashboard(state: AppState) -> None:
         if state.user_id:
             starred = db.list_starred_projects(state.user_id)
             if starred:
-                ui.label("Starred Projects").classes("text-h6 q-mt-md")
+                ui.label("Starred Projects").classes(
+                    SECTION_TITLE_CLS + " mt-4"
+                )
                 starred_container = ui.row().classes("w-full gap-4 flex-wrap")
                 _render_starred_cards(starred, starred_container)
 
-        # ---- Example Projects ----
-        if _SAMPLE_DIR.exists():
-            samples = sorted(_SAMPLE_DIR.glob("*.txt"))
-            if samples:
-                ui.label("Example Plots").classes("text-h6 q-mt-md")
-                with ui.row().classes("w-full gap-3 flex-wrap"):
-                    for sample_file in samples:
-                        title = sample_file.stem.replace("_", " ").title()
-                        _example_chip(state, sample_file, title)
+        # ---- Example Projects (pre-built world models) ----
+        examples = db.list_example_projects()
+        if examples:
+            ui.label("Example Plots").classes(SECTION_TITLE_CLS + " mt-4")
+            ui.label(
+                "Pre-built world models. Click an example to copy it into "
+                "your projects \u2014 no ingestion required."
+            ).classes("text-xs text-slate-500 -mt-2")
+            with ui.row().classes("w-full gap-3 flex-wrap"):
+                for ex in examples:
+                    _example_project_chip(state, ex)
 
         # ---- Recent Activity ----
         if state.user_id:
             activities = db.get_user_activity(state.user_id, limit=20)
             if activities:
-                ui.label("Recent Activity").classes("text-h6 q-mt-md")
-                with ui.list().props("bordered separator").classes("w-full"):
+                ui.label("Recent Activity").classes(
+                    SECTION_TITLE_CLS + " mt-4"
+                )
+                with ui.card().classes(
+                    "w-full p-0 bg-white border border-slate-200 "
+                    "rounded-xl shadow-sm overflow-hidden"
+                ):
                     for act in activities[:10]:
-                        with ui.item():
-                            with ui.item_section():
-                                ui.item_label(act["summary"] or act["action"])
-                                ui.item_label(
-                                    str(act["created_at"])[:16] if act["created_at"] else ""
-                                ).props("caption")
+                        with ui.row().classes(
+                            "w-full items-center px-4 py-3 "
+                            "border-b border-slate-100 last:border-b-0"
+                        ):
+                            with ui.column().classes("gap-0"):
+                                ui.label(act["summary"] or act["action"]).classes(
+                                    "text-sm text-slate-700"
+                                )
+                                ui.label(
+                                    str(act["created_at"])[:16]
+                                    if act["created_at"]
+                                    else ""
+                                ).classes("text-xs text-slate-400")
 
 
 # =====================================================================
@@ -87,30 +113,49 @@ def _render_project_cards(state: AppState, container: ui.row) -> None:
 
     if not projects:
         with container:
-            with ui.card().classes("w-72 q-pa-md"):
-                ui.icon("folder_open", size="xl", color="grey").classes("q-mb-sm")
-                ui.label("No projects yet").classes("text-body1 text-grey")
-                ui.label("Create a new project to get started.").classes("text-caption text-grey")
+            with ui.card().classes(
+                "w-72 bg-white border border-slate-200 rounded-xl shadow-sm p-6 "
+                "text-center"
+            ):
+                with ui.row().classes("justify-center w-full mb-2"):
+                    feather("folder", size="xl", color="#94a3b8")
+                ui.label("No projects yet").classes(
+                    "text-sm font-medium text-slate-700"
+                )
+                ui.label("Create a new project to get started.").classes(
+                    "text-xs text-slate-400"
+                )
         return
 
     with container:
         for p in projects:
-            with ui.card().classes("w-72 cursor-pointer hover:shadow-lg transition-shadow").on(
+            with ui.card().classes(
+                "w-72 bg-white border border-slate-200 rounded-xl shadow-sm "
+                "p-5 cursor-pointer sl-card-hover"
+            ).on(
                 "click", lambda pid=p["id"]: ui.navigate.to(f"/project/{pid}")
             ):
-                with ui.row().classes("items-center gap-2"):
-                    ui.icon("auto_stories", color="primary")
-                    ui.label(p["name"]).classes("text-subtitle1 ellipsis")
+                with ui.row().classes("items-center gap-2 w-full no-wrap"):
+                    feather("book-open", color="#C68661")
+                    ui.label(p["name"]).classes(
+                        "text-base font-semibold text-slate-800 ellipsis"
+                    )
                 if p.get("description"):
-                    ui.label(p["description"][:80]).classes("text-caption text-grey ellipsis")
-                with ui.row().classes("w-full justify-between q-mt-sm"):
-                    ui.label(f"v{p.get('version_count', 0)}").classes("text-caption text-grey")
-                    ui.label(p.get("updated_at", "")).classes("text-caption text-grey")
-                with ui.row().classes("gap-1"):
+                    ui.label(p["description"][:80]).classes(
+                        "text-xs text-slate-500 ellipsis mt-1"
+                    )
+                with ui.row().classes("w-full justify-between mt-3"):
+                    ui.label(f"v{p.get('version_count', 0)}").classes(
+                        "text-xs text-slate-400"
+                    )
+                    ui.label(p.get("updated_at", "")).classes(
+                        "text-xs text-slate-400"
+                    )
+                with ui.row().classes("gap-1 mt-2"):
                     if p.get("is_public"):
-                        ui.badge("public", color="teal").props("dense")
+                        ui.badge("public", color="primary").props("dense")
                     if p.get("is_template"):
-                        ui.badge("example", color="blue-grey").props("dense")
+                        ui.badge("example", color="secondary").props("dense")
 
 
 def _render_starred_cards(starred_ids: list[int], container: ui.row) -> None:
@@ -122,54 +167,55 @@ def _render_starred_cards(starred_ids: list[int], container: ui.row) -> None:
             proj = db.get_project(pid)
             if proj is None:
                 continue
-            with ui.card().classes("w-72 cursor-pointer hover:shadow-lg transition-shadow").on(
+            with ui.card().classes(
+                "w-72 bg-white border border-slate-200 rounded-xl shadow-sm "
+                "p-5 cursor-pointer sl-card-hover"
+            ).on(
                 "click", lambda p_id=pid: ui.navigate.to(f"/project/{p_id}")
             ):
                 with ui.row().classes("items-center gap-2"):
-                    ui.icon("star", color="amber")
-                    ui.label(proj.name).classes("text-subtitle1 ellipsis")
+                    feather("star", color="#D4A35B")
+                    ui.label(proj.name).classes(
+                        "text-base font-semibold text-slate-800 ellipsis"
+                    )
 
 
 # =====================================================================
-# Example chip — quick ingest from sample plots
+# Example project chip — fork pre-built world model into user account
 # =====================================================================
 
-def _example_chip(state: AppState, sample_file: Path, title: str) -> None:
-    """Render a clickable chip that ingests a sample plot."""
+def _example_project_chip(state: AppState, example: dict) -> None:
+    """Render a chip for a pre-built example world model.
 
-    async def _ingest_sample():
-        ui.notify(f"Ingesting {title}...", type="info")
+    Clicking forks the example project into the current user's account
+    and navigates to it. No ingestion runs.
+    """
+
+    def _use_example():
+        if state.user_id is None:
+            ui.notify("Sign in to copy this example into your projects.",
+                      type="warning")
+            return
         try:
-            text = sample_file.read_text(encoding="utf-8")
-            cfg = ExtractionConfig(
-                chunk_strategy="act_headings",
-                fabula_time_spacing=100,
-                output_retries=5,
-                max_correction_retries=1,
+            forked = db.fork_project(
+                source_project_id=example["id"],
+                new_owner_id=state.user_id,
+                new_name=example["name"],
             )
-            ws, report = await asyncio.to_thread(
-                run_extraction, text, cfg,
-            )
-            proj = db.create_project(
-                name=title,
-                raw_text=text,
-                owner_id=state.user_id,
-                is_public=False,
-            )
-            db.save_version(
-                project_id=proj.id,
-                world_state_json=ws.model_dump_json(),
-                source="ingestion",
-                description="Initial ingestion from example",
-                user_id=state.user_id,
-            )
-            ui.notify(f"Created {title}!", type="positive")
-            ui.navigate.to(f"/project/{proj.id}")
-        except Exception as e:
-            logger.exception("Sample ingestion failed")
-            ui.notify(f"Failed: {e}", type="negative")
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Forking example failed")
+            ui.notify(f"Failed to copy example: {exc}", type="negative")
+            return
+        if forked is None:
+            ui.notify("Example has no saved version yet.", type="warning")
+            return
+        ui.notify(f"Copied '{example['name']}' to your projects.",
+                  type="positive")
+        ui.navigate.to(f"/project/{forked.id}")
 
-    ui.chip(title, icon="menu_book", on_click=_ingest_sample).props("clickable outline")
+    ui.chip(example["name"], icon="auto_stories", on_click=_use_example).props(
+        "clickable outline color=secondary"
+    )
 
 
 # =====================================================================
@@ -182,11 +228,13 @@ def _build_ingest_dialog(state: AppState) -> ui.dialog:
     dialog = ui.dialog().props("persistent maximized")
 
     with dialog, ui.card().classes("w-full max-w-3xl"):
-        ui.label("Ingest Narrative Text").classes("text-h5")
+        ui.label("Ingest Narrative Text").classes(
+            "text-xl font-semibold text-slate-800"
+        )
         ui.label(
             "Paste or upload raw story text. The pipeline will extract "
             "entities, events, locations, objects, and all topology edges."
-        ).classes("text-body2 text-grey")
+        ).classes("text-sm text-slate-500")
 
         project_name = ui.input("Project Name", value="New Story").classes("w-full")
         project_desc = ui.input("Description (optional)").classes("w-full")
@@ -196,7 +244,7 @@ def _build_ingest_dialog(state: AppState) -> ui.dialog:
         ).classes("w-full").props("rows=15")
 
         # File upload
-        ui.label("Or upload a .txt file:").classes("text-caption q-mt-sm")
+        ui.label("Or upload a .txt file:").classes("text-xs text-slate-500 mt-2")
 
         async def _handle_upload(e):
             content = e.content.read().decode("utf-8")
@@ -211,7 +259,7 @@ def _build_ingest_dialog(state: AppState) -> ui.dialog:
         if _SAMPLE_DIR.exists():
             sample_files = sorted(_SAMPLE_DIR.glob("*.txt"))
             if sample_files:
-                ui.label("Or load a sample plot:").classes("text-caption q-mt-sm")
+                ui.label("Or load a sample plot:").classes("text-xs text-slate-500 mt-2")
                 sample_select = ui.select(
                     options={str(f): f.stem.replace("_", " ").title()
                              for f in sample_files},
@@ -226,7 +274,7 @@ def _build_ingest_dialog(state: AppState) -> ui.dialog:
 
                 sample_select.on("update:model-value", _load_sample)
 
-        status = ui.label("").classes("text-body2 q-mt-sm")
+        status = ui.label("").classes("text-sm text-slate-600 mt-2")
         progress = ui.linear_progress(value=0, show_value=False).classes("w-full")
         progress.set_visibility(False)
 
@@ -303,7 +351,7 @@ def _build_ingest_dialog(state: AppState) -> ui.dialog:
                     progress.set_visibility(False)
 
             ui.button("Ingest", on_click=_run_ingestion, icon="auto_fix_high").props(
-                "color=primary"
-            )
+                "unelevated color=primary no-caps"
+            ).classes("rounded-lg shadow-sm")
 
     return dialog

@@ -13,6 +13,7 @@ from shadow_loom.ingestion import ExtractionConfig, run_extraction
 from shadow_loom_ui import db
 from shadow_loom_ui.state import StateEvent
 from shadow_loom_ui.task_helpers import capture_logs_to_task, notify_task_complete
+from shadow_loom_ui.theme import feather
 
 if TYPE_CHECKING:
     from shadow_loom_ui.state import AppState
@@ -25,12 +26,17 @@ def build_ingest_dialog(state: AppState) -> ui.dialog:
 
     dialog = ui.dialog().props("persistent maximized")
 
-    with dialog, ui.card().classes("w-full max-w-3xl"):
-        ui.label("Ingest Narrative Text").classes("text-h5")
+    with dialog, ui.card().classes(
+        "w-full max-w-3xl bg-white border border-slate-200 "
+        "rounded-xl shadow-sm p-6"
+    ):
+        ui.label("Ingest Narrative Text").classes(
+            "text-2xl font-bold text-slate-800"
+        )
         ui.label(
             "Paste or upload raw story text. The pipeline will extract "
             "entities, events, locations, objects, and all topology edges."
-        ).classes("text-body2 text-grey")
+        ).classes("text-sm text-slate-500 mb-2")
 
         project_name = ui.input("Project Name", value="New Story").classes("w-full")
         text_area = ui.textarea(
@@ -39,7 +45,7 @@ def build_ingest_dialog(state: AppState) -> ui.dialog:
         ).classes("w-full").props("rows=15")
 
         # File upload option
-        ui.label("Or upload a .txt file:").classes("text-caption q-mt-sm")
+        ui.label("Or upload a .txt file:").classes("text-xs text-slate-500 mt-2")
 
         async def _handle_upload(e):
             content = e.content.read().decode("utf-8")
@@ -60,7 +66,7 @@ def build_ingest_dialog(state: AppState) -> ui.dialog:
                 # checking it against this map (defends against arbitrary
                 # file reads via crafted select payloads).
                 sample_allowlist = {str(f): f for f in sample_files}
-                ui.label("Or load a sample plot:").classes("text-caption q-mt-sm")
+                ui.label("Or load a sample plot:").classes("text-xs text-slate-500 mt-2")
                 sample_select = ui.select(
                     options={k: v.stem.replace("_", " ").title()
                              for k, v in sample_allowlist.items()},
@@ -78,7 +84,7 @@ def build_ingest_dialog(state: AppState) -> ui.dialog:
 
                 sample_select.on("update:model-value", _load_sample)
 
-        status = ui.label("").classes("text-body2 q-mt-sm")
+        status = ui.label("").classes("text-sm text-slate-600 mt-2")
         progress = ui.linear_progress(value=0, show_value=False).classes("w-full")
         progress.set_visibility(False)
 
@@ -98,18 +104,20 @@ def build_ingest_dialog(state: AppState) -> ui.dialog:
 
         state.on(StateEvent.TASKS_CHANGED, _on_tasks_changed)
 
-        button_row = ui.row().classes("w-full justify-end gap-2 q-mt-md")
+        button_row = ui.row().classes("w-full justify-end gap-2 mt-4")
         with button_row:
-            cancel_btn = ui.button("Cancel", on_click=lambda: dialog.close()).props("flat")
+            cancel_btn = ui.button("Cancel", on_click=lambda: dialog.close()).props(
+                "flat color=secondary no-caps"
+            )
             background_btn = ui.button(
                 "Run in background",
                 icon="visibility_off",
                 on_click=lambda: dialog.close(),
-            ).props("flat color=primary")
+            ).props("flat color=primary no-caps")
             background_btn.set_visibility(False)
             ingest_btn = ui.button(
                 "Ingest", icon="auto_fix_high",
-            ).props("color=primary")
+            ).props("unelevated color=primary no-caps").classes("rounded-lg shadow-sm")
 
         async def _run_ingestion():
             text = text_area.value.strip()
@@ -218,8 +226,11 @@ def build_project_dialog(state: AppState) -> ui.dialog:
 
     dialog = ui.dialog()
 
-    with dialog, ui.card().classes("w-full max-w-2xl"):
-        ui.label("Load Project").classes("text-h5")
+    with dialog, ui.card().classes(
+        "w-full max-w-2xl bg-white border border-slate-200 "
+        "rounded-xl shadow-sm p-6"
+    ):
+        ui.label("Load Project").classes("text-2xl font-bold text-slate-800")
 
         project_list = ui.column().classes("w-full")
 
@@ -234,20 +245,31 @@ def build_project_dialog(state: AppState) -> ui.dialog:
                 projects = [p for p in projects if p.get("is_public") or p.get("is_example")]
             if not projects:
                 with project_list:
-                    ui.label("No projects yet").classes("text-grey")
+                    ui.label("No projects yet").classes(
+                        "text-sm text-slate-400 italic"
+                    )
                 return
 
             with project_list:
                 for p in projects:
-                    with ui.row().classes("w-full items-center q-pa-sm"):
+                    with ui.row().classes(
+                        "w-full items-center px-3 py-2 "
+                        "border-b border-slate-100 last:border-b-0"
+                    ):
                         with ui.row().classes("items-center gap-2 flex-grow"):
-                            ui.label(p["name"]).classes("text-body1")
+                            ui.label(p["name"]).classes(
+                                "text-sm font-medium text-slate-800"
+                            )
                             if p.get("label"):
-                                ui.badge(p["label"], color="blue-grey")
+                                ui.badge(p["label"], color="secondary")
                             if p.get("is_example"):
-                                ui.badge("example", color="teal")
-                        ui.label(f"{p.get('version_count', 0)} versions").classes("text-caption text-grey")
-                        ui.label(p["updated_at"]).classes("text-caption text-grey")
+                                ui.badge("example", color="primary")
+                        ui.label(f"{p.get('version_count', 0)} versions").classes(
+                            "text-xs text-slate-400"
+                        )
+                        ui.label(p["updated_at"]).classes(
+                            "text-xs text-slate-400"
+                        )
 
                         async def _load(pid=p["id"], pname=p["name"]):
                             # Re-check access at load time \u2014 defends
@@ -279,12 +301,16 @@ def build_project_dialog(state: AppState) -> ui.dialog:
                             ui.notify(f"Loaded {pname} (v{snap.version})")
                             dialog.close()
 
-                        ui.button("Load", on_click=_load).props("flat dense color=primary")
+                        ui.button("Load", on_click=_load).props(
+                            "flat dense color=primary no-caps"
+                        )
 
         _refresh_projects()
 
-        with ui.row().classes("w-full justify-end q-mt-md"):
-            ui.button("Close", on_click=dialog.close).props("flat")
+        with ui.row().classes("w-full justify-end mt-4"):
+            ui.button("Close", on_click=dialog.close).props(
+                "flat color=secondary no-caps"
+            )
 
     return dialog
 
@@ -298,7 +324,9 @@ def build_version_dialog(state: AppState) -> ui.dialog:
     dialog = ui.dialog()
 
     with dialog, ui.card().classes("w-full max-w-2xl"):
-        ui.label("Version History").classes("text-h5")
+        ui.label("Version History").classes(
+            "text-xl font-semibold text-slate-800"
+        )
 
         version_list = ui.column().classes("w-full")
 
@@ -312,7 +340,9 @@ def build_version_dialog(state: AppState) -> ui.dialog:
 
             if db_tree:
                 with version_list:
-                    ui.label("Version Tree (DB)").classes("text-subtitle2 q-mb-xs")
+                    ui.label("Version Tree (DB)").classes(
+                        "text-sm font-semibold text-slate-700 mb-1"
+                    )
                     for entry in reversed(db_tree):
                         with ui.row().classes("w-full items-center q-pa-xs"):
                             # Indent branches
@@ -326,15 +356,17 @@ def build_version_dialog(state: AppState) -> ui.dialog:
                                 "ingestion": "green", "pipeline": "blue",
                                 "manual_edit": "purple", "rollback": "orange",
                             }.get(entry["source"], "grey")).classes("q-mx-xs")
-                            ui.label(ancestor_label).classes("text-caption text-grey")
+                            ui.label(ancestor_label).classes(
+                                "text-xs text-slate-500"
+                            )
                             desc = entry.get("description") or ""
-                            ui.label(desc[:50]).classes("text-caption flex-grow")
+                            ui.label(desc[:50]).classes("text-xs text-slate-600 flex-grow")
                             if entry.get("changeset_summary"):
                                 cs = entry["changeset_summary"]
                                 ui.label(
                                     f"+{cs.get('events_added', 0)}evt "
                                     f"+{cs.get('causal_edges_added', 0)}ce"
-                                ).classes("text-caption text-blue")
+                                ).classes("text-xs text-secondary")
 
                             def _load_version(v=entry["version"], pid=state.project_id):
                                 ver = db.get_version(pid, v)
@@ -355,7 +387,9 @@ def build_version_dialog(state: AppState) -> ui.dialog:
                 with version_list:
                     if db_tree:
                         ui.separator().classes("q-my-sm")
-                    ui.label("In-Memory History").classes("text-subtitle2 q-mb-xs")
+                    ui.label("In-Memory History").classes(
+                        "text-sm font-semibold text-slate-700 mb-1"
+                    )
                     for entry in reversed(state.versioned_model.history):
                         is_current = entry.version == state.versioned_model.version
                         with ui.row().classes("w-full items-center q-pa-xs"):
@@ -364,13 +398,15 @@ def build_version_dialog(state: AppState) -> ui.dialog:
                             ui.label(f"v{entry.version}").classes(
                                 "text-body1" + (" text-primary" if is_current else "")
                             )
-                            ui.label(entry.source).classes("text-caption text-grey")
-                            ui.label(entry.description[:60]).classes("text-caption flex-grow")
+                            ui.label(entry.source).classes(
+                                "text-xs text-slate-500"
+                            )
+                            ui.label(entry.description[:60]).classes("text-xs text-slate-600 flex-grow")
                             if entry.changeset:
                                 cs = entry.changeset
                                 ui.label(
                                     f"+{cs.events_added}evt +{cs.causal_edges_added}ce"
-                                ).classes("text-caption text-blue")
+                                ).classes("text-xs text-secondary")
                             if not is_current and entry.version in {
                                 s.version for s in state.versioned_model.snapshots
                             }:
@@ -385,7 +421,9 @@ def build_version_dialog(state: AppState) -> ui.dialog:
 
             if not db_tree and state.versioned_model is None:
                 with version_list:
-                    ui.label("No version history available").classes("text-grey")
+                    ui.label("No version history available").classes(
+                        "text-sm text-slate-400 italic"
+                    )
 
         _refresh()
 

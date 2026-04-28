@@ -46,24 +46,30 @@ _EMOTIONAL_TARGETS = [
 def build_causality_tab(state: AppState) -> None:
     """Build the Causality tab with four sub-views."""
 
-    with ui.column().classes("w-full h-full"):
-        with ui.tabs().classes("w-full").props("dense no-caps") as sub_tabs:
+    with ui.column().classes("w-full h-full bg-slate-50"):
+        with ui.tabs().props(
+            "dense no-caps indicator-color=primary active-color=primary align=left"
+        ).classes(
+            "w-full bg-white border-b border-slate-200 px-4"
+        ) as sub_tabs:
             ui.tab("topology", label="Causal Topology", icon="device_hub")
             ui.tab("whatif", label="What-If Workbench", icon="science")
             ui.tab("directive", label="Directive Builder", icon="theater_comedy")
             ui.tab("affective", label="Affective Dashboard", icon="favorite")
 
-        with ui.tab_panels(sub_tabs, value="topology").classes("w-full flex-grow"):
-            with ui.tab_panel("topology").classes("q-pa-sm"):
+        with ui.tab_panels(sub_tabs, value="topology").classes(
+            "w-full flex-grow bg-slate-50"
+        ):
+            with ui.tab_panel("topology").classes("p-4"):
                 _build_causal_topology(state)
 
-            with ui.tab_panel("whatif").classes("q-pa-sm"):
+            with ui.tab_panel("whatif").classes("p-4"):
                 _build_whatif_workbench(state)
 
-            with ui.tab_panel("directive").classes("q-pa-sm"):
+            with ui.tab_panel("directive").classes("p-4"):
                 _build_directive_builder(state)
 
-            with ui.tab_panel("affective").classes("q-pa-sm"):
+            with ui.tab_panel("affective").classes("p-4"):
                 _build_affective_dashboard(state)
 
 
@@ -78,16 +84,21 @@ def _build_causal_topology(state: AppState) -> None:
         view_toggle = ui.toggle(
             {"sankey": "Sankey Flow", "force": "Force Graph"},
             value="sankey",
-        ).props("dense no-caps")
+        ).props("dense no-caps color=primary")
 
-        graph_container = ui.column().classes("w-full flex-grow")
+        graph_container = ui.column().classes(
+            "w-full flex-grow bg-white border border-slate-200 "
+            "rounded-xl shadow-sm p-4"
+        )
 
         def _refresh(**kw):
             graph_container.clear()
             ws = state.world_state
             if ws is None:
                 with graph_container:
-                    ui.label("No world model loaded.").classes("text-body2 text-grey")
+                    ui.label("No world model loaded.").classes(
+                        "text-sm text-slate-400 italic"
+                    )
                 return
 
             with graph_container:
@@ -110,20 +121,24 @@ def _build_whatif_workbench(state: AppState) -> None:
 
     with ui.column().classes("w-full h-full gap-4"):
         # ── Single NL input with type toggle ──────────────────────
-        with ui.card().classes("w-full"):
+        with ui.card().classes(
+            "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-6"
+        ):
             with ui.row().classes("items-center gap-2"):
                 ui.icon("science", color="primary")
-                ui.label("What-If Explorer").classes("text-subtitle1")
+                ui.label("What-If Explorer").classes(
+                    "text-lg font-semibold text-slate-800"
+                )
 
             ui.label(
                 "Describe what you want to change (intervention) or explore "
                 "(counterfactual) in natural language."
-            ).classes("text-caption text-grey q-mb-sm")
+            ).classes("text-sm text-slate-500 mb-2")
 
             whatif_type = ui.toggle(
                 {"intervention": "Intervene (now)", "counterfactual": "What-If (past)"},
                 value="intervention",
-            ).props("dense no-caps")
+            ).props("dense no-caps color=primary")
 
             whatif_input = ui.textarea(
                 placeholder="e.g., 'Kill Macbeth' or 'What if Romeo never met Juliet?'",
@@ -166,7 +181,7 @@ def _build_whatif_workbench(state: AppState) -> None:
 
             ui.button(
                 "Run", icon="play_arrow", on_click=_run_whatif
-            ).props("color=primary no-caps")
+            ).props("unelevated color=primary no-caps").classes("rounded-lg shadow-sm")
 
 
 def _render_whatif_result(container, result: NLQueryResult) -> None:
@@ -181,15 +196,17 @@ def _render_whatif_result(container, result: NLQueryResult) -> None:
     pr = result.pipeline_result
     if pr is None:
         with container:
-            ui.label("No result.").classes("text-grey")
+            ui.label("No result.").classes("text-sm text-slate-400 italic")
         return
 
     with container:
-        with ui.card().classes("w-full q-pa-md"):
-            with ui.row().classes("items-center gap-2 q-mb-sm"):
+        with ui.card().classes(
+            "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-6"
+        ):
+            with ui.row().classes("items-center gap-2 mb-3"):
                 ui.badge(pr.query_type, color="primary").props("dense")
                 if pr.world_model:
-                    ui.badge(f"v{pr.world_model.version}", color="teal").props("dense")
+                    ui.badge(f"v{pr.world_model.version}", color="secondary").props("dense")
                 if pr.converged is not None:
                     status = "converged" if pr.converged else "did not converge"
                     color = "positive" if pr.converged else "warning"
@@ -216,7 +233,7 @@ def _render_whatif_result(container, result: NLQueryResult) -> None:
                                 f"{hd.get('entity', '?')}:{hd.get('trait', '?')} "
                                 f"factual={hd.get('factual', '?'):.2f} → "
                                 f"counterfactual={hd.get('counterfactual', '?'):.2f}"
-                            ).classes("text-caption")
+                            ).classes("text-xs text-slate-500")
 
             if pr.physics_result and not pr.prose:
                 with ui.expansion("Raw Physics", icon="data_object").props("dense"):
@@ -232,15 +249,19 @@ def _build_directive_builder(state: AppState) -> None:
     """Interactive emotional target builder with NL override."""
 
     with ui.column().classes("w-full h-full gap-4"):
-        with ui.card().classes("w-full"):
+        with ui.card().classes(
+            "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-6"
+        ):
             with ui.row().classes("items-center gap-2"):
-                ui.icon("theater_comedy", color="purple")
-                ui.label("Emotional Directive Builder").classes("text-subtitle1")
+                ui.icon("theater_comedy", color="secondary")
+                ui.label("Emotional Directive Builder").classes(
+                    "text-lg font-semibold text-slate-800"
+                )
 
             ui.label(
                 "Choose an emotional effect to optimize the next scene for. "
                 "Or describe what you want in natural language below."
-            ).classes("text-caption text-grey q-mb-sm")
+            ).classes("text-sm text-slate-500 mb-2")
 
             # Entity picker
             entity_select = ui.select(
@@ -258,7 +279,7 @@ def _build_directive_builder(state: AppState) -> None:
 
             # Intensity slider
             with ui.row().classes("w-full items-center gap-2 q-mt-sm"):
-                ui.label("Intensity:").classes("text-body2")
+                ui.label("Intensity:").classes("text-sm text-slate-600")
                 intensity_slider = ui.slider(
                     min=0.1, max=1.0, value=0.7, step=0.1
                 ).classes("flex-grow").props("label-always")
@@ -308,7 +329,7 @@ def _build_directive_builder(state: AppState) -> None:
 
             ui.button(
                 "Generate Directive", icon="play_arrow", on_click=_run_directive
-            ).props("color=purple no-caps")
+            ).props("unelevated color=secondary no-caps").classes("rounded-lg shadow-sm")
 
         # Update entity options on world state change
         def _update_entities(**kw):
@@ -331,13 +352,15 @@ def _render_directive_result(container, result: NLQueryResult) -> None:
     pr = result.pipeline_result
     if pr is None:
         with container:
-            ui.label("No result.").classes("text-grey")
+            ui.label("No result.").classes("text-sm text-slate-400 italic")
         return
 
     with container:
-        with ui.card().classes("w-full q-pa-md"):
-            with ui.row().classes("items-center gap-2 q-mb-sm"):
-                ui.badge("directive", color="purple").props("dense")
+        with ui.card().classes(
+            "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-6"
+        ):
+            with ui.row().classes("items-center gap-2 mb-3"):
+                ui.badge("directive", color="secondary").props("dense")
                 if pr.converged is not None:
                     status = "converged" if pr.converged else "did not converge"
                     color = "positive" if pr.converged else "warning"
@@ -355,8 +378,12 @@ def _build_affective_dashboard(state: AppState) -> None:
     """Emotional gauges, narrative tension, and candidate events."""
 
     with ui.column().classes("w-full h-full gap-4"):
-        gauge_container = ui.column().classes("w-full")
-        timeline_container = ui.column().classes("w-full")
+        gauge_container = ui.column().classes(
+            "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-6"
+        )
+        timeline_container = ui.column().classes(
+            "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-6"
+        )
 
         def _refresh(**kw):
             gauge_container.clear()
@@ -364,20 +391,28 @@ def _build_affective_dashboard(state: AppState) -> None:
             ws = state.world_state
             if ws is None:
                 with gauge_container:
-                    ui.label("No world model loaded.").classes("text-body2 text-grey")
+                    ui.label("No world model loaded.").classes(
+                        "text-sm text-slate-400 italic"
+                    )
                 return
 
             scores = _compute_affective_scores(ws)
 
             with gauge_container:
                 if scores:
-                    ui.label("Narrative Affect Scores").classes("text-subtitle1 q-mb-sm")
+                    ui.label("Narrative Affect Scores").classes(
+                        "text-lg font-semibold text-slate-800 mb-2"
+                    )
                     render_emotional_gauges(scores, height="200px")
                 else:
-                    ui.label("No affective scores available.").classes("text-grey")
+                    ui.label("No affective scores available.").classes(
+                        "text-sm text-slate-400 italic"
+                    )
 
             with timeline_container:
-                ui.label("Event Timeline").classes("text-subtitle1 q-mb-sm")
+                ui.label("Event Timeline").classes(
+                    "text-lg font-semibold text-slate-800 mb-2"
+                )
                 render_event_timeline(ws, height="250px")
 
         _refresh()

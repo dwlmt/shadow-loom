@@ -13,6 +13,7 @@ from typing import Any, Callable, Optional
 from nicegui import ui
 
 from shadow_loom.models import WorldStateV1
+from shadow_loom_ui.theme import chart_theme
 from shadow_loom_ui.viz_helpers import (
     CATEGORIES,
     NODE_COLORS,
@@ -40,23 +41,52 @@ logger = logging.getLogger(__name__)
 
 OnClick = Optional[Callable[[dict], Any]]
 
-# ── Shared dark theme defaults ──────────────────────────────────────
+# ── Shared theme defaults (refreshed by ``apply_chart_theme`` whenever
+#    the dark-mode flag changes via shadow_loom_ui.theme.set_chart_dark). ──
 
-_DARK_BG = "#1e1e1e"
-_DARK_TEXT = "#ccc"
-_DARK_TOOLTIP = {
-    "backgroundColor": "#333",
-    "borderColor": "#555",
-    "textStyle": {"color": "#eee"},
+_DARK_BG = "#ffffff"
+_DARK_TEXT = "#1e293b"
+_DARK_TOOLTIP: dict = {
+    "backgroundColor": "#ffffff",
+    "borderColor": "#e2e8f0",
+    "textStyle": {"color": "#1e293b"},
 }
-
-_LEGEND = {
+_LEGEND: dict = {
     "data": [c["name"] for c in CATEGORIES],
     "textStyle": {"color": _DARK_TEXT},
     "top": 0,
     "right": 10,
     "orient": "vertical",
 }
+
+
+def apply_chart_theme() -> None:
+    """Refresh the module-level palette constants from
+    :func:`shadow_loom_ui.theme.chart_theme`.
+
+    Called by ``theme.set_chart_dark`` so subsequent renders pick up the
+    new (light/dark) palette without each renderer having to fetch it.
+    """
+    global _DARK_BG, _DARK_TEXT, _DARK_TOOLTIP, _LEGEND
+    t = chart_theme()
+    _DARK_BG = t["bg"]
+    _DARK_TEXT = t["text"]
+    _DARK_TOOLTIP = {
+        "backgroundColor": t["tooltip_bg"],
+        "borderColor": t["tooltip_border"],
+        "textStyle": {"color": t["tooltip_text"]},
+    }
+    _LEGEND = {
+        "data": [c["name"] for c in CATEGORIES],
+        "textStyle": {"color": _DARK_TEXT},
+        "top": 0,
+        "right": 10,
+        "orient": "vertical",
+    }
+
+
+# Initialize once at import (light defaults).
+apply_chart_theme()
 
 
 # ── Force-directed full world graph ────────────────────────────────
@@ -323,7 +353,7 @@ def render_relationship_heatmap(
             "left": "center",
             "bottom": 0,
             "inRange": {
-                "color": ["#F44336", "#9E9E9E", "#4CAF50"],
+                "color": ["#9E4D4D", "#94a3b8", "#95A577"],
             },
             "textStyle": {"color": _DARK_TEXT},
         },
@@ -373,9 +403,9 @@ def render_emotional_gauges(
                 "lineStyle": {
                     "width": 15,
                     "color": [
-                        [0.3, "#4CAF50"],
-                        [0.7, "#FF9800"],
-                        [1, "#F44336"],
+                        [0.3, "#95A577"],
+                        [0.7, "#D4A35B"],
+                        [1, "#9E4D4D"],
                     ],
                 },
             },
@@ -459,8 +489,8 @@ def render_entity_state_timeline(
     title = ent.name if ent else entity_id
 
     series = []
-    colors = ["#4CAF50", "#2196F3", "#FF9800", "#E91E63", "#9C27B0",
-              "#00BCD4", "#FFEB3B", "#FF5722", "#607D8B", "#795548"]
+    colors = ["#C68661", "#5C7C8A", "#D4A35B", "#456A6B", "#B58988",
+              "#95A577", "#856B7D", "#8C7A6B", "#9E4D4D", "#1F2731"]
     for i, (trait_name, values) in enumerate(data["series"].items()):
         series.append({
             "name": trait_name,
@@ -641,7 +671,7 @@ def render_epistemic_map(
             "orient": "horizontal",
             "left": "center",
             "bottom": 0,
-            "inRange": {"color": ["#424242", "#2196F3", "#4CAF50"]},
+            "inRange": {"color": ["#1F2731", "#5C7C8A", "#95A577"]},
             "textStyle": {"color": _DARK_TEXT},
         },
         "series": [{
@@ -754,8 +784,8 @@ def render_parallel_coords(
     if not dimensions or not data_rows:
         return ui.label("No trait data for parallel view.").classes("text-grey q-pa-md")
 
-    colors = ["#4CAF50", "#2196F3", "#FF9800", "#E91E63", "#9C27B0",
-              "#00BCD4", "#FFEB3B", "#FF5722", "#607D8B", "#795548"]
+    colors = ["#C68661", "#5C7C8A", "#D4A35B", "#456A6B", "#B58988",
+              "#95A577", "#856B7D", "#8C7A6B", "#9E4D4D", "#1F2731"]
 
     series = []
     for i, (row, name) in enumerate(zip(data_rows, entity_names)):
@@ -890,11 +920,11 @@ def render_propagation_waterfall(
     values = []
     for d in data:
         if d["type"] == "blocked":
-            values.append({"value": 0, "itemStyle": {"color": "#616161", "borderType": "dashed"}})
+            values.append({"value": 0, "itemStyle": {"color": "#94a3b8", "borderType": "dashed"}})
         elif d["type"] == "positive":
-            values.append({"value": d["value"], "itemStyle": {"color": "#4CAF50"}})
+            values.append({"value": d["value"], "itemStyle": {"color": "#95A577"}})
         else:
-            values.append({"value": d["value"], "itemStyle": {"color": "#F44336"}})
+            values.append({"value": d["value"], "itemStyle": {"color": "#9E4D4D"}})
 
     return ui.echart({
         "backgroundColor": _DARK_BG,
@@ -950,7 +980,7 @@ def render_sunburst(
                 {"r0": "65%", "r": "90%", "label": {"rotate": "tangential", "color": _DARK_TEXT, "fontSize": 8}},
             ],
             "label": {"color": _DARK_TEXT},
-            "itemStyle": {"borderWidth": 1, "borderColor": "#1e1e1e"},
+            "itemStyle": {"borderWidth": 1, "borderColor": "#ffffff"},
         }],
     }).classes("w-full").style(f"height:{height}")
 

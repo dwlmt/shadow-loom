@@ -5,6 +5,7 @@ from __future__ import annotations
 from nicegui import app, ui
 
 from shadow_loom_ui import config
+from shadow_loom_ui.theme import PRIMARY, feather
 
 
 def build_login_page() -> None:
@@ -19,14 +20,22 @@ def build_login_page() -> None:
     with ui.column().classes("absolute-center items-center gap-6"):
         # Branding
         with ui.row().classes("items-center gap-3"):
-            ui.icon("auto_stories", size="xl", color="primary")
-            ui.label("Shadow Loom").classes("text-h3")
+            feather("book-open", size="xl", color=PRIMARY)
+            ui.label("Shadow Loom").classes(
+                "text-4xl font-bold tracking-tight text-slate-800"
+            )
 
-        ui.label("Causal Narrative Engine").classes("text-subtitle1 text-grey")
+        ui.label("Causal Narrative Engine").classes(
+            "text-sm font-medium text-slate-500"
+        )
 
         # Provider buttons
-        with ui.card().classes("w-80 q-pa-lg"):
-            ui.label("Sign in to continue").classes("text-h6 q-mb-md")
+        with ui.card().classes(
+            "w-80 bg-white border border-slate-200 rounded-xl shadow-sm p-6"
+        ):
+            ui.label("Sign in to continue").classes(
+                "text-base font-semibold text-slate-800 mb-4"
+            )
 
             providers = config.OAUTH_PROVIDERS
             if providers:
@@ -34,24 +43,30 @@ def build_login_page() -> None:
                     name = prov["name"]
                     label = prov["label"]
                     icon = prov["icon"]
-                    ui.button(
-                        f"Continue with {label}",
-                        icon=icon,
+                    with ui.button(
                         on_click=lambda n=name: ui.navigate.to(f"/auth/{n}"),
-                    ).props("outline no-caps").classes("w-full q-mb-sm")
+                    ).props("outline no-caps color=primary").classes(
+                        "w-full mb-2 rounded-lg"
+                    ):
+                        with ui.row().classes("items-center gap-2 w-full justify-center"):
+                            feather(icon)
+                            ui.label(f"Continue with {label}")
             else:
-                ui.label("No OAuth providers configured.").classes("text-body2 text-grey")
+                ui.label("No OAuth providers configured.").classes(
+                    "text-sm text-slate-500"
+                )
 
             ui.separator().classes("q-my-md")
 
             # Guest mode (when auth is optional)
             if not config.AUTH_ENABLED:
-                ui.button(
-                    "Continue as Guest",
-                    icon="person_outline",
+                with ui.button(
                     on_click=lambda: ui.navigate.to("/"),
-                ).props("flat no-caps").classes("w-full")
+                ).props("flat no-caps color=secondary").classes("w-full"):
+                    with ui.row().classes("items-center gap-2 w-full justify-center"):
+                        feather("user")
+                        ui.label("Continue as Guest")
             else:
                 ui.label(
                     "Contact your administrator if you need access."
-                ).classes("text-caption text-grey text-center")
+                ).classes("text-xs text-slate-400 text-center")

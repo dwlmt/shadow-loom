@@ -92,10 +92,14 @@ def build_world_tab(state: AppState) -> None:
             view_mode.on("update:model-value", _on_mode_change)
 
         # ── Graph container ───────────────────────────────────────
-        graph_container = ui.column().classes("w-full flex-grow q-pa-sm")
+        graph_container = ui.column().classes(
+            "w-full flex-grow p-4"
+        )
 
-        # ── Topology tables (expandable) ──────────────────────────
-        with ui.expansion("Topology Edges", icon="device_hub").classes("w-full"):
+        # ── Topology tables (expandable) ──────────────────────
+        with ui.expansion("Topology Edges", icon="device_hub").classes(
+            "w-full mx-4 mb-4 bg-white border border-slate-200 rounded-xl"
+        ):
             _build_topology_tables(state)
 
         # ── Graph click → inspector ───────────────────────────────
@@ -113,7 +117,9 @@ def build_world_tab(state: AppState) -> None:
             ws = state.world_state
             if ws is None:
                 with graph_container:
-                    ui.label("No world model loaded.").classes("text-body2 text-grey q-pa-lg")
+                    ui.label("No world model loaded.").classes(
+                        "text-sm text-slate-400 italic q-pa-lg"
+                    )
                 return
 
             # Update selectors
@@ -142,7 +148,7 @@ def build_world_tab(state: AppState) -> None:
                             render_ego_graph(ws, ids, on_click=_on_graph_click, height="100%")
                         else:
                             ui.label("Select focus entities above.").classes(
-                                "text-body2 text-grey"
+                                "text-sm text-slate-500"
                             )
                     elif mode == "temporal":
                         eid = temporal_select.value

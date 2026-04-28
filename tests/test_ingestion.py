@@ -959,7 +959,7 @@ class TestActorTargetValidation:
 # Test plot models pass programmatic validation
 # =====================================================================
 
-_TEST_MODEL_DIR = pathlib.Path(__file__).parent / "test_plot_models"
+_TEST_MODEL_DIR = pathlib.Path(__file__).resolve().parent.parent / "example_worlds"
 _MODEL_FILES = sorted(_TEST_MODEL_DIR.glob("*.py"))
 # Exclude __init__.py
 _MODEL_FILES = [f for f in _MODEL_FILES if f.name != "__init__.py"]
@@ -970,7 +970,7 @@ def test_plot_model_passes_validation(model_path):
     """Every hand-built test plot model should pass programmatic validation
     with zero errors (warnings are acceptable)."""
     # Dynamic import
-    module_name = f"tests.test_plot_models.{model_path.stem}"
+    module_name = f"example_worlds.{model_path.stem}"
     mod = importlib.import_module(module_name)
     ws = mod.world_state
 

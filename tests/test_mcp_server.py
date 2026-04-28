@@ -68,7 +68,7 @@ from shadow_loom_mcp.server import (
     write,
 )
 
-from tests.test_plot_models.macbeth import world_state as macbeth_ws
+from example_worlds.macbeth import world_state as macbeth_ws
 
 # ── Fixtures ──────────────────────────────────────────────────────
 

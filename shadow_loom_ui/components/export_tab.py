@@ -20,15 +20,19 @@ logger = logging.getLogger(__name__)
 def build_export_tab(state: AppState) -> None:
     """Build the Export tab layout."""
 
-    with ui.column().classes("w-full h-full q-pa-md gap-4"):
+    with ui.column().classes("w-full h-full p-6 gap-4 bg-slate-50"):
         # ---- Export Prose ----
-        with ui.card().classes("w-full"):
+        with ui.card().classes(
+            "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-6"
+        ):
             with ui.row().classes("items-center gap-2"):
                 ui.icon("article", size="md", color="primary")
-                ui.label("Export Prose").classes("text-h6")
+                ui.label("Export Prose").classes(
+                    "text-lg font-semibold text-slate-800"
+                )
 
             ui.label("Download all generated prose as Markdown.").classes(
-                "text-body2 text-grey"
+                "text-sm text-slate-500"
             )
 
             async def _export_prose():
@@ -50,17 +54,21 @@ def build_export_tab(state: AppState) -> None:
                 ui.notify("Prose exported!", type="positive")
 
             ui.button("Download Prose (Markdown)", icon="download", on_click=_export_prose).props(
-                "no-caps color=primary"
-            )
+                "unelevated no-caps color=primary"
+            ).classes("rounded-lg shadow-sm")
 
         # ---- Export World State ----
-        with ui.card().classes("w-full"):
+        with ui.card().classes(
+            "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-6"
+        ):
             with ui.row().classes("items-center gap-2"):
                 ui.icon("data_object", size="md", color="primary")
-                ui.label("Export World State").classes("text-h6")
+                ui.label("Export World State").classes(
+                    "text-lg font-semibold text-slate-800"
+                )
 
             ui.label("Download the current world model as JSON.").classes(
-                "text-body2 text-grey"
+                "text-sm text-slate-500"
             )
 
             def _export_json():
@@ -76,8 +84,8 @@ def build_export_tab(state: AppState) -> None:
 
             with ui.row().classes("gap-2"):
                 ui.button("Download JSON", icon="download", on_click=_export_json).props(
-                    "no-caps color=primary"
-                )
+                    "unelevated no-caps color=primary"
+                ).classes("rounded-lg shadow-sm")
 
                 # Copy to clipboard
                 def _copy_json():
@@ -91,8 +99,8 @@ def build_export_tab(state: AppState) -> None:
                     ui.notify("Copied to clipboard!", type="positive")
 
                 ui.button("Copy to Clipboard", icon="content_copy", on_click=_copy_json).props(
-                    "no-caps outline"
-                )
+                    "no-caps outline color=secondary"
+                ).classes("rounded-lg")
 
         # ---- Summary Stats ----
         stats_container = ui.column().classes("w-full")
@@ -103,8 +111,12 @@ def build_export_tab(state: AppState) -> None:
             if ws is None:
                 return
             with stats_container:
-                with ui.card().classes("w-full"):
-                    ui.label("World Model Summary").classes("text-h6")
+                with ui.card().classes(
+                    "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-6"
+                ):
+                    ui.label("World Model Summary").classes(
+                        "text-lg font-semibold text-slate-800"
+                    )
                     stats = [
                         ("Entities", len(ws.entities)),
                         ("Locations", len(ws.locations)),
@@ -116,21 +128,29 @@ def build_export_tab(state: AppState) -> None:
                         ("Social Edges", len(ws.social_topology)),
                         ("Info Edges", len(ws.information_topology)),
                     ]
-                    with ui.row().classes("gap-4 flex-wrap"):
+                    with ui.row().classes("gap-4 flex-wrap mt-2"):
                         for label, count in stats:
-                            with ui.column().classes("items-center"):
-                                ui.label(str(count)).classes("text-h5 text-primary")
-                                ui.label(label).classes("text-caption text-grey")
+                            with ui.column().classes("items-center min-w-20"):
+                                ui.label(str(count)).classes(
+                                    "text-3xl font-bold text-slate-800"
+                                )
+                                ui.label(label).classes(
+                                    "text-xs text-slate-500"
+                                )
 
         _refresh_stats()
         state.on(StateEvent.WORLD_STATE_CHANGED, _refresh_stats)
 
         # ---- Share / Collaborate ----
         if state.user_id and state.project_id:
-            with ui.card().classes("w-full"):
+            with ui.card().classes(
+                "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-6"
+            ):
                 with ui.row().classes("items-center gap-2"):
                     ui.icon("share", size="md", color="primary")
-                    ui.label("Share & Collaborate").classes("text-h6")
+                    ui.label("Share & Collaborate").classes(
+                        "text-lg font-semibold text-slate-800"
+                    )
 
                 project = db.get_project(state.project_id)
                 is_owner = project and project.owner_id == state.user_id
@@ -154,11 +174,13 @@ def build_export_tab(state: AppState) -> None:
                     vis_switch.on("update:model-value", _toggle_visibility)
 
                     with ui.row().classes("items-center gap-2"):
-                        ui.label("Visibility:").classes("text-body2")
+                        ui.label("Visibility:").classes("text-sm text-slate-600")
 
                     # Invite collaborators
                     ui.separator().classes("q-my-sm")
-                    ui.label("Invite Collaborators").classes("text-subtitle2")
+                    ui.label("Invite Collaborators").classes(
+                        "text-sm font-semibold text-slate-700"
+                    )
 
                     with ui.row().classes("items-center gap-2"):
                         invite_input = ui.input("Username or email").classes("w-64")
@@ -185,8 +207,8 @@ def build_export_tab(state: AppState) -> None:
                             _refresh_members()
 
                         ui.button("Invite", icon="person_add", on_click=_invite).props(
-                            "no-caps"
-                        )
+                            "unelevated no-caps color=primary"
+                        ).classes("rounded-lg shadow-sm")
 
                     # Current members
                     members_container = ui.column().classes("w-full q-mt-sm")
@@ -196,13 +218,17 @@ def build_export_tab(state: AppState) -> None:
                         members = db.list_project_members(state.project_id)
                         if not members:
                             with members_container:
-                                ui.label("No collaborators yet.").classes("text-caption text-grey")
+                                ui.label("No collaborators yet.").classes(
+                                    "text-sm text-slate-400 italic"
+                                )
                             return
                         with members_container:
                             for m in members:
                                 with ui.row().classes("items-center gap-2"):
-                                    ui.label(m["username"]).classes("text-body2")
-                                    ui.badge(m["role"], color="blue-grey").props("dense")
+                                    ui.label(m["username"]).classes(
+                                        "text-sm text-slate-700"
+                                    )
+                                    ui.badge(m["role"], color="secondary").props("dense")
 
                                     def _remove(uid=m["user_id"]):
                                         db.remove_project_member(state.project_id, uid)
@@ -232,5 +258,5 @@ def build_export_tab(state: AppState) -> None:
                     ui.navigate.to(f"/project/{new_proj.id}")
 
                 ui.button("Fork Project", icon="call_split", on_click=_fork).props(
-                    "no-caps outline"
-                )
+                    "no-caps outline color=secondary"
+                ).classes("rounded-lg")

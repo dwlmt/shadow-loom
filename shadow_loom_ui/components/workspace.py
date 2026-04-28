@@ -25,11 +25,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Tab definitions: (key, icon, label)
+# Tab definitions: (key, material-icon-name, label).  The Material font is
+# remapped to its Outlined variant in theme.py so these match Feather visually.
 _TABS = [
-    ("story", "menu_book", "Story"),
+    ("story", "auto_stories", "Story"),
     ("world", "hub", "World"),
-    ("causality", "device_hub", "Causality"),
+    ("causality", "account_tree", "Causality"),
     ("audit", "fact_check", "Audit"),
     ("export", "ios_share", "Export"),
 ]
@@ -41,8 +42,12 @@ def build_workspace(state: AppState, project_id: int) -> None:
     # ---- Load project from DB ----
     project = db.get_project(project_id)
     if project is None:
-        ui.label("Project not found.").classes("text-h5 text-negative q-pa-lg")
-        ui.button("Back to Dashboard", on_click=lambda: ui.navigate.to("/"))
+        ui.label("Project not found.").classes(
+            "text-2xl text-negative q-pa-lg"
+        )
+        ui.button(
+            "Back to Dashboard", on_click=lambda: ui.navigate.to("/")
+        ).props("unelevated color=primary no-caps")
         return
 
     # Check access. Fail-closed when no user_id is present \u2014 only public
@@ -50,12 +55,20 @@ def build_workspace(state: AppState, project_id: int) -> None:
     if state.user_id is not None:
         role = db.get_user_project_role(project_id, state.user_id)
         if role is None and not project.is_public and project.owner_id != state.user_id:
-            ui.label("Access denied.").classes("text-h5 text-negative q-pa-lg")
-            ui.button("Back to Dashboard", on_click=lambda: ui.navigate.to("/"))
+            ui.label("Access denied.").classes(
+                "text-2xl text-negative q-pa-lg"
+            )
+            ui.button(
+                "Back to Dashboard", on_click=lambda: ui.navigate.to("/")
+            ).props("unelevated color=primary no-caps")
             return
     elif not project.is_public:
-        ui.label("Access denied.").classes("text-h5 text-negative q-pa-lg")
-        ui.button("Back to Dashboard", on_click=lambda: ui.navigate.to("/"))
+        ui.label("Access denied.").classes(
+            "text-2xl text-negative q-pa-lg"
+        )
+        ui.button(
+            "Back to Dashboard", on_click=lambda: ui.navigate.to("/")
+        ).props("unelevated color=primary no-caps")
         return
 
     # Load latest version
@@ -80,10 +93,17 @@ def build_workspace(state: AppState, project_id: int) -> None:
         state.project_name = project.name
 
     # ---- Toolbar ----
-    with ui.row().classes("w-full items-center q-px-md q-pt-sm gap-2"):
-        ui.label(project.name).classes("text-h5")
+    with ui.row().classes(
+        "w-full items-center bg-white border-b border-slate-200 "
+        "px-6 py-3 gap-3"
+    ):
+        ui.label(project.name).classes(
+            "text-xl font-semibold text-slate-800"
+        )
         if project.description:
-            ui.label(f"— {project.description}").classes("text-subtitle1 text-grey")
+            ui.label(f"— {project.description}").classes(
+                "text-sm text-slate-500"
+            )
         ui.space()
 
         # Save button
@@ -103,42 +123,56 @@ def build_workspace(state: AppState, project_id: int) -> None:
             state.emit(StateEvent.VERSION_CHANGED, version=ver.version)
             ui.notify(f"Saved v{ver.version}", type="positive")
 
-        ui.button("Save", icon="save", on_click=_save).props("flat dense")
+        ui.button("Save", icon="save", on_click=_save).props(
+            "flat dense color=secondary no-caps"
+        )
 
         # Star toggle
         if state.user_id:
             is_starred = db.is_starred(project_id, state.user_id)
-            star_icon = "star" if is_starred else "star_outline"
-            star_btn = ui.button(icon=star_icon).props("flat dense round")
+            star_icon = "star" if is_starred else "star_border"
+            star_color = "warning" if is_starred else "secondary"
+            star_btn = ui.button(icon=star_icon).props(
+                f"flat dense round color={star_color}"
+            )
 
             def _toggle_star():
                 now_starred = db.toggle_star(project_id, state.user_id)
-                star_btn.props(f'icon={"star" if now_starred else "star_outline"}')
+                new_icon = "star" if now_starred else "star_border"
+                new_color = "warning" if now_starred else "secondary"
+                star_btn.props(f"flat dense round color={new_color} icon={new_icon}")
                 ui.notify("Starred!" if now_starred else "Unstarred")
 
             star_btn.on("click", _toggle_star)
 
     # ---- Main layout: left panel + tabbed canvas ----
-    with ui.splitter(value=18).classes("w-full").style(
+    with ui.splitter(value=18).classes("w-full bg-white").style(
         "height: calc(100vh - 140px)"
     ) as main_split:
         # Left panel
         with main_split.before:
-            with ui.scroll_area().classes("w-full h-full"):
+            with ui.scroll_area().classes(
+                "w-full h-full bg-slate-50 border-r border-slate-200"
+            ):
                 from shadow_loom_ui.components.left_panel import build_left_panel
                 build_left_panel(state)
 
         # Right: tabs + bottom drawer
         with main_split.after:
-            with ui.column().classes("w-full h-full gap-0"):
+            with ui.column().classes("w-full h-full gap-0 bg-white"):
                 # Tab bar
-                with ui.tabs().classes("w-full") as tabs:
-                    for key, icon, label in _TABS:
-                        ui.tab(key, label=label, icon=icon)
+                with ui.tabs().props(
+                    "dense indicator-color=primary active-color=primary "
+                    "align=left no-caps"
+                ).classes(
+                    "w-full bg-white border-b border-slate-200 px-4"
+                ) as tabs:
+                    for key, icon_name, label in _TABS:
+                        ui.tab(key, label=label, icon=icon_name)
 
                 # Tab panels
                 with ui.tab_panels(tabs, value="story").classes(
-                    "w-full flex-grow"
+                    "w-full flex-grow bg-slate-50"
                 ).style("overflow: auto"):
                     with ui.tab_panel("story").classes("q-pa-none h-full"):
                         from shadow_loom_ui.components.story_tab import build_story_tab

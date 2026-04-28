@@ -245,7 +245,7 @@ class UISettings(BaseSettings):
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=7860)
     title: str = Field(default="Shadow Loom")
-    dark_mode: bool = Field(default=True)
+    dark_mode: bool = Field(default=False)
     reload: bool = Field(default=False)
 
 

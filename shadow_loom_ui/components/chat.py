@@ -15,6 +15,7 @@ from nicegui import ui
 
 from shadow_loom_ui.state import AppState, NLQueryResult, StateEvent
 from shadow_loom_ui.task_helpers import capture_logs_to_task, notify_task_complete
+from shadow_loom_ui.theme import feather
 
 if TYPE_CHECKING:
     pass
@@ -77,7 +78,9 @@ def _build_command_bar(state: AppState) -> None:
         typing_row.set_visibility(False)
         with typing_row:
             ui.spinner("dots", size="sm", color="primary")
-            typing_label = ui.label("Processing…").classes("text-caption text-grey")
+            typing_label = ui.label("Processing\u2026").classes(
+                "text-xs text-slate-500"
+            )
 
         # ── Implausibility action row (shown after a flagged result) ──
         implausible_row = ui.row().classes("w-full q-px-md items-center gap-2")
@@ -135,8 +138,8 @@ def _build_command_bar(state: AppState) -> None:
 
             # Send button
             send_btn = ui.button(icon="send", on_click=lambda: _send()).props(
-                "round dense color=primary"
-            ).classes("q-mb-xs")
+                "unelevated round dense color=primary"
+            ).classes("mb-1 shadow-sm")
 
         # ── Keyboard shortcut ─────────────────────────────────────
         text_input.on(
@@ -154,16 +157,16 @@ def _build_command_bar(state: AppState) -> None:
                 implausible_row.set_visibility(False)
                 return
             with implausible_row:
-                ui.icon("warning", color="amber").classes("text-amber")
+                ui.icon("warning", color="warning")
                 ui.label(
                     "Engine deemed this query implausible "
                     "\u2014 the world model was not changed."
-                ).classes("text-caption text-grey")
+                ).classes("text-xs text-slate-500")
                 ui.button(
                     "Force generate anyway",
                     icon="bolt",
                     on_click=lambda: _send(force=True),
-                ).props("dense outline color=amber size=sm")
+                ).props("dense outline color=warning size=sm no-caps")
             implausible_row.set_visibility(True)
 
         async def _send(force: bool = False):

@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 # =====================================================================
 
 EXAMPLE_USER_PROVIDER_ID = "local:example"
+LOCAL_USER_PROVIDER_ID = "local:default"
 
 Base = SQLModel
 
@@ -274,6 +275,30 @@ def get_example_user_id() -> Optional[int]:
         return row.id if row else None
 
 
+def ensure_local_user() -> UserRow:
+    """Create (or return) the built-in *local* user.
+
+    Used when OAuth is not configured so the UI always has a real
+    account to attach projects, stars and activity to.  This user is
+    *not* the example user (which owns the seeded read-only fixtures).
+    """
+    with get_session() as s:
+        row = s.exec(
+            select(UserRow).where(UserRow.provider_id == LOCAL_USER_PROVIDER_ID)
+        ).first()
+        if row is None:
+            row = UserRow(
+                provider="local",
+                provider_id=LOCAL_USER_PROVIDER_ID,
+                username="local",
+                display_name="Local User",
+            )
+            s.add(row)
+            s.commit()
+            s.refresh(row)
+        return row
+
+
 # =====================================================================
 # User CRUD
 # =====================================================================
@@ -386,8 +411,10 @@ def find_project_by_name(
 def list_projects(user_id: int | None = None) -> list[dict]:
     """Return projects visible to *user_id*.
 
-    Includes the user's own projects, projects shared with them,
-    public projects, and all projects owned by the example user.
+    Includes the user's own projects, projects shared with them, and
+    public projects.  Example-user projects are *excluded* — they are
+    surfaced separately via :func:`list_example_projects` and copied
+    into the user's account on selection.
     """
     example_id = get_example_user_id()
 
@@ -402,18 +429,21 @@ def list_projects(user_id: int | None = None) -> list[dict]:
                     select(ProjectMemberRow).where(ProjectMemberRow.user_id == user_id)
                 ).all()
             ]
-            owner_ids = [user_id]
-            if example_id is not None:
-                owner_ids.append(example_id)
             conditions = [
-                ProjectRow.owner_id.in_(owner_ids),
+                ProjectRow.owner_id == user_id,
                 ProjectRow.owner_id.is_(None),
                 ProjectRow.is_public.is_(True),
             ]
             if shared_ids:
                 conditions.append(ProjectRow.id.in_(shared_ids))
             stmt = stmt.where(or_(*conditions))
-        # else: return all projects (admin / unauthenticated mode)
+
+        # Always hide example-user projects from the regular listing.
+        if example_id is not None:
+            stmt = stmt.where(
+                or_(ProjectRow.owner_id.is_(None),
+                    ProjectRow.owner_id != example_id)
+            )
 
         rows = s.exec(stmt.order_by(ProjectRow.updated_at.desc())).all()
 
@@ -443,6 +473,34 @@ def list_projects(user_id: int | None = None) -> list[dict]:
                 "star_count": r.star_count,
                 "updated_at": str(r.updated_at),
                 "version_count": version_counts.get(r.id, 0),
+            }
+            for r in rows
+        ]
+
+
+def list_example_projects() -> list[dict]:
+    """Return all projects owned by the built-in example user.
+
+    These are the seeded pre-built world models offered on the
+    dashboard.  They are intentionally excluded from
+    :func:`list_projects`.
+    """
+    example_id = get_example_user_id()
+    if example_id is None:
+        return []
+    with get_session() as s:
+        rows = s.exec(
+            select(ProjectRow)
+            .where(ProjectRow.owner_id == example_id)
+            .order_by(ProjectRow.name)
+        ).all()
+        return [
+            {
+                "id": r.id,
+                "name": r.name,
+                "description": r.description,
+                "owner_id": r.owner_id,
+                "is_example": True,
             }
             for r in rows
         ]

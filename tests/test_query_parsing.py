@@ -43,7 +43,7 @@ from shadow_loom.query_models import (
     InterventionQuery,
     ObservationQuery,
 )
-from tests.test_plot_models.macbeth import world_state as macbeth_ws
+from example_worlds.macbeth import world_state as macbeth_ws
 
 
 # =====================================================================

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from nicegui import ui
 
 from shadow_loom_ui.state import AppState, NLQueryResult, StateEvent
+from shadow_loom_ui.theme import feather
 
 if TYPE_CHECKING:
     pass
@@ -23,10 +24,12 @@ logger = logging.getLogger(__name__)
 def build_story_tab(state: AppState) -> None:
     """Build the Story tab — prose reading + generation display."""
 
-    with ui.column().classes("w-full h-full q-pa-md gap-3"):
-        # ── Source text (collapsible) ─────────────────────────────
+    with ui.column().classes("w-full h-full p-6 gap-3 bg-slate-50"):
+        # ── Source text (collapsible) ───────────────────────
         if state.raw_text:
-            with ui.expansion("Source Text", icon="description").classes("w-full"):
+            with ui.expansion("Source Text", icon="description").classes(
+                "w-full bg-white border border-slate-200 rounded-xl shadow-sm"
+            ):
                 ui.markdown(
                     state.raw_text[:8000]
                     + ("..." if len(state.raw_text) > 8000 else "")
@@ -55,11 +58,11 @@ def _build_prompt_starters(state: AppState) -> None:
     """Writer-friendly prompt starter chips that populate the command bar."""
 
     starters = [
-        ("Continue the story…", "observation", "auto_stories"),
-        ("What would happen if…", "counterfactual", "alt_route"),
-        ("Make this scene more suspenseful", "directive", "theater_comedy"),
-        ("Why does this character…", "interrogate", "psychology"),
-        ("Evaluate the story quality", "evaluate", "fact_check"),
+        ("Continue the story\u2026", "observation", "book-open"),
+        ("What would happen if\u2026", "counterfactual", "git-branch"),
+        ("Make this scene more suspenseful", "directive", "film"),
+        ("Why does this character\u2026", "interrogate", "cpu"),
+        ("Evaluate the story quality", "evaluate", "check-square"),
     ]
 
     for label, qtype, icon in starters:
@@ -67,7 +70,9 @@ def _build_prompt_starters(state: AppState) -> None:
             label,
             icon=icon,
             on_click=lambda l=label, q=qtype: _trigger_prompt(state, l, q),
-        ).props("outline dense no-caps size=sm").classes("text-caption")
+        ).props("outline dense no-caps size=sm color=primary").classes(
+            "rounded-lg"
+        )
 
 
 def _trigger_prompt(state: AppState, prompt_text: str, query_type: str) -> None:
@@ -110,20 +115,28 @@ def _render_prose(state: AppState, container) -> None:
 
     if not prose_entries:
         with container:
-            with ui.column().classes("w-full items-center q-pa-xl"):
-                ui.icon("menu_book", size="xl", color="grey")
-                ui.label("No prose generated yet").classes("text-body1 text-grey")
+            with ui.card().classes(
+                "w-full items-center bg-white border border-slate-200 "
+                "rounded-xl shadow-sm p-12 gap-2"
+            ):
+                feather("book-open", size="xl", color="#94a3b8")
+                ui.label("No prose generated yet").classes(
+                    "text-base font-medium text-slate-600"
+                )
                 ui.label(
                     "Use the prompt starters above or the command bar below to "
                     "ask questions, run directives, or write continuations."
-                ).classes("text-caption text-grey")
+                ).classes("text-sm text-slate-400 text-center max-w-md")
         return
 
     with container:
         for i, (qtype, prose, converged, iters) in enumerate(prose_entries):
-            with ui.card().classes("w-full"):
+            with ui.card().classes(
+                "w-full bg-white border border-slate-200 rounded-xl "
+                "shadow-sm p-6"
+            ):
                 # Header with badges
-                with ui.row().classes("items-center gap-2 q-mb-sm"):
+                with ui.row().classes("items-center gap-2 mb-3"):
                     ui.badge(qtype, color="primary").props("dense")
                     if converged is not None:
                         color = "positive" if converged else "warning"

@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 def build_audit_tab(state: AppState) -> None:
     """Build the Audit tab layout."""
 
-    with ui.column().classes("w-full h-full q-pa-md gap-4"):
+    with ui.column().classes("w-full h-full p-6 gap-4 bg-slate-50"):
         # ── NL prompt for evaluation ──────────────────────────────
         with ui.row().classes("w-full gap-2 flex-wrap"):
             ui.chip(
@@ -58,17 +58,21 @@ def build_audit_tab(state: AppState) -> None:
             ).props("dense outline clickable")
 
         # ── Full Story Evaluation ─────────────────────────────────
-        with ui.card().classes("w-full"):
+        with ui.card().classes(
+            "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-6"
+        ):
             with ui.row().classes("items-center gap-2"):
                 ui.icon("fact_check", size="md", color="primary")
-                ui.label("Full Story Evaluation").classes("text-h6")
+                ui.label("Full Story Evaluation").classes(
+                    "text-lg font-semibold text-slate-800"
+                )
 
             ui.label(
                 "Run a comprehensive narrative quality evaluation across the entire world model."
-            ).classes("text-body2 text-grey")
+            ).classes("text-sm text-slate-500")
 
             eval_container = ui.column().classes("w-full q-mt-sm")
-            eval_status = ui.label("").classes("text-body2")
+            eval_status = ui.label("").classes("text-sm text-slate-600")
 
             async def _run_evaluation():
                 if state.world_state is None:
@@ -91,11 +95,15 @@ def build_audit_tab(state: AppState) -> None:
 
             ui.button(
                 "Run Evaluation", icon="play_arrow", on_click=_run_evaluation
-            ).props("color=primary no-caps")
+            ).props("unelevated color=primary no-caps").classes("rounded-lg shadow-sm")
 
-        # ── Per-Query Audit History ───────────────────────────────
-        with ui.card().classes("w-full"):
-            ui.label("Query Audit History").classes("text-h6")
+        # ── Per-Query Audit History ────────────────────────
+        with ui.card().classes(
+            "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-6"
+        ):
+            ui.label("Query Audit History").classes(
+                "text-lg font-semibold text-slate-800"
+            )
             history_container = ui.column().classes("w-full")
 
             def _refresh_history(**kw):
@@ -103,7 +111,7 @@ def build_audit_tab(state: AppState) -> None:
                 if not state.query_history:
                     with history_container:
                         ui.label("No queries yet. Use the command bar to ask questions.").classes(
-                            "text-body2 text-grey"
+                            "text-sm text-slate-400 italic"
                         )
                     return
 
@@ -132,7 +140,9 @@ def _render_evaluation_result(container, result: NLQueryResult) -> None:
     pr = result.pipeline_result
     if pr is None:
         with container:
-            ui.label("No evaluation result.").classes("text-grey")
+            ui.label("No evaluation result.").classes(
+                "text-sm text-slate-400 italic"
+            )
         return
 
     with container:
@@ -142,18 +152,26 @@ def _render_evaluation_result(container, result: NLQueryResult) -> None:
         if eval_result:
             _render_scorecard(container, eval_result)
         elif pr.prose:
-            with ui.card().classes("w-full q-pa-md"):
-                ui.label("Evaluation Report").classes("text-subtitle1")
+            with ui.card().classes(
+                "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-4"
+            ):
+                ui.label("Evaluation Report").classes(
+                    "text-sm font-semibold text-slate-700"
+                )
                 ui.markdown(pr.prose)
 
         # Convergence info
         if pr.converged is not None:
-            with ui.card().classes("w-full q-pa-md"):
+            with ui.card().classes(
+                "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-4"
+            ):
                 status = "Converged" if pr.converged else "Did not converge"
                 color = "positive" if pr.converged else "warning"
                 with ui.row().classes("items-center gap-2"):
                     ui.badge(status, color=color)
-                    ui.label(f"Audit iterations: {pr.audit_iterations}").classes("text-caption")
+                    ui.label(f"Audit iterations: {pr.audit_iterations}").classes(
+                        "text-xs text-slate-500"
+                    )
 
 
 def _render_scorecard(container, eval_result) -> None:
@@ -162,7 +180,9 @@ def _render_scorecard(container, eval_result) -> None:
         # Extract scores
         narrative_order = getattr(eval_result, "narrative_order", None)
         if narrative_order is None:
-            ui.label("No scorecard data.").classes("text-grey")
+            ui.label("No scorecard data.").classes(
+                "text-sm text-slate-400 italic"
+            )
             return
 
         # Overall pass/fail
@@ -172,13 +192,17 @@ def _render_scorecard(container, eval_result) -> None:
             ui.badge(
                 "PASS" if overall else "FAIL",
                 color=color,
-            ).classes("text-h6 q-mb-md")
+            ).classes("text-base font-semibold mb-3")
 
         # Causal feedback
         causal = getattr(narrative_order, "causal_feedback", None)
         if causal:
-            with ui.card().classes("w-full q-pa-md"):
-                ui.label("Causal Metrics").classes("text-subtitle1 q-mb-sm")
+            with ui.card().classes(
+                "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-4"
+            ):
+                ui.label("Causal Metrics").classes(
+                    "text-sm font-semibold text-slate-700 mb-2"
+                )
                 scores = {}
                 if hasattr(causal, "foreshadowing_payoff_score"):
                     scores["Foreshadowing"] = causal.foreshadowing_payoff_score
@@ -191,18 +215,22 @@ def _render_scorecard(container, eval_result) -> None:
                 miracles = getattr(causal, "miracle_steps_detected", [])
                 if miracles:
                     ui.label(f"⚠️ Miracle steps detected: {len(miracles)}").classes(
-                        "text-negative q-mt-sm"
+                        "text-negative mt-2"
                     )
                     for m in miracles[:5]:
-                        ui.label(f"  • {m}").classes("text-caption text-negative")
+                        ui.label(f"  • {m}").classes("text-xs text-negative")
                 else:
-                    ui.label("✓ No miracle steps").classes("text-positive q-mt-sm")
+                    ui.label("✓ No miracle steps").classes("text-positive mt-2")
 
         # Affective feedback
         affective = getattr(narrative_order, "affective_feedback", None)
         if affective:
-            with ui.card().classes("w-full q-pa-md"):
-                ui.label("Affective Metrics").classes("text-subtitle1 q-mb-sm")
+            with ui.card().classes(
+                "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-4"
+            ):
+                ui.label("Affective Metrics").classes(
+                    "text-sm font-semibold text-slate-700 mb-2"
+                )
                 scores = {}
                 if hasattr(affective, "emotional_trajectory_scores") and affective.emotional_trajectory_scores:
                     scores.update(affective.emotional_trajectory_scores)
@@ -214,13 +242,17 @@ def _render_scorecard(container, eval_result) -> None:
                 if hasattr(affective, "kl_divergence_prediction_error"):
                     ui.label(
                         f"KL Divergence (surprise): {affective.kl_divergence_prediction_error:.3f}"
-                    ).classes("text-caption q-mt-sm")
+                    ).classes("text-xs text-slate-500 mt-2")
 
         # Quality synthesis
         quality = getattr(narrative_order, "quality_synthesis", None)
         if quality:
-            with ui.card().classes("w-full q-pa-md"):
-                ui.label("Quality Synthesis").classes("text-subtitle1 q-mb-sm")
+            with ui.card().classes(
+                "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-4"
+            ):
+                ui.label("Quality Synthesis").classes(
+                    "text-sm font-semibold text-slate-700 mb-2"
+                )
                 if hasattr(quality, "coherence_and_consistency_review") and quality.coherence_and_consistency_review:
                     with ui.expansion("Coherence Review", icon="check_circle").props("dense"):
                         ui.markdown(quality.coherence_and_consistency_review)
@@ -248,10 +280,10 @@ def _render_query_audit_entry(index: int, result: NLQueryResult) -> None:
         icon=icon,
     ).classes("w-full").props("dense"):
         if result.summary:
-            ui.label(result.summary).classes("text-body2")
+            ui.label(result.summary).classes("text-sm text-slate-600")
 
         if result.error:
-            ui.label(f"Error: {result.error}").classes("text-negative text-caption")
+            ui.label(f"Error: {result.error}").classes("text-xs text-negative")
 
         if pr is not None:
             # Convergence
@@ -260,7 +292,7 @@ def _render_query_audit_entry(index: int, result: NLQueryResult) -> None:
                 with ui.row().classes("items-center gap-2"):
                     color = "positive" if pr.converged else "warning"
                     ui.badge(status, color=color).props("dense")
-                    ui.label(f"{pr.audit_iterations} iterations").classes("text-caption")
+                    ui.label(f"{pr.audit_iterations} iterations").classes("text-xs text-slate-500")
 
             # Prose excerpt
             if pr.prose:
@@ -296,26 +328,36 @@ def _render_query_audit_entry(index: int, result: NLQueryResult) -> None:
                                 ui.badge(
                                     getattr(v, "severity", ""), color=severity_color
                                 ).props("dense")
-                                ui.label(getattr(v, "description", str(v))).classes("text-caption")
+                                ui.label(getattr(v, "description", str(v))).classes(
+                                    "text-xs text-slate-600"
+                                )
 
         # Parse info
         if result.parse_result and result.parse_result.parsed:
             with ui.expansion("Parse Details", icon="code").props("dense"):
                 parsed = result.parse_result.parsed
                 if hasattr(parsed, "reasoning") and parsed.reasoning:
-                    ui.label(f"Reasoning: {parsed.reasoning}").classes("text-caption text-grey")
+                    ui.label(f"Reasoning: {parsed.reasoning}").classes(
+                        "text-xs text-slate-500"
+                    )
 
 
 def _render_audit_cycle(cycle) -> None:
     """Render a single audit cycle (iteration) in the replay view."""
     iteration = getattr(cycle, "iteration", "?")
-    with ui.card().classes("w-full q-pa-sm q-mb-xs").style("background: #252530"):
-        ui.label(f"Iteration {iteration}").classes("text-subtitle2")
+    with ui.card().classes(
+        "w-full p-3 mb-1 bg-slate-100 border border-slate-200 rounded-lg"
+    ):
+        ui.label(f"Iteration {iteration}").classes(
+            "text-sm font-semibold text-slate-700"
+        )
 
         # Prose excerpt for this iteration
         prose = getattr(cycle, "prose", "")
         if prose:
-            ui.markdown(prose[:300] + ("…" if len(prose) > 300 else "")).classes("text-caption")
+            ui.markdown(prose[:300] + ("…" if len(prose) > 300 else "")).classes(
+                "text-xs text-slate-600"
+            )
 
         # Audit result
         audit = getattr(cycle, "audit_result", None)
@@ -332,4 +374,4 @@ def _render_audit_cycle(cycle) -> None:
                         ui.icon("error_outline", size="xs", color="warning")
                         ui.label(
                             getattr(v, "description", str(v))[:100]
-                        ).classes("text-caption text-grey")
+                        ).classes("text-xs text-slate-500")

@@ -19,22 +19,22 @@ from shadow_loom.query_models import (
 )
 
 # ── Import plot world-states used across tests ──────────────────────────
-from tests.test_plot_models.macbeth import world_state as macbeth_ws
-from tests.test_plot_models.romeo_and_juliet import world_state as romeo_ws
-from tests.test_plot_models.gone_girl import world_state as gone_girl_ws
-from tests.test_plot_models.great_gatsby import world_state as gatsby_ws
-from tests.test_plot_models.death_on_the_nile import world_state as nile_ws
-from tests.test_plot_models.apocalypse_now import world_state as apocalypse_ws
-from tests.test_plot_models.dads_army import world_state as dads_army_ws
-from tests.test_plot_models.frankenstein import world_state as frankenstein_ws
-from tests.test_plot_models.reservoir_dogs import world_state as reservoir_ws
-from tests.test_plot_models.wuthering_heights import world_state as wuthering_ws
-from tests.test_plot_models.a_court_of_thorn_and_roses import world_state as acotar_ws
-from tests.test_plot_models.a_fish_called_wanda import world_state as wanda_ws
-from tests.test_plot_models.brief_encounter import world_state as brief_ws
-from tests.test_plot_models.great_expectations import world_state as expectations_ws
-from tests.test_plot_models.nineteen_eighty_four import world_state as orwell_ws
-from tests.test_plot_models.persuasion import world_state as persuasion_ws
+from example_worlds.macbeth import world_state as macbeth_ws
+from example_worlds.romeo_and_juliet import world_state as romeo_ws
+from example_worlds.gone_girl import world_state as gone_girl_ws
+from example_worlds.great_gatsby import world_state as gatsby_ws
+from example_worlds.death_on_the_nile import world_state as nile_ws
+from example_worlds.apocalypse_now import world_state as apocalypse_ws
+from example_worlds.dads_army import world_state as dads_army_ws
+from example_worlds.frankenstein import world_state as frankenstein_ws
+from example_worlds.reservoir_dogs import world_state as reservoir_ws
+from example_worlds.wuthering_heights import world_state as wuthering_ws
+from example_worlds.a_court_of_thorn_and_roses import world_state as acotar_ws
+from example_worlds.a_fish_called_wanda import world_state as wanda_ws
+from example_worlds.brief_encounter import world_state as brief_ws
+from example_worlds.great_expectations import world_state as expectations_ws
+from example_worlds.nineteen_eighty_four import world_state as orwell_ws
+from example_worlds.persuasion import world_state as persuasion_ws
 
 
 # =====================================================================

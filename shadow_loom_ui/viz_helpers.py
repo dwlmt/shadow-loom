@@ -13,22 +13,23 @@ from shadow_loom.models import WorldStateV1, reconstruct_entity_at
 
 # ── Visual constants ────────────────────────────────────────────────
 
+# Mort-artistic palette (warm, muted)
 NODE_COLORS: dict[str, str] = {
-    "Entity": "#4CAF50",
-    "Location": "#2196F3",
-    "EventNode": "#FF9800",
-    "NarrativeObject": "#9C27B0",
-    "WorldTrait": "#00BFA5",
+    "Entity": "#C68661",          # Copper
+    "Location": "#5C7C8A",        # Slate Blue
+    "EventNode": "#D4A35B",       # Aged Gold
+    "NarrativeObject": "#856B7D", # Faded Plum
+    "WorldTrait": "#456A6B",      # Deep Spruce
 }
 
 EDGE_COLORS: dict[str, str] = {
-    "causal": "#F44336",
-    "relationship": "#E91E63",
-    "located_in": "#607D8B",
-    "owned_by": "#795548",
-    "connected_to": "#00BCD4",
-    "communicating_with": "#FFEB3B",
-    "eavesdropped_by": "#FF5722",
+    "causal": "#9E4D4D",            # Dusty Brick
+    "relationship": "#B58988",      # Dusty Rose
+    "located_in": "#8C7A6B",        # Warm Clay
+    "owned_by": "#8C7A6B",          # Warm Clay
+    "connected_to": "#5C7C8A",      # Slate Blue
+    "communicating_with": "#D4A35B",# Aged Gold
+    "eavesdropped_by": "#9E4D4D",   # Dusty Brick
 }
 
 NODE_SYMBOLS: dict[str, str] = {
@@ -58,12 +59,12 @@ CATEGORIES: list[dict[str, str]] = [
 _CATEGORY_INDEX = {c["name"]: i for i, c in enumerate(CATEGORIES)}
 
 EVENT_TYPE_COLORS: dict[str, str] = {
-    "choice": "#2196F3",
-    "outcome": "#FF9800",
-    "revelation": "#9C27B0",
-    "action": "#4CAF50",
-    "dialogue": "#00BCD4",
-    "transition": "#607D8B",
+    "choice": "#5C7C8A",      # Slate Blue
+    "outcome": "#D4A35B",     # Aged Gold
+    "revelation": "#856B7D",  # Faded Plum
+    "action": "#95A577",      # Olive
+    "dialogue": "#C68661",    # Copper
+    "transition": "#8C7A6B",  # Warm Clay
 }
 
 

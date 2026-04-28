@@ -31,9 +31,9 @@ from shadow_loom.causal_physics import (
 )
 
 # Reuse plot models that now include world_traits
-from tests.test_plot_models.macbeth import world_state as macbeth_ws
-from tests.test_plot_models.nineteen_eighty_four import world_state as orwell_ws
-from tests.test_plot_models.persuasion import world_state as persuasion_ws
+from example_worlds.macbeth import world_state as macbeth_ws
+from example_worlds.nineteen_eighty_four import world_state as orwell_ws
+from example_worlds.persuasion import world_state as persuasion_ws
 
 
 # =====================================================================
