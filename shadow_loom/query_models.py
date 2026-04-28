@@ -1,10 +1,27 @@
 from pydantic import BaseModel, Field
 from typing import Any, Optional, Literal, Union, Dict, List
 
+
+# ---------------------------------------------------------------------
+# Shared base — every query type carries the user's verbatim natural-
+# language request so it can be threaded into directive assembly,
+# generation prompts, audit feedback, and the persisted version row.
+# ---------------------------------------------------------------------
+class _QueryBase(BaseModel):
+    original_query: Optional[str] = Field(
+        default=None,
+        description=(
+            "The user's verbatim natural-language request. Surfaced to "
+            "the directive assembler, generator, auditor, and saved on "
+            "the version row so the UI can show what the user asked for."
+        ),
+    )
+
+
 # ==========================================
 # 1. THE OBSERVATION (Rung 1: Natural Progression)
 # ==========================================
-class ObservationQuery(BaseModel):
+class ObservationQuery(_QueryBase):
     """
     Advances the clock natively, but allows conditioning the probability 
     engine on MULTIPLE observed facts before simulating the next step.
@@ -22,7 +39,7 @@ class ObservationQuery(BaseModel):
 # ==========================================
 # 2. THE INTERVENTION (Rung 2: God Mode)
 # ==========================================
-class InterventionQuery(BaseModel):
+class InterventionQuery(_QueryBase):
     """
     Forces MULTIPLE variables to specific states simultaneously in the present moment,
     cutting incoming edges, and calculates the future from here.
@@ -41,7 +58,7 @@ class InterventionQuery(BaseModel):
 # ==========================================
 # 3. THE COUNTERFACTUAL (Rung 3: Abduction)
 # ==========================================
-class CounterfactualQuery(BaseModel):
+class CounterfactualQuery(_QueryBase):
     """
     Goes back in time, updates hidden variables based on current evidence, 
     applies multiple interventions, and runs prediction.
@@ -63,7 +80,7 @@ class CounterfactualQuery(BaseModel):
 # ==========================================
 # 4. THE NARRATIVE DIRECTIVE (Merged Suspense & Emotion)
 # ==========================================
-class DirectiveQuery(BaseModel):
+class DirectiveQuery(_QueryBase):
     """
     Tells the engine to mathematically optimize the next event to maximize 
     a specific psychological or epistemic effect.
@@ -88,7 +105,7 @@ class DirectiveQuery(BaseModel):
 # ==========================================
 # 5. THE INTERROGATOR (Graph RAG)
 # ==========================================
-class InterrogationQuery(BaseModel):
+class InterrogationQuery(_QueryBase):
     """Runs pathfinding on the AMWN without advancing time or writing prose."""
     query_type: Literal["interrogate"] = "interrogate"
     question: str = Field(description="e.g., 'Is there a physical path for Macbeth to reach the courtyard unseen?'")
@@ -97,7 +114,7 @@ class InterrogationQuery(BaseModel):
 # ==========================================
 # 6. GENERAL QUESTION (Full-Graph Q&A)
 # ==========================================
-class GeneralQuery(BaseModel):
+class GeneralQuery(_QueryBase):
     """Open-ended question answered against the full world-state graph.
 
     Unlike InterrogationQuery (which targets pathfinding and requires proof),
@@ -118,7 +135,7 @@ class GeneralQuery(BaseModel):
 # ==========================================
 # 7. MANUAL EDIT (User-authored prose)
 # ==========================================
-class ManualEditQuery(BaseModel):
+class ManualEditQuery(_QueryBase):
     """User-supplied prose that bypasses generation.
 
     The engine skips physics simulation and LLM rendering.  Instead the
@@ -141,7 +158,7 @@ class ManualEditQuery(BaseModel):
 # ==========================================
 # 8. EVALUATION (Full-story quality audit)
 # ==========================================
-class EvaluationQuery(BaseModel):
+class EvaluationQuery(_QueryBase):
     """Runs a full-story evaluation using the NarrativeOrderObject scorecard.
 
     Collects all prose across versions, computes engine metrics from

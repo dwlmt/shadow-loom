@@ -20,7 +20,7 @@ import copy
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import networkx as nx
 from pydantic import BaseModel, Field, model_validator
@@ -305,6 +305,26 @@ class FeedbackLoopResult(BaseModel):
         default=None,
         description="Per-cycle engine-computed delta metrics from the final cycle.",
     )
+    correction_error: Optional[str] = Field(
+        default=None,
+        description=(
+            "Populated when the loop exited because a refinement / rewrite "
+            "LLM call raised, rather than because iterations were exhausted "
+            "or convergence was reached. None on a normal exit."
+        ),
+    )
+    engine_thresholds_passed: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Result of the deterministic engine-threshold check on the "
+            "final cycle's ChangeImpactMetrics. None when no impact "
+            "metrics were available to score."
+        ),
+    )
+    engine_threshold_failures: List[str] = Field(
+        default_factory=list,
+        description="Human-readable list of engine thresholds that failed on the final cycle.",
+    )
 
 
 # =====================================================================
@@ -559,6 +579,57 @@ def compute_overall_pass(
     return True
 
 
+def _engine_thresholds_check(
+    impact: Optional[ChangeImpactMetrics],
+    config: AuditorConfig,
+) -> Tuple[Optional[bool], List[str]]:
+    """Apply :func:`compute_overall_pass` thresholds to per-cycle impact.
+
+    Mirrors the full-story scorecard logic but operates on
+    :class:`ChangeImpactMetrics` so the refinement loop can gate
+    convergence on deterministic engine output rather than only the
+    LLM auditor's self-report.
+
+    Returns
+    -------
+    (passed, failures)
+        ``passed`` is ``None`` when no impact was computed, otherwise
+        a bool. ``failures`` is a list of human-readable threshold
+        names that did not pass (empty when ``passed`` is True or None).
+    """
+    if impact is None:
+        return None, []
+
+    cf = impact.causal_feedback
+    af = impact.affective_feedback
+    failures: list[str] = []
+
+    if cf is not None:
+        if cf.foreshadowing_payoff_score < config.min_foreshadowing_score:
+            failures.append(
+                f"foreshadowing_payoff_score={cf.foreshadowing_payoff_score:.2f} "
+                f"< min={config.min_foreshadowing_score:.2f}"
+            )
+        if cf.cognitive_plausibility_score < config.min_cognitive_plausibility:
+            failures.append(
+                f"cognitive_plausibility_score={cf.cognitive_plausibility_score:.2f} "
+                f"< min={config.min_cognitive_plausibility:.2f}"
+            )
+        if cf.miracle_steps_detected:
+            failures.append(
+                f"miracle_steps_detected={list(cf.miracle_steps_detected)}"
+            )
+
+    if af is not None:
+        if af.affective_loss_mse > config.max_affective_loss:
+            failures.append(
+                f"affective_loss_mse={af.affective_loss_mse:.3f} "
+                f"> max={config.max_affective_loss:.3f}"
+            )
+
+    return (len(failures) == 0), failures
+
+
 # =====================================================================
 # Graph Versioning
 # =====================================================================
@@ -656,6 +727,18 @@ def assemble_audit_prompt(
     sections.append("=== PROSE TO AUDIT ===")
     sections.append(prose)
     sections.append("")
+
+    # The user's verbatim request is part of the audit contract: prose
+    # that ignores or contradicts what the user asked for is itself a
+    # violation, even when all engine-derived constraints pass.
+    if brief.original_query:
+        sections.append("=== USER'S ORIGINAL REQUEST (verbatim) ===")
+        sections.append(brief.original_query.strip())
+        sections.append(
+            "Flag the prose if it fails to address this request, even "
+            "when no other constraint is violated."
+        )
+        sections.append("")
 
     sections.append(f"=== TARGET EFFECT: {brief.target_effect.upper()} ===")
     sections.append(f"Target entities: {', '.join(brief.target_entities)}")
@@ -1086,11 +1169,31 @@ def run_audit(
             model_settings=model_settings if model_settings else None,
         )
     except Exception as exc:
-        logger.error("[Auditor] LLM call failed: %s. Returning pass-through.", exc)
+        # Fail SAFE, not OPEN. The previous behaviour returned
+        # ``passed=True`` which let the feedback loop converge on a
+        # malformed audit and silently merge possibly-bad prose. We
+        # now mark the audit as failed so the loop can decide whether
+        # to retry, fall through to its own safety net, or surface
+        # the error to the caller.
+        logger.error(
+            "[Auditor] LLM call failed: %s. Returning failed_open audit "
+            "(passed=False) so the loop does not silently converge.",
+            exc,
+        )
         return AuditResult(
-            passed=True,
-            violations=[],
-            audit_summary=f"Audit skipped due to LLM error: {exc}",
+            passed=False,
+            violations=[
+                AuditViolation(
+                    violation_type="miracle_step",
+                    severity="major",
+                    description=f"Auditor LLM call raised: {exc!r}",
+                    feedback=(
+                        "The auditor could not be invoked. Treat this scene "
+                        "as not-yet-validated."
+                    ),
+                ),
+            ],
+            audit_summary=f"Audit failed-open due to LLM error: {exc}",
             failed_open=True,
         )
 
@@ -1229,6 +1332,8 @@ def run_feedback_loop(
     current_scene = initial_scene
     history: List[AuditCycleSnapshot] = []
     accumulated_feedback: List[str] = []
+    consecutive_failed_open = 0
+    correction_error: Optional[str] = None
 
     for iteration in range(auditor_config.max_iterations):
         logger.info(
@@ -1261,6 +1366,15 @@ def run_feedback_loop(
         )
         audit.change_impact = cycle_impact
 
+        # Deterministic engine-side scorecard. The previous loop only
+        # honoured the LLM auditor's self-reported ``passed`` flag,
+        # which made convergence vulnerable to a hallucinated
+        # ``passed=True``. We now require both signals when the
+        # engine produced impact metrics.
+        engine_passed, engine_failures = _engine_thresholds_check(
+            cycle_impact, auditor_config,
+        )
+
         history.append(AuditCycleSnapshot(
             iteration=iteration,
             prose=current_scene.prose,
@@ -1270,11 +1384,35 @@ def run_feedback_loop(
             change_impact=cycle_impact,
         ))
 
-        # --- Check convergence ---
-        if audit.passed:
+        # --- Track failed-open audits separately from real fails ---
+        if audit.failed_open:
+            consecutive_failed_open += 1
+            logger.warning(
+                "[FeedbackLoop] Audit failed-open (%d consecutive). "
+                "Treating as NOT converged.",
+                consecutive_failed_open,
+            )
+            if consecutive_failed_open >= 2:
+                # The auditor LLM is repeatedly broken. Bail out so
+                # the caller sees a non-converged result with a typed
+                # error rather than spinning the loop forever.
+                correction_error = (
+                    f"Auditor failed-open {consecutive_failed_open} times "
+                    f"in a row: {audit.audit_summary}"
+                )
+                break
+        else:
+            consecutive_failed_open = 0
+
+        # --- Convergence: require BOTH the LLM pass and the engine
+        #     thresholds (when the engine produced metrics). ---
+        llm_passed = audit.passed and not audit.failed_open
+        if llm_passed and engine_passed is not False:
             logger.info(
-                "[FeedbackLoop] CONVERGED at iteration %d. %s",
-                iteration + 1, audit.audit_summary,
+                "[FeedbackLoop] CONVERGED at iteration %d "
+                "(llm_passed=%s, engine_passed=%s). %s",
+                iteration + 1, llm_passed, engine_passed,
+                audit.audit_summary,
             )
             return FeedbackLoopResult(
                 final_scene=current_scene,
@@ -1283,16 +1421,31 @@ def run_feedback_loop(
                 history=history,
                 final_graph_version=graph_version,
                 change_impact=cycle_impact,
+                engine_thresholds_passed=engine_passed,
+                engine_threshold_failures=engine_failures,
+            )
+
+        if llm_passed and engine_passed is False:
+            logger.info(
+                "[FeedbackLoop] LLM auditor passed but engine thresholds "
+                "failed (%s). Continuing refinement.",
+                "; ".join(engine_failures),
             )
 
         # --- Step 12: Refinement ---
         logger.info(
-            "[FeedbackLoop] FAILED audit — %d violations. Regenerating.",
-            len(audit.violations),
+            "[FeedbackLoop] FAILED audit — %d violations, %d engine failures. "
+            "Regenerating.",
+            len(audit.violations), len(engine_failures),
         )
 
-        # Collect feedback for this iteration
+        # Collect feedback for this iteration. Include engine failures
+        # as synthetic feedback strings so the rewriter sees them too.
         iteration_feedback = [v.feedback for v in audit.violations]
+        for failure in engine_failures:
+            iteration_feedback.append(
+                f"[engine-threshold] {failure} — adjust prose to fix."
+            )
         accumulated_feedback.extend(iteration_feedback)
 
         # Fork the graph for the next iteration
@@ -1306,8 +1459,12 @@ def run_feedback_loop(
             iteration + 1,
         )
 
-        # Re-generate the scene
-        agent = _build_generation_agent(generation_config)
+        # Re-generate the scene under the refinement system prompt so
+        # the LLM is explicitly in rewrite mode (rather than reusing
+        # the generic generation prompt and relying on injected text).
+        agent = _build_generation_agent(
+            generation_config, prompt_filename="refinement.md",
+        )
         deps = _GenerationDeps(rendering_prompt=refinement_prompt)
 
         model_settings: Dict[str, Any] = {}
@@ -1325,7 +1482,25 @@ def run_feedback_loop(
             )
             current_scene = result.output
         except Exception as exc:
-            logger.error("[FeedbackLoop] Re-generation LLM call failed: %s. Keeping previous scene.", exc)
+            logger.error(
+                "[FeedbackLoop] Re-generation LLM call failed: %s. "
+                "Keeping previous scene and exiting loop.", exc,
+            )
+            correction_error = f"Refinement LLM call raised: {exc!r}"
+            break
+
+        if current_scene.generation_error:
+            # The render itself fell back to a placeholder; don't keep
+            # iterating against bogus prose.
+            logger.error(
+                "[FeedbackLoop] Refinement returned a fallback scene "
+                "(generation_error=%s). Exiting loop.",
+                current_scene.generation_error,
+            )
+            correction_error = (
+                f"Refinement produced fallback scene: "
+                f"{current_scene.generation_error}"
+            )
             break
 
         logger.info(
@@ -1333,11 +1508,17 @@ def run_feedback_loop(
             len(current_scene.prose), current_scene.rendering_mode,
         )
 
-    # --- Exhausted iterations ---
-    logger.warning(
-        "[FeedbackLoop] Did NOT converge after %d iterations.",
-        auditor_config.max_iterations,
-    )
+    # --- Exhausted iterations or broke out with correction_error ---
+    if correction_error:
+        logger.warning(
+            "[FeedbackLoop] Exited with correction_error: %s",
+            correction_error,
+        )
+    else:
+        logger.warning(
+            "[FeedbackLoop] Did NOT converge after %d iterations.",
+            auditor_config.max_iterations,
+        )
 
     # Final snapshot
     graph_version = versioned.version if versioned else 0
@@ -1354,14 +1535,20 @@ def run_feedback_loop(
         causal_feedback=final_causal,
         affective_feedback=final_affective,
     )
+    final_engine_passed, final_engine_failures = _engine_thresholds_check(
+        final_impact, auditor_config,
+    )
 
     return FeedbackLoopResult(
         final_scene=current_scene,
         converged=False,
-        iterations=auditor_config.max_iterations,
+        iterations=len(history),
         history=history,
         final_graph_version=graph_version,
         change_impact=final_impact,
+        correction_error=correction_error,
+        engine_thresholds_passed=final_engine_passed,
+        engine_threshold_failures=final_engine_failures,
     )
 
 

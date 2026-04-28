@@ -118,6 +118,16 @@ class GeneratedScene(BaseModel):
         default_factory=list,
         description="Any hard constraints that could not be fully satisfied.",
     )
+    generation_error: Optional[str] = Field(
+        default=None,
+        description=(
+            "When set, the LLM call (or its structured-output validation) "
+            "raised, and ``prose`` is a placeholder rather than a real "
+            "rendering. Downstream consumers MUST treat the scene as "
+            "invalid (skip merge, surface to caller). ``None`` on a "
+            "normal render."
+        ),
+    )
 
 
 # =====================================================================
@@ -310,6 +320,19 @@ def assemble_rendering_prompt(
     """
     sections: List[str] = []
 
+    # === User's Original Request ===
+    # Surface the verbatim NL query so the model writes for the human's
+    # intent, not just the engine's structured derivation. Hard
+    # constraints from the brief still take precedence on conflict.
+    if brief.original_query:
+        sections.append("=== USER'S ORIGINAL REQUEST (verbatim) ===")
+        sections.append(brief.original_query.strip())
+        sections.append(
+            "Honour the spirit of this request wherever it doesn't "
+            "contradict the hard constraints below."
+        )
+        sections.append("")
+
     # === Header ===
     sections.append(f"=== GENERATION TASK: {brief.target_effect.upper()} ===")
     sections.append(f"Target entities: {', '.join(brief.target_entities)}")
@@ -412,6 +435,32 @@ def assemble_rendering_prompt(
 # Brief builders for non-directive query types
 # =====================================================================
 
+def _user_intent_constraints(original_query: Optional[str]) -> List[ConstraintBlock]:
+    """Lift the user's verbatim NL request into a HARD constraint.
+
+    Mirrors the equivalent block at the top of
+    ``DirectiveAssembler.assemble`` so non-directive briefs (observation,
+    intervention, counterfactual, evaluation fallback) also bind the
+    rendering and audit prompts to the user's actual ask. Returns an
+    empty list when no original query is available so callers can
+    splat it unconditionally.
+    """
+    text = (original_query or "").strip()
+    if not text:
+        return []
+    return [ConstraintBlock(
+        constraint_type="narrative",
+        priority="hard",
+        instruction=(
+            f"[USER INTENT \u2014 verbatim]: {text}\n"
+            "The rendered scene MUST address the user's request above. "
+            "Engine-derived constraints below are guard-rails, not "
+            "substitutes for the user's intent."
+        ),
+        evidence={"original_query": text},
+    )]
+
+
 def build_observation_brief(
     query: ObservationQuery,
     physics_state: Dict[str, Any],
@@ -419,9 +468,12 @@ def build_observation_brief(
 ) -> CreativeBrief:
     """Build a lightweight CreativeBrief for observation queries."""
     pov = query.focus_entity_ids[0] if query.focus_entity_ids else None
+    constraints: List[ConstraintBlock] = _user_intent_constraints(query.original_query)
     return CreativeBrief(
         target_effect="observation",
         target_entities=query.focus_entity_ids,
+        original_query=query.original_query,
+        constraints=constraints,
         rendering=RenderingDirective(
             rendering_mode="observation",
             pov_lock=pov,
@@ -491,7 +543,7 @@ def build_intervention_brief(
             inertia=inertia,
         ))
 
-    constraints: List[ConstraintBlock] = []
+    constraints: List[ConstraintBlock] = list(_user_intent_constraints(query.original_query))
     # Blocked propagations become constraints
     if blocked:
         for b in blocked:
@@ -524,6 +576,7 @@ def build_intervention_brief(
             p.split(".")[0] for p in query.interventions
             if p.split(".")[0].startswith("ENT_")
         }),
+        original_query=query.original_query,
         constraints=constraints,
         rendering=RenderingDirective(
             rendering_mode="intervention",
@@ -581,6 +634,7 @@ def build_counterfactual_brief(
     )
 
     constraints = [
+        *_user_intent_constraints(query.original_query),
         ConstraintBlock(
             constraint_type="narrative",
             priority="hard",
@@ -614,6 +668,7 @@ def build_counterfactual_brief(
             p.split(".")[0] for p in query.historical_interventions
             if p.split(".")[0].startswith("ENT_")
         }),
+        original_query=query.original_query,
         constraints=constraints,
         rendering=RenderingDirective(
             rendering_mode="counterfactual",
@@ -639,13 +694,28 @@ def build_counterfactual_brief(
 # Agent Builder
 # =====================================================================
 
-def _build_generation_agent(config: GenerationConfig) -> Agent[_GenerationDeps, GeneratedScene]:
-    """Construct the Step 10 rendering LLM agent."""
+def _build_generation_agent(
+    config: GenerationConfig,
+    *,
+    prompt_filename: str = "generation.md",
+) -> Agent[_GenerationDeps, GeneratedScene]:
+    """Construct the Step 10 rendering LLM agent.
+
+    Parameters
+    ----------
+    config : GenerationConfig
+        Model + retry configuration.
+    prompt_filename : str
+        Which file under ``shadow_loom/prompts/`` to use as the system
+        prompt. Defaults to the standard generation prompt; the
+        refinement loop passes ``"refinement.md"`` so the agent
+        explicitly knows it is in rewrite mode.
+    """
     agent: Agent[_GenerationDeps, GeneratedScene] = Agent(
         _resolve_model(config.model),
         deps_type=_GenerationDeps,
         output_type=NativeOutput(GeneratedScene),
-        system_prompt=_load_prompt("generation.md"),
+        system_prompt=_load_prompt(prompt_filename),
         retries=config.output_retries,
     )
 
@@ -721,6 +791,7 @@ def render_scene(
             rendering_mode="fallback",
             constraints_honoured=[],
             constraints_violated=["generation_failure"],
+            generation_error=repr(exc),
         )
 
     logger.info(

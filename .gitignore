@@ -209,3 +209,4 @@ __marimo__/
 *.lock
 *.env
 **storage-user**
+*.db

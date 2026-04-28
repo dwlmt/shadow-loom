@@ -256,6 +256,11 @@ def calculate_narrative_physics(
                 "social_mutations": [m.model_dump() for m in physics_result.social_mutations],
                 "blocked": [b.model_dump() for b in physics_result.blocked],
                 "intervened_nodes": physics_result.intervened_nodes,
+                # Typed object stashed under a private key so the pipeline
+                # can forward it to the auditor (which needs the full
+                # CausalPhysicsResult, not the JSON-serialised slices).
+                # Filtered out of PipelineHistory extras at the call site.
+                "_causal_physics_result": physics_result,
             }
         else:
             AMWNInstantiator.execute_interventions(shadow_graph, request.interventions)
@@ -384,6 +389,9 @@ def calculate_narrative_physics(
                 "social_mutations": [m.model_dump() for m in physics_result.social_mutations],
                 "blocked": [b.model_dump() for b in physics_result.blocked],
                 "hidden_deltas": physics_result.hidden_deltas,
+                # Typed object stashed for the pipeline → auditor handoff;
+                # see the intervention branch for rationale.
+                "_causal_physics_result": physics_result,
             }
         else:
             # --- ABDUCTION STEP: Update hidden variables from present evidence ---

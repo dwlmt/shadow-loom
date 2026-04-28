@@ -476,7 +476,15 @@ class AppState:
         if not short_circuited and not pipeline_result.reextraction_failed and not context_switched:
             self._save_version_to_db(
                 pipeline_result=pipeline_result,
-                raw_query=getattr(query, 'edited_prose', None) or (
+                # Prefer the user's verbatim NL request (now carried on
+                # every query type as ``original_query``) so the UI and
+                # activity log show what the human asked for, not the
+                # parser's restated reasoning. Fall back through the
+                # legacy edited-prose / parser-reasoning sources for
+                # queries that were built without an NL string.
+                raw_query=getattr(query, "original_query", None)
+                or getattr(query, 'edited_prose', None)
+                or (
                     parse_result.parsed.reasoning if parse_result and parse_result.parsed else None
                 ),
                 parsed_query_json=query.model_dump_json() if query else None,

@@ -246,6 +246,15 @@ class CreativeBrief(BaseModel):
     """
     target_effect: str
     target_entities: List[str]
+    original_query: Optional[str] = Field(
+        default=None,
+        description=(
+            "The user's verbatim natural-language request that produced "
+            "this brief. Surfaced to the generator and auditor so the "
+            "rendered prose can honour the user's actual intent rather "
+            "than only the engine's structured derivation."
+        ),
+    )
     constraints: List[ConstraintBlock] = Field(default_factory=list)
     epistemic_gaps: List[EpistemicGap] = Field(default_factory=list)
     narrative_tensions: List[NarrativeTension] = Field(default_factory=list)
@@ -967,6 +976,32 @@ class DirectiveAssembler:
         constraints: List[ConstraintBlock] = []
 
         # =============================================================
+        # USER INTENT  (verbatim NL request as a HARD constraint)
+        # =============================================================
+        # The user's natural-language request is the highest-priority
+        # signal we have about what the scene must accomplish. We lift
+        # it into a ``hard`` ConstraintBlock so:
+        #   1) it appears in both the rendering prompt and the audit
+        #      prompt (both consume ``brief.constraints`` directly),
+        #   2) the LLM auditor can flag prose that ignores it as a
+        #      typed violation rather than only a soft hint,
+        #   3) it survives any future serialisation of the brief
+        #      (constraints are first-class state).
+        original_query = (getattr(directive, "original_query", None) or "").strip()
+        if original_query:
+            constraints.append(ConstraintBlock(
+                constraint_type="narrative",
+                priority="hard",
+                instruction=(
+                    f"[USER INTENT \u2014 verbatim]: {original_query}\n"
+                    "The rendered scene MUST address the user's request "
+                    "above. Engine-derived constraints below are "
+                    "guard-rails, not substitutes for the user's intent."
+                ),
+                evidence={"original_query": original_query},
+            ))
+
+        # =============================================================
         # MYSTERY  (hidden causal ancestors)
         # =============================================================
         if effect == "mystery":
@@ -1631,6 +1666,7 @@ class DirectiveAssembler:
         return CreativeBrief(
             target_effect=effect,
             target_entities=entity_ids,
+            original_query=getattr(directive, "original_query", None),
             constraints=constraints,
             epistemic_gaps=gaps,
             narrative_tensions=narrative_tensions,

@@ -694,7 +694,11 @@ def ask(
 
     if not parse_result.is_valid or parse_result.query is None:
         # Fallback: run as general physics query
-        query = InterrogationQuery(question=question, require_proof=True)
+        query = InterrogationQuery(
+            question=question,
+            require_proof=True,
+            original_query=question,
+        )
     else:
         query = parse_result.query
 
@@ -1071,6 +1075,7 @@ async def direct(
         target_effect=target_effect,
         intensity=intensity,
         force_implausible=force_implausible,
+        original_query=f"Directive: {target_effect} (intensity={intensity})",
     )
 
     await ctx.report_progress(1, 3, f"Assembling {target_effect} directive...")
@@ -1118,7 +1123,11 @@ def write(
         return {"error": "No world model found."}
 
     user_row_id = get_user_id(ctx)
-    query = ManualEditQuery(edited_prose=prose, description=description)
+    query = ManualEditQuery(
+        edited_prose=prose,
+        description=description,
+        original_query=description or prose,
+    )
 
     response = run_and_save(
         query=query,

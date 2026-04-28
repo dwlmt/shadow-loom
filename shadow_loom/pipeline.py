@@ -375,8 +375,10 @@ def run_pipeline(
     )
     result.physics_result = physics_result
 
-    # Extract the keys that aren't common metadata
-    common_keys = {"status", "query_type", "physics_state"}
+    # Extract the keys that aren't common metadata. ``_causal_physics_result``
+    # is a typed object stashed for the auditor handoff and must not be
+    # serialised into PipelineHistory.
+    common_keys = {"status", "query_type", "physics_state", "_causal_physics_result"}
     extras = {k: v for k, v in physics_result.items() if k not in common_keys}
 
     history.record("narrative_physics", PhysicsStepRecord(
@@ -543,6 +545,7 @@ def run_pipeline(
                 generation_config=cfg.generation_config,
                 query_type=query.query_type,
                 physics_state=physics_state,
+                physics_result=physics_result.get("_causal_physics_result"),
                 assembler=_assembler,
             )
         else:
@@ -562,6 +565,7 @@ def run_pipeline(
                 generation_config=cfg.generation_config,
                 query_type=query.query_type,
                 physics_state=physics_state,
+                physics_result=physics_result.get("_causal_physics_result"),
             )
 
         history.record("generation", GenerationStepRecord(
@@ -691,7 +695,7 @@ async def run_pipeline_async(
     )
     result.physics_result = physics_result
 
-    common_keys = {"status", "query_type", "physics_state"}
+    common_keys = {"status", "query_type", "physics_state", "_causal_physics_result"}
     extras = {k: v for k, v in physics_result.items() if k not in common_keys}
     history.record("narrative_physics", PhysicsStepRecord(
         query_type=physics_result.get("query_type", query.query_type),
@@ -787,6 +791,7 @@ async def run_pipeline_async(
                 generation_config=cfg.generation_config,
                 query_type=query.query_type,
                 physics_state=physics_state,
+                physics_result=physics_result.get("_causal_physics_result"),
             )
         else:
             gen_cfg = cfg.generation_config or GenerationConfig()
@@ -799,6 +804,7 @@ async def run_pipeline_async(
                 generation_config=cfg.generation_config,
                 query_type=query.query_type,
                 physics_state=physics_state,
+                physics_result=physics_result.get("_causal_physics_result"),
             )
         history.record("generation", GenerationStepRecord(scene=feedback.final_scene, brief=brief))
         history.record("audit", AuditStepRecord(feedback_result=feedback))
@@ -884,9 +890,13 @@ def _run_evaluation_branch(
         sandbox=None, ego_payload=ego_graph.model_dump(), world_state=ws,
     )
 
+    from shadow_loom.generation import _user_intent_constraints
+    _nl = getattr(query, "original_query", None)
     eval_brief = CreativeBrief(
         target_effect="observation",
         target_entities=focus_ids,
+        original_query=_nl,
+        constraints=_user_intent_constraints(_nl),
         scene_context=physics_result.get("physics_state", {}),
     )
     eval_brief.epistemic_gaps = eval_assembler.compute_epistemic_gaps(focus_ids)
@@ -953,11 +963,46 @@ def _build_brief_for_query(
             query, physics_state, world_state,
             hidden_deltas=physics_result.get("hidden_deltas"),
         )
+    elif query.query_type == "directive":
+        # Reached when the causal engine is disabled (or otherwise
+        # didn't surface a ``creative_brief``). Build a real
+        # directive brief via DirectiveAssembler so the auditor sees
+        # the same epistemic gaps / tensions / trajectories it would
+        # have seen in the engine-on path — NOT a degenerate
+        # ``observation`` brief.
+        from shadow_loom.extract_graph import extract_ego_graph_from_memory
+        target_entities = list(query.target_entity_ids or [])
+        try:
+            ego = extract_ego_graph_from_memory(world_state, target_entities)
+            assembler = DirectiveAssembler(
+                sandbox=None,
+                ego_payload=ego.model_dump(),
+                world_state=world_state,
+            )
+            return assembler.assemble(query)
+        except Exception:
+            logger.exception(
+                "[Pipeline] DirectiveAssembler fallback failed — "
+                "returning minimal directive brief."
+            )
+            from shadow_loom.generation import _user_intent_constraints
+            nl = getattr(query, "original_query", None)
+            return CreativeBrief(
+                target_effect=query.target_effect,
+                target_entities=target_entities,
+                original_query=nl,
+                constraints=_user_intent_constraints(nl),
+                scene_context=physics_state,
+            )
     else:
         # Fallback minimal brief
+        from shadow_loom.generation import _user_intent_constraints
+        nl = getattr(query, "original_query", None)
         return CreativeBrief(
             target_effect="observation",
             target_entities=[],
+            original_query=nl,
+            constraints=_user_intent_constraints(nl),
             scene_context=physics_state,
         )
 

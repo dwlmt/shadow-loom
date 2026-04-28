@@ -19,7 +19,7 @@ from difflib import SequenceMatcher
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field, create_model, model_validator
-from pydantic_ai import Agent, NativeOutput
+from pydantic_ai import Agent, PromptedOutput, ModelRetry
 
 from shadow_loom.models import WorldStateV1
 from shadow_loom.query_models import (
@@ -1512,7 +1512,7 @@ def _build_general_fallback(
         question=natural_language,
         include_topology=True,
     )
-    query = _build_query(fallback_parsed)
+    query = _build_query(fallback_parsed, natural_language=natural_language)
     return QueryParseResult(
         query=query,
         parsed=fallback_parsed,
@@ -1552,7 +1552,7 @@ def _apply_fallback(
             )
             has_remaining_hard = any(e.severity == "error" for e in remaining)
             if not has_remaining_hard and remappings:
-                query = _build_query(patched)
+                query = _build_query(patched, natural_language=natural_language)
                 logger.info(
                     "[QueryParser] Fuzzy repair succeeded — remapped %s.",
                     remappings,
@@ -1658,14 +1658,25 @@ def _normalise_intervention_keys(
     return repaired
 
 
-def _build_query(parsed: ParsedQuery) -> UserRequest:
-    """Construct a concrete query model from the parsed classification."""
+def _build_query(
+    parsed: ParsedQuery,
+    natural_language: Optional[str] = None,
+) -> UserRequest:
+    """Construct a concrete query model from the parsed classification.
+
+    ``natural_language`` is the user's verbatim request; it is stored
+    on the resulting query as ``original_query`` so downstream stages
+    (directive assembler, generator, auditor, persistence) can see
+    exactly what the user asked for, not just the LLM's classification.
+    """
     qt = parsed.query_type
+    nl = natural_language
 
     if qt == "observation":
         return ObservationQuery(
             observations=parsed.observations or {},
             focus_entity_ids=parsed.focus_entity_ids or [],
+            original_query=nl,
         )
 
     if qt == "intervention":
@@ -1673,6 +1684,7 @@ def _build_query(parsed: ParsedQuery) -> UserRequest:
             interventions=_normalise_intervention_keys(
                 parsed.interventions or {}, field_name="interventions",
             ),
+            original_query=nl,
         )
 
     if qt == "counterfactual":
@@ -1682,6 +1694,7 @@ def _build_query(parsed: ParsedQuery) -> UserRequest:
                 field_name="historical_interventions",
             ),
             evidence_node_ids=parsed.evidence_node_ids or [],
+            original_query=nl,
         )
 
     if qt == "directive":
@@ -1690,30 +1703,35 @@ def _build_query(parsed: ParsedQuery) -> UserRequest:
             target_effect=parsed.target_effect or "suspense",
             target_vector_id=parsed.target_vector_id,
             intensity=parsed.intensity if parsed.intensity is not None else 1.0,
+            original_query=nl,
         )
 
     if qt == "interrogate":
         return InterrogationQuery(
-            question=parsed.question or "",
+            question=parsed.question or nl or "",
             require_proof=parsed.require_proof if parsed.require_proof is not None else True,
+            original_query=nl,
         )
 
     if qt == "manual_edit":
         return ManualEditQuery(
-            edited_prose=parsed.edited_prose or "",
+            edited_prose=parsed.edited_prose or nl or "",
             description=parsed.edit_description or "",
             focus_entity_ids=parsed.focus_entity_ids or [],
+            original_query=nl,
         )
 
     if qt == "evaluate":
         return EvaluationQuery(
             focus_entity_ids=parsed.focus_entity_ids or [],
+            original_query=nl,
         )
 
     # general
     return GeneralQuery(
-        question=parsed.question or "",
+        question=parsed.question or nl or "",
         include_topology=parsed.include_topology if parsed.include_topology is not None else True,
+        original_query=nl,
     )
 
 
@@ -1783,6 +1801,60 @@ def _select_output_model(
     return ParsedQuery, False
 
 
+def _attach_output_validator(
+    agent: Agent,
+    *,
+    query_type: Optional[str],
+    constrained: bool,
+    world_state: Optional[WorldStateV1],
+) -> None:
+    """Wire an ``output_validator`` onto the agent that normalises the
+    LLM output into a ``ParsedQuery`` and re-runs structural validation
+    against the world model.
+
+    On a hard validation error (unknown ID, missing required field,
+    invalid property path) we raise :class:`ModelRetry` with a
+    structured failure message. PydanticAI surfaces that message back
+    to the LLM as a tool retry, so the agent uses its
+    ``output_retries`` budget to actually fix the bad output rather
+    than letting the caller see it. This is the only point where the
+    PromptedOutput path can recover from hallucinated IDs \u2014 the schema
+    only lives in the prompt, so the model provider never enforces it.
+    """
+    if world_state is None:
+        # Without a world model we have nothing to validate IDs against.
+        return
+
+    @agent.output_validator
+    def _validate(_ctx, raw_output: Any) -> Any:
+        try:
+            parsed = _interpret_agent_output(
+                raw_output, query_type=query_type, constrained=constrained,
+            )
+        except Exception as exc:
+            raise ModelRetry(
+                f"Could not interpret structured output: {exc!r}. "
+                "Re-emit a JSON object that strictly matches the schema."
+            ) from exc
+
+        errors = _validate_parsed_query(parsed, world_state)
+        hard = [e for e in errors if e.severity == "error"]
+        if hard:
+            # The fuzzy-repair / general-fallback layer can still
+            # rescue this on the caller side, but giving the LLM one
+            # chance to self-correct produces dramatically better
+            # results than always falling back. Keep the message
+            # short so it fits comfortably in the next prompt.
+            details = "; ".join(f"{e.field}: {e.message}" for e in hard[:5])
+            raise ModelRetry(
+                "Structured output failed validation against the world "
+                f"model: {details}. Use ONLY IDs that appear in the "
+                "graph summary above and use the dotted "
+                "<ID>.<property> form for intervention keys."
+            )
+        return raw_output
+
+
 def _interpret_agent_output(
     raw_output: Any,
     *,
@@ -1792,11 +1864,11 @@ def _interpret_agent_output(
     """Normalise the agent's structured output into a ``ParsedQuery``.
 
     Handles three cases:
-      • Constrained dynamic model → fold into ParsedQuery via
+      \u2022 Constrained dynamic model \u2192 fold into ParsedQuery via
         :func:`_normalise_dynamic_to_parsed` (also forces query_type).
-      • Plain ParsedQuery from a typed prompt → optionally override
+      \u2022 Plain ParsedQuery from a typed prompt \u2192 optionally override
         query_type if the LLM misclassified despite the system prompt.
-      • Plain ParsedQuery from the legacy auto-classify path → return
+      \u2022 Plain ParsedQuery from the legacy auto-classify path \u2192 return
         as-is.
     """
     if constrained and query_type is not None and not isinstance(raw_output, ParsedQuery):
@@ -1829,7 +1901,7 @@ def _finalise_parse(
         )
         return _apply_fallback(natural_language, parsed, errors, world_state)
 
-    query = _build_query(parsed)
+    query = _build_query(parsed, natural_language=natural_language)
     logger.info("[QueryParser] Resolved to %s query", parsed.query_type)
     return QueryParseResult(
         query=query,
@@ -1886,11 +1958,24 @@ def parse_query(
         natural_language, world_state, constrained=constrained,
     )
 
+    # ``PromptedOutput`` keeps the dynamic ``Literal`` / ``anyOf``
+    # schemas out of the model provider's native ``format`` field.
+    # Recent Ollama builds reject ``anyOf`` (used for Optional fields
+    # and the ``target_vector_id`` enum-or-null shape) with
+    # ``invalid JSON schema in format``. PromptedOutput injects the
+    # schema into the prompt and validates the JSON in Python, so
+    # arbitrary Pydantic schemas work on any backend.
     agent: Agent[None, Any] = Agent(
         model,
         system_prompt=system_prompt,
-        output_type=NativeOutput(output_model),
+        output_type=PromptedOutput(output_model),
         retries=cfg.output_retries,
+    )
+    _attach_output_validator(
+        agent,
+        query_type=query_type,
+        constrained=constrained,
+        world_state=world_state,
     )
 
     logger.info(
@@ -1928,11 +2013,18 @@ async def parse_query_async(
         natural_language, world_state, constrained=constrained,
     )
 
+    # See sync ``parse_query`` for why PromptedOutput is used here.
     agent: Agent[None, Any] = Agent(
         model,
         system_prompt=system_prompt,
-        output_type=NativeOutput(output_model),
+        output_type=PromptedOutput(output_model),
         retries=cfg.output_retries,
+    )
+    _attach_output_validator(
+        agent,
+        query_type=query_type,
+        constrained=constrained,
+        world_state=world_state,
     )
 
     logger.info(
