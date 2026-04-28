@@ -283,7 +283,6 @@ def render_world_graph(
     chart = ui.echart({
         "backgroundColor": _CHART_BG,
         "tooltip": {**_CHART_TOOLTIP, "trigger": "item"},
-        "legend": [_LEGEND],
         "animationDuration": 800,
         "animationEasingUpdate": "quinticInOut",
         "series": [{
@@ -331,7 +330,6 @@ def render_ego_graph(
     chart = ui.echart({
         "backgroundColor": _CHART_BG,
         "tooltip": {**_CHART_TOOLTIP, "trigger": "item"},
-        "legend": [_LEGEND],
         "animationDuration": 600,
         "series": [{
             "type": "graph",

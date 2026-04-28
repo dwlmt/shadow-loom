@@ -120,16 +120,15 @@ def build_world_tab(state: AppState) -> None:
                 value="force",
             ).props("dense no-caps").tooltip("Social graph layout")
             social_layout.set_visibility(False)
-            social_metric = ui.toggle(
+            social_metric = ui.select(
                 {
-                    "affinity": "Affinity",
-                    "fear": "Fear",
-                    "power_dynamic": "Power",
+                    "affinity": "Affinity  (-1 hate ↔ +1 love)",
+                    "fear": "Fear  (0 calm → 1 terrified)",
+                    "power_dynamic": "Power dynamic  (-1 subservient ↔ +1 dominant)",
                 },
                 value="affinity",
-            ).props("dense no-caps").tooltip(
-                "Which relationship metric the heatmap shows"
-            )
+                label="Heatmap metric",
+            ).classes("w-64").props("dense outlined")
             social_metric.set_visibility(False)
             spatial_animated = ui.checkbox("Animated", value=True).tooltip(
                 "Animate location nodes (rippleEffect)"
@@ -327,42 +326,49 @@ def build_world_tab(state: AppState) -> None:
                             title="World graph \u2014 overview",
                         )
                     elif mode == "social":
-                        # One social graph (relationship topology) on
-                        # the left, one heatmap on the right whose
-                        # metric is chosen from the toolbar toggle.
-                        # Affinity / Fear / Power_dynamic each get
-                        # their own selectable heatmap rather than
-                        # being collapsed into a single ambiguous one.
                         chosen_metric = social_metric.value or "affinity"
-                        with ui.row().classes("w-full gap-2"):
-                            with ui.column().classes("flex-grow"):
-                                with_expand(
-                                    lambda h, lay=social_layout.value or "force": (
-                                        render_social_graph(
-                                            ws,
-                                            on_click=_on_graph_click,
-                                            height=h,
-                                            layout=lay,
-                                        )
-                                    ),
-                                    title="Social graph (relationships)",
-                                )
-                            with ui.column().classes("w-1/3"):
-                                _metric_titles = {
-                                    "affinity": "Affinity heatmap (–1 hate ↔ +1 love)",
-                                    "fear": "Fear heatmap (0 calm → 1 terrified)",
-                                    "power_dynamic": "Power dynamic (–1 subservient ↔ +1 dominant)",
-                                }
-                                with_expand(
-                                    lambda h, m=chosen_metric: (
-                                        render_relationship_heatmap(
-                                            ws, metric=m, height=h,
-                                        )
-                                    ),
-                                    title=_metric_titles.get(
-                                        chosen_metric, "Relationship heatmap",
-                                    ),
-                                )
+                        _metric_titles = {
+                            "affinity": "Affinity heatmap  (–1 hate ↔ +1 love)",
+                            "fear": "Fear heatmap  (0 calm → 1 terrified)",
+                            "power_dynamic": "Power dynamic  (–1 subservient ↔ +1 dominant)",
+                        }
+                        with ui.expansion(
+                            "Social Graph",
+                            icon="hub",
+                            value=True,
+                        ).classes(
+                            "w-full bg-white border border-slate-200 rounded-xl mb-2"
+                        ):
+                            with_expand(
+                                lambda h, lay=social_layout.value or "force": (
+                                    render_social_graph(
+                                        ws,
+                                        on_click=_on_graph_click,
+                                        height=h,
+                                        layout=lay,
+                                    )
+                                ),
+                                title="Social graph (relationships)",
+                                height="420px",
+                            )
+                        with ui.expansion(
+                            _metric_titles.get(chosen_metric, "Relationship heatmap"),
+                            icon="grid_on",
+                            value=True,
+                        ).classes(
+                            "w-full bg-white border border-slate-200 rounded-xl mb-2"
+                        ):
+                            with_expand(
+                                lambda h, m=chosen_metric: (
+                                    render_relationship_heatmap(
+                                        ws, metric=m, height=h,
+                                    )
+                                ),
+                                title=_metric_titles.get(
+                                    chosen_metric, "Relationship heatmap",
+                                ),
+                                height="420px",
+                            )
                     elif mode == "spatial":
                         with_expand(
                             lambda h, an=bool(spatial_animated.value): (
