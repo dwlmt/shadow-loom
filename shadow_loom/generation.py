@@ -498,6 +498,8 @@ def build_intervention_brief(
     world_state: WorldStateV1,
     mutations: Optional[List[Dict[str, Any]]] = None,
     blocked: Optional[List[Dict[str, Any]]] = None,
+    rule3_pruned_interventions: Optional[List[str]] = None,
+    rule2_redundant_evidence: Optional[List[str]] = None,
 ) -> CreativeBrief:
     """Build a CreativeBrief for intervention (do-calculus) queries."""
     # Build InterventionMechanism entries from the interventions dict
@@ -559,6 +561,26 @@ def build_intervention_brief(
                 evidence=b,
             ))
 
+    # ctf-calculus pre-flight prunings (Correa & Bareinboim 2025).
+    # The engine proved these surgeries vacuous against the user's targets
+    # before simulation. The prose MUST NOT invent downstream effects for
+    # them — the do-operator was applied locally but is provably
+    # disconnected from the rest of the AMWN.
+    if rule3_pruned_interventions:
+        constraints.append(ConstraintBlock(
+            constraint_type="mathematical",
+            priority="hard",
+            instruction=(
+                "VACUOUS INTERVENTIONS (Rule-3 pruned): "
+                f"{', '.join(rule3_pruned_interventions)}. These surgeries "
+                "have no directed path to any target on the AMWN. Render "
+                "the local change at the intervened node, but do NOT "
+                "describe causal ripples reaching other characters or "
+                "downstream events — the engine proved there are none."
+            ),
+            evidence={"rule3_pruned": list(rule3_pruned_interventions)},
+        ))
+
     constraints.append(ConstraintBlock(
         constraint_type="mathematical",
         priority="hard",
@@ -602,6 +624,8 @@ def build_counterfactual_brief(
     physics_state: Dict[str, Any],
     world_state: WorldStateV1,
     hidden_deltas: Optional[Dict[str, Dict[str, float]]] = None,
+    rule3_pruned_interventions: Optional[List[str]] = None,
+    rule2_redundant_evidence: Optional[List[str]] = None,
 ) -> CreativeBrief:
     """Build a CreativeBrief for counterfactual (Rung 3) queries."""
     # Build AbductionTruth entries from hidden_deltas
@@ -661,6 +685,35 @@ def build_counterfactual_brief(
                 "that these hidden variables are structurally present."
             ),
             evidence={},
+        ))
+
+    # ctf-calculus pre-flight prunings (Correa & Bareinboim 2025).
+    if rule3_pruned_interventions:
+        constraints.append(ConstraintBlock(
+            constraint_type="mathematical",
+            priority="hard",
+            instruction=(
+                "VACUOUS HISTORICAL INTERVENTIONS (Rule-3 pruned): "
+                f"{', '.join(rule3_pruned_interventions)}. These do-surgeries "
+                "have no directed path to the present-day evidence on the "
+                "AMWN. The counterfactual at the intervened node holds "
+                "locally, but the rest of the timeline is unchanged — do "
+                "NOT spin out alternate consequences for the broader story."
+            ),
+            evidence={"rule3_pruned": list(rule3_pruned_interventions)},
+        ))
+    if rule2_redundant_evidence:
+        constraints.append(ConstraintBlock(
+            constraint_type="mathematical",
+            priority="soft",
+            instruction=(
+                "REDUNDANT EVIDENCE (Rule-2): "
+                f"{', '.join(rule2_redundant_evidence)} are d-separated "
+                "from the historical interventions on the AMWN. Their "
+                "present-day state did not constrain the abduction — treat "
+                "them as background colour, not evidential anchors."
+            ),
+            evidence={"rule2_redundant": list(rule2_redundant_evidence)},
         ))
 
     return CreativeBrief(
@@ -846,6 +899,8 @@ def render_from_query(
             world_state,
             mutations=physics_result.get("mutations"),
             blocked=physics_result.get("blocked"),
+            rule3_pruned_interventions=physics_result.get("rule3_pruned_interventions"),
+            rule2_redundant_evidence=physics_result.get("rule2_redundant_evidence"),
         )
         return render_scene(brief, config, "intervention", physics_state)
 
@@ -855,6 +910,8 @@ def render_from_query(
             physics_state,
             world_state,
             hidden_deltas=physics_result.get("hidden_deltas"),
+            rule3_pruned_interventions=physics_result.get("rule3_pruned_interventions"),
+            rule2_redundant_evidence=physics_result.get("rule2_redundant_evidence"),
         )
         return render_scene(brief, config, "counterfactual", physics_state)
 

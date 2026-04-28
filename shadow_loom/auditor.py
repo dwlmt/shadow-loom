@@ -117,6 +117,36 @@ class CausalPhysicsFeedback(BaseModel):
             "unacquired knowledge."
         ),
     )
+    cyclic_propagation_clusters: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Trait propagations refused because the source node sits inside "
+            "a strongly-connected component of the causal subgraph. These "
+            "indicate extraction problems (a true cycle in the static "
+            "topology), not narrative miracles, and are reported separately "
+            "from miracle steps so the rewrite loop doesn't try to 'fix' "
+            "physics that is unfixable at the prose layer."
+        ),
+    )
+    rule3_pruned_interventions: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Intervention keys that the ctf-calculus pre-flight (Rule 3 "
+            "Exclusion) proved vacuous against the user's query targets. "
+            "Reported here so the auditor can warn when the engine had "
+            "to drop a request the user explicitly asked for."
+        ),
+    )
+    rule2_redundant_evidence: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Evidence node IDs that the ctf-calculus pre-flight (Rule 2 "
+            "Independence) proved d-separated from every intervention "
+            "given the rest of the evidence. Abduction on these nodes "
+            "is informational only — they cannot change the counter"
+            "factual distribution."
+        ),
+    )
 
 
 class AffectiveStateFeedback(BaseModel):
@@ -448,17 +478,30 @@ def compute_causal_feedback(
         The canonical world state (for resolving causal topology).
     """
     miracle_steps: List[str] = []
+    cyclic_clusters: List[str] = []
+    rule3_pruned: List[str] = []
+    rule2_redundant: List[str] = []
     foreshadowing_score = 1.0
     cog_plausibility_score = 1.0
     cog_details = ""
 
     # --- Miracle steps: blocked propagations where impact failed inertia ---
+    # Cycle blocks indicate static-topology extraction problems (the
+    # causal subgraph contains an SCC), not narrative miracles, so they
+    # are split out into ``cyclic_propagation_clusters`` and excluded
+    # from miracle-step accounting.
     if physics_result is not None:
         for b in physics_result.blocked:
-            miracle_steps.append(
+            entry = (
                 f"{b.node_id}.{b.trait}: impact={b.impact:.2f} < "
                 f"inertia={b.inertia:.2f} ({b.reason})"
             )
+            if b.reason == "cycle":
+                cyclic_clusters.append(entry)
+            else:
+                miracle_steps.append(entry)
+        rule3_pruned = list(physics_result.rule3_pruned_interventions)
+        rule2_redundant = list(physics_result.rule2_redundant_evidence)
 
     # --- Foreshadowing payoff: ratio of withheld narrative tensions resolved ---
     if brief.narrative_tensions:
@@ -512,6 +555,9 @@ def compute_causal_feedback(
         foreshadowing_payoff_score=round(foreshadowing_score, 4),
         cognitive_plausibility_score=cog_plausibility_score,
         cognitive_plausibility_details=cog_details,
+        cyclic_propagation_clusters=cyclic_clusters,
+        rule3_pruned_interventions=rule3_pruned,
+        rule2_redundant_evidence=rule2_redundant,
     )
     log_agent_output(logger, "CausalPhysicsFeedback", feedback)
     return feedback
@@ -753,6 +799,7 @@ def assemble_audit_prompt(
     brief: CreativeBrief,
     audit_categories: List[str],
     prior_feedback: Optional[List[str]] = None,
+    causal_feedback: Optional[CausalPhysicsFeedback] = None,
 ) -> str:
     """Build the full prompt for the auditor LLM.
 
@@ -918,6 +965,52 @@ def assemble_audit_prompt(
             sections.append(f"  {i}. {fb}")
         sections.append("")
 
+    # Engine-computed physics ground truth — fed to the auditor so it
+    # can flag prose against deterministic facts the engine already
+    # established (miracle steps, cyclic clusters, ctf-calculus prunings).
+    if causal_feedback is not None and (
+        causal_feedback.miracle_steps_detected
+        or causal_feedback.cyclic_propagation_clusters
+        or causal_feedback.rule3_pruned_interventions
+        or causal_feedback.rule2_redundant_evidence
+    ):
+        sections.append("=== ENGINE PHYSICS LEDGER (ground truth) ===")
+        if causal_feedback.miracle_steps_detected:
+            sections.append(
+                f"  Miracle steps ({len(causal_feedback.miracle_steps_detected)}) "
+                f"— prose MUST render the mechanism for each:"
+            )
+            for ms in causal_feedback.miracle_steps_detected:
+                sections.append(f"    - {ms}")
+        if causal_feedback.cyclic_propagation_clusters:
+            sections.append(
+                f"  Cyclic propagation clusters "
+                f"({len(causal_feedback.cyclic_propagation_clusters)}) "
+                f"— static-topology cycles, NOT miracle steps. "
+                f"Do not flag these as prose problems:"
+            )
+            for cc in causal_feedback.cyclic_propagation_clusters:
+                sections.append(f"    - {cc}")
+        if causal_feedback.rule3_pruned_interventions:
+            sections.append(
+                f"  Rule-3 pruned interventions "
+                f"({len(causal_feedback.rule3_pruned_interventions)}) "
+                f"— provably vacuous on the AMWN. The prose should not "
+                f"claim these surgeries had downstream effects:"
+            )
+            for ip in causal_feedback.rule3_pruned_interventions:
+                sections.append(f"    - {ip}")
+        if causal_feedback.rule2_redundant_evidence:
+            sections.append(
+                f"  Rule-2 redundant evidence "
+                f"({len(causal_feedback.rule2_redundant_evidence)}) "
+                f"— d-separated from interventions; abduction skipped "
+                f"(informational only):"
+            )
+            for ev in causal_feedback.rule2_redundant_evidence:
+                sections.append(f"    - {ev}")
+        sections.append("")
+
     sections.append(
         "=== TASK ===\n"
         "Audit the prose above against the constraints and physics state. "
@@ -1078,6 +1171,33 @@ def assemble_evaluation_prompt(
             sections.append(
                 f"    {causal_feedback.cognitive_plausibility_details}"
             )
+        # ctf-calculus pre-flight (Correa & Bareinboim 2025): flag the
+        # auditor that these are *not* prose problems — they are static
+        # graphical proofs the engine performed before simulation.
+        if causal_feedback.cyclic_propagation_clusters:
+            sections.append(
+                f"  Cyclic propagation clusters: "
+                f"{len(causal_feedback.cyclic_propagation_clusters)} "
+                f"(static-topology cycles, NOT miracle steps — do not rewrite)"
+            )
+            for cc in causal_feedback.cyclic_propagation_clusters:
+                sections.append(f"    - {cc}")
+        if causal_feedback.rule3_pruned_interventions:
+            sections.append(
+                f"  Rule-3 pruned interventions: "
+                f"{len(causal_feedback.rule3_pruned_interventions)} "
+                f"(provably vacuous on the AMWN — surgery cannot reach targets)"
+            )
+            for ip in causal_feedback.rule3_pruned_interventions:
+                sections.append(f"    - {ip}")
+        if causal_feedback.rule2_redundant_evidence:
+            sections.append(
+                f"  Rule-2 redundant evidence: "
+                f"{len(causal_feedback.rule2_redundant_evidence)} "
+                f"(d-separated from interventions — abduction skipped)"
+            )
+            for ev in causal_feedback.rule2_redundant_evidence:
+                sections.append(f"    - {ev}")
         sections.append("")
 
     if affective_feedback is not None:
@@ -1166,6 +1286,7 @@ def run_audit(
     brief: CreativeBrief,
     config: AuditorConfig | None = None,
     prior_feedback: Optional[List[str]] = None,
+    causal_feedback: Optional[CausalPhysicsFeedback] = None,
 ) -> AuditResult:
     """Execute a single audit pass (Step 11).
 
@@ -1192,7 +1313,7 @@ def run_audit(
     )
 
     audit_prompt = assemble_audit_prompt(
-        prose, brief, categories, prior_feedback,
+        prose, brief, categories, prior_feedback, causal_feedback,
     )
 
     logger.info(
@@ -1390,21 +1511,28 @@ def run_feedback_loop(
         )
 
         # --- Step 11: Audit ---
+        # Compute the engine's deterministic physics ledger first so the
+        # auditor LLM sees the same ground-truth (miracle steps,
+        # cyclic clusters, ctf-calculus prunings) the cycle scorecard
+        # below will use. Without this the LLM auditor was blind to the
+        # facts the engine already proved.
+        cycle_causal = compute_causal_feedback(
+            physics_result, brief, world_state,
+        )
+
         audit = run_audit(
             prose=current_scene.prose,
             brief=brief,
             config=auditor_config,
             prior_feedback=accumulated_feedback if iteration > 0 else None,
+            causal_feedback=cycle_causal,
         )
 
         # Snapshot the current state
         graph_version = versioned.version if versioned else 0
         graph_data = versioned.snapshot_data() if versioned else {}
 
-        # Compute per-cycle engine metrics
-        cycle_causal = compute_causal_feedback(
-            physics_result, brief, world_state,
-        )
+        # Compute per-cycle engine metrics (causal computed above; reuse).
         cycle_affective = compute_affective_feedback(
             brief, assembler,
         )

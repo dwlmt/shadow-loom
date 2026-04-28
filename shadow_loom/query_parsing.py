@@ -125,6 +125,17 @@ class ParsedQuery(BaseModel):
         description="For counterfactual: present-tense facts to condition on.",
     )
 
+    # --- Shared by intervention + counterfactual ---
+    target_node_ids: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "For intervention/counterfactual: downstream nodes the user "
+            "cares about. Used as the Y-set for the ctf-calculus Rule 3 "
+            "(Exclusion) pre-flight to prove that an intervention is "
+            "vacuous when no path exists to any of these nodes."
+        ),
+    )
+
     # --- Directive ---
     target_entity_ids: Optional[List[str]] = Field(
         default=None,
@@ -490,6 +501,22 @@ def _build_intervention_dynamic_model(world_state: WorldStateV1):
                 description="One or more constrained intervention items.",
             ),
         ),
+        target_node_ids=(
+            List[target_lit],
+            Field(
+                default_factory=list,
+                description=(
+                    "Downstream graph node IDs the user cares about. Used "
+                    "by the ctf-calculus pre-flight (Rule 3) to prove an "
+                    "intervention vacuous when it has no directed path to "
+                    "any of these nodes. Include any entity, event, object "
+                    "or world-trait the user explicitly mentions as the "
+                    "thing they want to affect or observe the effect on. "
+                    "Leave empty only when the user gives no downstream "
+                    "reference at all."
+                ),
+            ),
+        ),
         resolved_ids=(
             List[ResolvedID],
             Field(default_factory=list, description="Auxiliary name→ID resolutions."),
@@ -545,6 +572,20 @@ def _build_counterfactual_dynamic_model(world_state: WorldStateV1):
             Field(
                 default_factory=list,
                 description="Present-tense node IDs to condition on.",
+            ),
+        ),
+        target_node_ids=(
+            List[all_lit],
+            Field(
+                default_factory=list,
+                description=(
+                    "Downstream graph node IDs the user cares about. Used "
+                    "by the ctf-calculus pre-flight (Rule 3) to prove a "
+                    "historical intervention vacuous when no path exists "
+                    "to any of these nodes in the mutilated diagram. "
+                    "Include any present-tense entity, event, or world-trait "
+                    "the user mentions as the thing they want changed."
+                ),
             ),
         ),
         resolved_ids=(
@@ -690,6 +731,7 @@ def _normalise_dynamic_to_parsed(dynamic_output: Any, query_type: str) -> Parsed
         return ParsedQuery(
             **base,
             interventions=_items_to_dotted_dict(data.get("interventions") or []),
+            target_node_ids=list(data.get("target_node_ids") or []),
         )
 
     if query_type == "counterfactual":
@@ -699,6 +741,7 @@ def _normalise_dynamic_to_parsed(dynamic_output: Any, query_type: str) -> Parsed
                 data.get("historical_interventions") or []
             ),
             evidence_node_ids=list(data.get("evidence_node_ids") or []),
+            target_node_ids=list(data.get("target_node_ids") or []),
         )
 
     if query_type == "directive":
@@ -797,6 +840,11 @@ The user wants to forcibly change something in the present moment.
 
 **Fields to populate:**
 - `interventions`: Required dict of {{"node_id.property": new_value}} pairs.
+- `target_node_ids`: Optional list of downstream graph node IDs the user explicitly
+  cares about (the thing they want affected). Populate this whenever the user
+  mentions a target — e.g. "make Macbeth kill Duncan" → target_node_ids=["ENT_DUNCAN"];
+  "force the war to end" → target_node_ids=["WORLD_WAR"]. Used by the engine's
+  ctf-calculus pre-flight to detect provably-vacuous interventions.
 
 **KEY FORMAT — EVERY KEY MUST CONTAIN A DOT.**
 The key is `<node_id>.<property_path>` (the property after the first dot is
@@ -827,6 +875,9 @@ The user asks "what if" about PAST events.
 - `historical_interventions`: Required dict of {{"event_id.property": altered_outcome}}
   — the past events to change.
 - `evidence_node_ids`: List of present-tense node IDs to condition on (recommended but optional).
+- `target_node_ids`: Optional list of present-tense graph node IDs the user wants
+  changed by the counterfactual (the things they expect to look different in the
+  re-simulated world). Used by the engine's ctf-calculus pre-flight.
 
 **KEY FORMAT — EVERY KEY MUST CONTAIN A DOT.**
 The key is `<event_id>.<property_path>`. Bare event IDs without a `.property`
@@ -1685,6 +1736,7 @@ def _build_query(
             interventions=_normalise_intervention_keys(
                 parsed.interventions or {}, field_name="interventions",
             ),
+            target_node_ids=parsed.target_node_ids or [],
             original_query=nl,
         )
 
@@ -1695,6 +1747,7 @@ def _build_query(
                 field_name="historical_interventions",
             ),
             evidence_node_ids=parsed.evidence_node_ids or [],
+            target_node_ids=parsed.target_node_ids or [],
             original_query=nl,
         )
 

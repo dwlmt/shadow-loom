@@ -611,7 +611,7 @@ class TestFeedbackLoop:
         """Prior feedback must accumulate across iterations."""
         call_args = []
 
-        def capture_audit(prose, brief, config=None, prior_feedback=None):
+        def capture_audit(prose, brief, config=None, prior_feedback=None, causal_feedback=None):
             call_args.append(prior_feedback)
             if len(call_args) < 3:
                 return _make_failing_audit()

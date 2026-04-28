@@ -224,7 +224,11 @@ def calculate_narrative_physics(
 
         if use_causal_engine:
             engine = CausalPhysicsEngine(shadow_graph, global_world_state)
-            physics_result = engine.execute(rung=2, interventions=request.interventions)
+            physics_result = engine.execute(
+                rung=2,
+                interventions=request.interventions,
+                target_node_ids=getattr(request, "target_node_ids", None) or [],
+            )
 
             # Tier-2 vacuity check (after engine ran)
             vacuous = _check_engine_vacuity(
@@ -256,6 +260,16 @@ def calculate_narrative_physics(
                 "social_mutations": [m.model_dump() for m in physics_result.social_mutations],
                 "blocked": [b.model_dump() for b in physics_result.blocked],
                 "intervened_nodes": physics_result.intervened_nodes,
+                # ctf-calculus pre-flight (Correa & Bareinboim 2025).
+                # Surfaced in JSON so UI / MCP / auditor can render the
+                # interventions Rule 3 dropped and the evidence Rule 2
+                # flagged as d-separated.
+                "rule3_pruned_interventions": list(
+                    physics_result.rule3_pruned_interventions
+                ),
+                "rule2_redundant_evidence": list(
+                    physics_result.rule2_redundant_evidence
+                ),
                 # Typed object stashed under a private key so the pipeline
                 # can forward it to the auditor (which needs the full
                 # CausalPhysicsResult, not the JSON-serialised slices).
@@ -355,6 +369,7 @@ def calculate_narrative_physics(
                 rung=3,
                 interventions=request.historical_interventions,
                 evidence_node_ids=request.evidence_node_ids,
+                target_node_ids=getattr(request, "target_node_ids", None) or [],
             )
 
             # Tier-2 vacuity check: did the abductive simulation produce anything?
@@ -389,6 +404,14 @@ def calculate_narrative_physics(
                 "social_mutations": [m.model_dump() for m in physics_result.social_mutations],
                 "blocked": [b.model_dump() for b in physics_result.blocked],
                 "hidden_deltas": physics_result.hidden_deltas,
+                # ctf-calculus pre-flight (Correa & Bareinboim 2025) — see
+                # intervention branch for rationale.
+                "rule3_pruned_interventions": list(
+                    physics_result.rule3_pruned_interventions
+                ),
+                "rule2_redundant_evidence": list(
+                    physics_result.rule2_redundant_evidence
+                ),
                 # Typed object stashed for the pipeline → auditor handoff;
                 # see the intervention branch for rationale.
                 "_causal_physics_result": physics_result,

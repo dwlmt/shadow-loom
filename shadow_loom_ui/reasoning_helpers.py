@@ -224,6 +224,10 @@ def extract_reasoning_trace(
         "cascade": [],
         "social_cascade": [],
         "blocked": [],
+        # ctf-calculus pre-flight surface (Correa & Bareinboim 2025)
+        "rule3_pruned_interventions": [],
+        "rule2_redundant_evidence": [],
+        "cyclic_propagation_clusters": [],
     }
     if not physics_result:
         return out
@@ -330,6 +334,32 @@ def extract_reasoning_trace(
             "reason": b.get("reason", "inertia"),
         })
 
+    # ── ctf-calculus pre-flight (Rules 2 & 3) ─────────────────────
+    # The engine reports interventions and evidence the AMWN d-separation
+    # check proved vacuous before simulation. Cycle-blocked propagations
+    # are the third bucket that shouldn't show up as narrative miracles.
+    for path in physics_result.get("rule3_pruned_interventions") or []:
+        node_id = str(path).split(".", 1)[0] if "." in str(path) else str(path)
+        out["rule3_pruned_interventions"].append({
+            "path": str(path),
+            "node_id": node_id,
+            "label": label(node_id),
+        })
+    for nid in physics_result.get("rule2_redundant_evidence") or []:
+        out["rule2_redundant_evidence"].append({
+            "node_id": str(nid),
+            "label": label(str(nid)),
+        })
+    # Cyclic clusters are also surfaced from blocked entries (reason="cycle")
+    # so the UI can collapse them into a separate panel from miracle blocks.
+    for b in out["blocked"]:
+        if b.get("reason") == "cycle":
+            out["cyclic_propagation_clusters"].append({
+                "node_id": b.get("node_id", ""),
+                "label": b.get("label", ""),
+                "trait": b.get("trait", ""),
+            })
+
     return out
 
 
@@ -348,6 +378,12 @@ def reasoning_trace_summary(trace: Dict[str, Any]) -> str:
         parts.append(f"{len(trace['social_cascade'])} social")
     if trace.get("blocked"):
         parts.append(f"{len(trace['blocked'])} blocked")
+    if trace.get("rule3_pruned_interventions"):
+        parts.append(f"{len(trace['rule3_pruned_interventions'])} rule3-pruned")
+    if trace.get("rule2_redundant_evidence"):
+        parts.append(f"{len(trace['rule2_redundant_evidence'])} rule2-redundant")
+    if trace.get("cyclic_propagation_clusters"):
+        parts.append(f"{len(trace['cyclic_propagation_clusters'])} cycle-blocked")
     return " · ".join(parts) if parts else "no reasoning trace"
 
 

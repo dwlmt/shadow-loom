@@ -48,6 +48,15 @@ class InterventionQuery(_QueryBase):
     interventions: Dict[str, Any] = Field(
         description="A dictionary of do-operator targets. Values are strings for state changes, or dicts for genesis spawns."
     )
+    target_node_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Optional downstream nodes the user cares about. When set, the "
+            "ctf-calculus pre-flight uses these as the Y-set for Rule 3 "
+            "(Exclusion): an intervention is provably vacuous if it has no "
+            "directed path to any of these nodes in the mutilated diagram."
+        ),
+    )
     force_implausible: bool = Field(
         default=False,
         description="If True, generate prose even when the engine cannot resolve any "
@@ -69,6 +78,13 @@ class CounterfactualQuery(_QueryBase):
     )
     evidence_node_ids: List[str] = Field(
         description="The facts from the present we must condition on to calculate latent traits."
+    )
+    target_node_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Optional downstream nodes the user cares about (Y-set for Rule 3 "
+            "Exclusion in the ctf-calculus pre-flight)."
+        ),
     )
     force_implausible: bool = Field(
         default=False,

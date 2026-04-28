@@ -26,6 +26,22 @@ in spirit but operates on a *latent-free* SCM (no bidirected ``U`` arcs), so
 soundness for d-separation holds; completeness across worlds with shared
 unobserved confounders would require explicit bidirected edges that the
 shadow-loom data model does not currently encode.
+
+**Closed-world assumption.** Identifiability via Rule 2 here is
+*sound but incomplete with respect to unobserved confounders*. The AMWN is
+built directly from ``WorldStateV1.causal_topology``, which is the engine's
+ground truth; any latent common cause that the LLM extraction missed is
+silently treated as absent. Two nodes that the AMWN flags as d-separated
+are therefore independent **only relative to the extracted graph** — not
+necessarily independent in the underlying narrative. Callers using the
+ctf-calculus report to short-circuit simulation should treat Rule 2 / 3
+flags as advisory, not authoritative.
+
+Relationship metrics (affinity / fear / power_dynamic on social edges) are
+lifted into synthetic ``REL::<src>::<tgt>::<metric>`` nodes by
+:func:`build_causal_diagram` so that ``mutation_social`` causal edges can
+contribute to d-separation reasoning. These are graph-only artefacts — they
+never enter the simulation sandbox.
 """
 from __future__ import annotations
 
@@ -68,14 +84,20 @@ def _hashable_value(value: Any) -> str:
 
 
 def _to_context(interventions: Mapping[str, Any]) -> InterventionContext:
-    """Normalise an intervention dict to a frozenset of ``(node_id, value)``."""
+    """Normalise an intervention dict to a frozenset of ``(node_id, "")``.
+
+    AMWN node identity for d-separation depends only on *which* variables
+    are surgically cut, not the values they were set to: two interventions
+    that hit the same variable produce identical do-surgery (incoming
+    edges removed) regardless of value. We therefore use the empty string
+    as a canonical value so floating-point drift in values cannot fragment
+    the AMWN's node-shadowing behaviour. Value-sensitive reasoning lives
+    in :func:`check_consistency`, which compares raw values directly.
+    """
     items: Set[InterventionItem] = set()
-    for path, value in interventions.items():
-        # We only care about the intervened *node* for graph surgery —
-        # property paths inside the node (``ENT_X.traits.fear``) collapse
-        # to the same surgical cut on incoming edges.
+    for path, _value in interventions.items():
         node_id = path.split(".", 1)[0] if "." in path else path
-        items.add((node_id, _hashable_value(value)))
+        items.add((node_id, ""))
     return frozenset(items)
 
 
@@ -102,6 +124,22 @@ class CounterfactualVar:
 # Causal diagram construction
 # ---------------------------------------------------------------------------
 
+def _rel_node_id(source_id: str, target_id: str, metric: str) -> str:
+    """Synthetic AMWN node id for a relationship-metric variable.
+
+    Relationship metrics live on edges in ``WorldStateV1.social_topology``
+    rather than as first-class nodes. To make ``mutation_social`` causal
+    edges visible to d-separation reasoning, :func:`build_causal_diagram`
+    promotes each ``(source, target, metric)`` triple into a node with the
+    canonical id produced by this helper.
+
+    The ``REL::`` prefix guarantees the synthetic id can never collide
+    with a real graph node (every real id uses a single-prefix convention
+    like ``ENT_``, ``EVT_``, etc.).
+    """
+    return f"REL::{source_id}::{target_id}::{metric}"
+
+
 def build_causal_diagram(world_state: WorldStateV1) -> nx.DiGraph:
     """Strip ``world_state`` to a structural directed diagram ``G``.
 
@@ -112,6 +150,13 @@ def build_causal_diagram(world_state: WorldStateV1) -> nx.DiGraph:
 
     Self-loops (a node listed as its own cause, which can happen with
     misformed extraction) are dropped to keep ``nx.ancestors`` well-defined.
+
+    Relationship-metric variables are promoted into synthetic nodes
+    ``REL::<src>::<tgt>::<metric>`` so ``mutation_social`` causal edges
+    contribute to d-separation reasoning. Each is wired downstream from
+    its triggering event (the ``CausalEdge.source_id``) and from its two
+    endpoint entities, so the AMWN sees them as caused both by the event
+    and by the relationship's participants.
     """
     g = nx.DiGraph()
     # Seed nodes so isolates are still queryable
@@ -129,6 +174,28 @@ def build_causal_diagram(world_state: WorldStateV1) -> nx.DiGraph:
         if ce.source_id == ce.target_id:
             continue
         g.add_edge(ce.source_id, ce.target_id)
+        # Promote mutation_social edges into a synthetic relationship-metric
+        # node so d-separation reasoning can flow through social state.
+        if getattr(ce, "causality_type", None) == "mutation_social":
+            counterpart = getattr(ce, "rel_counterpart_id", None)
+            metric = getattr(ce, "trait_target", None)
+            if counterpart and metric:
+                rel_node = _rel_node_id(ce.target_id, counterpart, metric)
+                g.add_node(rel_node)
+                g.add_edge(ce.source_id, rel_node)
+                # The two endpoint entities are also (weak) parents — their
+                # current state co-determines the relationship metric.
+                g.add_edge(ce.target_id, rel_node)
+                g.add_edge(counterpart, rel_node)
+    # Also seed REL nodes from the static social topology so observation-
+    # only queries still see relationship metrics in the diagram.
+    for rel in getattr(world_state, "social_topology", []) or []:
+        for metric in ("affinity", "fear", "power_dynamic"):
+            rel_node = _rel_node_id(rel.source_entity_id, rel.target_entity_id, metric)
+            if not g.has_node(rel_node):
+                g.add_node(rel_node)
+                g.add_edge(rel.source_entity_id, rel_node)
+                g.add_edge(rel.target_entity_id, rel_node)
     return g
 
 
@@ -376,56 +443,91 @@ def apply_ctf_calculus(
     interventions: Mapping[str, Any],
     evidence_node_ids: Optional[Iterable[str]] = None,
     target_node_ids: Optional[Iterable[str]] = None,
+    *,
+    diagram: Optional[nx.DiGraph] = None,
 ) -> CtfCalculusReport:
     """Apply the three ctf-calculus rules as a pre-flight check.
 
-    For each intervention key, test whether the surgery is excluded by
-    Rule 3 (no path to any evidence/target node). For each evidence node,
-    test whether it is independent of the interventions by Rule 2 (and
-    therefore redundant). The returned report lists pruning candidates;
-    the caller decides whether to skip them.
+    Rule 3 (Exclusion) prunes intervention keys whose target node has no
+    directed path to any *query target* in the mutilated diagram, where
+    edges into evidence and other-intervened nodes are cut.
 
-    This is *static graphical reasoning* — no simulation or trait math.
+    Rule 2 (Independence) flags evidence nodes that are d-separated from
+    every intervened variable on the AMWN, given the full counterfactual
+    context ``W*`` (all interventions) as the conditioning set.
+
+    Spawn-style intervention paths (``X.spawn``) and intervention targets
+    that don't yet exist in the diagram are skipped — they create new
+    nodes that the static causal topology cannot reason about.
+
+    The caller may pass a pre-built ``diagram`` to avoid rebuilding it
+    when a single ``world_state`` is reused across many candidate
+    interventions (e.g. inside ``evaluate_candidate_events``).
     """
-    diagram = build_causal_diagram(world_state)
+    if diagram is None:
+        diagram = build_causal_diagram(world_state)
     evidence_node_ids = list(evidence_node_ids or [])
     target_node_ids = list(target_node_ids or [])
-    # The "downstream interest" set Y for Rule 3 is the union of evidence
-    # and any explicit query targets. If neither is provided we cannot
-    # prune via Rule 3 (every node is potentially relevant).
-    y_universe = set(evidence_node_ids) | set(target_node_ids)
 
     report = CtfCalculusReport()
 
-    intervened_node_ids = {
-        path.split(".", 1)[0] if "." in path else path
-        for path in interventions
-    }
+    # Partition intervention paths into "real" (resolvable to a node we
+    # can reason about) and "spawn" (new node — skip pre-flight).
+    intervened_node_ids: Set[str] = set()
+    spawn_paths: Set[str] = set()
+    for path in interventions:
+        node_id = path.split(".", 1)[0] if "." in path else path
+        sub = path.split(".", 1)[1] if "." in path else ""
+        if sub == "spawn" or path.endswith(".spawn"):
+            spawn_paths.add(path)
+            continue
+        if not diagram.has_node(node_id):
+            # Node not in static topology — can't analyse; preserve.
+            continue
+        intervened_node_ids.add(node_id)
 
-    if y_universe:
+    # ---- Rule 3 (Exclusion) ----
+    # Y = explicit query targets only. Evidence is conditioning, not
+    # query, so it goes into Z together with the *other* interventions.
+    if target_node_ids:
+        y_set = set(target_node_ids)
         for path in interventions:
-            node_id = path.split(".", 1)[0] if "." in path else path
-            if node_id.endswith(".spawn") or path.endswith(".spawn"):
+            if path in spawn_paths:
                 continue
-            # Z = the *other* interventions (we mutilate edges into them too)
+            node_id = path.split(".", 1)[0] if "." in path else path
+            if node_id not in intervened_node_ids:
+                continue
             other_interventions = intervened_node_ids - {node_id}
-            if check_exclusion(diagram, {node_id}, y_universe, other_interventions):
+            z_for_rule3 = other_interventions | set(evidence_node_ids)
+            if check_exclusion(diagram, {node_id}, y_set, z_for_rule3):
                 report.rule3_pruned.append(path)
                 logger.info(
-                    "[ctf-calculus·Rule3] Pruning intervention %s — disconnected "
-                    "from {evidence ∪ targets} in mutilated diagram.", path,
+                    "[ctf-calculus·Rule3] Pruning intervention %s — no path "
+                    "to query targets %s in mutilated diagram.",
+                    path, sorted(y_set),
                 )
 
+    # ---- Rule 2 (Independence) ----
+    # Test Y_r ⊥ X_t | W* for each evidence node, with the *other*
+    # evidence as the conditioning set W*. Conditioning on the
+    # interventions themselves would overlap X (NetworkXError); the
+    # interventions appear only on the X side via their projection.
     if evidence_node_ids and intervened_node_ids:
-        # Test Y_r ⊥ X_t (no extra conditioning) for each evidence node.
         x_query = [(nid, dict(interventions)) for nid in intervened_node_ids]
         for ev in evidence_node_ids:
+            if not diagram.has_node(ev):
+                continue
             y_query = [(ev, {})]
-            if check_ctf_independence(diagram, x_query, y_query):
+            # W*: every *other* evidence node, with no intervention context
+            # (we are asking about pre-surgery observed values).
+            z_query = [(o, {}) for o in evidence_node_ids if o != ev]
+            if check_ctf_independence(diagram, x_query, y_query, z_query):
                 report.rule2_redundant_evidence.append(ev)
                 logger.info(
                     "[ctf-calculus·Rule2] Evidence %s d-separated from "
-                    "interventions on AMWN — abduction is redundant.", ev,
+                    "interventions on AMWN given other evidence — "
+                    "abduction is redundant.",
+                    ev,
                 )
 
     return report
@@ -440,4 +542,5 @@ __all__ = [
     "check_ctf_independence",
     "check_exclusion",
     "apply_ctf_calculus",
+    "_rel_node_id",
 ]

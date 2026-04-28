@@ -148,8 +148,11 @@ class TestBuildAmwn:
         assert len(evt_a_nodes) == 1
 
     def test_distinct_contexts_split_nodes(self):
-        """Different intervention values on a shared ancestor must
-        produce DISTINCT AMWN copies."""
+        """Two interventions on the same variable produce *the same*
+        do-surgery (incoming edges cut) regardless of value — d-sep on
+        the AMWN therefore treats them as a single node. Value-sensitive
+        reasoning lives in :func:`check_consistency`, not in node
+        identity."""
         ws = _linear_world()
         diag = build_causal_diagram(ws)
         amwn = build_amwn(diag, [
@@ -157,7 +160,7 @@ class TestBuildAmwn:
             ("ENT_TARGET", {"EVT_A": "y"}),
         ])
         target_nodes = [n for n in amwn.nodes if n.var_id == "ENT_TARGET"]
-        assert len(target_nodes) == 2
+        assert len(target_nodes) == 1
 
 
 # =====================================================================

@@ -199,6 +199,16 @@ def run_and_save(
         answer = result.physics_result.get("answer")
         if answer:
             response["answer"] = answer
+        # ctf-calculus pre-flight surface (Correa & Bareinboim 2025).
+        # Surfaced on the MCP envelope so external clients can see which
+        # interventions/evidence the engine dropped before simulation
+        # and explain to the user when their request was provably vacuous.
+        rule3 = result.physics_result.get("rule3_pruned_interventions") or []
+        rule2 = result.physics_result.get("rule2_redundant_evidence") or []
+        if rule3:
+            response["rule3_pruned_interventions"] = list(rule3)
+        if rule2:
+            response["rule2_redundant_evidence"] = list(rule2)
     if result.converged is not None:
         response["audit_converged"] = result.converged
         response["audit_iterations"] = result.audit_iterations

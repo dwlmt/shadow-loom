@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional
 import networkx as nx
 from pydantic import BaseModel, Field
 
-from shadow_loom.amwn import CtfCalculusReport, apply_ctf_calculus
+from shadow_loom.amwn import CtfCalculusReport, apply_ctf_calculus, build_causal_diagram
 from shadow_loom.instantiator import AMWNInstantiator
 from shadow_loom.models import WorldStateV1, reconstruct_entity_at
 from shadow_loom.settings import get_settings as _get_settings
@@ -101,7 +101,7 @@ class BlockedPropagation(BaseModel):
     trait: str
     impact: float
     inertia: float
-    reason: str  # "inertia" or "spatial_affordance"
+    reason: str  # "inertia", "spatial_affordance", or "cycle"
 
 
 class SocialMutation(BaseModel):
@@ -168,6 +168,13 @@ class CausalPhysicsEngine:
         self.sandbox = sandbox
         self.world_state = world_state
         self._intervened_nodes: set[str] = set()
+        # Per-trait pinning: (node_id, trait_name) pairs that propagate()
+        # must NOT overwrite. A path like ``ENT_X.traits.fear=0.9`` adds
+        # ``("ENT_X", "fear")`` here so the surgical pin is honoured
+        # without freezing the entity's other traits. Bare-node and spawn
+        # interventions register the sentinel ``"*"`` to mean "every trait
+        # of this node is pinned."
+        self._intervened_traits: set[tuple[str, str]] = set()
         self._hidden_deltas: Dict[str, Dict[str, float]] = {}
         self._mutations: List[TraitMutation] = []
         self._social_mutations: List[SocialMutation] = []
@@ -181,6 +188,10 @@ class CausalPhysicsEngine:
         # same evidence event does not contribute to a target trait twice
         # (once via abduction, once via forward propagation).
         self._abducted_event_evidence: set[str] = set()
+        # Cached traversable spatial subgraph; invariant per execute() so
+        # we build it once and reuse for all _check_spatial_reachability
+        # calls instead of rebuilding on every (src_loc, tgt_loc) pair.
+        self._spatial_traversable: Optional[nx.DiGraph] = None
 
     def _simulation_horizon(self) -> float:
         """Return the maximum fabula_time across all events (the 'now' of the story)."""
@@ -238,10 +249,16 @@ class CausalPhysicsEngine:
                         old_val = sandbox_traits[trait_name].get("value", 0.5)
                         delta = tv_value - old_val
                         deltas[trait_name] = delta
-                        blended = old_val + delta * 0.5
+                        # Blend toward the factual value, but let trait
+                        # inertia damp the update — high-inertia traits
+                        # resist being rewritten by present-day evidence,
+                        # low-inertia traits absorb it almost fully.
+                        trait_inertia = sandbox_traits[trait_name].get("inertia", 0.5)
+                        blend_factor = max(0.0, min(1.0, 1.0 - trait_inertia))
+                        blended = old_val + delta * blend_factor
                         sandbox_traits[trait_name]["value"] = max(0.0, min(1.0, blended))
-                        logger.debug("[CausalPhysics·Abduction] %s.%s: old=%.3f target=%.3f delta=%.3f blended=%.3f",
-                                     eid, trait_name, old_val, tv_value, delta, blended)
+                        logger.debug("[CausalPhysics·Abduction] %s.%s: old=%.3f target=%.3f delta=%.3f blend=%.2f blended=%.3f",
+                                     eid, trait_name, old_val, tv_value, delta, blend_factor, blended)
 
                 if deltas:
                     self._hidden_deltas[eid] = deltas
@@ -324,17 +341,49 @@ class CausalPhysicsEngine:
         Delegate graph surgery to AMWNInstantiator.execute_interventions()
         and record which nodes were directly intervened on (so propagation
         will not override them).
+
+        Both *path-style* keys (``ENT_X.traits.fear``) and *node-level*
+        keys (``ENT_X``) record the underlying node id in
+        ``_intervened_nodes`` so propagation cannot subsequently overwrite
+        a value the user pinned by intervention.
+
+        We additionally record per-trait pins in ``_intervened_traits`` so
+        propagation can freeze only the specific trait the user surgically
+        set instead of freezing every trait on the entity — a
+        ``do(ENT_X.traits.fear=0.9)`` should leave ``loyalty`` and ``hope``
+        free to evolve in response to other causal forces.
         """
         AMWNInstantiator.execute_interventions(self.sandbox, interventions)
 
         for target_path in interventions:
-            if "." not in target_path:
+            if "." in target_path:
+                node_id, sub_path = target_path.split(".", 1)
+            else:
+                node_id, sub_path = target_path, ""
+            if not self.sandbox.has_node(node_id):
                 continue
-            node_id = target_path.split(".", 1)[0]
-            if self.sandbox.has_node(node_id):
-                self._intervened_nodes.add(node_id)
+            self._intervened_nodes.add(node_id)
 
-        logger.info("[CausalPhysics·do] Surgeries applied. Intervened roots: %s", self._intervened_nodes)
+            # Decide which traits, if any, are pinned by this intervention.
+            sub = sub_path.strip()
+            if not sub or sub == "spawn":
+                # Bare-node or genesis spawn — the whole node is fresh, so
+                # pin every trait. Use the wildcard sentinel.
+                self._intervened_traits.add((node_id, "*"))
+            elif sub.startswith("traits."):
+                # ``traits.<name>`` or ``traits.<name>.value`` — pin the
+                # specific trait only.
+                parts = sub.split(".")
+                trait_name = parts[1] if len(parts) >= 2 else ""
+                if trait_name:
+                    self._intervened_traits.add((node_id, trait_name))
+            # status / location_id / beliefs / properties / etc. don't pin
+            # any trait — propagation over the entity's traits is unaffected.
+
+        logger.info(
+            "[CausalPhysics·do] Surgeries applied. Intervened roots: %s; pinned traits: %s",
+            self._intervened_nodes, self._intervened_traits,
+        )
 
     # ------------------------------------------------------------------
     # Forward Propagation (the new physics)
@@ -427,12 +476,34 @@ class CausalPhysicsEngine:
             logger.info("[CausalPhysics·Propagate] No causal edges in sandbox. Skipping.")
             return
 
-        # 2. Topological sort (fallback to BFS order if cycles)
+        # 2. Topological sort. If the causal sub-graph contains cycles
+        #    (extraction occasionally produces them), fall back to an
+        #    SCC-condensed ordering. *Within* a non-trivial SCC we refuse
+        #    to propagate (every member is recorded as ``BlockedPropagation
+        #    (reason="cycle")`` so the audit trail is explicit) — picking
+        #    an arbitrary visit order would bake meaningless structure
+        #    into the cycle's resolution.
+        cyclic_blocked: set[str] = set()
         try:
             execution_order = list(nx.topological_sort(causal_graph))
         except nx.NetworkXUnfeasible:
-            logger.warning("[CausalPhysics·Propagate] Cyclic causal graph — falling back to node order.")
-            execution_order = list(causal_graph.nodes())
+            sccs = list(nx.strongly_connected_components(causal_graph))
+            cyclic_sccs = [s for s in sccs if len(s) > 1]
+            for s in cyclic_sccs:
+                cyclic_blocked |= s
+            logger.warning(
+                "[CausalPhysics·Propagate] Cyclic causal graph: %d SCC(s) with "
+                "%d node(s) total. Cyclic clusters are blocked from "
+                "propagation; only acyclic spines fire.",
+                len(cyclic_sccs), len(cyclic_blocked),
+            )
+            condensation = nx.condensation(causal_graph, sccs)
+            execution_order = []
+            for comp_idx in nx.topological_sort(condensation):
+                # ``members`` is the set of original node ids in this SCC.
+                members = condensation.nodes[comp_idx]["members"]
+                # Sort for determinism so test runs are reproducible.
+                execution_order.extend(sorted(members))
 
         # 2b. Seed the active-source set. Edges only fire when their source
         #     is in this set; downstream targets get added as they mutate.
@@ -442,7 +513,27 @@ class CausalPhysicsEngine:
 
         # 3. Propagate
         for node_id in execution_order:
-            if node_id in self._intervened_nodes:
+            # Per-trait pinning: an entity may be in _intervened_nodes
+            # because the user surgically pinned ONE of its traits, but
+            # we should still let other traits respond to causal forces.
+            # Only skip the entity wholesale when every trait is pinned
+            # (the wildcard "*" sentinel set by bare-node / spawn surgery).
+            if (node_id, "*") in self._intervened_traits:
+                continue
+
+            # Refuse to propagate inside a cyclic SCC — record the block
+            # explicitly so callers can see why the trait didn't move.
+            if node_id in cyclic_blocked:
+                node_data = self.sandbox.nodes.get(node_id)
+                if node_data and node_data.get("node_type") == "Entity":
+                    for trait_name, trait_data in (node_data.get("traits") or {}).items():
+                        if not isinstance(trait_data, dict) or "value" not in trait_data:
+                            continue
+                        self._blocked.append(BlockedPropagation(
+                            node_id=node_id, trait=trait_name,
+                            impact=0.0, inertia=trait_data.get("inertia", 0.5),
+                            reason="cycle",
+                        ))
                 continue
 
             node_data = self.sandbox.nodes.get(node_id)
@@ -460,6 +551,10 @@ class CausalPhysicsEngine:
             # Collect per-trait accumulated impact from all upstream sources
             for trait_name, trait_data in traits.items():
                 if not isinstance(trait_data, dict) or "value" not in trait_data:
+                    continue
+
+                # Per-trait pin: skip just this trait if the user pinned it.
+                if (node_id, trait_name) in self._intervened_traits:
                     continue
 
                 current_val = trait_data["value"]
@@ -500,26 +595,36 @@ class CausalPhysicsEngine:
 
                     relevant_traits = MECHANISM_TRAIT_MAP.get(mechanism)
 
-                    # Mechanism-targeted gating: reduce weight for non-matching traits
+                    # Mechanism-targeted gating: reduce weight for non-matching traits.
+                    # We track the worst single fallback (mechanism mismatch OR
+                    # WORLD_ domain mismatch) and apply it once, instead of
+                    # multiplying both penalties — a trait that loses both a
+                    # mechanism and a domain match shouldn't be ×fallback².
+                    fallback_penalty = 1.0
                     if relevant_traits is not None and trait_name not in relevant_traits:
-                        fallback = _mechanism_fallback_factor()
-                        logger.debug("[CausalPhysics·Propagate] %s→%s trait=%s: mechanism=%s not in target list, w %.3f→%.3f",
-                                         src, node_id, trait_name, mechanism, w, w * fallback)
-                        w *= fallback
+                        fb = _mechanism_fallback_factor()
+                        fallback_penalty = min(fallback_penalty, fb)
+                        logger.debug("[CausalPhysics·Propagate] %s→%s trait=%s: mechanism=%s not in target list, fb=%.3f",
+                                         src, node_id, trait_name, mechanism, fb)
 
                     src_data = self.sandbox.nodes.get(src)
                     if not src_data:
                         continue
 
                     # Domain filtering for WORLD_ sources: if edge mechanism
-                    # is not in the world trait's affected_domains, apply fallback.
+                    # is not in the world trait's affected_domains, contribute
+                    # to the (single) fallback penalty.
                     if src_data.get("node_type") == "WorldTrait":
                         affected = src_data.get("affected_domains", [])
                         if affected and mechanism not in affected:
-                            fallback = _mechanism_fallback_factor()
-                            logger.debug("[CausalPhysics·Propagate] WORLD_ domain filter: %s→%s mechanism=%s not in %s, w %.3f→%.3f",
-                                     src, node_id, mechanism, affected, w, w * fallback)
-                            w *= fallback
+                            fb = _mechanism_fallback_factor()
+                            fallback_penalty = min(fallback_penalty, fb)
+                            logger.debug("[CausalPhysics·Propagate] WORLD_ domain filter: %s→%s mechanism=%s not in %s, fb=%.3f",
+                                     src, node_id, mechanism, affected, fb)
+
+                    # Apply the (combined) fallback once.
+                    if fallback_penalty < 1.0:
+                        w *= fallback_penalty
 
                     if src_data.get("node_type") == "Entity":
                         src_trait = src_data.get("traits", {}).get(trait_name)
@@ -618,7 +723,11 @@ class CausalPhysicsEngine:
         if not self._active_sources:
             self._active_sources = self._seed_active_sources()
 
-        for u, v, d in self.sandbox.edges(data=True):
+        # Snapshot the edge list before iterating: ``add_edge`` calls below
+        # mutate the MultiDiGraph (creating a new relationship edge when
+        # none exists) and iterating a live view is implementation-defined.
+        edges_snapshot = list(self.sandbox.edges(data=True))
+        for u, v, d in edges_snapshot:
             if d.get("edge_type") != "causal":
                 continue
             if d.get("causality_type") != "mutation_social":
@@ -738,47 +847,62 @@ class CausalPhysicsEngine:
     # ------------------------------------------------------------------
     def _check_spatial_reachability(self, src_loc: str, tgt_loc: str) -> bool:
         """Check whether *tgt_loc* is reachable from *src_loc* via unlocked
-        (or affordance-unlockable) connected_to edges in the sandbox."""
-        traversable = nx.DiGraph()
-        for u, v, d in self.sandbox.edges(data=True):
-            if d.get("edge_type") != "connected_to":
-                continue
-            if not d.get("is_locked", False):
-                traversable.add_edge(u, v)
-            else:
-                # Check if any entity in the sandbox owns an item that
-                # can unlock the barrier (mirrors AMWNInstantiator logic).
-                barrier_id = d.get("barrier_item_id")
-                if barrier_id:
-                    barrier_node = self.sandbox.nodes.get(barrier_id, {})
-                    barrier_name = barrier_node.get("name", "")
-                    barrier_node_type = barrier_node.get("node_type", "NarrativeObject")
-                    for nid, ndata in self.sandbox.nodes(data=True):
-                        if ndata.get("node_type") != "NarrativeObject":
-                            continue
-                        if ndata.get("owner_id") is None:
-                            continue  # unowned items can't be used
-                        for aff in ndata.get("affordances", []):
-                            if not isinstance(aff, dict):
-                                continue
-                            if aff.get("action") != "unlock":
-                                continue
-                            # Match target_type against the barrier's
-                            # node_type OR its name (domain term)
-                            aff_target = aff.get("target_type", "")
-                            if (aff_target == barrier_node_type
-                                    or aff_target == barrier_name):
-                                traversable.add_edge(u, v)
-                                break
-                        else:
-                            continue
-                        break
+        (or affordance-unlockable) connected_to edges in the sandbox.
+
+        The traversable subgraph is invariant for the duration of a single
+        ``execute()`` call (sandbox edges aren't mutated by propagation),
+        so we build it lazily once and cache it on the engine instead of
+        rebuilding it for every (src, tgt) pair.
+        """
+        traversable = self._spatial_traversable
+        if traversable is None:
+            traversable = self._build_spatial_traversable()
+            self._spatial_traversable = traversable
         if not traversable.has_node(src_loc) or not traversable.has_node(tgt_loc):
             logger.debug("[CausalPhysics·Spatial] %s or %s not in traversable graph", src_loc, tgt_loc)
             return False
         reachable = nx.has_path(traversable, src_loc, tgt_loc)
         logger.debug("[CausalPhysics·Spatial] %s→%s reachable=%s", src_loc, tgt_loc, reachable)
         return reachable
+
+    def _build_spatial_traversable(self) -> nx.DiGraph:
+        """Build the cached traversable connected_to subgraph for this run.
+
+        Iterates the sandbox edges once. Locked edges are admitted only when
+        an entity in the sandbox owns an item with an ``unlock`` affordance
+        whose ``target_type`` matches the barrier's node-type or name.
+        """
+        traversable = nx.DiGraph()
+        for u, v, d in self.sandbox.edges(data=True):
+            if d.get("edge_type") != "connected_to":
+                continue
+            if not d.get("is_locked", False):
+                traversable.add_edge(u, v)
+                continue
+            barrier_id = d.get("barrier_item_id")
+            if not barrier_id:
+                continue
+            barrier_node = self.sandbox.nodes.get(barrier_id, {})
+            barrier_name = barrier_node.get("name", "")
+            barrier_node_type = barrier_node.get("node_type", "NarrativeObject")
+            for nid, ndata in self.sandbox.nodes(data=True):
+                if ndata.get("node_type") != "NarrativeObject":
+                    continue
+                if ndata.get("owner_id") is None:
+                    continue
+                for aff in ndata.get("affordances", []):
+                    if not isinstance(aff, dict):
+                        continue
+                    if aff.get("action") != "unlock":
+                        continue
+                    aff_target = aff.get("target_type", "")
+                    if aff_target == barrier_node_type or aff_target == barrier_name:
+                        traversable.add_edge(u, v)
+                        break
+                else:
+                    continue
+                break
+        return traversable
 
     # ------------------------------------------------------------------
     # ctf-calculus pre-flight (Correa & Bareinboim, ICML 2025)
@@ -789,17 +913,19 @@ class CausalPhysicsEngine:
         rung: int,
         interventions: Dict[str, Any],
         evidence_node_ids: List[str],
+        target_node_ids: List[str],
+        diagram: Optional[nx.DiGraph] = None,
     ) -> CtfCalculusReport:
         """Run the static AMWN d-separation checks before simulation.
 
         Rule 3 (Exclusion) prunes intervention keys whose target node has
-        no directed path to any evidence/target variable in the mutilated
-        diagram. Rule 2 (Independence) flags evidence nodes that are
-        d-separated from every intervened variable on the AMWN.
+        no directed path to any *query target* in the mutilated diagram.
+        Rule 2 (Independence) flags evidence nodes that are d-separated
+        from every intervened variable on the AMWN given W*.
 
-        The report is purely diagnostic at this layer; the engine still
-        executes the requested surgery so the heuristic narrative
-        physics layer remains unaffected.
+        The caller (execute) consumes the report to skip pruned
+        interventions and redundant evidence — the heuristic propagation
+        layer still runs on whatever survives.
         """
         if not interventions:
             return CtfCalculusReport()
@@ -808,9 +934,8 @@ class CausalPhysicsEngine:
                 self.world_state,
                 interventions=interventions,
                 evidence_node_ids=evidence_node_ids,
-                # Without explicit query targets, Rule 3 has nothing to
-                # test against — pass None to disable that branch.
-                target_node_ids=None,
+                target_node_ids=target_node_ids or None,
+                diagram=diagram,
             )
         except Exception:  # pragma: no cover - defensive
             logger.exception("[CausalPhysics\u00b7ctf-calculus] Pre-flight failed; skipping report.")
@@ -824,6 +949,9 @@ class CausalPhysicsEngine:
         rung: int,
         interventions: Dict[str, Any] | None = None,
         evidence_node_ids: List[str] | None = None,
+        target_node_ids: List[str] | None = None,
+        *,
+        causal_diagram: Optional[nx.DiGraph] = None,
     ) -> CausalPhysicsResult:
         """
         Run the full CTF simulation.
@@ -836,22 +964,54 @@ class CausalPhysicsEngine:
             do-operator targets (same format as InterventionQuery.interventions).
         evidence_node_ids : list[str], optional
             Present-day evidence nodes for Rung-3 abduction.
+        target_node_ids : list[str], optional
+            Downstream nodes the caller cares about. Used as the Y-set for
+            the Rule 3 (Exclusion) ctf-calculus pre-flight: an intervention
+            is provably vacuous if it has no directed path to any of these
+            nodes in the mutilated diagram.
+        causal_diagram : nx.DiGraph, optional
+            Pre-built static causal diagram (output of ``build_causal_diagram``).
+            Hoist this out of tight loops (e.g. candidate evaluation) where the
+            world state is constant across many ``execute()`` calls.
         """
         if rung not in (2, 3):
             raise ValueError(f"Invalid rung={rung}. Must be 2 (intervention) or 3 (counterfactual).")
 
+        # Reset per-run caches. Sandbox edges aren't mutated by simulation,
+        # so the spatial traversable graph is built once and reused for
+        # every reachability check inside this execute() call.
+        self._spatial_traversable = None
+
+        interventions = interventions or {}
+        evidence_node_ids = list(evidence_node_ids or [])
+        target_node_ids = list(target_node_ids or [])
+
         # Step 0 — ctf-calculus pre-flight (Rules 2 & 3).
-        # Static graphical reasoning on the AMWN: prune interventions that
-        # are *provably* vacuous (Rule 3) and flag evidence that is
-        # d-separated from every intervention (Rule 2). The simulation
-        # below still runs on the unpruned set so heuristic narrative
-        # propagation is preserved — the report is informational and the
-        # pipeline can decide whether to short-circuit.
+        # Static graphical reasoning on the AMWN: prune interventions
+        # that are *provably* vacuous (Rule 3) and flag evidence that is
+        # d-separated from every intervention given W* (Rule 2). The
+        # engine drops both before stepping into abduction / surgery so
+        # we don't waste cycles on simulation we've proven cannot move
+        # the world.
         ctf_report = self._apply_ctf_calculus_preflight(
             rung=rung,
-            interventions=interventions or {},
-            evidence_node_ids=evidence_node_ids or [],
+            interventions=interventions,
+            evidence_node_ids=evidence_node_ids,
+            target_node_ids=target_node_ids,
+            diagram=causal_diagram,
         )
+
+        # Filter Rule-3 pruned interventions out of the working set:
+        # those are *provably vacuous* with respect to the user's query
+        # targets, so simulating them only adds noise. Rule-2 redundant
+        # evidence is reported but NOT filtered — abduction may still
+        # populate ``hidden_deltas`` that downstream consumers
+        # (introspection, the auditor, the UI) depend on.
+        pruned_set = set(ctf_report.rule3_pruned)
+        if pruned_set:
+            interventions = {
+                k: v for k, v in interventions.items() if k not in pruned_set
+            }
 
         # Step A — Abduction (Rung 3 only)
         if rung == 3 and evidence_node_ids:

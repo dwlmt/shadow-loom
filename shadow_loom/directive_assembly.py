@@ -110,6 +110,22 @@ class CandidateResult(BaseModel):
     )
     blocked_reasons: List[str] = Field(default_factory=list)
     mutations: List[Dict[str, Any]] = Field(default_factory=list)
+    rule3_pruned_interventions: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Intervention paths the AMWN ctf-calculus pre-flight (Rule 3) "
+            "proved vacuous against ``target_node_ids`` for this candidate. "
+            "A candidate whose only interventions are all rule3-pruned will "
+            "be marked invalid because no physical surgery was applied."
+        ),
+    )
+    rule2_redundant_evidence: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Evidence nodes the ctf-calculus pre-flight (Rule 2) proved "
+            "d-separated from this candidate's interventions on the AMWN."
+        ),
+    )
 
 
 class ConstraintBlock(BaseModel):
@@ -536,8 +552,12 @@ class DirectiveAssembler:
                 effect_nodes.add(evt.id)
         effect_nodes |= eid_set
 
-        total_ancestors = 0
-        hidden_ancestors = 0
+        # Strength-weighted mystery: each ancestor contributes its
+        # *path strength* (product of edge weights along the strongest
+        # path) so weak rumours don't count as much as eyewitness
+        # causation. Falls back to 1.0 when no edge weight is available.
+        total_mass = 0.0
+        hidden_mass = 0.0
 
         for eff in effect_nodes:
             if not causal_g.has_node(eff):
@@ -545,16 +565,31 @@ class DirectiveAssembler:
             ancestors = nx.ancestors(causal_g, eff)
             if not ancestors:
                 continue
-            total_ancestors += len(ancestors)
-            hidden_ancestors += len(ancestors - revealed)
+            for anc in ancestors:
+                # Strength of the strongest single-edge contribution from
+                # this ancestor toward the effect (cheap proxy for path
+                # strength; full path-product would be O(V*E) per query).
+                if causal_g.has_edge(anc, eff):
+                    w = causal_g[anc][eff].get("weight", 0.5)
+                else:
+                    # Multi-hop ancestor — use the max outgoing weight as
+                    # an upper bound on its causal contribution.
+                    out_ws = [
+                        d.get("weight", 0.5)
+                        for _, _, d in causal_g.out_edges(anc, data=True)
+                    ]
+                    w = max(out_ws) if out_ws else 0.5
+                total_mass += w
+                if anc not in revealed:
+                    hidden_mass += w
 
-        if total_ancestors == 0:
+        if total_mass == 0.0:
             return 0.0
 
-        score = hidden_ancestors / total_ancestors
+        score = hidden_mass / total_mass
         logger.debug(
-            "[DirectiveAssembly·Mystery] hidden=%d / total=%d = %.3f",
-            hidden_ancestors, total_ancestors, score,
+            "[DirectiveAssembly·Mystery] hidden_mass=%.3f / total_mass=%.3f = %.3f",
+            hidden_mass, total_mass, score,
         )
         return round(score, 4)
 
@@ -587,27 +622,58 @@ class DirectiveAssembler:
             if not ent:
                 continue
 
-            character_aware_of = {b.target_id for b in ent.beliefs}
-
-            # Revealed causal edges targeting this entity
-            for ce in self.world_state.causal_topology:
-                if ce.target_id != eid:
-                    continue
-                if ce.source_id not in revealed:
-                    continue  # Reader doesn't know this either
-                total_connections += 1
-                if ce.source_id not in character_aware_of:
-                    irony_gaps += 1
-
-            # Revealed information edges the character is unaware of
+            # An entity is *aware* of an event when (a) they participate in
+            # it (actor or target — direct experience), or (b) they are the
+            # recipient of a revealed InformationEdge whose source carries
+            # the event, or (c) they hold a Belief whose target_id matches
+            # the event id. Belief.target_id is the *state* a character
+            # believes about (entity/object/event), so events with a direct
+            # belief entry are also counted.
+            events_known_by_character: set[str] = {
+                evt.id for evt in self.world_state.events
+                if eid in evt.actor_ids or eid in evt.target_ids
+            }
             for ie in self.world_state.information_topology:
                 if ie.discovered_at_syuzhet > syuzhet_anchor:
                     continue
                 if eid not in ie.target_ids:
                     continue
+                # Treat the source of a revealed information edge as a
+                # potential channel: if it names an event the character
+                # learns about it.
+                if ie.source_id.startswith("EVT_"):
+                    events_known_by_character.add(ie.source_id)
+            events_known_by_character |= {
+                b.target_id for b in ent.beliefs
+                if b.target_id.startswith("EVT_")
+            }
+
+            # Revealed causal edges whose *cause* is an event targeting
+            # this entity. If the character has no awareness of that
+            # event, the reader sees a threat/secret the character cannot.
+            for ce in self.world_state.causal_topology:
+                if ce.target_id != eid:
+                    continue
+                if not ce.source_id.startswith("EVT_"):
+                    continue
+                if ce.source_id not in revealed:
+                    continue  # Reader doesn't know this either
                 total_connections += 1
-                if ie.source_id not in character_aware_of:
+                if ce.source_id not in events_known_by_character:
                     irony_gaps += 1
+
+            # Revealed information edges whose existence the character
+            # cannot perceive (they are not a target). Counted as irony
+            # only when the source is an event the reader has seen.
+            for ie in self.world_state.information_topology:
+                if ie.discovered_at_syuzhet > syuzhet_anchor:
+                    continue
+                if eid in ie.target_ids:
+                    continue  # Character is on the channel — no asymmetry
+                if not ie.source_id.startswith("EVT_") or ie.source_id not in revealed:
+                    continue
+                total_connections += 1
+                irony_gaps += 1
 
         if total_connections == 0:
             return 0.0
@@ -644,8 +710,13 @@ class DirectiveAssembler:
         unrevealed = all_evt_ids - revealed
         eid_set = set(entity_ids)
 
-        threat_prob = 0.0
-        hope_prob = 0.0
+        # Noisy-OR aggregation: each unrevealed threat/hope event
+        # contributes an independent failure probability ``1 - p_i``;
+        # the combined probability is ``1 - ∏(1 - p_i)``. This means
+        # multiple concurrent dangers compound rather than collapsing
+        # to the single strongest one.
+        threat_complement = 1.0
+        hope_complement = 1.0
 
         for evt_id in unrevealed:
             evt = next(
@@ -668,11 +739,16 @@ class DirectiveAssembler:
                 elif out_edges:
                     prob = max(d.get("weight", 0.5) for _, _, d in out_edges)
 
+            prob = max(0.0, min(1.0, prob))
+
             # Classify: entity acted upon → threat; entity acting → hope
             if (set(evt.target_ids) & eid_set) and not (set(evt.actor_ids) & eid_set):
-                threat_prob = max(threat_prob, prob)
+                threat_complement *= (1.0 - prob)
             elif set(evt.actor_ids) & eid_set:
-                hope_prob = max(hope_prob, prob)
+                hope_complement *= (1.0 - prob)
+
+        threat_prob = 1.0 - threat_complement
+        hope_prob = 1.0 - hope_complement
 
         if hope_prob <= 0.0:
             logger.debug(
@@ -883,6 +959,7 @@ class DirectiveAssembler:
             Invalid candidates are appended at the end.
         """
         from shadow_loom.causal_physics import CausalPhysicsEngine
+        from shadow_loom.amwn import build_causal_diagram
 
         if self.sandbox is None:
             raise ValueError(
@@ -890,12 +967,23 @@ class DirectiveAssembler:
                 "Pass one via DirectiveAssembler(sandbox=..., ...)."
             )
 
+        # Build the static causal diagram ONCE — it depends only on
+        # ``self.world_state`` which is invariant across candidates, and
+        # the AMWN pre-flight inside each ``engine.execute()`` call would
+        # otherwise rebuild it K times for K candidates.
+        shared_diagram = build_causal_diagram(self.world_state)
+
         results: List[CandidateResult] = []
 
         for candidate in candidates:
             forked = deepcopy(self.sandbox)
             engine = CausalPhysicsEngine(forked, self.world_state)
-            physics = engine.execute(rung=2, interventions=candidate)
+            physics = engine.execute(
+                rung=2,
+                interventions=candidate,
+                target_node_ids=entity_ids,
+                causal_diagram=shared_diagram,
+            )
 
             # --- Pruning: intervention failed AND all propagations blocked ---
             # A candidate is physically impossible only if the surgery itself
@@ -903,14 +991,29 @@ class DirectiveAssembler:
             surgery_applied = len(physics.intervened_nodes) > 0
             has_mutations = len(physics.mutations) > 0
             all_blocked = len(physics.blocked) > 0 and not has_mutations
+            # Rule-3 (ctf-calculus exclusion) can drop every intervention
+            # silently before the do-surgery runs; without an explicit
+            # check the candidate would otherwise look "valid" against the
+            # untouched sandbox. Mark it invalid so the assembler doesn't
+            # rank a vacuous request alongside real surgeries.
+            all_rule3_pruned = (
+                len(physics.rule3_pruned_interventions) >= len(candidate)
+                and not surgery_applied
+                and not has_mutations
+            )
 
-            if not surgery_applied and all_blocked:
-                logger.debug("[DirectiveAssembly·Candidate] PRUNED: no surgery applied and all blocked. reasons=%s",
-                             [b.reason for b in physics.blocked])
+            if (not surgery_applied and all_blocked) or all_rule3_pruned:
+                reasons = [b.reason for b in physics.blocked]
+                if all_rule3_pruned:
+                    reasons.append("rule3_vacuous")
+                logger.debug("[DirectiveAssembly·Candidate] PRUNED: no surgery applied. reasons=%s rule3=%s",
+                             reasons, physics.rule3_pruned_interventions)
                 results.append(CandidateResult(
                     interventions=candidate,
                     valid=False,
-                    blocked_reasons=[b.reason for b in physics.blocked],
+                    blocked_reasons=reasons,
+                    rule3_pruned_interventions=list(physics.rule3_pruned_interventions),
+                    rule2_redundant_evidence=list(physics.rule2_redundant_evidence),
                 ))
                 continue
 
@@ -930,6 +1033,8 @@ class DirectiveAssembler:
                 valid=True,
                 affective_score=aff_score,
                 mutations=[m.model_dump() for m in physics.mutations],
+                rule3_pruned_interventions=list(physics.rule3_pruned_interventions),
+                rule2_redundant_evidence=list(physics.rule2_redundant_evidence),
             ))
             logger.debug("[DirectiveAssembly·Candidate] VALID: score=%.4f mutations=%d",
                          aff_score, len(physics.mutations))

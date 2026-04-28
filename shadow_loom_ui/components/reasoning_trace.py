@@ -66,6 +66,9 @@ def render_reasoning_trace(
         if not any(trace[k] for k in (
             "do_set", "evidence", "abduction",
             "cascade", "social_cascade", "blocked",
+            "rule3_pruned_interventions",
+            "rule2_redundant_evidence",
+            "cyclic_propagation_clusters",
         )):
             ui.label(
                 "No causal-physics trace available. "
@@ -157,6 +160,65 @@ def render_reasoning_trace(
                     "inertia or barred by an affordance gate."
                 ).classes("text-xs text-slate-600")
                 _render_blocked_table(trace["blocked"])
+
+        # 7. ctf-calculus pre-flight (Correa & Bareinboim 2025)
+        if trace["rule3_pruned_interventions"]:
+            with ui.expansion(
+                f"Rule-3 pruned interventions — "
+                f"{len(trace['rule3_pruned_interventions'])}",
+                icon="filter_alt_off",
+                value=False,
+            ).props("dense").classes("w-full bg-violet-50 rounded-lg"):
+                ui.label(
+                    "These interventions were proven vacuous on the AMWN "
+                    "before simulation: the surgery has no directed path "
+                    "to any target/evidence variable."
+                ).classes("text-xs text-slate-600")
+                for item in trace["rule3_pruned_interventions"]:
+                    with ui.row().classes("items-baseline gap-2"):
+                        ui.badge(item["label"] or item["node_id"]).props("dense color=purple")
+                        ui.label(item["path"]).classes(
+                            "text-[10px] text-slate-500 font-mono"
+                        )
+
+        if trace["rule2_redundant_evidence"]:
+            with ui.expansion(
+                f"Rule-2 redundant evidence — "
+                f"{len(trace['rule2_redundant_evidence'])}",
+                icon="visibility_off",
+                value=False,
+            ).props("dense").classes("w-full bg-violet-50 rounded-lg"):
+                ui.label(
+                    "These evidence nodes are d-separated from the "
+                    "intervened variables on the AMWN; abduction on them "
+                    "cannot change the counterfactual distribution."
+                ).classes("text-xs text-slate-600")
+                for item in trace["rule2_redundant_evidence"]:
+                    with ui.row().classes("items-baseline gap-2"):
+                        ui.badge(item["label"] or item["node_id"]).props("dense color=purple")
+                        ui.label(item["node_id"]).classes(
+                            "text-[10px] text-slate-500 font-mono"
+                        )
+
+        if trace["cyclic_propagation_clusters"]:
+            with ui.expansion(
+                f"Cyclic propagation clusters — "
+                f"{len(trace['cyclic_propagation_clusters'])}",
+                icon="all_inclusive",
+                value=False,
+            ).props("dense").classes("w-full bg-orange-50 rounded-lg"):
+                ui.label(
+                    "Propagations refused because the source sits in a "
+                    "strongly-connected component of the causal graph. "
+                    "These are extraction problems, not narrative miracles."
+                ).classes("text-xs text-slate-600")
+                for item in trace["cyclic_propagation_clusters"]:
+                    with ui.row().classes("items-baseline gap-2"):
+                        ui.badge(item["label"] or item["node_id"]).props("dense color=orange")
+                        if item.get("trait"):
+                            ui.label(f".{item['trait']}").classes(
+                                "text-xs text-slate-700"
+                            )
 
     return container
 

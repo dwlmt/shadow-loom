@@ -210,19 +210,22 @@ class TestRung3Counterfactual:
         assert abs(result.hidden_deltas["ENT_ALICE"]["courage"] - 0.4) < 0.01
 
     def test_abduction_blends_traits(self):
-        """Abduction must blend traits 50% toward factual values."""
+        """Abduction must blend traits toward factual values, damped by
+        trait inertia (high-inertia traits resist present-day evidence)."""
         ws = _make_minimal_world()
         ws_modified = deepcopy(ws)
         ws_modified.entities["ENT_ALICE"].traits["courage"].value = 0.9
 
         sandbox = _build_sandbox(ws, ["ENT_ALICE", "ENT_BOB"], "counterfactual")
         old_courage = sandbox.nodes["ENT_ALICE"]["traits"]["courage"]["value"]
+        trait_inertia = sandbox.nodes["ENT_ALICE"]["traits"]["courage"].get("inertia", 0.5)
 
         engine = CausalPhysicsEngine(sandbox, ws_modified)
         engine.abduction_update(["ENT_ALICE"])
 
         new_courage = sandbox.nodes["ENT_ALICE"]["traits"]["courage"]["value"]
-        expected = old_courage + (0.9 - old_courage) * 0.5
+        blend_factor = max(0.0, min(1.0, 1.0 - trait_inertia))
+        expected = old_courage + (0.9 - old_courage) * blend_factor
         assert abs(new_courage - expected) < 0.01
 
     def test_abduction_backpropagates_beliefs(self):
