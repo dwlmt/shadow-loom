@@ -332,7 +332,17 @@ class TestBuildQuery:
         )
         q = _build_query(parsed)
         assert isinstance(q, InterventionQuery)
-        assert q.interventions == {"ENT_MACBETH": "dead"}
+        # Bare ENT_ + str value is normalised to .status
+        assert q.interventions == {"ENT_MACBETH.status": "dead"}
+
+    def test_intervention_preserves_dotted_keys(self):
+        parsed = ParsedQuery(
+            query_type="intervention",
+            reasoning="test",
+            interventions={"ENT_MACBETH.location_id": "LOC_HEATH"},
+        )
+        q = _build_query(parsed)
+        assert q.interventions == {"ENT_MACBETH.location_id": "LOC_HEATH"}
 
     def test_counterfactual(self):
         parsed = ParsedQuery(
@@ -343,8 +353,28 @@ class TestBuildQuery:
         )
         q = _build_query(parsed)
         assert isinstance(q, CounterfactualQuery)
-        assert q.historical_interventions == {"EVT_MURDER": "prevented"}
+        # Bare EVT_ key is normalised to .event_type
+        assert q.historical_interventions == {"EVT_MURDER.event_type": "prevented"}
         assert q.evidence_node_ids == ["ENT_DUNCAN"]
+
+    def test_counterfactual_dict_valued_bare_evt_left_unnormalised(self):
+        # A dict value on a bare EVT_* key in historical_interventions is
+        # ambiguous (alter vs. spawn) and previously got normalised to
+        # ``.event_type`` with a dict payload, which would silently
+        # corrupt event_type. The normaliser now leaves such keys bare
+        # so the downstream layer can reject them cleanly.
+        parsed = ParsedQuery(
+            query_type="counterfactual",
+            reasoning="test",
+            historical_interventions={
+                "EVT_MURDER": {"new_outcome": "Duncan survives"}
+            },
+            evidence_node_ids=["ENT_DUNCAN"],
+        )
+        q = _build_query(parsed)
+        # Key is preserved verbatim — no dotted suffix added.
+        assert "EVT_MURDER" in q.historical_interventions
+        assert "EVT_MURDER.event_type" not in q.historical_interventions
 
     def test_directive(self):
         parsed = ParsedQuery(
@@ -423,6 +453,7 @@ class TestBuildQuery:
         )
         q = _build_query(parsed)
         assert isinstance(q, InterventionQuery)
+        # Bare ENT_ + numeric value can't be safely auto-routed; left as-is.
         assert q.interventions["ENT_MACBETH"] == 0.99
 
     def test_intervention_dict_value(self):
@@ -433,7 +464,8 @@ class TestBuildQuery:
         )
         q = _build_query(parsed)
         assert isinstance(q, InterventionQuery)
-        assert isinstance(q.interventions["ENT_NEW"], dict)
+        # Bare ENT_ + dict value is normalised to .spawn (genesis).
+        assert isinstance(q.interventions["ENT_NEW.spawn"], dict)
 
 
 # =====================================================================

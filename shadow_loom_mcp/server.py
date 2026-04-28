@@ -1,12 +1,14 @@
 """Shadow-Loom MCP server — agent-first narrative intelligence.
 
-20 tools grouped by cognitive task:
+25 tools grouped by cognitive task:
   ORIENT  (2) — list_projects, open_project
   EXPLORE (5) — inspect, search, get_relationships, trace_causality, get_history
   REASON  (3) — ask, compute_tension, diff_versions
   CREATE  (4) — narrate, direct, write, ingest
   JUDGE   (2) — evaluate, audit_log
-  MANAGE  (4) — branch, share, fork, update_project
+  MANAGE  (9) — branch, share, fork, update_project, delete_project,
+               delete_version, reparent_version,
+               set_active_version, get_active_version
 
 5 resources:
   world://projects
@@ -33,21 +35,30 @@ from fastmcp import Context, FastMCP
 
 from shadow_loom.db import (
     add_project_member,
+    clear_active_version as db_clear_active_version,
     create_project,
+    delete_project as db_delete_project,
+    delete_version as db_delete_version,
     fork_project,
+    get_active_version as db_get_active_version,
     get_all_prose,
     get_latest_version,
     get_project,
     get_project_activity,
     get_user_project_role,
     get_version,
+    get_version_by_id,
     get_version_tree,
     init_db,
     list_projects as db_list_projects,
     list_versions,
+    ProjectDeleteError,
+    reparent_version as db_reparent_version,
     save_version,
     search_users,
+    set_active_version as db_set_active_version,
     update_project,
+    VersionMutationError,
 )
 from shadow_loom.extract_graph import VersionedWorldModel
 from shadow_loom.ingestion import ExtractionConfig, run_extraction
@@ -172,18 +183,30 @@ def open_project(
     if err:
         return {"error": err}
 
-    ws, ver_row_id = load_world_state(pid, version)
+    ws, ver_row_id = load_world_state(pid, version, ctx=ctx)
     if ws is None:
         return {"error": "No world model found. Use 'ingest' first."}
 
     proj = get_project(pid)
     versions = list_versions(pid)
 
+    # Report the version we actually loaded (which may differ from the
+    # latest version when the caller passed an explicit ``version`` or
+    # the active-version pointer points elsewhere).
+    loaded_version = None
+    if ver_row_id is not None:
+        loaded_row = get_version_by_id(ver_row_id)
+        if loaded_row is not None:
+            loaded_version = loaded_row.version
+    if loaded_version is None:
+        loaded_version = versions[-1]["version"] if versions else 0
+
     return {
         "project_id": pid,
         "project_name": proj.name if proj else "",
         "description": proj.description if proj else None,
-        "current_version": versions[-1]["version"] if versions else 0,
+        "current_version": loaded_version,
+        "latest_version": versions[-1]["version"] if versions else 0,
         "version_count": len(versions),
         "entities": {eid: {"name": e.name, "status": e.status, "location": e.location_id}
                      for eid, e in ws.entities.items()},
@@ -237,7 +260,7 @@ def inspect(
     if err:
         return {"error": err}
 
-    ws, _ = load_world_state(pid, version)
+    ws, _ = load_world_state(pid, version, ctx=ctx)
     if ws is None:
         return {"error": "No world model found."}
 
@@ -395,7 +418,7 @@ def search(
     if err:
         return {"error": err}
 
-    ws, _ = load_world_state(pid, version)
+    ws, _ = load_world_state(pid, version, ctx=ctx)
     if ws is None:
         return {"error": "No world model found."}
 
@@ -471,7 +494,7 @@ def get_relationships(
     if err:
         return {"error": err}
 
-    ws, _ = load_world_state(pid, version)
+    ws, _ = load_world_state(pid, version, ctx=ctx)
     if ws is None:
         return {"error": "No world model found."}
 
@@ -526,7 +549,7 @@ def trace_causality(
     if err:
         return {"error": err}
 
-    ws, _ = load_world_state(pid, version)
+    ws, _ = load_world_state(pid, version, ctx=ctx)
     if ws is None:
         return {"error": "No world model found."}
 
@@ -659,7 +682,7 @@ def ask(
     if err:
         return {"error": err}
 
-    ws, _ = load_world_state(pid, version)
+    ws, _ = load_world_state(pid, version, ctx=ctx)
     if ws is None:
         return {"error": "No world model found."}
 
@@ -738,7 +761,7 @@ def compute_tension(
     if err:
         return {"error": err}
 
-    ws, _ = load_world_state(pid, version)
+    ws, _ = load_world_state(pid, version, ctx=ctx)
     if ws is None:
         return {"error": "No world model found."}
 
@@ -798,8 +821,8 @@ def diff_versions(
     if err:
         return {"error": err}
 
-    ws_a, _ = load_world_state(project_id, version_a)
-    ws_b, _ = load_world_state(project_id, version_b)
+    ws_a, _ = load_world_state(project_id, version_a, ctx=ctx)
+    ws_b, _ = load_world_state(project_id, version_b, ctx=ctx)
     if ws_a is None:
         return {"error": f"Version {version_a} not found."}
     if ws_b is None:
@@ -934,7 +957,7 @@ async def narrate(
     if err:
         return {"error": err}
 
-    ws, ancestor_row_id = load_world_state(pid, version)
+    ws, ancestor_row_id = load_world_state(pid, version, ctx=ctx)
     if ws is None:
         return {"error": "No world model found. Use 'ingest' first."}
 
@@ -1030,7 +1053,7 @@ async def direct(
     if err:
         return {"error": err}
 
-    ws, ancestor_row_id = load_world_state(pid, version)
+    ws, ancestor_row_id = load_world_state(pid, version, ctx=ctx)
     if ws is None:
         return {"error": "No world model found."}
 
@@ -1090,7 +1113,7 @@ def write(
     if err:
         return {"error": err}
 
-    ws, ancestor_row_id = load_world_state(pid, version)
+    ws, ancestor_row_id = load_world_state(pid, version, ctx=ctx)
     if ws is None:
         return {"error": "No world model found."}
 
@@ -1215,7 +1238,7 @@ def evaluate(
     if err:
         return {"error": err}
 
-    ws, _ = load_world_state(pid, version)
+    ws, _ = load_world_state(pid, version, ctx=ctx)
     if ws is None:
         return {"error": "No world model found."}
 
@@ -1352,7 +1375,7 @@ def branch(
     if err:
         return {"error": err}
 
-    ws, ancestor_row_id = load_world_state(project_id, from_version)
+    ws, ancestor_row_id = load_world_state(project_id, from_version, ctx=ctx)
     if ws is None:
         return {"error": f"Version {from_version} not found."}
 
@@ -1500,6 +1523,231 @@ def update_project_tool(
         "name": updated.name,
         "description": updated.description,
         "is_public": updated.is_public,
+    }
+
+
+@mcp.tool()
+@_safe_tool
+def delete_project(
+    ctx: Context,
+    project_id: int,
+) -> dict:
+    """Permanently delete a project and all of its versions.
+
+    Owner-only and irreversible. Cascades the project's versions,
+    activity log, stars, and member access. Refuses to delete the
+    seeded example projects.
+
+    Returns ``{"status": "deleted", "project_id": <int>}`` on success
+    or ``{"error": "..."}`` on failure.
+    """
+    err = require_scope(ctx, "admin")
+    if err:
+        return {"error": err}
+
+    user_row_id = get_user_id(ctx)
+    if user_row_id is None:
+        return {"error": "Authentication required to delete projects."}
+
+    err = check_project_access(project_id, ctx)
+    if err:
+        return {"error": err}
+
+    try:
+        db_delete_project(project_id, user_row_id)
+    except ProjectDeleteError as exc:
+        return {"error": str(exc)}
+    except PermissionError as exc:
+        return {"error": str(exc)}
+
+    return {"status": "deleted", "project_id": project_id}
+
+
+@mcp.tool()
+@_safe_tool
+def delete_version(
+    ctx: Context,
+    version_row_id: int,
+    cascade: bool = False,
+) -> dict:
+    """Delete a single version from a project's version tree.
+
+    By default the version's children are *re-parented* onto the deleted
+    version's parent so the tree remains connected (a "rejoin"). Set
+    ``cascade=True`` to delete every descendant as well.
+
+    The root version (v0) cannot be deleted. Owner-or-editor only.
+
+    Returns ``{"deleted": [ids], "reparented": {child_id: new_parent_id}}``
+    on success, or ``{"error": "..."}`` on failure.
+    """
+    err = require_scope(ctx, "write")
+    if err:
+        return {"error": err}
+
+    user_row_id = get_user_id(ctx)
+    if user_row_id is None:
+        return {"error": "Authentication required to delete versions."}
+
+    # Locate the owning project for the access check.
+    row = get_version_by_id(version_row_id)
+    if row is None:
+        return {"error": f"Version {version_row_id} not found."}
+    err = check_project_access(row.project_id, ctx)
+    if err:
+        return {"error": err}
+
+    try:
+        result = db_delete_version(
+            version_row_id, user_row_id, cascade=cascade,
+        )
+    except VersionMutationError as exc:
+        return {"error": str(exc)}
+    except PermissionError as exc:
+        return {"error": str(exc)}
+
+    return {
+        "deleted": result["deleted"],
+        "reparented": result["reparented"],
+        "project_id": row.project_id,
+    }
+
+
+@mcp.tool()
+@_safe_tool
+def reparent_version(
+    ctx: Context,
+    version_row_id: int,
+    new_ancestor_id: Optional[int],
+) -> dict:
+    """Move a version under a new ancestor (rejoin / branch graft).
+
+    Both versions must belong to the same project. The operation is
+    rejected if it would create a cycle (i.e. ``new_ancestor_id`` is a
+    descendant of ``version_row_id``) or if the version is the root.
+
+    ``new_ancestor_id`` is required and must be a non-null version
+    row ID belonging to the same project. Passing ``null`` is
+    rejected because every non-root version must have an ancestor.
+
+    Owner-or-editor only.
+    """
+    err = require_scope(ctx, "write")
+    if err:
+        return {"error": err}
+
+    user_row_id = get_user_id(ctx)
+    if user_row_id is None:
+        return {"error": "Authentication required to reparent versions."}
+
+    row = get_version_by_id(version_row_id)
+    if row is None:
+        return {"error": f"Version {version_row_id} not found."}
+    err = check_project_access(row.project_id, ctx)
+    if err:
+        return {"error": err}
+
+    try:
+        db_reparent_version(version_row_id, new_ancestor_id, user_row_id)
+    except VersionMutationError as exc:
+        return {"error": str(exc)}
+    except PermissionError as exc:
+        return {"error": str(exc)}
+
+    return {
+        "status": "reparented",
+        "version_row_id": version_row_id,
+        "new_ancestor_id": new_ancestor_id,
+        "project_id": row.project_id,
+    }
+
+
+@mcp.tool()
+@_safe_tool
+def set_active_version(
+    ctx: Context,
+    project_id: int,
+    version: Optional[int] = None,
+    version_row_id: Optional[int] = None,
+) -> dict:
+    """Set the caller's active version pointer for a project.
+
+    All subsequent read tools (``open_project``, ``inspect``, ``ask``,
+    ``compute_tension``, etc.) called *without* an explicit ``version``
+    will default to this row instead of the project's latest version.
+
+    Specify *either* ``version`` (sequential project-scoped number) or
+    ``version_row_id`` (the underlying DB row id). The pointer is
+    per-user-per-project and survives across tool calls.
+
+    Pass nothing besides ``project_id`` to *clear* the pointer (so
+    subsequent reads fall back to the latest version).
+    """
+    err = require_scope(ctx, "read")
+    if err:
+        return {"error": err}
+
+    user_row_id = get_user_id(ctx)
+    if user_row_id is None:
+        return {"error": "Authentication required to set active version."}
+
+    err = check_project_access(project_id, ctx)
+    if err:
+        return {"error": err}
+
+    if version is None and version_row_id is None:
+        cleared = db_clear_active_version(project_id, user_row_id)
+        return {
+            "status": "cleared" if cleared else "noop",
+            "project_id": project_id,
+        }
+
+    if version_row_id is None:
+        ver = get_version(project_id, version)
+        if ver is None:
+            return {"error": f"Version {version} not found in project {project_id}."}
+        version_row_id = ver.id
+
+    try:
+        row = db_set_active_version(project_id, user_row_id, version_row_id)
+    except ValueError as exc:
+        return {"error": str(exc)}
+
+    return {
+        "status": "set",
+        "project_id": project_id,
+        "version_row_id": row.version_row_id,
+    }
+
+
+@mcp.tool()
+@_safe_tool
+def get_active_version(ctx: Context, project_id: int) -> dict:
+    """Return the caller's active-version pointer for a project, if any.
+
+    Returns ``{"active": false, ...}`` when no pointer is set (read tools
+    will fall back to the project's latest version).
+    """
+    err = require_scope(ctx, "read")
+    if err:
+        return {"error": err}
+
+    user_row_id = get_user_id(ctx)
+    if user_row_id is None:
+        return {"error": "Authentication required."}
+
+    err = check_project_access(project_id, ctx)
+    if err:
+        return {"error": err}
+
+    ver = db_get_active_version(project_id, user_row_id)
+    if ver is None:
+        return {"active": False, "project_id": project_id}
+    return {
+        "active": True,
+        "project_id": project_id,
+        "version": ver.version,
+        "version_row_id": ver.id,
     }
 
 

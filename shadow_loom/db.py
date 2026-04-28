@@ -215,6 +215,33 @@ class ActivityRow(SQLModel, table=True):
     )
 
 
+class ActiveVersionRow(SQLModel, table=True):
+    """Persistent per-user-per-project active version pointer.
+
+    Used by the MCP service so a sequence of tool calls can default to
+    the version the user has selected (e.g. via the UI version-tree
+    sidebar) rather than always falling back to ``latest``.
+    """
+
+    __tablename__ = "active_versions"
+    __table_args__ = (
+        UniqueConstraint("project_id", "user_id", name="uq_active_version_user_project"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    project_id: int = Field(foreign_key="projects.id")
+    user_id: int = Field(foreign_key="users.id")
+    version_row_id: int = Field(foreign_key="versions.id")
+    updated_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(
+            DateTime,
+            default=lambda: datetime.now(timezone.utc),
+            onupdate=lambda: datetime.now(timezone.utc),
+        ),
+    )
+
+
 # =====================================================================
 # Engine / Session factory
 # =====================================================================
@@ -237,6 +264,20 @@ def init_db(database_url: str = "sqlite:///shadow_loom.db") -> None:
     """Create the engine, all tables, and seed the example user."""
     global _engine
     _engine = create_engine(database_url, echo=False)
+    # Enable SQLite foreign-key enforcement so the schema's FK
+    # declarations and our delete-ordering invariants are validated
+    # at runtime (SQLite leaves FKs OFF by default).
+    if database_url.startswith("sqlite"):
+        from sqlalchemy import event as _sa_event
+
+        @_sa_event.listens_for(_engine, "connect")
+        def _enable_sqlite_fk(dbapi_conn, _conn_record):  # noqa: ANN001
+            cur = dbapi_conn.cursor()
+            try:
+                cur.execute("PRAGMA foreign_keys=ON")
+            finally:
+                cur.close()
+
     SQLModel.metadata.create_all(_engine)
     ensure_example_user()
     logger.info("[DB] Tables initialised on %s", database_url)
@@ -518,6 +559,7 @@ def update_project(
     description: str | None = None,
     label: str | None = None,
     is_public: bool | None = None,
+    raw_text: str | None = None,
 ) -> Optional[ProjectRow]:
     with get_session() as s:
         row = s.get(ProjectRow, project_id)
@@ -531,6 +573,8 @@ def update_project(
             row.label = label
         if is_public is not None:
             row.is_public = is_public
+        if raw_text is not None:
+            row.raw_text = raw_text
         row.updated_at = datetime.now(timezone.utc)
         s.commit()
         s.refresh(row)
@@ -577,6 +621,94 @@ def fork_project(
         s.commit()
         s.refresh(forked)
         return forked
+
+
+class ProjectDeleteError(Exception):
+    """Raised when a project cannot be deleted."""
+
+
+def delete_project(project_id: int, user_id: int) -> bool:
+    """Hard-delete a project and all dependent rows.
+
+    Owner-only. Refuses to delete projects owned by the built-in
+    *example* user so the seeded fixtures cannot be removed via the UI.
+
+    Cascades: VersionRow, ActivityRow, ProjectStarRow, ProjectMemberRow.
+
+    Returns ``True`` on success. Raises ``ProjectDeleteError`` if the
+    project does not exist, the caller is not the owner, or the project
+    is an example fixture. Raises ``PermissionError`` for non-owners
+    so the UI can distinguish forbidden vs. missing cleanly.
+    """
+    example_user_id = get_example_user_id()
+    with get_session() as s:
+        proj = s.get(ProjectRow, project_id)
+        if proj is None:
+            raise ProjectDeleteError(f"Project {project_id} not found")
+        if example_user_id is not None and proj.owner_id == example_user_id:
+            raise ProjectDeleteError("Example projects cannot be deleted")
+        if proj.owner_id != user_id:
+            raise PermissionError("Only the project owner can delete it")
+
+        # Delete order matters now that SQLite FK enforcement is on:
+        # rows that reference versions.id (ActivityRow.version_id,
+        # ActiveVersionRow.version_row_id) must go BEFORE the versions
+        # themselves, and versions must be deleted deepest-first so
+        # the self-FK ancestor_id never points at a row already gone.
+        for act in s.exec(
+            select(ActivityRow).where(ActivityRow.project_id == project_id)
+        ).all():
+            s.delete(act)
+        for av in s.exec(
+            select(ActiveVersionRow).where(ActiveVersionRow.project_id == project_id)
+        ).all():
+            s.delete(av)
+        for star in s.exec(
+            select(ProjectStarRow).where(ProjectStarRow.project_id == project_id)
+        ).all():
+            s.delete(star)
+        for mem in s.exec(
+            select(ProjectMemberRow).where(ProjectMemberRow.project_id == project_id)
+        ).all():
+            s.delete(mem)
+        s.flush()
+        # Versions: deepest-first so each delete sees no descendant FK
+        # still pointing at it via ancestor_id.
+        versions = s.exec(
+            select(VersionRow).where(VersionRow.project_id == project_id)
+        ).all()
+        depth: dict[int, int] = {}
+
+        def _depth(v: VersionRow) -> int:
+            if v.id in depth:
+                return depth[v.id]
+            d = 0
+            cur = v
+            seen: set[int] = set()
+            while cur.ancestor_id is not None and cur.ancestor_id not in seen:
+                seen.add(cur.ancestor_id)
+                parent = next(
+                    (x for x in versions if x.id == cur.ancestor_id), None,
+                )
+                if parent is None:
+                    break
+                d += 1
+                cur = parent
+            depth[v.id] = d
+            return d
+
+        for ver in sorted(versions, key=_depth, reverse=True):
+            s.delete(ver)
+            s.flush()
+        # Detach any forks that pointed at this project so the FK doesn't dangle.
+        for child in s.exec(
+            select(ProjectRow).where(ProjectRow.forked_from_id == project_id)
+        ).all():
+            child.forked_from_id = None
+            s.add(child)
+        s.delete(proj)
+        s.commit()
+        return True
 
 
 # =====================================================================
@@ -1118,6 +1250,228 @@ def get_version_children(version_row_id: int) -> list[dict]:
 
 
 # =====================================================================
+# Version delete + reparent (rejoin)
+# =====================================================================
+
+
+class VersionMutationError(Exception):
+    """Raised when a version delete or reparent cannot be performed."""
+
+
+def _collect_descendant_ids(s, root_id: int) -> set[int]:
+    """BFS over the version tree to collect all descendants (inclusive)."""
+    seen: set[int] = {root_id}
+    frontier = [root_id]
+    while frontier:
+        children = s.exec(
+            select(VersionRow).where(VersionRow.ancestor_id.in_(frontier))
+        ).all()
+        new_ids = [c.id for c in children if c.id not in seen]
+        if not new_ids:
+            break
+        seen.update(new_ids)
+        frontier = new_ids
+    return seen
+
+
+def delete_version(
+    version_row_id: int,
+    user_id: int,
+    *,
+    cascade: bool = False,
+) -> dict:
+    """Delete a version row.
+
+    Behaviour:
+      * The root version (``ancestor_id is NULL`` and ``version == 0``)
+        cannot be deleted — that would orphan the entire project.
+      * The currently-loaded version may be deleted; callers should
+        refresh state afterwards.
+      * When ``cascade=False`` (default), descendants of the deleted
+        version are *re-parented* to the deleted version's parent so
+        the tree stays connected (a "rejoin"). When the deleted version
+        was the root the operation is rejected.
+      * When ``cascade=True``, all descendants are deleted as well.
+
+    Owner-or-editor only. Raises ``VersionMutationError`` for missing
+    rows or root-deletion attempts. Raises ``PermissionError`` for
+    callers without write access to the project.
+
+    Returns ``{"deleted": [ids], "reparented": {child_id: new_ancestor_id}}``.
+    """
+    with get_session() as s:
+        row = s.get(VersionRow, version_row_id)
+        if row is None:
+            raise VersionMutationError(f"Version {version_row_id} not found")
+
+        # Permission check: project owner or editor.
+        proj = s.get(ProjectRow, row.project_id)
+        if proj is None:
+            raise VersionMutationError(
+                f"Project {row.project_id} for version {version_row_id} not found"
+            )
+        if proj.owner_id != user_id:
+            member = s.exec(
+                select(ProjectMemberRow).where(
+                    ProjectMemberRow.project_id == row.project_id,
+                    ProjectMemberRow.user_id == user_id,
+                )
+            ).first()
+            if member is None or member.role not in ("editor", "admin"):
+                raise PermissionError(
+                    "Only the project owner or an editor can delete versions"
+                )
+
+        # Disallow root deletion: it is the only invariant anchor of the tree.
+        if row.ancestor_id is None:
+            raise VersionMutationError(
+                "The root version (v0) cannot be deleted"
+            )
+
+        if cascade:
+            descendants = _collect_descendant_ids(s, row.id)
+            # Retarget active-version pointers that target any deleted row
+            # onto the parent of the deleted subtree (``row.ancestor_id``)
+            # so MCP/UI callers don't silently jump to an unrelated branch.
+            retarget = row.ancestor_id
+            stale = s.exec(
+                select(ActiveVersionRow).where(
+                    ActiveVersionRow.version_row_id.in_(descendants)
+                )
+            ).all()
+            for av in stale:
+                av.version_row_id = retarget
+                av.updated_at = datetime.now(timezone.utc)
+            # Null out activity log references to versions about to be
+            # deleted (FK is enforced under SQLite ``PRAGMA foreign_keys=ON``).
+            stale_acts = s.exec(
+                select(ActivityRow).where(
+                    ActivityRow.version_id.in_(descendants)
+                )
+            ).all()
+            for act in stale_acts:
+                act.version_id = None
+            s.flush()
+            # Delete deepest-first to satisfy the self-FK on ancestor_id.
+            ordered = sorted(descendants, reverse=True)
+            for vid in ordered:
+                v = s.get(VersionRow, vid)
+                if v is not None:
+                    s.delete(v)
+                    s.flush()
+            proj.updated_at = datetime.now(timezone.utc)
+            s.commit()
+            return {"deleted": sorted(descendants), "reparented": {}}
+
+        # Rejoin: reparent direct children onto row.ancestor_id.
+        new_ancestor = row.ancestor_id
+        children = s.exec(
+            select(VersionRow).where(VersionRow.ancestor_id == row.id)
+        ).all()
+        reparented: dict[int, int] = {}
+        for child in children:
+            child.ancestor_id = new_ancestor
+            reparented[child.id] = new_ancestor
+        # Flush so the FK update is staged before we delete the parent;
+        # without this SQLAlchemy may interleave the parent-delete with
+        # the child-update and null out the child FKs.
+        s.flush()
+
+        # Retarget active-version pointers that target the row we're about
+        # to delete onto the parent (``new_ancestor``) rather than dropping
+        # them, so MCP/UI callers don't silently jump to an unrelated
+        # latest branch when their active version is removed.
+        stale = s.exec(
+            select(ActiveVersionRow).where(
+                ActiveVersionRow.version_row_id == version_row_id
+            )
+        ).all()
+        for av in stale:
+            av.version_row_id = new_ancestor
+            av.updated_at = datetime.now(timezone.utc)
+
+        # Null out activity-log references to the version we're deleting
+        # (FK enforced under SQLite ``PRAGMA foreign_keys=ON``).
+        stale_acts = s.exec(
+            select(ActivityRow).where(
+                ActivityRow.version_id == version_row_id
+            )
+        ).all()
+        for act in stale_acts:
+            act.version_id = None
+        s.flush()
+
+        s.delete(row)
+        proj.updated_at = datetime.now(timezone.utc)
+        s.commit()
+        return {"deleted": [version_row_id], "reparented": reparented}
+
+
+def reparent_version(
+    version_row_id: int,
+    new_ancestor_id: Optional[int],
+    user_id: int,
+) -> bool:
+    """Move a version under a new ancestor (manual rejoin / branch graft).
+
+    Constraints:
+      * Both versions must belong to the same project.
+      * ``new_ancestor_id`` must not be a descendant of ``version_row_id``
+        (would create a cycle).
+      * Cannot reparent the root.
+      * The version's own ID is rejected as new ancestor (self-loop).
+
+    Owner-or-editor only.
+    """
+    with get_session() as s:
+        row = s.get(VersionRow, version_row_id)
+        if row is None:
+            raise VersionMutationError(f"Version {version_row_id} not found")
+        if row.ancestor_id is None:
+            raise VersionMutationError("Cannot reparent the root version")
+        if new_ancestor_id == version_row_id:
+            raise VersionMutationError("A version cannot be its own ancestor")
+
+        proj = s.get(ProjectRow, row.project_id)
+        if proj is None:
+            raise VersionMutationError(
+                f"Project {row.project_id} for version {version_row_id} not found"
+            )
+        if proj.owner_id != user_id:
+            member = s.exec(
+                select(ProjectMemberRow).where(
+                    ProjectMemberRow.project_id == row.project_id,
+                    ProjectMemberRow.user_id == user_id,
+                )
+            ).first()
+            if member is None or member.role not in ("editor", "admin"):
+                raise PermissionError(
+                    "Only the project owner or an editor can reparent versions"
+                )
+
+        if new_ancestor_id is None:
+            raise VersionMutationError(
+                "A non-root version must have an ancestor"
+            )
+
+        new_ancestor = s.get(VersionRow, new_ancestor_id)
+        if new_ancestor is None or new_ancestor.project_id != row.project_id:
+            raise VersionMutationError(
+                "New ancestor must belong to the same project"
+            )
+        descendants = _collect_descendant_ids(s, row.id)
+        if new_ancestor_id in descendants:
+            raise VersionMutationError(
+                "Cannot reparent under a descendant (would create a cycle)"
+            )
+
+        row.ancestor_id = new_ancestor_id
+        proj.updated_at = datetime.now(timezone.utc)
+        s.commit()
+        return True
+
+
+# =====================================================================
 # Version bookmarks, labels, prose export
 # =====================================================================
 
@@ -1140,6 +1494,105 @@ def label_version(version_row_id: int, label: str | None) -> bool:
         if row is None:
             return False
         row.label = label
+        s.commit()
+        return True
+
+
+# =====================================================================
+# Active version pointer (per-user-per-project)
+# =====================================================================
+
+
+def set_active_version(
+    project_id: int,
+    user_id: int,
+    version_row_id: int,
+) -> "ActiveVersionRow":
+    """Upsert the active-version pointer for ``(project_id, user_id)``.
+
+    Validates that ``version_row_id`` belongs to ``project_id``. The
+    upsert is retried on ``IntegrityError`` to absorb the read-then-
+    insert race when multiple callers (UI, MCP, autosave) write the
+    pointer concurrently.
+    """
+    max_attempts = 3
+    for attempt in range(max_attempts):
+        with get_session() as s:
+            ver = s.get(VersionRow, version_row_id)
+            if ver is None:
+                raise ValueError(f"Version {version_row_id} not found")
+            if ver.project_id != project_id:
+                raise ValueError(
+                    f"Version {version_row_id} does not belong to project {project_id}"
+                )
+            row = s.exec(
+                select(ActiveVersionRow).where(
+                    ActiveVersionRow.project_id == project_id,
+                    ActiveVersionRow.user_id == user_id,
+                )
+            ).first()
+            if row is None:
+                row = ActiveVersionRow(
+                    project_id=project_id,
+                    user_id=user_id,
+                    version_row_id=version_row_id,
+                )
+                s.add(row)
+            else:
+                row.version_row_id = version_row_id
+                row.updated_at = datetime.now(timezone.utc)
+            try:
+                s.commit()
+            except IntegrityError:
+                s.rollback()
+                if attempt + 1 >= max_attempts:
+                    raise
+                continue
+            s.refresh(row)
+            return row
+    # Unreachable: loop either returns or re-raises on the final attempt.
+    raise RuntimeError("set_active_version: exhausted retries without resolution")
+
+
+def get_active_version(
+    project_id: int,
+    user_id: int,
+) -> Optional[VersionRow]:
+    """Return the user's active version row for a project, or ``None``.
+
+    Read-only: if the active pointer references a version that has
+    since been deleted, ``None`` is returned but the stale pointer is
+    *not* mutated. Callers that want to reclaim the row should call
+    :func:`clear_active_version` explicitly. Keeping reads side-effect
+    free matters for MCP tools that route through this function.
+    """
+    with get_session() as s:
+        row = s.exec(
+            select(ActiveVersionRow).where(
+                ActiveVersionRow.project_id == project_id,
+                ActiveVersionRow.user_id == user_id,
+            )
+        ).first()
+        if row is None:
+            return None
+        ver = s.get(VersionRow, row.version_row_id)
+        if ver is None:
+            return None
+        return ver
+
+
+def clear_active_version(project_id: int, user_id: int) -> bool:
+    """Drop the active-version pointer for ``(project_id, user_id)``."""
+    with get_session() as s:
+        row = s.exec(
+            select(ActiveVersionRow).where(
+                ActiveVersionRow.project_id == project_id,
+                ActiveVersionRow.user_id == user_id,
+            )
+        ).first()
+        if row is None:
+            return False
+        s.delete(row)
         s.commit()
         return True
 

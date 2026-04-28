@@ -136,10 +136,22 @@ def _render_project_cards(state: AppState, container: ui.row) -> None:
                 "click", lambda pid=p["id"]: ui.navigate.to(f"/project/{pid}")
             ):
                 with ui.row().classes("items-center gap-2 w-full no-wrap"):
-                    feather("book-open", color="#C68661")
+                    feather("book-open", color="#F26B5E")
                     ui.label(p["name"]).classes(
-                        "text-base font-semibold text-slate-800 ellipsis"
+                        "text-base font-semibold text-slate-800 ellipsis flex-grow"
                     )
+                    # Owner-only project actions menu (delete with confirm)
+                    if user_id is not None and p.get("owner_id") == user_id:
+                        with ui.button(icon="more_vert").props(
+                            "flat dense round size=sm color=secondary"
+                        ).on("click.stop", lambda: None):
+                            with ui.menu().props("auto-close"):
+                                ui.menu_item(
+                                    "Delete project",
+                                    on_click=lambda proj=p: _confirm_delete_project(
+                                        state, container, proj
+                                    ),
+                                ).classes("text-negative")
                 if p.get("description"):
                     ui.label(p["description"][:80]).classes(
                         "text-xs text-slate-500 ellipsis mt-1"
@@ -158,6 +170,49 @@ def _render_project_cards(state: AppState, container: ui.row) -> None:
                         ui.badge("example", color="secondary").props("dense")
 
 
+async def _confirm_delete_project(
+    state: AppState, container: ui.row, project: dict
+) -> None:
+    """Show a confirmation dialog and delete the project on accept."""
+    if state.user_id is None:
+        ui.notify("Sign in required to delete projects.", type="warning")
+        return
+
+    confirm = ui.dialog()
+    with confirm, ui.card().classes("p-4 gap-2 max-w-md"):
+        ui.label(f'Delete "{project.get("name", "?")}"?').classes(
+            "text-lg font-semibold text-slate-800"
+        )
+        ui.label(
+            "This permanently removes the project and ALL of its versions, "
+            "activity, stars, and member access. This cannot be undone."
+        ).classes("text-sm text-slate-600")
+        with ui.row().classes("w-full justify-end gap-2 mt-2"):
+            ui.button("Cancel", on_click=confirm.close).props(
+                "flat dense no-caps"
+            )
+            ui.button(
+                "Delete", on_click=lambda: confirm.submit("delete")
+            ).props("unelevated dense color=negative no-caps")
+    result = await confirm
+    if result != "delete":
+        return
+    try:
+        db.delete_project(project["id"], state.user_id)
+    except db.ProjectDeleteError as exc:
+        ui.notify(str(exc), type="negative")
+        return
+    except PermissionError as exc:
+        ui.notify(str(exc), type="negative")
+        return
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Project delete failed")
+        ui.notify(f"Delete failed: {exc}", type="negative")
+        return
+    ui.notify("Project deleted", type="positive")
+    _render_project_cards(state, container)
+
+
 def _render_starred_cards(starred_ids: list[int], container: ui.row) -> None:
     """Render starred project cards."""
     container.clear()
@@ -174,7 +229,7 @@ def _render_starred_cards(starred_ids: list[int], container: ui.row) -> None:
                 "click", lambda p_id=pid: ui.navigate.to(f"/project/{p_id}")
             ):
                 with ui.row().classes("items-center gap-2"):
-                    feather("star", color="#D4A35B")
+                    feather("star", color="#F5B43C")
                     ui.label(proj.name).classes(
                         "text-base font-semibold text-slate-800 ellipsis"
                     )

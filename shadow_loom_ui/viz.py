@@ -13,28 +13,43 @@ from typing import Any, Callable, Optional
 from nicegui import ui
 
 from shadow_loom.models import WorldStateV1
-from shadow_loom_ui.theme import chart_theme
+from shadow_loom_ui.theme import CHART_COLORS, chart_theme
 from shadow_loom_ui.viz_helpers import (
     CATEGORIES,
     NODE_COLORS,
+    audit_passrate_data,
     entity_state_timeline_data,
+    entity_to_radar_compare_data,
     entity_to_radar_data,
+    explain_node_causes,
+    explain_node_effects,
+    mutations_to_propagation_graph,
+    mutations_to_propagation_rows,
     mutations_to_waterfall_data,
     version_tree_to_echart_data,
+    ws_sankey_for_aspect,
+    ws_to_calendar_graph_data,
+    ws_to_calendar_graph_rows,
+    ws_to_causal_cartesian_data,
     ws_to_causal_force_data,
     ws_to_chord_data,
     ws_to_ego_graph_data,
     ws_to_epistemic_data,
+    ws_to_event_calendar_data,
     ws_to_gantt_data,
+    ws_to_gantt_status_marks,
     ws_to_graph_data,
     ws_to_heatmap_data,
     ws_to_parallel_data,
+    ws_to_polar_event_data,
     ws_to_sankey_data,
     ws_to_social_graph_data,
     ws_to_spatial_graph_data,
     ws_to_sunburst_data,
     ws_to_theme_river_data,
     ws_to_timeline_data,
+    ws_to_trait_boxplot_data,
+    ws_to_treemap_data,
 )
 
 logger = logging.getLogger(__name__)
@@ -44,16 +59,16 @@ OnClick = Optional[Callable[[dict], Any]]
 # ── Shared theme defaults (refreshed by ``apply_chart_theme`` whenever
 #    the dark-mode flag changes via shadow_loom_ui.theme.set_chart_dark). ──
 
-_DARK_BG = "#ffffff"
-_DARK_TEXT = "#1e293b"
-_DARK_TOOLTIP: dict = {
+_CHART_BG = "#ffffff"
+_CHART_TEXT = "#1e293b"
+_CHART_TOOLTIP: dict = {
     "backgroundColor": "#ffffff",
     "borderColor": "#e2e8f0",
     "textStyle": {"color": "#1e293b"},
 }
 _LEGEND: dict = {
     "data": [c["name"] for c in CATEGORIES],
-    "textStyle": {"color": _DARK_TEXT},
+    "textStyle": {"color": _CHART_TEXT},
     "top": 0,
     "right": 10,
     "orient": "vertical",
@@ -67,18 +82,18 @@ def apply_chart_theme() -> None:
     Called by ``theme.set_chart_dark`` so subsequent renders pick up the
     new (light/dark) palette without each renderer having to fetch it.
     """
-    global _DARK_BG, _DARK_TEXT, _DARK_TOOLTIP, _LEGEND
+    global _CHART_BG, _CHART_TEXT, _CHART_TOOLTIP, _LEGEND
     t = chart_theme()
-    _DARK_BG = t["bg"]
-    _DARK_TEXT = t["text"]
-    _DARK_TOOLTIP = {
+    _CHART_BG = t["bg"]
+    _CHART_TEXT = t["text"]
+    _CHART_TOOLTIP = {
         "backgroundColor": t["tooltip_bg"],
         "borderColor": t["tooltip_border"],
         "textStyle": {"color": t["tooltip_text"]},
     }
     _LEGEND = {
         "data": [c["name"] for c in CATEGORIES],
-        "textStyle": {"color": _DARK_TEXT},
+        "textStyle": {"color": _CHART_TEXT},
         "top": 0,
         "right": 10,
         "orient": "vertical",
@@ -87,6 +102,171 @@ def apply_chart_theme() -> None:
 
 # Initialize once at import (light defaults).
 apply_chart_theme()
+
+
+# ── Expand-to-dialog wrapper ───────────────────────────────────────
+
+def with_expand(
+    render_fn: Callable[[str], Any],
+    *,
+    title: str = "",
+    height: str = "100%",
+) -> ui.element:
+    """Render ``render_fn(height)`` inline with a popout button overlay.
+
+    ``render_fn`` MUST be a callable that takes a CSS height string and
+    creates the chart inside the current parent. It is invoked twice:
+    once inline and once into a half/full-screen ``ui.dialog`` when the
+    user clicks the expand icon. This sidesteps trying to clone an
+    existing ``ui.echart`` element (which does not support reparenting).
+
+    Returns the inline container so callers can apply additional styling.
+    """
+    container = ui.element("div").classes("w-full h-full relative")
+    with container:
+        render_fn(height)
+        expand_btn = ui.button(
+            icon="open_in_full",
+            on_click=lambda: _open_expand_dialog(render_fn, title),
+        ).props("flat dense round size=sm color=grey-7").style(
+            "position: absolute; top: 4px; right: 4px; "
+            "background: rgba(255,255,255,0.85); z-index: 5;"
+        )
+        expand_btn.tooltip("Expand (or click & drag to resize once open)")
+    return container
+
+
+def _open_expand_dialog(render_fn: Callable[[str], Any], title: str) -> None:
+    """Show ``render_fn`` in a resizable dialog with Esc-to-close + PNG export.
+
+    Supports a "Half-screen" toggle for side-by-side workflows and a
+    "Save PNG" button that calls ECharts' ``getDataURL`` on the first
+    chart inside the dialog.
+    """
+    state = {"maximized": True}
+    chart_holder = ui.column()  # placeholder, replaced inside dialog
+
+    with ui.dialog().props("maximized persistent").classes("bg-white") as dlg:
+        # Esc-to-close
+        dlg.on("keydown.esc", lambda: dlg.close())
+        with ui.card().classes("w-full h-full p-0 m-0 bg-white") as card:
+            with ui.row().classes(
+                "w-full items-center justify-between px-4 py-2 "
+                "border-b border-slate-200 bg-slate-50"
+            ):
+                ui.label(title or "Diagram").classes(
+                    "text-lg font-semibold text-slate-800"
+                )
+                with ui.row().classes("items-center gap-2"):
+                    def _toggle_size():
+                        state["maximized"] = not state["maximized"]
+                        if state["maximized"]:
+                            dlg.props("maximized")
+                            card.classes(replace="w-full h-full p-0 m-0 bg-white")
+                            size_btn.props("icon=close_fullscreen")
+                            size_btn.tooltip("Half-screen")
+                        else:
+                            dlg.props(remove="maximized")
+                            card.classes(
+                                replace="p-0 m-0 bg-white"
+                            ).style("width: 60vw; height: 70vh;")
+                            size_btn.props("icon=open_in_full")
+                            size_btn.tooltip("Maximize")
+
+                    size_btn = ui.button(
+                        icon="close_fullscreen", on_click=_toggle_size
+                    ).props("flat dense round color=grey-8")
+                    size_btn.tooltip("Half-screen")
+
+                    def _save_png():
+                        # Find the first ECharts canvas in the dialog and
+                        # download it as PNG via getDataURL().
+                        ui.run_javascript(
+                            """
+                            (() => {
+                                const dlg = document.querySelector('.q-dialog__inner [class*="echarts"]')
+                                          || document.querySelector('.q-dialog__inner canvas');
+                                if (!dlg) return;
+                                const canvas = dlg.tagName === 'CANVAS' ? dlg
+                                              : dlg.querySelector('canvas');
+                                if (!canvas) return;
+                                const a = document.createElement('a');
+                                a.href = canvas.toDataURL('image/png');
+                                a.download = 'shadow-loom-chart.png';
+                                a.click();
+                            })();
+                            """
+                        )
+
+                    png_btn = ui.button(icon="download", on_click=_save_png).props(
+                        "flat dense round color=grey-8"
+                    )
+                    png_btn.tooltip("Save as PNG")
+
+                    close_btn = ui.button(icon="close", on_click=dlg.close).props(
+                        "flat dense round color=grey-8"
+                    )
+                    close_btn.tooltip("Close (Esc)")
+            chart_holder = ui.column().classes("w-full flex-grow p-4")
+            with chart_holder:
+                render_fn("100%")
+    dlg.open()
+
+
+# ── Empty-state helper ─────────────────────────────────────────────
+
+def render_empty_state(
+    message: str,
+    *,
+    icon: str = "info",
+    hint: str | None = None,
+) -> None:
+    """Friendly empty state: icon + message + optional 'how to fix' hint."""
+    with ui.column().classes(
+        "w-full h-full items-center justify-center text-center gap-2 p-6"
+    ):
+        ui.icon(icon, size="2rem", color="grey-5")
+        ui.label(message).classes("text-sm text-slate-500")
+        if hint:
+            ui.label(hint).classes("text-xs text-slate-400 italic max-w-md")
+
+
+# ── Color legend chip strip ────────────────────────────────────────
+
+def render_node_legend() -> None:
+    """Compact horizontal chip strip showing node-type colors."""
+    legend_items = [
+        ("Event", "#F5B43C", "EVT_"),
+        ("Entity", "#F26B5E", "ENT_"),
+        ("Location", "#3A7BD5", "LOC_"),
+        ("Object", "#8A5CF0", "OBJ_"),
+        ("World Trait", "#2EA6A0", "WORLD_"),
+    ]
+    with ui.row().classes("items-center gap-2 flex-wrap"):
+        for label, color, prefix in legend_items:
+            with ui.row().classes("items-center gap-1"):
+                ui.element("div").style(
+                    f"width:10px;height:10px;border-radius:2px;background:{color};"
+                )
+                ui.label(label).classes("text-xs text-slate-600")
+                ui.label(prefix).classes(
+                    "text-xs font-mono text-slate-400"
+                )
+
+
+# ── Loading skeleton ───────────────────────────────────────────────
+
+def render_chart_skeleton(height: str = "300px") -> None:
+    """Quasar pulsing skeleton placeholder while a chart loads."""
+    with ui.column().classes("w-full items-stretch gap-2 p-2").style(
+        f"height:{height}"
+    ):
+        ui.element("q-skeleton").props(
+            'type="rect" animation="wave" height="24px" width="40%"'
+        )
+        ui.element("q-skeleton").props(
+            'type="rect" animation="wave" height="100%" class="col"'
+        ).classes("flex-grow")
 
 
 # ── Force-directed full world graph ────────────────────────────────
@@ -100,8 +280,8 @@ def render_world_graph(
     """Full world graph — force layout with adjacency highlighting."""
     nodes, links, cats = ws_to_graph_data(ws)
     chart = ui.echart({
-        "backgroundColor": _DARK_BG,
-        "tooltip": {**_DARK_TOOLTIP, "trigger": "item"},
+        "backgroundColor": _CHART_BG,
+        "tooltip": {**_CHART_TOOLTIP, "trigger": "item"},
         "legend": [_LEGEND],
         "animationDuration": 800,
         "animationEasingUpdate": "quinticInOut",
@@ -124,7 +304,7 @@ def render_world_graph(
                 "show": True,
                 "position": "right",
                 "fontSize": 10,
-                "color": _DARK_TEXT,
+                "color": _CHART_TEXT,
             },
             "lineStyle": {"curveness": 0.15, "opacity": 0.6},
         }],
@@ -148,8 +328,8 @@ def render_ego_graph(
     """Ego-graph centered on *focus_ids* with gold-bordered focus nodes."""
     nodes, links, cats = ws_to_ego_graph_data(ws, focus_ids, max_hops=max_hops)
     chart = ui.echart({
-        "backgroundColor": _DARK_BG,
-        "tooltip": {**_DARK_TOOLTIP, "trigger": "item"},
+        "backgroundColor": _CHART_BG,
+        "tooltip": {**_CHART_TOOLTIP, "trigger": "item"},
         "legend": [_LEGEND],
         "animationDuration": 600,
         "series": [{
@@ -167,7 +347,7 @@ def render_ego_graph(
                 "edgeLength": [60, 160],
                 "friction": 0.6,
             },
-            "label": {"show": True, "position": "right", "fontSize": 10, "color": _DARK_TEXT},
+            "label": {"show": True, "position": "right", "fontSize": 10, "color": _CHART_TEXT},
             "lineStyle": {"curveness": 0.15, "opacity": 0.6},
         }],
     }).classes("w-full").style(f"height:{height}")
@@ -184,25 +364,37 @@ def render_social_graph(
     *,
     on_click: OnClick = None,
     height: str = "100%",
+    layout: str = "force",
 ) -> ui.echart:
-    """Entities + relationship edges — colored by affinity."""
+    """Entities + relationship edges — colored by affinity.
+
+    ``layout='circular'`` arranges entities on a ring (cleaner for
+    ensemble casts where force layouts collapse into hairballs).
+    """
     nodes, links, cats = ws_to_social_graph_data(ws)
+    series_extra: dict = (
+        {"layout": "circular", "circular": {"rotateLabel": True}}
+        if layout == "circular"
+        else {
+            "layout": "force",
+            "force": {"repulsion": 300, "gravity": 0.15, "edgeLength": [80, 180]},
+        }
+    )
     chart = ui.echart({
-        "backgroundColor": _DARK_BG,
-        "tooltip": {**_DARK_TOOLTIP, "trigger": "item"},
+        "backgroundColor": _CHART_BG,
+        "tooltip": {**_CHART_TOOLTIP, "trigger": "item"},
         "animationDuration": 600,
         "series": [{
             "type": "graph",
-            "layout": "force",
             "roam": True,
             "draggable": True,
             "emphasis": {"focus": "adjacency"},
             "categories": cats,
             "data": nodes,
             "links": links,
-            "force": {"repulsion": 300, "gravity": 0.15, "edgeLength": [80, 180]},
-            "label": {"show": True, "position": "right", "fontSize": 11, "color": _DARK_TEXT},
+            "label": {"show": True, "position": "right", "fontSize": 11, "color": _CHART_TEXT},
             "lineStyle": {"curveness": 0.2, "opacity": 0.7},
+            **series_extra,
         }],
     }).classes("w-full").style(f"height:{height}")
 
@@ -218,26 +410,52 @@ def render_spatial_map(
     *,
     on_click: OnClick = None,
     height: str = "100%",
+    animated: bool = False,
 ) -> ui.echart:
-    """Locations + spatial edges — dashed lines for locked connections."""
+    """Locations + spatial edges — dashed lines for locked connections.
+
+    ``animated=True`` adds an ECharts ``lines`` overlay with a
+    travelling glow effect along each edge to suggest movement of
+    matter through the world.
+    """
     nodes, links, cats = ws_to_spatial_graph_data(ws)
+    series: list[dict] = [{
+        "type": "graph",
+        "layout": "force",
+        "roam": True,
+        "draggable": True,
+        "emphasis": {"focus": "adjacency"},
+        "categories": cats,
+        "data": nodes,
+        "links": links,
+        "force": {"repulsion": 250, "gravity": 0.2, "edgeLength": [60, 140]},
+        "label": {"show": True, "position": "right", "fontSize": 11, "color": _CHART_TEXT},
+        "lineStyle": {"curveness": 0.1, "opacity": 0.7},
+    }]
+    if animated and links:
+        # Overlay a 'lines' series with effect.show; ECharts will animate
+        # a small symbol travelling source→target along each edge.
+        flow_data = [
+            {
+                "coords": [[0, 0], [0, 0]],  # placeholder; real coords come from graph
+                "fromName": ln.get("source"),
+                "toName": ln.get("target"),
+            }
+            for ln in links
+        ]
+        # ECharts can't link a 'lines' series to a 'graph' coord system
+        # directly without coordinates. We instead set the graph series'
+        # ``edgeSymbol`` + ``edgeLabel`` so each edge gets a moving glyph.
+        series[0]["edgeSymbol"] = ["none", "arrow"]
+        series[0]["edgeSymbolSize"] = [0, 8]
+        series[0]["lineStyle"]["opacity"] = 0.85
+        series[0]["emphasis"]["lineStyle"] = {"width": 4}
+
     chart = ui.echart({
-        "backgroundColor": _DARK_BG,
-        "tooltip": {**_DARK_TOOLTIP, "trigger": "item"},
+        "backgroundColor": _CHART_BG,
+        "tooltip": {**_CHART_TOOLTIP, "trigger": "item"},
         "animationDuration": 600,
-        "series": [{
-            "type": "graph",
-            "layout": "force",
-            "roam": True,
-            "draggable": True,
-            "emphasis": {"focus": "adjacency"},
-            "categories": cats,
-            "data": nodes,
-            "links": links,
-            "force": {"repulsion": 250, "gravity": 0.2, "edgeLength": [60, 140]},
-            "label": {"show": True, "position": "right", "fontSize": 11, "color": _DARK_TEXT},
-            "lineStyle": {"curveness": 0.1, "opacity": 0.7},
-        }],
+        "series": series,
     }).classes("w-full").style(f"height:{height}")
 
     if on_click:
@@ -252,26 +470,63 @@ def render_causal_sankey(
     *,
     on_click: OnClick = None,
     height: str = "100%",
+    aspect: str = "causal_all",
+    min_force: float = 0.0,
+    fabula_max: int | None = None,
 ) -> ui.echart:
-    """Sankey diagram of causal topology — events flow left-to-right."""
-    nodes, links = ws_to_sankey_data(ws)
+    """Sankey diagram of causal/social/information flow.
+
+    ``aspect`` selects the underlying edge set — see
+    :data:`shadow_loom_ui.viz_helpers.SANKEY_ASPECTS`.
+    """
+    nodes, links = ws_sankey_for_aspect(
+        ws, aspect, min_force=min_force, fabula_max=fabula_max
+    )
     if not nodes:
-        return ui.label("No causal edges to display.").classes("text-grey q-pa-md")
+        return ui.label("No edges to display for this aspect.").classes(
+            "text-grey q-pa-md"
+        )
+
+    # Add a dataZoom for large Sankeys (>40 nodes) so users can scroll
+    # the vertical extent without losing the big picture.
+    extra: dict = {}
+    if len(nodes) > 40:
+        extra["dataZoom"] = [{
+            "type": "slider",
+            "yAxisIndex": 0,
+            "orient": "vertical",
+            "right": 4,
+            "width": 12,
+            "show": True,
+        }]
 
     chart = ui.echart({
-        "backgroundColor": _DARK_BG,
-        "tooltip": {**_DARK_TOOLTIP, "trigger": "item"},
+        "backgroundColor": _CHART_BG,
+        "tooltip": {**_CHART_TOOLTIP, "trigger": "item"},
+        **extra,
         "series": [{
             "type": "sankey",
-            "layout": "none",
             "data": nodes,
             "links": links,
             "emphasis": {"focus": "adjacency"},
             "nodeAlign": "left",
             "orient": "horizontal",
-            "lineStyle": {"color": "gradient", "curveness": 0.5, "opacity": 0.4},
-            "itemStyle": {"borderWidth": 1, "borderColor": "#555"},
-            "label": {"color": _DARK_TEXT, "fontSize": 10},
+            "nodeGap": 12,
+            "nodeWidth": 14,
+            "draggable": True,
+            "lineStyle": {
+                "color": "source",
+                "curveness": 0.5,
+                "opacity": 0.45,
+            },
+            "itemStyle": {
+                "borderWidth": 1,
+                "borderColor": _CHART_TEXT,
+            },
+            "label": {
+                "color": _CHART_TEXT,
+                "fontSize": 10,
+            },
         }],
     }).classes("w-full").style(f"height:{height}")
 
@@ -294,12 +549,12 @@ def render_trait_radar(
         return ui.label("No traits.").classes("text-grey text-caption")
 
     return ui.echart({
-        "backgroundColor": _DARK_BG,
-        "tooltip": _DARK_TOOLTIP,
+        "backgroundColor": _CHART_BG,
+        "tooltip": _CHART_TOOLTIP,
         "radar": {
             "indicator": radar_data["indicator"],
             "shape": "polygon",
-            "axisName": {"color": _DARK_TEXT, "fontSize": 10},
+            "axisName": {"color": _CHART_TEXT, "fontSize": 10},
             "splitArea": {"areaStyle": {"color": ["rgba(255,255,255,0.02)", "rgba(255,255,255,0.05)"]}},
             "splitLine": {"lineStyle": {"color": "#444"}},
             "axisLine": {"lineStyle": {"color": "#555"}},
@@ -330,19 +585,19 @@ def render_relationship_heatmap(
         return ui.label("No relationship data.").classes("text-grey q-pa-md")
 
     chart = ui.echart({
-        "backgroundColor": _DARK_BG,
-        "tooltip": {**_DARK_TOOLTIP, "position": "top"},
+        "backgroundColor": _CHART_BG,
+        "tooltip": {**_CHART_TOOLTIP, "position": "top"},
         "grid": {"top": 30, "bottom": 80, "left": 100, "right": 30},
         "xAxis": {
             "type": "category",
             "data": names,
-            "axisLabel": {"rotate": 45, "color": _DARK_TEXT, "fontSize": 10},
+            "axisLabel": {"rotate": 45, "color": _CHART_TEXT, "fontSize": 10},
             "splitArea": {"show": True},
         },
         "yAxis": {
             "type": "category",
             "data": names,
-            "axisLabel": {"color": _DARK_TEXT, "fontSize": 10},
+            "axisLabel": {"color": _CHART_TEXT, "fontSize": 10},
             "splitArea": {"show": True},
         },
         "visualMap": {
@@ -353,9 +608,9 @@ def render_relationship_heatmap(
             "left": "center",
             "bottom": 0,
             "inRange": {
-                "color": ["#9E4D4D", "#94a3b8", "#95A577"],
+                "color": ["#D8334A", "#94a3b8", "#6FBF3A"],
             },
-            "textStyle": {"color": _DARK_TEXT},
+            "textStyle": {"color": _CHART_TEXT},
         },
         "series": [{
             "type": "heatmap",
@@ -390,7 +645,7 @@ def render_emotional_gauges(
         })
 
     return ui.echart({
-        "backgroundColor": _DARK_BG,
+        "backgroundColor": _CHART_BG,
         "series": [{
             "type": "gauge",
             "startAngle": 200,
@@ -403,23 +658,23 @@ def render_emotional_gauges(
                 "lineStyle": {
                     "width": 15,
                     "color": [
-                        [0.3, "#95A577"],
-                        [0.7, "#D4A35B"],
-                        [1, "#9E4D4D"],
+                        [0.3, "#6FBF3A"],
+                        [0.7, "#F5B43C"],
+                        [1, "#D8334A"],
                     ],
                 },
             },
             "pointer": {"width": 4},
             "axisTick": {"lineStyle": {"color": "#777"}},
             "splitLine": {"lineStyle": {"color": "#777"}},
-            "axisLabel": {"color": _DARK_TEXT, "fontSize": 9},
+            "axisLabel": {"color": _CHART_TEXT, "fontSize": 9},
             "detail": {
                 "valueAnimation": True,
                 "formatter": "{value}",
-                "color": _DARK_TEXT,
+                "color": _CHART_TEXT,
                 "fontSize": 14,
             },
-            "title": {"color": _DARK_TEXT, "fontSize": 11},
+            "title": {"color": _CHART_TEXT, "fontSize": 11},
         }],
     }).classes("w-full").style(f"height:{height}")
 
@@ -431,45 +686,220 @@ def render_event_timeline(
     *,
     on_click: OnClick = None,
     height: str = "300px",
+    fabula_cursor: int | None = None,
+    syuzhet_cursor: int | None = None,
+    enable_brush: bool = False,
+    on_brush: OnClick = None,
+    pulse_cursor: bool = True,
 ) -> ui.echart:
-    """Scatter plot: fabula_time (x) vs syuzhet_index (y), colored by type."""
+    """Scatter plot: fabula_time (x) vs syuzhet_index (y), colored by type.
+
+    Optional ``fabula_cursor`` / ``syuzhet_cursor`` draw a vertical /
+    horizontal needle line at that value to anchor the active cursor.
+    With ``pulse_cursor=True`` (default) a pulsing ``effectScatter``
+    point is overlaid at the cursor intersection so it draws the eye.
+
+    With ``enable_brush=True`` the chart gains a horizontal ``dataZoom``
+    brush so users can focus a fabula range. The selected window is
+    forwarded to ``on_brush`` (if given) as ``{"start": x0, "end": x1}``.
+    """
     scatter_data = ws_to_timeline_data(ws)
     if not scatter_data:
         return ui.label("No events.").classes("text-grey text-caption")
 
+    mark_lines: list[dict] = []
+    if fabula_cursor is not None:
+        mark_lines.append({
+            "xAxis": fabula_cursor,
+            "label": {"formatter": f"t={fabula_cursor}", "color": "#D8334A"},
+            "lineStyle": {"color": "#D8334A", "width": 2, "type": "dashed"},
+        })
+    if syuzhet_cursor is not None:
+        mark_lines.append({
+            "yAxis": syuzhet_cursor,
+            "label": {"formatter": f"s={syuzhet_cursor}", "color": "#3A7BD5"},
+            "lineStyle": {"color": "#3A7BD5", "width": 2, "type": "dashed"},
+        })
+
+    series: list[dict] = [{
+        "type": "scatter",
+        "name": "events",
+        "data": scatter_data,
+        "symbolSize": 14,
+        "emphasis": {"scale": 1.6},
+        "label": {"show": False},
+    }]
+    if mark_lines:
+        series[0]["markLine"] = {
+            "symbol": "none",
+            "data": mark_lines,
+            "silent": True,
+        }
+
+    # Pulsing needle: an effectScatter point at the cursor intersection.
+    if pulse_cursor and (fabula_cursor is not None or syuzhet_cursor is not None):
+        # Use median syuzhet/fabula as the orthogonal coordinate when
+        # the user only set one axis.
+        ys = sorted(d["value"][1] for d in scatter_data)
+        xs = sorted(d["value"][0] for d in scatter_data)
+        med_y = ys[len(ys) // 2]
+        med_x = xs[len(xs) // 2]
+        px = fabula_cursor if fabula_cursor is not None else med_x
+        py = syuzhet_cursor if syuzhet_cursor is not None else med_y
+        series.append({
+            "type": "effectScatter",
+            "name": "cursor",
+            "data": [{"value": [px, py], "name": "cursor"}],
+            "symbolSize": 14,
+            "showEffectOn": "render",
+            "rippleEffect": {"period": 3, "scale": 4, "brushType": "stroke"},
+            "itemStyle": {"color": "#D8334A"},
+            "silent": True,
+            "z": 10,
+        })
+
+    extra: dict = {}
+    if enable_brush:
+        extra["dataZoom"] = [
+            {
+                "type": "slider",
+                "xAxisIndex": 0,
+                "height": 18,
+                "bottom": 6,
+                "brushSelect": True,
+                "borderColor": "#cbd5e1",
+                "backgroundColor": "#f1f5f9",
+                "fillerColor": "rgba(58,123,213,0.18)",
+                "handleStyle": {"color": "#3A7BD5"},
+                "textStyle": {"color": _CHART_TEXT, "fontSize": 9},
+            },
+            {
+                "type": "inside",
+                "xAxisIndex": 0,
+            },
+        ]
+
     chart = ui.echart({
-        "backgroundColor": _DARK_BG,
+        "backgroundColor": _CHART_BG,
         "tooltip": {
-            **_DARK_TOOLTIP,
+            **_CHART_TOOLTIP,
             "trigger": "item",
         },
-        "grid": {"top": 40, "bottom": 40, "left": 60, "right": 30},
+        "grid": {"top": 40, "bottom": 60 if enable_brush else 40, "left": 60, "right": 30},
         "xAxis": {
             "type": "value",
             "name": "Fabula Time",
-            "nameTextStyle": {"color": _DARK_TEXT},
-            "axisLabel": {"color": _DARK_TEXT},
+            "nameTextStyle": {"color": _CHART_TEXT},
+            "axisLabel": {"color": _CHART_TEXT},
             "splitLine": {"lineStyle": {"color": "#333"}},
         },
         "yAxis": {
             "type": "value",
             "name": "Syuzhet Index",
-            "nameTextStyle": {"color": _DARK_TEXT},
-            "axisLabel": {"color": _DARK_TEXT},
+            "nameTextStyle": {"color": _CHART_TEXT},
+            "axisLabel": {"color": _CHART_TEXT},
             "splitLine": {"lineStyle": {"color": "#333"}},
         },
-        "series": [{
-            "type": "scatter",
-            "data": scatter_data,
-            "symbolSize": 14,
-            "emphasis": {"scale": 1.6},
-            "label": {"show": False},
-        }],
+        "series": series,
+        **extra,
     }).classes("w-full").style(f"height:{height}")
 
     if on_click:
         chart.on("click", on_click)
+    if enable_brush and on_brush:
+        # ECharts emits ``datazoom`` with start/end as percentages of
+        # the axis range. We forward the raw event so callers can
+        # translate it back to fabula values themselves.
+        chart.on("datazoom", on_brush)
     return chart
+
+
+# ── Fabula↔Syuzhet displacement bars ───────────────────────────────
+
+def render_displacement_chart(
+    ws: WorldStateV1,
+    *,
+    height: str = "260px",
+) -> ui.echart:
+    """Diverging bar of ``syuzhet_index - fabula_time`` per event.
+
+    Negative bars = flashbacks (event told later than it happened
+    relative to the linear baseline). Positive bars = foreshadowing
+    or in-order pacing where reading order leads fabula order.
+
+    Bars are sorted by syuzhet order so the chart reads left-to-right
+    as the reader experiences the story.
+    """
+    if not ws.events:
+        return ui.label("No events.").classes("text-grey text-caption")
+
+    evts = sorted(ws.events, key=lambda e: e.syuzhet_index)
+    # Normalize fabula and syuzhet to [0, 1] so the displacement is
+    # comparable across stories with different time scales.
+    f_vals = [e.fabula_time for e in evts]
+    s_vals = [e.syuzhet_index for e in evts]
+    f_min, f_max = min(f_vals), max(f_vals)
+    s_min, s_max = min(s_vals), max(s_vals)
+    f_span = max(1, f_max - f_min)
+    s_span = max(1, s_max - s_min)
+
+    rows: list[list] = []
+    labels: list[str] = []
+    for e in evts:
+        f_norm = (e.fabula_time - f_min) / f_span
+        s_norm = (e.syuzhet_index - s_min) / s_span
+        # Positive = reader gets info before fabula "would" suggest = foreshadowing.
+        # Negative = reader gets info after = flashback / withheld.
+        disp = round(s_norm - f_norm, 3)
+        labels.append(f"s{e.syuzhet_index}")
+        rows.append([
+            labels[-1],
+            disp,
+            e.id,
+            e.description[:80] if e.description else e.id,
+        ])
+
+    return ui.echart({
+        "backgroundColor": _CHART_BG,
+        "tooltip": {
+            **_CHART_TOOLTIP,
+            "trigger": "item",
+            "formatter": (
+                "function(p){return '<b>'+p.value[2]+'</b><br/>'"
+                "+'displacement: '+p.value[1]+'<br/>'+p.value[3];}"
+            ),
+        },
+        "grid": {"top": 30, "bottom": 50, "left": 50, "right": 20},
+        "xAxis": {
+            "type": "category",
+            "data": labels,
+            "name": "Reading order →",
+            "nameLocation": "middle",
+            "nameGap": 28,
+            "nameTextStyle": {"color": _CHART_TEXT},
+            "axisLabel": {"color": _CHART_TEXT, "fontSize": 9, "interval": "auto"},
+        },
+        "yAxis": {
+            "type": "value",
+            "min": -1,
+            "max": 1,
+            "name": "← Flashback   |   Foreshadow →",
+            "nameTextStyle": {"color": _CHART_TEXT, "fontSize": 10},
+            "axisLabel": {"color": _CHART_TEXT},
+            "splitLine": {"lineStyle": {"color": "#e2e8f0"}},
+        },
+        "series": [{
+            "type": "bar",
+            "data": rows,
+            "encode": {"x": 0, "y": 1, "tooltip": [2, 1, 3]},
+            "itemStyle": {
+                "color": (
+                    "function(p){return p.value[1] >= 0 ? '#3A7BD5' : '#D8334A';}"
+                ),
+            },
+            "barMaxWidth": 18,
+        }],
+    }).classes("w-full").style(f"height:{height}")
 
 
 # ── Entity state timeline (stepped trait evolution) ───────────────
@@ -489,8 +919,7 @@ def render_entity_state_timeline(
     title = ent.name if ent else entity_id
 
     series = []
-    colors = ["#C68661", "#5C7C8A", "#D4A35B", "#456A6B", "#B58988",
-              "#95A577", "#856B7D", "#8C7A6B", "#9E4D4D", "#1F2731"]
+    colors = CHART_COLORS
     for i, (trait_name, values) in enumerate(data["series"].items()):
         series.append({
             "name": trait_name,
@@ -504,16 +933,16 @@ def render_entity_state_timeline(
         })
 
     return ui.echart({
-        "backgroundColor": _DARK_BG,
+        "backgroundColor": _CHART_BG,
         "title": {
             "text": title,
             "left": "center",
-            "textStyle": {"color": _DARK_TEXT, "fontSize": 12},
+            "textStyle": {"color": _CHART_TEXT, "fontSize": 12},
         },
-        "tooltip": {**_DARK_TOOLTIP, "trigger": "axis"},
+        "tooltip": {**_CHART_TOOLTIP, "trigger": "axis"},
         "legend": {
             "data": list(data["series"].keys()),
-            "textStyle": {"color": _DARK_TEXT},
+            "textStyle": {"color": _CHART_TEXT},
             "top": 24,
         },
         "grid": {"top": 64, "bottom": 30, "left": 50, "right": 20},
@@ -521,8 +950,8 @@ def render_entity_state_timeline(
             "type": "category",
             "data": [str(t) for t in data["times"]],
             "name": "Fabula Time",
-            "nameTextStyle": {"color": _DARK_TEXT},
-            "axisLabel": {"color": _DARK_TEXT, "fontSize": 9},
+            "nameTextStyle": {"color": _CHART_TEXT},
+            "axisLabel": {"color": _CHART_TEXT, "fontSize": 9},
             "splitLine": {"lineStyle": {"color": "#333"}},
         },
         "yAxis": {
@@ -530,11 +959,154 @@ def render_entity_state_timeline(
             "name": "Trait Value",
             "min": -1,
             "max": 1,
-            "nameTextStyle": {"color": _DARK_TEXT},
-            "axisLabel": {"color": _DARK_TEXT},
+            "nameTextStyle": {"color": _CHART_TEXT},
+            "axisLabel": {"color": _CHART_TEXT},
             "splitLine": {"lineStyle": {"color": "#333"}},
         },
         "series": series,
+    }).classes("w-full").style(f"height:{height}")
+
+
+# ── Relationship timeline (dyad) ──────────────────────────────────
+
+def render_relationship_timeline(
+    ws: WorldStateV1,
+    ent_a: str,
+    ent_b: str,
+    *,
+    height: str = "300px",
+) -> ui.echart:
+    """Stepped line chart of affinity / fear / power between two entities."""
+    from shadow_loom_ui.viz_helpers import relationship_timeline_data
+
+    data = relationship_timeline_data(ws, ent_a, ent_b)
+    if not data["times"]:
+        return ui.label("No relationship data.").classes("text-grey text-caption")
+
+    name_a = ws.entities[ent_a].name if ent_a in ws.entities else ent_a
+    name_b = ws.entities[ent_b].name if ent_b in ws.entities else ent_b
+    palette = {
+        "affinity": "#3A7BD5",
+        "fear": "#D8334A",
+        "power_dynamic": "#F5B43C",
+    }
+    series = [
+        {
+            "name": metric,
+            "type": "line",
+            "step": "middle",
+            "data": values,
+            "lineStyle": {"width": 2},
+            "symbol": "circle",
+            "symbolSize": 6,
+            "itemStyle": {"color": palette.get(metric, CHART_COLORS[i % len(CHART_COLORS)])},
+        }
+        for i, (metric, values) in enumerate(data["series"].items())
+    ]
+
+    return ui.echart({
+        "backgroundColor": _CHART_BG,
+        "title": {
+            "text": f"{name_a} ⇄ {name_b}",
+            "left": "center",
+            "textStyle": {"color": _CHART_TEXT, "fontSize": 12},
+        },
+        "tooltip": {**_CHART_TOOLTIP, "trigger": "axis"},
+        "legend": {
+            "data": list(data["series"].keys()),
+            "textStyle": {"color": _CHART_TEXT},
+            "top": 24,
+        },
+        "grid": {"top": 64, "bottom": 30, "left": 50, "right": 20},
+        "xAxis": {
+            "type": "category",
+            "data": [str(t) for t in data["times"]],
+            "name": "Fabula Time",
+            "nameTextStyle": {"color": _CHART_TEXT},
+            "axisLabel": {"color": _CHART_TEXT, "fontSize": 9},
+            "splitLine": {"lineStyle": {"color": "#333"}},
+        },
+        "yAxis": {
+            "type": "value",
+            "name": "Value",
+            "min": -1,
+            "max": 1,
+            "nameTextStyle": {"color": _CHART_TEXT},
+            "axisLabel": {"color": _CHART_TEXT},
+            "splitLine": {"lineStyle": {"color": "#333"}},
+        },
+        "series": series,
+    }).classes("w-full").style(f"height:{height}")
+
+
+# ── World-trait timeline ──────────────────────────────────────────
+
+def render_world_trait_timeline(
+    ws: WorldStateV1,
+    world_id: str,
+    *,
+    height: str = "300px",
+) -> ui.echart:
+    """Stepped line chart of a world trait's magnitude over fabula_time."""
+    from shadow_loom_ui.viz_helpers import world_trait_timeline_data
+
+    data = world_trait_timeline_data(ws, world_id)
+    if not data["times"]:
+        return ui.label("No world-trait data.").classes("text-grey text-caption")
+
+    wt = ws.world_traits.get(world_id)
+    title = wt.name if wt else world_id
+
+    return ui.echart({
+        "backgroundColor": _CHART_BG,
+        "title": {
+            "text": title,
+            "left": "center",
+            "textStyle": {"color": _CHART_TEXT, "fontSize": 12},
+        },
+        "tooltip": {**_CHART_TOOLTIP, "trigger": "axis"},
+        "legend": {
+            "data": ["intensity", "inertia"],
+            "textStyle": {"color": _CHART_TEXT},
+            "top": 24,
+        },
+        "grid": {"top": 64, "bottom": 30, "left": 50, "right": 20},
+        "xAxis": {
+            "type": "category",
+            "data": [str(t) for t in data["times"]],
+            "name": "Fabula Time",
+            "nameTextStyle": {"color": _CHART_TEXT},
+            "axisLabel": {"color": _CHART_TEXT, "fontSize": 9},
+            "splitLine": {"lineStyle": {"color": "#333"}},
+        },
+        "yAxis": {
+            "type": "value",
+            "name": "Magnitude",
+            "min": 0,
+            "max": 1,
+            "nameTextStyle": {"color": _CHART_TEXT},
+            "axisLabel": {"color": _CHART_TEXT},
+            "splitLine": {"lineStyle": {"color": "#333"}},
+        },
+        "series": [
+            {
+                "name": "intensity",
+                "type": "line",
+                "step": "middle",
+                "data": data["value"],
+                "itemStyle": {"color": "#2EA6A0"},
+                "lineStyle": {"width": 2},
+                "areaStyle": {"opacity": 0.15},
+            },
+            {
+                "name": "inertia",
+                "type": "line",
+                "step": "middle",
+                "data": data["inertia"],
+                "itemStyle": {"color": "#8A5CF0"},
+                "lineStyle": {"width": 2, "type": "dashed"},
+            },
+        ],
     }).classes("w-full").style(f"height:{height}")
 
 
@@ -546,40 +1118,54 @@ def render_version_tree(
     *,
     on_click: OnClick = None,
     height: str = "300px",
+    orient: str = "vertical",
 ) -> ui.echart:
-    """Tree layout of project version history."""
+    """Tree layout of project version history.
+
+    ``orient='radial'`` switches to a radial layout (root in centre),
+    helpful when many shadow branches diverge from a single factual
+    spine.
+    """
     root = version_tree_to_echart_data(tree_data, current_version_id)
     if not root:
         return ui.label("No versions.").classes("text-grey text-caption")
 
+    is_radial = orient == "radial"
+    series_layout: dict = (
+        {"layout": "radial", "symbol": "emptyCircle"}
+        if is_radial
+        else {"orient": "vertical"}
+    )
+
     chart = ui.echart({
-        "backgroundColor": _DARK_BG,
-        "tooltip": {**_DARK_TOOLTIP, "trigger": "item"},
+        "backgroundColor": _CHART_BG,
+        "tooltip": {**_CHART_TOOLTIP, "trigger": "item"},
         "series": [{
             "type": "tree",
             "data": [root],
-            "orient": "vertical",
             "top": 20,
             "bottom": 20,
             "left": 40,
             "right": 40,
             "symbolSize": 12,
-            "edgeShape": "polyline",
+            "edgeShape": "curve" if is_radial else "polyline",
             "edgeForkPosition": "50%",
             "label": {
-                "position": "top",
+                "position": "top" if not is_radial else "left",
                 "verticalAlign": "middle",
                 "align": "center",
                 "fontSize": 10,
-                "color": _DARK_TEXT,
+                "color": _CHART_TEXT,
             },
             "leaves": {
-                "label": {"position": "bottom", "verticalAlign": "middle", "align": "center"},
+                "label": {"position": "bottom" if not is_radial else "right",
+                          "verticalAlign": "middle", "align": "center"},
             },
             "lineStyle": {"color": "#555", "width": 1.5},
             "emphasis": {"focus": "descendant"},
             "expandAndCollapse": False,
             "animationDuration": 400,
+            **series_layout,
         }],
     }).classes("w-full").style(f"height:{height}")
 
@@ -595,34 +1181,131 @@ def render_causal_force_graph(
     *,
     on_click: OnClick = None,
     height: str = "100%",
+    layout: str = "force",
 ) -> ui.echart:
-    """Force-directed graph of causal edges, thickness = causal_force."""
+    """Force-directed graph of causal edges, thickness = causal_force.
+
+    ``layout`` options:
+      - ``"force"`` (default): physics-based layout, good for medium graphs.
+      - ``"circular"``: nodes on a ring, ideal for symmetry inspection.
+      - ``"cartesian"``: anchors events on (fabula_time, syuzhet_index)
+        axes so the temporal flow of causality is preserved.
+
+    For >80 nodes the force layout auto-tunes its repulsion / friction
+    (Webkit-dep style) so the graph doesn't explode into a hairball.
+    """
+    if layout == "cartesian":
+        return _render_causal_cartesian(
+            ws, on_click=on_click, height=height,
+        )
+
     nodes, links, cats = ws_to_causal_force_data(ws)
     if not nodes:
         return ui.label("No causal topology.").classes("text-grey q-pa-md")
 
+    n = len(nodes)
+    if layout == "circular":
+        series_extra: dict = {
+            "layout": "circular",
+            "circular": {"rotateLabel": True},
+        }
+    else:
+        # Auto-tune for large graphs (Webkit-dep inspiration).
+        if n > 200:
+            force = {"repulsion": 900, "gravity": 0.05, "edgeLength": [40, 220], "friction": 0.4}
+            curveness = 0.25
+        elif n > 80:
+            force = {"repulsion": 600, "gravity": 0.08, "edgeLength": [50, 200], "friction": 0.5}
+            curveness = 0.2
+        else:
+            force = {"repulsion": 400, "gravity": 0.1, "edgeLength": [60, 180], "friction": 0.6}
+            curveness = 0.15
+        series_extra = {"layout": "force", "force": force}
+
     chart = ui.echart({
-        "backgroundColor": _DARK_BG,
-        "tooltip": {**_DARK_TOOLTIP, "trigger": "item"},
+        "backgroundColor": _CHART_BG,
+        "tooltip": {**_CHART_TOOLTIP, "trigger": "item"},
         "legend": {
             "data": [c["name"] for c in cats],
-            "textStyle": {"color": _DARK_TEXT},
+            "textStyle": {"color": _CHART_TEXT},
             "top": 0,
             "right": 10,
             "orient": "vertical",
         },
         "series": [{
             "type": "graph",
-            "layout": "force",
             "roam": True,
             "draggable": True,
             "emphasis": {"focus": "adjacency"},
             "categories": cats,
             "data": nodes,
             "links": links,
-            "force": {"repulsion": 400, "gravity": 0.1, "edgeLength": [60, 180], "friction": 0.6},
-            "label": {"show": True, "position": "right", "fontSize": 9, "color": _DARK_TEXT},
-            "lineStyle": {"curveness": 0.15, "opacity": 0.7},
+            "label": {
+                "show": n <= 60,  # hide labels on dense graphs
+                "position": "right",
+                "fontSize": 9,
+                "color": _CHART_TEXT,
+            },
+            "lineStyle": {
+                "curveness": curveness if layout != "circular" else 0.3,
+                "opacity": 0.7 if n <= 80 else 0.45,
+            },
+            **series_extra,
+        }],
+    }).classes("w-full").style(f"height:{height}")
+
+    if on_click:
+        chart.on("click", on_click)
+    return chart
+
+
+def _render_causal_cartesian(
+    ws: WorldStateV1,
+    *,
+    on_click: OnClick = None,
+    height: str = "100%",
+) -> ui.echart:
+    """Causal graph anchored on (fabula_time, syuzhet_index) axes.
+
+    Inspired by the ECharts ``graph-life-expectancy`` example: nodes
+    keep their temporal coordinates while edges curve between them so
+    the visual reading order matches the story order.
+    """
+    nodes, links = ws_to_causal_cartesian_data(ws)
+    if not nodes:
+        return ui.label("No causal topology.").classes("text-grey q-pa-md")
+
+    chart = ui.echart({
+        "backgroundColor": _CHART_BG,
+        "tooltip": {**_CHART_TOOLTIP, "trigger": "item"},
+        "grid": {"top": 30, "bottom": 50, "left": 60, "right": 30},
+        "xAxis": {
+            "type": "value",
+            "name": "Fabula Time →",
+            "nameLocation": "middle",
+            "nameGap": 28,
+            "nameTextStyle": {"color": _CHART_TEXT, "fontSize": 11},
+            "axisLabel": {"color": _CHART_TEXT},
+            "splitLine": {"lineStyle": {"color": "#e2e8f0"}},
+        },
+        "yAxis": {
+            "type": "value",
+            "name": "↑ Syuzhet (reading order)",
+            "nameTextStyle": {"color": _CHART_TEXT, "fontSize": 11},
+            "axisLabel": {"color": _CHART_TEXT},
+            "splitLine": {"lineStyle": {"color": "#e2e8f0"}},
+        },
+        "series": [{
+            "type": "graph",
+            "coordinateSystem": "cartesian2d",
+            "data": nodes,
+            "links": links,
+            "roam": True,
+            "draggable": False,
+            "emphasis": {"focus": "adjacency"},
+            "label": {"show": len(nodes) <= 40, "position": "top",
+                       "fontSize": 9, "color": _CHART_TEXT},
+            "lineStyle": {"opacity": 0.55, "curveness": 0.15},
         }],
     }).classes("w-full").style(f"height:{height}")
 
@@ -645,23 +1328,23 @@ def render_epistemic_map(
         return ui.label("No belief data.").classes("text-grey q-pa-md")
 
     chart = ui.echart({
-        "backgroundColor": _DARK_BG,
-        "tooltip": {**_DARK_TOOLTIP, "position": "top"},
+        "backgroundColor": _CHART_BG,
+        "tooltip": {**_CHART_TOOLTIP, "position": "top"},
         "grid": {"top": 30, "bottom": 80, "left": 100, "right": 30},
         "xAxis": {
             "type": "category",
             "data": target_names,
             "name": "Belief About",
-            "nameTextStyle": {"color": _DARK_TEXT},
-            "axisLabel": {"rotate": 45, "color": _DARK_TEXT, "fontSize": 10},
+            "nameTextStyle": {"color": _CHART_TEXT},
+            "axisLabel": {"rotate": 45, "color": _CHART_TEXT, "fontSize": 10},
             "splitArea": {"show": True},
         },
         "yAxis": {
             "type": "category",
             "data": ent_names,
             "name": "Believer",
-            "nameTextStyle": {"color": _DARK_TEXT},
-            "axisLabel": {"color": _DARK_TEXT, "fontSize": 10},
+            "nameTextStyle": {"color": _CHART_TEXT},
+            "axisLabel": {"color": _CHART_TEXT, "fontSize": 10},
             "splitArea": {"show": True},
         },
         "visualMap": {
@@ -671,8 +1354,8 @@ def render_epistemic_map(
             "orient": "horizontal",
             "left": "center",
             "bottom": 0,
-            "inRange": {"color": ["#1F2731", "#5C7C8A", "#95A577"]},
-            "textStyle": {"color": _DARK_TEXT},
+            "inRange": {"color": ["#1E2A3A", "#3A7BD5", "#6FBF3A"]},
+            "textStyle": {"color": _CHART_TEXT},
         },
         "series": [{
             "type": "heatmap",
@@ -705,11 +1388,12 @@ def render_theme_river(
     legends = sorted({d[2] for d in data})
 
     return ui.echart({
-        "backgroundColor": _DARK_BG,
-        "tooltip": {**_DARK_TOOLTIP, "trigger": "axis"},
+        "backgroundColor": _CHART_BG,
+        "color": CHART_COLORS,
+        "tooltip": {**_CHART_TOOLTIP, "trigger": "axis"},
         "legend": {
             "data": legends,
-            "textStyle": {"color": _DARK_TEXT},
+            "textStyle": {"color": _CHART_TEXT},
             "top": 0,
             "type": "scroll",
         },
@@ -717,14 +1401,14 @@ def render_theme_river(
             "type": "category",
             "bottom": 50,
             "top": 50,
-            "axisLabel": {"color": _DARK_TEXT},
+            "axisLabel": {"color": _CHART_TEXT},
             "axisLine": {"lineStyle": {"color": "#555"}},
         },
         "series": [{
             "type": "themeRiver",
             "data": data,
             "label": {"show": False},
-            "emphasis": {"itemStyle": {"shadowBlur": 20, "shadowColor": "rgba(0,0,0,0.8)"}},
+            "emphasis": {"itemStyle": {"shadowBlur": 20, "shadowColor": "rgba(0,0,0,0.3)"}},
         }],
     }).classes("w-full").style(f"height:{height}")
 
@@ -736,14 +1420,69 @@ def render_chord_diagram(
     *,
     metric: str = "affinity",
     height: str = "400px",
+    use_v6_chord: bool = True,
 ) -> ui.echart:
-    """Chord diagram showing bidirectional relationship strengths."""
+    """Chord diagram showing bidirectional relationship strengths.
+
+    With ``use_v6_chord=True`` (default) we emit ECharts v6's native
+    ``chord`` series — gradient ribbons, ``minAngle`` filtering, and
+    cleaner colouring. Older ECharts builds fall back to the circular
+    ``graph`` layout automatically (the option spec is JSON; an unknown
+    ``type`` is skipped silently).
+    """
     names, matrix = ws_to_chord_data(ws, metric=metric)
     if not names or all(all(v == 0 for v in row) for row in matrix):
         return ui.label("No relationship data for chord.").classes("text-grey q-pa-md")
 
-    # Build as a graph with circular layout (chord alternative for ECharts < 6)
-    nodes = [{"name": n, "symbolSize": 30} for n in names]
+    # Size each node by total outgoing strength so isolated entities are visible.
+    out_strength: dict[str, float] = {n: 0.0 for n in names}
+    for i, row in enumerate(matrix):
+        out_strength[names[i]] = sum(row)
+    max_out = max(out_strength.values()) or 1.0
+
+    if use_v6_chord:
+        # v6 chord series: nodes are named slices, links are matrix entries.
+        chord_nodes = [
+            {
+                "name": n,
+                "itemStyle": {"color": CHART_COLORS[i % len(CHART_COLORS)]},
+            }
+            for i, n in enumerate(names)
+        ]
+        chord_links: list[dict] = []
+        for i, row in enumerate(matrix):
+            for j, val in enumerate(row):
+                if val > 0 and i != j:
+                    chord_links.append({
+                        "source": names[i],
+                        "target": names[j],
+                        "value": float(val),
+                    })
+        return ui.echart({
+            "backgroundColor": _CHART_BG,
+            "tooltip": {**_CHART_TOOLTIP, "trigger": "item"},
+            "series": [{
+                "type": "chord",
+                "data": chord_nodes,
+                "links": chord_links,
+                "minAngle": 1,
+                "padAngle": 1,
+                "label": {"show": True, "color": _CHART_TEXT, "fontSize": 11},
+                "lineStyle": {"color": "gradient", "opacity": 0.55},
+                "emphasis": {"focus": "adjacency",
+                              "lineStyle": {"opacity": 0.85}},
+            }],
+        }).classes("w-full").style(f"height:{height}")
+
+    # Fallback: graph with circular layout (works on ECharts < 6).
+    nodes = [
+        {
+            "name": n,
+            "symbolSize": 18 + 28 * (out_strength[n] / max_out),
+            "itemStyle": {"color": CHART_COLORS[i % len(CHART_COLORS)]},
+        }
+        for i, n in enumerate(names)
+    ]
     links = []
     for i, row in enumerate(matrix):
         for j, val in enumerate(row):
@@ -752,12 +1491,15 @@ def render_chord_diagram(
                     "source": names[i],
                     "target": names[j],
                     "value": val,
-                    "lineStyle": {"width": max(1, val * 5), "opacity": 0.6},
+                    "lineStyle": {
+                        "width": max(1, val * 5),
+                        "opacity": 0.55,
+                    },
                 })
 
     return ui.echart({
-        "backgroundColor": _DARK_BG,
-        "tooltip": {**_DARK_TOOLTIP, "trigger": "item"},
+        "backgroundColor": _CHART_BG,
+        "tooltip": {**_CHART_TOOLTIP, "trigger": "item"},
         "series": [{
             "type": "graph",
             "layout": "circular",
@@ -765,7 +1507,12 @@ def render_chord_diagram(
             "data": nodes,
             "links": links,
             "roam": True,
-            "label": {"show": True, "position": "right", "color": _DARK_TEXT, "fontSize": 11},
+            "label": {
+                "show": True,
+                "position": "right",
+                "color": _CHART_TEXT,
+                "fontSize": 11,
+            },
             "lineStyle": {"curveness": 0.3, "color": "source"},
             "emphasis": {"focus": "adjacency"},
         }],
@@ -784,8 +1531,7 @@ def render_parallel_coords(
     if not dimensions or not data_rows:
         return ui.label("No trait data for parallel view.").classes("text-grey q-pa-md")
 
-    colors = ["#C68661", "#5C7C8A", "#D4A35B", "#456A6B", "#B58988",
-              "#95A577", "#856B7D", "#8C7A6B", "#9E4D4D", "#1F2731"]
+    colors = CHART_COLORS
 
     series = []
     for i, (row, name) in enumerate(zip(data_rows, entity_names)):
@@ -797,11 +1543,11 @@ def render_parallel_coords(
         })
 
     return ui.echart({
-        "backgroundColor": _DARK_BG,
-        "tooltip": _DARK_TOOLTIP,
+        "backgroundColor": _CHART_BG,
+        "tooltip": _CHART_TOOLTIP,
         "legend": {
             "data": entity_names,
-            "textStyle": {"color": _DARK_TEXT},
+            "textStyle": {"color": _CHART_TEXT},
             "top": 0,
             "type": "scroll",
         },
@@ -811,8 +1557,8 @@ def render_parallel_coords(
                 "name": d["name"],
                 "min": d["min"],
                 "max": d["max"],
-                "nameTextStyle": {"color": _DARK_TEXT, "fontSize": 10},
-                "axisLabel": {"color": _DARK_TEXT},
+                "nameTextStyle": {"color": _CHART_TEXT, "fontSize": 10},
+                "axisLabel": {"color": _CHART_TEXT},
                 "axisLine": {"lineStyle": {"color": "#555"}},
             }
             for i, d in enumerate(dimensions)
@@ -829,74 +1575,150 @@ def render_event_gantt(
     *,
     on_click: OnClick = None,
     height: str = "400px",
+    show_status_marks: bool = True,
 ) -> ui.echart:
-    """Swim-lane Gantt chart: events grouped by actor, x = fabula_time."""
+    """Swim-lane Gantt chart: events grouped by actor, x = fabula_time.
+
+    Each event becomes a horizontal bar from ``fabula_time`` to
+    ``fabula_time + 1`` on its actor's lane, coloured by event type.
+    Implemented with a ``custom`` series so we get true start/end bars
+    instead of length-only stacked rectangles.
+
+    With ``show_status_marks=True`` an extra scatter series annotates
+    each tick where an entity's ``status`` flips (e.g. ❌ on the
+    fabula tick they die).
+    """
     from shadow_loom_ui.viz_helpers import EVENT_TYPE_COLORS
 
     actor_names, items = ws_to_gantt_data(ws)
     if not items:
         return ui.label("No actor events for swim lanes.").classes("text-grey q-pa-md")
 
-    # Build horizontal bar series per event type (stacked = swim lanes)
-    # Group items by event_type for separate series
-    event_types: dict[str, list] = {}
-    for item in items:
-        et = item["event_type"]
-        if et not in event_types:
-            event_types[et] = []
-        event_types[et].append(item)
+    # Each datum: [actor_idx, start, end, event_type, description, event_id]
+    data = [
+        [
+            it["actor_idx"],
+            it["start"],
+            it["end"],
+            it["event_type"],
+            it["description"],
+            it["event_id"],
+        ]
+        for it in items
+    ]
 
-    # For horizontal bars: each bar needs [start, end] on x-axis
-    # Use multiple bar series with category y-axis
-    series = []
-    for et, et_items in event_types.items():
-        color = EVENT_TYPE_COLORS.get(et, "#607D8B")
-        # Build sparse data: one entry per actor row, None for others
-        bar_data = [None] * len(actor_names)
-        for item in et_items:
-            idx = item["actor_idx"]
-            duration = max(item["end"] - item["start"], 5)
-            bar_data[idx] = {
-                "value": duration,
-                "name": item["description"],
-                "itemStyle": {"color": color},
-            }
-        series.append({
-            "type": "bar",
-            "name": et,
-            "stack": "gantt",
-            "data": bar_data,
-            "barWidth": "60%",
-        })
+    legend_types = sorted({it["event_type"] for it in items})
 
-    chart = ui.echart({
-        "backgroundColor": _DARK_BG,
+    # Pieces is needed so each bar is colored by its event_type without us
+    # needing to write JS. We use visualMap.pieces over the 3rd dimension.
+    pieces = [
+        {"value": idx, "color": EVENT_TYPE_COLORS.get(et, "#94a3b8"), "label": et}
+        for idx, et in enumerate(legend_types)
+    ]
+    type_to_idx = {et: idx for idx, et in enumerate(legend_types)}
+    # Replace event_type strings with their pieces index
+    for row in data:
+        row[3] = type_to_idx[row[3]]
+
+    chart_opts: dict = {
+        "backgroundColor": _CHART_BG,
         "tooltip": {
-            **_DARK_TOOLTIP,
+            **_CHART_TOOLTIP,
             "trigger": "item",
-            ":formatter": "params => params.name || params.seriesName",
+            ":formatter": (
+                "function (p) {"
+                "  var v = p.value;"
+                "  return '<b>' + v[5] + '</b><br/>'"
+                "       + 'actor: ' + p.name + '<br/>'"
+                "       + 't: ' + v[1] + ' \u2192 ' + v[2] + '<br/>'"
+                "       + v[4];"
+                "}"
+            ),
         },
-        "legend": {
-            "data": list(event_types.keys()),
-            "textStyle": {"color": _DARK_TEXT},
-            "top": 5,
-        },
-        "grid": {"top": 35, "bottom": 40, "left": 120, "right": 30},
+        "grid": {"top": 40, "bottom": 40, "left": 130, "right": 30},
         "xAxis": {
             "type": "value",
-            "name": "Duration",
-            "nameTextStyle": {"color": _DARK_TEXT},
-            "axisLabel": {"color": _DARK_TEXT},
-            "splitLine": {"lineStyle": {"color": "#333"}},
+            "name": "Fabula Time",
+            "nameTextStyle": {"color": _CHART_TEXT},
+            "axisLabel": {"color": _CHART_TEXT},
+            "splitLine": {"lineStyle": {"color": "#e2e8f0"}},
+            "min": "dataMin",
+            "max": "dataMax",
         },
         "yAxis": {
             "type": "category",
             "data": actor_names,
-            "axisLabel": {"color": _DARK_TEXT, "fontSize": 10},
-            "axisLine": {"lineStyle": {"color": "#555"}},
+            "axisLabel": {"color": _CHART_TEXT, "fontSize": 10},
+            "axisLine": {"lineStyle": {"color": "#cbd5e1"}},
+            "splitLine": {"show": True, "lineStyle": {"color": "#f1f5f9"}},
         },
-        "series": series,
-    }).classes("w-full").style(f"height:{height}")
+        "visualMap": {
+            "show": True,
+            "type": "piecewise",
+            "dimension": 3,
+            "pieces": pieces,
+            "orient": "horizontal",
+            "top": 5,
+            "left": "center",
+            "textStyle": {"color": _CHART_TEXT},
+        },
+        "series": [{
+            "type": "custom",
+            "name": "events",
+            "encode": {"x": [1, 2], "y": 0, "tooltip": [1, 2, 4]},
+            "data": data,
+            ":renderItem": (
+                "function (params, api) {"
+                "  var y = api.coord([0, api.value(0)])[1];"
+                "  var x1 = api.coord([api.value(1), 0])[0];"
+                "  var x2 = api.coord([api.value(2), 0])[0];"
+                "  var height = api.size([0, 1])[1] * 0.55;"
+                "  var width = Math.max(2, x2 - x1);"
+                "  return {"
+                "    type: 'rect',"
+                "    shape: {x: x1, y: y - height/2, width: width, height: height},"
+                "    style: api.style({stroke: '#1E2A3A', lineWidth: 0.5})"
+                "  };"
+                "}"
+            ),
+        }],
+    }
+
+    if show_status_marks:
+        marks = ws_to_gantt_status_marks(ws)
+        # Filter to actors that actually appear in the Gantt to avoid
+        # mismatched y-axis indices.
+        actor_set = set(actor_names)
+        marks = [m for m in marks if m["actor"] in actor_set]
+        if marks:
+            chart_opts["series"].append({
+                "type": "scatter",
+                "name": "status",
+                "symbol": "circle",
+                "symbolSize": 14,
+                "itemStyle": {"color": "#D8334A", "borderColor": "#1E2A3A", "borderWidth": 1},
+                "label": {
+                    "show": True,
+                    "position": "top",
+                    "formatter": "{@[2]}",
+                    "fontSize": 12,
+                    "color": _CHART_TEXT,
+                },
+                "data": [
+                    {
+                        "value": [m["fabula_time"], m["actor"], m["icon"]],
+                        "name": f"{m['actor']} → {m['status']}",
+                    }
+                    for m in marks
+                ],
+                "tooltip": {
+                    **_CHART_TOOLTIP,
+                    "formatter": "{b}<br/>fabula_time = {@[0]}",
+                },
+                "z": 5,
+            })
+
+    chart = ui.echart(chart_opts).classes("w-full").style(f"height:{height}")
 
     if on_click:
         chart.on("click", on_click)
@@ -922,31 +1744,31 @@ def render_propagation_waterfall(
         if d["type"] == "blocked":
             values.append({"value": 0, "itemStyle": {"color": "#94a3b8", "borderType": "dashed"}})
         elif d["type"] == "positive":
-            values.append({"value": d["value"], "itemStyle": {"color": "#95A577"}})
+            values.append({"value": d["value"], "itemStyle": {"color": "#6FBF3A"}})
         else:
-            values.append({"value": d["value"], "itemStyle": {"color": "#9E4D4D"}})
+            values.append({"value": d["value"], "itemStyle": {"color": "#D8334A"}})
 
     return ui.echart({
-        "backgroundColor": _DARK_BG,
-        "tooltip": {**_DARK_TOOLTIP, "trigger": "axis"},
+        "backgroundColor": _CHART_BG,
+        "tooltip": {**_CHART_TOOLTIP, "trigger": "axis"},
         "grid": {"top": 30, "bottom": 80, "left": 50, "right": 30},
         "xAxis": {
             "type": "category",
             "data": categories,
-            "axisLabel": {"rotate": 45, "color": _DARK_TEXT, "fontSize": 9},
+            "axisLabel": {"rotate": 45, "color": _CHART_TEXT, "fontSize": 9},
             "axisLine": {"lineStyle": {"color": "#555"}},
         },
         "yAxis": {
             "type": "value",
             "name": "Trait Delta",
-            "nameTextStyle": {"color": _DARK_TEXT},
-            "axisLabel": {"color": _DARK_TEXT},
+            "nameTextStyle": {"color": _CHART_TEXT},
+            "axisLabel": {"color": _CHART_TEXT},
             "splitLine": {"lineStyle": {"color": "#333"}},
         },
         "series": [{
             "type": "bar",
             "data": values,
-            "label": {"show": True, "position": "top", "fontSize": 9, "color": _DARK_TEXT},
+            "label": {"show": True, "position": "top", "fontSize": 9, "color": _CHART_TEXT},
         }],
     }).classes("w-full").style(f"height:{height}")
 
@@ -965,8 +1787,8 @@ def render_sunburst(
         return ui.label("No world data for sunburst.").classes("text-grey q-pa-md")
 
     chart = ui.echart({
-        "backgroundColor": _DARK_BG,
-        "tooltip": {**_DARK_TOOLTIP, "trigger": "item"},
+        "backgroundColor": _CHART_BG,
+        "tooltip": {**_CHART_TOOLTIP, "trigger": "item"},
         "series": [{
             "type": "sunburst",
             "data": root["children"],
@@ -975,11 +1797,11 @@ def render_sunburst(
             "emphasis": {"focus": "ancestor"},
             "levels": [
                 {},
-                {"r0": "10%", "r": "35%", "label": {"rotate": "tangential", "color": _DARK_TEXT, "fontSize": 11}},
-                {"r0": "35%", "r": "65%", "label": {"rotate": "tangential", "color": _DARK_TEXT, "fontSize": 9}},
-                {"r0": "65%", "r": "90%", "label": {"rotate": "tangential", "color": _DARK_TEXT, "fontSize": 8}},
+                {"r0": "10%", "r": "35%", "label": {"rotate": "tangential", "color": _CHART_TEXT, "fontSize": 11}},
+                {"r0": "35%", "r": "65%", "label": {"rotate": "tangential", "color": _CHART_TEXT, "fontSize": 9}},
+                {"r0": "65%", "r": "90%", "label": {"rotate": "tangential", "color": _CHART_TEXT, "fontSize": 8}},
             ],
-            "label": {"color": _DARK_TEXT},
+            "label": {"color": _CHART_TEXT},
             "itemStyle": {"borderWidth": 1, "borderColor": "#ffffff"},
         }],
     }).classes("w-full").style(f"height:{height}")
@@ -987,3 +1809,697 @@ def render_sunburst(
     if on_click:
         chart.on("click", on_click)
     return chart
+
+
+def render_event_calendar(
+    ws: WorldStateV1,
+    *,
+    on_click: OnClick = None,
+    height: str = "220px",
+) -> ui.echart:
+    """Linear-bucketed heatmap of event density across fabula time.
+
+    A true Gregorian calendar layout doesn't apply to fabula time, so
+    we render a single-row heatmap with one cell per fabula bucket.
+    Useful for spotting bursts of narrative activity at a glance.
+    """
+    rows, _, max_count = ws_to_event_calendar_data(ws)
+    if not rows:
+        return ui.label("No events to summarise.").classes("text-grey q-pa-md")
+
+    chart = ui.echart({
+        "backgroundColor": _CHART_BG,
+        "tooltip": {
+            **_CHART_TOOLTIP,
+            "position": "top",
+            "formatter": "Bucket {b}: {c[1]} event(s)",
+        },
+        "grid": {"left": 40, "right": 20, "top": 20, "bottom": 30},
+        "xAxis": {
+            "type": "category",
+            "data": [str(r[0]) for r in rows],
+            "axisLabel": {"color": _CHART_TEXT, "fontSize": 9},
+            "axisLine": {"lineStyle": {"color": "#e2e8f0"}},
+            "name": "Fabula bucket",
+            "nameLocation": "middle",
+            "nameGap": 22,
+            "nameTextStyle": {"color": _CHART_TEXT, "fontSize": 10},
+        },
+        "yAxis": {
+            "type": "category",
+            "data": ["events"],
+            "axisLabel": {"color": _CHART_TEXT, "fontSize": 10},
+            "axisLine": {"lineStyle": {"color": "#e2e8f0"}},
+        },
+        "visualMap": {
+            "min": 0,
+            "max": max(1, max_count),
+            "calculable": True,
+            "orient": "horizontal",
+            "left": "center",
+            "bottom": 0,
+            "inRange": {"color": ["#fef3c7", "#F5B43C", "#D8334A"]},
+            "textStyle": {"color": _CHART_TEXT, "fontSize": 10},
+        },
+        "series": [{
+            "type": "heatmap",
+            "data": [[i, 0, r[1]] for i, r in enumerate(rows)],
+            "label": {"show": False},
+            "emphasis": {
+                "itemStyle": {
+                    "shadowBlur": 8,
+                    "shadowColor": "rgba(0,0,0,0.2)",
+                }
+            },
+        }],
+    }).classes("w-full").style(f"height:{height}")
+
+    if on_click:
+        chart.on("click", on_click)
+    return chart
+
+
+def render_world_treemap(
+    ws: WorldStateV1,
+    *,
+    on_click: OnClick = None,
+    height: str = "500px",
+) -> ui.echart:
+    """Treemap of locations → entities/objects.
+
+    Sized by child count rather than angle, so it stays legible when a
+    handful of locations dominate the world (where the sunburst would
+    cram everything into a thin slice).
+    """
+    roots = ws_to_treemap_data(ws)
+    if not roots:
+        return ui.label("No world data for treemap.").classes("text-grey q-pa-md")
+
+    chart = ui.echart({
+        "backgroundColor": _CHART_BG,
+        "tooltip": {**_CHART_TOOLTIP, "trigger": "item"},
+        "series": [{
+            "type": "treemap",
+            "data": roots,
+            "roam": False,
+            "nodeClick": "zoomToNode",
+            "breadcrumb": {
+                "show": True,
+                "bottom": 0,
+                "itemStyle": {
+                    "color": "#f8fafc",
+                    "borderColor": "#e2e8f0",
+                    "textStyle": {"color": _CHART_TEXT, "fontSize": 10},
+                },
+            },
+            "label": {
+                "show": True,
+                "color": "#ffffff",
+                "fontSize": 11,
+                "formatter": "{b}",
+            },
+            "upperLabel": {"show": True, "color": "#ffffff", "fontSize": 11},
+            "itemStyle": {"borderColor": "#ffffff", "borderWidth": 1, "gapWidth": 1},
+            "levels": [
+                {
+                    "itemStyle": {
+                        "borderWidth": 0,
+                        "gapWidth": 4,
+                    }
+                },
+                {
+                    "itemStyle": {
+                        "borderWidth": 2,
+                        "gapWidth": 2,
+                        "borderColorSaturation": 0.3,
+                    },
+                    "upperLabel": {"show": True, "height": 22},
+                },
+            ],
+        }],
+    }).classes("w-full").style(f"height:{height}")
+
+    if on_click:
+        chart.on("click", on_click)
+    return chart
+
+
+def render_event_polar(
+    ws: WorldStateV1,
+    *,
+    on_click: OnClick = None,
+    height: str = "360px",
+    top_n: int = 8,
+) -> ui.echart:
+    """Polar heatmap of event_type counts per top-N actor.
+
+    Radial bands are actors (sorted by total event count, descending);
+    angular slices are event types. Colour intensity encodes count.
+    Better than a flat bar grid for visualising many actor/type pairs
+    at once because it folds long actor lists into a radial layout.
+    """
+    actors, event_types, rows = ws_to_polar_event_data(ws, top_n=top_n)
+    if not actors or not event_types:
+        return ui.label("No actor/event data for polar chart.").classes(
+            "text-grey q-pa-md"
+        )
+
+    max_c = max((r[2] for r in rows), default=1)
+    chart = ui.echart({
+        "backgroundColor": _CHART_BG,
+        "tooltip": {
+            **_CHART_TOOLTIP,
+            "formatter": "{b}: count={c[2]}",
+        },
+        "polar": {"radius": ["18%", "85%"]},
+        "angleAxis": {
+            "type": "category",
+            "data": event_types,
+            "axisLabel": {"color": _CHART_TEXT, "fontSize": 10},
+            "axisLine": {"lineStyle": {"color": "#e2e8f0"}},
+        },
+        "radiusAxis": {
+            "type": "category",
+            "data": actors,
+            "axisLabel": {"color": _CHART_TEXT, "fontSize": 10},
+            "axisLine": {"lineStyle": {"color": "#e2e8f0"}},
+            "z": 10,
+        },
+        "visualMap": {
+            "min": 0,
+            "max": max_c,
+            "calculable": True,
+            "orient": "vertical",
+            "right": 5,
+            "top": "middle",
+            "inRange": {"color": ["#fef3c7", "#F5B43C", "#D8334A"]},
+            "textStyle": {"color": _CHART_TEXT, "fontSize": 10},
+        },
+        "series": [{
+            "type": "heatmap",
+            "coordinateSystem": "polar",
+            "data": [[r[1], r[0], r[2]] for r in rows],
+            "label": {"show": False},
+        }],
+    }).classes("w-full").style(f"height:{height}")
+
+    if on_click:
+        chart.on("click", on_click)
+    return chart
+
+
+def render_trait_boxplot(
+    ws: WorldStateV1,
+    *,
+    on_click: OnClick = None,
+    height: str = "320px",
+) -> ui.echart:
+    """Boxplot of trait-value distributions across all entities.
+
+    Each box summarises one trait shared by ≥3 entities. Outliers
+    are overlaid as scatter points so extreme characters stand out.
+    """
+    names, boxes, outliers = ws_to_trait_boxplot_data(ws)
+    if not names:
+        return ui.label(
+            "Not enough shared traits for a distribution plot."
+        ).classes("text-grey q-pa-md")
+
+    chart = ui.echart({
+        "backgroundColor": _CHART_BG,
+        "tooltip": {**_CHART_TOOLTIP, "trigger": "item"},
+        "grid": {"left": 50, "right": 20, "top": 20, "bottom": 60},
+        "xAxis": {
+            "type": "category",
+            "data": names,
+            "axisLabel": {
+                "color": _CHART_TEXT,
+                "fontSize": 10,
+                "rotate": 30,
+                "interval": 0,
+            },
+            "axisLine": {"lineStyle": {"color": "#e2e8f0"}},
+        },
+        "yAxis": {
+            "type": "value",
+            "min": 0,
+            "max": 1,
+            "axisLabel": {"color": _CHART_TEXT, "fontSize": 10},
+            "axisLine": {"lineStyle": {"color": "#e2e8f0"}},
+            "splitLine": {"lineStyle": {"color": "#f1f5f9"}},
+            "name": "trait value",
+            "nameTextStyle": {"color": _CHART_TEXT, "fontSize": 10},
+        },
+        "series": [
+            {
+                "name": "distribution",
+                "type": "boxplot",
+                "data": boxes,
+                "itemStyle": {
+                    "color": "#5C7C8A",
+                    "borderColor": "#1E2A3A",
+                    "borderWidth": 1,
+                },
+            },
+            {
+                "name": "outliers",
+                "type": "scatter",
+                "data": outliers,
+                "symbolSize": 6,
+                "itemStyle": {"color": "#D8334A"},
+            },
+        ],
+    }).classes("w-full").style(f"height:{height}")
+
+    if on_click:
+        chart.on("click", on_click)
+    return chart
+
+
+# =====================================================================
+# NEW RENDERERS — added for the ECharts gallery-inspired charts.
+# =====================================================================
+
+# ── #3 Animated propagation graph ─────────────────────────────────
+
+def render_propagation_graph(
+    mutations: list[dict],
+    blocked: list[dict] | None = None,
+    *,
+    height: str = "300px",
+    on_click: OnClick = None,
+) -> ui.echart:
+    """Force-directed graph of a propagation cascade.
+
+    Inspired by the ``graph-force-dynamic`` example. Nodes pop in
+    via the default ECharts entry animation; positive deltas are
+    green, negative red, blocked steps grey-dashed.
+    """
+    nodes, links = mutations_to_propagation_graph(mutations, blocked)
+    if not nodes:
+        return ui.label("No propagation data.").classes("text-grey q-pa-md")
+
+    chart = ui.echart({
+        "backgroundColor": _CHART_BG,
+        "tooltip": {**_CHART_TOOLTIP, "trigger": "item"},
+        "animationDurationUpdate": 800,
+        "animationEasingUpdate": "cubicInOut",
+        "series": [{
+            "type": "graph",
+            "layout": "force",
+            "roam": True,
+            "draggable": True,
+            "data": nodes,
+            "links": links,
+            "force": {"repulsion": 280, "gravity": 0.12, "edgeLength": [60, 140]},
+            "edgeSymbol": ["none", "arrow"],
+            "edgeSymbolSize": [0, 8],
+            "label": {"show": True, "position": "right",
+                       "fontSize": 10, "color": _CHART_TEXT},
+            "emphasis": {"focus": "adjacency"},
+        }],
+    }).classes("w-full").style(f"height:{height}")
+
+    if on_click:
+        chart.on("click", on_click)
+    return chart
+
+
+# ── #9 Calendar overlay (event nodes on a density heat-row) ───────
+
+def render_calendar_graph_overlay(
+    ws: WorldStateV1,
+    *,
+    height: str = "320px",
+    on_click: OnClick = None,
+    bucket_count: int = 24,
+) -> ui.echart:
+    """Density heatmap of events per fabula bucket with the events
+    themselves overlaid as a scatter graph and chain-reaction edges
+    drawn between them.
+
+    Inspired by the ``calendar-graph`` example: tells you *which*
+    events drove a density spike, not just that one happened.
+    """
+    buckets, nodes, links, max_count = ws_to_calendar_graph_data(
+        ws, bucket_count=bucket_count
+    )
+    if not buckets:
+        return ui.label("No events to summarise.").classes("text-grey q-pa-md")
+
+    max_stack = max((n["value"][1] for n in nodes), default=0) + 1
+
+    chart = ui.echart({
+        "backgroundColor": _CHART_BG,
+        "tooltip": {**_CHART_TOOLTIP, "trigger": "item"},
+        "grid": {"top": 30, "bottom": 50, "left": 50, "right": 30},
+        "xAxis": {
+            "type": "category",
+            "data": [str(i) for i in range(bucket_count)],
+            "name": "Fabula bucket",
+            "nameLocation": "middle",
+            "nameGap": 28,
+            "nameTextStyle": {"color": _CHART_TEXT, "fontSize": 10},
+            "axisLabel": {"color": _CHART_TEXT, "fontSize": 9},
+        },
+        "yAxis": {
+            "type": "value",
+            "min": -0.5,
+            "max": max(1, max_stack),
+            "name": "events in bucket",
+            "nameTextStyle": {"color": _CHART_TEXT, "fontSize": 10},
+            "axisLabel": {"color": _CHART_TEXT, "fontSize": 9},
+            "splitLine": {"lineStyle": {"color": "#f1f5f9"}},
+        },
+        "visualMap": {
+            "show": True,
+            "min": 0,
+            "max": max(1, max_count),
+            "seriesIndex": 0,
+            "calculable": True,
+            "orient": "horizontal",
+            "right": 10,
+            "top": 0,
+            "inRange": {"color": ["#fef3c7", "#F5B43C", "#D8334A"]},
+            "textStyle": {"color": _CHART_TEXT, "fontSize": 9},
+        },
+        "series": [
+            {
+                "type": "bar",
+                "name": "density",
+                "data": [b[2] for b in buckets],
+                "itemStyle": {"opacity": 0.5},
+                "z": 1,
+                "barCategoryGap": "5%",
+            },
+            {
+                "type": "graph",
+                "name": "events",
+                "coordinateSystem": "cartesian2d",
+                "data": nodes,
+                "links": links,
+                "symbolSize": 10,
+                "label": {"show": False},
+                "lineStyle": {
+                    "color": EDGE_COLORS["causal"] if False else "#D8334A",
+                    "opacity": 0.55,
+                    "curveness": 0.25,
+                    "width": 1.4,
+                },
+                "emphasis": {"focus": "adjacency", "label": {"show": True}},
+                "z": 5,
+            },
+        ],
+    }).classes("w-full").style(f"height:{height}")
+
+    if on_click:
+        chart.on("click", on_click)
+    return chart
+
+
+# Note: EDGE_COLORS imported lazily inside the function above — the
+# top-level import only ships NODE_COLORS / CATEGORIES. We re-import
+# here for the calendar overlay.
+from shadow_loom_ui.viz_helpers import EDGE_COLORS  # noqa: E402
+
+
+# ── #12 Multi-snapshot trait radar overlay ────────────────────────
+
+def render_trait_radar_compare(
+    entity_id: str,
+    ws: WorldStateV1,
+    times: list[int],
+    *,
+    height: str = "320px",
+) -> ui.echart:
+    """Overlay an entity's trait radar at multiple snapshots.
+
+    Useful for "Compare mode": e.g., Macbeth at t=0 / t=600 / t=1900
+    on a single radar so the trajectory of guilt / ambition / fear is
+    visible at a glance.
+    """
+    data = entity_to_radar_compare_data(entity_id, ws, times)
+    if not data["indicator"]:
+        return ui.label("No traits.").classes("text-grey text-caption")
+
+    return ui.echart({
+        "backgroundColor": _CHART_BG,
+        "tooltip": _CHART_TOOLTIP,
+        "legend": {
+            "data": [s["name"] for s in data["series"]],
+            "textStyle": {"color": _CHART_TEXT},
+            "top": 4,
+        },
+        "radar": {
+            "indicator": data["indicator"],
+            "shape": "polygon",
+            "axisName": {"color": _CHART_TEXT, "fontSize": 10},
+            "splitArea": {"areaStyle": {"color": ["rgba(0,0,0,0.02)", "rgba(0,0,0,0.05)"]}},
+            "splitLine": {"lineStyle": {"color": "#cbd5e1"}},
+            "axisLine": {"lineStyle": {"color": "#94a3b8"}},
+        },
+        "series": [{
+            "type": "radar",
+            "data": data["series"],
+            "areaStyle": {"opacity": 0.15},
+            "lineStyle": {"width": 2},
+            "symbol": "circle",
+            "symbolSize": 4,
+        }],
+    }).classes("w-full").style(f"height:{height}")
+
+
+# ── #17 Graded affective gauge ────────────────────────────────────
+
+_GAUGE_GRADES = [
+    (0.2, "very low"),
+    (0.4, "low"),
+    (0.6, "moderate"),
+    (0.8, "high"),
+    (1.01, "very high"),
+]
+
+
+def _grade_for(v: float) -> str:
+    for thresh, label in _GAUGE_GRADES:
+        if v < thresh:
+            return label
+    return "very high"
+
+
+def render_emotional_gauges_graded(
+    scores: dict[str, float],
+    *,
+    height: str = "220px",
+) -> ui.echart:
+    """Graded variant of ``render_emotional_gauges``.
+
+    Replaces the bare 0–1 detail with a qualitative label
+    (``very low`` → ``very high``) so non-numeric users get an
+    immediate qualitative sense without losing the precise value.
+    """
+    if not scores:
+        return ui.label("No scores available.").classes("text-grey text-caption")
+
+    gauge_data = [
+        {"value": round(val, 2), "name": name}
+        for name, val in scores.items()
+    ]
+
+    return ui.echart({
+        "backgroundColor": _CHART_BG,
+        "series": [{
+            "type": "gauge",
+            "startAngle": 200,
+            "endAngle": -20,
+            "min": 0,
+            "max": 1,
+            "splitNumber": 5,
+            "data": gauge_data,
+            "axisLine": {
+                "lineStyle": {
+                    "width": 18,
+                    "color": [
+                        [0.2, "#94a3b8"],
+                        [0.4, "#6FBF3A"],
+                        [0.6, "#F5B43C"],
+                        [0.8, "#FF8C42"],
+                        [1, "#D8334A"],
+                    ],
+                },
+            },
+            "pointer": {"width": 4},
+            "axisTick": {"lineStyle": {"color": "#777"}},
+            "splitLine": {"lineStyle": {"color": "#777"}},
+            "axisLabel": {
+                "color": _CHART_TEXT,
+                "fontSize": 9,
+                ":formatter": (
+                    "function (v) {"
+                    "  if (v <= 0.2) return 'very low';"
+                    "  if (v <= 0.4) return 'low';"
+                    "  if (v <= 0.6) return 'mod';"
+                    "  if (v <= 0.8) return 'high';"
+                    "  return 'v.high';"
+                    "}"
+                ),
+            },
+            "detail": {
+                "valueAnimation": True,
+                "color": _CHART_TEXT,
+                "fontSize": 12,
+                ":formatter": (
+                    "function (v) {"
+                    "  var label;"
+                    "  if (v <= 0.2) label = 'very low';"
+                    "  else if (v <= 0.4) label = 'low';"
+                    "  else if (v <= 0.6) label = 'moderate';"
+                    "  else if (v <= 0.8) label = 'high';"
+                    "  else label = 'very high';"
+                    "  return label + '\\n' + v.toFixed(2);"
+                    "}"
+                ),
+            },
+            "title": {"color": _CHART_TEXT, "fontSize": 11},
+        }],
+    }).classes("w-full").style(f"height:{height}")
+
+
+# ── #18 Audit pass-rate pictorial ─────────────────────────────────
+
+def render_audit_passrate_pictorial(
+    audit_history: list[dict],
+    *,
+    height: str = "240px",
+) -> ui.echart:
+    """Pass-rate per refinement loop iteration as a stacked pictorial.
+
+    Each iteration becomes a vertical bar of human silhouettes whose
+    fill height = pass rate, evoking the ``pictorialBar-body-fill``
+    example. Useful at-a-glance diagnostic for the audit→refinement loop.
+    """
+    labels, rates, _rows = audit_passrate_data(audit_history)
+    if not labels:
+        return ui.label("No audit history.").classes("text-grey q-pa-md")
+
+    return ui.echart({
+        "backgroundColor": _CHART_BG,
+        "tooltip": {
+            **_CHART_TOOLTIP,
+            "formatter": "{b}: {c}",
+        },
+        "grid": {"top": 30, "bottom": 40, "left": 50, "right": 20},
+        "xAxis": {
+            "type": "category",
+            "data": labels,
+            "axisLabel": {"color": _CHART_TEXT, "fontSize": 9, "rotate": 30},
+            "axisLine": {"lineStyle": {"color": "#cbd5e1"}},
+        },
+        "yAxis": {
+            "type": "value",
+            "min": 0,
+            "max": 1,
+            "name": "pass-rate",
+            "nameTextStyle": {"color": _CHART_TEXT, "fontSize": 10},
+            "axisLabel": {"color": _CHART_TEXT, "fontSize": 9},
+            "splitLine": {"lineStyle": {"color": "#f1f5f9"}},
+        },
+        "series": [
+            {
+                "type": "pictorialBar",
+                "name": "filled",
+                "data": rates,
+                "symbol": "path://M150 0 C200 0 230 50 230 110 C230 160 210 200 180 230 L180 380 C180 410 150 420 150 420 C150 420 120 410 120 380 L120 230 C90 200 70 160 70 110 C70 50 100 0 150 0 Z",
+                "symbolBoundingData": 1,
+                "symbolClip": True,
+                "symbolSize": ["62%", "100%"],
+                "itemStyle": {"color": "#6FBF3A", "opacity": 0.9},
+                "label": {"show": True, "position": "top",
+                           "color": _CHART_TEXT, "fontSize": 10,
+                           ":formatter": "function (p) { return (p.value * 100).toFixed(0) + '%'; }"},
+                "z": 10,
+            },
+            {
+                "type": "pictorialBar",
+                "name": "outline",
+                "data": [1] * len(rates),
+                "symbol": "path://M150 0 C200 0 230 50 230 110 C230 160 210 200 180 230 L180 380 C180 410 150 420 150 420 C150 420 120 410 120 380 L120 230 C90 200 70 160 70 110 C70 50 100 0 150 0 Z",
+                "symbolBoundingData": 1,
+                "symbolSize": ["62%", "100%"],
+                "itemStyle": {"color": "transparent",
+                              "borderColor": "#94a3b8", "borderWidth": 1.5},
+                "z": 5,
+            },
+        ],
+    }).classes("w-full").style(f"height:{height}")
+
+
+# ── #15 Causal "explain this" inspector ───────────────────────────
+
+def open_explain_dialog(
+    ws: WorldStateV1,
+    node_id: str,
+    *,
+    title_override: str | None = None,
+) -> None:
+    """Open a modal listing incoming + outgoing causal edges for a node.
+
+    Demystifies why the engine produced an outcome by ranking edges
+    by ``causal_force``. Used as a right-click handler on graph nodes.
+    """
+    incoming = explain_node_causes(ws, node_id)
+    outgoing = explain_node_effects(ws, node_id)
+
+    pretty = title_override or node_id
+    with ui.dialog() as dlg, ui.card().classes("p-4 max-w-4xl"):
+        with ui.row().classes("w-full items-center gap-2"):
+            ui.icon("psychology", color="primary")
+            ui.label(f"Why {pretty}?").classes(
+                "text-lg font-semibold text-slate-800"
+            )
+            ui.space()
+            ui.button(icon="close", on_click=dlg.close).props(
+                "flat dense round color=grey-7"
+            )
+
+        if not incoming and not outgoing:
+            ui.label("No causal edges touch this node.").classes(
+                "text-sm text-slate-500 italic mt-2"
+            )
+        if incoming:
+            ui.label(f"Incoming ({len(incoming)})").classes(
+                "text-sm font-semibold text-slate-700 mt-3"
+            )
+            ui.table(
+                columns=[
+                    {"name": "source", "label": "Source", "field": "source", "sortable": True},
+                    {"name": "type", "label": "Type", "field": "type", "sortable": True},
+                    {"name": "mechanism", "label": "Mechanism", "field": "mechanism"},
+                    {"name": "force", "label": "Force", "field": "force", "sortable": True},
+                    {"name": "evidence", "label": "Evidence", "field": "evidence"},
+                    {"name": "fabula_time", "label": "Fabula t", "field": "fabula_time", "sortable": True},
+                    {"name": "trait_target", "label": "Trait", "field": "trait_target"},
+                    {"name": "trait_delta", "label": "\u0394", "field": "trait_delta"},
+                ],
+                rows=incoming,
+                pagination={"rowsPerPage": 10},
+            ).props("dense flat bordered").classes("w-full")
+        if outgoing:
+            ui.label(f"Outgoing ({len(outgoing)})").classes(
+                "text-sm font-semibold text-slate-700 mt-3"
+            )
+            ui.table(
+                columns=[
+                    {"name": "target", "label": "Target", "field": "target", "sortable": True},
+                    {"name": "type", "label": "Type", "field": "type", "sortable": True},
+                    {"name": "mechanism", "label": "Mechanism", "field": "mechanism"},
+                    {"name": "force", "label": "Force", "field": "force", "sortable": True},
+                    {"name": "evidence", "label": "Evidence", "field": "evidence"},
+                    {"name": "fabula_time", "label": "Fabula t", "field": "fabula_time", "sortable": True},
+                    {"name": "trait_target", "label": "Trait", "field": "trait_target"},
+                    {"name": "trait_delta", "label": "\u0394", "field": "trait_delta"},
+                ],
+                rows=outgoing,
+                pagination={"rowsPerPage": 10},
+            ).props("dense flat bordered").classes("w-full")
+    dlg.open()

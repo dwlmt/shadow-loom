@@ -98,7 +98,7 @@ def build_settings(state: AppState) -> None:
         # ---- API Keys ----
         with ui.card().classes("w-full " + CARD_CLS):
             with ui.row().classes("items-center gap-2"):
-                feather("key", size="lg", color="#C68661")
+                feather("key", size="lg", color="#F26B5E")
                 ui.label("API Keys").classes(SECTION_TITLE_CLS)
 
             ui.label(

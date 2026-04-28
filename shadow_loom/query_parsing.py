@@ -381,11 +381,26 @@ Forces variables to specific states (do-operator). Cuts incoming causal edges.
 The user wants to forcibly change something in the present moment.
 
 **Fields to populate:**
-- `interventions`: Required dict of {{node_id: new_value}} pairs.
-  - String values = state changes (e.g. "dead", "healthy")
-  - Dict values = genesis spawns (create new entities/objects)
-  - Number values = trait overrides (e.g. 0.9)
-  - At least one intervention is required.
+- `interventions`: Required dict of {{"node_id.property": new_value}} pairs.
+
+**KEY FORMAT — EVERY KEY MUST CONTAIN A DOT.**
+The key is `<node_id>.<property_path>` (the property after the first dot is
+the attribute being mutated). Bare node IDs without a `.property` suffix
+are INVALID and will be rejected. Examples:
+
+  - `"ENT_MACBETH.status": "dead"`              — set entity status
+  - `"ENT_MACBETH.location_id": "LOC_HEATH"`     — move an entity
+  - `"ENT_MACBETH.traits.guilt": 0.9`            — trait override (0.0–1.0)
+  - `"OBJ_DAGGER.owner_id": "ENT_MACBETH"`       — transfer an object
+  - `"EVT_DUNCAN_MURDER.event_type": "prevented"`— alter an event
+  - `"ENT_GHOST.spawn": {{"name": "Banquo's ghost", "type": "entity"}}` — genesis
+
+Value semantics:
+  - String values = state / categorical changes (e.g. "dead", "healthy").
+  - Number values = trait overrides on a `.traits.<name>` path (0.0–1.0).
+  - Dict values on a `.spawn` path = genesis spawns.
+
+At least one intervention is required.
 """,
     "counterfactual": """\
 ## COUNTERFACTUAL QUERY
@@ -394,8 +409,20 @@ Goes back in time, changes past events, conditions on present evidence, re-simul
 The user asks "what if" about PAST events.
 
 **Fields to populate:**
-- `historical_interventions`: Required dict of {{event_id: altered_outcome}} — the past events to change.
+- `historical_interventions`: Required dict of {{"event_id.property": altered_outcome}}
+  — the past events to change.
 - `evidence_node_ids`: List of present-tense node IDs to condition on (recommended but optional).
+
+**KEY FORMAT — EVERY KEY MUST CONTAIN A DOT.**
+The key is `<event_id>.<property_path>`. Bare event IDs without a `.property`
+suffix are INVALID and will be rejected. Common forms:
+
+  - `"EVT_DUNCAN_MURDER.event_type": "prevented"`
+  - `"EVT_DUNCAN_MURDER.outcome": "Duncan survives the night"`
+  - `"EVT_GUARD_DUTY.event_type": "slept"`
+
+If you only know that an event should be "changed" or "prevented" without a
+specific attribute in mind, default to `.event_type`.
 """,
     "directive": """\
 ## DIRECTIVE QUERY
@@ -567,8 +594,11 @@ def _validate_parsed_query(
                 message="Intervention query requires at least one intervention.",
             ))
         else:
-            for nid in parsed.interventions:
-                _check_id(nid, "interventions")
+            for key in parsed.interventions:
+                # Keys are dotted paths like 'ENT_MACBETH.status'; validate
+                # the base node ID, not the full key.
+                base_id = key.split(".", 1)[0] if "." in key else key
+                _check_id(base_id, "interventions")
 
     elif qt == "counterfactual":
         if not parsed.historical_interventions:
@@ -577,8 +607,9 @@ def _validate_parsed_query(
                 message="Counterfactual query requires at least one historical intervention.",
             ))
         else:
-            for nid in parsed.historical_interventions:
-                _check_id(nid, "historical_interventions")
+            for key in parsed.historical_interventions:
+                base_id = key.split(".", 1)[0] if "." in key else key
+                _check_id(base_id, "historical_interventions")
         if not parsed.evidence_node_ids:
             errors.append(ValidationError(
                 field="evidence_node_ids",
@@ -860,6 +891,79 @@ def _apply_fallback(
 # Query construction
 # =====================================================================
 
+def _normalise_intervention_keys(
+    interventions: Dict[str, Any],
+    *,
+    field_name: str,
+) -> Dict[str, Any]:
+    """Repair bare-ID keys in an intervention dict to the dotted form.
+
+    The narrative-physics engine requires keys of the form
+    ``<node_id>.<property_path>``. LLM outputs sometimes drop the
+    property suffix and emit a bare ``EVT_X`` / ``ENT_X`` / etc. This
+    helper infers a sensible default property based on the ID prefix
+    and the value type, so the engine has *something* to operate on
+    rather than rejecting the whole request as malformed.
+
+    Heuristics (only applied when the key contains no ``.``):
+
+      - ``EVT_*`` \u2192 ``.event_type`` (the standard "alter this event" axis)
+      - ``ENT_*`` with str value \u2192 ``.status``
+      - ``ENT_*`` with dict value \u2192 ``.spawn``
+      - ``OBJ_*`` with dict value \u2192 ``.spawn``
+      - ``LOC_*`` with dict value \u2192 ``.spawn``
+      - ``WORLD_*`` with number value \u2192 ``.magnitude``
+
+    Keys that don't match any heuristic are left unchanged so that
+    downstream plausibility checks can report them clearly.
+    """
+    if not interventions:
+        return interventions
+
+    repaired: Dict[str, Any] = {}
+    for key, value in interventions.items():
+        if "." in key:
+            repaired[key] = value
+            continue
+
+        prefix = key.split("_", 1)[0] if "_" in key else ""
+        suffix: Optional[str] = None
+
+        # Field-aware: in counterfactuals, a bare EVT_* key with a dict
+        # value is ambiguous — it could mean "alter this event" or
+        # "spawn a new past event". Forcibly normalising to .event_type
+        # would silently corrupt event_type with a dict payload, so we
+        # leave it bare and let the downstream layer reject it cleanly.
+        if prefix == "EVT" and isinstance(value, dict):
+            if field_name == "historical_interventions":
+                # Leave malformed; downstream surfaces a clear error.
+                repaired[key] = value
+                continue
+            suffix = "spawn"
+        elif isinstance(value, dict):
+            suffix = "spawn"
+        elif prefix == "EVT":
+            suffix = "event_type"
+        elif prefix == "ENT" and isinstance(value, str):
+            suffix = "status"
+        elif prefix == "WORLD" and isinstance(value, (int, float)):
+            suffix = "magnitude"
+
+        if suffix is None:
+            # Leave malformed; downstream layer will surface a clear error.
+            repaired[key] = value
+            continue
+
+        new_key = f"{key}.{suffix}"
+        logger.info(
+            "[QueryParser] Normalised %s key %r \u2192 %r (inferred property).",
+            field_name, key, new_key,
+        )
+        repaired[new_key] = value
+
+    return repaired
+
+
 def _build_query(parsed: ParsedQuery) -> UserRequest:
     """Construct a concrete query model from the parsed classification."""
     qt = parsed.query_type
@@ -872,12 +976,17 @@ def _build_query(parsed: ParsedQuery) -> UserRequest:
 
     if qt == "intervention":
         return InterventionQuery(
-            interventions=parsed.interventions or {},
+            interventions=_normalise_intervention_keys(
+                parsed.interventions or {}, field_name="interventions",
+            ),
         )
 
     if qt == "counterfactual":
         return CounterfactualQuery(
-            historical_interventions=parsed.historical_interventions or {},
+            historical_interventions=_normalise_intervention_keys(
+                parsed.historical_interventions or {},
+                field_name="historical_interventions",
+            ),
             evidence_node_ids=parsed.evidence_node_ids or [],
         )
 

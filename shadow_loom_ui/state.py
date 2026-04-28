@@ -33,6 +33,7 @@ from shadow_loom.db import (
     save_version,
     get_latest_version,
     log_activity,
+    set_active_version,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,8 @@ class StateEvent(Enum):
     QUERY_STARTED = "query_started"
     QUERY_COMPLETE = "query_complete"
     TASKS_CHANGED = "tasks_changed"
+    FABULA_CURSOR_CHANGED = "fabula_cursor_changed"
+    SYUZHET_CURSOR_CHANGED = "syuzhet_cursor_changed"
 
 
 @dataclass
@@ -133,9 +136,21 @@ class AppState:
     selected_node_id: Optional[str] = None
     selected_node_type: Optional[str] = None
 
+    # Fabula timeline cursor (None = "live"/latest); affects time-aware charts
+    fabula_cursor: Optional[int] = None
+
+    # Syuzhet (reading-order) cursor (None = "live"); affects suspense/reveal views
+    syuzhet_cursor: Optional[int] = None
+
     # Background task registry (in-flight + recently completed)
     background_tasks: List[BackgroundTask] = field(default_factory=list)
     _max_completed_tasks: int = 20
+
+    # Live asyncio task handles for in-flight background coroutines.
+    # Tracking these prevents "Task was destroyed but it is pending"
+    # warnings (asyncio holds only weak refs to created tasks) and lets
+    # us cancel everything cleanly on session shutdown.
+    _async_tasks: "set[asyncio.Task]" = field(default_factory=set)
 
     # Event bus: multiple listeners per event
     _listeners: Dict[StateEvent, List[Callable]] = field(default_factory=dict)
@@ -153,12 +168,35 @@ class AppState:
             listeners.remove(callback)
 
     def emit(self, event: StateEvent, **kwargs) -> None:
-        """Notify all listeners of an event."""
-        for cb in self._listeners.get(event, []):
+        """Notify all listeners of an event.
+
+        Listeners that raise ``RuntimeError`` (the typical signal that
+        their owning NiceGUI client has been deleted) are auto-removed
+        so we don't keep trying to mutate dead UI elements on every
+        subsequent emission. Other exceptions are logged but the
+        listener is kept registered — only dead-client failures are
+        treated as terminal.
+        """
+        listeners = self._listeners.get(event, [])
+        dead: list[Callable] = []
+        for cb in list(listeners):
             try:
                 cb(**kwargs)
+            except RuntimeError as exc:
+                # NiceGUI raises RuntimeError("client has been deleted")
+                # when the originating tab was closed before the
+                # listener was unregistered.
+                logger.debug(
+                    "[AppState] Auto-detaching dead listener for %s: %s",
+                    event.value, exc,
+                )
+                dead.append(cb)
             except Exception:
-                logger.exception("[AppState] Listener error for %s", event.value)
+                logger.exception(
+                    "[AppState] Listener error for %s", event.value,
+                )
+        for cb in dead:
+            self.off(event, cb)
 
     # ---- Background task registry ----
 
@@ -212,6 +250,43 @@ class AppState:
     @property
     def running_task_count(self) -> int:
         return sum(1 for t in self.background_tasks if t.status == "running")
+
+    # ---- asyncio task lifecycle ----
+
+    def spawn_task(self, coro, *, name: str | None = None) -> "asyncio.Task":
+        """Schedule ``coro`` and retain a strong reference for cancellation.
+
+        Use this in place of :func:`asyncio.create_task` for any work
+        whose lifetime is tied to the UI session, so the task survives
+        garbage collection and can be cancelled on session shutdown.
+        """
+        task = asyncio.create_task(coro, name=name)
+        self._async_tasks.add(task)
+        task.add_done_callback(self._async_tasks.discard)
+        return task
+
+    async def cancel_all_async_tasks(self, timeout: float = 2.0) -> None:
+        """Cancel every tracked asyncio task and await their teardown.
+
+        Best-effort: any task that does not honour cancellation within
+        ``timeout`` seconds is logged and left to the event loop.
+        Intended for session/app shutdown hooks.
+        """
+        tasks = [t for t in self._async_tasks if not t.done()]
+        for t in tasks:
+            t.cancel()
+        if not tasks:
+            return
+        try:
+            await asyncio.wait(tasks, timeout=timeout)
+        except Exception:
+            logger.exception("[AppState] Error awaiting cancelled tasks")
+        still_alive = [t for t in tasks if not t.done()]
+        if still_alive:
+            logger.warning(
+                "[AppState] %d background task(s) did not finish within %.1fs",
+                len(still_alive), timeout,
+            )
 
     # ---- Session setup ----
 
@@ -296,6 +371,13 @@ class AppState:
                 summary="Error: No world model loaded.",
             )
 
+        # Snapshot execution context up-front so a project switch (or a
+        # version load) that happens while the pipeline is running in a
+        # worker thread cannot corrupt the persisted ancestor lineage.
+        ctx_project_id = self.project_id
+        ctx_user_id = self.user_id
+        ctx_ancestor_row_id = self.current_version_row_id
+
         logger.info("[AppState] Running pipeline: query_type=%s", query.query_type)
         try:
             pipeline_result = run_pipeline(
@@ -322,8 +404,18 @@ class AppState:
             self.versioned_model.version if self.versioned_model is not None else None
         )
 
+        # Detect a project switch *or* a version switch that happened
+        # during pipeline execution so we don't paint stale results onto
+        # the new context.
+        project_switched = self.project_id != ctx_project_id
+        version_switched = (
+            self.current_version_row_id != ctx_ancestor_row_id
+            and ctx_ancestor_row_id is not None
+        )
+        context_switched = project_switched or version_switched
+
         # Update world model if pipeline produced a new versioned model
-        if pipeline_result.world_model is not None:
+        if pipeline_result.world_model is not None and not context_switched:
             self.versioned_model = pipeline_result.world_model
             self.world_state = pipeline_result.world_model.current
             self.emit(StateEvent.WORLD_STATE_CHANGED)
@@ -342,7 +434,9 @@ class AppState:
         # Also skip when re-extraction failed: prose is present but the world
         # model was *not* advanced to reflect that prose. Persisting would
         # store divergent prose/world state under the same version row.
-        if not short_circuited and not pipeline_result.reextraction_failed:
+        # Skip persistence entirely when context switched mid-flight — the
+        # ancestor lineage we captured is no longer the user's current view.
+        if not short_circuited and not pipeline_result.reextraction_failed and not context_switched:
             self._save_version_to_db(
                 pipeline_result=pipeline_result,
                 raw_query=getattr(query, 'edited_prose', None) or (
@@ -350,6 +444,9 @@ class AppState:
                 ),
                 parsed_query_json=query.model_dump_json() if query else None,
                 source=query.query_type,
+                project_id=ctx_project_id,
+                user_id=ctx_user_id,
+                ancestor_row_id=ctx_ancestor_row_id,
             )
 
         # Build summary
@@ -455,47 +552,92 @@ class AppState:
         raw_query: str | None = None,
         parsed_query_json: str | None = None,
         source: str = "pipeline",
+        *,
+        project_id: int | None = None,
+        user_id: int | None = None,
+        ancestor_row_id: int | None = None,
     ) -> None:
-        """Persist the pipeline result as a new DB version (if a project is active)."""
-        if self.project_id is None or self.world_state is None:
-            return
-        try:
-            ancestor_id = self.current_version_row_id
+        """Persist the pipeline result as a new DB version (if a project is active).
 
+        ``project_id`` / ``user_id`` / ``ancestor_row_id`` may be passed
+        explicitly to pin the save against a snapshot of the session
+        captured at query-start. This guards against project-switch
+        races where ``self.project_id`` has moved on by the time an
+        async pipeline run completes.
+        """
+        proj_id = project_id if project_id is not None else self.project_id
+        if proj_id is None or pipeline_result.world_model is None:
+            return
+        # Avoid persisting against the wrong project if the user
+        # navigated away mid-run.
+        if (
+            project_id is not None
+            and self.project_id is not None
+            and project_id != self.project_id
+        ):
+            logger.info(
+                "[AppState] Skipping autosave \u2014 project switched (%s \u2192 %s)",
+                project_id, self.project_id,
+            )
+            return
+        save_user_id = user_id if user_id is not None else self.user_id
+        ancestor = (
+            ancestor_row_id if ancestor_row_id is not None
+            else self.current_version_row_id
+        )
+        try:
+            # Use the pipeline's own world_state JSON so we don't rely
+            # on ``self.world_state`` (which may have been mutated by a
+            # concurrent project load).
+            ws_json = pipeline_result.world_model.current.model_dump_json()
             changeset_json = None
-            if pipeline_result.world_model and pipeline_result.world_model.history:
+            if pipeline_result.world_model.history:
                 last_entry = pipeline_result.world_model.history[-1]
                 if last_entry.changeset:
                     changeset_json = last_entry.changeset.model_dump_json()
 
             ver = save_version(
-                project_id=self.project_id,
-                world_state_json=self.world_state.model_dump_json(),
-                ancestor_id=ancestor_id,
+                project_id=proj_id,
+                world_state_json=ws_json,
+                ancestor_id=ancestor,
                 source=source,
                 description=f"{source} query",
                 changeset_json=changeset_json,
                 raw_query=raw_query,
                 parsed_query_json=parsed_query_json,
                 prose=pipeline_result.prose,
-                user_id=self.user_id,
+                user_id=save_user_id,
             )
-            self.current_version_row_id = ver.id
+            # Only mutate session state if the user is still on the same
+            # project as when the query started.
+            if proj_id == self.project_id:
+                self.current_version_row_id = ver.id
+
+            # Mirror into the active-version pointer so MCP read tools
+            # called by the agent default to the same version.
+            if save_user_id is not None:
+                try:
+                    set_active_version(proj_id, save_user_id, ver.id)
+                except Exception:
+                    logger.exception(
+                        "[AppState] Failed to update active-version pointer"
+                    )
 
             # Log activity
             try:
                 log_activity(
-                    project_id=self.project_id,
+                    project_id=proj_id,
                     action=source,
-                    user_id=self.user_id,
-                    summary=f"{source} query → v{ver.version}",
+                    user_id=save_user_id,
+                    summary=f"{source} query \u2192 v{ver.version}",
                     version_id=ver.id,
                 )
             except Exception:
                 pass  # Activity logging is best-effort
 
-            # Notify version change
-            self.emit(StateEvent.VERSION_CHANGED, version=ver.version)
+            # Notify version change (only when still on the same project)
+            if proj_id == self.project_id:
+                self.emit(StateEvent.VERSION_CHANGED, version=ver.version)
         except Exception:
             logger.exception("[AppState] Failed to save version to DB")
 
@@ -525,6 +667,8 @@ class AppState:
         self.query_history.clear()
         self.last_result = None
         self.last_parse = None
+        self.fabula_cursor = None
+        self.syuzhet_cursor = None
         self.load_world_state(world_state)
         self.emit(StateEvent.PROJECT_LOADED, project_id=project_id)
 

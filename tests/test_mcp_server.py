@@ -44,6 +44,7 @@ from shadow_loom_mcp.server import (
     audit_log,
     branch,
     compute_tension,
+    delete_project,
     diff_versions,
     direct,
     evaluate,
@@ -567,6 +568,158 @@ class TestUpdateProject:
     def test_project_not_found(self):
         _seed_project()
         result = update_project_tool(_ctx(), project_id=99999)
+        assert "error" in result
+
+
+class TestDeleteProject:
+    def test_deletes_owned_project(self):
+        from shadow_loom.db import get_project as _get_project
+
+        uid, pid, _ = _seed_project()
+        result = delete_project(_ctx(), project_id=pid)
+        assert result.get("status") == "deleted"
+        assert result["project_id"] == pid
+        assert _get_project(pid) is None
+
+    def test_missing_project(self):
+        _seed_project()
+        result = delete_project(_ctx(), project_id=99999)
+        assert "error" in result
+
+    def test_non_owner_refused(self):
+        from shadow_loom.db import get_project as _get_project
+
+        # Owner seeds the project
+        uid_owner, pid, _ = _seed_project()
+        # Switch active token to a different user
+        other = upsert_user(
+            "local", "other-1", "other", email="other@example.com",
+            display_name="Other",
+        )
+        mcp_auth._token_user_cache["test-token"] = {
+            "user_id": other.id,
+            "scopes": {"read", "write", "admin"},
+            "key_id": 2,
+        }
+        result = delete_project(_ctx(), project_id=pid)
+        assert "error" in result
+        # Project still exists
+        assert _get_project(pid) is not None
+
+
+class TestDeleteVersionMcp:
+    def test_delete_middle_rejoins(self):
+        from shadow_loom.db import save_version, get_version_by_id
+        from shadow_loom_mcp.server import delete_version as mcp_delete_version
+
+        uid, pid, v0_id = _seed_project()
+        v1 = save_version(
+            project_id=pid, world_state_json="{}", ancestor_id=v0_id,
+            source="pipeline", description="v1", user_id=uid, version=1,
+        )
+        v2 = save_version(
+            project_id=pid, world_state_json="{}", ancestor_id=v1.id,
+            source="pipeline", description="v2", user_id=uid, version=2,
+        )
+
+        result = mcp_delete_version(_ctx(), version_row_id=v1.id)
+        assert v1.id in result["deleted"]
+        # v2 reparented onto v0
+        assert result["reparented"] == {v2.id: v0_id}
+        assert get_version_by_id(v1.id) is None
+
+    def test_delete_root_rejected(self):
+        from shadow_loom_mcp.server import delete_version as mcp_delete_version
+
+        _uid, _pid, v0_id = _seed_project()
+        result = mcp_delete_version(_ctx(), version_row_id=v0_id)
+        assert "error" in result
+        assert "root" in result["error"].lower()
+
+    def test_delete_missing_version(self):
+        from shadow_loom_mcp.server import delete_version as mcp_delete_version
+
+        _seed_project()
+        result = mcp_delete_version(_ctx(), version_row_id=999_999)
+        assert "error" in result
+
+    def test_cascade_subtree(self):
+        from shadow_loom.db import save_version, get_version_by_id
+        from shadow_loom_mcp.server import delete_version as mcp_delete_version
+
+        uid, pid, v0_id = _seed_project()
+        v1 = save_version(
+            project_id=pid, world_state_json="{}", ancestor_id=v0_id,
+            source="pipeline", description="v1", user_id=uid, version=1,
+        )
+        v2 = save_version(
+            project_id=pid, world_state_json="{}", ancestor_id=v1.id,
+            source="pipeline", description="v2", user_id=uid, version=2,
+        )
+        result = mcp_delete_version(_ctx(), version_row_id=v1.id, cascade=True)
+        assert set(result["deleted"]) == {v1.id, v2.id}
+        assert get_version_by_id(v2.id) is None
+
+
+class TestReparentVersionMcp:
+    def test_reparent_under_sibling(self):
+        from shadow_loom.db import save_version, get_version_by_id
+        from shadow_loom_mcp.server import reparent_version as mcp_reparent
+
+        uid, pid, v0_id = _seed_project()
+        v1 = save_version(
+            project_id=pid, world_state_json="{}", ancestor_id=v0_id,
+            source="pipeline", user_id=uid, version=1,
+        )
+        v2 = save_version(
+            project_id=pid, world_state_json="{}", ancestor_id=v1.id,
+            source="pipeline", user_id=uid, version=2,
+        )
+        v1b = save_version(
+            project_id=pid, world_state_json="{}", ancestor_id=v0_id,
+            source="branch", user_id=uid, version=3,
+        )
+        result = mcp_reparent(
+            _ctx(), version_row_id=v2.id, new_ancestor_id=v1b.id,
+        )
+        assert result["status"] == "reparented"
+        assert get_version_by_id(v2.id).ancestor_id == v1b.id
+
+    def test_reparent_cycle_rejected(self):
+        from shadow_loom.db import save_version
+        from shadow_loom_mcp.server import reparent_version as mcp_reparent
+
+        uid, pid, v0_id = _seed_project()
+        v1 = save_version(
+            project_id=pid, world_state_json="{}", ancestor_id=v0_id,
+            source="pipeline", user_id=uid, version=1,
+        )
+        v2 = save_version(
+            project_id=pid, world_state_json="{}", ancestor_id=v1.id,
+            source="pipeline", user_id=uid, version=2,
+        )
+        result = mcp_reparent(
+            _ctx(), version_row_id=v1.id, new_ancestor_id=v2.id,
+        )
+        assert "error" in result
+        assert "descendant" in result["error"].lower()
+
+    def test_reparent_root_rejected(self):
+        from shadow_loom_mcp.server import reparent_version as mcp_reparent
+
+        _uid, _pid, v0_id = _seed_project()
+        result = mcp_reparent(
+            _ctx(), version_row_id=v0_id, new_ancestor_id=None,
+        )
+        assert "error" in result
+
+    def test_reparent_missing_version(self):
+        from shadow_loom_mcp.server import reparent_version as mcp_reparent
+
+        _seed_project()
+        result = mcp_reparent(
+            _ctx(), version_row_id=999_999, new_ancestor_id=None,
+        )
         assert "error" in result
 
 

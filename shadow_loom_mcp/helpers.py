@@ -10,10 +10,12 @@ from fastmcp import Context
 
 from shadow_loom.db import (
     find_project_by_name,
+    get_active_version,
     get_latest_version,
     get_project,
     get_version,
     save_version,
+    set_active_version,
 )
 from shadow_loom.extract_graph import VersionedWorldModel
 from shadow_loom.models import WorldStateV1
@@ -59,9 +61,26 @@ def resolve_project(
 def load_world_state(
     project_id: int,
     version: int | None = None,
+    *,
+    ctx: Context | None = None,
 ) -> tuple[WorldStateV1 | None, int | None]:
-    """Load a world state from DB. Returns (ws, version_row_id) or (None, None)."""
-    ver = get_version(project_id, version) if version is not None else get_latest_version(project_id)
+    """Load a world state from DB. Returns (ws, version_row_id) or (None, None).
+
+    Resolution order when ``version`` is omitted:
+      1. The authenticated user's active-version pointer (per-project),
+         when ``ctx`` is provided and a pointer exists.
+      2. The project's latest version.
+    """
+    if version is not None:
+        ver = get_version(project_id, version)
+    else:
+        ver = None
+        if ctx is not None:
+            user_id = get_user_id(ctx)
+            if user_id is not None:
+                ver = get_active_version(project_id, user_id)
+        if ver is None:
+            ver = get_latest_version(project_id)
     if ver is None:
         return None, None
     ws = WorldStateV1.model_validate_json(ver.world_state_json)
@@ -148,6 +167,13 @@ def run_and_save(
         )
         response["version"] = ver.version
         response["version_row_id"] = ver.id
+        # Auto-advance the user's active-version pointer to the row we
+        # just created so subsequent tool calls default to it.
+        if user_row_id is not None:
+            try:
+                set_active_version(project_id, user_row_id, ver.id)
+            except Exception:
+                logger.exception("Failed to update active-version pointer")
         if world_model_unchanged and result.prose:
             response["world_model_unchanged"] = True
     else:

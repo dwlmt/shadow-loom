@@ -8,7 +8,8 @@ from shadow_loom_ui.components.world_tab import build_world_tab
 from shadow_loom_ui.components.causality_tab import build_causality_tab
 from shadow_loom_ui.components.audit_tab import build_audit_tab
 from shadow_loom_ui.components.export_tab import build_export_tab
-from shadow_loom_ui.components.left_panel import build_left_panel
+from shadow_loom_ui.components.explorer_tab import build_explorer_tab
+from shadow_loom_ui.components.version_sidebar import build_version_sidebar
 from shadow_loom_ui.components.chat import build_chat_drawer
 from shadow_loom_ui.components.settings import build_settings
 from shadow_loom_ui.components.dialogs import (
@@ -26,7 +27,8 @@ __all__ = [
     "build_causality_tab",
     "build_audit_tab",
     "build_export_tab",
-    "build_left_panel",
+    "build_explorer_tab",
+    "build_version_sidebar",
     "build_chat_drawer",
     "build_settings",
     "build_ingest_dialog",

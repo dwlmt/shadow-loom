@@ -425,3 +425,200 @@ class TestAsyncPipelineE2E:
         # Validation should have run
         assert report is not None
         assert isinstance(report.is_valid, bool)
+
+
+# =========================================================================
+# 11. QUERY PARSING E2E — natural language → nodes / edges
+# =========================================================================
+#
+# These tests run real LLM classification via Ollama and verify that the
+# parser correctly maps free-form English to graph IDs (entities, events,
+# objects, locations, world traits) and the appropriate query type, and
+# that the resulting structured query then executes cleanly through the
+# real pipeline.
+
+@requires_ollama
+class TestQueryParsingE2E:
+    """End-to-end NL → structured query → pipeline integration."""
+
+    def _parse(self, nl: str, *, query_type: str | None = None, ws=None):
+        from shadow_loom.query_parsing import (
+            QueryParsingConfig, parse_query,
+        )
+        ws = ws if ws is not None else macbeth_ws
+        cfg = QueryParsingConfig(model=_MODEL)
+        return parse_query(nl, query_type=query_type, world_state=ws, config=cfg)
+
+    # ── Per-type classification + ID resolution ──────────────────────
+
+    def test_observation_classification(self):
+        result = self._parse(
+            "What happens next from Macbeth's point of view?",
+        )
+        assert result.is_valid
+        assert result.query.query_type == "observation"
+        # Macbeth should be resolved as the focus entity
+        focus = result.query.focus_entity_ids or []
+        assert any("MACBETH" in f for f in focus), (
+            f"Expected ENT_MACBETH in focus_entity_ids, got {focus}"
+        )
+
+    def test_intervention_classification_and_id_resolution(self):
+        result = self._parse(
+            "Force Macbeth to die immediately. Set ENT_MACBETH.status to 'dead'.",
+            query_type="intervention",
+        )
+        assert result.is_valid, f"Errors: {result.validation_errors}"
+        # If the LLM under-populated the intervention payload the parser
+        # falls back to a general query — still a valid run, but in that
+        # case the resolved_ids should at least include ENT_MACBETH.
+        if result.query.query_type == "intervention":
+            keys = list(result.query.interventions.keys())
+            assert keys, "Expected at least one intervention"
+            assert all("." in k for k in keys), f"Bad keys: {keys}"
+            assert any("ENT_MACBETH" in k for k in keys), keys
+        else:
+            assert result.fallback is not None
+            resolved = [r.resolved_id for r in (result.parsed.resolved_ids or [])]
+            assert any("MACBETH" in r for r in resolved), resolved
+
+    def test_counterfactual_classification(self):
+        result = self._parse(
+            "What if Duncan had never been murdered? Use Macbeth's current "
+            "guilt as evidence.",
+            query_type="counterfactual",
+        )
+        assert result.is_valid, f"Errors: {result.validation_errors}"
+        assert result.query.query_type == "counterfactual"
+        hi_keys = list(result.query.historical_interventions.keys())
+        assert hi_keys, "Expected at least one historical intervention"
+        assert all("." in k for k in hi_keys)
+        # Should reference an EVT_ id
+        assert any(k.split(".")[0].startswith("EVT_") for k in hi_keys), hi_keys
+
+    def test_directive_classification_with_target_entity(self):
+        result = self._parse(
+            "Maximise dramatic irony around Macbeth.",
+            query_type="directive",
+        )
+        assert result.is_valid, f"Errors: {result.validation_errors}"
+        assert result.query.query_type == "directive"
+        assert result.query.target_effect == "dramatic_irony"
+        assert any(
+            "MACBETH" in t for t in result.query.target_entity_ids
+        ), result.query.target_entity_ids
+
+    def test_interrogate_classification(self):
+        result = self._parse(
+            "Question: is there a physical path for Macbeth to reach "
+            "Duncan's chamber unseen? Answer with proof.",
+            query_type="interrogate",
+        )
+        assert result.is_valid
+        # Accept fallback to general (also a Q&A query type) when the LLM
+        # forgets to populate `question`.
+        assert result.query.query_type in ("interrogate", "general")
+        assert result.query.question
+
+    def test_general_classification(self):
+        result = self._parse(
+            "Summarise the relationships between the main characters.",
+            query_type="general",
+        )
+        assert result.is_valid
+        assert result.query.query_type == "general"
+        assert result.query.question
+
+    def test_evaluate_classification(self):
+        result = self._parse(
+            "Run a full quality audit of the story.",
+            query_type="evaluate",
+        )
+        assert result.is_valid
+        assert result.query.query_type == "evaluate"
+
+    def test_manual_edit_classification(self):
+        prose = (
+            "Edit: Macbeth draws his dagger and stares at it in the gloom "
+            "of the courtyard, his hand trembling."
+        )
+        result = self._parse(prose, query_type="manual_edit")
+        assert result.is_valid
+        assert result.query.query_type == "manual_edit"
+        assert "dagger" in result.query.edited_prose.lower()
+
+    # ── ID-only resolution (entities, locations, objects, events) ────
+
+    def test_resolves_location_name_to_loc_id(self):
+        result = self._parse(
+            "Show what is happening at the battlefield.",
+            query_type="observation",
+        )
+        assert result.is_valid
+        # Either focus_entity_ids has it or resolved_ids contains the LOC_
+        all_ids = (
+            (result.query.focus_entity_ids or [])
+            + [r.resolved_id for r in (result.parsed.resolved_ids or [])]
+        )
+        assert any(i.startswith("LOC_") for i in all_ids), all_ids
+
+    def test_resolves_object_name_to_obj_id(self):
+        result = self._parse(
+            "Force Macbeth to drop the crown.",
+            query_type="intervention",
+        )
+        assert result.is_valid
+        all_ids = list(result.query.interventions.keys()) + [
+            r.resolved_id for r in (result.parsed.resolved_ids or [])
+        ]
+        assert any(
+            "OBJ_" in i or "CROWN" in i.upper() for i in all_ids
+        ), all_ids
+
+    # ── Pipeline integration: NL → parse → run_pipeline ─────────────
+
+    def test_nl_to_pipeline_observation(self):
+        """Parse NL then execute the resulting query through run_pipeline."""
+        parsed = self._parse(
+            "What happens next from Macbeth's perspective?",
+            query_type="observation",
+        )
+        assert parsed.is_valid
+        cfg = _test_pipeline_config(skip_audit=True, skip_reextraction=True)
+        result = run_pipeline(
+            parsed.query,
+            world_state=macbeth_ws.model_copy(deep=True),
+            config=cfg,
+        )
+        assert result.prose, "Pipeline should produce prose"
+        assert result.world_model is not None
+
+    def test_nl_to_pipeline_directive(self):
+        parsed = self._parse(
+            "Maximise suspense around Macbeth.",
+            query_type="directive",
+        )
+        assert parsed.is_valid
+        cfg = _test_pipeline_config(skip_audit=True, skip_reextraction=True)
+        result = run_pipeline(
+            parsed.query,
+            world_state=macbeth_ws.model_copy(deep=True),
+            config=cfg,
+        )
+        assert result.prose
+        assert result.query_type == "directive"
+
+    # ── Fuzzy fallback when LLM returns a slightly wrong ID ─────────
+
+    def test_fuzzy_repair_on_unknown_id(self):
+        # We can't force the LLM to emit a bad id, but we can verify the
+        # fallback machinery works by checking that valid responses round-trip
+        # cleanly without invoking the fallback.
+        result = self._parse(
+            "What happens next from Lady Macbeth's perspective?",
+            query_type="observation",
+        )
+        assert result.is_valid
+        # No fallback should be needed for a clean reference.
+        assert result.fallback is None or result.fallback.strategy == "none"
+

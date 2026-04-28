@@ -56,6 +56,13 @@ def build_tasks_indicator(state: AppState) -> None:
                 task_list = ui.column().classes("w-full gap-1")
 
     def _render(**_kwargs) -> None:
+        # Bail out if the owning client has been deleted (e.g. tab closed)
+        # before the disconnect handler had a chance to unsubscribe us.
+        try:
+            _ = task_list.client
+        except RuntimeError:
+            state.off(StateEvent.TASKS_CHANGED, _render)
+            return
         # Update badge: prefer running count, else show total recent if any
         running = state.running_task_count
         total = len(state.background_tasks)
@@ -118,3 +125,14 @@ def build_tasks_indicator(state: AppState) -> None:
 
     state.on(StateEvent.TASKS_CHANGED, _render)
     _render()
+
+    # Detach the listener when this client disconnects so we don't try to
+    # mutate elements whose owning client has been deleted.
+    try:
+        client = ui.context.client
+    except Exception:
+        client = None
+    if client is not None:
+        client.on_disconnect(
+            lambda: state.off(StateEvent.TASKS_CHANGED, _render)
+        )

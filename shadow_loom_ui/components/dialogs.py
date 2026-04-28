@@ -208,7 +208,9 @@ def build_ingest_dialog(state: AppState) -> ui.dialog:
                     current["task"] = None
                     current["asyncio_task"] = None
 
-            current["asyncio_task"] = asyncio.create_task(_do_work())
+            current["asyncio_task"] = state.spawn_task(
+                _do_work(), name=f"ingest:{task.id}",
+            )
 
         ingest_btn.on("click", _run_ingestion)
 

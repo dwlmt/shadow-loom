@@ -1,0 +1,401 @@
+"""Left sidebar — version-history tree.
+
+Always-visible left rail showing the project's version DAG. Clicking a
+node loads that version into the rest of the UI (Story / World /
+Causality / Audit / Export tabs all subscribe to
+:data:`StateEvent.VERSION_CHANGED`). Owners and editors can also delete
+the currently-loaded version (children are re-parented onto the deleted
+version's ancestor) or graft it under a different ancestor.
+
+Selecting a version also writes the active-version pointer in the DB,
+which the MCP server consults so subsequent tool calls default to the
+same version the user is looking at in the UI.
+"""
+
+from __future__ import annotations
+
+import logging
+
+from nicegui import ui
+
+from shadow_loom_ui import db
+from shadow_loom_ui.state import AppState, StateEvent
+from shadow_loom_ui.viz import render_version_tree
+
+logger = logging.getLogger(__name__)
+
+
+def build_version_sidebar(state: AppState) -> None:
+    """Build the left version-tree sidebar."""
+
+    with ui.column().classes(
+        "w-full h-full bg-slate-50 border-r border-slate-200 gap-0"
+    ):
+        with ui.row().classes(
+            "w-full items-center px-3 py-2 border-b border-slate-200 gap-2"
+        ):
+            ui.icon("account_tree", color="primary")
+            ui.label("Versions").classes(
+                "text-sm font-semibold text-slate-700"
+            )
+
+        with ui.scroll_area().classes("w-full flex-grow"):
+            container = ui.column().classes("w-full p-1")
+            _render_versions(state, container)
+
+    def _on_version_change(**_kw):
+        _render_versions(state, container)
+
+    def _on_project_loaded(**_kw):
+        _render_versions(state, container)
+
+    state.on(StateEvent.VERSION_CHANGED, _on_version_change)
+    state.on(StateEvent.PROJECT_LOADED, _on_project_loaded)
+
+
+# =====================================================================
+# Version tree rendering + mutations
+# =====================================================================
+
+
+def _render_versions(state: AppState, container) -> None:
+    container.clear()
+    if state.project_id is None:
+        with container:
+            ui.label("No project loaded.").classes(
+                "text-xs text-slate-400 italic p-3"
+            )
+        return
+
+    tree_data = db.get_version_tree(state.project_id)
+    if not tree_data:
+        with container:
+            ui.label("No versions yet.").classes(
+                "text-xs text-slate-400 italic p-3"
+            )
+        return
+
+    def _on_version_click(e):
+        data = e.args if isinstance(e.args, dict) else {}
+        name = data.get("name", "")
+        for v in tree_data:
+            if f"v{v['version']}" == name:
+                _load_version(state, v)
+                return
+
+    with container:
+        if _can_mutate_versions(state):
+            with ui.row().classes("w-full items-center gap-1 px-1 pt-1"):
+                ui.button(
+                    icon="delete",
+                    on_click=lambda: _open_delete_version_dialog(
+                        state, tree_data, container,
+                    ),
+                ).props("flat dense color=negative").tooltip(
+                    "Delete current version (rejoins children to its parent)"
+                )
+                ui.button(
+                    icon="alt_route",
+                    on_click=lambda: _open_reparent_dialog(
+                        state, tree_data, container,
+                    ),
+                ).props("flat dense color=primary").tooltip(
+                    "Move current version under a different ancestor"
+                )
+
+        orient_toggle = ui.toggle(
+            {"vertical": "Vertical", "radial": "Radial"},
+            value="vertical",
+        ).props("dense no-caps").tooltip("Layout of the version tree")
+
+        tree_holder = ui.column().classes("w-full")
+
+        def _draw_tree():
+            tree_holder.clear()
+            with tree_holder:
+                render_version_tree(
+                    tree_data,
+                    current_version_id=state.current_version_row_id,
+                    on_click=_on_version_click,
+                    height="calc(100vh - 280px)",
+                    orient=orient_toggle.value or "vertical",
+                )
+
+        orient_toggle.on("update:model-value", lambda _e: _draw_tree())
+        _draw_tree()
+
+
+def _can_mutate_versions(state: AppState) -> bool:
+    if state.project_id is None or state.user_id is None:
+        return False
+    proj = db.get_project(state.project_id)
+    if proj is None:
+        return False
+    if proj.owner_id == state.user_id:
+        return True
+    role = db.get_user_project_role(state.project_id, state.user_id)
+    return role in ("editor", "admin")
+
+
+def _load_version(state: AppState, v: dict) -> None:
+    from shadow_loom.models import WorldStateV1
+
+    if v["id"] == state.current_version_row_id:
+        return
+    ver = db.get_version_by_id(v["id"])
+    if ver is None:
+        ui.notify("Version not found", type="warning")
+        return
+    try:
+        ws = WorldStateV1.model_validate_json(ver.world_state_json)
+        state.load_world_state(ws)
+        state.current_version_row_id = v["id"]
+
+        # Mirror the selection into the MCP active-version pointer so
+        # subsequent agent tool calls default to the same version.
+        if state.user_id is not None and state.project_id is not None:
+            try:
+                db.set_active_version(
+                    state.project_id, state.user_id, v["id"],
+                )
+            except Exception:
+                logger.exception("Failed to update active-version pointer")
+
+        state.emit(StateEvent.VERSION_CHANGED, version=v["version"])
+        ui.notify(f"Loaded v{v['version']}")
+    except Exception as e:
+        ui.notify(f"Load failed: {e}", type="negative")
+
+
+def _open_delete_version_dialog(
+    state: AppState, tree_data: list[dict], container,
+) -> None:
+    if state.current_version_row_id is None:
+        ui.notify("No version selected", type="warning")
+        return
+    current = next(
+        (v for v in tree_data if v["id"] == state.current_version_row_id),
+        None,
+    )
+    if current is None:
+        ui.notify("Current version not found in tree", type="warning")
+        return
+    if current.get("ancestor_id") is None:
+        ui.notify("The root version (v0) cannot be deleted", type="warning")
+        return
+
+    cascade_holder = {"value": False}
+
+    with ui.dialog() as dialog, ui.card():
+        ui.label(f"Delete version v{current['version']}?").classes(
+            "text-base font-semibold"
+        )
+        ui.label(
+            "Children will be re-parented onto this version's ancestor "
+            "(rejoin), so the tree stays connected."
+        ).classes("text-xs text-slate-500")
+        ui.checkbox(
+            "Cascade — also delete all descendants",
+            on_change=lambda e: cascade_holder.update(value=bool(e.value)),
+        ).props("dense")
+        with ui.row().classes("justify-end gap-2 mt-2"):
+            ui.button("Cancel", on_click=dialog.close).props("flat")
+            ui.button(
+                "Delete",
+                on_click=lambda: _do_delete_version(
+                    state, current, cascade_holder["value"],
+                    container, dialog,
+                ),
+            ).props("color=negative unelevated")
+    dialog.open()
+
+
+def _do_delete_version(
+    state: AppState,
+    current: dict,
+    cascade: bool,
+    container,
+    dialog,
+) -> None:
+    try:
+        result = db.delete_version(
+            current["id"], state.user_id, cascade=cascade,
+        )
+    except db.VersionMutationError as exc:
+        ui.notify(f"Delete failed: {exc}", type="negative")
+        return
+    except PermissionError as exc:
+        ui.notify(str(exc), type="negative")
+        return
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Version delete failed")
+        ui.notify(f"Delete failed: {exc}", type="negative")
+        return
+
+    dialog.close()
+    deleted_count = len(result.get("deleted", []))
+    reparented = result.get("reparented", {})
+    msg = f"Deleted {deleted_count} version(s)"
+    if reparented:
+        msg += f"; rejoined {len(reparented)} child branch(es)"
+    ui.notify(msg, type="positive")
+
+    if state.current_version_row_id in result.get("deleted", []):
+        # Pick a fallback version so the rest of the UI doesn't keep
+        # rendering against deleted data: prefer the deleted row's
+        # ancestor (the rejoin target), else fall back to the project's
+        # current latest.
+        from shadow_loom.models import WorldStateV1
+
+        fallback_id = current.get("ancestor_id")
+        fallback_ver = None
+        if fallback_id is not None:
+            fallback_ver = db.get_version_by_id(fallback_id)
+        if fallback_ver is None and state.project_id is not None:
+            fallback_ver = db.get_latest_version(state.project_id)
+
+        if fallback_ver is not None:
+            try:
+                ws = WorldStateV1.model_validate_json(
+                    fallback_ver.world_state_json
+                )
+                state.load_world_state(ws)
+                state.current_version_row_id = fallback_ver.id
+                if state.user_id is not None and state.project_id is not None:
+                    try:
+                        db.set_active_version(
+                            state.project_id, state.user_id, fallback_ver.id,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to update active-version pointer after delete"
+                        )
+                state.emit(
+                    StateEvent.VERSION_CHANGED, version=fallback_ver.version,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to load fallback world state after delete"
+                )
+                state.current_version_row_id = None
+                if state.user_id is not None and state.project_id is not None:
+                    try:
+                        db.clear_active_version(state.project_id, state.user_id)
+                    except Exception:
+                        logger.exception(
+                            "Failed to clear active-version pointer"
+                        )
+                state.emit(StateEvent.VERSION_CHANGED, version=None)
+        else:
+            state.current_version_row_id = None
+            if state.user_id is not None and state.project_id is not None:
+                try:
+                    db.clear_active_version(state.project_id, state.user_id)
+                except Exception:
+                    logger.exception(
+                        "Failed to clear active-version pointer"
+                    )
+            state.emit(StateEvent.VERSION_CHANGED, version=None)
+    else:
+        state.emit(StateEvent.VERSION_CHANGED, version=None)
+    _render_versions(state, container)
+
+
+def _open_reparent_dialog(
+    state: AppState, tree_data: list[dict], container,
+) -> None:
+    if state.current_version_row_id is None:
+        ui.notify("No version selected", type="warning")
+        return
+    current = next(
+        (v for v in tree_data if v["id"] == state.current_version_row_id),
+        None,
+    )
+    if current is None:
+        ui.notify("Current version not found in tree", type="warning")
+        return
+    if current.get("ancestor_id") is None:
+        ui.notify("The root version cannot be reparented", type="warning")
+        return
+
+    descendants = _collect_descendants_in_tree(tree_data, current["id"])
+    options: dict[int, str] = {}
+    for v in tree_data:
+        if v["id"] == current["id"] or v["id"] in descendants:
+            continue
+        label = f"v{v['version']}"
+        if v.get("description"):
+            label += f" — {v['description'][:40]}"
+        options[v["id"]] = label
+
+    if not options:
+        ui.notify("No valid ancestor candidates", type="warning")
+        return
+
+    selected = {"value": current.get("ancestor_id")}
+
+    with ui.dialog() as dialog, ui.card():
+        ui.label(f"Reparent v{current['version']}").classes(
+            "text-base font-semibold"
+        )
+        ui.label("Select the new ancestor:").classes(
+            "text-xs text-slate-500"
+        )
+        ui.select(
+            options=options,
+            value=selected["value"],
+            on_change=lambda e: selected.update(value=e.value),
+        ).classes("w-full").props("dense outlined")
+        with ui.row().classes("justify-end gap-2 mt-2"):
+            ui.button("Cancel", on_click=dialog.close).props("flat")
+            ui.button(
+                "Move",
+                on_click=lambda: _do_reparent_version(
+                    state, current, selected["value"], container, dialog,
+                ),
+            ).props("color=primary unelevated")
+    dialog.open()
+
+
+def _collect_descendants_in_tree(
+    tree_data: list[dict], root_id: int,
+) -> set[int]:
+    seen: set[int] = {root_id}
+    frontier = [root_id]
+    while frontier:
+        next_frontier: list[int] = []
+        for v in tree_data:
+            if v.get("ancestor_id") in frontier and v["id"] not in seen:
+                seen.add(v["id"])
+                next_frontier.append(v["id"])
+        frontier = next_frontier
+    return seen
+
+
+def _do_reparent_version(
+    state: AppState,
+    current: dict,
+    new_ancestor_id: int | None,
+    container,
+    dialog,
+) -> None:
+    try:
+        db.reparent_version(current["id"], new_ancestor_id, state.user_id)
+    except db.VersionMutationError as exc:
+        ui.notify(f"Reparent failed: {exc}", type="negative")
+        return
+    except PermissionError as exc:
+        ui.notify(str(exc), type="negative")
+        return
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Version reparent failed")
+        ui.notify(f"Reparent failed: {exc}", type="negative")
+        return
+
+    dialog.close()
+    ui.notify(
+        f"v{current['version']} moved under "
+        f"{'(detached)' if new_ancestor_id is None else f'version row {new_ancestor_id}'}",
+        type="positive",
+    )
+    _render_versions(state, container)

@@ -49,6 +49,23 @@ def _on_startup():
 
 app.on_startup(_on_startup)
 
+
+async def _on_shutdown() -> None:
+    """Cancel any in-flight per-session background tasks before exit.
+
+    Each ``AppState`` tracks its own asyncio task handles; without this
+    hook a long-running ingestion can leak past app shutdown and emit
+    "Task was destroyed but it is pending" warnings.
+    """
+    for state in list(_SESSION_STATES.values()):
+        try:
+            await state.cancel_all_async_tasks()
+        except Exception:
+            logger.exception("[App] Error cancelling session tasks on shutdown")
+
+
+app.on_shutdown(_on_shutdown)
+
 # Auth middleware
 app.add_middleware(AuthMiddleware)
 

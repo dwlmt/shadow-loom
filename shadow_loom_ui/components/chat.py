@@ -61,19 +61,16 @@ def _build_command_bar(state: AppState) -> None:
     manual_mode = {"active": False}
     last_request = {"text": "", "qtype": "", "manual": False, "forced": False}
 
-    with ui.column().classes("w-full").style(
-        "border-top: 2px solid #444; background: #1a1a2e;"
+    with ui.column().classes("w-full gap-0").style(
+        "border-top: 2px solid #444; background: #1a1a2e; flex: 0 0 auto;"
     ):
-        # ── Expandable history (scrolls up) ───────────────────────
-        history_expansion = ui.expansion(
-            "History", icon="history", value=False
-        ).classes("w-full").props("dense")
-        with history_expansion:
-            scroll = ui.scroll_area().classes("w-full").style("max-height: 300px")
-            with scroll:
-                chat_container = ui.column().classes("w-full q-pa-xs gap-1")
+        # Messages are tracked but not displayed inline — the bar is a
+        # permanent narrow strip. (Results still surface via toast
+        # notifications + the per-tab result panels.)
+        chat_container = ui.column()
+        chat_container.set_visibility(False)
 
-        # ── Typing / loading indicator ────────────────────────────
+        # ── Typing / loading indicator (only visible while running) ─
         typing_row = ui.row().classes("w-full q-px-md items-center gap-2")
         typing_row.set_visibility(False)
         with typing_row:
@@ -86,15 +83,15 @@ def _build_command_bar(state: AppState) -> None:
         implausible_row = ui.row().classes("w-full q-px-md items-center gap-2")
         implausible_row.set_visibility(False)
 
-        # ── Context suggestions row ──────────────────────────────
-        suggestions_row = ui.row().classes("w-full q-px-md gap-1 flex-wrap")
-        _build_context_suggestions(state, suggestions_row)
 
-        # ── Main input row (ALWAYS VISIBLE) ──────────────────────
-        with ui.row().classes("w-full items-end q-pa-sm gap-2").style(
-            "min-height: 56px;"
-        ):
-            # Query type selector (compact)
+        # ── Main input row (ALWAYS VISIBLE, fixed height) ─────────
+        with ui.row().classes(
+            "w-full items-center q-px-sm q-py-xs gap-2 no-wrap"
+        ).style("min-height: 64px;"):
+            # Query type selector — sized to fit the longest option label
+            # ("✏ Write prose") so the combo never truncates. ``stack-label``
+            # keeps the floating label compact and ``items-center`` (above)
+            # vertically aligns the field with the textarea.
             type_select = ui.select(
                 options={
                     "": "Auto-detect",
@@ -103,7 +100,10 @@ def _build_command_bar(state: AppState) -> None:
                 },
                 value="",
                 label="Mode",
-            ).classes("w-32").props("dense outlined")
+            ).props(
+                "dense outlined options-dense stack-label "
+                "bg-color=white behavior=menu"
+            ).style("min-width: 156px; height: 48px;")
 
             def _on_type_change():
                 val = type_select.value
@@ -117,12 +117,14 @@ def _build_command_bar(state: AppState) -> None:
 
             type_select.on("update:model-value", _on_type_change)
 
-            # Main text input
+            # Main text input — fixed two visible lines.
             text_input = ui.textarea(
                 placeholder="Ask anything about your story, or describe what should happen next…",
             ).classes("flex-grow").props(
-                "rows=1 autogrow outlined dense"
-            ).style("max-height: 120px;")
+                "outlined dense bg-color=white "
+                "input-style='height: 48px; min-height: 48px; "
+                "max-height: 48px; overflow-y: auto;'"
+            )
 
             def _update_placeholder():
                 if manual_mode["active"]:
@@ -139,7 +141,7 @@ def _build_command_bar(state: AppState) -> None:
             # Send button
             send_btn = ui.button(icon="send", on_click=lambda: _send()).props(
                 "unelevated round dense color=primary"
-            ).classes("mb-1 shadow-sm")
+            ).classes("shadow-sm").style("height: 40px; width: 40px;")
 
         # ── Keyboard shortcut ─────────────────────────────────────
         text_input.on(
@@ -208,7 +210,6 @@ def _build_command_bar(state: AppState) -> None:
             user_text = text + ("  *(forced)*" if force else "")
             messages.append({"role": "user", "text": user_text})
             _render_messages(chat_container, messages)
-            history_expansion.value = True  # Show history when sending
 
             if state.world_state is None:
                 messages.append({
@@ -271,8 +272,6 @@ def _build_command_bar(state: AppState) -> None:
 
             _render_messages(chat_container, messages)
             _refresh_implausible_row(result)
-            # Update suggestions after result
-            _build_context_suggestions(state, suggestions_row)
 
         # ── Listen for prompt suggestions from other components ───
         def _on_suggestion(**kwargs):
@@ -289,95 +288,9 @@ def _build_command_bar(state: AppState) -> None:
         state.on(StateEvent.QUERY_STARTED, _on_suggestion)
 
 
-def _build_context_suggestions(state: AppState, container) -> None:
-    """Rebuild context-aware NL prompt suggestions."""
-    container.clear()
-    ws = state.world_state
-    if ws is None:
-        with container:
-            ui.chip(
-                "Ingest a story to get started",
-                icon="upload",
-            ).props("dense outline size=sm color=grey")
-        return
-
-    with container:
-        # Dynamic suggestions based on selected node
-        if state.selected_node_id and state.selected_node_type == "Entity":
-            ent = ws.entities.get(state.selected_node_id)
-            if ent:
-                name = ent.name
-                ui.chip(
-                    f"What does {name} believe?",
-                    icon="psychology",
-                    on_click=lambda n=name: state.emit(
-                        StateEvent.QUERY_STARTED,
-                        suggestion=f"What does {n} believe about the other characters?",
-                        query_type="interrogate",
-                    ),
-                ).props("dense outline size=sm clickable")
-                ui.chip(
-                    f"Continue from {name}'s POV",
-                    icon="auto_stories",
-                    on_click=lambda n=name: state.emit(
-                        StateEvent.QUERY_STARTED,
-                        suggestion=f"Continue the story from {n}'s point of view",
-                        query_type="observation",
-                    ),
-                ).props("dense outline size=sm clickable")
-                ui.chip(
-                    f"What if {name} died?",
-                    icon="alt_route",
-                    on_click=lambda n=name: state.emit(
-                        StateEvent.QUERY_STARTED,
-                        suggestion=f"What would happen if {n} died?",
-                        query_type="counterfactual",
-                    ),
-                ).props("dense outline size=sm clickable")
-                return
-
-        # General suggestions
-        entity_names = [e.name for e in list(ws.entities.values())[:3]]
-        ui.chip(
-            "Continue the story",
-            icon="auto_stories",
-            on_click=lambda: state.emit(
-                StateEvent.QUERY_STARTED,
-                suggestion="Continue the story naturally",
-                query_type="observation",
-            ),
-        ).props("dense outline size=sm clickable")
-
-        if entity_names:
-            ui.chip(
-                f"What if {entity_names[0]}…",
-                icon="alt_route",
-                on_click=lambda n=entity_names[0]: state.emit(
-                    StateEvent.QUERY_STARTED,
-                    suggestion=f"What would happen if {n} ",
-                    query_type="counterfactual",
-                ),
-            ).props("dense outline size=sm clickable")
-
-        ui.chip(
-            "Make it more suspenseful",
-            icon="theater_comedy",
-            on_click=lambda: state.emit(
-                StateEvent.QUERY_STARTED,
-                suggestion="Make the next scene feel more suspenseful and tense",
-                query_type="directive",
-            ),
-        ).props("dense outline size=sm clickable")
-
-        ui.chip(
-            "Evaluate quality",
-            icon="fact_check",
-            on_click=lambda: state.emit(
-                StateEvent.QUERY_STARTED,
-                suggestion="Evaluate the story quality",
-                query_type="evaluate",
-            ),
-        ).props("dense outline size=sm clickable")
+def _build_context_suggestions(state: AppState, container) -> None:  # pragma: no cover - removed
+    """Deprecated: in-bar suggestion chips were removed for less clutter."""
+    return
 
 
 def _render_messages(container, messages: List[dict]) -> None:

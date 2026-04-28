@@ -15,7 +15,8 @@ from typing import TYPE_CHECKING
 from nicegui import ui
 
 from shadow_loom_ui.state import AppState, NLQueryResult, StateEvent
-from shadow_loom_ui.viz import render_emotional_gauges
+from shadow_loom_ui.viz import render_emotional_gauges, render_audit_passrate_pictorial
+from shadow_loom_ui.viz_helpers import audit_passrate_data
 
 if TYPE_CHECKING:
     pass
@@ -312,6 +313,51 @@ def _render_query_audit_entry(index: int, result: NLQueryResult) -> None:
                 with ui.expansion(
                     f"Audit Loop ({len(feedback.history)} iterations)", icon="replay"
                 ).props("dense"):
+                    # Build per-iteration audit history for the
+                    # pass-rate pictorial chart + table.
+                    history_rows: list[dict] = []
+                    for cycle in feedback.history:
+                        audit = getattr(cycle, "audit_result", None)
+                        if not audit:
+                            continue
+                        viols = getattr(audit, "violations", []) or []
+                        total = len(viols)
+                        # ``passed`` flag on the audit means the *iteration*
+                        # passed; for per-violation pass we count any with
+                        # severity != critical/major as "ok".
+                        passed = sum(
+                            1 for v in viols
+                            if getattr(v, "severity", "") not in ("critical", "major")
+                        )
+                        history_rows.append({
+                            "label": f"iter {getattr(cycle, 'iteration', '?')}",
+                            "passed": passed,
+                            "total": total,
+                            "converged": bool(getattr(audit, "passed", False)),
+                            "issues": [
+                                {"ok": getattr(v, "severity", "") not in ("critical", "major")}
+                                for v in viols
+                            ],
+                        })
+
+                    if history_rows:
+                        render_audit_passrate_pictorial(history_rows, height="220px")
+                        _, _, table_rows = audit_passrate_data(history_rows)
+                        with ui.expansion(
+                            "Pass-rate table", icon="table_view",
+                        ).props("dense"):
+                            ui.table(
+                                columns=[
+                                    {"name": "iteration", "label": "Iteration", "field": "iteration", "sortable": True},
+                                    {"name": "passed", "label": "Passed", "field": "passed", "sortable": True},
+                                    {"name": "total", "label": "Total", "field": "total", "sortable": True},
+                                    {"name": "pass_rate", "label": "Pass-rate", "field": "pass_rate", "sortable": True},
+                                    {"name": "converged", "label": "Converged?", "field": "converged"},
+                                ],
+                                rows=table_rows,
+                                pagination={"rowsPerPage": 10},
+                            ).props("dense flat bordered").classes("w-full")
+
                     for cycle in feedback.history:
                         _render_audit_cycle(cycle)
 

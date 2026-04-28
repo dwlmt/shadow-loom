@@ -1,18 +1,21 @@
 """Story tab — prose reader, generation results, and source text.
 
 Reading pane shows all generated prose from DB + session history.
-Collapsible source text. Prompt starters for common writer actions.
+Collapsible source text with manual-edit + re-ingest.
 Chat/query input lives in the bottom command bar (not here).
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 
 from nicegui import ui
 
-from shadow_loom_ui.state import AppState, NLQueryResult, StateEvent
+from shadow_loom_ui import db
+from shadow_loom_ui.state import AppState, StateEvent
+from shadow_loom_ui.task_helpers import capture_logs_to_task, notify_task_complete
 from shadow_loom_ui.theme import feather
 
 if TYPE_CHECKING:
@@ -25,19 +28,12 @@ def build_story_tab(state: AppState) -> None:
     """Build the Story tab — prose reading + generation display."""
 
     with ui.column().classes("w-full h-full p-6 gap-3 bg-slate-50"):
-        # ── Source text (collapsible) ───────────────────────
-        if state.raw_text:
-            with ui.expansion("Source Text", icon="description").classes(
-                "w-full bg-white border border-slate-200 rounded-xl shadow-sm"
-            ):
-                ui.markdown(
-                    state.raw_text[:8000]
-                    + ("..." if len(state.raw_text) > 8000 else "")
-                )
+        # ── Source text (collapsible, editable) ─────────────
+        source_container = ui.column().classes(
+            "w-full bg-white border border-slate-200 rounded-xl shadow-sm"
+        )
+        _render_source_text(state, source_container)
 
-        # ── Quick NL prompts for writers ──────────────────────────
-        with ui.row().classes("w-full gap-2 flex-wrap q-pa-xs"):
-            _build_prompt_starters(state)
 
         # ── Generated Prose ───────────────────────────────────────
         prose_container = ui.column().classes("w-full gap-3")
@@ -50,34 +46,217 @@ def build_story_tab(state: AppState) -> None:
         )
         state.on(
             StateEvent.PROJECT_LOADED,
-            lambda **kw: _render_prose(state, prose_container),
+            lambda **kw: (
+                _render_source_text(state, source_container),
+                _render_prose(state, prose_container),
+            ),
         )
 
 
-def _build_prompt_starters(state: AppState) -> None:
-    """Writer-friendly prompt starter chips that populate the command bar."""
-
-    starters = [
-        ("Continue the story\u2026", "observation", "book-open"),
-        ("What would happen if\u2026", "counterfactual", "git-branch"),
-        ("Make this scene more suspenseful", "directive", "film"),
-        ("Why does this character\u2026", "interrogate", "cpu"),
-        ("Evaluate the story quality", "evaluate", "check-square"),
-    ]
-
-    for label, qtype, icon in starters:
-        ui.button(
-            label,
-            icon=icon,
-            on_click=lambda l=label, q=qtype: _trigger_prompt(state, l, q),
-        ).props("outline dense no-caps size=sm color=primary").classes(
-            "rounded-lg"
-        )
+def _build_prompt_starters(state: AppState) -> None:  # pragma: no cover - removed
+    """Deprecated. Prompt starter chips were removed from the Story tab."""
+    return
 
 
-def _trigger_prompt(state: AppState, prompt_text: str, query_type: str) -> None:
-    """Emit a prompt suggestion that the command bar will pick up."""
+def _trigger_prompt(state: AppState, prompt_text: str, query_type: str) -> None:  # pragma: no cover - removed
+    """Deprecated."""
     state.emit(StateEvent.QUERY_STARTED, suggestion=prompt_text, query_type=query_type)
+
+
+def _render_source_text(state: AppState, container) -> None:
+    """Editable source-text panel: bulk replace + trigger full re-ingestion."""
+    container.clear()
+    if not state.raw_text:
+        with container:
+            with ui.expansion("Source Text", icon="description").props("dense").classes("w-full"):
+                ui.label(
+                    "No source text on this project — manual edits are unavailable."
+                ).classes("text-xs text-slate-500 p-3")
+        return
+
+    can_edit = (
+        state.project_id is not None
+        and state.user_id is not None
+        and _user_can_edit(state)
+    )
+
+    with container:
+        with ui.expansion("Source Text", icon="description").classes("w-full"):
+            with ui.column().classes("w-full p-3 gap-2"):
+                ui.label(
+                    f"{len(state.raw_text):,} characters"
+                ).classes("text-xs text-slate-500")
+                text_area = ui.textarea(value=state.raw_text).classes(
+                    "w-full font-mono text-sm"
+                ).props(
+                    "outlined input-style='min-height: 60vh; max-height: 80vh; overflow:auto;'"
+                )
+                if not can_edit:
+                    text_area.props("readonly")
+
+                with ui.row().classes("w-full justify-end gap-2"):
+                    if can_edit:
+                        ui.button(
+                            "Reset",
+                            icon="undo",
+                            on_click=lambda: text_area.set_value(state.raw_text),
+                        ).props("flat color=secondary no-caps")
+                        ui.button(
+                            "Save & Re-ingest",
+                            icon="auto_fix_high",
+                            on_click=lambda: _confirm_reingest(
+                                state, text_area.value,
+                            ),
+                        ).props("unelevated color=primary no-caps")
+
+
+def _user_can_edit(state: AppState) -> bool:
+    """True if the current user owns or has editor access."""
+    if state.project_id is None or state.user_id is None:
+        return False
+    proj = db.get_project(state.project_id)
+    if proj is None:
+        return False
+    if proj.owner_id == state.user_id:
+        return True
+    role = db.get_user_project_role(state.project_id, state.user_id)
+    return role in ("editor", "admin")
+
+
+def _confirm_reingest(state: AppState, edited_text: str) -> None:
+    """Show a confirmation dialog before destructively re-ingesting."""
+    edited_text = (edited_text or "").strip()
+    if not edited_text:
+        ui.notify("Edited text is empty", type="warning")
+        return
+    if edited_text == (state.raw_text or "").strip():
+        ui.notify("No changes detected", type="info")
+        return
+
+    with ui.dialog() as dialog, ui.card():
+        ui.label("Replace source text & re-ingest?").classes(
+            "text-base font-semibold"
+        )
+        ui.label(
+            "This runs the full extraction pipeline on the edited text and "
+            "saves the result as a new version branching from the current one."
+        ).classes("text-xs text-slate-500")
+        ui.label(
+            "The project's source text will be replaced. Existing versions "
+            "are preserved."
+        ).classes("text-xs text-slate-500")
+        with ui.row().classes("justify-end gap-2 mt-2"):
+            ui.button("Cancel", on_click=dialog.close).props("flat")
+            ui.button(
+                "Re-ingest",
+                on_click=lambda: (dialog.close(), _start_reingest(state, edited_text)),
+            ).props("unelevated color=primary")
+    dialog.open()
+
+
+def _start_reingest(state: AppState, edited_text: str) -> None:
+    """Kick off background re-ingestion task."""
+    from shadow_loom.ingestion import ExtractionConfig, run_extraction
+
+    project_id = state.project_id
+    user_id = state.user_id
+    if project_id is None:
+        return
+
+    parent_version_row_id = state.current_version_row_id
+    pname = state.project_name or f"Project {project_id}"
+
+    task = state.start_task(
+        label=f"Re-ingest: {pname}",
+        kind="ingestion",
+    )
+
+    extraction_config = ExtractionConfig(
+        chunk_strategy="act_headings",
+        fabula_time_spacing=100,
+        output_retries=5,
+        max_correction_retries=1,
+    )
+
+    async def _do_work():
+        try:
+            with capture_logs_to_task(state, task):
+                ws, report = await asyncio.to_thread(
+                    run_extraction, edited_text, extraction_config,
+                )
+
+            # Bail out cleanly if the user navigated to a different
+            # project *or version* while the heavyweight extraction was
+            # running — we must not overwrite their new context with stale
+            # data. We compare against the version pinned at task-start
+            # (parent_version_row_id) since the user may have explicitly
+            # branched away.
+            if state.project_id != project_id:
+                logger.info(
+                    "[Re-ingest] Project switched mid-run (%s → %s); "
+                    "discarding result.",
+                    project_id, state.project_id,
+                )
+                state.finish_task(
+                    task,
+                    result_summary="cancelled (project switched)",
+                )
+                notify_task_complete(task)
+                return
+            if (
+                parent_version_row_id is not None
+                and state.current_version_row_id != parent_version_row_id
+            ):
+                logger.info(
+                    "[Re-ingest] Version switched mid-run (%s → %s); "
+                    "discarding result.",
+                    parent_version_row_id, state.current_version_row_id,
+                )
+                state.finish_task(
+                    task,
+                    result_summary="cancelled (version switched)",
+                )
+                notify_task_complete(task)
+                return
+
+            db.update_project(project_id, raw_text=edited_text)
+
+            new_ver = db.save_version(
+                project_id=project_id,
+                world_state_json=ws.model_dump_json(),
+                ancestor_id=parent_version_row_id,
+                source="manual_reingest",
+                description="Manual edit \u2014 full re-ingestion",
+                user_id=user_id,
+            )
+
+            state.raw_text = edited_text
+            state.load_world_state(ws)
+            state.current_version_row_id = new_ver.id
+            # Mirror into the active-version pointer so MCP defaults
+            # to the freshly re-ingested version.
+            if user_id is not None:
+                try:
+                    db.set_active_version(project_id, user_id, new_ver.id)
+                except Exception:
+                    logger.exception(
+                        "Failed to update active-version pointer after re-ingest"
+                    )
+            state.emit(StateEvent.VERSION_CHANGED, version=new_ver.version)
+
+            summary = (
+                f"v{new_ver.version}: {len(ws.entities)} entities, "
+                f"{len(ws.events)} events, {len(ws.locations)} locations · "
+                f"validation {'PASS' if report.is_valid else 'FAIL'}"
+            )
+            state.finish_task(task, result_summary=summary)
+            notify_task_complete(task)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Re-ingestion failed")
+            state.finish_task(task, error=str(exc))
+            notify_task_complete(task)
+
+    state.spawn_task(_do_work(), name=f"reingest:{task.id}")
 
 
 def _render_prose(state: AppState, container) -> None:

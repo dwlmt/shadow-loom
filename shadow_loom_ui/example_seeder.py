@@ -27,6 +27,19 @@ from shadow_loom.models import WorldStateV1
 logger = logging.getLogger(__name__)
 
 _EXAMPLES_PACKAGE = "example_worlds"
+_SAMPLE_PLOTS_DIR = Path(__file__).resolve().parents[1] / "sample_plots"
+
+
+def _load_sample_plot(slug: str) -> str | None:
+    """Return the contents of sample_plots/<slug>.txt if it exists."""
+    path = _SAMPLE_PLOTS_DIR / f"{slug}.txt"
+    if not path.is_file():
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        logger.exception("[examples] Failed to read %s", path)
+        return None
 
 
 def _fixture_slugs() -> list[str]:
@@ -97,6 +110,15 @@ def _reconcile_existing(example_user_id: int, expected_names: set[str]) -> None:
             if keeper.is_public:
                 keeper.is_public = False
                 dirty = True
+            # Backfill raw_text from the matching sample_plots fixture so
+            # legacy seeded rows (created before raw_text was wired in)
+            # show source text in the Story tab.
+            if not keeper.raw_text:
+                slug = name.lower().replace(" ", "_")
+                plot = _load_sample_plot(slug)
+                if plot:
+                    keeper.raw_text = plot
+                    dirty = True
             for dup in dups:
                 # Cascade-delete dependent rows for the duplicate.
                 for ver in s.exec(
@@ -186,6 +208,7 @@ def seed_examples() -> int:
                 owner_id=example_user.id,
                 description=f"Example world model: {name}",
                 is_public=False,
+                raw_text=_load_sample_plot(slug),
             )
             db.save_version(
                 project_id=proj.id,

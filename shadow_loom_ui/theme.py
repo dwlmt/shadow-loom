@@ -21,36 +21,49 @@ from nicegui import ui
 # Palette constants
 # =====================================================================
 
-# Brand
-PRIMARY = "#C68661"        # Copper
-SECONDARY = "#5C7C8A"      # Slate Blue
-ACCENT = "#D4A35B"         # Aged Gold
+# Brand — refined-but-vibrant: saturated coral against teal & amber.
+PRIMARY = "#F26B5E"        # Coral
+SECONDARY = "#2EA6A0"      # Teal
+ACCENT = "#F5B43C"         # Amber
 
-# 10-color "mort artistic" chart palette (also surfaces semantic colors)
+# 10-color vibrant chart palette. Tuned for high saturation while
+# keeping perceived luminance roughly even so series read clearly when
+# placed side-by-side (no single hue dominates).
 CHART_COLORS: list[str] = [
-    "#C68661",   # 1. Copper
-    "#5C7C8A",   # 2. Slate Blue
-    "#D4A35B",   # 3. Aged Gold
-    "#456A6B",   # 4. Deep Spruce
-    "#B58988",   # 5. Dusty Rose
-    "#95A577",   # 6. Olive
-    "#856B7D",   # 7. Faded Plum
-    "#8C7A6B",   # 8. Warm Clay
-    "#9E4D4D",   # 9. Dusty Brick
-    "#1F2731",   # 10. Ink
+    "#F26B5E",   # 1. Coral
+    "#2EA6A0",   # 2. Teal
+    "#F5B43C",   # 3. Amber
+    "#3A7BD5",   # 4. Sapphire
+    "#E36BB8",   # 5. Magenta Rose
+    "#6FBF3A",   # 6. Spring Green
+    "#8A5CF0",   # 7. Iris
+    "#FF8C42",   # 8. Tangerine
+    "#D8334A",   # 9. Crimson
+    "#1E2A3A",   # 10. Midnight (anchor / text)
 ]
 
 # Aliases for semantic use
-COPPER = CHART_COLORS[0]
-SLATE_BLUE = CHART_COLORS[1]
-AGED_GOLD = CHART_COLORS[2]
-SPRUCE = CHART_COLORS[3]
-ROSE = CHART_COLORS[4]
-OLIVE = CHART_COLORS[5]
-PLUM = CHART_COLORS[6]
-CLAY = CHART_COLORS[7]
-BRICK = CHART_COLORS[8]
+CORAL = CHART_COLORS[0]
+TEAL = CHART_COLORS[1]
+AMBER = CHART_COLORS[2]
+SAPPHIRE = CHART_COLORS[3]
+MAGENTA = CHART_COLORS[4]
+SPRING_GREEN = CHART_COLORS[5]
+IRIS = CHART_COLORS[6]
+TANGERINE = CHART_COLORS[7]
+CRIMSON = CHART_COLORS[8]
 INK = CHART_COLORS[9]
+
+# Backward-compat aliases for any callers that imported the old warm names.
+COPPER = CORAL
+SLATE_BLUE = SAPPHIRE
+AGED_GOLD = AMBER
+SPRUCE = TEAL
+ROSE = MAGENTA
+OLIVE = SPRING_GREEN
+PLUM = IRIS
+CLAY = TANGERINE
+BRICK = CRIMSON
 
 # Neutral scale
 SLATE_50 = "#f8fafc"
@@ -65,10 +78,10 @@ SLATE_800 = "#1e293b"
 SLATE_900 = "#0f172a"
 
 # Semantic statuses (used for badges, gauges, alerts)
-POSITIVE = OLIVE
-WARNING = AGED_GOLD
-NEGATIVE = BRICK
-INFO = SLATE_BLUE
+POSITIVE = SPRING_GREEN
+WARNING = AMBER
+NEGATIVE = CRIMSON
+INFO = SAPPHIRE
 
 
 # =====================================================================
@@ -96,28 +109,34 @@ BTN_PRIMARY_CLS = "rounded-lg shadow-sm"
 
 def _head_html() -> str:
     palette_css = ", ".join(f"'{c}'" for c in CHART_COLORS)
-    # Fonts are loaded with the print/onload pattern so they NEVER block
-    # the initial render.  If the CDN is unreachable the page still
-    # appears immediately with the system-font fallback; when the font
-    # arrives the swap is invisible.  This is critical for:
-    #   - sandboxed/offline environments where fonts.googleapis.com is
-    #     blocked or slow,
-    #   - browsers that synchronously block first paint on font CSS.
+    # Web fonts are injected lazily AFTER the window load event so they
+    # NEVER hold up the initial page load.  In sandboxed/offline
+    # environments where fonts.googleapis.com is unreachable, the
+    # browser would otherwise keep the page-load spinner active until
+    # the request timed out (often 30-90s) \u2014 making the app appear to
+    # hang.  By deferring injection until after `load` has already
+    # fired, an unreachable CDN can no longer block the load event.
+    # If the fonts do load, they swap in invisibly; if they don't, the
+    # system-font fallback (defined in the body { font-family } below)
+    # and Quasar's bundled Material Icons keep the UI fully readable.
     return f"""
-<link rel="preconnect" href="https://fonts.googleapis.com" crossorigin>
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="preload" as="style"
-  href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
-  onload="this.onload=null;this.rel='stylesheet'">
-<link rel="preload" as="style"
-  href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined"
-  onload="this.onload=null;this.rel='stylesheet'">
-<noscript>
-  <link rel="stylesheet"
-    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
-  <link rel="stylesheet"
-    href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined">
-</noscript>
+<script>
+  window.addEventListener('load', function () {{
+    var add = function (href) {{
+      var l = document.createElement('link');
+      l.rel = 'stylesheet';
+      l.href = href;
+      l.crossOrigin = 'anonymous';
+      document.head.appendChild(l);
+    }};
+    setTimeout(function () {{
+      try {{
+        add('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        add('https://fonts.googleapis.com/icon?family=Material+Icons+Outlined');
+      }} catch (e) {{ /* offline / blocked CDN \u2014 fall back to system fonts */ }}
+    }}, 0);
+  }});
+</script>
 <style>
   :root {{
     --sl-primary: {PRIMARY};
