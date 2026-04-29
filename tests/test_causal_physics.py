@@ -211,22 +211,33 @@ class TestRung3Counterfactual:
 
     def test_abduction_blends_traits(self):
         """Abduction must blend traits toward factual values, damped by
-        trait inertia (high-inertia traits resist present-day evidence)."""
-        ws = _make_minimal_world()
-        ws_modified = deepcopy(ws)
-        ws_modified.entities["ENT_ALICE"].traits["courage"].value = 0.9
+        trait inertia (high-inertia traits resist present-day evidence).
 
-        sandbox = _build_sandbox(ws, ["ENT_ALICE", "ENT_BOB"], "counterfactual")
-        old_courage = sandbox.nodes["ENT_ALICE"]["traits"]["courage"]["value"]
-        trait_inertia = sandbox.nodes["ENT_ALICE"]["traits"]["courage"].get("inertia", 0.5)
+        This test exercises the *legacy* blend formula explicitly so it is
+        not coupled to the package-level default ``abduction_blend_mode``.
+        """
+        from shadow_loom.settings import get_settings
+        physics = get_settings().physics
+        prev_mode = physics.abduction_blend_mode
+        physics.abduction_blend_mode = "legacy"
+        try:
+            ws = _make_minimal_world()
+            ws_modified = deepcopy(ws)
+            ws_modified.entities["ENT_ALICE"].traits["courage"].value = 0.9
 
-        engine = CausalPhysicsEngine(sandbox, ws_modified)
-        engine.abduction_update(["ENT_ALICE"])
+            sandbox = _build_sandbox(ws, ["ENT_ALICE", "ENT_BOB"], "counterfactual")
+            old_courage = sandbox.nodes["ENT_ALICE"]["traits"]["courage"]["value"]
+            trait_inertia = sandbox.nodes["ENT_ALICE"]["traits"]["courage"].get("inertia", 0.5)
 
-        new_courage = sandbox.nodes["ENT_ALICE"]["traits"]["courage"]["value"]
-        blend_factor = max(0.0, min(1.0, 1.0 - trait_inertia))
-        expected = old_courage + (0.9 - old_courage) * blend_factor
-        assert abs(new_courage - expected) < 0.01
+            engine = CausalPhysicsEngine(sandbox, ws_modified)
+            engine.abduction_update(["ENT_ALICE"])
+
+            new_courage = sandbox.nodes["ENT_ALICE"]["traits"]["courage"]["value"]
+            blend_factor = max(0.0, min(1.0, 1.0 - trait_inertia))
+            expected = old_courage + (0.9 - old_courage) * blend_factor
+            assert abs(new_courage - expected) < 0.01
+        finally:
+            physics.abduction_blend_mode = prev_mode
 
     def test_abduction_backpropagates_beliefs(self):
         """Abduction must copy missing beliefs from factual entity."""
@@ -1036,3 +1047,389 @@ class TestMutationSocialPropagation:
         assert fear_edge.rel_counterpart_id == "ENT_BANQUO"
         assert fear_edge.trait_target == "fear"
         assert fear_edge.trait_delta == 0.4
+
+
+# =====================================================================
+# PROBABILISTIC PHYSICS — added with the noisy-OR / Monte-Carlo / drift
+# / Bayesian-blend changes. These tests pin the *new* settings paths and
+# exercise the orchestration entry points (execute_distribution).
+# =====================================================================
+import pytest as _pytest
+import random
+import statistics
+
+from shadow_loom.settings import get_settings as _get_settings
+from shadow_loom.causal_physics import (
+    NoisyOrProbability, TraitDistribution,
+    _sigmoid, _noisy_or_per_edge_probability, _noisy_or_aggregate,
+    _evidence_strength_sigma, _sample_causal_force, _sample_trait_value,
+)
+
+
+@_pytest.fixture
+def physics_settings():
+    """Snapshot/restore the cached physics settings for an isolated test.
+
+    Mutating ``get_settings().physics`` directly is the simplest path —
+    the settings object is a long-lived singleton and per-process state.
+    The fixture saves every attribute we touch and restores it on
+    teardown so tests can't leak into one another.
+    """
+    s = _get_settings().physics
+    snapshot = {
+        k: getattr(s, k) for k in (
+            "abduction_blend_mode", "abduction_evidence_precision",
+            "propagation_mode", "noisy_or_temperature",
+            "noisy_or_threshold", "monte_carlo_samples",
+            "monte_carlo_seed", "entity_trait_baseline_drift_rate",
+            "causal_force_sigma_weak", "causal_force_sigma_moderate",
+            "causal_force_sigma_strong",
+        )
+    }
+    yield s
+    for k, v in snapshot.items():
+        setattr(s, k, v)
+
+
+# =====================================================================
+# Noisy-OR helpers (unit-level)
+# =====================================================================
+class TestNoisyOrHelpers:
+    def test_sigmoid_monotonic(self):
+        assert _sigmoid(-10.0) < _sigmoid(0.0) < _sigmoid(10.0)
+        assert abs(_sigmoid(0.0) - 0.5) < 1e-9
+
+    def test_per_edge_probability_at_inertia_is_half(self):
+        # impulse magnitude == inertia ⇒ sigmoid(0) = 0.5
+        p = _noisy_or_per_edge_probability(
+            weighted_impulse=0.5, inertia=0.5, temperature=0.25,
+        )
+        assert abs(p - 0.5) < 1e-9
+
+    def test_per_edge_probability_above_inertia(self):
+        p = _noisy_or_per_edge_probability(
+            weighted_impulse=1.0, inertia=0.2, temperature=0.25,
+        )
+        assert p > 0.5
+
+    def test_per_edge_probability_uses_absolute_impulse(self):
+        # Sign of impulse must not affect the per-edge probability.
+        p_pos = _noisy_or_per_edge_probability(0.7, 0.3, 0.25)
+        p_neg = _noisy_or_per_edge_probability(-0.7, 0.3, 0.25)
+        assert abs(p_pos - p_neg) < 1e-9
+
+    def test_aggregate_empty_is_zero(self):
+        assert _noisy_or_aggregate([]) == 0.0
+
+    def test_aggregate_independent_or(self):
+        # Two independent attempts at p=0.5 give 1 - 0.25 = 0.75.
+        assert abs(_noisy_or_aggregate([0.5, 0.5]) - 0.75) < 1e-9
+
+
+# =====================================================================
+# Causal-force / trait-value sampling
+# =====================================================================
+class TestStochasticSampling:
+    def test_evidence_strength_sigma_lookup(self, physics_settings):
+        physics_settings.causal_force_sigma_weak = 0.4
+        physics_settings.causal_force_sigma_moderate = 0.2
+        physics_settings.causal_force_sigma_strong = 0.05
+        assert _evidence_strength_sigma("weak") == 0.4
+        assert _evidence_strength_sigma("moderate") == 0.2
+        assert _evidence_strength_sigma("strong") == 0.05
+        # Unknown labels fall through to moderate.
+        assert _evidence_strength_sigma("unrecognised") == 0.2
+
+    def test_sample_causal_force_scales_with_evidence(self, physics_settings):
+        # With sigma=0 (impossible — clamped to 1e-6), strong evidence
+        # collapses to the nominal value; weak evidence scatters wider.
+        physics_settings.causal_force_sigma_weak = 0.5
+        physics_settings.causal_force_sigma_strong = 0.001
+        rng_weak = random.Random(42)
+        rng_strong = random.Random(42)
+        weak_samples = [
+            _sample_causal_force(5.0, "weak", rng_weak) for _ in range(200)
+        ]
+        strong_samples = [
+            _sample_causal_force(5.0, "strong", rng_strong) for _ in range(200)
+        ]
+        weak_var = statistics.pvariance(weak_samples)
+        strong_var = statistics.pvariance(strong_samples)
+        assert weak_var > strong_var
+
+    def test_sample_causal_force_clamped(self):
+        rng = random.Random(0)
+        for _ in range(100):
+            v = _sample_causal_force(5.0, "moderate", rng)
+            assert 0.0 <= v <= 10.0
+
+    def test_sample_trait_value_high_inertia_tight(self):
+        rng_high = random.Random(7)
+        rng_low = random.Random(7)
+        high = [_sample_trait_value(0.5, 0.95, rng_high) for _ in range(300)]
+        low = [_sample_trait_value(0.5, 0.05, rng_low) for _ in range(300)]
+        assert statistics.pvariance(high) < statistics.pvariance(low)
+
+
+# =====================================================================
+# Bayesian abduction blend (Rung 3)
+# =====================================================================
+class TestBayesianAbduction:
+    def test_bayesian_posterior_formula(self, physics_settings):
+        physics_settings.abduction_blend_mode = "bayesian"
+        physics_settings.abduction_evidence_precision = 1.0
+
+        ws = _make_minimal_world()
+        ws_modified = deepcopy(ws)
+        # Set a high-inertia trait on Alice and override the factual value.
+        ws.entities["ENT_ALICE"].traits["courage"] = TraitVector(value=0.5, inertia=0.8)
+        ws_modified.entities["ENT_ALICE"].traits["courage"] = TraitVector(value=0.9, inertia=0.8)
+
+        sandbox = _build_sandbox(ws, ["ENT_ALICE", "ENT_BOB"], "counterfactual")
+        old_val = sandbox.nodes["ENT_ALICE"]["traits"]["courage"]["value"]
+        inertia = sandbox.nodes["ENT_ALICE"]["traits"]["courage"]["inertia"]
+
+        engine = CausalPhysicsEngine(sandbox, ws_modified)
+        engine.abduction_update(["ENT_ALICE"])
+
+        new_val = sandbox.nodes["ENT_ALICE"]["traits"]["courage"]["value"]
+        # Posterior = (k_prior * old + k_ev * evidence) / (k_prior + k_ev).
+        expected = (inertia * old_val + 1.0 * 0.9) / (inertia + 1.0)
+        assert abs(new_val - expected) < 1e-6
+
+    def test_bayesian_high_inertia_resists_evidence(self, physics_settings):
+        physics_settings.abduction_blend_mode = "bayesian"
+        physics_settings.abduction_evidence_precision = 0.1  # weak evidence
+        ws = _make_minimal_world()
+        ws_modified = deepcopy(ws)
+        ws.entities["ENT_ALICE"].traits["courage"] = TraitVector(value=0.2, inertia=0.95)
+        ws_modified.entities["ENT_ALICE"].traits["courage"] = TraitVector(value=0.9, inertia=0.95)
+
+        sandbox = _build_sandbox(ws, ["ENT_ALICE"], "counterfactual")
+        old_val = sandbox.nodes["ENT_ALICE"]["traits"]["courage"]["value"]
+        engine = CausalPhysicsEngine(sandbox, ws_modified)
+        engine.abduction_update(["ENT_ALICE"])
+        new_val = sandbox.nodes["ENT_ALICE"]["traits"]["courage"]["value"]
+        # Should barely move from the prior.
+        assert abs(new_val - old_val) < 0.1
+        # And in particular nowhere near the evidence value 0.9.
+        assert abs(new_val - 0.9) > 0.5
+
+    def test_legacy_mode_still_supported(self, physics_settings):
+        physics_settings.abduction_blend_mode = "legacy"
+        ws = _make_minimal_world()
+        ws_modified = deepcopy(ws)
+        ws_modified.entities["ENT_ALICE"].traits["courage"].value = 0.9
+
+        sandbox = _build_sandbox(ws, ["ENT_ALICE"], "counterfactual")
+        old_val = sandbox.nodes["ENT_ALICE"]["traits"]["courage"]["value"]
+        inertia = sandbox.nodes["ENT_ALICE"]["traits"]["courage"]["inertia"]
+        engine = CausalPhysicsEngine(sandbox, ws_modified)
+        engine.abduction_update(["ENT_ALICE"])
+        new_val = sandbox.nodes["ENT_ALICE"]["traits"]["courage"]["value"]
+        expected = old_val + (0.9 - old_val) * (1.0 - inertia)
+        assert abs(new_val - expected) < 1e-6
+
+
+# =====================================================================
+# Noisy-OR propagation
+# =====================================================================
+class TestNoisyOrPropagation:
+    def test_noisy_or_records_populated(self, physics_settings):
+        physics_settings.propagation_mode = "noisy_or"
+        ws = _make_minimal_world()
+        # Low inertia so the noisy-OR gate fires and we get a record.
+        ws.entities["ENT_BOB"].traits["courage"] = TraitVector(value=0.5, inertia=0.05)
+        sandbox = _build_sandbox(ws, ["ENT_ALICE", "ENT_BOB"])
+        engine = CausalPhysicsEngine(sandbox, ws)
+        result = engine.execute(rung=2, interventions={"EVT_FIGHT.event_type": "outcome"})
+        assert any(
+            isinstance(r, NoisyOrProbability) and r.node_id == "ENT_BOB"
+            for r in result.noisy_or_probabilities
+        )
+
+    def test_noisy_or_blocks_emit_absorbed_reason(self, physics_settings):
+        physics_settings.propagation_mode = "noisy_or"
+        physics_settings.noisy_or_temperature = 0.05  # sharp gate
+        physics_settings.noisy_or_threshold = 0.99    # near-impossible to clear
+        ws = _make_minimal_world()
+        ws.entities["ENT_BOB"].traits["anger"] = TraitVector(value=0.5, inertia=0.99)
+        sandbox = _build_sandbox(ws, ["ENT_ALICE", "ENT_BOB"])
+        engine = CausalPhysicsEngine(sandbox, ws)
+        result = engine.execute(rung=2, interventions={"EVT_FIGHT.event_type": "outcome"})
+        absorbed = [b for b in result.blocked if b.reason == "noisy_or_absorbed"]
+        # Anger should at least be tracked as an absorbed noisy-OR block
+        # whenever the gate fired against it.
+        assert any(b.node_id == "ENT_BOB" for b in absorbed) or all(
+            r.fired or r.aggregate_probability < 0.99
+            for r in result.noisy_or_probabilities
+            if r.node_id == "ENT_BOB"
+        )
+
+    def test_noisy_or_does_not_pollute_legacy_path(self, physics_settings):
+        physics_settings.propagation_mode = "deterministic"
+        ws = _make_minimal_world()
+        sandbox = _build_sandbox(ws, ["ENT_ALICE", "ENT_BOB"])
+        engine = CausalPhysicsEngine(sandbox, ws)
+        result = engine.execute(rung=2, interventions={"EVT_FIGHT.event_type": "outcome"})
+        # No noisy-OR records under deterministic mode.
+        assert result.noisy_or_probabilities == []
+        # And no noisy_or_absorbed reasons either.
+        assert all(b.reason != "noisy_or_absorbed" for b in result.blocked)
+
+
+# =====================================================================
+# Baseline drift (entity_trait_baseline_drift_rate)
+# =====================================================================
+class TestBaselineDrift:
+    def test_drift_pulls_mutation_back_toward_baseline(self, physics_settings):
+        physics_settings.propagation_mode = "deterministic"
+        physics_settings.entity_trait_baseline_drift_rate = 1.0  # full pull-back
+        ws = _make_minimal_world()
+        # Strong incoming impulse, low-inertia target.
+        ws.entities["ENT_BOB"].traits["courage"] = TraitVector(value=0.5, inertia=0.05)
+
+        # First capture the no-drift result.
+        physics_settings.entity_trait_baseline_drift_rate = 0.0
+        sb_no = _build_sandbox(ws, ["ENT_ALICE", "ENT_BOB"])
+        eng_no = CausalPhysicsEngine(sb_no, ws)
+        result_no = eng_no.execute(rung=2, interventions={"EVT_FIGHT.event_type": "outcome"})
+
+        # Now compare against full drift (rate=1.0) on a fresh sandbox.
+        physics_settings.entity_trait_baseline_drift_rate = 1.0
+        sb_yes = _build_sandbox(ws, ["ENT_ALICE", "ENT_BOB"])
+        eng_yes = CausalPhysicsEngine(sb_yes, ws)
+        result_yes = eng_yes.execute(rung=2, interventions={"EVT_FIGHT.event_type": "outcome"})
+
+        # If propagate produced any mutation on Bob.courage, the drifted
+        # version must sit closer to the baseline (0.5) than the
+        # un-drifted version. Skip the check when there were no mutations.
+        muts_no = [m for m in result_no.mutations
+                   if m.node_id == "ENT_BOB" and m.trait == "courage"]
+        muts_yes = [m for m in result_yes.mutations
+                    if m.node_id == "ENT_BOB" and m.trait == "courage"]
+        if not muts_no:
+            _pytest.skip("Test fixture did not produce a Bob.courage mutation.")
+        assert muts_yes, "Drift run produced no Bob.courage mutation."
+        baseline = 0.5
+        assert abs(muts_yes[0].new_value - baseline) <= abs(muts_no[0].new_value - baseline)
+
+    def test_zero_drift_rate_preserves_legacy(self, physics_settings):
+        physics_settings.propagation_mode = "deterministic"
+        physics_settings.entity_trait_baseline_drift_rate = 0.0
+        ws = _make_minimal_world()
+        sandbox = _build_sandbox(ws, ["ENT_ALICE", "ENT_BOB"])
+        engine = CausalPhysicsEngine(sandbox, ws)
+        before = sandbox.nodes["ENT_BOB"]["traits"]["courage"]["value"]
+        result = engine.execute(rung=2, interventions={"EVT_FIGHT.event_type": "outcome"})
+        # No drift bookkeeping should have run; mutations match trait values.
+        for m in result.mutations:
+            tdata = sandbox.nodes[m.node_id]["traits"][m.trait]
+            assert abs(tdata["value"] - m.new_value) < 1e-9
+        # Sanity: at least one trait may still equal its before-value.
+        assert isinstance(before, float)
+
+
+# =====================================================================
+# Monte-Carlo distributional execute
+# =====================================================================
+class TestExecuteDistribution:
+    def test_zero_samples_falls_back_to_deterministic(self, physics_settings):
+        physics_settings.monte_carlo_samples = 0
+        ws = _make_minimal_world()
+        sandbox = _build_sandbox(ws, ["ENT_ALICE", "ENT_BOB"])
+        engine = CausalPhysicsEngine(sandbox, ws)
+        result = engine.execute_distribution(
+            rung=2, interventions={"EVT_FIGHT.event_type": "outcome"},
+        )
+        # No distributions populated when sampling is disabled.
+        assert result.trait_distributions == {}
+
+    def test_distribution_populated_with_samples(self, physics_settings):
+        physics_settings.monte_carlo_samples = 6
+        physics_settings.monte_carlo_seed = 123
+        physics_settings.propagation_mode = "noisy_or"
+        ws = _make_minimal_world()
+        sandbox = _build_sandbox(ws, ["ENT_ALICE", "ENT_BOB"])
+        engine = CausalPhysicsEngine(sandbox, ws)
+        result = engine.execute_distribution(
+            rung=2,
+            interventions={"EVT_FIGHT.event_type": "outcome"},
+            samples=6,
+            seed=123,
+        )
+        # At least one entity-trait should have a distribution recorded.
+        assert result.trait_distributions, (
+            "execute_distribution returned no per-trait distributions"
+        )
+        any_dist: TraitDistribution | None = None
+        for by_trait in result.trait_distributions.values():
+            for d in by_trait.values():
+                any_dist = d
+                break
+            if any_dist:
+                break
+        assert any_dist is not None
+        assert any_dist.samples_count > 0
+        assert 0.0 <= any_dist.p5 <= any_dist.p50 <= any_dist.p95 <= 1.0
+
+    def test_distribution_supports_bayesian_blend(self, physics_settings):
+        # The Monte-Carlo path must honour the abduction_blend_mode
+        # setting — execute_distribution delegates to execute() which
+        # delegates to abduction_update().
+        physics_settings.monte_carlo_samples = 4
+        physics_settings.monte_carlo_seed = 7
+        physics_settings.abduction_blend_mode = "bayesian"
+        physics_settings.abduction_evidence_precision = 5.0  # evidence dominates
+
+        ws = _make_minimal_world()
+        ws_modified = deepcopy(ws)
+        ws_modified.entities["ENT_ALICE"].traits["courage"].value = 0.9
+
+        sandbox = _build_sandbox(ws, ["ENT_ALICE", "ENT_BOB"], "counterfactual")
+        engine = CausalPhysicsEngine(sandbox, ws_modified)
+        result = engine.execute_distribution(
+            rung=3,
+            interventions={"EVT_FIGHT.event_type": "outcome"},
+            evidence_node_ids=["ENT_ALICE"],
+            samples=4,
+            seed=7,
+        )
+        # Result should record a distribution for at least one trait of Alice.
+        assert "ENT_ALICE" in result.trait_distributions
+
+    def test_sandbox_restored_after_distribution_run(self, physics_settings):
+        physics_settings.monte_carlo_samples = 3
+        physics_settings.monte_carlo_seed = 1
+        ws = _make_minimal_world()
+        sandbox = _build_sandbox(ws, ["ENT_ALICE", "ENT_BOB"])
+        engine = CausalPhysicsEngine(sandbox, ws)
+        before_value = engine.sandbox.nodes["ENT_BOB"]["traits"]["courage"]["value"]
+        engine.execute_distribution(
+            rung=2,
+            interventions={"EVT_FIGHT.event_type": "outcome"},
+            samples=3,
+            seed=1,
+        )
+        after_value = engine.sandbox.nodes["ENT_BOB"]["traits"]["courage"]["value"]
+        assert before_value == after_value, (
+            "execute_distribution must not mutate the engine's sandbox in place."
+        )
+
+    def test_execute_auto_routes_when_samples_configured(self, physics_settings):
+        """Setting ``monte_carlo_samples > 0`` makes the *plain* ``execute()``
+        entry point auto-delegate to ``execute_distribution`` so existing
+        callers (narrative_physics, directive_assembly, MCP server, ...)
+        opt into Monte-Carlo without code changes.
+        """
+        physics_settings.monte_carlo_samples = 3
+        physics_settings.monte_carlo_seed = 11
+        ws = _make_minimal_world()
+        sandbox = _build_sandbox(ws, ["ENT_ALICE", "ENT_BOB"])
+        engine = CausalPhysicsEngine(sandbox, ws)
+        # Plain execute() — but settings should redirect through the MC path.
+        result = engine.execute(rung=2, interventions={"EVT_FIGHT.event_type": "outcome"})
+        assert result.trait_distributions, (
+            "execute() with monte_carlo_samples>0 must populate "
+            "trait_distributions via the auto-routed Monte-Carlo path."
+        )

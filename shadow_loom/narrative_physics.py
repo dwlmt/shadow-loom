@@ -267,6 +267,7 @@ def calculate_narrative_physics(
                 "rule3_pruned_interventions": list(
                     physics_result.rule3_pruned_interventions
                 ),
+                "rule3_pruning_mode": physics_result.rule3_pruning_mode,
                 "rule2_redundant_evidence": list(
                     physics_result.rule2_redundant_evidence
                 ),
@@ -409,6 +410,7 @@ def calculate_narrative_physics(
                 "rule3_pruned_interventions": list(
                     physics_result.rule3_pruned_interventions
                 ),
+                "rule3_pruning_mode": physics_result.rule3_pruning_mode,
                 "rule2_redundant_evidence": list(
                     physics_result.rule2_redundant_evidence
                 ),

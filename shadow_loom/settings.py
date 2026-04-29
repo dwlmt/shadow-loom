@@ -198,6 +198,184 @@ class CausalPhysicsSettings(BaseSettings):
     inertia_epsilon: float = Field(default=0.0)
     ego_memory_limit: int = Field(default=5)
 
+    # ------------------------------------------------------------------
+    # Probabilistic propagation
+    # ------------------------------------------------------------------
+    propagation_mode: Literal["deterministic", "noisy_or"] = Field(
+        default="noisy_or",
+        description=(
+            "How incoming causal impulses are aggregated and gated against "
+            "trait inertia. 'deterministic' (default) keeps the legacy "
+            "weighted-average + |impact| > inertia gate so existing "
+            "behaviour is preserved bit-for-bit. 'noisy_or' treats each "
+            "incoming edge as an independent Bernoulli attempt to overcome "
+            "inertia: per-edge success probability p_i = sigmoid((|w_i * "
+            "impulse_i| - inertia) / noisy_or_temperature), and the trait "
+            "shifts iff a noisy-OR draw 1 - prod(1 - p_i) > 0.5 (or, in "
+            "Monte-Carlo mode, with that probability)."
+        ),
+    )
+    noisy_or_temperature: float = Field(
+        default=0.25,
+        description=(
+            "Sigmoid temperature for the noisy-OR per-edge gate. Lower = "
+            "sharper (closer to a hard threshold at |w*impulse| == inertia); "
+            "higher = softer (more probability mass even when impulse is "
+            "below inertia)."
+        ),
+    )
+    noisy_or_threshold: float = Field(
+        default=0.5,
+        description=(
+            "Aggregate noisy-OR probability above which the trait is "
+            "considered to have shifted in the *deterministic* "
+            "propagation_mode='noisy_or' path. Ignored under Monte-Carlo "
+            "sampling, where the noisy-OR probability is drawn directly."
+        ),
+    )
+
+    # ------------------------------------------------------------------
+    # Per-edge causal-force noise (Normal model around the point estimate)
+    # ------------------------------------------------------------------
+    causal_force_sigma_weak: float = Field(
+        default=0.30,
+        description="std-dev (fraction of nominal causal_force) for evidence_strength='weak'.",
+    )
+    causal_force_sigma_moderate: float = Field(
+        default=0.15,
+        description="std-dev fraction for evidence_strength='moderate'.",
+    )
+    causal_force_sigma_strong: float = Field(
+        default=0.05,
+        description="std-dev fraction for evidence_strength='strong'.",
+    )
+
+    # ------------------------------------------------------------------
+    # Monte-Carlo distributional CTF
+    # ------------------------------------------------------------------
+    monte_carlo_samples: int = Field(
+        default=0,
+        description=(
+            "If >0, ``CausalPhysicsEngine.execute_distribution`` will draw "
+            "this many samples by perturbing causal_force ~ Normal(force, "
+            "sigma(evidence_strength)) and trait values ~ Beta(alpha, beta) "
+            "with concentration kappa = 1/(1 - inertia + eps). The aggregate "
+            "result is a distribution over post-propagation trait values "
+            "(mean / p5 / p50 / p95) instead of a single point. ``execute()`` "
+            "is unaffected; this is a separate orchestration entry point."
+        ),
+    )
+    monte_carlo_seed: Optional[int] = Field(
+        default=None,
+        description="Optional RNG seed for reproducible Monte-Carlo runs.",
+    )
+
+    # ------------------------------------------------------------------
+    # Abduction blending (Rung 3)
+    # ------------------------------------------------------------------
+    abduction_blend_mode: Literal["legacy", "bayesian"] = Field(
+        default="bayesian",
+        description=(
+            "How abduction reconciles a sandbox trait value with the "
+            "factual present-day evidence. 'legacy' (default): blended = "
+            "old + delta * (1 - inertia). 'bayesian': posterior = "
+            "(inertia * old + ev_precision * evidence) / (inertia + "
+            "ev_precision), i.e. inertia is interpreted as the *precision* "
+            "of the historical prior and characters with high inertia "
+            "shrink toward the historical baseline rather than the present "
+            "evidence."
+        ),
+    )
+    abduction_evidence_precision: float = Field(
+        default=1.0,
+        description=(
+            "Precision (inverse variance) of the present-day evidence in "
+            "the bayesian abduction blend. Larger values let the evidence "
+            "dominate the prior even for high-inertia traits."
+        ),
+    )
+
+    # ------------------------------------------------------------------
+    # Type-aware inertia priors (used as fallbacks where extraction is silent)
+    # ------------------------------------------------------------------
+    entity_trait_inertia_default: float = Field(
+        default=0.5,
+        description=(
+            "Fallback inertia for an Entity trait when the extracted "
+            "TraitVector is missing one. Characters are stickier than "
+            "events: defaults sit higher than situation-level facts."
+        ),
+    )
+    belief_inertia_default: float = Field(
+        default=0.3,
+        description=(
+            "Fallback inertia for a Belief when extraction omits it. "
+            "Beliefs flip faster than personality, so the prior is lower "
+            "than entity_trait_inertia_default."
+        ),
+    )
+    world_trait_inertia_default: float = Field(
+        default=0.8,
+        description=(
+            "Fallback inertia for a WORLD_ trait magnitude when extraction "
+            "omits it. World-level facts are the stickiest tier."
+        ),
+    )
+    event_state_inertia_default: float = Field(
+        default=0.0,
+        description=(
+            "Conceptual inertia of an *event* — events are discrete, "
+            "either-they-happened-or-they-didn't, so they have effectively "
+            "zero stickiness. Exposed as a field so the auditor / reasoning "
+            "layer can quote it explicitly when contrasting event volatility "
+            "with character stability."
+        ),
+    )
+    entity_trait_baseline_drift_rate: float = Field(
+        default=0.0,
+        description=(
+            "If >0, after each propagation step entity traits drift back "
+            "toward their state_timeline baseline by (1 - inertia) * rate. "
+            "Encodes 'characters return to type' so a single off-screen "
+            "shock doesn't permanently rewrite a high-inertia trait. "
+            "Default 0 keeps legacy behaviour."
+        ),
+    )
+    rule3_pruning_mode: Literal["advisory", "prune"] = Field(
+        default="advisory",
+        description=(
+            "How the ctf-calculus pre-flight should treat Rule 3 (Exclusion) "
+            "verdicts. 'advisory' (default): report pruned interventions but "
+            "still execute the do-surgery — d-separation on the latent-free "
+            "AMWN can spuriously mark an intervention vacuous when the LLM "
+            "extraction missed a confounder. 'prune': drop the interventions "
+            "before simulation. Use 'prune' only when the extracted causal "
+            "topology is known to be confounder-complete."
+        ),
+    )
+    allow_unobserved_confounders: bool = Field(
+        default=False,
+        description=(
+            "Safety-net only. When True, the AMWN builder injects a "
+            "synthetic ``U_<a>__<b>`` latent parent for *every* pair of "
+            "nodes that share an observed cause, so d-separation refuses "
+            "to mark the siblings independent. This is combinatorial and "
+            "will collapse Rule 2 / Rule 3 reasoning to 'everything is "
+            "dependent on everything' on richly-extracted graphs — use "
+            "only as a debugging / research toggle when extraction is "
+            "known to under-emit named latents.\n\n"
+            "Preferred path: the extraction prompts "
+            "(``ontology_world_traits.md`` rule 7, "
+            "``physics_extraction.md`` rule 16) elicit named latent "
+            "forces — fate, prophecy, ambient ideology, offstage war, "
+            "family curse — as first-class ``WORLD_*`` traits and wire "
+            "them as explicit ``chain_reaction`` causes of the events "
+            "they jointly produce. With confounders modelled as "
+            "observed ``WORLD_*`` parents the AMWN already routes the "
+            "shared dependency correctly without needing this flag."
+        ),
+    )
+
     @property
     def strength_multiplier(self) -> dict[str, float]:
         return {

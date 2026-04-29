@@ -775,10 +775,19 @@ class DirectiveAssembler:
 
         Models each entity trait as a Bernoulli variable.
 
-        * **Prior** — maximum-entropy baseline (0.5) adjusted toward the
-          actual value for each *revealed* causal edge (what the reader
-          can reasonably infer).  Unrevealed causes leave the prior at
-          0.5, maximising the prediction error.
+        * **Prior** — starts from a corpus-marginal baseline (the average
+          value of *that* trait across all entities in ``world_state``)
+          rather than a hard-coded 0.5. The 0.5 default treats every
+          trait as maximally uncertain, which is rarely true in practice
+          (e.g. ``courage`` skews high in heroic casts; ``despair`` skews
+          low). The marginal collapses to 0.5 only when the corpus is
+          itself maximally split, otherwise it pulls the reader's
+          expectation toward what the rest of the cast looks like.
+          For each *revealed* causal edge targeting this entity we then
+          apply a Bayesian-style additive update,
+          ``prior += w_i · (actual - base_prior)`` (clipped to ``[ε, 1-ε]``),
+          so the magnitude of the shift is tied directly to the edge
+          weight rather than the previous geometric ``* 0.5`` halving.
         * **Posterior** — actual trait values from the sandbox
           (post-simulation) or world state (truth).
 
@@ -790,6 +799,26 @@ class DirectiveAssembler:
         EPS = 0.01
         _STRENGTH_W = {"weak": 0.25, "moderate": 0.5, "strong": 0.75}
         revealed = self._revealed_event_ids(syuzhet_anchor)
+
+        # Pre-compute per-trait corpus marginals (average value of each
+        # trait across every entity in the world state). This is the
+        # "no causal evidence" baseline — what an uninformed reader
+        # would guess given only knowledge of the world's overall trait
+        # distribution.
+        marginal_sum: Dict[str, float] = {}
+        marginal_count: Dict[str, int] = {}
+        for ent in self.world_state.entities.values():
+            for tname, tdata in ent.traits.items():
+                v = getattr(tdata, "value", None)
+                if v is None:
+                    continue
+                marginal_sum[tname] = marginal_sum.get(tname, 0.0) + float(v)
+                marginal_count[tname] = marginal_count.get(tname, 0) + 1
+
+        def _trait_marginal(name: str) -> float:
+            if marginal_count.get(name, 0) == 0:
+                return 0.5
+            return marginal_sum[name] / marginal_count[name]
 
         total_kl = 0.0
         trait_count = 0
@@ -812,19 +841,26 @@ class DirectiveAssembler:
 
                 actual_val = actual_data["value"]
 
-                # Prior: start from maximum entropy, shift toward truth
-                # for each revealed causal edge targeting this entity.
-                prior_val = 0.5
+                # Prior: start from the corpus marginal for this trait,
+                # then accumulate additive Bayesian-style evidence from
+                # revealed causal edges. ``prior = base + Σ w_i · (actual - base)``
+                # is monotone in the number/strength of revealed edges
+                # and clips cleanly into ``[ε, 1-ε]`` for the KL.
+                base_prior = _trait_marginal(trait_name)
+                prior_val = base_prior
                 for ce in self.world_state.causal_topology:
                     if ce.target_id != eid:
                         continue
                     if ce.source_id not in revealed:
                         continue
                     w = _STRENGTH_W.get(ce.evidence_strength, 0.5)
-                    prior_val += (actual_val - prior_val) * w * 0.5
+                    prior_val += w * (actual_val - base_prior)
+                # Explicit clipping so cumulative updates can't push the
+                # prior outside the open unit interval used by the KL.
+                prior_val = max(EPS, min(1 - EPS, prior_val))
 
                 p = max(EPS, min(1 - EPS, actual_val))    # posterior
-                q = max(EPS, min(1 - EPS, prior_val))     # prior
+                q = prior_val                             # prior
 
                 # Binary KL: D_KL(p || q)
                 kl = (
@@ -883,7 +919,19 @@ class DirectiveAssembler:
         elif target_effect == "surprise":
             score -= self.compute_surprise_score(entity_ids, syuzhet_anchor)
 
-        # --- Emotion effects (trait headroom) ---
+        # --- Emotion effects (distance-to-target, NOT remaining headroom) ---
+        # The previous implementation rewarded ``headroom_up`` for the
+        # increase set, but ``headroom_up = 1 - current_value`` is the
+        # ROOM still available to grow toward saturation — i.e. the
+        # distance from the trait to its target (1.0). Subtracting that
+        # from the score made an entity at value=0.0 score "best" for
+        # grief/rage/etc., the exact opposite of what the affective
+        # loss should reward. We now compute *closeness to target*:
+        #   • increase set: target = 1.0, closeness = current_value
+        #   • decrease set: target = 0.0, closeness = 1 - current_value
+        # so an entity already saturated in the right direction yields
+        # ``score ≈ -1`` (strong match) and an entity stuck on the wrong
+        # side yields ``score ≈ 0`` (no match).
         else:
             _EFFECT_TRAIT_MAP: Dict[str, List[str]] = {
                 "grief": ["despair", "love", "hope"],
@@ -910,16 +958,28 @@ class DirectiveAssembler:
                 if traj.trait_name in target_traits
             ]
             if relevant:
-                avg_headroom = sum(
-                    traj.headroom_down if traj.trait_name in decrease_set
-                    else traj.headroom_up
+                # Closeness of each trait to its per-effect target.
+                avg_match = sum(
+                    (1.0 - traj.current_value) if traj.trait_name in decrease_set
+                    else traj.current_value
                     for traj in relevant
                 ) / len(relevant)
-                score -= avg_headroom
-                logger.debug("[DirectiveAssembly·AffectiveScore] effect=%s avg_headroom=%.3f score=%.4f",
-                             target_effect, avg_headroom, score)
+                score -= avg_match
+                logger.debug("[DirectiveAssembly·AffectiveScore] effect=%s avg_match=%.3f score=%.4f",
+                             target_effect, avg_match, score)
             else:
-                score += 0.5
+                # No traits in the entity match the per-effect target
+                # set — we have nothing to score against. Treat this as
+                # the *worst possible* match (``+1.0``) rather than the
+                # midpoint (``+0.5``) so the loss is on the same scale
+                # as the success path: structural effects subtract a
+                # value in ``[0, 1]`` and emotion successes subtract
+                # a closeness in ``[0, 1]``, giving a best-case score
+                # of ``-1.0``. The fallback is the symmetric worst-case
+                # of ``+1.0`` rather than a half-step that silently
+                # ranked an unmeasurable trait set above genuinely
+                # bad matches.
+                score += 1.0
 
         return round(score, 4)
 
@@ -992,12 +1052,16 @@ class DirectiveAssembler:
             has_mutations = len(physics.mutations) > 0
             all_blocked = len(physics.blocked) > 0 and not has_mutations
             # Rule-3 (ctf-calculus exclusion) can drop every intervention
-            # silently before the do-surgery runs; without an explicit
-            # check the candidate would otherwise look "valid" against the
-            # untouched sandbox. Mark it invalid so the assembler doesn't
-            # rank a vacuous request alongside real surgeries.
+            # silently before the do-surgery runs *when the engine is
+            # configured to prune* (``physics.rule3_pruning_mode ==
+            # "prune"``). Without an explicit check the candidate would
+            # otherwise look "valid" against the untouched sandbox. In
+            # advisory mode (the default) the surgery is still applied,
+            # so ``surgery_applied`` will be True and this branch
+            # naturally does not fire.
             all_rule3_pruned = (
-                len(physics.rule3_pruned_interventions) >= len(candidate)
+                physics.rule3_pruning_mode == "prune"
+                and len(physics.rule3_pruned_interventions) >= len(candidate)
                 and not surgery_applied
                 and not has_mutations
             )
@@ -1222,19 +1286,46 @@ class DirectiveAssembler:
             revealed = self._revealed_event_ids(syuzhet_anchor)
 
             # Find specific irony points: reader sees cause → character,
-            # but the character's beliefs lack the source event.
+            # but the character has no perceptual access to the source
+            # event. Mirrors the awareness model used by
+            # ``compute_dramatic_irony_score`` — a character "knows" an
+            # event only when (a) they participated in it, (b) they
+            # received a revealed information edge whose source is the
+            # event, or (c) they hold an explicit belief whose target
+            # IS the event id. Comparing event IDs against
+            # ``{b.target_id for b in ent.beliefs}`` directly (the
+            # previous implementation) was wrong: belief targets are
+            # almost always entity / object / world ids, never EVT_*,
+            # so every revealed causal edge looked like irony and
+            # saturated the constraint list.
             irony_details: List[tuple] = []
             for eid in entity_ids:
                 ent = self.world_state.entities.get(eid)
                 if not ent:
                     continue
-                character_aware_of = {b.target_id for b in ent.beliefs}
+                events_known_by_character: set[str] = {
+                    evt.id for evt in self.world_state.events
+                    if eid in evt.actor_ids or eid in evt.target_ids
+                }
+                for ie in self.world_state.information_topology:
+                    if syuzhet_anchor is not None and ie.discovered_at_syuzhet > syuzhet_anchor:
+                        continue
+                    if eid not in ie.target_ids:
+                        continue
+                    if ie.source_id.startswith("EVT_"):
+                        events_known_by_character.add(ie.source_id)
+                events_known_by_character |= {
+                    b.target_id for b in ent.beliefs
+                    if b.target_id.startswith("EVT_")
+                }
                 for ce in self.world_state.causal_topology:
                     if ce.target_id != eid:
                         continue
+                    if not ce.source_id.startswith("EVT_"):
+                        continue
                     if ce.source_id not in revealed:
                         continue
-                    if ce.source_id not in character_aware_of:
+                    if ce.source_id not in events_known_by_character:
                         src_evt = next(
                             (e for e in self.world_state.events
                              if e.id == ce.source_id),

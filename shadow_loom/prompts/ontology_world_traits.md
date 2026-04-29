@@ -45,6 +45,7 @@ Each `GlobalTrait` has:
 4. **Domain specificity**: Be precise with `affected_domains`. A surveillance state primarily affects `"psychological"` and `"epistemic"` domains. Social rigidity primarily affects `"social"`. A magic system might affect `"physical"` and `"epistemic"`.
 5. **Avoid character-level traits.** "Macbeth is ambitious" is an entity trait, not a world trait. "Scotland's feudal hierarchy rewards violent ambition" IS a world trait.
 6. **Avoid location-specific conditions.** "The castle is cold" is a location ambient state. "Winter grips the entire kingdom" IS a world trait.
+7. **Extract *implicit* forces too — the named latent causes.** Many narratives are driven by forces that are never given a single on-page event but that demonstrably shape multiple events in parallel: a prophecy, a curse, a conspiracy, fate, the spirit of an age, an offstage war, a family's accumulated shame, a religious worldview. If two or more events in the story "feel co-caused" by something the text refers to obliquely ("the prophecy demanded it", "as fate would have it", "the war made everyone suspicious"), extract that thing as a `WORLD_` trait so the causal graph can route their shared cause through an explicit node rather than leaving it as an unobserved confounder. Use the `category` that fits best (`"cosmology"` for fate/prophecy/curse, `"social_structure"` for ambient ideology, `"governance"` for offstage political pressure, etc.). These named-latent traits typically have moderate `magnitude.value` (0.3–0.6) and high `inertia` (0.7–0.95) — they pervade quietly and resist change.
 
 ---
 
@@ -60,3 +61,8 @@ Each `GlobalTrait` has:
 
 **Persuasion:**
 - `WORLD_SOCIAL_RIGIDITY`: Regency-era class expectations constrain marriage, social interaction, and personal autonomy. Category: `"social_structure"`. Magnitude: `{"value": 0.7, "inertia": 0.75}`. Domains: `["social", "emotional"]`.
+
+**Named-latent (implicit) examples:**
+- *Macbeth* — `WORLD_FATE`: The witches' prophecy operates as a latent force shaping every major decision; characters act under it without ever directly invoking it as an event. Category: `"cosmology"`. Magnitude: `{"value": 0.55, "inertia": 0.9}`. Domains: `["psychological", "epistemic"]`.
+- *Wuthering Heights* — `WORLD_HEATHCLIFF_RESENTMENT`: An ambient grievance from childhood mistreatment that quietly drives multiple revenge events spanning two generations. Category: `"social_structure"`. Magnitude: `{"value": 0.6, "inertia": 0.85}`. Domains: `["emotional", "social"]`.
+- *1984* — `WORLD_INGSOC_IDEOLOGY`: The Party's worldview that produces conforming behaviour without any single on-page event commanding it. Category: `"governance"`. Magnitude: `{"value": 0.8, "inertia": 0.9}`. Domains: `["psychological", "social", "epistemic"]`.

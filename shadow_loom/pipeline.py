@@ -957,11 +957,17 @@ def _build_brief_for_query(
             query, physics_state, world_state,
             mutations=physics_result.get("mutations"),
             blocked=physics_result.get("blocked"),
+            rule3_pruned_interventions=physics_result.get("rule3_pruned_interventions"),
+            rule2_redundant_evidence=physics_result.get("rule2_redundant_evidence"),
+            rule3_pruning_mode=physics_result.get("rule3_pruning_mode", "advisory"),
         )
     elif query.query_type == "counterfactual":
         return build_counterfactual_brief(
             query, physics_state, world_state,
             hidden_deltas=physics_result.get("hidden_deltas"),
+            rule3_pruned_interventions=physics_result.get("rule3_pruned_interventions"),
+            rule2_redundant_evidence=physics_result.get("rule2_redundant_evidence"),
+            rule3_pruning_mode=physics_result.get("rule3_pruning_mode", "advisory"),
         )
     elif query.query_type == "directive":
         # Reached when the causal engine is disabled (or otherwise

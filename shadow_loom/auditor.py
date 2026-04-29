@@ -31,6 +31,7 @@ from shadow_loom.directive_assembly import (
     CreativeBrief,
     ConstraintBlock,
     DirectiveAssembler,
+    InterventionMechanism,
 )
 from shadow_loom.generation import (
     GeneratedScene,
@@ -1020,6 +1021,85 @@ def assemble_audit_prompt(
     return "\n".join(sections)
 
 
+def _inject_miracle_step_mechanisms(
+    brief: CreativeBrief,
+    blocked: List[BlockedPropagation],
+    violations: List[AuditViolation],
+) -> int:
+    """Append :class:`InterventionMechanism` entries to *brief* for every
+    miracle-step the engine or auditor flagged.
+
+    The audit/refinement loop previously could only re-prompt the LLM on
+    a miracle step. That left the rewriter free to ignore the deficit and
+    repeat the same Impact < Inertia mistake. Here we mutate the brief
+    itself: each blocked propagation becomes an explicit
+    ``InterventionMechanism`` directive carrying the entity, the trait,
+    its old value, the inertia the rewrite must overcome, and a synthetic
+    ``mechanism_hint`` reminding the renderer that a *visible physical
+    or psychological force* is required on the page.
+
+    Returns the number of mechanisms added (so the caller can decide
+    whether to rebuild the rendering prompt).
+    """
+    if not blocked and not violations:
+        return 0
+
+    existing_keys = {
+        (m.node_id, m.new_state) for m in brief.intervention_mechanisms
+    }
+    added = 0
+
+    for b in blocked:
+        if b.reason != "inertia":
+            # Spatial / cycle blocks aren't narrative miracles \u2014
+            # their fix is in the world topology, not in the prose.
+            continue
+        key = (b.node_id, f"{b.trait}\u2191" if b.impact > 0 else f"{b.trait}\u2193")
+        if key in existing_keys:
+            continue
+        direction = "raise" if b.impact > 0 else "lower"
+        brief.intervention_mechanisms.append(InterventionMechanism(
+            node_id=b.node_id,
+            old_state=b.trait,
+            new_state=key[1],
+            mechanism_hint=(
+                f"Render an explicit on-page force that {direction}s "
+                f"{b.node_id}.{b.trait}: the engine measured "
+                f"|impact|={abs(b.impact):.2f} \u2264 inertia={b.inertia:.2f}, "
+                "so the prose MUST stage a mechanism strong enough to "
+                "overcome that inertia (described action, dialogue, "
+                "perceived threat, etc.) instead of asserting the change."
+            ),
+            inertia=b.inertia,
+        ))
+        existing_keys.add(key)
+        added += 1
+
+    # The LLM auditor may also flag miracle-steps the engine missed
+    # (e.g. an off-graph trait the renderer changed without justification).
+    for v in violations:
+        if v.violation_type != "miracle_step":
+            continue
+        # Synthetic key so the auditor-only flag still becomes a directive.
+        key = ("AUDITOR", v.feedback[:40])
+        if key in existing_keys:
+            continue
+        brief.intervention_mechanisms.append(InterventionMechanism(
+            node_id="UNKNOWN",
+            old_state="(auditor-flagged)",
+            new_state="(auditor-flagged)",
+            mechanism_hint=(
+                "Auditor flagged miracle-step: " + v.feedback +
+                " \u2014 stage an explicit causal mechanism in the next draft."
+            ),
+            inertia=0.5,
+        ))
+        existing_keys.add(key)
+        added += 1
+
+    return added
+
+
 def _build_refinement_prompt(
     original_rendering_prompt: str,
     violations: List[AuditViolation],
@@ -1608,9 +1688,29 @@ def run_feedback_loop(
                 "; ".join(engine_failures),
             )
 
+        # --- Step 11.5: Mutate the brief on miracle-step verdicts ---
+        # Re-prompting alone gives the rewriter no new structured signal
+        # \u2014 it just sees the same scene + a textual nag. Promote each
+        # miracle step into an explicit ``InterventionMechanism`` so the
+        # next render pass sees a *typed directive* in the brief, not
+        # just a paragraph of feedback. The rendering prompt is rebuilt
+        # below from the (now mutated) brief so the new directives flow
+        # into the LLM context.
+        engine_blocked: List[BlockedPropagation] = []
+        if physics_result is not None:
+            engine_blocked = list(physics_result.blocked)
+        injected_mechanisms = _inject_miracle_step_mechanisms(
+            brief, engine_blocked, audit.violations,
+        )
+        if injected_mechanisms:
+            logger.info(
+                "[FeedbackLoop] Injected %d InterventionMechanism entries "
+                "into brief from miracle-step violations.", injected_mechanisms,
+            )
+
         # --- Step 12: Refinement ---
         logger.info(
-            "[FeedbackLoop] FAILED audit — %d violations, %d engine failures. "
+            "[FeedbackLoop] FAILED audit \u2014 %d violations, %d engine failures. "
             "Regenerating.",
             len(audit.violations), len(engine_failures),
         )
@@ -1620,13 +1720,21 @@ def run_feedback_loop(
         iteration_feedback = [v.feedback for v in audit.violations]
         for failure in engine_failures:
             iteration_feedback.append(
-                f"[engine-threshold] {failure} — adjust prose to fix."
+                f"[engine-threshold] {failure} \u2014 adjust prose to fix."
             )
         accumulated_feedback.extend(iteration_feedback)
 
         # Fork the graph for the next iteration
         if versioned is not None:
             versioned.fork()
+
+        # Rebuild the base rendering prompt from the (possibly mutated)
+        # brief so any newly-injected InterventionMechanisms make it
+        # into the next render pass.
+        if injected_mechanisms:
+            base_rendering_prompt = assemble_rendering_prompt(
+                brief, query_type, physics_state,
+            )
 
         # Build the augmented rendering prompt with feedback
         refinement_prompt = _build_refinement_prompt(

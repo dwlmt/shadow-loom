@@ -64,6 +64,68 @@ InterventionItem = Tuple[str, str]  # (target_path, hashable repr of value)
 InterventionContext = FrozenSet[InterventionItem]
 
 
+# Sentinel returned by ``_resolve_observed_value`` when an intervention
+# path cannot be resolved against the current world state (the node is
+# absent, the attribute path doesn't exist, etc.). Rule 1 (Consistency)
+# only applies when there is a concrete observed value to compare the
+# do-value against, so unresolvable paths are skipped.
+_SENTINEL_UNRESOLVED = object()
+
+
+def _resolve_observed_value(world_state: WorldStateV1, path: str) -> Any:
+    """Resolve a dotted intervention path to its current observed value.
+
+    Supports the same path shapes that ``AMWNInstantiator.execute_interventions``
+    accepts: bare ``ENT_X`` (returns the entity dump), ``ENT_X.spawn``
+    (always unresolvable — spawn creates a new node), ``ENT_X.traits.<name>``,
+    ``ENT_X.traits.<name>.value``, ``ENT_X.location_id``, ``ENT_X.status``,
+    and ``WORLD_X.magnitude.value``. Any unsupported attribute returns
+    the ``_SENTINEL_UNRESOLVED`` sentinel so the caller skips Rule 1
+    rather than emitting a spurious "redundant" verdict.
+    """
+    if "." not in path:
+        return _SENTINEL_UNRESOLVED  # Bare-node interventions have no scalar to compare.
+
+    node_id, sub_path = path.split(".", 1)
+    sub = sub_path.strip()
+    if sub == "spawn":
+        return _SENTINEL_UNRESOLVED
+
+    # Resolve the host node from the world state.
+    host: Any = None
+    if node_id in world_state.entities:
+        host = world_state.entities[node_id]
+    elif node_id in (getattr(world_state, "objects", {}) or {}):
+        host = world_state.objects[node_id]
+    elif node_id in (getattr(world_state, "locations", {}) or {}):
+        host = world_state.locations[node_id]
+    elif node_id in (getattr(world_state, "world_traits", {}) or {}):
+        host = world_state.world_traits[node_id]
+    if host is None:
+        return _SENTINEL_UNRESOLVED
+
+    parts = sub.split(".")
+    cursor: Any = host
+    for part in parts:
+        if isinstance(cursor, dict):
+            if part not in cursor:
+                return _SENTINEL_UNRESOLVED
+            cursor = cursor[part]
+            continue
+        # Pydantic model or arbitrary object — try attribute access first,
+        # then fall back to model_dump for dict-style access on traits.
+        if hasattr(cursor, part):
+            cursor = getattr(cursor, part)
+            continue
+        if hasattr(cursor, "model_dump"):
+            dumped = cursor.model_dump()
+            if isinstance(dumped, dict) and part in dumped:
+                cursor = dumped[part]
+                continue
+        return _SENTINEL_UNRESOLVED
+    return cursor
+
+
 def _hashable_value(value: Any) -> str:
     """Coerce an intervention value to a stable hashable string.
 
@@ -140,7 +202,11 @@ def _rel_node_id(source_id: str, target_id: str, metric: str) -> str:
     return f"REL::{source_id}::{target_id}::{metric}"
 
 
-def build_causal_diagram(world_state: WorldStateV1) -> nx.DiGraph:
+def build_causal_diagram(
+    world_state: WorldStateV1,
+    *,
+    allow_unobserved_confounders: Optional[bool] = None,
+) -> nx.DiGraph:
     """Strip ``world_state`` to a structural directed diagram ``G``.
 
     Nodes are entity / event / object / world-trait IDs; edges are the
@@ -157,7 +223,29 @@ def build_causal_diagram(world_state: WorldStateV1) -> nx.DiGraph:
     its triggering event (the ``CausalEdge.source_id``) and from its two
     endpoint entities, so the AMWN sees them as caused both by the event
     and by the relationship's participants.
+
+    Parameters
+    ----------
+    allow_unobserved_confounders
+        When ``True`` (or, by default, when
+        ``CausalPhysicsSettings.allow_unobserved_confounders`` is set in
+        ``config.env``), every pair of distinct nodes that share an
+        observed parent is also given a *latent shared parent*
+        ``U_<a>__<b>`` — modelling a potentially-unobserved confounder.
+        This makes the diagram *sound-but-incomplete* explicit:
+        d-separation will refuse to mark the two siblings independent
+        because the latent ``U`` opens an active path between them.
+        Default ``None`` defers to the settings value.
     """
+    if allow_unobserved_confounders is None:
+        try:
+            from shadow_loom.settings import get_settings  # local to avoid cycles
+            allow_unobserved_confounders = bool(
+                get_settings().causal_physics.allow_unobserved_confounders
+            )
+        except Exception:  # pragma: no cover - defensive: settings always loadable
+            allow_unobserved_confounders = False
+
     g = nx.DiGraph()
     # Seed nodes so isolates are still queryable
     for nid in world_state.entities:
@@ -196,6 +284,38 @@ def build_causal_diagram(world_state: WorldStateV1) -> nx.DiGraph:
                 g.add_node(rel_node)
                 g.add_edge(rel.source_entity_id, rel_node)
                 g.add_edge(rel.target_entity_id, rel_node)
+
+    # Optional: inject explicit ``U_*`` latent confounders. For every pair
+    # of distinct nodes that share at least one *observed* parent in the
+    # current diagram, materialise a single shared latent ``U_<a>__<b>``
+    # parent. d-separation queries on the resulting diagram will then
+    # refuse to mark the two nodes independent solely because their
+    # observed parents are conditioned on — opening an active path
+    # through the latent and yielding the sound-but-incomplete
+    # behaviour callers ask for via the settings flag.
+    if allow_unobserved_confounders:
+        # Find sibling pairs (sharing a common parent) on the *original*
+        # observed-only diagram; mutating ``g`` while iterating its
+        # successors would otherwise create runaway latent injections.
+        sibling_pairs: Set[Tuple[str, str]] = set()
+        for parent in list(g.nodes()):
+            children = sorted(c for c in g.successors(parent)
+                              if not str(c).startswith(("U_", "REL::")))
+            for i, a in enumerate(children):
+                for b in children[i + 1:]:
+                    sibling_pairs.add((a, b))
+        for a, b in sibling_pairs:
+            latent = f"U_{a}__{b}"
+            if g.has_node(latent):
+                continue
+            g.add_node(latent, latent=True)
+            g.add_edge(latent, a)
+            g.add_edge(latent, b)
+        logger.debug(
+            "[AMWN] Injected %d latent U_* confounders for sibling pairs.",
+            len(sibling_pairs),
+        )
+
     return g
 
 
@@ -485,6 +605,26 @@ def apply_ctf_calculus(
             # Node not in static topology — can't analyse; preserve.
             continue
         intervened_node_ids.add(node_id)
+
+    # ---- Rule 1 (Consistency) ----
+    # ``do(X = observed(X))`` is a redundant no-op: surgery cannot change
+    # what is already observed. We resolve each intervention path back to
+    # the live world-state value and flag the path when ``check_consistency``
+    # confirms the do-value matches. Spawn paths and unresolvable
+    # attributes are skipped (they have no observed value to compare).
+    for path, intervention_value in interventions.items():
+        if path in spawn_paths:
+            continue
+        observed = _resolve_observed_value(world_state, path)
+        if observed is _SENTINEL_UNRESOLVED:
+            continue
+        if check_consistency(path, intervention_value, observed):
+            report.rule1_redundant.append(path)
+            logger.info(
+                "[ctf-calculus\u00b7Rule1] Intervention %s is redundant \u2014 "
+                "observed value already equals %r.",
+                path, intervention_value,
+            )
 
     # ---- Rule 3 (Exclusion) ----
     # Y = explicit query targets only. Evidence is conditioning, not

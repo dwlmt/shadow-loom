@@ -500,6 +500,7 @@ def build_intervention_brief(
     blocked: Optional[List[Dict[str, Any]]] = None,
     rule3_pruned_interventions: Optional[List[str]] = None,
     rule2_redundant_evidence: Optional[List[str]] = None,
+    rule3_pruning_mode: Literal["advisory", "prune"] = "advisory",
 ) -> CreativeBrief:
     """Build a CreativeBrief for intervention (do-calculus) queries."""
     # Build InterventionMechanism entries from the interventions dict
@@ -567,19 +568,41 @@ def build_intervention_brief(
     # them — the do-operator was applied locally but is provably
     # disconnected from the rest of the AMWN.
     if rule3_pruned_interventions:
-        constraints.append(ConstraintBlock(
-            constraint_type="mathematical",
-            priority="hard",
-            instruction=(
-                "VACUOUS INTERVENTIONS (Rule-3 pruned): "
-                f"{', '.join(rule3_pruned_interventions)}. These surgeries "
-                "have no directed path to any target on the AMWN. Render "
-                "the local change at the intervened node, but do NOT "
-                "describe causal ripples reaching other characters or "
-                "downstream events — the engine proved there are none."
-            ),
-            evidence={"rule3_pruned": list(rule3_pruned_interventions)},
-        ))
+        if rule3_pruning_mode == "prune":
+            constraints.append(ConstraintBlock(
+                constraint_type="mathematical",
+                priority="hard",
+                instruction=(
+                    "VACUOUS INTERVENTIONS (Rule-3 pruned): "
+                    f"{', '.join(rule3_pruned_interventions)}. These surgeries "
+                    "have no directed path to any target on the AMWN. Render "
+                    "the local change at the intervened node, but do NOT "
+                    "describe causal ripples reaching other characters or "
+                    "downstream events — the engine proved there are none."
+                ),
+                evidence={"rule3_pruned": list(rule3_pruned_interventions)},
+            ))
+        else:
+            # Advisory mode: AMWN flagged these as vacuous against the
+            # extracted graph, but the engine still ran the surgery
+            # because a missed confounder could mask a real causal path.
+            # Surface as a SOFT note so the LLM down-weights (but does
+            # not suppress) downstream effects.
+            constraints.append(ConstraintBlock(
+                constraint_type="mathematical",
+                priority="soft",
+                instruction=(
+                    "AMWN ADVISORY (Rule-3): the static causal diagram "
+                    "shows no directed path from "
+                    f"{', '.join(rule3_pruned_interventions)} to the query "
+                    "targets. The do-surgery WAS still applied (advisory "
+                    "mode) because the extracted topology may be missing "
+                    "latent confounders. Treat downstream consequences "
+                    "of these interventions as plausible-but-uncertain; "
+                    "prefer subtle echoes over loud causal chains."
+                ),
+                evidence={"rule3_advisory": list(rule3_pruned_interventions)},
+            ))
 
     constraints.append(ConstraintBlock(
         constraint_type="mathematical",
@@ -626,6 +649,7 @@ def build_counterfactual_brief(
     hidden_deltas: Optional[Dict[str, Dict[str, float]]] = None,
     rule3_pruned_interventions: Optional[List[str]] = None,
     rule2_redundant_evidence: Optional[List[str]] = None,
+    rule3_pruning_mode: Literal["advisory", "prune"] = "advisory",
 ) -> CreativeBrief:
     """Build a CreativeBrief for counterfactual (Rung 3) queries."""
     # Build AbductionTruth entries from hidden_deltas
@@ -689,19 +713,36 @@ def build_counterfactual_brief(
 
     # ctf-calculus pre-flight prunings (Correa & Bareinboim 2025).
     if rule3_pruned_interventions:
-        constraints.append(ConstraintBlock(
-            constraint_type="mathematical",
-            priority="hard",
-            instruction=(
-                "VACUOUS HISTORICAL INTERVENTIONS (Rule-3 pruned): "
-                f"{', '.join(rule3_pruned_interventions)}. These do-surgeries "
-                "have no directed path to the present-day evidence on the "
-                "AMWN. The counterfactual at the intervened node holds "
-                "locally, but the rest of the timeline is unchanged — do "
-                "NOT spin out alternate consequences for the broader story."
-            ),
-            evidence={"rule3_pruned": list(rule3_pruned_interventions)},
-        ))
+        if rule3_pruning_mode == "prune":
+            constraints.append(ConstraintBlock(
+                constraint_type="mathematical",
+                priority="hard",
+                instruction=(
+                    "VACUOUS HISTORICAL INTERVENTIONS (Rule-3 pruned): "
+                    f"{', '.join(rule3_pruned_interventions)}. These do-surgeries "
+                    "have no directed path to the present-day evidence on the "
+                    "AMWN. The counterfactual at the intervened node holds "
+                    "locally, but the rest of the timeline is unchanged — do "
+                    "NOT spin out alternate consequences for the broader story."
+                ),
+                evidence={"rule3_pruned": list(rule3_pruned_interventions)},
+            ))
+        else:
+            constraints.append(ConstraintBlock(
+                constraint_type="mathematical",
+                priority="soft",
+                instruction=(
+                    "AMWN ADVISORY (Rule-3): the static causal diagram "
+                    "shows no directed path from "
+                    f"{', '.join(rule3_pruned_interventions)} to present-"
+                    "day evidence. The do-surgery WAS still applied "
+                    "(advisory mode); the extracted topology may be "
+                    "missing latent confounders. Render alternate-timeline "
+                    "consequences cautiously — favour atmospheric "
+                    "divergence over explicit causal chains."
+                ),
+                evidence={"rule3_advisory": list(rule3_pruned_interventions)},
+            ))
     if rule2_redundant_evidence:
         constraints.append(ConstraintBlock(
             constraint_type="mathematical",
@@ -901,6 +942,7 @@ def render_from_query(
             blocked=physics_result.get("blocked"),
             rule3_pruned_interventions=physics_result.get("rule3_pruned_interventions"),
             rule2_redundant_evidence=physics_result.get("rule2_redundant_evidence"),
+            rule3_pruning_mode=physics_result.get("rule3_pruning_mode", "advisory"),
         )
         return render_scene(brief, config, "intervention", physics_state)
 
@@ -912,6 +954,7 @@ def render_from_query(
             hidden_deltas=physics_result.get("hidden_deltas"),
             rule3_pruned_interventions=physics_result.get("rule3_pruned_interventions"),
             rule2_redundant_evidence=physics_result.get("rule2_redundant_evidence"),
+            rule3_pruning_mode=physics_result.get("rule3_pruning_mode", "advisory"),
         )
         return render_scene(brief, config, "counterfactual", physics_state)
 

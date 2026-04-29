@@ -16,8 +16,12 @@ Key improvements over the inline helpers in narrative_physics.py:
 
 from __future__ import annotations
 
+import copy
 import logging
-from typing import Any, Dict, List, Optional
+import math
+import random
+import statistics
+from typing import Any, Dict, List, Literal, Optional
 
 import networkx as nx
 from pydantic import BaseModel, Field
@@ -101,7 +105,7 @@ class BlockedPropagation(BaseModel):
     trait: str
     impact: float
     inertia: float
-    reason: str  # "inertia", "spatial_affordance", or "cycle"
+    reason: str  # "inertia", "spatial_affordance", "cycle", or "noisy_or_absorbed"
 
 
 class SocialMutation(BaseModel):
@@ -114,6 +118,45 @@ class SocialMutation(BaseModel):
     impact: float
     inertia: float
     triggered_by: str  # source_id of the causal edge (usually EVT_)
+
+
+class NoisyOrProbability(BaseModel):
+    """Per-trait noisy-OR aggregate plus its per-edge components.
+
+    ``per_edge`` lists ``{"source_id": str, "p": float, "weighted_impulse":
+    float}`` dicts — one Bernoulli "attempt" per incoming causal edge — so
+    the auditor can see which sources drove the joint probability and which
+    were absorbed by inertia.
+    """
+    node_id: str
+    trait: str
+    inertia: float
+    per_edge: List[Dict[str, Any]] = Field(default_factory=list)
+    aggregate_probability: float = Field(
+        description="1 - prod(1 - p_i) over the per-edge components."
+    )
+    fired: bool = Field(
+        description=(
+            "Under deterministic noisy-OR mode: aggregate_probability >= "
+            "noisy_or_threshold. Under sampled mode: result of the Bernoulli "
+            "draw."
+        ),
+    )
+
+
+class TraitDistribution(BaseModel):
+    """Sampled distribution over a post-propagation trait value.
+
+    Populated by ``CausalPhysicsEngine.execute_distribution`` when the
+    Monte-Carlo orchestration entry point is used. ``samples_count`` is
+    the number of successful samples (excluding any that failed).
+    """
+    mean: float
+    std: float
+    p5: float
+    p50: float
+    p95: float
+    samples_count: int
 
 
 class CausalPhysicsResult(BaseModel):
@@ -133,7 +176,20 @@ class CausalPhysicsResult(BaseModel):
         description=(
             "Intervention keys excluded by Rule 3 (Exclusion): the target "
             "node has no directed path to any evidence/target variable in "
-            "the mutilated diagram, so the do-surgery is provably vacuous."
+            "the mutilated diagram, so the do-surgery is provably vacuous "
+            "*relative to the extracted graph*. Whether the engine actually "
+            "filtered these from the working set is governed by "
+            "``CausalPhysicsSettings.rule3_pruning_mode``; see "
+            "``rule3_pruning_mode`` below."
+        ),
+    )
+    rule3_pruning_mode: Literal["advisory", "prune"] = Field(
+        default="advisory",
+        description=(
+            "Mode the engine ran under. 'advisory': "
+            "``rule3_pruned_interventions`` is reportage only — the do-"
+            "surgery was still applied. 'prune': those keys were filtered "
+            "out of the working set before simulation."
         ),
     )
     rule2_redundant_evidence: List[str] = Field(
@@ -144,6 +200,109 @@ class CausalPhysicsResult(BaseModel):
             "abduction on it cannot change the counterfactual distribution."
         ),
     )
+    # ------------------------------------------------------------------
+    # Probabilistic outputs (populated only when the corresponding modes
+    # are active in CausalPhysicsSettings; empty under default settings).
+    # ------------------------------------------------------------------
+    noisy_or_probabilities: List["NoisyOrProbability"] = Field(
+        default_factory=list,
+        description=(
+            "Per (node, trait) noisy-OR aggregate probability that the trait "
+            "shifted this step, plus the per-edge contributing probabilities. "
+            "Populated under propagation_mode='noisy_or'."
+        ),
+    )
+    trait_distributions: Dict[str, Dict[str, "TraitDistribution"]] = Field(
+        default_factory=dict,
+        description=(
+            "node_id -> trait_name -> TraitDistribution. Populated by "
+            "execute_distribution(); empty for single-shot execute() runs."
+        ),
+    )
+
+
+# =====================================================================
+# Probabilistic helpers (sampling + noisy-OR)
+# =====================================================================
+
+
+def _sigmoid(x: float) -> float:
+    """Numerically-stable logistic sigmoid."""
+    if x >= 0:
+        z = math.exp(-x)
+        return 1.0 / (1.0 + z)
+    z = math.exp(x)
+    return z / (1.0 + z)
+
+
+def _evidence_strength_sigma(label: str) -> float:
+    """Std-dev fraction of nominal causal_force for the given evidence_strength bucket."""
+    s = _physics_settings()
+    if label == "weak":
+        return s.causal_force_sigma_weak
+    if label == "strong":
+        return s.causal_force_sigma_strong
+    return s.causal_force_sigma_moderate
+
+
+def _sample_causal_force(
+    nominal_force: float,
+    evidence_strength: str,
+    rng: random.Random,
+) -> float:
+    """Draw causal_force ~ Normal(nominal, sigma * nominal), clamped to [0, 10].
+
+    The point estimate emitted by the LLM is treated as the mean of a
+    Normal whose std-dev scales with evidence_strength: weak evidence ⇒
+    wider distribution, strong evidence ⇒ tight around the point estimate.
+    """
+    sigma_frac = _evidence_strength_sigma(evidence_strength)
+    sigma = max(1e-6, sigma_frac * abs(nominal_force))
+    sample = rng.gauss(nominal_force, sigma)
+    return max(0.0, min(10.0, sample))
+
+
+def _sample_trait_value(value: float, inertia: float, rng: random.Random) -> float:
+    """Draw a trait value from Beta(alpha, beta) parameterised by inertia.
+
+    Concentration kappa = 1 / (1 - inertia + eps) so high-inertia traits
+    yield tight Betas (point-estimate-like), low-inertia traits yield
+    diffuse Betas (more uncertainty around the point estimate).
+    """
+    eps = 1e-3
+    value = max(eps, min(1.0 - eps, value))
+    inertia = max(0.0, min(1.0, inertia))
+    kappa = 1.0 / max(eps, 1.0 - inertia + eps)
+    alpha = max(eps, value * kappa)
+    beta = max(eps, (1.0 - value) * kappa)
+    sample = rng.betavariate(alpha, beta)
+    return max(0.0, min(1.0, sample))
+
+
+def _noisy_or_per_edge_probability(
+    weighted_impulse: float,
+    inertia: float,
+    temperature: float,
+) -> float:
+    """Per-edge p_i = sigmoid((|w*impulse| - inertia) / temperature).
+
+    A weighted impulse exactly equal to the trait's inertia gives p_i =
+    0.5 (the point at which the deterministic gate would barely flip);
+    larger impulses saturate toward 1, smaller toward 0. Temperature
+    controls how sharp the transition is.
+    """
+    temp = max(1e-6, temperature)
+    return _sigmoid((abs(weighted_impulse) - inertia) / temp)
+
+
+def _noisy_or_aggregate(per_edge_probs: List[float]) -> float:
+    """1 - prod(1 - p_i). Independent-Bernoulli OR over per-edge attempts."""
+    if not per_edge_probs:
+        return 0.0
+    survival = 1.0
+    for p in per_edge_probs:
+        survival *= max(0.0, 1.0 - p)
+    return 1.0 - survival
 
 
 # =====================================================================
@@ -179,6 +338,22 @@ class CausalPhysicsEngine:
         self._mutations: List[TraitMutation] = []
         self._social_mutations: List[SocialMutation] = []
         self._blocked: List[BlockedPropagation] = []
+        # Noisy-OR per-trait records, populated only when
+        # ``CausalPhysicsSettings.propagation_mode == "noisy_or"``.
+        self._noisy_or_records: List[NoisyOrProbability] = []
+        # RNG for the Monte-Carlo sampling path. Seeded explicitly when a
+        # caller invokes ``execute_distribution``; unused under the default
+        # deterministic path so the legacy code path stays bit-for-bit
+        # reproducible.
+        self._rng: Optional[random.Random] = None
+        # When True, the noisy-OR gate draws a Bernoulli sample per trait
+        # using ``self._rng`` instead of thresholding the aggregate
+        # probability. Only flipped on inside execute_distribution().
+        self._sample_noisy_or: bool = False
+        # Marker set by ``execute_distribution`` on its per-sample sub-
+        # engines so their ``execute()`` calls bypass the auto-route to
+        # the Monte-Carlo orchestrator (otherwise we'd recurse).
+        self._in_mc_sample: bool = False
         # Set of node IDs whose outgoing causal edges are eligible to fire
         # in the next propagation step. Populated by _seed_active_sources()
         # at the start of propagate(); also consumed by propagate_social().
@@ -243,22 +418,48 @@ class CausalPhysicsEngine:
                     target_beliefs = [b.model_dump() for b in factual.beliefs]
 
                 sandbox_traits = node_data.get("traits", {})
+                ab_settings = _physics_settings()
+                blend_mode = ab_settings.abduction_blend_mode
+                ev_precision = ab_settings.abduction_evidence_precision
                 for trait_name, tv in target_traits.items():
                     tv_value = tv["value"] if isinstance(tv, dict) else tv.value
                     if trait_name in sandbox_traits and isinstance(sandbox_traits[trait_name], dict):
                         old_val = sandbox_traits[trait_name].get("value", 0.5)
                         delta = tv_value - old_val
                         deltas[trait_name] = delta
-                        # Blend toward the factual value, but let trait
-                        # inertia damp the update — high-inertia traits
-                        # resist being rewritten by present-day evidence,
-                        # low-inertia traits absorb it almost fully.
                         trait_inertia = sandbox_traits[trait_name].get("inertia", 0.5)
-                        blend_factor = max(0.0, min(1.0, 1.0 - trait_inertia))
-                        blended = old_val + delta * blend_factor
+                        if blend_mode == "bayesian":
+                            # Treat inertia as the *precision* of the
+                            # historical prior. Posterior mean is the
+                            # precision-weighted combination of the prior
+                            # (old_val) and the present-day evidence
+                            # (tv_value). High-inertia traits shrink toward
+                            # the historical baseline; low-inertia traits
+                            # snap to the evidence.
+                            denom = trait_inertia + ev_precision
+                            if denom <= 0:
+                                blended = old_val
+                            else:
+                                blended = (
+                                    trait_inertia * old_val
+                                    + ev_precision * tv_value
+                                ) / denom
+                            logger.debug(
+                                "[CausalPhysics·Abduction·Bayes] %s.%s: prior=%.3f (k=%.3f) ev=%.3f (k=%.3f) post=%.3f",
+                                eid, trait_name, old_val, trait_inertia,
+                                tv_value, ev_precision, blended,
+                            )
+                        else:
+                            # Legacy: blend toward factual value, damped
+                            # by inertia. High-inertia traits resist;
+                            # low-inertia absorb fully.
+                            blend_factor = max(0.0, min(1.0, 1.0 - trait_inertia))
+                            blended = old_val + delta * blend_factor
+                            logger.debug(
+                                "[CausalPhysics·Abduction] %s.%s: old=%.3f target=%.3f delta=%.3f blend=%.2f blended=%.3f",
+                                eid, trait_name, old_val, tv_value, delta, blend_factor, blended,
+                            )
                         sandbox_traits[trait_name]["value"] = max(0.0, min(1.0, blended))
-                        logger.debug("[CausalPhysics·Abduction] %s.%s: old=%.3f target=%.3f delta=%.3f blend=%.2f blended=%.3f",
-                                     eid, trait_name, old_val, tv_value, delta, blend_factor, blended)
 
                 if deltas:
                     self._hidden_deltas[eid] = deltas
@@ -355,6 +556,26 @@ class CausalPhysicsEngine:
         """
         AMWNInstantiator.execute_interventions(self.sandbox, interventions)
 
+        # First pass: collect every per-trait pin the user explicitly
+        # named. We need this set up-front so a co-occurring wildcard
+        # (``do(ENT_X.spawn)``) doesn't smother explicit per-trait
+        # surgeries on the same node \u2014 the previous logic added
+        # ``("ENT_X", "*")`` whenever spawn or a bare-node intervention
+        # was present, and ``propagate()`` then froze every trait of the
+        # entity, ignoring the fact that the user only wanted *some*
+        # traits pinned and others free to evolve under propagation.
+        per_trait_pins_by_node: Dict[str, set[str]] = {}
+        for target_path in interventions:
+            if "." not in target_path:
+                continue
+            node_id, sub_path = target_path.split(".", 1)
+            sub = sub_path.strip()
+            if sub.startswith("traits."):
+                parts = sub.split(".")
+                trait_name = parts[1] if len(parts) >= 2 else ""
+                if trait_name:
+                    per_trait_pins_by_node.setdefault(node_id, set()).add(trait_name)
+
         for target_path in interventions:
             if "." in target_path:
                 node_id, sub_path = target_path.split(".", 1)
@@ -367,18 +588,26 @@ class CausalPhysicsEngine:
             # Decide which traits, if any, are pinned by this intervention.
             sub = sub_path.strip()
             if not sub or sub == "spawn":
-                # Bare-node or genesis spawn — the whole node is fresh, so
-                # pin every trait. Use the wildcard sentinel.
-                self._intervened_traits.add((node_id, "*"))
+                # Bare-node or genesis spawn. If the user *also* pinned
+                # specific traits on this node, only honour those pins
+                # (the wildcard would otherwise smother them and freeze
+                # every other trait too). With no per-trait companion
+                # surgery, the spawn pins everything via the wildcard.
+                pinned = per_trait_pins_by_node.get(node_id)
+                if pinned:
+                    for trait_name in pinned:
+                        self._intervened_traits.add((node_id, trait_name))
+                else:
+                    self._intervened_traits.add((node_id, "*"))
             elif sub.startswith("traits."):
-                # ``traits.<name>`` or ``traits.<name>.value`` — pin the
+                # ``traits.<name>`` or ``traits.<name>.value`` \u2014 pin the
                 # specific trait only.
                 parts = sub.split(".")
                 trait_name = parts[1] if len(parts) >= 2 else ""
                 if trait_name:
                     self._intervened_traits.add((node_id, trait_name))
             # status / location_id / beliefs / properties / etc. don't pin
-            # any trait — propagation over the entity's traits is unaffected.
+            # any trait \u2014 propagation over the entity's traits is unaffected.
 
         logger.info(
             "[CausalPhysics·do] Surgeries applied. Intervened roots: %s; pinned traits: %s",
@@ -511,6 +740,21 @@ class CausalPhysicsEngine:
         logger.debug("[CausalPhysics·Propagate] Active sources seeded: %d nodes (intervened=%d, abducted=%d)",
                      len(self._active_sources), len(self._intervened_nodes), len(self._hidden_deltas))
 
+        # 2c. Capture per-trait baselines (the pre-propagation value of every
+        #     entity trait) so that ``entity_trait_baseline_drift_rate``
+        #     can pull mutated traits back toward type after the
+        #     propagation pass. Encodes "characters return to type" so a
+        #     single off-screen shock doesn't permanently rewrite a high-
+        #     inertia trait.
+        trait_baselines: Dict[str, Dict[str, float]] = {}
+        if _physics_settings().entity_trait_baseline_drift_rate > 0:
+            for nid, ndata in self.sandbox.nodes(data=True):
+                if ndata.get("node_type") != "Entity":
+                    continue
+                for tname, tdata in (ndata.get("traits") or {}).items():
+                    if isinstance(tdata, dict) and "value" in tdata:
+                        trait_baselines.setdefault(nid, {})[tname] = tdata["value"]
+
         # 3. Propagate
         for node_id in execution_order:
             # Per-trait pinning: an entity may be in _intervened_nodes
@@ -566,8 +810,22 @@ class CausalPhysicsEngine:
                 # precise delta if this trait matches; skip non-matching traits.
                 # For entity→entity edges, use signed delta toward source.
                 # For event→entity or other, use weight as fixed impulse.
+                #
+                # We accumulate weighted contributions and a running
+                # ``total_weight`` so the final aggregate is normalised
+                # (weighted average), not a raw sum. The previous
+                # ``total_impact - sign*inertia`` formulation was
+                # scale-dependent: ten weak edges could outweigh a single
+                # canonical force purely by stacking, defeating the
+                # Impact > Inertia gate as a meaningful threshold.
                 total_impact = 0.0
+                total_weight = 0.0
                 spatial_ok = True
+                # Per-edge signed contributions: (source_id, signed_w*impulse)
+                # tuples used by the noisy-OR aggregator. Always populated
+                # so the cost is identical under the deterministic path
+                # (the list is just unused).
+                per_edge_contributions: List[tuple[str, float]] = []
 
                 for src, _, edata in incoming:
                     if src not in self._active_sources:
@@ -590,7 +848,10 @@ class CausalPhysicsEngine:
                         if trait_name != edge_trait_target:
                             continue  # this edge doesn't affect this trait
                         if edge_trait_delta is not None:
-                            total_impact += edge_trait_delta * w
+                            contrib = edge_trait_delta * w
+                            total_impact += contrib
+                            total_weight += w
+                            per_edge_contributions.append((src, contrib))
                             continue
 
                     relevant_traits = MECHANISM_TRAIT_MAP.get(mechanism)
@@ -630,17 +891,20 @@ class CausalPhysicsEngine:
                         src_trait = src_data.get("traits", {}).get(trait_name)
                         if isinstance(src_trait, dict) and "value" in src_trait:
                             # Signed delta: shift toward source trait value
-                            total_impact += (src_trait["value"] - current_val) * w
+                            contrib = (src_trait["value"] - current_val) * w
                         else:
-                            total_impact += w
+                            contrib = w
                     elif src_data.get("node_type") == "WorldTrait":
                         # World trait: scale impulse by magnitude intensity
                         mag = src_data.get("magnitude", {})
                         mag_value = mag.get("value", 0.5) if isinstance(mag, dict) else 0.5
-                        total_impact += mag_value * w
+                        contrib = mag_value * w
                     else:
                         # EventNode or other — fixed impulse from edge weight
-                        total_impact += w
+                        contrib = w
+                    total_impact += contrib
+                    total_weight += w
+                    per_edge_contributions.append((src, contrib))
 
                     # Spatial affordance: if the target entity's location is
                     # reachable from the source's location.  We only check when
@@ -652,45 +916,170 @@ class CausalPhysicsEngine:
                             if not self._check_spatial_reachability(src_loc, tgt_loc):
                                 spatial_ok = False
 
+                # Normalise the accumulated impact into a scale-invariant
+                # aggregate. We divide by ``max(1.0, total_weight)`` rather
+                # than ``total_weight`` so the gate is *scale-invariant
+                # only above unit weight*: a single weak edge with
+                # ``total_weight = 0.1`` and ``total_impact = 0.1`` should
+                # not be inflated to ``norm_impact = 1.0`` — that would
+                # let any single edge clear an arbitrarily high inertia.
+                # Above unit weight (multiple stacking sources) the
+                # divisor takes over and the aggregate behaves like a
+                # weighted average, so ten weak edges no longer dominate
+                # one canonical strong source.
+                divisor = max(1.0, total_weight)
+                norm_impact = total_impact / divisor if divisor else 0.0
+
                 if not spatial_ok:
-                    logger.debug("[CausalPhysics·Propagate] BLOCKED spatial: %s.%s impact=%.3f", node_id, trait_name, total_impact)
+                    logger.debug("[CausalPhysics·Propagate] BLOCKED spatial: %s.%s impact=%.3f (norm=%.3f)", node_id, trait_name, total_impact, norm_impact)
                     self._blocked.append(BlockedPropagation(
                         node_id=node_id, trait=trait_name,
-                        impact=total_impact, inertia=trait_inertia,
+                        impact=norm_impact, inertia=trait_inertia,
                         reason="spatial_affordance",
                     ))
                     continue
 
-                if abs(total_impact) <= trait_inertia + _inertia_epsilon():
-                    if total_impact == 0.0:
+                # ----------------------------------------------------------
+                # Gating: deterministic (legacy) vs noisy-OR (probabilistic).
+                # The noisy-OR path treats each contributing edge as an
+                # independent Bernoulli attempt to overcome inertia, then
+                # ORs them. Under default settings the legacy gate is
+                # preserved bit-for-bit.
+                # ----------------------------------------------------------
+                settings = _physics_settings()
+                if settings.propagation_mode == "noisy_or" and per_edge_contributions:
+                    per_edge_probs: List[Dict[str, Any]] = []
+                    raw_probs: List[float] = []
+                    for src_id, contrib in per_edge_contributions:
+                        p_i = _noisy_or_per_edge_probability(
+                            weighted_impulse=contrib,
+                            inertia=trait_inertia,
+                            temperature=settings.noisy_or_temperature,
+                        )
+                        per_edge_probs.append({
+                            "source_id": src_id,
+                            "p": p_i,
+                            "weighted_impulse": contrib,
+                        })
+                        raw_probs.append(p_i)
+                    aggregate = _noisy_or_aggregate(raw_probs)
+
+                    if self._sample_noisy_or and self._rng is not None:
+                        fired = self._rng.random() < aggregate
+                    else:
+                        fired = aggregate >= settings.noisy_or_threshold
+
+                    self._noisy_or_records.append(NoisyOrProbability(
+                        node_id=node_id, trait=trait_name,
+                        inertia=trait_inertia,
+                        per_edge=per_edge_probs,
+                        aggregate_probability=aggregate,
+                        fired=fired,
+                    ))
+                    if not fired:
+                        if norm_impact == 0.0:
+                            continue
+                        logger.debug(
+                            "[CausalPhysics·Propagate] NOISY-OR ABSORBED %s.%s "
+                            "p_agg=%.3f thr=%.3f inertia=%.3f",
+                            node_id, trait_name, aggregate,
+                            settings.noisy_or_threshold, trait_inertia,
+                        )
+                        self._blocked.append(BlockedPropagation(
+                            node_id=node_id, trait=trait_name,
+                            impact=norm_impact, inertia=trait_inertia,
+                            reason="noisy_or_absorbed",
+                        ))
+                        continue
+
+                    # Fired: scale shift by aggregate confidence so a
+                    # marginal noisy-OR fire (p just over threshold) moves
+                    # the trait less than a saturated one (p ~= 1.0).
+                    sign = 1 if norm_impact > 0 else -1 if norm_impact < 0 else 0
+                    if sign == 0:
+                        continue
+                    effective_shift = sign * abs(norm_impact) * aggregate
+                    new_val = max(0.0, min(1.0, current_val + effective_shift))
+                    logger.debug(
+                        "[CausalPhysics·Propagate] NOISY-OR MUTATED %s.%s: "
+                        "%.3f→%.3f (p_agg=%.3f, shift=%.3f, raw=%.3f)",
+                        node_id, trait_name, current_val, new_val,
+                        aggregate, effective_shift, total_impact,
+                    )
+                    self._mutations.append(TraitMutation(
+                        node_id=node_id, trait=trait_name,
+                        old_value=current_val, new_value=new_val,
+                        impact=norm_impact, inertia=trait_inertia,
+                    ))
+                    trait_data["value"] = new_val
+                    self._active_sources.add(node_id)
+                    continue
+
+                if abs(norm_impact) <= trait_inertia + _inertia_epsilon():
+                    if norm_impact == 0.0:
                         # No active source contributed any impulse this step —
                         # not a block, just nothing happened. Skip silently.
                         continue
-                    logger.debug("[CausalPhysics·Propagate] BLOCKED inertia: %s.%s |impact|=%.3f <= inertia=%.3f",
-                                 node_id, trait_name, abs(total_impact), trait_inertia)
+                    logger.debug("[CausalPhysics·Propagate] BLOCKED inertia: %s.%s |norm_impact|=%.3f <= inertia=%.3f (raw=%.3f, w=%.3f)",
+                                 node_id, trait_name, abs(norm_impact), trait_inertia, total_impact, total_weight)
                     self._blocked.append(BlockedPropagation(
                         node_id=node_id, trait=trait_name,
-                        impact=total_impact, inertia=trait_inertia,
+                        impact=norm_impact, inertia=trait_inertia,
                         reason="inertia",
                     ))
                     continue
 
-                # Dampened shift (same formula as existing surgery)
-                sign = 1 if total_impact > 0 else -1
-                effective_shift = total_impact - sign * trait_inertia
+                # Dampened shift on the normalised impact (same dampening
+                # formula as before, but in the scale-invariant space).
+                sign = 1 if norm_impact > 0 else -1
+                effective_shift = norm_impact - sign * trait_inertia
                 new_val = max(0.0, min(1.0, current_val + effective_shift))
-                logger.debug("[CausalPhysics·Propagate] MUTATED %s.%s: %.3f→%.3f (impact=%.3f, inertia=%.3f, shift=%.3f)",
-                             node_id, trait_name, current_val, new_val, total_impact, trait_inertia, effective_shift)
+                logger.debug("[CausalPhysics·Propagate] MUTATED %s.%s: %.3f→%.3f (norm_impact=%.3f, inertia=%.3f, shift=%.3f, raw=%.3f, w=%.3f)",
+                             node_id, trait_name, current_val, new_val, norm_impact, trait_inertia, effective_shift, total_impact, total_weight)
 
                 self._mutations.append(TraitMutation(
                     node_id=node_id, trait=trait_name,
                     old_value=current_val, new_value=new_val,
-                    impact=total_impact, inertia=trait_inertia,
+                    impact=norm_impact, inertia=trait_inertia,
                 ))
                 trait_data["value"] = new_val
                 # Cascade: this target is now an active source for any
                 # downstream edges processed later in topo order.
                 self._active_sources.add(node_id)
+
+        # 4. Baseline drift — pull every mutated trait back toward its
+        #    captured baseline by ``(1 - inertia) * rate``. High-inertia
+        #    traits resist drift (they keep most of the propagated shift);
+        #    low-inertia traits snap back almost entirely. Default rate is
+        #    0 so legacy behaviour is preserved bit-for-bit.
+        drift_rate = _physics_settings().entity_trait_baseline_drift_rate
+        if drift_rate > 0 and trait_baselines and self._mutations:
+            for mut in self._mutations:
+                baseline = trait_baselines.get(mut.node_id, {}).get(mut.trait)
+                if baseline is None:
+                    continue
+                node_data = self.sandbox.nodes.get(mut.node_id)
+                if not node_data:
+                    continue
+                tdata = (node_data.get("traits") or {}).get(mut.trait)
+                if not isinstance(tdata, dict) or "value" not in tdata:
+                    continue
+                current = tdata["value"]
+                inertia = mut.inertia
+                pull = (baseline - current) * max(0.0, 1.0 - inertia) * drift_rate
+                if pull == 0.0:
+                    continue
+                drifted = max(0.0, min(1.0, current + pull))
+                logger.debug(
+                    "[CausalPhysics·Drift] %s.%s: %.3f → %.3f (baseline=%.3f, inertia=%.3f, rate=%.3f)",
+                    mut.node_id, mut.trait, current, drifted,
+                    baseline, inertia, drift_rate,
+                )
+                tdata["value"] = drifted
+                # Reflect the post-drift value in the mutation record so
+                # callers see the engine's final answer, not the
+                # intermediate pre-drift number.
+                mut.new_value = drifted
 
         logger.info(
             "[CausalPhysics·Propagate] %d mutations applied, %d blocked.",
@@ -722,6 +1111,46 @@ class CausalPhysicsEngine:
         # so we still have intervened/abducted/ambient sources available.
         if not self._active_sources:
             self._active_sources = self._seed_active_sources()
+
+        # Cycle detection on the social-causal subgraph, mirroring
+        # ``propagate()``. A ``mutation_social`` edge connects an event
+        # source to a perspective entity (``target_id``) whose
+        # relationship metric toward ``rel_counterpart_id`` is being
+        # mutated. If those edges form an SCC the deltas would feed
+        # back into themselves \u2014 the engine cannot decide a valid
+        # firing order, so members of the cycle are skipped and a
+        # ``BlockedPropagation(reason="cycle")`` entry is emitted for
+        # each blocked metric, matching the reporting contract that
+        # ``propagate()`` already establishes for trait cycles.
+        social_subgraph = nx.DiGraph()
+        for u, v, d in self.sandbox.edges(data=True):
+            if d.get("edge_type") != "causal":
+                continue
+            if d.get("causality_type") != "mutation_social":
+                continue
+            tgt = d.get("target_id", v)
+            counterpart = d.get("rel_counterpart_id")
+            if not counterpart:
+                continue
+            # Edge from the perspective entity (whose relationship is
+            # mutated) toward its counterpart \u2014 a cycle here means
+            # mutual social mutations form a feedback loop.
+            social_subgraph.add_edge(tgt, counterpart, source=u,
+                                     metric=d.get("trait_target"))
+        social_cyclic_blocked: set[str] = set()
+        if social_subgraph.number_of_edges() > 0:
+            try:
+                nx.topological_sort(social_subgraph)
+            except nx.NetworkXUnfeasible:
+                for scc in nx.strongly_connected_components(social_subgraph):
+                    if len(scc) > 1:
+                        social_cyclic_blocked |= scc
+                logger.warning(
+                    "[CausalPhysics\u00b7SocialProp] Cyclic social-causal "
+                    "subgraph: %d node(s) in non-trivial SCC(s). Members "
+                    "are blocked from social propagation.",
+                    len(social_cyclic_blocked),
+                )
 
         # Snapshot the edge list before iterating: ``add_edge`` calls below
         # mutate the MultiDiGraph (creating a new relationship edge when
@@ -756,6 +1185,23 @@ class CausalPhysicsEngine:
             if not self.sandbox.has_node(target_id) or not self.sandbox.has_node(counterpart_id):
                 logger.debug("[CausalPhysics·SocialProp] Endpoint missing: target=%s, counterpart=%s",
                              target_id, counterpart_id)
+                continue
+
+            # Refuse to fire any social mutation whose perspective
+            # entity or counterpart sits inside a cyclic SCC of the
+            # social-causal subgraph (mirrors propagate() for trait
+            # cycles). Record an explicit ``cycle`` block so the
+            # auditor sees why the metric didn't move.
+            if target_id in social_cyclic_blocked or counterpart_id in social_cyclic_blocked:
+                logger.debug("[CausalPhysics·SocialProp] Cycle-blocked: %s→%s %s",
+                             target_id, counterpart_id, metric)
+                self._blocked.append(BlockedPropagation(
+                    node_id=target_id,
+                    trait=f"rel.{counterpart_id}.{metric}",
+                    impact=raw_delta,
+                    inertia=_relationship_inertia_default(),
+                    reason="cycle",
+                ))
                 continue
 
             # Scale delta by evidence_strength × causal_force
@@ -977,6 +1423,27 @@ class CausalPhysicsEngine:
         if rung not in (2, 3):
             raise ValueError(f"Invalid rung={rung}. Must be 2 (intervention) or 3 (counterfactual).")
 
+        # Auto-route to the Monte-Carlo orchestrator when sampling is
+        # configured *and* this call isn't itself a sub-sample. Setting
+        # ``CausalPhysicsSettings.monte_carlo_samples > 0`` makes
+        # ``execute_distribution`` the effective engine for every call
+        # site (narrative_physics, directive_assembly, MCP server, …)
+        # without each caller having to know about the alternate entry
+        # point. The flag ``_in_mc_sample`` is set on the per-sample
+        # sub-engines inside ``execute_distribution`` to short-circuit
+        # this redirect and prevent infinite recursion.
+        if (
+            not getattr(self, "_in_mc_sample", False)
+            and _physics_settings().monte_carlo_samples > 0
+        ):
+            return self.execute_distribution(
+                rung,
+                interventions=interventions,
+                evidence_node_ids=evidence_node_ids,
+                target_node_ids=target_node_ids,
+                causal_diagram=causal_diagram,
+            )
+
         # Reset per-run caches. Sandbox edges aren't mutated by simulation,
         # so the spatial traversable graph is built once and reused for
         # every reachability check inside this execute() call.
@@ -1001,17 +1468,33 @@ class CausalPhysicsEngine:
             diagram=causal_diagram,
         )
 
-        # Filter Rule-3 pruned interventions out of the working set:
-        # those are *provably vacuous* with respect to the user's query
-        # targets, so simulating them only adds noise. Rule-2 redundant
-        # evidence is reported but NOT filtered — abduction may still
-        # populate ``hidden_deltas`` that downstream consumers
-        # (introspection, the auditor, the UI) depend on.
+        # Filter Rule-3 pruned interventions out of the working set only
+        # when the engine is configured to *prune* (the default is
+        # *advisory*). Rationale: the AMWN is built from a latent-free
+        # SCM (no bidirected confounder arcs). A missed common cause can
+        # silently d-separate a real intervention from its query target,
+        # so hard-deleting the do-surgery on Rule 3's word risks
+        # converting a substantively meaningful intervention into a
+        # no-op. In advisory mode we still surface
+        # ``rule3_pruned_interventions`` for the auditor / UI but let
+        # the heuristic propagation layer make the call. Switch to
+        # ``rule3_pruning_mode='prune'`` only when the extracted causal
+        # topology is known to be confounder-complete.
+        # Rule-2 redundant evidence is reported but NOT filtered —
+        # abduction may still populate ``hidden_deltas`` that downstream
+        # consumers (introspection, the auditor, the UI) depend on.
+        rule3_mode = _physics_settings().rule3_pruning_mode
         pruned_set = set(ctf_report.rule3_pruned)
-        if pruned_set:
+        if pruned_set and rule3_mode == "prune":
             interventions = {
                 k: v for k, v in interventions.items() if k not in pruned_set
             }
+        elif pruned_set:
+            logger.info(
+                "[CausalPhysics\u00b7Rule3] %d intervention(s) flagged as "
+                "vacuous by Rule 3 but kept (advisory mode): %s",
+                len(pruned_set), sorted(pruned_set),
+            )
 
         # Step A — Abduction (Rung 3 only)
         if rung == 3 and evidence_node_ids:
@@ -1035,15 +1518,177 @@ class CausalPhysicsEngine:
             intervened_nodes=sorted(self._intervened_nodes),
             hidden_deltas=self._hidden_deltas,
             rule3_pruned_interventions=ctf_report.rule3_pruned,
+            rule3_pruning_mode=rule3_mode,
             rule2_redundant_evidence=ctf_report.rule2_redundant_evidence,
+            noisy_or_probabilities=self._noisy_or_records,
         )
         _log_physics_result(rung, interventions, evidence_node_ids, result)
         return result
 
+    # ------------------------------------------------------------------
+    # Monte-Carlo distributional CTF
+    # ------------------------------------------------------------------
+    def execute_distribution(
+        self,
+        rung: int,
+        interventions: Dict[str, Any] | None = None,
+        evidence_node_ids: List[str] | None = None,
+        target_node_ids: List[str] | None = None,
+        *,
+        causal_diagram: Optional[nx.DiGraph] = None,
+        samples: Optional[int] = None,
+        seed: Optional[int] = None,
+    ) -> CausalPhysicsResult:
+        """Run ``execute()`` repeatedly under perturbed inputs.
 
-# =====================================================================
-# Readable summary logger
-# =====================================================================
+        Each sample:
+          * Restores the sandbox from a deep copy of the original.
+          * Perturbs every causal edge's ``causal_force`` ~ Normal(force,
+            sigma(evidence_strength)) so the per-edge weight becomes a
+            random draw rather than the LLM's point estimate.
+          * Perturbs every entity trait initial value ~ Beta(alpha, beta)
+            with concentration ``kappa = 1/(1 - inertia + eps)`` so high-
+            inertia traits stay tight and low-inertia ones diffuse.
+          * Switches the noisy-OR gate from threshold mode to Bernoulli-
+            sampling mode if ``propagation_mode == 'noisy_or'``.
+          * Runs the standard ``execute()`` pipeline and records each
+            entity-trait's post-propagation value.
+
+        Returns a ``CausalPhysicsResult`` whose ``trait_distributions`` map
+        is ``node_id -> trait_name -> TraitDistribution`` (mean/std/p5/p50/
+        p95/samples_count). ``sandbox_data`` is taken from the last sample
+        so the auditor still has a representative graph to inspect.
+        """
+        s = _physics_settings()
+        n = samples if samples is not None else s.monte_carlo_samples
+        if n <= 0:
+            # Nothing to sample — fall back to a single deterministic run.
+            return self.execute(
+                rung,
+                interventions=interventions,
+                evidence_node_ids=evidence_node_ids,
+                target_node_ids=target_node_ids,
+                causal_diagram=causal_diagram,
+            )
+
+        rng_seed = seed if seed is not None else s.monte_carlo_seed
+        rng = random.Random(rng_seed)
+
+        # Snapshot the original sandbox so each sample starts from a
+        # pristine copy. The original is restored at the end so callers
+        # observing ``self.sandbox`` see no side-effects from sampling.
+        original_sandbox = copy.deepcopy(self.sandbox)
+        original_world_state = self.world_state
+
+        # Collected: node_id -> trait_name -> [values...]
+        collected: Dict[str, Dict[str, List[float]]] = {}
+        last_result: Optional[CausalPhysicsResult] = None
+
+        for i in range(n):
+            sample_sandbox = copy.deepcopy(original_sandbox)
+
+            # Perturb causal_force on every causal edge.
+            for _u, _v, edata in sample_sandbox.edges(data=True):
+                if edata.get("edge_type") != "causal":
+                    continue
+                nominal = edata.get("causal_force", s.default_causal_force)
+                ev_label = edata.get("evidence_strength", "moderate")
+                edata["causal_force"] = _sample_causal_force(nominal, ev_label, rng)
+
+            # Perturb entity trait initial values.
+            for _nid, ndata in sample_sandbox.nodes(data=True):
+                if ndata.get("node_type") != "Entity":
+                    continue
+                traits = ndata.get("traits") or {}
+                for _tname, tdata in traits.items():
+                    if not isinstance(tdata, dict) or "value" not in tdata:
+                        continue
+                    inertia = tdata.get("inertia", 0.5)
+                    tdata["value"] = _sample_trait_value(
+                        tdata["value"], inertia, rng,
+                    )
+
+            # Build a fresh sub-engine bound to this sample's sandbox so
+            # per-run state (mutations, blocked, hidden_deltas) is isolated.
+            sub = CausalPhysicsEngine(sample_sandbox, original_world_state)
+            sub._rng = rng
+            # Mark this engine as already executing inside the Monte-Carlo
+            # loop so its ``execute()`` call does not re-enter
+            # ``execute_distribution`` and recurse forever.
+            sub._in_mc_sample = True
+            sub._sample_noisy_or = True
+            try:
+                last_result = sub.execute(
+                    rung,
+                    interventions=interventions,
+                    evidence_node_ids=evidence_node_ids,
+                    target_node_ids=target_node_ids,
+                    causal_diagram=causal_diagram,
+                )
+            except Exception:
+                logger.exception(
+                    "[CausalPhysics·MC] Sample %d/%d failed; skipping.",
+                    i + 1, n,
+                )
+                continue
+
+            # Collect post-propagation trait values from this sample.
+            for nid, ndata in sample_sandbox.nodes(data=True):
+                if ndata.get("node_type") != "Entity":
+                    continue
+                traits = ndata.get("traits") or {}
+                for tname, tdata in traits.items():
+                    if not isinstance(tdata, dict) or "value" not in tdata:
+                        continue
+                    collected.setdefault(nid, {}).setdefault(tname, []).append(
+                        float(tdata["value"])
+                    )
+
+        # Restore the original sandbox so the engine is reusable.
+        self.sandbox = original_sandbox
+
+        # Aggregate distributions.
+        distributions: Dict[str, Dict[str, TraitDistribution]] = {}
+        for nid, by_trait in collected.items():
+            for tname, values in by_trait.items():
+                if not values:
+                    continue
+                sorted_vals = sorted(values)
+                k = len(sorted_vals)
+
+                def _quantile(q: float) -> float:
+                    if k == 1:
+                        return sorted_vals[0]
+                    pos = q * (k - 1)
+                    lo = int(math.floor(pos))
+                    hi = int(math.ceil(pos))
+                    if lo == hi:
+                        return sorted_vals[lo]
+                    frac = pos - lo
+                    return sorted_vals[lo] * (1 - frac) + sorted_vals[hi] * frac
+
+                mean = statistics.fmean(values)
+                std = statistics.pstdev(values) if k > 1 else 0.0
+                distributions.setdefault(nid, {})[tname] = TraitDistribution(
+                    mean=mean,
+                    std=std,
+                    p5=_quantile(0.05),
+                    p50=_quantile(0.50),
+                    p95=_quantile(0.95),
+                    samples_count=k,
+                )
+
+        if last_result is None:
+            # All samples failed — return an empty result rather than crash.
+            return CausalPhysicsResult(
+                sandbox_data=nx.node_link_data(self.sandbox),
+                trait_distributions=distributions,
+            )
+
+        last_result.trait_distributions = distributions
+        return last_result
+
+
 
 _RUNG_NAMES = {
     1: "Rung 1 (Observation)",
@@ -1188,3 +1833,11 @@ def _log_physics_result(
             lines.append(f"    × {k}")
 
     logger.info("\n".join(lines))
+
+
+# Resolve forward references in CausalPhysicsResult — the typed fields
+# noisy_or_probabilities and trait_distributions reference NoisyOrProbability
+# and TraitDistribution as strings (combined with `from __future__ import
+# annotations`), so an explicit rebuild ensures pydantic v2 wires them up
+# eagerly at import time rather than lazily on first instantiation.
+CausalPhysicsResult.model_rebuild()
