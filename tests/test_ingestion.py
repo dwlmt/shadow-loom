@@ -992,8 +992,8 @@ class TestExtractionConfig:
         assert c.min_chunk_chars == 1500
         assert c.output_retries == 5
         assert c.chunk_overlap_chars == 300
-        assert c.max_correction_retries == 3
-        assert c.max_concurrent_chunks == 4
+        assert c.max_correction_retries == 5
+        assert c.max_concurrent_chunks == 8
         assert c.estimated_events_per_chunk == 10
 
     def test_custom_values(self):
@@ -1277,17 +1277,21 @@ class TestPreAllocateChunkParams:
         assert len(params) == 1
         assert params[0].syuzhet_offset == 0
 
-    def test_fabula_bases_non_overlapping(self):
+    def test_fabula_bases_not_pre_allocated(self):
+        """_ChunkParams must NOT carry a per-chunk fabula_time_base —
+        forcing chunk order onto fabula order would erase flashbacks.
+        Syuzhet offsets, on the other hand, ARE chunk-position-derived
+        because syuzhet IS narration order."""
         chunks = ["a", "b", "c", "d"]
         config = ExtractionConfig(
             estimated_events_per_chunk=5,
             fabula_time_spacing=100,
         )
         params = _pre_allocate_chunk_params(chunks, config)
-        bases = [p.fabula_time_base for p in params]
-        # Each base should be strictly greater than the previous
-        for i in range(1, len(bases)):
-            assert bases[i] > bases[i - 1]
+        assert not hasattr(params[0], "fabula_time_base") or \
+               "fabula_time_base" not in type(params[0]).model_fields
+        offsets = [p.syuzhet_offset for p in params]
+        assert offsets == [0, 5, 10, 15]
 
 
 class TestReconcileChunkTopologies:
@@ -1322,20 +1326,25 @@ class TestReconcileChunkTopologies:
         all_syuzhets = [e.syuzhet_index for t in result for e in t.events]
         assert all_syuzhets == [0, 1, 2]
 
-    def test_fabula_time_ordering_across_chunks(self):
-        """If chunk 1 events overlap chunk 0's range, they get shifted."""
+    def test_fabula_time_preserved_across_chunks(self):
+        """Reconcile must NOT force chunk-order onto fabula-order.
+        Chunk 1 narrating an earlier story-world event (a flashback)
+        must keep its smaller fabula_time — syuzhet position does not
+        determine fabula position."""
         topo0 = self._make_topo(events=[
             EventNode(id="EVT_A", description="a", event_type="choice",
                       fabula_time=500, syuzhet_index=0, actor_ids=[], target_ids=[]),
         ])
         topo1 = self._make_topo(events=[
-            EventNode(id="EVT_B", description="b", event_type="choice",
+            EventNode(id="EVT_B", description="flashback", event_type="choice",
                       fabula_time=100, syuzhet_index=0, actor_ids=[], target_ids=[]),
         ])
         config = ExtractionConfig(fabula_time_spacing=1000)
         result = _reconcile_chunk_topologies([topo0, topo1], config)
-        # Chunk 1's event must come after chunk 0's max (500)
-        assert result[1].events[0].fabula_time > result[0].events[0].fabula_time
+        assert result[0].events[0].fabula_time == 500
+        assert result[1].events[0].fabula_time == 100  # flashback preserved
+        # Syuzhet renumbering still applies (narration order = chunk order).
+        assert [e.syuzhet_index for t in result for e in t.events] == [0, 1]
 
     def test_duplicate_event_ids_renamed(self):
         """Same EVT_ID in two chunks → later chunk's ID gets _cN suffix."""
@@ -1423,13 +1432,13 @@ class TestReconcileChunkTopologies:
         assert result[1].information_topology[0].discovered_at_syuzhet == 1
 
     def test_fabula_shift_includes_entity_update_beliefs(self):
-        """_shift_fabula_times should shift beliefs in entity_updates too."""
+        """_shift_fabula_times must shift beliefs in entity_updates too,
+        but must leave the 0 "pre-story baseline" sentinel untouched.
+        (The reconcile pass no longer invokes this helper; this is a
+        direct unit test of the helper, kept because other call sites
+        may add inter-chunk shifts in the future.)"""
         from shadow_loom.ingestion import EntityUpdate
-        topo0 = self._make_topo(events=[
-            EventNode(id="EVT_A", description="a", event_type="choice",
-                      fabula_time=500, syuzhet_index=0, actor_ids=[], target_ids=[]),
-        ])
-        topo1 = self._make_topo(
+        topo = self._make_topo(
             events=[
                 EventNode(id="EVT_B", description="b", event_type="choice",
                           fabula_time=100, syuzhet_index=0, actor_ids=[], target_ids=[]),
@@ -1437,20 +1446,28 @@ class TestReconcileChunkTopologies:
             entity_updates=[
                 EntityUpdate(
                     entity_id="ENT_X", fabula_time=100, triggered_by="EVT_B",
-                    new_beliefs=[Belief(
-                        target_id="ENT_Y", perceived_state="alive",
-                        confidence=0.9, inertia=0.5, established_at_fabula=100,
-                    )],
+                    new_beliefs=[
+                        Belief(
+                            target_id="ENT_Y", perceived_state="alive",
+                            confidence=0.9, inertia=0.5,
+                            established_at_fabula=100,
+                        ),
+                        Belief(
+                            target_id="ENT_Z", perceived_state="pre-story",
+                            confidence=0.9, inertia=0.5,
+                            established_at_fabula=0,  # pre-story sentinel
+                        ),
+                    ],
                 ),
             ],
         )
-        config = ExtractionConfig(fabula_time_spacing=1000)
-        result = _reconcile_chunk_topologies([topo0, topo1], config)
-        # Chunk 1 should have been shifted so its events come after chunk 0's
-        eu = result[1].entity_updates[0]
-        assert eu.fabula_time > 500
-        # The belief's established_at_fabula should be shifted too
-        assert eu.new_beliefs[0].established_at_fabula == eu.fabula_time
+        _shift_fabula_times(topo, shift=400)
+        assert topo.events[0].fabula_time == 500
+        eu = topo.entity_updates[0]
+        assert eu.fabula_time == 500
+        # Story-time belief shifted; pre-story sentinel left at 0.
+        assert eu.new_beliefs[0].established_at_fabula == 500
+        assert eu.new_beliefs[1].established_at_fabula == 0
 
 
 class TestApplyEventRenames:

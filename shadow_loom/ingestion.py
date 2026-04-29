@@ -1150,7 +1150,12 @@ def extract_topology(
     social_agent = _build_social_agent(config)
     topologies: List[ChunkTopology] = []
     syuzhet_counter = 0
-    fabula_time_base = config.fabula_time_spacing
+    # Informational only — the LLM is told the highest fabula_time it has
+    # produced so far so it can place continuation events after it. It is
+    # NOT used to shift the LLM's output: chunks are free to use earlier
+    # fabula_time values to encode flashbacks, prologues, or interstitial
+    # events. (Syuzhet position ≠ fabula position by design.)
+    prev_max_fabula = 0
     all_event_ids: List[str] = []
     prev_chunk_tail = ""  # trailing context for coreference continuity
 
@@ -1189,8 +1194,15 @@ def extract_topology(
         physics_msg = (
             f"Chunk {i + 1} of {len(chunks)} "
             f"(syuzhet_index offset: {syuzhet_counter}, "
-            f"fabula_time_base: {fabula_time_base}, "
-            f"fabula_time_spacing: {config.fabula_time_spacing}):\n\n"
+            f"fabula_time_spacing: {config.fabula_time_spacing}, "
+            f"max fabula_time so far: {prev_max_fabula}).\n\n"
+            f"Use ABSOLUTE story-world chronology for fabula_time. Most "
+            f"continuation events will follow the previous max, but the "
+            f"narration MAY jump in either direction: flashbacks / "
+            f"prologues / pre-story events use SMALLER fabula_time, and "
+            f"flash-forwards / prophecies / glimpses of the future use "
+            f"LARGER fabula_time than surrounding chunks. Chunk position "
+            f"in the syuzhet does NOT determine fabula order.\n\n"
             f"{chunk_with_ctx}"
         )
         physics_deps = _PhysicsDeps(
@@ -1302,18 +1314,15 @@ def extract_topology(
         )
         topologies.append(topo)
 
-        # Accumulate counters
+        # Accumulate counters. ``prev_max_fabula`` is purely informational —
+        # it tells the next chunk's prompt what the high-water mark is so
+        # the LLM can place forward-marching events sensibly. We do NOT
+        # shift the LLM's output, so flashbacks remain expressible.
         syuzhet_counter += len(physics.events)
         if physics.events:
-            max_fabula = max(e.fabula_time for e in physics.events)
-            # Ensure base always advances — even if LLM used small integers,
-            # guarantee at least one spacing unit beyond the previous base.
-            next_from_max = (
-                (max_fabula // config.fabula_time_spacing + 1)
-                * config.fabula_time_spacing
-            )
-            next_from_prev = fabula_time_base + config.fabula_time_spacing
-            fabula_time_base = max(next_from_max, next_from_prev)
+            chunk_max = max(e.fabula_time for e in physics.events)
+            if chunk_max > prev_max_fabula:
+                prev_max_fabula = chunk_max
         all_event_ids.extend(chunk_evt_ids)
 
         # Save trailing context for next chunk's coreference overlap
@@ -1336,11 +1345,17 @@ def extract_topology(
 
 
 class _ChunkParams(BaseModel):
-    """Pre-allocated parameters for a single chunk in parallel extraction."""
+    """Pre-allocated parameters for a single chunk in parallel extraction.
+
+    ``syuzhet_offset`` is deterministic from chunk position because syuzhet
+    *is* narration order. ``fabula_time`` is intentionally NOT pre-allocated:
+    chunks must be free to encode flashbacks, prologues, and other
+    non-monotone story-world chronologies (see
+    `docs/academic-foundations.md` §1.1).
+    """
     chunk_index: int
     total_chunks: int
     syuzhet_offset: int
-    fabula_time_base: int
     prev_chunk_tail: str
 
 
@@ -1350,11 +1365,13 @@ def _pre_allocate_chunk_params(
 ) -> List[_ChunkParams]:
     """Pre-compute per-chunk extraction parameters for parallel dispatch.
 
-    Each chunk gets a deterministic ``syuzhet_offset`` and
-    ``fabula_time_base`` range so parallel extraction produces
-    non-overlapping indices that can be reconciled afterwards.
-    The ``prev_chunk_tail`` is pre-computed from raw chunk
-    boundaries — no sequential dependency required.
+    ``syuzhet_offset`` is allocated deterministically from chunk position
+    because syuzhet position equals narration position. ``fabula_time``
+    is intentionally NOT pre-allocated: forcing chunk order onto fabula
+    order would make flashbacks structurally impossible. Chunks are
+    expected to use absolute story-world chronology, and the global
+    ``run_extraction_async`` pipeline relies on the validator to flag
+    any temporal contradictions.
     """
     params: List[_ChunkParams] = []
     est = config.estimated_events_per_chunk
@@ -1366,7 +1383,6 @@ def _pre_allocate_chunk_params(
             chunk_index=i,
             total_chunks=len(chunks),
             syuzhet_offset=i * est,
-            fabula_time_base=(i + 1) * est * config.fabula_time_spacing,
             prev_chunk_tail=tail,
         ))
     return params
@@ -1418,8 +1434,14 @@ async def _extract_single_chunk_async(
     physics_msg = (
         f"Chunk {i + 1} of {n} "
         f"(syuzhet_index offset: {params.syuzhet_offset}, "
-        f"fabula_time_base: {params.fabula_time_base}, "
-        f"fabula_time_spacing: {config.fabula_time_spacing}):\n\n"
+        f"fabula_time_spacing: {config.fabula_time_spacing}).\n\n"
+        f"Use ABSOLUTE story-world chronology for fabula_time. Earlier "
+        f"story-time = smaller fabula_time, later story-time = larger. "
+        f"The narration MAY jump in either direction: flashbacks / "
+        f"prologues use SMALLER fabula_time than surrounding chunks; "
+        f"flash-forwards / prophecies / glimpses of the future use "
+        f"LARGER fabula_time. Chunk position in the syuzhet does NOT "
+        f"determine fabula order.\n\n"
         f"{chunk_with_ctx}"
     )
     physics_deps = _PhysicsDeps(
@@ -1540,9 +1562,18 @@ def _reconcile_chunk_topologies(
 
     1. Detects and renames duplicate ``EVT_`` IDs across chunks
        (appends ``_cN`` suffix where N is the chunk index).
-    2. Re-numbers ``syuzhet_index`` globally in chunk order.
-    3. Ensures ``fabula_time`` ordering across chunks: all events
-       in chunk N have ``fabula_time`` < all events in chunk N+1.
+    2. Re-numbers ``syuzhet_index`` globally in chunk order — syuzhet IS
+       narration order, so the chunk-position assignment is canonical.
+       Per-chunk and global fallback maps are built so that any
+       ``InformationEdge.discovered_at_syuzhet`` reference resolves
+       correctly regardless of whether the LLM used a chunk-local or
+       global value.
+
+    Note: there is intentionally NO inter-chunk ``fabula_time`` shift.
+    Forcing chunk order onto fabula order would erase flashbacks (per
+    the fabula/syuzhet design — see `docs/academic-foundations.md`
+    §1.1). Temporal contradictions inside the merged graph are caught
+    later by ``_validate_time_ordering`` and the auditor.
     """
     # --- Pass 1: Detect and resolve duplicate event IDs across chunks ---
     global_evt_ids: Dict[str, int] = {}  # evt_id → first chunk index
@@ -1576,42 +1607,50 @@ def _reconcile_chunk_topologies(
         reconciled.append(topo)
 
     # --- Pass 2: Re-number syuzhet_index globally in chunk order ---
-    # Build per-chunk old → new syuzhet mappings for remapping discovered_at_syuzhet
+    # Build a per-chunk old → new syuzhet map AND a flat fallback map keyed
+    # by old syuzhet only. The flat map is used as a fallback when an
+    # ``InformationEdge.discovered_at_syuzhet`` references a value that
+    # isn't in its own chunk's local remap (e.g. the LLM cited a global
+    # syuzhet index from another chunk).
     chunk_syuzhet_remaps: List[Dict[int, int]] = []
+    flat_syuzhet_remap: Dict[int, int] = {}
+    flat_syuzhet_ambiguous: set[int] = set()
     syuzhet_counter = 0
     for topo in reconciled:
         remap: Dict[int, int] = {}
         sorted_events = sorted(topo.events, key=lambda e: e.syuzhet_index)
         for evt in sorted_events:
-            remap[evt.syuzhet_index] = syuzhet_counter
+            old = evt.syuzhet_index
+            remap[old] = syuzhet_counter
+            if old in flat_syuzhet_remap:
+                # Same chunk-local syuzhet appeared before — ambiguous as a
+                # flat fallback. Drop it.
+                if flat_syuzhet_remap[old] != syuzhet_counter:
+                    flat_syuzhet_ambiguous.add(old)
+            else:
+                flat_syuzhet_remap[old] = syuzhet_counter
             evt.syuzhet_index = syuzhet_counter
             syuzhet_counter += 1
         chunk_syuzhet_remaps.append(remap)
 
-    # Remap discovered_at_syuzhet on InformationEdges using per-chunk maps
-    for ci, topo in enumerate(reconciled):
-        remap = chunk_syuzhet_remaps[ci]
-        for ie in topo.information_topology:
-            if ie.discovered_at_syuzhet in remap:
-                ie.discovered_at_syuzhet = remap[ie.discovered_at_syuzhet]
+    # Drop ambiguous values from the flat fallback map.
+    for amb in flat_syuzhet_ambiguous:
+        flat_syuzhet_remap.pop(amb, None)
 
-    # --- Pass 3: Ensure fabula_time inter-chunk ordering ---
-    # Within each chunk, preserve relative order. Between chunks,
-    # shift later chunks so they don't overlap earlier ones.
-    spacing = config.fabula_time_spacing
-    running_max = 0
-    for topo in reconciled:
-        if not topo.events:
-            continue
-        chunk_min = min(e.fabula_time for e in topo.events)
-        # Ensure this chunk starts above the running max
-        needed_shift = 0
-        if chunk_min <= running_max:
-            needed_shift = running_max + spacing - chunk_min
-        if needed_shift > 0:
-            _shift_fabula_times(topo, needed_shift)
-        if topo.events:
-            running_max = max(e.fabula_time for e in topo.events)
+    # Remap discovered_at_syuzhet — chunk-local first, then unambiguous flat.
+    for ci, topo in enumerate(reconciled):
+        local = chunk_syuzhet_remaps[ci]
+        for ie in topo.information_topology:
+            old = ie.discovered_at_syuzhet
+            if old in local:
+                ie.discovered_at_syuzhet = local[old]
+            elif old in flat_syuzhet_remap:
+                ie.discovered_at_syuzhet = flat_syuzhet_remap[old]
+            # else: out-of-range value — leave for the validator to flag.
+
+    # No Pass 3: fabula_time order is intentionally free across chunks so
+    # flashbacks remain expressible. Cross-chunk temporal contradictions
+    # are surfaced by ``_validate_time_ordering`` downstream.
 
     return reconciled
 
@@ -1653,25 +1692,37 @@ def _apply_event_renames(topo: ChunkTopology, rmap: Dict[str, str]) -> ChunkTopo
 
 
 def _shift_fabula_times(topo: ChunkTopology, shift: int) -> None:
-    """Shift all fabula_time values in a ChunkTopology by *shift* (in-place)."""
+    """Shift all fabula_time values in a ChunkTopology by *shift* (in-place).
+
+    Values <= 0 are treated as the "pre-story baseline" sentinel and
+    left untouched, so beliefs and edges that were established before
+    the narrative begins are not pushed into story-time.
+    """
     for evt in topo.events:
-        evt.fabula_time += shift
+        if evt.fabula_time > 0:
+            evt.fabula_time += shift
     for ce in topo.causal_topology:
-        ce.fabula_time += shift
+        if ce.fabula_time > 0:
+            ce.fabula_time += shift
     for ie in topo.information_topology:
-        ie.established_at_fabula += shift
-        if ie.terminated_at_fabula is not None:
+        if ie.established_at_fabula > 0:
+            ie.established_at_fabula += shift
+        if ie.terminated_at_fabula is not None and ie.terminated_at_fabula > 0:
             ie.terminated_at_fabula += shift
     for se in topo.social_topology:
-        se.last_updated_fabula += shift
+        if se.last_updated_fabula > 0:
+            se.last_updated_fabula += shift
     for sp in topo.spatial_topology:
-        sp.established_at_fabula += shift
-        if sp.destroyed_at_fabula is not None:
+        if sp.established_at_fabula > 0:
+            sp.established_at_fabula += shift
+        if sp.destroyed_at_fabula is not None and sp.destroyed_at_fabula > 0:
             sp.destroyed_at_fabula += shift
     for eu in topo.entity_updates:
-        eu.fabula_time += shift
+        if eu.fabula_time > 0:
+            eu.fabula_time += shift
         for belief in eu.new_beliefs:
-            belief.established_at_fabula += shift
+            if belief.established_at_fabula > 0:
+                belief.established_at_fabula += shift
 
 
 async def extract_topology_async(
@@ -1727,27 +1778,65 @@ def _normalize_fabula_times(ws: WorldStateV1, spacing: int = 1000) -> WorldState
     Re-space ``fabula_time`` values using *spacing* when the LLM ignores
     the requested 100-scale and returns small sequential integers (1, 2, 3 …).
 
-    Builds a monotonic mapping ``{old_time: new_time}`` from the sorted
-    unique fabula_time values found on events, then applies it to every
-    temporal field across events, edges, and entity beliefs.
+    Builds a monotonic mapping over the union of every fabula_time value
+    found anywhere in the world-state — events, every edge type, beliefs,
+    and timeline snapshots — then applies it uniformly. This guarantees
+    edges and beliefs stay synchronised with their referenced events
+    after rescaling.
 
-    Returns the original world-state unchanged when times are already
-    well-spaced (median gap ≥ spacing / 2).
+    The 0 value is preserved as the "pre-story baseline" sentinel: it
+    is never remapped, and any belief / edge with fabula_time == 0 stays
+    at 0 to keep its pre-story semantics.
+
+    Returns the original world-state unchanged when event times are
+    already well-spaced (median gap ≥ spacing / 2).
     """
     if not ws.events:
         return ws
 
-    unique_times = sorted({e.fabula_time for e in ws.events})
-    if len(unique_times) < 2:
+    # --- Decide whether normalisation is needed (event spacing only) ---
+    event_times = sorted({e.fabula_time for e in ws.events if e.fabula_time > 0})
+    if len(event_times) < 2:
         return ws
-
-    diffs = [unique_times[i + 1] - unique_times[i] for i in range(len(unique_times) - 1)]
+    diffs = [event_times[i + 1] - event_times[i] for i in range(len(event_times) - 1)]
     median_diff = sorted(diffs)[len(diffs) // 2]
     if median_diff >= spacing // 2:
         return ws  # already well-spaced
 
-    # Build old → new mapping
-    time_map: dict[int, int] = {t: (i + 1) * spacing for i, t in enumerate(unique_times)}
+    # --- Collect ALL fabula_time values across the world-state ---
+    all_times: set[int] = set()
+    for e in ws.events:
+        all_times.add(e.fabula_time)
+    for ce in ws.causal_topology:
+        all_times.add(ce.fabula_time)
+    for ie in ws.information_topology:
+        all_times.add(ie.established_at_fabula)
+        if ie.terminated_at_fabula is not None:
+            all_times.add(ie.terminated_at_fabula)
+    for se in ws.spatial_topology:
+        all_times.add(se.established_at_fabula)
+        if se.destroyed_at_fabula is not None:
+            all_times.add(se.destroyed_at_fabula)
+    for re_edge in ws.social_topology:
+        all_times.add(re_edge.last_updated_fabula)
+    for ent in ws.entities.values():
+        for b in ent.beliefs:
+            all_times.add(b.established_at_fabula)
+        for snap in ent.state_timeline:
+            all_times.add(snap.fabula_time)
+    for wt in ws.world_traits.values():
+        for snap in wt.state_timeline:
+            all_times.add(snap.fabula_time)
+
+    # 0 is the pre-story sentinel — keep it pinned at 0.
+    nonzero_sorted = sorted(t for t in all_times if t > 0)
+    if not nonzero_sorted:
+        return ws
+
+    # Build old → new mapping. 0 always stays 0.
+    time_map: dict[int, int] = {0: 0}
+    for i, t in enumerate(nonzero_sorted):
+        time_map[t] = (i + 1) * spacing
 
     def _map(t: int | None) -> int | None:
         if t is None:
@@ -1755,7 +1844,7 @@ def _normalize_fabula_times(ws: WorldStateV1, spacing: int = 1000) -> WorldState
         return time_map.get(t, t)
 
     new_events = [
-        e.model_copy(update={"fabula_time": time_map[e.fabula_time]}) for e in ws.events
+        e.model_copy(update={"fabula_time": _map(e.fabula_time) or e.fabula_time}) for e in ws.events
     ]
     new_causal = [
         ce.model_copy(update={"fabula_time": _map(ce.fabula_time) or ce.fabula_time})
@@ -1801,8 +1890,8 @@ def _normalize_fabula_times(ws: WorldStateV1, spacing: int = 1000) -> WorldState
         })
 
     logger.info(
-        "[Normalize] Rescaled %d unique fabula_time values (median gap %d → %d).",
-        len(unique_times), median_diff, spacing,
+        "[Normalize] Rescaled %d unique fabula_time values (median event gap %d → %d).",
+        len(nonzero_sorted), median_diff, spacing,
     )
 
     # Remap world trait snapshot fabula_times
