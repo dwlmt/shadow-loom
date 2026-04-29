@@ -55,11 +55,11 @@ class QueryParsingConfig(BaseModel):
         description="PydanticAI model string.",
     )
     output_retries: int = Field(
-        default=3,
+        default=5,
         description="Max retries for output validation.",
     )
     max_tokens: int = Field(
-        default=2048,
+        default=64000,
         description="Maximum tokens for the classification response.",
     )
     temperature: float = Field(

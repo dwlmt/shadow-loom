@@ -70,7 +70,7 @@ class GenerationConfig(BaseModel):
         description="PydanticAI model string.",
     )
     output_retries: int = Field(
-        default=3,
+        default=5,
         description="Max retries for output validation.",
     )
     max_tokens: int = Field(
@@ -868,7 +868,7 @@ def render_scene(
     model_settings: Dict[str, Any] = {}
     if config.temperature != 0.7:
         model_settings["temperature"] = config.temperature
-    if config.max_tokens != 4096:
+    if config.max_tokens != 64000:
         model_settings["max_tokens"] = config.max_tokens
 
     try:

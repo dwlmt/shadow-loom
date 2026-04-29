@@ -251,7 +251,7 @@ class ExtractionConfig(BaseModel):
         "chunk boundaries.",
     )
     max_correction_retries: int = Field(
-        default=3,
+        default=5,
         description="Maximum correction passes after validation. Each pass feeds "
         "programmatic errors back to the LLM for targeted repair.",
     )

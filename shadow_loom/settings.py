@@ -119,9 +119,9 @@ class QueryParsingSettings(BaseSettings):
     )
 
     model: str = Field(default="ollama:qwen3.6:27b")
-    max_tokens: int = Field(default=2048)
+    max_tokens: int = Field(default=64000)
     temperature: float = Field(default=0.1)
-    output_retries: int = Field(default=3)
+    output_retries: int = Field(default=5)
 
 
 # =====================================================================
@@ -139,11 +139,11 @@ class AuditorSettings(BaseSettings):
     model: str = Field(default="ollama:qwen3.6:27b", alias="AUDITOR_MODEL")
     generation_model: str = Field(default="ollama:qwen3.6:27b")
     max_iterations: int = Field(default=3)
-    output_retries: int = Field(default=3)
+    output_retries: int = Field(default=5)
     temperature: float = Field(default=0.2)
     generation_temperature: float = Field(default=0.7)
-    max_tokens: int = Field(default=2048)
-    max_tokens_generation: int = Field(default=4096)
+    max_tokens: int = Field(default=64000)
+    max_tokens_generation: int = Field(default=64000)
     min_foreshadowing_score: float = Field(default=0.6)
     max_affective_loss: float = Field(default=0.3)
     min_cognitive_plausibility: float = Field(default=0.7)
@@ -169,7 +169,7 @@ class ExtractionSettings(BaseSettings):
     fabula_time_spacing: int = Field(default=1000)
     min_chunk_chars: int = Field(default=1500)
     chunk_overlap_chars: int = Field(default=300)
-    max_correction_retries: int = Field(default=3)
+    max_correction_retries: int = Field(default=5)
     max_concurrent_chunks: int = Field(default=8)
     estimated_events_per_chunk: int = Field(default=10)
 
@@ -399,7 +399,7 @@ class MCPSettings(BaseSettings):
 
     skip_audit: bool = Field(default=True)
     ingest_fabula_time_spacing: int = Field(default=100)
-    ingest_max_correction_retries: int = Field(default=1)
+    ingest_max_correction_retries: int = Field(default=5)
     # When True, scope checks pass when no scopes are resolved (dev/local mode).
     # In production this MUST stay False so that misconfigured auth fails closed.
     allow_open_mode: bool = Field(default=False)

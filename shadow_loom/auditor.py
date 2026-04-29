@@ -382,7 +382,7 @@ class AuditorConfig(BaseModel):
         description="Maximum audit → rewrite cycles before giving up.",
     )
     output_retries: int = Field(
-        default=3,
+        default=5,
         description="Max retries for structured output parsing per LLM call.",
     )
     auditor_temperature: float = Field(
@@ -394,7 +394,7 @@ class AuditorConfig(BaseModel):
         description="Creative temperature for prose re-generation.",
     )
     max_tokens_audit: int = Field(
-        default=4092,
+        default=64000,
         description="Max tokens for auditor response.",
     )
     max_tokens_generation: int = Field(
@@ -1335,7 +1335,7 @@ def run_evaluation(
     model_settings: Dict[str, Any] = {}
     if config.auditor_temperature != 0.2:
         model_settings["temperature"] = config.auditor_temperature
-    if config.max_tokens_audit != 2048:
+    if config.max_tokens_audit != 64000:
         model_settings["max_tokens"] = config.max_tokens_audit
 
     try:
@@ -1409,7 +1409,7 @@ def run_audit(
     model_settings: Dict[str, Any] = {}
     if config.auditor_temperature != 0.2:
         model_settings["temperature"] = config.auditor_temperature
-    if config.max_tokens_audit != 2048:
+    if config.max_tokens_audit != 64000:
         model_settings["max_tokens"] = config.max_tokens_audit
 
     try:
@@ -1756,7 +1756,7 @@ def run_feedback_loop(
         model_settings: Dict[str, Any] = {}
         if generation_config.temperature != 0.7:
             model_settings["temperature"] = generation_config.temperature
-        if generation_config.max_tokens != 4096:
+        if generation_config.max_tokens != 64000:
             model_settings["max_tokens"] = generation_config.max_tokens
 
         try:
