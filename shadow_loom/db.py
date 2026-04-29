@@ -263,7 +263,27 @@ def get_session() -> Session:
 def init_db(database_url: str = "sqlite:///shadow_loom.db") -> None:
     """Create the engine, all tables, and seed the example user."""
     global _engine
-    _engine = create_engine(database_url, echo=False)
+
+    # Railway / Heroku-style ``postgres://`` URLs are legacy SQLAlchemy
+    # syntax — rewrite to the modern ``postgresql+psycopg://`` driver
+    # string so the same env var works on every host.
+    if database_url.startswith("postgres://"):
+        database_url = "postgresql+psycopg://" + database_url[len("postgres://"):]
+    elif database_url.startswith("postgresql://"):
+        database_url = "postgresql+psycopg://" + database_url[len("postgresql://"):]
+
+    engine_kwargs: dict = {"echo": False}
+    if database_url.startswith("postgresql"):
+        # Tuned for a small Railway dyno + a handful of concurrent
+        # NiceGUI sessions. ``pool_pre_ping`` survives idle drops.
+        engine_kwargs.update(
+            pool_pre_ping=True,
+            pool_size=5,
+            max_overflow=10,
+            pool_recycle=1800,
+        )
+
+    _engine = create_engine(database_url, **engine_kwargs)
     # Enable SQLite foreign-key enforcement so the schema's FK
     # declarations and our delete-ordering invariants are validated
     # at runtime (SQLite leaves FKs OFF by default).

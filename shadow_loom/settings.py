@@ -21,7 +21,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Optional
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # ── Discover config.env next to this file's package root ──────────
@@ -440,6 +440,21 @@ class UISettings(BaseSettings):
     title: str = Field(default="Shadow Loom")
     dark_mode: bool = Field(default=False)
     reload: bool = Field(default=False)
+
+    @model_validator(mode="after")
+    def _honour_platform_port(self) -> "UISettings":
+        """Allow the unprefixed ``PORT`` env var (Railway, Heroku, Cloud
+        Run, Fly.io …) to override ``UI_PORT`` so the same image runs on
+        every PaaS without a per-host wrapper."""
+        import os
+
+        platform_port = os.environ.get("PORT")
+        if platform_port:
+            try:
+                self.port = int(platform_port)
+            except ValueError:
+                pass
+        return self
 
 
 class OAuthSettings(BaseSettings):

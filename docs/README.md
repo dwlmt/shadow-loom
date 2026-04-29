@@ -31,6 +31,7 @@ file is the canonical entry point.
 | [use-cases.md](use-cases.md) | What the system is *for* — author tooling, AI-assisted fiction, narrative QA, simulation research. |
 | [design-decisions.md](design-decisions.md) | The key choices that shape the architecture and what we deliberately rejected. |
 | [settings.md](settings.md) | Every runtime knob: env vars, defaults, tuning recipes, model-provider switching. |
+| [railway-deployment.md](railway-deployment.md) | Step-by-step recipe for deploying to Railway with managed Postgres, OAuth, and OpenRouter. |
 | [academic-foundations.md](academic-foundations.md) | The literature behind every named concept — Pearl, Genette, Greimas, Sternberg, Halpern, Wilmot, Correa & Bareinboim, etc. |
 
 Quick links by intent:
@@ -46,6 +47,7 @@ Quick links by intent:
 | See what Shadow-Loom is *for* | [use-cases.md](use-cases.md) |
 | Understand *why* the architecture is the way it is | [design-decisions.md](design-decisions.md) |
 | Tune model defaults, swap providers, or tweak physics constants | [settings.md](settings.md) |
+| Deploy to production (Railway / Postgres / OAuth / OpenRouter) | [railway-deployment.md](railway-deployment.md) |
 | Trace every named concept back to its literature | [academic-foundations.md](academic-foundations.md) |
 
 ---
@@ -236,6 +238,7 @@ This documentation set is organised as follows:
 | [use-cases.md](use-cases.md) | What the system is *for* — author tooling, AI-assisted fiction, narrative QA, simulation research. |
 | [design-decisions.md](design-decisions.md) | The key choices that shape the architecture (graph-first, fabula vs syuzhet, AMWN sandboxing, hybrid 4+5 timelines, manual editing, etc.) and what we rejected. |
 | [settings.md](settings.md) | Every runtime knob: env vars, defaults, tuning recipes, model-provider switching. |
+| [railway-deployment.md](railway-deployment.md) | Step-by-step recipe for deploying to Railway with managed Postgres, OAuth, and OpenRouter. |
 | [academic-foundations.md](academic-foundations.md) | The literature behind every named concept: Pearl, Genette, Greimas, Sternberg, Halpern, etc. |
 | [ui-guide.md](ui-guide.md) | NiceGUI workspace walkthrough, including the new manual-editing **Editor** tab. |
 

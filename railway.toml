@@ -1,0 +1,18 @@
+# Railway deployment configuration.
+# Docs: https://docs.railway.app/reference/config-as-code
+#
+# Plug a Postgres service into the same project — Railway will inject
+# DATABASE_URL automatically. All other knobs are set via the
+# "Variables" tab (mirror docs/railway-deployment.md).
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "python -m shadow_loom_ui"
+healthcheckPath = "/"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
+numReplicas = 1
