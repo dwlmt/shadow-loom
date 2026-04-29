@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 
 from shadow_loom.models import WorldStateV1
 from shadow_loom.query_models import DirectiveQuery
+from shadow_loom.settings import get_settings as _get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -504,10 +505,11 @@ class DirectiveAssembler:
     def _build_causal_digraph(self) -> nx.DiGraph:
         """Build a weighted causal DiGraph from the world state topology."""
         _STRENGTH_W = {"weak": 0.25, "moderate": 0.5, "strong": 0.75}
+        _scaling = _get_settings().physics.causal_force_scaling
         g = nx.DiGraph()
         for ce in self.world_state.causal_topology:
             evidence_w = _STRENGTH_W.get(ce.evidence_strength, 0.5)
-            force_scale = ce.causal_force / 10.0
+            force_scale = ce.causal_force / _scaling
             w = evidence_w * force_scale
             if g.has_edge(ce.source_id, ce.target_id):
                 existing = g[ce.source_id][ce.target_id]["weight"]

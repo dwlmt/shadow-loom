@@ -42,8 +42,8 @@ Fields:
 - `affinity` (float): -1.0 (hate) to 1.0 (love). How much source likes/trusts target.
 - `fear` (float): 0.0 (none) to 1.0 (terrified). How much source fears target.
 - `power_dynamic` (float): -1.0 (subservient) to 1.0 (dominant). Source's power over target.
-- `inertia` (float): 0.0 to 1.0. How resistant this relationship is to change. Default 0.3.
-- `evidence_strength` (str): `"weak"`, `"moderate"`, or `"strong"`. Default `"moderate"`.
+- `inertia` (float): 0.0 to 1.0. How resistant this relationship is to mutation. The downstream `mutation_social` cascade gates incoming impulses against this value (`|scaled_delta| > inertia` to fire), so high inertia means a stable bond that survives single shocks. Bands: `0.8–0.95` blood ties, lifelong loyalty oaths, deep marriages; `0.5–0.7` settled friendships and rivalries; `0.2–0.4` working alliances and recent acquaintances; `0.0–0.15` opportunistic, transactional. Default if omitted: `0.3`.
+- `evidence_strength` (str): `"weak"` (inferred from subtext only), `"moderate"` (clearly suggested), `"strong"` (directly stated on-page). The engine maps these to multipliers `0.25 / 0.50 / 0.75` and uses them both to scale `mutation_social` impulse magnitude and to set Monte-Carlo σ on the relationship metric (`0.30 / 0.15 / 0.05` fractional). Default `"moderate"`.
 - `last_updated_fabula` (int): The fabula_time of the last event in this chunk affecting this relationship.
 
 ---

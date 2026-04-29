@@ -978,7 +978,7 @@ def _apply_forward_cascade(
             if target_ft < ce.fabula_time + ce.propagation_delay:
                 continue
         evidence_w = strength_mult.get(ce.evidence_strength, 0.5)
-        force_scale = ce.causal_force / 10.0
+        force_scale = ce.causal_force / get_settings().physics.causal_force_scaling
         weight = evidence_w * force_scale
         key = (src, tgt)
         if causal_graph.has_edge(src, tgt):
@@ -1159,7 +1159,7 @@ def _apply_social_cascade(
 
         # Scale delta
         evidence_w = strength_mult.get(ce.evidence_strength, 0.5)
-        force_scale = ce.causal_force / 10.0
+        force_scale = ce.causal_force / get_settings().physics.causal_force_scaling
         scaled_delta = raw_delta * evidence_w * force_scale
 
         # Find the relationship edge target_id → counterpart_id

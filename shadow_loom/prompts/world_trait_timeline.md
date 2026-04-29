@@ -24,7 +24,7 @@ For each world trait that changes during the story, return one or more `WorldTra
 
 - **fabula_time** (int): The fabula_time of the event that triggered this change. Must match an existing event's fabula_time exactly.
 - **triggered_by** (str | null): The EVT_ ID of the event that caused this inflection. Must be a valid event ID from the provided list.
-- **magnitude** (TraitVector | null): The NEW magnitude after this inflection point. TraitVector has a single field `value` (float, -1.0 to 1.0). Only provide if the magnitude changed.
+- **magnitude** (TraitVector | null): The NEW magnitude after this inflection point. `TraitVector` has two fields: `value` (float 0–1, the trait's new intensity) and `inertia` (float 0–1, how resistant the trait will be to *further* change after this snapshot). Provide both whenever you emit a `magnitude` snapshot. Inertia bands: `0.9–0.95` physics laws and cosmological constraints; `0.6–0.8` stable social structures and political regimes; `0.3–0.5` active conflicts and mutable political situations; `0.1–0.3` weather, seasons, transient conditions. After a regime collapse the *new* regime usually has lower inertia than the old one (it is freshly installed and unstable).
 - **description** (str | null): Brief description of what changed (e.g., "The war ends with the treaty signing").
 
 ## Guidelines

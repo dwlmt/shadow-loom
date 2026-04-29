@@ -681,7 +681,7 @@ class CausalPhysicsEngine:
                         continue
 
                 evidence_w = _strength_weight(d.get("evidence_strength", "moderate"))
-                force_scale = _force_scale(d.get("causal_force", 5.0))
+                force_scale = _force_scale(d.get("causal_force", _physics_settings().default_causal_force))
                 weight = evidence_w * force_scale
                 # DiGraph only keeps one edge per (u,v), take the max weight
                 mechanism = d.get("mechanism", "physical")
@@ -1206,7 +1206,7 @@ class CausalPhysicsEngine:
 
             # Scale delta by evidence_strength × causal_force
             evidence_w = _strength_weight(d.get("evidence_strength", "moderate"))
-            force_scale = _force_scale(d.get("causal_force", 5.0))
+            force_scale = _force_scale(d.get("causal_force", _physics_settings().default_causal_force))
             scaled_delta = raw_delta * evidence_w * force_scale
 
             # Find the relationship edge target_id → counterpart_id

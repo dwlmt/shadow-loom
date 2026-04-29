@@ -19,6 +19,10 @@ def _ambient_force_multiplier() -> float:
     return _physics_settings().ambient_force_multiplier
 
 
+def _default_causal_force() -> float:
+    return _physics_settings().default_causal_force
+
+
 def _inertia_epsilon() -> float:
     return _physics_settings().inertia_epsilon
 
@@ -151,7 +155,7 @@ class AMWNInstantiator:
             tgt = ce.get("target_id")
             mech = ce.get("mechanism", "physical")
             strength = ce.get("evidence_strength", "moderate")
-            force = ce.get("causal_force", 5.0)
+            force = ce.get("causal_force", _default_causal_force())
             ctype = ce.get("causality_type", "chain_reaction")
             delay = ce.get("propagation_delay", 0)
             ft = ce.get("fabula_time", 0)
