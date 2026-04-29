@@ -9,6 +9,7 @@ from shadow_loom.extract_graph import EgoGraphPayload, extract_ego_graph_from_me
 from shadow_loom.instantiator import AMWNInstantiator
 from shadow_loom.causal_physics import CausalPhysicsEngine, CausalPhysicsResult
 from shadow_loom.directive_assembly import DirectiveAssembler
+from shadow_loom.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -852,7 +853,8 @@ def _apply_abduction(
     if not evidence_node_ids:
         return
 
-    evidence_strength_multiplier = {"weak": 0.25, "moderate": 0.5, "strong": 0.75}
+    physics_settings = get_settings().physics
+    evidence_strength_multiplier = physics_settings.strength_multiplier
 
     for eid in evidence_node_ids:
         # Case 1: Evidence is an Entity — condition on its current factual state
@@ -907,8 +909,10 @@ def _apply_abduction(
                             target_ft = _get_delay_target_ft(sandbox, ce.target_id, global_world_state)
                             if target_ft < ce.fabula_time + ce.propagation_delay:
                                 continue
-                        mult = evidence_strength_multiplier.get(ce.evidence_strength, 0.5)
-                        force_scale = ce.causal_force / 10.0
+                        mult = evidence_strength_multiplier.get(
+                            ce.evidence_strength, physics_settings.strength_moderate
+                        )
+                        force_scale = ce.causal_force / physics_settings.causal_force_scaling
                         target_node = sandbox.nodes.get(ce.target_id)
                         if target_node and target_node.get("node_type") == "Entity":
                             traits = target_node.get("traits", {})
