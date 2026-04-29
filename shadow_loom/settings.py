@@ -101,9 +101,9 @@ class GenerationSettings(BaseSettings):
     )
 
     model: str = Field(default="ollama:qwen3.6:27b")
-    max_tokens: int = Field(default=4096)
+    max_tokens: int = Field(default=64000)
     temperature: float = Field(default=0.7)
-    output_retries: int = Field(default=3)
+    output_retries: int = Field(default=5)
 
 
 # =====================================================================
