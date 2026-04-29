@@ -373,4 +373,5 @@ already coordinate their own concurrency internally.
 * [query-and-cycles.md](query-and-cycles.md) — the **per-query-type** walkthrough of Step 2 (router) through Step 7 (merge).
 * [mcp-guide.md](mcp-guide.md) §5 — the `run_and_save` versioning contract that wraps every `run_pipeline` call from MCP.
 * [design-decisions.md](design-decisions.md) — *why* re-extraction is mandatory, *why* implausibility short-circuits, *why* the auditor is separate from the renderer.
-* [academic-foundations.md](academic-foundations.md) — the literature behind ingestion's Socratic scaffold, the auditor's LLM-as-judge protocol, and the merge's changeset model.
+* [academic-foundations.md](academic-foundations.md) — the literature behind ingestion's Socratic scaffold ([§6.5](academic-foundations.md#65-computational-narratology-and-story-understanding)), the auditor's LLM-as-judge protocol ([§4.3](academic-foundations.md#43-llm-as-judge-audit-loop)), and the merge's changeset model.
+* [settings.md](settings.md) — every per-step `*Config` value (`GENERATION_*`, `EXTRACTION_*`, `AUDITOR_*`, `PHYSICS_*`) and the env vars that override them.

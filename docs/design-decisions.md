@@ -302,5 +302,6 @@ to the validator.
 * [architecture.md](architecture.md) — the schema and runtime that *implement* the decisions above.
 * [pipeline-walkthrough.md](pipeline-walkthrough.md) — see the implausibility short-circuit, the re-extraction failure mode, and the auditor / renderer split in action.
 * [query-and-cycles.md](query-and-cycles.md) — *why* the eight query types exist as a closed set rather than a free-form prompt.
-* [academic-foundations.md](academic-foundations.md) — the literature behind every named decision (graph-first, fabula/syuzhet, Pearl, AMWN, Wilmot, Halpern).
+* [academic-foundations.md](academic-foundations.md) — the literature behind every named decision (graph-first, fabula/syuzhet, Pearl, AMWN, Wilmot, Halpern). Key anchors: [§1.1 fabula/syuzhet](academic-foundations.md#11-fabula-vs-syuzhet-fabula_time--syuzhet_index), [§2.1 Pearl's ladder](academic-foundations.md#21-three-rungs-of-causation-observationquery-interventionquery-counterfactualquery), [§2.2 AMWN](academic-foundations.md#22-ancestral-multi-world-networks-and-ctf-calculus--correa--bareinboim-icml-2025), [§3.1 Wilmot suspense](academic-foundations.md#31-suspense-as-uncertainty-reduction--wilmot--keller-acl-2020), [§4.3 LLM-as-judge](academic-foundations.md#43-llm-as-judge-audit-loop).
+* [settings.md](settings.md) — runtime defaults that operationalise these decisions.
 * [use-cases.md](use-cases.md) — the user-facing capabilities each decision unlocks (and the ones it forecloses).

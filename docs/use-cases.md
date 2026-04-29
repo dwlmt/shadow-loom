@@ -63,8 +63,10 @@ Pearl rung-3 counterfactuals in a literary setting:
 **Audience:** anyone who needs to dial the emotional intensity of a scene.
 
 Because suspense, mystery, dramatic irony and surprise are computable
-quantities (see [academic-foundations.md](academic-foundations.md) §"Wilmot
-& Keller suspense"), the user can:
+quantities (see [academic-foundations.md §3.1 (Wilmot & Keller suspense)](academic-foundations.md#31-suspense-as-uncertainty-reduction--wilmot--keller-acl-2020),
+[§3.3 (KL surprise)](academic-foundations.md#33-surprise-as-kl-divergence),
+[§3.4 (dramatic irony)](academic-foundations.md#34-dramatic-irony-as-epistemic-asymmetry)),
+the user can:
 
 * Ask *"raise the suspense in chapter 7 to 0.8 without revealing the
   betrayal"* and the directive assembler will choose interventions that move
@@ -107,8 +109,8 @@ Because every generated scene comes with:
 
 Shadow-Loom can produce **(prompt, brief, prose, audit-loss)** quadruples
 that are useful as supervision for training models that learn to respect
-hard narrative constraints. See [academic-foundations.md](academic-foundations.md)
-§"Constrained generation" for related lines of work.
+hard narrative constraints. See [academic-foundations.md §4 (Constrained / neuro-symbolic generation)](academic-foundations.md#4-constrained--neuro-symbolic-generation)
+for related lines of work.
 
 ## 7. Programmable narrative analytics
 

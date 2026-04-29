@@ -180,8 +180,8 @@ Four structural-effect scorers operate purely on the graph geometry:
 |---|---|
 | **Mystery** | $\dfrac{\#\text{hidden ancestors}}{\#\text{total ancestors}}$ for each known effect; walks back through `causal_topology` and filters by `discovered_at_syuzhet > syuzhet_anchor`. |
 | **Dramatic Irony** | $\dfrac{\#\text{irony gaps}}{\#\text{total connections}}$; an irony gap is a revealed causal edge where the source event is not in the focal entity's belief set at `temporal_anchor`. |
-| **Suspense** | $P(\text{threat}) - P(\text{hope})$; threat = unrevealed events targeting the entity, hope = unrevealed events authored by the entity. `evidence_strength` is the probability proxy. Returns 0 when hope is extinguished (despair, not suspense). Inspired directly by Wilmot & Keller (2020); see [academic-foundations.md](academic-foundations.md). |
-| **Surprise** | Per-trait binary KL divergence $D_\text{KL}(p \| q) = p\log\tfrac{p}{q} + (1-p)\log\tfrac{1-p}{1-q}$. Prior $q$ starts at maximum entropy 0.5 and is updated toward truth for each revealed causal edge; posterior $p$ is the actual trait. |
+| **Suspense** | $P(\text{threat}) - P(\text{hope})$; threat = unrevealed events targeting the entity, hope = unrevealed events authored by the entity. `evidence_strength` is the probability proxy. Returns 0 when hope is extinguished (despair, not suspense). Inspired directly by Wilmot & Keller (2020); see [academic-foundations.md §3.1](academic-foundations.md#31-suspense-as-uncertainty-reduction--wilmot--keller-acl-2020). |
+| **Surprise** | Per-trait binary KL divergence $D_\text{KL}(p \| q) = p\log\tfrac{p}{q} + (1-p)\log\tfrac{1-p}{1-q}$. Prior $q$ starts at maximum entropy 0.5 and is updated toward truth for each revealed causal edge; posterior $p$ is the actual trait. See [academic-foundations.md §3.3](academic-foundations.md#33-surprise-as-kl-divergence). |
 
 Six emotional effects (`grief`, `rage`, `joy`, `regret`, `love`, `fear`) use
 trait-trajectory headroom analysis: each effect declares which traits should
@@ -328,4 +328,5 @@ python -m pytest tests/ --ignore=tests/test_live_e2e.py -q
 * [mcp-guide.md](mcp-guide.md) — the agent-facing surface for everything in §10.
 * [ui-guide.md](ui-guide.md) — the human-facing surface for everything in §9.
 * [design-decisions.md](design-decisions.md) — *why* the schema looks the way it does.
-* [academic-foundations.md](academic-foundations.md) — citations for fabula/syuzhet, Pearl's ladder, Wilmot suspense, KL surprise, AMWN, ctf-calculus.
+* [academic-foundations.md](academic-foundations.md) — citations for fabula/syuzhet ([§1.1](academic-foundations.md#11-fabula-vs-syuzhet-fabula_time--syuzhet_index)), Pearl's ladder ([§2.1](academic-foundations.md#21-three-rungs-of-causation-observationquery-interventionquery-counterfactualquery)), Wilmot suspense ([§3.1](academic-foundations.md#31-suspense-as-uncertainty-reduction--wilmot--keller-acl-2020)), KL surprise ([§3.3](academic-foundations.md#33-surprise-as-kl-divergence)), AMWN, ctf-calculus ([§2.2](academic-foundations.md#22-ancestral-multi-world-networks-and-ctf-calculus--correa--bareinboim-icml-2025)).
+* [settings.md](settings.md) — every runtime knob (model strings, token budgets, physics constants, audit thresholds) and how to override them.

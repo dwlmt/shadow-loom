@@ -12,8 +12,11 @@ This document explains:
 For the static schema reference, see
 [architecture.md §1](architecture.md). For the cycle as code, see
 [pipeline-walkthrough.md](pipeline-walkthrough.md). For the academic
-provenance (Pearl's ladder, Greimas, Sternberg, Wilmot, Halpern), see
-[academic-foundations.md](academic-foundations.md).
+provenance, see
+[academic-foundations.md §2.1 (Pearl's three rungs)](academic-foundations.md#21-three-rungs-of-causation-observationquery-interventionquery-counterfactualquery),
+[§2.2 (AMWN / ctf-calculus)](academic-foundations.md#22-ancestral-multi-world-networks-and-ctf-calculus--correa--bareinboim-icml-2025),
+[§3.1 (Wilmot suspense)](academic-foundations.md#31-suspense-as-uncertainty-reduction--wilmot--keller-acl-2020),
+and [§3.4 (dramatic irony)](academic-foundations.md#34-dramatic-irony-as-epistemic-asymmetry).
 
 ---
 
@@ -482,4 +485,5 @@ graph is unchanged.
 * [architecture.md §2 (Director intent)](architecture.md) and [§3 (causal physics)](architecture.md) — the conceptual map of the eight types and the engine they drive.
 * [mcp-guide.md §3 (CREATE)](mcp-guide.md) — `narrate`, `direct`, `write`, `ingest` — the agent-facing surface that builds these queries.
 * [ui-guide.md](ui-guide.md) — the **Story** and **Reasoning** tabs where users issue these queries interactively.
-* [academic-foundations.md](academic-foundations.md) — Pearl's three rungs (Rung 1/2/3 mapped to observation/intervention/counterfactual), Wilmot suspense, KL surprise, Halpern actual causality.
+* [academic-foundations.md](academic-foundations.md) — Pearl's three rungs ([§2.1](academic-foundations.md#21-three-rungs-of-causation-observationquery-interventionquery-counterfactualquery)) mapped to observation/intervention/counterfactual; AMWN sandboxing ([§2.2](academic-foundations.md#22-ancestral-multi-world-networks-and-ctf-calculus--correa--bareinboim-icml-2025)); Wilmot suspense ([§3.1](academic-foundations.md#31-suspense-as-uncertainty-reduction--wilmot--keller-acl-2020)); KL surprise ([§3.3](academic-foundations.md#33-surprise-as-kl-divergence)); Halpern actual causality ([§2.3](academic-foundations.md#23-abduction-causalphysicsengineabduction_update)).
+* [settings.md](settings.md) — runtime knobs that control parsing retries, intervention defaults, and the audit thresholds the cycle is checked against.
