@@ -1,168 +1,380 @@
 # Shadow Loom
 
-A neuro-symbolic causal narrative AI framework. Integrates classical narratology, Pearl's causal inference, information theory, and modern LLM orchestration to move from static world-building to mathematical simulation, prose generation, and rigorous self-auditing.
+A **neuro-symbolic causal narrative AI framework**. Shadow-Loom treats a story
+as a typed graph of entities, events and edges with explicit physics
+(causality, beliefs, information flow, spatial topology) and uses a Large
+Language Model only as a constrained renderer once mathematical simulation has
+fixed what is allowed to happen next.
 
-Built on hybrid neuro-symbolic reasoning with open-source LLMs, CTF-calculus, and Ancestral Multi-World Networks.
-
----
-
-## Architecture Overview
-
-The pipeline is divided into five phases and twelve steps:
-
-1. **World State & Initialization** — establishing the physical and epistemic baseline
-2. **Mathematical Simulation** — calculating what is physically and emotionally possible
-3. **The Generative Constraint** — bridging hard math and natural language
-4. **Prose Generation** — rendering constrained mathematics into literature
-5. **The Nested Learning Audit** — self-evaluation and correction
-
----
-
-### Phase 1: World State & Initialization
-
-Before any new text is generated, the AI establishes the physical and epistemic baseline of the story.
-
-#### Step 1: Entity & Ontology Ingestion
-
-- **Function:** Parse story elements (Characters, Objects, Locations) into graph nodes.
-- **Mechanism:** Assigns permanent physical trait vectors to nodes — `inertia` (resistance to change), `damage_potential`, and `spatial_affordances` (e.g., "inside", "locked"). Each `TraitVector` carries a `value` in [0, 1] and an `inertia` threshold that must be overcome for mutation.
-- **Implementation:** `WorldStateV1` schema in `shadow_loom/models.py` — `Entity`, `NarrativeObject`, `Location` nodes with typed `TraitVector`, `Affordance`, and `Belief` sub-models.
-
-#### Step 2: Canonical Graph Maintenance
-
-- **Function:** Maintain the master database of the story.
-- **Mechanism:** Stores every verified event on a strict `fabula_time` axis (objective physical chronology) to maintain cause-and-effect continuity. Causal edges (`CausalEdge`) carry `mechanism` (e.g., `physical_force`, `psychological`, `epistemic_revelation`) and `evidence_strength` (`weak`/`moderate`/`strong`) for statistical variance.
-- **Implementation:** `WorldStateV1` holds `events`, `causal_topology`, `social_topology`, `spatial_topology`, and `information_topology` as typed Pydantic collections.
-
-#### Step 3: Epistemic Synchronization
-
-- **Function:** Separate what is physically true from what the reader knows.
-- **Mechanism:** Maps the `syuzhet_index` (the order information is revealed in the text) alongside `fabula_time`. This dual-index system tracks who knows what at any exact moment. `InformationEdge` tracks communication channels with `established_at_fabula`, `terminated_at_fabula`, and `discovered_at_syuzhet` timestamps. `Belief` nodes on entities record `perceived_state` with `confidence` and `established_at_fabula`.
-- **Implementation:** `EventNode.fabula_time` vs `EventNode.syuzhet_index`; `InformationEdge.discovered_at_syuzhet`; `Entity.beliefs`.
-
-#### Step 4: AI Director Intent Formulation
-
-- **Function:** A high-level system prompt dictates the narrative goal for the next generation cycle.
-- **Mechanism:** The Director sets a specific emotional target and intensity (e.g., `target_effect: "suspense"`, `intensity: 0.8`) and selects the focal characters. Supported effects:
-  - **Structural:** `mystery`, `dramatic_irony`, `suspense`, `surprise`
-  - **Emotional:** `grief`, `rage`, `joy`, `regret`, `love`, `fear`
-- **Implementation:** `DirectiveQuery` in `shadow_loom/query_models.py`. Other query types: `ObservationQuery` (Rung 1), `InterventionQuery` (Rung 2), `CounterfactualQuery` (Rung 3), `InterrogationQuery` (Graph RAG).
-
-#### Step 5: Localized Ego-Graph Extraction
-
-- **Function:** Save compute and avoid context-window overload by pulling only relevant data.
-- **Mechanism:** Extracts a sub-graph containing only the nodes and causal edges relevant to the current scene, target characters, and requested emotion. Includes 1-hop spatial neighbors, co-located entities, temporal filtering (beliefs and relationships time-sliced to `temporal_anchor`), and a capped `memory_limit` of recent events.
-- **Implementation:** `extract_ego_graph_from_memory()` in `shadow_loom/extract_graph.py`. Returns an `EgoGraphPayload` with `focus_entities`, `current_locations`, `present_entities`, `present_objects`, `relevant_relationships`, `relevant_causal_edges`, `relevant_spatial_edges`, `relevant_information_edges`, and `recent_memory`.
-
----
-
-### Phase 2: Mathematical Simulation
-
-The AI halts language generation to calculate what is physically and emotionally possible.
-
-#### Step 6: AMWN Shadow Instantiation
-
-- **Function:** Protect the canonical database from hallucinated or rejected timelines.
-- **Mechanism:** Creates a volatile, in-memory NetworkX `MultiDiGraph` shadow graph (an Ancestral Multi-World Network). All simulation math is performed safely within this sandbox. Nodes are tagged `world_id: "shadow"` for volatile branches. The instantiator also wires:
-  - `located_in` / `owned_by` edges for spatial and inventory topology
-  - `relationship` edges with `affinity`, `fear`, `power_dynamic`, and `inertia`
-  - `causal` edges with `mechanism` and `evidence_strength`
-  - `connected_to` edges with `is_locked` and `barrier_item_id`
-  - `communicating_with` edges with `medium` and `is_encrypted`
-  - `eavesdropped_by` edges for epistemic leakage on unencrypted channels
-- **Implementation:** `AMWNInstantiator.create_sandbox()` in `shadow_loom/instantiator.py`.
-
-#### Step 7: Causal Physics & $do$-Calculus
-
-- **Function:** Deterministic physics engine that calculates the boundaries of reality.
-- **Mechanism:**
-  - **Abduction (Rung 3):** Infers unobserved background events. Back-propagates present-day evidence into the historical sandbox — entity traits are blended 50% toward factual values, beliefs are back-propagated, and event evidence propagates through causal edges weighted by `evidence_strength` with mechanism-targeted gating via `MECHANISM_TRAIT_MAP`.
-  - **Action (Rung 2):** Applies the $do$-operator ($do(X=x)$) to simulate theoretical choices, severing incoming causal edges. Six surgery types: spatial (with affordance path-checking), inventory, relationship (Impact > Inertia dampening), state mutation, genesis (spawn new nodes), and comms (establish/sever channels).
-  - **Propagation:** Topological-sort-based forward propagation through the causal sub-graph. Per-trait signed delta impact: $(V_{\text{source}} - V_{\text{current}}) \times w$. Only mutations where $|Impact| > Inertia$ pass. Spatial affordance checks gate cross-location influence. Dampened shift: $\Delta_{\text{effective}} = Impact - \text{sign} \times Inertia$.
-- **Implementation:** `CausalPhysicsEngine` in `shadow_loom/causal_physics.py`. Returns `CausalPhysicsResult` with `mutations`, `blocked`, `hidden_deltas`, `intervened_nodes`.
-
-#### Step 8: Affective Calculus Engine
-
-- **Function:** Grade the surviving physical branches for emotional and psychological resonance.
-- **Mechanism:** Runs mathematical queries on the graph geometry to calculate four structural effects:
-
-  | Effect | Calculation |
-  |---|---|
-  | **Mystery** | Walks backward from known effect nodes, counts causal ancestors hidden from the reader's syuzhet graph. $\text{score} = \frac{\text{hidden ancestors}}{\text{total ancestors}}$ |
-  | **Dramatic Irony** | Finds revealed causal edges targeting an entity where the source event is NOT in the character's belief set. $\text{score} = \frac{\text{irony gaps}}{\text{total connections}}$ |
-  | **Suspense** | Forward along causal edges: classifies unrevealed events as threat (entity = victim) vs hope (entity = actor). $\text{score} = P(\text{threat}) - P(\text{hope})$ using `evidence_strength` as probability proxy. Returns 0 when hope is extinguished (despair, not suspense). |
-  | **Surprise** | Binary KL divergence per trait. Prior starts at maximum entropy (0.5), adjusted toward truth for each revealed causal edge. $D_{KL}(p \| q) = p\log\frac{p}{q} + (1-p)\log\frac{1-p}{1-q}$. Normalised to [0, 1]. |
-
-  Emotion effects (`grief`, `rage`, `joy`, `fear`, `love`, `regret`) use trait-trajectory headroom analysis with direction-aware scoring (traits that should increase vs decrease for each effect).
-
-- **Implementation:** `DirectiveAssembler` in `shadow_loom/directive_assembly.py`. Dedicated methods: `compute_mystery_score()`, `compute_dramatic_irony_score()`, `compute_suspense_score()`, `compute_surprise_score()`, `compute_affective_score()`.
-
----
-
-### Phase 3: The Generative Constraint
-
-The system bridges the gap between hard math and natural language.
-
-#### Step 9: Directive Assembly & The Envelope of Possibilities
-
-- **Function:** Prune mathematical failures and package the optimal success into a Creative Brief.
-- **Mechanism:** The engine deletes any narrative branch that violated the physical constraints of Step 7. It ranks remaining valid branches by how perfectly they match the Director's emotional target from Step 8. The winning branch is compiled into a **Semantic Prompt Injection** — a rigid, inescapable set of natural language guardrails.
-  - **Mystery:** Hidden predecessor counts + "do not reveal" constraints
-  - **Dramatic Irony:** Reader/character asymmetry + "character MUST NOT learn" constraints
-  - **Suspense:** Threat-vs-hope tension + withheld event protection + hidden channel constraints
-  - **Surprise:** KL divergence magnitude + belief-shattering revelation constraints + flashback reveals
-  - **Emotions:** Per-trait mathematical shift constraints with headroom and inertia evidence
-- **Implementation:** `DirectiveAssembler.assemble()` returns a `CreativeBrief` with typed `ConstraintBlock` entries. `evaluate_candidate_events()` forks reality for each candidate intervention, prunes the impossible, and ranks survivors by affective score.
-
----
-
-### Phase 4: Prose Generation
-
-The Large Language Model is engaged strictly as a creative renderer, not an unrestricted author.
-
-#### Step 10: LLM Rendering
-
-- **Function:** Translate the mathematical guardrails into literature.
-- **Mechanism:** A highly creative LLM receives the Semantic Prompt Injection. It weaves the mandatory physical state changes, hidden background truths, and epistemic information restrictions into flowing, natural dialogue and prose.
-- **Output:** Scene-length narrative text that satisfies every constraint in the Creative Brief.
-
----
-
-### Phase 5: The Nested Learning Audit
-
-The system evaluates the LLM's output to catch and correct "Reward Hacking" or logical leaps.
-
-#### Step 11: The Recursive Narrative Auditor (LLM-as-a-Judge)
-
-- **Function:** A "Small Core" orchestrator model acts as literary critic and physics inspector.
-- **Mechanism:** Reverse-engineers the prose from Step 10 back into causal claims.
-  - **Causal Audit:** Checks for "Miracle Steps" — did the text bypass the physics graph?
-  - **Abduction Audit:** Runs executable counterfactual questions against the text to ensure implicit events logically hold.
-  - **Affective Audit:** Measures the actual epistemic gap in the prose to ensure the LLM didn't accidentally spoil a twist or ruin the suspense.
-
-#### Step 12: Inner-Loop Refinement
-
-- **Function:** Self-correction and finalization.
-- **Mechanism:** If the Auditor detects an error (a non-zero loss), it generates explicit feedback and forces the LLM in Step 10 to rewrite the scene. This nested loop repeats until the text converges perfectly with the mathematical constraints. Once verified, the output is displayed to the user, and the new world state is permanently committed back to the Canonical Graph in Step 2.
-
----
-
-## Project Structure
+It integrates classical narratology (fabula vs syuzhet, Greimas, Genette),
+Pearl's ladder of causation (observation, intervention, counterfactual),
+information theory (KL surprise, Wilmot suspense), and modern LLM orchestration
+into a single end-to-end pipeline that ingests prose, simulates over it,
+generates new prose under provable constraints, and audits its own output —
+all inside a versioned world model.
 
 ```
-shadow_loom/
-├── models.py              # WorldStateV1 schema (Pydantic v2)
-├── query_models.py         # Query types: Observation, Intervention, Counterfactual, Directive, Interrogation
-├── extract_graph.py        # Step 5: Ego-graph extraction with temporal filtering
-├── instantiator.py         # Step 6: AMWN shadow sandbox (NetworkX MultiDiGraph)
-├── causal_physics.py       # Step 7: CausalPhysicsEngine (3-rung CTF simulation)
-├── directive_assembly.py   # Steps 8-9: Affective calculus + CreativeBrief assembly
-├── narrative_physics.py    # Legacy pipeline orchestrator (routes all query types)
-└── __init__.py             # Public API exports
+prose ──► graph ──► AMWN sandbox ──► causal physics ──► creative brief
+                                                              │
+                                                              ▼
+        versioned world model ◄── re-extract ◄── audit ◄── LLM render
 ```
 
-## Running Tests
+---
+
+## Documentation
+
+The long-form technical and conceptual reference lives in [`docs/`](docs/).
+Every doc has a **See also** footer cross-linking its closest neighbours.
+
+| Document | Purpose |
+|---|---|
+| [docs/architecture.md](docs/architecture.md) | Deep technical walkthrough of the 12-step pipeline, data model, modules, and runtime flow. |
+| [docs/pipeline-walkthrough.md](docs/pipeline-walkthrough.md) | End-to-end code-level tour of one pipeline run — ingestion, physics, generation, audit, re-extraction, merge. |
+| [docs/query-and-cycles.md](docs/query-and-cycles.md) | The eight query types, how natural language is parsed into them, and how each is realised in a pipeline cycle. |
+| [docs/mcp-guide.md](docs/mcp-guide.md) | The `shadow_loom_mcp` server — 25 tools, 5 resources, auth, scopes, versioning contract, agent workflow. |
+| [docs/ui-guide.md](docs/ui-guide.md) | NiceGUI workspace walkthrough, including the manual-editing **Editor** tab. |
+| [docs/testing.md](docs/testing.md) | Test-suite organisation, what each file covers, how to run the live-LLM tier. |
+| [docs/use-cases.md](docs/use-cases.md) | What the system is *for* — author tooling, AI-assisted fiction, narrative QA, simulation research. |
+| [docs/design-decisions.md](docs/design-decisions.md) | The key choices that shape the architecture and what we deliberately rejected. |
+| [docs/academic-foundations.md](docs/academic-foundations.md) | The literature behind every named concept — Pearl, Genette, Greimas, Sternberg, Halpern, Wilmot, Correa & Bareinboim, etc. |
+
+### Reading paths
+
+Pick the path that matches what you're trying to do.
+
+**"I just want to understand the system."**
+[architecture.md](docs/architecture.md) → [academic-foundations.md](docs/academic-foundations.md) → [design-decisions.md](docs/design-decisions.md).
+
+**"I want to drive it from an agent / build a client."**
+[mcp-guide.md](docs/mcp-guide.md) → [query-and-cycles.md](docs/query-and-cycles.md) → [pipeline-walkthrough.md](docs/pipeline-walkthrough.md).
+
+**"I want to use the workspace as a human author."**
+[use-cases.md](docs/use-cases.md) → [ui-guide.md](docs/ui-guide.md) → [query-and-cycles.md](docs/query-and-cycles.md).
+
+**"I want to extend the engine or contribute code."**
+[architecture.md](docs/architecture.md) → [pipeline-walkthrough.md](docs/pipeline-walkthrough.md) → [testing.md](docs/testing.md) → [design-decisions.md](docs/design-decisions.md) → the module the change touches.
+
+**"I'm writing a paper or comparing to prior work."**
+[academic-foundations.md](docs/academic-foundations.md) → [design-decisions.md](docs/design-decisions.md) → [architecture.md](docs/architecture.md).
+
+If none of these fit, the safe default is [architecture.md](docs/architecture.md) —
+it links into every other document.
+
+---
+
+## What it does, in one paragraph
+
+You hand Shadow-Loom raw narrative text. It runs a five-pass extraction to
+build a typed `WorldStateV1` — entities with `TraitVector`s, events anchored
+on both `fabula_time` and `syuzhet_index`, beliefs, locations with ambient
+state, and four kinds of edge (causal, social, spatial, informational). You
+then issue a query: an observation, a do-calculus intervention, an abductive
+counterfactual, an affective directive ("maximise dramatic irony for character
+X"), or a graph Q&A. Shadow-Loom forks an Ancestral Multi-World Network
+sandbox, runs Pearl's ladder over it, scores survivors with mathematical
+mystery / irony / suspense / surprise / emotion functions, packages the
+winner as a `CreativeBrief`, hands it to a constrained-LLM renderer, and runs
+a recursive auditor against the prose to catch "Miracle Steps" and broken
+beliefs. The new prose is re-extracted into topology and merged into a new
+version of the world model. Every step is logged, every version is
+ancestor-linked, and nothing canonical is mutated until the audit passes.
+
+For the full technical breakdown of each phase, see
+[docs/architecture.md](docs/architecture.md). For the per-query-type cycle,
+see [docs/query-and-cycles.md](docs/query-and-cycles.md).
+
+---
+
+## TL;DR architecture
+
+```
+       (narrative text)
+              │
+              ▼
+   ┌──────────────────────┐         Phase 1: Initialisation
+   │  Ingestion (LLM)     │  ─────  Steps 1–5
+   │  → WorldStateV1      │         (ontology, fabula, syuzhet,
+   └──────────┬───────────┘          beliefs, ego-graph)
+              │
+              ▼
+   ┌──────────────────────┐         Phase 2: Simulation
+   │  AMWN sandbox        │  ─────  Steps 6–8
+   │  Causal Physics (CTF)│         (Pearl rungs 2 & 3,
+   │  Affective Calculus  │          Wilmot suspense, KL surprise)
+   └──────────┬───────────┘
+              │
+              ▼
+   ┌──────────────────────┐         Phase 3: Constraint
+   │  Directive Assembly  │  ─────  Step 9
+   │  → CreativeBrief     │         (envelope of possibilities)
+   └──────────┬───────────┘
+              │
+              ▼
+   ┌──────────────────────┐         Phase 4: Generation
+   │  Constrained LLM     │  ─────  Step 10
+   │  prose render        │
+   └──────────┬───────────┘
+              │
+              ▼
+   ┌──────────────────────┐         Phase 5: Audit
+   │  LLM-as-judge        │  ─────  Steps 11–12
+   │  + refinement loop   │         (causal / abductive / affective)
+   └──────────┬───────────┘
+              │
+              ▼
+       (verified prose +
+        committed world state)
+```
+
+---
+
+## The five phases (and where they live)
+
+| Phase | Steps | Module | Doc |
+|---|---|---|---|
+| 1. World State & Initialisation | 1–5 | [`shadow_loom/ingestion.py`](shadow_loom/ingestion.py), [`models.py`](shadow_loom/models.py), [`extract_graph.py`](shadow_loom/extract_graph.py) | [architecture §2](docs/architecture.md), [pipeline §1](docs/pipeline-walkthrough.md) |
+| 2. Mathematical Simulation | 6–8 | [`instantiator.py`](shadow_loom/instantiator.py), [`causal_physics.py`](shadow_loom/causal_physics.py) | [architecture §3](docs/architecture.md) |
+| 3. Generative Constraint | 9 | [`directive_assembly.py`](shadow_loom/directive_assembly.py) | [architecture §4](docs/architecture.md) |
+| 4. Prose Generation | 10 | [`generation.py`](shadow_loom/generation.py) | [architecture §5](docs/architecture.md) |
+| 5. Nested Learning Audit | 11–12 | [`auditor.py`](shadow_loom/auditor.py), [`pipeline.py`](shadow_loom/pipeline.py) | [architecture §6](docs/architecture.md), [pipeline §5–7](docs/pipeline-walkthrough.md) |
+
+The query router that ties them all together is
+[`shadow_loom/narrative_physics.py`](shadow_loom/narrative_physics.py); the
+end-to-end orchestrator is
+[`shadow_loom/pipeline.py::run_pipeline`](shadow_loom/pipeline.py).
+
+---
+
+## Quick start
 
 ```bash
-conda run -n shadow-loom python -m pytest tests/ -v
+# Environment
+conda env create -f environment.yml      # or use the existing `shadow-loom` env
+conda activate shadow-loom
+pip install -e .
+
+# Tests (~978 tests; live LLM e2e excluded by default)
+python -m pytest tests/ --ignore=tests/test_live_e2e.py -q
+
+# UI
+python -m shadow_loom_ui                 # NiceGUI workspace on http://localhost:8080
+
+# MCP server (FastMCP, stdio)
+python -m shadow_loom_mcp
 ```
+
+See [docs/ui-guide.md](docs/ui-guide.md) for the workspace tour,
+[docs/mcp-guide.md](docs/mcp-guide.md) for the MCP tool catalogue and the
+Claude Desktop / Cursor configuration snippet, and
+[docs/testing.md](docs/testing.md) for the test-suite layout.
+
+---
+
+## Project layout
+
+```
+shadow_loom/                # core engine
+  models.py                 # WorldStateV1 schema (Pydantic v2)
+  ingestion.py              # 5-pass prose → WorldStateV1 extraction
+  extract_graph.py          # ego-graph slicing + VersionedWorldModel
+  instantiator.py           # AMWN sandbox (NetworkX MultiDiGraph)
+  amwn.py                   # ctf-calculus pre-flight (Correa & Bareinboim 2025)
+  causal_physics.py         # 3-rung CTF engine (Pearl's ladder)
+  directive_assembly.py     # affective calculus + CreativeBrief
+  narrative_physics.py      # query router (8 query types)
+  generation.py             # constrained LLM renderer
+  auditor.py                # recursive narrative auditor
+  pipeline.py               # end-to-end orchestrator
+  query_models.py           # the 8 typed query schemas
+  query_parsing.py          # NL → typed query, with ID grounding
+  db.py                     # SQLModel persistence + version tree
+  settings.py               # config loader
+
+shadow_loom_mcp/            # FastMCP server (25 tools, 5 resources)
+shadow_loom_ui/             # NiceGUI workspace (8 tabs)
+example_worlds/             # 16 scripted worlds for tests + demos
+sample_plots/               # raw plot summaries for ingestion demos
+tests/                      # ~978 pytest tests — see docs/testing.md
+docs/                       # long-form documentation
+```
+
+---
+
+## Status & licence
+
+Research project; APIs are stable enough to use but evolve between minor
+versions. See [docs/design-decisions.md](docs/design-decisions.md) for the
+choices that shape the public surface and what we deliberately rejected.
+# Shadow Loom
+
+A **neuro-symbolic causal narrative AI framework**. Shadow-Loom treats a story
+as a typed graph of entities, events and edges with explicit physics
+(causality, beliefs, information flow, spatial topology) and uses a Large
+Language Model only as a constrained renderer once mathematical simulation has
+fixed what is allowed to happen next.
+
+```
+prose ──► graph ──► AMWN sandbox ──► causal physics ──► creative brief
+                                                              │
+                                                              ▼
+        versioned world model ◄── re-extract ◄── audit ◄── LLM render
+```
+
+**The full README, reading paths, architecture diagram, quick-start, and
+documentation index live in [`docs/README.md`](docs/README.md).** This file
+is intentionally a pointer so the canonical documentation sits next to the
+rest of the docs.
+
+Direct jumps:
+
+- [docs/architecture.md](docs/architecture.md) — 12-step pipeline & data model
+- [docs/pipeline-walkthrough.md](docs/pipeline-walkthrough.md) — code-level tour
+- [docs/query-and-cycles.md](docs/query-and-cycles.md) — 8 query types & NL parsing
+- [docs/mcp-guide.md](docs/mcp-guide.md) — MCP server (25 tools, 5 resources)
+- [docs/ui-guide.md](docs/ui-guide.md) — NiceGUI workspace
+- [docs/testing.md](docs/testing.md) — test suite organisation
+- [docs/use-cases.md](docs/use-cases.md) — what it's for
+- [docs/design-decisions.md](docs/design-decisions.md) — why the architecture is what it is
+- [docs/academic-foundations.md](docs/academic-foundations.md) — every concept's literature
+# Shadow Loom
+
+A **neuro-symbolic causal narrative AI framework**. Shadow-Loom treats a story
+as a typed graph of entities, events and edges with explicit physics
+(causality, beliefs, information flow, spatial topology) and uses a Large
+Language Model only as a constrained renderer once mathematical simulation has
+fixed what is allowed to happen next.
+
+It integrates classical narratology (fabula vs syuzhet, Greimas, Genette),
+Pearl's ladder of causation (observation, intervention, counterfactual),
+information theory (KL surprise, Wilmot suspense), and modern LLM orchestration
+into a single end-to-end pipeline that ingests prose, simulates over it,
+generates new prose under provable constraints, and audits its own output —
+all inside a versioned world model.
+
+```
+prose ──► graph ──► AMWN sandbox ──► causal physics ──► creative brief
+                                                              │
+                                                              ▼
+        versioned world model ◄── re-extract ◄── audit ◄── LLM render
+```
+
+---
+
+## Documentation
+
+The long-form technical and conceptual reference lives in
+[`docs/`](docs/). Start with the index at [docs/README.md](docs/README.md).
+Quick links by intent:
+
+| If you want to … | Read |
+|---|---|
+| Understand the data model and the 12-step pipeline at a high level | [docs/architecture.md](docs/architecture.md) |
+| Follow one request end-to-end through the code (ingestion → merge) | [docs/pipeline-walkthrough.md](docs/pipeline-walkthrough.md) |
+| Learn the eight query types and how natural language becomes one | [docs/query-and-cycles.md](docs/query-and-cycles.md) |
+| Drive Shadow-Loom from Claude Desktop, Cursor, or any MCP client | [docs/mcp-guide.md](docs/mcp-guide.md) |
+| Use the NiceGUI workspace (story / explorer / world / causality / …) | [docs/ui-guide.md](docs/ui-guide.md) |
+| See what Shadow-Loom is *for* (authoring, QA, counterfactuals, …) | [docs/use-cases.md](docs/use-cases.md) |
+| Understand *why* the architecture is the way it is | [docs/design-decisions.md](docs/design-decisions.md) |
+| Trace every named concept back to its literature | [docs/academic-foundations.md](docs/academic-foundations.md) |
+
+---
+
+## What it does, in one paragraph
+
+You hand Shadow-Loom raw narrative text. It runs a five-pass extraction to
+build a typed `WorldStateV1` — entities with `TraitVector`s, events anchored
+on both `fabula_time` and `syuzhet_index`, beliefs, locations with ambient
+state, and four kinds of edge (causal, social, spatial, informational). You
+then issue a query: an observation, a do-calculus intervention, an abductive
+counterfactual, an affective directive ("maximise dramatic irony for character
+X"), or a graph Q&A. Shadow-Loom forks an Ancestral Multi-World Network
+sandbox, runs Pearl's ladder over it, scores survivors with mathematical
+mystery / irony / suspense / surprise / emotion functions, packages the
+winner as a `CreativeBrief`, hands it to a constrained-LLM renderer, and runs
+a recursive auditor against the prose to catch "Miracle Steps" and broken
+beliefs. The new prose is re-extracted into topology and merged into a new
+version of the world model. Every step is logged, every version is
+ancestor-linked, and nothing canonical is mutated until the audit passes.
+
+For the full technical breakdown of each phase, see
+[docs/architecture.md](docs/architecture.md). For the per-query-type cycle,
+see [docs/query-and-cycles.md](docs/query-and-cycles.md).
+
+---
+
+## The five phases (and where they live)
+
+| Phase | Steps | Module | Doc |
+|---|---|---|---|
+| 1. World State & Initialization | 1–5 | [`shadow_loom/ingestion.py`](shadow_loom/ingestion.py), [`models.py`](shadow_loom/models.py), [`extract_graph.py`](shadow_loom/extract_graph.py) | [architecture §2](docs/architecture.md), [pipeline §1](docs/pipeline-walkthrough.md) |
+| 2. Mathematical Simulation | 6–8 | [`instantiator.py`](shadow_loom/instantiator.py), [`causal_physics.py`](shadow_loom/causal_physics.py) | [architecture §3](docs/architecture.md) |
+| 3. Generative Constraint | 9 | [`directive_assembly.py`](shadow_loom/directive_assembly.py) | [architecture §4](docs/architecture.md) |
+| 4. Prose Generation | 10 | [`generation.py`](shadow_loom/generation.py) | [architecture §5](docs/architecture.md) |
+| 5. Nested Learning Audit | 11–12 | [`auditor.py`](shadow_loom/auditor.py), [`pipeline.py`](shadow_loom/pipeline.py) | [architecture §6](docs/architecture.md), [pipeline §5–7](docs/pipeline-walkthrough.md) |
+
+The query router that ties them all together is
+[`shadow_loom/narrative_physics.py`](shadow_loom/narrative_physics.py); the
+end-to-end orchestrator is
+[`shadow_loom/pipeline.py::run_pipeline`](shadow_loom/pipeline.py).
+
+---
+
+## Quick start
+
+```bash
+# Environment
+conda env create -f environment.yml      # or use the existing `shadow-loom` env
+conda activate shadow-loom
+pip install -e .
+
+# Tests (950+ tests; live LLM e2e excluded)
+python -m pytest tests/ --ignore=tests/test_live_e2e.py -q
+
+# UI
+python -m shadow_loom_ui                 # NiceGUI workspace on http://localhost:8080
+
+# MCP server (FastMCP, stdio)
+python -m shadow_loom_mcp
+```
+
+See [docs/ui-guide.md](docs/ui-guide.md) for the workspace tour and
+[docs/mcp-guide.md](docs/mcp-guide.md) for the MCP tool catalogue and the
+Claude Desktop / Cursor configuration snippet.
+
+---
+
+## Project layout
+
+```
+shadow_loom/                # core engine
+  models.py                 # WorldStateV1 schema (Pydantic v2)
+  ingestion.py              # 5-pass prose → WorldStateV1 extraction
+  extract_graph.py          # ego-graph slicing + VersionedWorldModel
+  instantiator.py           # AMWN sandbox (NetworkX MultiDiGraph)
+  causal_physics.py         # 3-rung CTF engine (Pearl's ladder)
+  directive_assembly.py     # affective calculus + CreativeBrief
+  narrative_physics.py      # query router (8 query types)
+  generation.py             # constrained LLM renderer
+  auditor.py                # recursive narrative auditor
+  pipeline.py               # end-to-end orchestrator
+  query_models.py           # the 8 typed query schemas
+  query_parsing.py          # NL → typed query, with ID grounding
+  db.py                     # SQLModel persistence + version tree
+  settings.py               # config loader
+
+shadow_loom_mcp/            # FastMCP server (25 tools, 5 resources)
+shadow_loom_ui/             # NiceGUI workspace (8 tabs)
+example_worlds/             # 16 scripted worlds for tests + demos
+sample_plots/               # raw plot summaries for ingestion demos
+tests/                      # 950+ pytest tests
+docs/                       # the long-form documentation
+```
+
+---
+
+## Status & licence
+
+Research project; APIs are stable enough to use but evolve between minor
+versions. See [docs/design-decisions.md](docs/design-decisions.md) for the
+choices that shape the public surface and what we deliberately rejected.
