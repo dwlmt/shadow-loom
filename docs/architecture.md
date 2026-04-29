@@ -79,15 +79,24 @@ Five LLM agents extract a `GlobalRegister` from prose:
 
 ### Step 2: Topology extraction (per-chunk)
 
-For each text chunk the pipeline runs three parallel agents producing:
+For each text chunk the pipeline runs a **Socratic-QA scaffold** first
+(Who/What/Where/When/Why/How pairs that articulate hidden motivations and
+abductive inferences before structured extraction — see
+[academic-foundations.md §6.5](academic-foundations.md#65-computational-narratology-and-story-understanding)
+for the lineage), then dispatches three specialist agents:
 
-* `PhysicsExtraction` — `EventNode`s, `CausalEdge`s, `EntityUpdate`s
-* `SocialExtraction` — `RelationshipEdge`s
-* `SpatialExtraction` — `SpatialEdge`s + `InformationEdge`s
+* `PhysicsExtraction` — `EventNode`s, `CausalEdge`s, `SpatialEdge`s, fallback `EntityUpdate`s
+* `SocialExtraction` — `RelationshipEdge`s, `InformationEdge`s
+* `ConsequencesExtraction` — authoritative `EntityUpdate`s anchored to the Physics events + mutation edges (default-on; overrides the Physics agent's own `entity_updates`). Toggle via `ExtractionConfig.enable_consequences_agent`.
 
-Results are merged in `assemble_world_state`, normalised
-(`_normalize_fabula_times`), auto-repaired (`_auto_repair`), and validated
-(`_programmatic_validation` → optional LLM correction loop).
+In async mode Physics runs first; Social and Consequences are dispatched
+concurrently via `asyncio.gather` since both depend only on the Physics
+output. Each agent's output validator runs a **sanitiser layer** that
+clamps numeric ranges, drops self-loops, coerces status enum aliases, and
+fuzzy-fixes ID typos before falling back to a `ModelRetry`. Results are
+merged in `assemble_world_state`, normalised (`_normalize_fabula_times`),
+auto-repaired (`_auto_repair`), and validated (`_programmatic_validation`
+→ optional LLM correction loop).
 
 ### Step 3: Epistemic synchronisation
 

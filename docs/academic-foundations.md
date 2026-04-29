@@ -378,6 +378,27 @@ ones for the *graph + LLM* hybrid we adopt.
 * Graesser, A. C., Singer, M., Trabasso, T. (1994). "Constructing inferences during narrative text comprehension". *Psychological Review* 101(3): 371–395. — the constructionist theory of inference; motivates why we materialise *causal links* explicitly rather than leave them implicit in prose.
 * Elson, D. K. (2012). *Modeling Narrative Discourse*. PhD thesis, Columbia Univ. — the *Story Intention Graph* (SIG); a direct ancestor of our typed multi-edge representation.
 
+### Socratic-QA scaffolding (ingestion Step 2)
+
+The ingestion pipeline runs a Who/What/Where/When/Why/How **Socratic-QA
+scaffold** on every chunk before any structured extraction. This is the
+classical Socratic method (Plato, *Meno*) repurposed as a chain-of-thought
+technique: by forcing the model to articulate hidden motivations, implicit
+causal chains, and unobserved background variables in natural language
+first, the structured Physics / Social / Consequences agents produce
+dramatically tighter graphs.
+
+* Lai, V. *et al.* (2023). "Are Human Explanations Always Helpful? Towards Objective Evaluation of Human Natural Language Explanations". *ACL 2023* — evidence that explicit explanations gate downstream reasoning quality.
+* Wei, J. *et al.* (2022). "Chain-of-Thought Prompting Elicits Reasoning in Large Language Models". *NeurIPS 2022* — the modern prompt-engineering form of the same idea.
+* Zelikman, E. *et al.* (2022). "STaR: Bootstrapping Reasoning with Reasoning". *NeurIPS 2022* — reinforces that scaffolded rationales raise extraction fidelity.
+* Qi, J. *et al.* (2023). "The Art of SOCRATIC QUESTIONING: Recursive Thinking with Large Language Models". *EMNLP 2023* — directly motivates the Who/What/Where/When/Why/How decomposition we adopt.
+
+The scaffold is implemented in `shadow_loom/ingestion.py`
+(`_build_socratic_agent`) and prompted by
+[`shadow_loom/prompts/socratic_scaffolding.md`](../shadow_loom/prompts/socratic_scaffolding.md).
+Its output (`SocraticScaffold.qa_pairs`) is injected as system-prompt
+context into all three downstream extraction agents.
+
 ### Neural era and benchmarks
 
 * Mostafazadeh, N. *et al.* (2016). "A corpus and cloze evaluation for deeper understanding of commonsense stories". *NAACL 2016*. — the *Story Cloze Test* / ROCStories benchmark for commonsense narrative reasoning.

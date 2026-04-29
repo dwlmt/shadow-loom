@@ -104,6 +104,35 @@ the consequences through `affected_domains` and `MECHANISM_TRAIT_MAP`. See
 
 ---
 
+## D5b. Decomposed Step 3 ingestion (Physics + Social + Consequences)
+
+**Decision.** Per-chunk topology extraction is split across three
+specialist agents, preceded by a **Socratic-QA scaffold** (see
+[academic-foundations.md §6.5](academic-foundations.md#socratic-qa-scaffolding-ingestion-step-2)):
+
+* **Step 3a — Physics agent**: events, causal edges, spatial edges.
+* **Step 3b — Social agent**: relationship edges, information edges.
+* **Step 3c — Consequences agent**: `EntityUpdate`s (trait/belief/status/location deltas) anchored to the events + mutation edges Physics produced. Default-on; overrides Physics's own `entity_updates` when enabled. Toggle: `ExtractionConfig.enable_consequences_agent`.
+
+**Alternative.** A single "do everything" agent per chunk — the original
+design — or a two-agent split (Physics + Social) where Physics also
+emitted `EntityUpdate`s as a side-task.
+
+**Tradeoff.** Three LLM calls per chunk instead of one or two. Mitigated
+by running Steps 3b and 3c concurrently in async mode (both depend only
+on the Physics output) and by the dramatic quality improvement: each
+agent now has a single focused contract with a contract-headed prompt
+and a sanitiser-equipped output validator that clamps numeric ranges,
+drops self-loops, coerces status enum aliases, and fuzzy-fixes ID typos.
+
+**Invariant.** Every Physics `mutation` / `mutation_social` edge that
+targets an entity should have a corresponding `EntityUpdate` from the
+Consequences agent. The Consequences validator audits this parity and
+logs gaps without retrying (the agent already has every mutation listed
+in its system prompt).
+
+---
+
 ## D6. AMWN sandboxing for all simulation
 
 **Decision.** Every Pearl rung-2 / rung-3 query runs against a NetworkX

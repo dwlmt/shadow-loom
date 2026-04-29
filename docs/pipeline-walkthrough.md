@@ -86,14 +86,27 @@ references survive boundaries. Tunable via `ExtractionConfig.min_chunk_chars`.
 
 ### 1c. Per-Chunk Topology — `extract_topology`
 
-For each chunk, three agents run **in parallel** (gated by
-`max_concurrent_chunks`):
+For each chunk the pipeline runs a **Socratic scaffold** first, then
+decomposes the structured extraction across **three specialist agents**
+(Step 3a → 3b ∥ 3c). The Social and Consequences agents run concurrently
+in async mode because both depend only on the Physics output.
 
-| Agent | Output | Prompt |
-|---|---|---|
-| Physics agent | `PhysicsExtraction` — `EventNode`s, `CausalEdge`s, `SpatialEdge`s, `EntityUpdate`s | `prompts/physics_extraction.md` |
-| Social agent | `SocialExtraction` — `RelationshipEdge`s, `InformationEdge`s | `prompts/social_extraction.md` |
-| (Scaffold) | `SocraticScaffold` — Who/What/Where/When/Why/How QA pairs that prime the structured passes | `prompts/socratic_scaffold.md` |
+| Step | Agent | Output | Prompt |
+|---|---|---|---|
+| 2 | Socratic scaffold | `SocraticScaffold` — Who/What/Where/When/Why/How QA pairs that surface implicit motivations, hidden state, and abductive inferences before structured extraction. Inspired by the Socratic method (see [academic-foundations.md §6.5](academic-foundations.md#65-computational-narratology-and-story-understanding)) and modern Socratic-QA / chain-of-thought prompting. | `prompts/socratic_scaffolding.md` |
+| 3a | Physics agent | `PhysicsExtraction` — `EventNode`s, `CausalEdge`s, `SpatialEdge`s, plus a fallback set of `EntityUpdate`s | `prompts/physics_extraction.md` |
+| 3b | Social agent | `SocialExtraction` — `RelationshipEdge`s, `InformationEdge`s | `prompts/social_extraction.md` |
+| 3c | Consequences agent | `ConsequencesExtraction` — authoritative `EntityUpdate`s (trait/belief/status/location deltas) anchored to Physics events + mutation edges. Toggle via `ExtractionConfig.enable_consequences_agent` (default **on**); when enabled it overrides Physics's own `entity_updates` output. | `prompts/consequences_extraction.md` |
+
+Each agent's output validator runs a **sanitiser layer** that auto-clamps
+numeric ranges (`causal_force ∈ [0, 10]`, `trait_delta ∈ [-1, 1]`,
+relationship metrics ∈ schema bounds, `inertia` capped at `0.99` so
+traits never freeze permanently), drops self-loops, coerces status
+aliases (`deceased → dead`, `wounded → injured`, …), and fuzzy-fixes ID
+typos. Only structurally unfixable IDs trigger a `ModelRetry`. The
+Consequences validator additionally performs a mutation⇄`EntityUpdate`
+parity audit and a dead-actor warning that surface silent quality losses
+in the log.
 
 `EntityUpdate` is the per-chunk delta that becomes an `EntityStateSnapshot`
 on the entity's `state_timeline` — this is where the **Hybrid 4+5 timeline**
