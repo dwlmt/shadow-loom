@@ -40,6 +40,7 @@ _TABS = [
     ("causality", "account_tree", "Causality"),
     ("reasoning", "psychology", "Reasoning"),
     ("audit", "fact_check", "Audit"),
+    ("editor", "edit_note", "Edit"),
     ("export", "ios_share", "Export"),
 ]
 
@@ -265,6 +266,12 @@ def build_workspace(state: AppState, project_id: int) -> None:
                     with ui.tab_panel("audit").classes("q-pa-none h-full"):
                         from shadow_loom_ui.components.audit_tab import build_audit_tab
                         build_audit_tab(state)
+
+                    with ui.tab_panel("editor").classes("q-pa-none h-full"):
+                        from shadow_loom_ui.components.editor_tab import (
+                            build_editor_tab,
+                        )
+                        build_editor_tab(state)
 
                     with ui.tab_panel("export").classes("q-pa-none h-full"):
                         from shadow_loom_ui.components.export_tab import build_export_tab
