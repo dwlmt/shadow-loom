@@ -7,7 +7,7 @@ Five-step LLM extraction using PydanticAI + Ollama:
     Step 1b — Object extraction (OBJ_ nodes, with location context)
     Step 1c — Entity extraction (ENT_ nodes, with location + object context)
   Step 2 — Semantic Scaffolding (Socratic QA per chunk)
-  Step 3 — Decomposed Topology Extraction (Physics Agent + Social Agent per chunk)
+  Step 3 — Decomposed Topology Extraction (Physics + Social + Consequences agents per chunk)
   Step 4 — Pydantic Propose-Critique-Repair (per-chunk result validation)
   Step 5 — Global Assembly + Mathematical Sorting + Validation + Correction
   Step 5b — Post-Assembly World Trait Timeline Extraction (single focused LLM pass)
@@ -155,6 +155,18 @@ class SocialExtraction(BaseModel):
     social_topology: List[RelationshipEdge] = Field(default_factory=list)
 
 
+class ConsequencesExtraction(BaseModel):
+    """Step 3c output: per-entity state deltas from the Consequences Agent.
+
+    Run *after* the Physics Agent so it can ground each EntityUpdate in the
+    actual events and mutation edges produced by Physics. Decoupling this
+    from the Physics pass lets the LLM concentrate fully on the
+    trait/belief/status accounting that previously had to share attention
+    with event/edge extraction.
+    """
+    entity_updates: List["EntityUpdate"] = Field(default_factory=list)
+
+
 class EntityUpdate(BaseModel):
     """Per-chunk delta: how an entity's state changed during this chunk."""
     entity_id: str = Field(description="ENT_ ID of the entity that changed.")
@@ -178,6 +190,7 @@ class EntityUpdate(BaseModel):
 # Resolve forward references now that EntityUpdate is defined
 ChunkTopology.model_rebuild()
 PhysicsExtraction.model_rebuild()
+ConsequencesExtraction.model_rebuild()
 
 
 class WorldTraitTimelineExtraction(BaseModel):
@@ -190,6 +203,33 @@ class WorldTraitTimelineExtraction(BaseModel):
             "changed (e.g., a war ends, a law is repealed, a regime falls)."
         ),
     )
+
+
+# =====================================================================
+# Canonical vocabularies — kept in sync with downstream physics engine
+# (``shadow_loom.causal_physics.MECHANISM_TRAIT_MAP`` + the
+# ``RelationshipEdge`` schema). Used by per-chunk output validators to
+# auto-correct non-fatal LLM drift without paying a full ``ModelRetry``.
+# =====================================================================
+_CANONICAL_MECHANISMS: set[str] = {
+    "physical", "physical_force",
+    "psychological",
+    "epistemic", "epistemic_revelation",
+    "social", "social_coercion",
+    "emotional",
+    "informational",
+    "betrayal",
+}
+# Custom labels we deliberately tolerate — they bypass the routing
+# fallback (so they receive full impulse to all traits) and are common
+# domain words the LLM legitimately reaches for.
+_TOLERATED_MECHANISMS: set[str] = {
+    "kinetic", "chemical", "seduction", "coercion", "deduction",
+    "manipulation", "intimidation", "persuasion", "supernatural",
+    "ritual", "biological", "environmental",
+}
+_RELATIONSHIP_METRICS: set[str] = {"affinity", "fear", "power_dynamic"}
+_VALID_STATUSES: set[str] = {"healthy", "injured", "ill", "dead", "unconscious"}
 
 
 class ValidationIssue(BaseModel):
@@ -264,6 +304,14 @@ class ExtractionConfig(BaseModel):
         default=10,
         description="Estimated events per chunk — used to pre-allocate syuzhet "
         "and fabula_time ranges for parallel extraction.",
+    )
+    enable_consequences_agent: bool = Field(
+        default=True,
+        description="If true, run a third per-chunk agent (Step 3c) that focuses "
+        "exclusively on producing EntityUpdate records (trait/belief/status/location "
+        "deltas) from the events Physics produced. When enabled, the Physics agent's "
+        "own entity_updates output is discarded in favour of the Consequences output. "
+        "Disable to fall back to the legacy two-agent (Physics + Social) split.",
     )
 
     @model_validator(mode="before")
@@ -766,6 +814,21 @@ class _SocialDeps(BaseModel):
     previous_event_ids: List[str] = Field(default_factory=list)
 
 
+class _ConsequencesDeps(BaseModel):
+    """Dependencies for Step 3c (Consequences Agent: entity_updates).
+
+    Receives the events and mutation/mutation_social edges already produced
+    by the Physics Agent so that every EntityUpdate it emits is anchored
+    to a concrete event and aligned with the causal mutations.
+    """
+    model_config = {"protected_namespaces": ()}
+    global_register: GlobalRegister
+    scaffold: SocraticScaffold
+    chunk_events: List[EventNode] = Field(default_factory=list)
+    chunk_causal: List[CausalEdge] = Field(default_factory=list)
+    previous_event_ids: List[str] = Field(default_factory=list)
+
+
 def _format_scaffold(scaffold: SocraticScaffold) -> str:
     """Format a SocraticScaffold as a readable text block for agent injection."""
     if not scaffold.qa_pairs:
@@ -860,6 +923,254 @@ def _fix_id(candidate: str, valid_ids: set[str], field_label: str, fixes: List[s
     return candidate, False
 
 
+# =====================================================================
+# Numeric / semantic sanitisation helpers — used by every per-chunk
+# output validator. Each helper returns the corrected value plus,
+# where relevant, an "issue" string appended to a shared *notes* list
+# so the caller can decide whether to log, drop, or pass through.
+# =====================================================================
+
+
+def _clamp(value: float, lo: float, hi: float) -> float:
+    """Clamp ``value`` into the inclusive range [lo, hi]."""
+    if value < lo:
+        return lo
+    if value > hi:
+        return hi
+    return value
+
+
+def _sanitize_causal_edge(
+    ce: CausalEdge, notes: List[str],
+) -> Optional[CausalEdge]:
+    """Apply numeric clamps and semantic fixes to a CausalEdge.
+
+    Returns the (possibly mutated) edge or ``None`` if the edge is
+    structurally incoherent enough that downstream physics would just
+    silently drop it (in which case we drop it now and log).
+    """
+    updates: dict = {}
+
+    # Drop self-loops — physics treats these as zero-effect cycles
+    # and the AMWN structural diagram throws them away anyway.
+    if ce.source_id == ce.target_id:
+        notes.append(
+            f"[Auto-Fix] Dropped self-loop CausalEdge '{ce.source_id}'→"
+            f"'{ce.target_id}' ({ce.causality_type})"
+        )
+        return None
+
+    # Clamp causal_force to [0, 10]
+    if ce.causal_force is not None and not (0.0 <= ce.causal_force <= 10.0):
+        clamped = _clamp(ce.causal_force, 0.0, 10.0)
+        notes.append(
+            f"[Auto-Fix] Clamped CausalEdge causal_force {ce.causal_force} → {clamped} "
+            f"({ce.source_id}→{ce.target_id})"
+        )
+        updates["causal_force"] = clamped
+
+    # Clamp trait_delta to [-1, 1]
+    if ce.trait_delta is not None and not (-1.0 <= ce.trait_delta <= 1.0):
+        clamped = _clamp(ce.trait_delta, -1.0, 1.0)
+        notes.append(
+            f"[Auto-Fix] Clamped CausalEdge trait_delta {ce.trait_delta} → {clamped} "
+            f"({ce.source_id}→{ce.target_id})"
+        )
+        updates["trait_delta"] = clamped
+
+    # Clamp propagation_delay to >= 0
+    if ce.propagation_delay is not None and ce.propagation_delay < 0:
+        notes.append(
+            f"[Auto-Fix] Clamped negative propagation_delay {ce.propagation_delay} → 0 "
+            f"({ce.source_id}→{ce.target_id})"
+        )
+        updates["propagation_delay"] = 0
+
+    # Mutation edges should carry trait_target + trait_delta. The downstream
+    # physics engine falls back to a generic trait-routing path when these
+    # are missing, which silently degrades fidelity. Log so the issue is
+    # visible without rejecting the edge entirely.
+    if ce.causality_type in ("mutation", "mutation_social"):
+        if not ce.trait_target:
+            notes.append(
+                f"[Quality] {ce.causality_type} edge {ce.source_id}→{ce.target_id} "
+                "missing trait_target — physics will use generic routing."
+            )
+        if ce.trait_delta is None:
+            notes.append(
+                f"[Quality] {ce.causality_type} edge {ce.source_id}→{ce.target_id} "
+                "missing trait_delta — physics will use a default (+1.0) magnitude."
+            )
+
+    # mutation_social: trait_target must be a relationship metric, and
+    # rel_counterpart_id must differ from target_id. The schema-level
+    # validator already requires rel_counterpart_id; we strengthen here.
+    if ce.causality_type == "mutation_social":
+        if ce.trait_target and ce.trait_target not in _RELATIONSHIP_METRICS:
+            notes.append(
+                f"[Auto-Fix] Dropped mutation_social edge {ce.source_id}→{ce.target_id}: "
+                f"trait_target '{ce.trait_target}' is not one of "
+                f"{sorted(_RELATIONSHIP_METRICS)}."
+            )
+            return None
+        if ce.rel_counterpart_id and ce.rel_counterpart_id == ce.target_id:
+            notes.append(
+                f"[Auto-Fix] Dropped mutation_social edge {ce.source_id}→{ce.target_id}: "
+                "rel_counterpart_id is the same as target_id (self-relationship)."
+            )
+            return None
+
+    # Mechanism vocabulary check — fully informational. The physics engine
+    # routes by mechanism via MECHANISM_TRAIT_MAP and falls back to a
+    # penalty for unknown labels. We surface unknown-but-acceptable labels
+    # so authors can spot persistent novel labels they may want canonised.
+    if ce.mechanism:
+        mech = ce.mechanism.strip()
+        if mech != ce.mechanism:
+            updates["mechanism"] = mech
+        if (
+            mech not in _CANONICAL_MECHANISMS
+            and mech not in _TOLERATED_MECHANISMS
+        ):
+            notes.append(
+                f"[Quality] CausalEdge mechanism '{mech}' is non-canonical "
+                f"({ce.source_id}→{ce.target_id}) — physics will apply the "
+                "mechanism-routing fallback (~20% impulse) for off-list traits."
+            )
+
+    if updates:
+        try:
+            return ce.model_copy(update=updates)
+        except Exception:
+            notes.append(
+                f"[Auto-Fix] Dropped CausalEdge {ce.source_id}→{ce.target_id} "
+                "after numeric clamp triggered a schema rejection."
+            )
+            return None
+    return ce
+
+
+def _sanitize_relationship_edge(
+    re_edge: RelationshipEdge, notes: List[str],
+) -> RelationshipEdge:
+    """Clamp the metric and inertia ranges on a RelationshipEdge."""
+    updates: dict = {}
+    for field, lo, hi in (
+        ("affinity", -1.0, 1.0),
+        ("fear", 0.0, 1.0),
+        ("power_dynamic", -1.0, 1.0),
+        ("inertia", 0.0, 1.0),
+    ):
+        cur = getattr(re_edge, field)
+        if cur is None:
+            continue
+        if not (lo <= cur <= hi):
+            clamped = _clamp(cur, lo, hi)
+            notes.append(
+                f"[Auto-Fix] Clamped RelationshipEdge.{field} {cur} → {clamped} "
+                f"({re_edge.source_entity_id}→{re_edge.target_entity_id})"
+            )
+            updates[field] = clamped
+    return re_edge.model_copy(update=updates) if updates else re_edge
+
+
+def _sanitize_entity_update(
+    eu: "EntityUpdate", notes: List[str],
+) -> Optional["EntityUpdate"]:
+    """Clamp trait/inertia/confidence ranges and validate status enum.
+
+    Drops the update entirely only when *every* field is no-op after
+    sanitisation (the LLM produced a hollow record).
+    """
+    updates: dict = {}
+
+    # status enum guard — schema enforces it, but LLMs sometimes return
+    # title-case or synonyms. Try to coerce common aliases before giving up.
+    if eu.new_status and eu.new_status not in _VALID_STATUSES:
+        coerced = eu.new_status.lower().strip()
+        alias = {
+            "alive": "healthy", "well": "healthy",
+            "wounded": "injured", "hurt": "injured",
+            "sick": "ill", "diseased": "ill",
+            "deceased": "dead", "killed": "dead",
+            "ko": "unconscious", "knocked_out": "unconscious",
+            "asleep": "unconscious",
+        }.get(coerced)
+        if alias:
+            updates["new_status"] = alias
+            notes.append(
+                f"[Auto-Fix] EntityUpdate.new_status '{eu.new_status}' → '{alias}' "
+                f"({eu.entity_id}@{eu.fabula_time})"
+            )
+        else:
+            updates["new_status"] = None
+            notes.append(
+                f"[Auto-Fix] EntityUpdate.new_status '{eu.new_status}' is unknown — "
+                f"dropped ({eu.entity_id}@{eu.fabula_time})."
+            )
+
+    # Clamp trait values + inertia to [0, 1]; physics asserts these.
+    if eu.trait_updates:
+        cleaned: Dict[str, TraitVector] = {}
+        for tname, tv in eu.trait_updates.items():
+            new_value = _clamp(tv.value, 0.0, 1.0)
+            new_inertia = _clamp(tv.inertia, 0.0, 1.0)
+            # Avoid 1.0 inertia — it makes the trait literally unmovable.
+            if new_inertia >= 1.0:
+                new_inertia = 0.99
+                notes.append(
+                    f"[Auto-Fix] Capped EntityUpdate trait '{tname}' inertia at 0.99 "
+                    f"({eu.entity_id}@{eu.fabula_time}) — 1.0 would freeze it forever."
+                )
+            if new_value != tv.value or new_inertia != tv.inertia:
+                notes.append(
+                    f"[Auto-Fix] Clamped EntityUpdate trait '{tname}' "
+                    f"value/inertia {tv.value:.2f}/{tv.inertia:.2f} → "
+                    f"{new_value:.2f}/{new_inertia:.2f} "
+                    f"({eu.entity_id}@{eu.fabula_time})"
+                )
+            cleaned[tname] = TraitVector(value=new_value, inertia=new_inertia)
+        if cleaned != eu.trait_updates:
+            updates["trait_updates"] = cleaned
+
+    # Clamp belief confidence + inertia, ensure established_at_fabula is set.
+    if eu.new_beliefs:
+        cleaned_beliefs: List[Belief] = []
+        for b in eu.new_beliefs:
+            b_updates: dict = {}
+            new_conf = _clamp(b.confidence, 0.0, 1.0)
+            new_in = _clamp(b.inertia, 0.0, 1.0)
+            if new_in >= 1.0:
+                new_in = 0.99
+            if new_conf != b.confidence:
+                b_updates["confidence"] = new_conf
+            if new_in != b.inertia:
+                b_updates["inertia"] = new_in
+            # Default missing established_at_fabula to the EntityUpdate's
+            # own fabula_time so downstream time-slicing works.
+            if not b.established_at_fabula and eu.fabula_time > 0:
+                b_updates["established_at_fabula"] = eu.fabula_time
+            cleaned_beliefs.append(b.model_copy(update=b_updates) if b_updates else b)
+        updates["new_beliefs"] = cleaned_beliefs
+
+    # Drop entirely-empty updates: no traits, no beliefs, no
+    # invalidations, no status, no location.
+    candidate = eu.model_copy(update=updates) if updates else eu
+    if (
+        not candidate.trait_updates
+        and not candidate.new_beliefs
+        and not candidate.invalidated_belief_targets
+        and candidate.new_status is None
+        and candidate.new_location_id is None
+    ):
+        notes.append(
+            f"[Auto-Fix] Dropped empty EntityUpdate for {eu.entity_id}@{eu.fabula_time} "
+            "(no trait/belief/status/location change)."
+        )
+        return None
+    return candidate
+
+
 def _build_physics_agent(config: ExtractionConfig) -> Agent[_PhysicsDeps, PhysicsExtraction]:
     """Construct the Step 3a Physics Agent — events + causal + spatial edges."""
     agent: Agent[_PhysicsDeps, PhysicsExtraction] = Agent(
@@ -951,10 +1262,14 @@ def _build_physics_agent(config: ExtractionConfig) -> Agent[_PhysicsDeps, Physic
             if tgt not in valid and not updates.get("target_id"):
                 bad.append(f"CausalEdge target_id '{ce.target_id}' is not a valid ID.")
             try:
-                fixed_causal.append(ce.model_copy(update=updates) if updates else ce)
+                fixed = ce.model_copy(update=updates) if updates else ce
             except Exception:
                 # model_validator rejected the fix (prefix mismatch) — drop edge
                 fixes.append(f"[Auto-Fix] Dropped causal edge {ce.source_id}→{ce.target_id} (validation error after fix)")
+                continue
+            sanitised = _sanitize_causal_edge(fixed, fixes)
+            if sanitised is not None:
+                fixed_causal.append(sanitised)
 
         # --- Fix spatial edge IDs ---
         fixed_spatial: List[SpatialEdge] = []
@@ -970,6 +1285,10 @@ def _build_physics_agent(config: ExtractionConfig) -> Agent[_PhysicsDeps, Physic
                 bad.append(f"SpatialEdge source_id '{se.source_id}' is not a valid location.")
             elif tgt not in location_ids:
                 bad.append(f"SpatialEdge target_id '{se.target_id}' is not a valid location.")
+            elif src == tgt:
+                fixes.append(
+                    f"[Auto-Fix] Dropped self-loop SpatialEdge '{src}'→'{tgt}'"
+                )
             else:
                 fixed_spatial.append(se.model_copy(update=updates) if updates else se)
 
@@ -995,7 +1314,10 @@ def _build_physics_agent(config: ExtractionConfig) -> Agent[_PhysicsDeps, Physic
             if eid not in entity_ids:
                 bad.append(f"EntityUpdate entity_id '{eu.entity_id}' is not a valid entity.")
             else:
-                fixed_updates.append(eu.model_copy(update=updates) if updates else eu)
+                cleaned_eu = eu.model_copy(update=updates) if updates else eu
+                sanitised_eu = _sanitize_entity_update(cleaned_eu, fixes)
+                if sanitised_eu is not None:
+                    fixed_updates.append(sanitised_eu)
 
         if fixes:
             logger.info("[Validator·Physics] Auto-fixed %d ID(s): %s", len(fixes), "; ".join(fixes))
@@ -1078,13 +1400,24 @@ def _build_social_agent(config: ExtractionConfig) -> Agent[_SocialDeps, SocialEx
             for tid in ie.target_ids:
                 t, _ = _fix_id(tid, node_ids, "InformationEdge.target_id", fixes)
                 if t in node_ids:
+                    if t == src:
+                        # self-broadcast: information cannot flow to itself
+                        fixes.append(
+                            f"[Auto-Fix] Dropped self-targeting InformationEdge target "
+                            f"'{src}' on edge from '{src}'."
+                        )
+                        continue
                     fixed_targets.append(t)
                 else:
                     bad.append(f"InformationEdge target_id '{tid}' is not a valid entity/object.")
-            if fixed_targets:
-                if fixed_targets != list(ie.target_ids):
-                    updates["target_ids"] = fixed_targets
-                fixed_info.append(ie.model_copy(update=updates) if updates else ie)
+            if not fixed_targets:
+                fixes.append(
+                    f"[Auto-Fix] Dropped InformationEdge from '{src}' — no valid targets remain."
+                )
+                continue
+            if fixed_targets != list(ie.target_ids):
+                updates["target_ids"] = fixed_targets
+            fixed_info.append(ie.model_copy(update=updates) if updates else ie)
 
         # --- Fix relationship edge IDs ---
         fixed_social: List[RelationshipEdge] = []
@@ -1103,7 +1436,8 @@ def _build_social_agent(config: ExtractionConfig) -> Agent[_SocialDeps, SocialEx
             elif src == tgt:
                 fixes.append(f"[Auto-Fix] Dropped self-referencing RelationshipEdge '{src}'→'{tgt}'")
             else:
-                fixed_social.append(re_edge.model_copy(update=updates) if updates else re_edge)
+                rebuilt = re_edge.model_copy(update=updates) if updates else re_edge
+                fixed_social.append(_sanitize_relationship_edge(rebuilt, fixes))
 
         if fixes:
             logger.info("[Validator·Social] Auto-fixed %d issue(s): %s", len(fixes), "; ".join(fixes))
@@ -1122,13 +1456,226 @@ def _build_social_agent(config: ExtractionConfig) -> Agent[_SocialDeps, SocialEx
     return agent
 
 
+def _build_consequences_agent(
+    config: ExtractionConfig,
+) -> Agent[_ConsequencesDeps, ConsequencesExtraction]:
+    """Construct the Step 3c Consequences Agent — entity_updates only.
+
+    The agent is given the events and mutation/mutation_social edges
+    already produced by the Physics Agent, plus the entity baselines
+    from the Global Register. Its sole job is to translate those into
+    EntityUpdate records (trait deltas, new/invalidated beliefs, status
+    changes, location changes).
+    """
+    agent: Agent[_ConsequencesDeps, ConsequencesExtraction] = Agent(
+        _resolve_model(config.model),
+        deps_type=_ConsequencesDeps,
+        output_type=NativeOutput(ConsequencesExtraction),
+        system_prompt=_load_prompt("consequences_extraction.md"),
+        retries=config.output_retries,
+    )
+
+    @agent.system_prompt
+    def inject_register_for_consequences(ctx: RunContext[_ConsequencesDeps]) -> str:
+        reg = ctx.deps.global_register
+        entity_ids = sorted(reg.entities.keys())
+        location_ids = sorted(reg.locations.keys())
+        object_ids = sorted(reg.objects.keys())
+        entity_names = {eid: reg.entities[eid].name for eid in entity_ids}
+        scaffold_text = _format_scaffold(ctx.deps.scaffold)
+
+        # Compact entity baselines so the LLM knows starting trait values.
+        entity_baselines: List[str] = []
+        for eid in entity_ids:
+            ent = reg.entities[eid]
+            traits_str = ", ".join(
+                f"{k}={v.value:.1f}/i={v.inertia:.2f}" for k, v in ent.traits.items()
+            )
+            entity_baselines.append(
+                f"  {eid} ({ent.name}): status={ent.status}, "
+                f"loc={ent.location_id}, traits=[{traits_str}]"
+            )
+        baselines_block = "\n".join(entity_baselines)
+
+        # Compact event summary (the only events whose consequences matter).
+        evt_lines: List[str] = []
+        for e in ctx.deps.chunk_events:
+            evt_lines.append(
+                f"  - {e.id} (fabula={e.fabula_time}, type={e.event_type}, "
+                f"actors={e.actor_ids}, targets={e.target_ids}): {e.description}"
+            )
+        events_block = "\n".join(evt_lines) if evt_lines else "  (no events in this chunk)"
+
+        # Compact mutation hints from Physics — every mutation/mutation_social
+        # edge implies an EntityUpdate is needed.
+        mut_lines: List[str] = []
+        for ce in ctx.deps.chunk_causal:
+            if ce.causality_type in ("mutation", "mutation_social"):
+                mut_lines.append(
+                    f"  - {ce.source_id} → {ce.target_id} "
+                    f"[{ce.causality_type}] trait={ce.trait_target} "
+                    f"delta={ce.trait_delta} (force={ce.causal_force}, "
+                    f"evidence={ce.evidence_strength})"
+                )
+        mutations_block = (
+            "\n".join(mut_lines)
+            if mut_lines
+            else "  (no mutation edges — infer trait/belief deltas from events directly)"
+        )
+
+        chunk_evt_ids = [e.id for e in ctx.deps.chunk_events]
+
+        return (
+            "=== VALID ID REGISTER (from Step 1) ===\n"
+            f"ENTITY IDs: {entity_ids}\n"
+            f"ENTITY NAMES: {entity_names}\n"
+            f"LOCATION IDs: {location_ids}\n"
+            f"OBJECT IDs: {object_ids}\n"
+            f"WORLD TRAIT IDs: {list(reg.world_traits.keys())}\n"
+            f"THIS CHUNK'S EVENT IDs: {chunk_evt_ids}\n"
+            f"PREVIOUS CHUNKS' EVENT IDs: {ctx.deps.previous_event_ids}\n"
+            "\n"
+            "You MUST ONLY use IDs from the lists above. Do NOT invent any IDs.\n"
+            "\n"
+            "=== ENTITY BASELINES (initial trait values + inertia) ===\n"
+            f"{baselines_block}\n"
+            "\n"
+            "Trait_updates values are the NEW absolute trait value after the "
+            "event, NOT the delta. The engine computes deltas from baselines.\n"
+            "\n"
+            "=== EVENTS EXTRACTED FROM THIS CHUNK (by Physics Agent) ===\n"
+            f"{events_block}\n"
+            "\n"
+            "=== MUTATION EDGES FROM PHYSICS (each implies an EntityUpdate) ===\n"
+            f"{mutations_block}\n"
+            "\n"
+            "=== SOCRATIC SCAFFOLD (semantic pre-analysis) ===\n"
+            f"{scaffold_text}\n"
+            "\n"
+            "Use the scaffold's WHY/HOW answers to surface IMPLICIT trait "
+            "shifts (guilt after killing, fear after threat, grief after loss) "
+            "even when the prose does not name them."
+        )
+
+    @agent.output_validator
+    def validate_consequences_ids(
+        ctx: RunContext[_ConsequencesDeps],
+        result: ConsequencesExtraction,
+    ) -> ConsequencesExtraction:
+        """Validate entity_update IDs — fix typos, retry only for unfixable IDs."""
+        reg = ctx.deps.global_register
+        chunk_evt_ids = [e.id for e in ctx.deps.chunk_events]
+        valid = _build_valid_id_set(
+            reg, ctx.deps.previous_event_ids + chunk_evt_ids,
+        )
+        entity_ids = set(reg.entities.keys())
+        location_ids = set(reg.locations.keys())
+        fixes: List[str] = []
+        bad: List[str] = []
+
+        fixed_updates: List[EntityUpdate] = []
+        for eu in result.entity_updates:
+            updates: dict = {}
+            eid, _ = _fix_id(eu.entity_id, entity_ids, "EntityUpdate.entity_id", fixes)
+            if eid != eu.entity_id:
+                updates["entity_id"] = eid
+            if eu.triggered_by and eu.triggered_by not in valid:
+                trig, _ = _fix_id(eu.triggered_by, valid, "EntityUpdate.triggered_by", fixes)
+                if trig != eu.triggered_by:
+                    updates["triggered_by"] = trig
+                if trig not in valid:
+                    bad.append(
+                        f"EntityUpdate triggered_by '{eu.triggered_by}' is not a valid event."
+                    )
+            if eu.new_location_id and eu.new_location_id not in location_ids:
+                loc, _ = _fix_id(eu.new_location_id, location_ids, "EntityUpdate.new_location_id", fixes)
+                if loc != eu.new_location_id:
+                    updates["new_location_id"] = loc
+                if loc not in location_ids:
+                    bad.append(
+                        f"EntityUpdate new_location_id '{eu.new_location_id}' is not a valid location."
+                    )
+            if eid not in entity_ids:
+                bad.append(f"EntityUpdate entity_id '{eu.entity_id}' is not a valid entity.")
+            else:
+                cleaned_eu = eu.model_copy(update=updates) if updates else eu
+                sanitised_eu = _sanitize_entity_update(cleaned_eu, fixes)
+                if sanitised_eu is not None:
+                    fixed_updates.append(sanitised_eu)
+
+        # --- Mutation⇄EntityUpdate parity audit ---
+        # Every Physics mutation/mutation_social edge that targets an entity
+        # SHOULD have a matching EntityUpdate. Surface gaps so they are
+        # visible in the log; do not retry (the agent already had every
+        # mutation listed in its system prompt).
+        eu_keys: set[Tuple[str, int, Optional[str]]] = {
+            (eu.entity_id, eu.fabula_time, eu.triggered_by) for eu in fixed_updates
+        }
+        eu_entity_set: set[str] = {eu.entity_id for eu in fixed_updates}
+        missing: List[str] = []
+        for ce in ctx.deps.chunk_causal:
+            if ce.causality_type not in ("mutation", "mutation_social"):
+                continue
+            target_ent = (
+                ce.target_id if ce.causality_type == "mutation"
+                else ce.target_id  # mutation_social: target_id is the perspective entity
+            )
+            if not target_ent.startswith("ENT_"):
+                continue
+            # Loose match: same entity touched by something in this chunk is OK.
+            # We only flag when the entity has no update at all.
+            if target_ent not in eu_entity_set:
+                missing.append(
+                    f"{ce.source_id} → {target_ent} "
+                    f"({ce.causality_type}, trait={ce.trait_target})"
+                )
+        if missing:
+            logger.info(
+                "[Validator·Consequences] %d mutation edge(s) lack a "
+                "corresponding EntityUpdate: %s",
+                len(missing), "; ".join(missing[:5]),
+            )
+
+        # --- Dead-actor warning ---
+        # If an EntityUpdate marks an entity dead, warn when subsequent
+        # events in this chunk still list that entity as an actor.
+        deaths: Dict[str, int] = {
+            eu.entity_id: eu.fabula_time
+            for eu in fixed_updates
+            if eu.new_status == "dead"
+        }
+        for ev in ctx.deps.chunk_events:
+            for actor in ev.actor_ids:
+                if actor in deaths and ev.fabula_time > deaths[actor]:
+                    logger.info(
+                        "[Validator·Consequences] %s is marked dead at "
+                        "fabula=%d but still acts in event %s at fabula=%d.",
+                        actor, deaths[actor], ev.id, ev.fabula_time,
+                    )
+
+        if fixes:
+            logger.info(
+                "[Validator·Consequences] Auto-fixed %d issue(s): %s",
+                len(fixes), "; ".join(fixes[:8]),
+            )
+        if bad:
+            raise ModelRetry(
+                "The following IDs could not be auto-resolved. "
+                "Fix them using ONLY IDs from the register:\n" + "\n".join(bad)
+            )
+
+        return ConsequencesExtraction(entity_updates=fixed_updates)
+
+    return agent
+
+
 def extract_topology(
     chunks: List[str],
     register: GlobalRegister,
     config: ExtractionConfig | None = None,
 ) -> List[ChunkTopology]:
     """
-    Steps 2–4: Three-agent extraction per chunk with Socratic scaffolding.
+    Steps 2–4: Per-chunk agent pipeline with Socratic scaffolding.
 
     **Step 2** — Socratic QA scaffolding: lightweight agent generates
     Who/What/Where/When/Why/How pairs to articulate hidden reasoning.
@@ -1140,6 +1687,12 @@ def extract_topology(
     informed by the scaffold + concrete events from 3a. Result validator
     catches hallucinated IDs.
 
+    **Step 3c** — Consequences Agent (enabled by default): translates
+    events + mutation edges from 3a into per-entity ``EntityUpdate``
+    records (trait deltas, new/invalidated beliefs, status, location).
+    When enabled, replaces the ``entity_updates`` Physics produced.
+    Toggle via ``ExtractionConfig.enable_consequences_agent``.
+
     The GlobalRegister (from Step 1) is injected into every agent via
     dependency injection, preventing hallucination of new entity/location/
     object IDs.
@@ -1148,6 +1701,10 @@ def extract_topology(
     socratic_agent = _build_socratic_agent(config)
     physics_agent = _build_physics_agent(config)
     social_agent = _build_social_agent(config)
+    consequences_agent = (
+        _build_consequences_agent(config)
+        if config.enable_consequences_agent else None
+    )
     topologies: List[ChunkTopology] = []
     syuzhet_counter = 0
     # Informational only — the LLM is told the highest fabula_time it has
@@ -1303,6 +1860,37 @@ def extract_topology(
         else:
             logger.info("[Step 3b] Chunk %d: skipping social pass (no events).", i + 1)
 
+        # --- Step 3c: Consequences Agent (entity_updates) ---
+        entity_updates_final = physics.entity_updates
+        if consequences_agent is not None and physics.events:
+            logger.info("[Step 3c] Processing chunk %d/%d — consequences …", i + 1, len(chunks))
+            consequences_msg = (
+                f"Chunk {i + 1} of {len(chunks)}.\n\n"
+                f"EVENTS EXTRACTED FROM THIS CHUNK:\n{event_summary}\n\n"
+                f"ORIGINAL TEXT:\n{chunk}"
+            )
+            consequences_deps = _ConsequencesDeps(
+                global_register=register,
+                scaffold=scaffold,
+                chunk_events=physics.events,
+                chunk_causal=physics.causal_topology,
+                previous_event_ids=all_event_ids.copy(),
+            )
+            try:
+                consequences_result = consequences_agent.run_sync(
+                    consequences_msg, deps=consequences_deps,
+                )
+                consequences = consequences_result.output
+                log_agent_output(
+                    logger, f"ConsequencesExtraction[chunk={i + 1}]", consequences,
+                )
+                entity_updates_final = consequences.entity_updates
+            except Exception:
+                logger.exception(
+                    "[Step 3c] Chunk %d FAILED — falling back to physics.entity_updates.",
+                    i + 1,
+                )
+
         # Merge into ChunkTopology
         topo = ChunkTopology(
             events=physics.events,
@@ -1310,7 +1898,7 @@ def extract_topology(
             information_topology=social.information_topology,
             social_topology=social.social_topology,
             spatial_topology=physics.spatial_topology,
-            entity_updates=physics.entity_updates,
+            entity_updates=entity_updates_final,
         )
         topologies.append(topo)
 
@@ -1396,10 +1984,13 @@ async def _extract_single_chunk_async(
     socratic_agent: Agent,
     physics_agent: Agent,
     social_agent: Agent,
+    consequences_agent: Optional[Agent] = None,
 ) -> ChunkTopology:
-    """Process one chunk through the three-agent pipeline (async).
+    """Process one chunk through the per-chunk agent pipeline (async).
 
-    Runs Socratic scaffolding → Physics → Social for a single chunk.
+    Runs Socratic scaffolding → Physics → (Social ∥ Consequences) for a
+    single chunk. Social and Consequences are dispatched concurrently
+    via ``asyncio.gather`` since both depend only on the Physics output.
     ``previous_event_ids`` is empty (advisory context only; the
     ``GlobalRegister`` provides structural ID validation).
     """
@@ -1490,8 +2081,18 @@ async def _extract_single_chunk_async(
     event_summary = "\n".join(event_summary_lines)
 
     # --- Step 3b: Social Agent ---
+    # --- Step 3c: Consequences Agent (optional, parallel with Social) ---
+    # Both agents depend only on the Physics output, so we dispatch them
+    # concurrently to halve the wall-clock cost of the consequences pass.
     social = SocialExtraction()
-    if physics.events:
+    entity_updates_final = physics.entity_updates  # legacy fallback
+
+    async def _run_social() -> SocialExtraction:
+        if not physics.events:
+            logger.info(
+                "[Step 3b·Async] Chunk %d: skipping social pass (no events).", i + 1,
+            )
+            return SocialExtraction()
         logger.info("[Step 3b·Async] Processing chunk %d/%d — social …", i + 1, n)
         social_msg = (
             f"Chunk {i + 1} of {n}.\n\n"
@@ -1502,17 +2103,22 @@ async def _extract_single_chunk_async(
             global_register=register,
             scaffold=scaffold,
             chunk_event_ids=chunk_evt_ids,
-            previous_event_ids=[],  # no cross-chunk IDs in parallel mode
+            previous_event_ids=[],
         )
         try:
             social_result = await social_agent.run(social_msg, deps=social_deps)
-            social = social_result.output
+            local_social = social_result.output
         except Exception:
-            logger.exception("[Step 3b·Async] Chunk %d FAILED — returning empty social.", i + 1)
+            logger.exception(
+                "[Step 3b·Async] Chunk %d FAILED — returning empty social.", i + 1,
+            )
+            return SocialExtraction()
 
         # Retry if zero info edges with multiple events (quality gate)
-        if len(physics.events) >= 2 and not social.information_topology:
-            logger.info("[Step 3b·Async] Chunk %d: 0 info edges — retrying with emphasis …", i + 1)
+        if len(physics.events) >= 2 and not local_social.information_topology:
+            logger.info(
+                "[Step 3b·Async] Chunk %d: 0 info edges — retrying with emphasis …", i + 1,
+            )
             retry_social_msg = (
                 "IMPORTANT: The previous extraction returned zero InformationEdge "
                 "entries. Most narrative chunks contain conversations, prophecies, "
@@ -1524,18 +2130,51 @@ async def _extract_single_chunk_async(
                 retry_result = await social_agent.run(retry_social_msg, deps=social_deps)
                 retry_social = retry_result.output
                 if retry_social.information_topology:
-                    social = SocialExtraction(
+                    local_social = SocialExtraction(
                         information_topology=retry_social.information_topology,
-                        social_topology=social.social_topology,
+                        social_topology=local_social.social_topology,
                     )
                     logger.info(
                         "[Step 3b·Async] Chunk %d: retry recovered %d info edges.",
-                        i + 1, len(social.information_topology),
+                        i + 1, len(local_social.information_topology),
                     )
             except Exception:
                 logger.exception("[Step 3b·Async] Chunk %d info retry FAILED.", i + 1)
-    else:
-        logger.info("[Step 3b·Async] Chunk %d: skipping social pass (no events).", i + 1)
+        return local_social
+
+    async def _run_consequences() -> Optional[ConsequencesExtraction]:
+        if consequences_agent is None or not physics.events:
+            return None
+        logger.info("[Step 3c·Async] Processing chunk %d/%d — consequences …", i + 1, n)
+        consequences_msg = (
+            f"Chunk {i + 1} of {n}.\n\n"
+            f"EVENTS EXTRACTED FROM THIS CHUNK:\n{event_summary}\n\n"
+            f"ORIGINAL TEXT:\n{chunk}"
+        )
+        consequences_deps = _ConsequencesDeps(
+            global_register=register,
+            scaffold=scaffold,
+            chunk_events=physics.events,
+            chunk_causal=physics.causal_topology,
+            previous_event_ids=[],
+        )
+        try:
+            consequences_result = await consequences_agent.run(
+                consequences_msg, deps=consequences_deps,
+            )
+            return consequences_result.output
+        except Exception:
+            logger.exception(
+                "[Step 3c·Async] Chunk %d FAILED — falling back to physics.entity_updates.",
+                i + 1,
+            )
+            return None
+
+    social, consequences_out = await asyncio.gather(
+        _run_social(), _run_consequences(),
+    )
+    if consequences_out is not None:
+        entity_updates_final = consequences_out.entity_updates
 
     topo = ChunkTopology(
         events=physics.events,
@@ -1543,7 +2182,7 @@ async def _extract_single_chunk_async(
         information_topology=social.information_topology,
         social_topology=social.social_topology,
         spatial_topology=physics.spatial_topology,
-        entity_updates=physics.entity_updates,
+        entity_updates=entity_updates_final,
     )
     logger.info(
         "[Step 3·Async] Chunk %d: %d events, %d causal, %d social, %d spatial, %d info edges.",
@@ -1742,6 +2381,10 @@ async def extract_topology_async(
     socratic_agent = _build_socratic_agent(config)
     physics_agent = _build_physics_agent(config)
     social_agent = _build_social_agent(config)
+    consequences_agent = (
+        _build_consequences_agent(config)
+        if config.enable_consequences_agent else None
+    )
 
     params_list = _pre_allocate_chunk_params(chunks, config)
     semaphore = asyncio.Semaphore(config.max_concurrent_chunks)
@@ -1751,6 +2394,7 @@ async def extract_topology_async(
             return await _extract_single_chunk_async(
                 chunk, params, register, config,
                 socratic_agent, physics_agent, social_agent,
+                consequences_agent,
             )
 
     topologies = await asyncio.gather(*[

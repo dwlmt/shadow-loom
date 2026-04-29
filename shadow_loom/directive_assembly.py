@@ -1571,7 +1571,7 @@ class DirectiveAssembler:
             upcoming = [
                 t for t in narrative_tensions
                 if t.tension_type == "withheld_cause"
-                and t.displacement > 0.15
+                and t.displacement > 0.10
             ]
             if upcoming:
                 biggest = max(upcoming, key=lambda t: t.displacement)

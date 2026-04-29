@@ -172,6 +172,7 @@ class ExtractionSettings(BaseSettings):
     max_correction_retries: int = Field(default=5)
     max_concurrent_chunks: int = Field(default=8)
     estimated_events_per_chunk: int = Field(default=10)
+    enable_consequences_agent: bool = Field(default=True)
 
 
 # =====================================================================
@@ -582,6 +583,7 @@ class Settings:
             "max_correction_retries": self.extraction.max_correction_retries,
             "max_concurrent_chunks": self.extraction.max_concurrent_chunks,
             "estimated_events_per_chunk": self.extraction.estimated_events_per_chunk,
+            "enable_consequences_agent": self.extraction.enable_consequences_agent,
         }
 
     def pipeline_config_kwargs(self) -> dict:

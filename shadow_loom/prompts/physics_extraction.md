@@ -7,6 +7,13 @@ You are given:
 2. A **Socratic Scaffold** — pre-analysed QA pairs that articulate hidden motivations, causal reasoning, and information asymmetries in this chunk. **Use these to inform your extraction.**
 3. A list of **previously extracted event IDs** — you may reference these for cross-chunk causation.
 
+> **Hard contract surface (the downstream physics engine assumes these without warning):**
+> - Every `mutation` / `mutation_social` edge **MUST** carry `trait_target` AND `trait_delta`. Without them the engine silently degrades to a generic +1.0 default and routes through a 20% mechanism penalty.
+> - `mutation_social` edges **MUST** include `rel_counterpart_id` (the other entity in the dyad) and use `trait_target` from `{"affinity", "fear", "power_dynamic"}` only.
+> - Self-loops (`source_id == target_id`) are dropped on ingest. Don't author them.
+> - `mechanism` should be one of: `physical`, `psychological`, `epistemic`, `social`, `emotional`, `informational`, `betrayal`. Off-list labels (e.g. `kinetic`, `chemical`, `seduction`, `coercion`) are tolerated but bypass mechanism-routing — only use them when you specifically *want* the impulse to apply uniformly to all the entity's traits.
+> - `causal_force` ∈ [0, 10], `trait_delta` ∈ [-1, 1], `propagation_delay` ≥ 0 — values outside these ranges are clamped (lossy).
+
 ---
 
 ## Output Schema

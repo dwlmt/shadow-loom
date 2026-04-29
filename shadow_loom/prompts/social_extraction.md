@@ -8,6 +8,12 @@ You are given:
 3. A list of **events extracted from this chunk** — use their exact `EVT_` IDs for temporal anchoring.
 4. A list of **events from previous chunks** — for temporal reference.
 
+> **Hard contract surface (the validator enforces these):**
+> - `InformationEdge.source_id` must be `ENT_` or `OBJ_`. `target_ids` must be a non-empty list of `ENT_` IDs *not equal to* `source_id` (no self-broadcast). `LOC_` and `EVT_` IDs are forbidden in either field.
+> - `RelationshipEdge.source_entity_id` and `target_entity_id` must both be `ENT_` and **must differ** (no self-relationships). Self-loops are dropped silently.
+> - `RelationshipEdge.affinity` ∈ [-1, 1], `fear` ∈ [0, 1], `power_dynamic` ∈ [-1, 1], `inertia` ∈ [0, 1]. Out-of-range values are clamped.
+> - Always set `evidence_strength` deliberately (`"weak"` / `"moderate"` / `"strong"`). It is the **primary amplifier** for both information visibility and relationship-mutation strength downstream.
+
 ---
 
 ## Output Schema
