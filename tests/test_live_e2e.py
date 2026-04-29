@@ -15,9 +15,14 @@ Skipped automatically when Ollama is unreachable.
 
 from __future__ import annotations
 
+import os
+import pathlib
+import time
 import urllib.request
+import uuid
 import pytest
 
+import shadow_loom.db as sl_db
 from shadow_loom.auditor import AuditorConfig, FeedbackLoopResult
 from shadow_loom.extract_graph import VersionedWorldModel
 from shadow_loom.generation import GenerationConfig
@@ -43,6 +48,56 @@ from shadow_loom.query_models import (
 # -- Plot model fixtures --------------------------------------------------
 from example_worlds.macbeth import world_state as macbeth_ws
 from example_worlds.gone_girl import world_state as gone_girl_ws
+
+# =========================================================================
+# Per-test SQLite database fixture
+# =========================================================================
+#
+# Every test in this module gets a fresh, isolated SQLite database file
+# under ``logs/test_dbs/`` so live ingestion / version writes from one
+# test cannot leak into another and so a failed run can be inspected on
+# disk after the fact. The DB file is named
+# ``<timestamp>_<test-name>_<short-uuid>.db`` and the path is exposed
+# to the test via the ``test_db_path`` fixture if it needs it.
+
+_TEST_DB_DIR = pathlib.Path(
+    os.environ.get(
+        "SHADOW_LOOM_TEST_DB_DIR",
+        pathlib.Path(__file__).resolve().parent.parent / "logs" / "test_dbs",
+    )
+)
+
+
+@pytest.fixture(autouse=True)
+def test_db_path(request, tmp_path_factory):
+    """Initialise a fresh SQLite DB for every test and tear it down after.
+
+    The DB file is created under ``logs/test_dbs/`` (overridable via
+    ``SHADOW_LOOM_TEST_DB_DIR``) so it persists for post-mortem inspection.
+    The module-level engine in ``shadow_loom.db`` is reset between tests so
+    each test starts from a clean slate.
+    """
+    _TEST_DB_DIR.mkdir(parents=True, exist_ok=True)
+    safe_name = request.node.name.replace("/", "_").replace(":", "_")[:80]
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    db_path = _TEST_DB_DIR / f"{stamp}_{safe_name}_{uuid.uuid4().hex[:6]}.db"
+    url = f"sqlite:///{db_path}"
+
+    # Reset any engine that a previous test (or import-time init) created
+    # so init_db() rebinds cleanly to this test's URL.
+    sl_db._engine = None
+    sl_db.init_db(url)
+
+    yield db_path
+
+    # Dispose engine so the file handle is released; keep the .db file on
+    # disk for inspection.
+    if sl_db._engine is not None:
+        try:
+            sl_db._engine.dispose()
+        except Exception:
+            pass
+        sl_db._engine = None
 
 # =========================================================================
 # Skip if Ollama is not reachable
@@ -101,6 +156,111 @@ def _assert_valid_pipeline_result(result: PipelineResult, *, expect_prose: bool)
     else:
         # interrogate / general don't produce prose
         assert result.physics_result.get("status") is not None
+
+
+# =========================================================================
+# 0. PLOT TEXT INGESTION (Step 1 of the pipeline) — runs FIRST
+# =========================================================================
+#
+# These are the *first* live-e2e tests so a freshly-pulled clone with
+# nothing but Ollama running can confirm that raw plot summaries from
+# ``sample_plots/`` ingest into a valid ``WorldStateV1`` end-to-end
+# before any of the downstream physics / generation tests fire.
+
+_SAMPLE_PLOTS_DIR = pathlib.Path(__file__).resolve().parent.parent / "sample_plots"
+
+_PLOTS_TO_INGEST = [
+    "romeo_and_juliet.txt",
+    "macbeth.txt",
+    "dads_army.txt",
+    "gone_girl.txt",
+    "persuasion.txt",
+    "reservoir_dogs.txt",
+]
+
+
+@requires_ollama
+class TestPlotIngestionE2E:
+    """Live ingestion of every sample plot text in ``sample_plots/``.
+
+    Each plot is read from disk, fed through ``run_pipeline`` with
+    ``raw_text=...``, and the resulting ``WorldStateV1`` is validated.
+    Each test gets its own SQLite DB via the ``test_db_path`` fixture.
+    """
+
+    @pytest.mark.parametrize("plot_filename", _PLOTS_TO_INGEST)
+    def test_ingest_plot_to_world_state(self, plot_filename, test_db_path):
+        plot_path = _SAMPLE_PLOTS_DIR / plot_filename
+        assert plot_path.exists(), f"Missing sample plot: {plot_path}"
+        raw_text = plot_path.read_text(encoding="utf-8")
+        assert len(raw_text) > 100, (
+            f"Plot file too short to be meaningful: {plot_path}"
+        )
+
+        # Run an observation query — physics is disabled so we exercise
+        # ingestion + brief + render without slow simulation.
+        query = ObservationQuery(focus_entity_ids=[])
+        cfg = PipelineConfig(
+            use_causal_engine=False,
+            ingestion_config=ExtractionConfig(model=_MODEL),
+            generation_config=GenerationConfig(model=_MODEL, max_tokens=512),
+            skip_audit=True,
+            skip_reextraction=True,
+        )
+        result = run_pipeline(query, raw_text=raw_text, config=cfg)
+        _assert_valid_pipeline_result(result, expect_prose=True)
+
+        ws = result.world_model.current
+        assert isinstance(ws, WorldStateV1), "Ingestion must yield WorldStateV1"
+        assert len(ws.entities) >= 2, (
+            f"{plot_filename}: expected >= 2 entities, got "
+            f"{list(ws.entities.keys())}"
+        )
+        assert len(ws.events) >= 2, (
+            f"{plot_filename}: expected >= 2 events, got {len(ws.events)}"
+        )
+        assert len(ws.locations) >= 1, (
+            f"{plot_filename}: expected >= 1 location"
+        )
+        # Every entity should carry a non-empty name
+        for eid, ent in ws.entities.items():
+            assert ent.name and ent.name.strip(), (
+                f"{plot_filename}: entity {eid} has empty name"
+            )
+        # Every event should have a well-formed EVT_ id
+        for ev in ws.events:
+            assert ev.id and ev.id.startswith("EVT_"), (
+                f"{plot_filename}: event missing/invalid id: {ev}"
+            )
+        # The DB file for this test must have been created.
+        assert test_db_path.exists(), (
+            f"Per-test DB was not created at {test_db_path}"
+        )
+
+    def test_ingest_async_short_plot(self, test_db_path):
+        """Async ingestion path against a short hand-crafted plot."""
+        import asyncio
+        from shadow_loom.ingestion import run_extraction_async
+
+        short_text = (
+            "Part I\n\n"
+            "In the small Provençal village of Manosque, a young shepherd "
+            "named Jean discovers a hidden spring on the abandoned Soubeyran "
+            "farm. He confides the secret to his neighbour, Ugolin, who "
+            "covets the land for himself.\n\n"
+            "Part II\n\n"
+            "Ugolin and his uncle Cesar quietly block the spring. Jean labours "
+            "day after day to keep his crops alive without water and eventually "
+            "dies of exhaustion. Ugolin buys the farm."
+        )
+        cfg = ExtractionConfig(model=_MODEL)
+        ws, report = asyncio.run(run_extraction_async(short_text, config=cfg))
+        assert isinstance(ws, WorldStateV1)
+        assert len(ws.entities) >= 2
+        assert len(ws.events) >= 2
+        assert report is not None
+        assert isinstance(report.is_valid, bool)
+        assert test_db_path.exists()
 
 
 # =========================================================================
