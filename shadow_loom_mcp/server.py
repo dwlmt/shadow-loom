@@ -747,15 +747,33 @@ def compute_tension(
     project_name: Optional[str] = None,
     entity_ids: Optional[List[str]] = None,
     version: Optional[int] = None,
+    syuzhet_anchor: Optional[int] = None,
+    target_vector_id: Optional[str] = None,
 ) -> dict:
     """Compute narrative tension scores for the story or specific entities.
 
-    Returns 8 structural and emotional scores:
-      mystery, dramatic_irony, suspense, surprise (0–1 each)
-      epistemic_gaps, hidden_channels, narrative_tensions, relationship_tensions
+    Returns 4 structural and emotional scores (mystery, dramatic_irony,
+    suspense, surprise) plus structural diagnostics (epistemic gaps,
+    hidden information channels, narrative tensions, trait trajectories,
+    relationship tensions).
 
-    These scores measure the story's potential for each effect at the
-    current point in the narrative.
+    Args:
+        entity_ids: Optional list of entity IDs to focus the analysis on.
+            Defaults to the first six entities in the world.
+        syuzhet_anchor: The reader's position in the syuzhet (reading
+            order). When supplied, mystery / dramatic-irony / surprise
+            are evaluated against what the reader has *seen so far*
+            instead of the full story; suspense is computed against the
+            unrevealed future.
+        target_vector_id: Optional ``node.path.metric`` selector
+            (e.g. ``ENT_001.traits.fear``). When set, the response
+            includes a ``vector_state`` block with the current value
+            for that vector so callers can plan a directive against it.
+
+    The ``suspense_breakdown`` block exposes the per-entity threat /
+    hope decomposition that drives the suspense score, including the
+    most threatening unrevealed event, its probability, and the spatial
+    distance to the focal entity.
     """
     err = require_scope(ctx, "read")
     if err:
@@ -785,23 +803,117 @@ def compute_tension(
 
         scores: dict[str, Any] = {
             "entity_ids": entity_ids,
+            "syuzhet_anchor": syuzhet_anchor,
             "scores": {
-                "mystery": round(assembler.compute_mystery_score(entity_ids), 3),
-                "dramatic_irony": round(assembler.compute_dramatic_irony_score(entity_ids), 3),
-                "suspense": round(assembler.compute_suspense_score(entity_ids), 3),
-                "surprise": round(assembler.compute_surprise_score(entity_ids), 3),
+                "mystery": round(
+                    assembler.compute_mystery_score(entity_ids, syuzhet_anchor), 3
+                ),
+                "dramatic_irony": round(
+                    assembler.compute_dramatic_irony_score(entity_ids, syuzhet_anchor), 3
+                ),
+                "suspense": round(
+                    assembler.compute_suspense_score(entity_ids, syuzhet_anchor), 3
+                ),
+                "surprise": round(
+                    assembler.compute_surprise_score(entity_ids, syuzhet_anchor), 3
+                ),
             },
             "epistemic_gaps": [g.model_dump() for g in assembler.compute_epistemic_gaps(entity_ids)],
-            "narrative_tensions": [t.model_dump() for t in assembler.compute_narrative_tension()],
-            "hidden_channels": [c.model_dump() for c in assembler.compute_hidden_channels()],
+            "narrative_tensions": [t.model_dump() for t in assembler.compute_narrative_tension(syuzhet_anchor)],
+            "hidden_channels": [c.model_dump() for c in assembler.compute_hidden_channels(syuzhet_anchor)],
             "trait_trajectories": [t.model_dump() for t in assembler.compute_trait_trajectories(entity_ids)],
             "relationship_tensions": [t.model_dump() for t in assembler.compute_relationship_tensions(entity_ids)],
         }
+
+        # Suspense breakdown — threat vs hope decomposition powering the
+        # aggregate suspense score. Useful for directive callers that
+        # want to pick the highest-leverage threat to escalate.
+        try:
+            tp = assembler._compute_threat_hope_detail(entity_ids, syuzhet_anchor)
+            scores["suspense_breakdown"] = tp.model_dump()
+        except Exception:
+            logger.debug("threat/hope detail unavailable", exc_info=True)
+
+        # Vector state lookup — when the caller pre-identified a target
+        # node.metric, echo its current value so they can size a delta.
+        if target_vector_id:
+            scores["vector_state"] = _resolve_vector_state(ws, target_vector_id)
+
         return scores
 
     except Exception as e:
         logger.exception("Tension computation failed")
         return {"error": f"Tension computation failed: {e}"}
+
+
+def _resolve_vector_state(ws: WorldStateV1, vector_id: str) -> dict:
+    """Resolve a ``node.path.metric`` selector to its current value.
+
+    Mirrors ``DirectiveAssembler._build_vector_constraint`` parsing so a
+    caller can preview the state targeted by ``directive.target_vector_id``
+    without invoking the full directive pipeline.
+    """
+    if "." not in vector_id:
+        return {"target_vector_id": vector_id, "error": "expected 'node_id.path[.metric]'"}
+    node_id, path = vector_id.split(".", 1)
+    parts = path.split(".")
+
+    if parts[0] == "traits" and len(parts) >= 2:
+        ent = ws.entities.get(node_id)
+        if ent is None:
+            return {"target_vector_id": vector_id, "error": f"entity '{node_id}' not found"}
+        tv = ent.traits.get(parts[1])
+        if tv is None:
+            return {"target_vector_id": vector_id, "error": f"trait '{parts[1]}' not found"}
+        return {
+            "target_vector_id": vector_id,
+            "kind": "trait",
+            "node_id": node_id,
+            "trait": parts[1],
+            "value": tv.value,
+            "inertia": tv.inertia,
+        }
+
+    if parts[0] == "relationships" and len(parts) == 3:
+        target_entity, metric = parts[1], parts[2]
+        for e in ws.social_topology:
+            if e.source_entity_id == node_id and e.target_entity_id == target_entity:
+                return {
+                    "target_vector_id": vector_id,
+                    "kind": "relationship",
+                    "source_id": node_id,
+                    "target_id": target_entity,
+                    "metric": metric,
+                    "value": getattr(e, metric, None),
+                    "inertia": e.inertia,
+                }
+        return {"target_vector_id": vector_id, "error": "relationship not found"}
+
+    if parts[0] == "beliefs" and len(parts) >= 2:
+        ent = ws.entities.get(node_id)
+        if ent is None:
+            return {"target_vector_id": vector_id, "error": f"entity '{node_id}' not found"}
+        target = parts[1]
+        belief = next((b for b in ent.beliefs if b.target_id == target), None)
+        if belief is None:
+            return {
+                "target_vector_id": vector_id,
+                "kind": "belief",
+                "node_id": node_id,
+                "belief_target_id": target,
+                "value": None,
+                "note": "no current belief on this target",
+            }
+        return {
+            "target_vector_id": vector_id,
+            "kind": "belief",
+            "node_id": node_id,
+            "belief_target_id": target,
+            "perceived_state": belief.perceived_state,
+            "confidence": belief.confidence,
+        }
+
+    return {"target_vector_id": vector_id, "error": f"unsupported path '{path}'"}
 
 
 @mcp.tool()

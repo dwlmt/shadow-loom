@@ -21,7 +21,12 @@ from typing import Any, Callable, Dict, List, Optional
 
 from shadow_loom.extract_graph import VersionedWorldModel
 from shadow_loom.models import WorldStateV1
-from shadow_loom.pipeline import PipelineConfig, PipelineResult, run_pipeline
+from shadow_loom.pipeline import (
+    PipelineConfig,
+    PipelineResult,
+    humanize_pipeline_result,
+    run_pipeline,
+)
 from shadow_loom.query_models import ManualEditQuery, UserRequest
 from shadow_loom.query_parsing import (
     QueryParseResult,
@@ -494,24 +499,22 @@ class AppState:
                 ancestor_row_id=ctx_ancestor_row_id,
             )
 
-        # Build summary
-        summary_parts = [f"Query type: {pipeline_result.query_type}"]
-        if pipeline_result.prose:
-            summary_parts.append(f"Prose generated ({len(pipeline_result.prose)} chars)")
-        if pipeline_result.converged is not None:
-            summary_parts.append(
-                f"Audit: {'converged' if pipeline_result.converged else 'did not converge'}"
-                f" ({pipeline_result.audit_iterations} iterations)"
-            )
-        if pipeline_result.world_model:
-            summary_parts.append(f"World model v{pipeline_result.world_model.version}")
+        # Build summary — lay-user phrasing including audit thresholds
+        # and achieved-vs-target affective intensity when available.
+        requested_effect = getattr(query, "target_effect", None)
+        requested_intensity = getattr(query, "intensity", None)
+        summary_text = humanize_pipeline_result(
+            pipeline_result,
+            requested_effect=requested_effect,
+            requested_intensity=requested_intensity,
+        )
 
         result = NLQueryResult(
             parse_result=parse_result or QueryParseResult(
                 query=query, parsed=None, is_valid=True,
             ),
             pipeline_result=pipeline_result,
-            summary=" | ".join(summary_parts),
+            summary=summary_text,
         )
         self.query_history.append(result)
 

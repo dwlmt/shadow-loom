@@ -415,10 +415,12 @@ class AuditorConfig(BaseModel):
         description="Minimum cognitive plausibility ratio to pass.",
     )
     max_miracle_steps: int = Field(
-        default=1,
+        default=0,
         description=(
             "Maximum number of tolerated miracle steps before failing. "
-            "0 preserves strict behavior."
+            "0 preserves strict behavior. Mirrors the default in "
+            "``AuditorSettings`` so direct construction matches the "
+            "settings-driven path."
         ),
     )
     ignore_spatial_blocks: bool = Field(

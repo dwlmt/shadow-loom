@@ -19,7 +19,12 @@ from shadow_loom.db import (
 )
 from shadow_loom.extract_graph import VersionedWorldModel
 from shadow_loom.models import WorldStateV1
-from shadow_loom.pipeline import PipelineConfig, PipelineResult, run_pipeline
+from shadow_loom.pipeline import (
+    PipelineConfig,
+    PipelineResult,
+    humanize_pipeline_result,
+    run_pipeline,
+)
 from shadow_loom.query_models import UserRequest
 
 from shadow_loom_mcp.auth import check_project_access, get_user_id
@@ -214,9 +219,44 @@ def run_and_save(
         response["audit_iterations"] = result.audit_iterations
     if result.feedback_result and result.feedback_result.change_impact:
         response["change_impact"] = result.feedback_result.change_impact.model_dump()
+    # Surface deterministic engine threshold gate + flat affective metrics so
+    # external clients don't have to dig into the nested change_impact blob.
+    fb = result.feedback_result
+    if fb is not None:
+        if fb.engine_thresholds_passed is not None:
+            response["engine_thresholds_passed"] = fb.engine_thresholds_passed
+        if fb.engine_threshold_failures:
+            response["engine_threshold_failures"] = list(fb.engine_threshold_failures)
+        ci = fb.change_impact
+        if ci is not None:
+            af = ci.affective_feedback
+            cf = ci.causal_feedback
+            if af is not None:
+                if af.emotional_trajectory_scores:
+                    response["achieved_intensity"] = dict(af.emotional_trajectory_scores)
+                response["affective_loss"] = af.affective_loss_mse
+            if cf is not None:
+                response["foreshadowing_score"] = cf.foreshadowing_payoff_score
+                response["cognitive_plausibility_score"] = cf.cognitive_plausibility_score
+                response["miracle_step_count"] = len(cf.miracle_steps_detected or [])
+    # Echo the directive's request so the achieved-vs-target gap is interpretable.
+    requested_effect = getattr(query, "target_effect", None)
+    requested_intensity = getattr(query, "intensity", None)
+    if requested_effect is not None:
+        response["requested_target_effect"] = requested_effect
+    if requested_intensity is not None:
+        response["requested_intensity"] = requested_intensity
     if result.evaluation_result:
         response["evaluation"] = result.evaluation_result.model_dump()
     if result.world_model:
         response["world_model_version"] = result.world_model.version
+
+    # Plain-English summary for the user (LLMs / chat surfaces can read this
+    # directly instead of trying to assemble one from the structured fields).
+    response["lay_summary"] = humanize_pipeline_result(
+        result,
+        requested_effect=requested_effect,
+        requested_intensity=requested_intensity,
+    )
 
     return response

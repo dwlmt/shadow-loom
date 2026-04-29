@@ -390,6 +390,48 @@ def _append_result(messages: List[dict], result: NLQueryResult) -> None:
                 icon = "✓" if pr.converged else "⚠"
                 status = "converged" if pr.converged else "did not converge"
                 parts.append(f"{icon} *Audit: {status} ({pr.audit_iterations} iterations)*")
+
+            # Engine threshold gate + achieved-vs-target intensity ─
+            # surface deterministic affective metrics so the user sees
+            # WHY the auditor said pass/fail without opening the
+            # Audit tab.
+            fb = getattr(pr, "feedback_result", None)
+            if fb is not None:
+                if fb.engine_thresholds_passed is False and fb.engine_threshold_failures:
+                    failure_lines = "\n".join(
+                        f"- {_friendly_chat_threshold(f)}"
+                        for f in fb.engine_threshold_failures[:4]
+                    )
+                    parts.append(
+                        "⚠ **Quality thresholds missed:**\n" + failure_lines
+                    )
+                ci = fb.change_impact
+                parsed = result.parse_result.parsed if result.parse_result else None
+                req_effect = getattr(parsed, "target_effect", None) if parsed else None
+                req_intensity = getattr(parsed, "intensity", None) if parsed else None
+                if ci is not None and ci.affective_feedback is not None:
+                    af = ci.affective_feedback
+                    scores = af.emotional_trajectory_scores or {}
+                    if req_effect and req_effect in scores:
+                        achieved = scores[req_effect]
+                        if req_intensity is not None:
+                            gap = achieved - req_intensity
+                            arrow = "✓" if abs(gap) <= 0.15 else ("↑" if gap > 0 else "↓")
+                            parts.append(
+                                f"{arrow} *{req_effect.replace('_',' ').title()}: "
+                                f"asked {req_intensity:.2f}, achieved {achieved:.2f} "
+                                f"(gap {gap:+.2f}).*"
+                            )
+                        else:
+                            parts.append(
+                                f"*{req_effect.replace('_',' ').title()} "
+                                f"intensity achieved: {achieved:.2f}.*"
+                            )
+                    if af.affective_loss_mse is not None and af.affective_loss_mse > 0:
+                        parts.append(
+                            f"*Distance from requested feeling: "
+                            f"{af.affective_loss_mse:.2f} (lower is better).*"
+                        )
             if pr.world_model:
                 parts.append(f"📝 *World model updated → v{pr.world_model.version}*")
 
@@ -402,3 +444,19 @@ def _append_result(messages: List[dict], result: NLQueryResult) -> None:
         "role": "assistant",
         "text": "\n\n".join(parts) if parts else (result.summary or "Done."),
     })
+
+
+_CHAT_FRIENDLY_THRESHOLDS = {
+    "foreshadowing_payoff_score": "foreshadowing pay-off was too low",
+    "cognitive_plausibility_score": "characters' beliefs weren't consistent enough",
+    "affective_loss_mse": "the scene's emotional fit missed the target",
+    "miracle_steps_detected": "an unexplained leap was detected",
+}
+
+
+def _friendly_chat_threshold(failure: str) -> str:
+    """Translate an engine threshold failure into a chat-friendly string."""
+    for key, label in _CHAT_FRIENDLY_THRESHOLDS.items():
+        if failure.startswith(key):
+            return f"{label} — `{failure}`"
+    return failure

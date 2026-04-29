@@ -271,6 +271,139 @@ class PipelineResult(BaseModel):
 
 
 # =====================================================================
+# Lay-user summary
+# =====================================================================
+
+def humanize_pipeline_result(
+    result: "PipelineResult",
+    *,
+    requested_effect: str | None = None,
+    requested_intensity: float | None = None,
+) -> str:
+    """Render a ``PipelineResult`` as plain-English bullet lines.
+
+    Designed for end-users (chat UI, MCP envelopes, CLI logs) — avoids
+    jargon, shows achieved-vs-target affective intensity, and surfaces
+    deterministic engine threshold failures with friendly labels.
+
+    Parameters
+    ----------
+    result
+        The pipeline run to summarise.
+    requested_effect
+        The directive's ``target_effect`` (when known) so achieved
+        intensity can be compared against the user's ask.
+    requested_intensity
+        The directive's ``intensity`` (0-1) so the gap to target can be
+        reported.
+    """
+    lines: list[str] = []
+
+    qt = result.query_type or "query"
+    lines.append(f"Ran a {qt} query.")
+
+    if result.implausible:
+        reason = result.implausibility_reason or "unspecified"
+        lines.append(f"⚠ The request couldn't be applied: {reason}.")
+        unresolved = (result.implausibility_details or {}).get("unresolved_targets", [])
+        if unresolved:
+            for u in unresolved[:3]:
+                lines.append(
+                    f"  • {u.get('target','?')}: {u.get('reason','?')}"
+                )
+
+    if result.prose:
+        lines.append(f"Generated {len(result.prose):,} characters of prose.")
+
+    if result.reextraction_failed:
+        lines.append(
+            "⚠ Prose was generated but the world model couldn't be updated "
+            "from it — treat the new version as a draft only."
+        )
+        if result.reextraction_error:
+            lines.append(f"  Reason: {result.reextraction_error}")
+
+    if result.converged is not None:
+        status = "passed audit" if result.converged else "did not pass audit"
+        lines.append(
+            f"Audit: {status} after {result.audit_iterations or 0} "
+            f"refinement {'pass' if (result.audit_iterations or 0) == 1 else 'passes'}."
+        )
+
+    fb = result.feedback_result
+    if fb is not None:
+        # Engine threshold gate (deterministic, separate from LLM auditor).
+        if fb.engine_thresholds_passed is True:
+            lines.append("✓ All quality thresholds met (foreshadowing, plausibility, affective fit).")
+        elif fb.engine_thresholds_passed is False:
+            lines.append("⚠ Some quality thresholds were not met:")
+            for f in fb.engine_threshold_failures[:5]:
+                lines.append(f"  • {_friendly_threshold(f)}")
+
+        # Achieved intensity per emotional effect.
+        ci = fb.change_impact
+        if ci is not None and ci.affective_feedback is not None:
+            af = ci.affective_feedback
+            scores = af.emotional_trajectory_scores or {}
+            if requested_effect and requested_effect in scores:
+                achieved = scores[requested_effect]
+                if requested_intensity is not None:
+                    gap = achieved - requested_intensity
+                    arrow = "✓" if abs(gap) <= 0.15 else ("↑" if gap > 0 else "↓")
+                    lines.append(
+                        f"{arrow} {requested_effect.replace('_',' ').title()}: "
+                        f"asked for {requested_intensity:.2f}, achieved "
+                        f"{achieved:.2f} (gap {gap:+.2f})."
+                    )
+                else:
+                    lines.append(
+                        f"{requested_effect.replace('_',' ').title()} "
+                        f"intensity achieved: {achieved:.2f}."
+                    )
+            elif scores:
+                top = sorted(scores.items(), key=lambda kv: -kv[1])[:3]
+                pretty = ", ".join(f"{k.replace('_',' ')} {v:.2f}" for k, v in top)
+                lines.append(f"Strongest emotional effects: {pretty}.")
+
+            if af.affective_loss_mse is not None and af.affective_loss_mse > 0:
+                lines.append(
+                    f"Distance from requested feeling: "
+                    f"{af.affective_loss_mse:.2f} (lower is better)."
+                )
+
+        if ci is not None and ci.causal_feedback is not None:
+            cf = ci.causal_feedback
+            bits: list[str] = []
+            bits.append(f"foreshadowing {cf.foreshadowing_payoff_score:.2f}")
+            bits.append(f"plausibility {cf.cognitive_plausibility_score:.2f}")
+            miracles = len(cf.miracle_steps_detected or [])
+            if miracles:
+                bits.append(f"{miracles} unexplained jump{'s' if miracles != 1 else ''}")
+            lines.append("Causal quality — " + ", ".join(bits) + ".")
+
+    if result.world_model is not None:
+        lines.append(f"World model is now at version {result.world_model.version}.")
+
+    return "\n".join(lines) if lines else "Done."
+
+
+_FRIENDLY_THRESHOLD_LABELS = {
+    "foreshadowing_payoff_score": "foreshadowing pay-off was below the minimum",
+    "cognitive_plausibility_score": "characters' beliefs were less consistent than allowed",
+    "affective_loss_mse": "the scene's emotional fit was further from the target than allowed",
+    "miracle_steps_detected": "the scene contained an unexplained leap the engine couldn't justify",
+}
+
+
+def _friendly_threshold(failure: str) -> str:
+    """Translate an engine threshold failure string into lay English."""
+    for key, label in _FRIENDLY_THRESHOLD_LABELS.items():
+        if failure.startswith(key):
+            return f"{label} ({failure})"
+    return failure
+
+
+# =====================================================================
 # The pipeline
 # =====================================================================
 

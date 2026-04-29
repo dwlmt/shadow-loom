@@ -241,7 +241,7 @@ def build_causal_diagram(
         try:
             from shadow_loom.settings import get_settings  # local to avoid cycles
             allow_unobserved_confounders = bool(
-                get_settings().causal_physics.allow_unobserved_confounders
+                get_settings().physics.allow_unobserved_confounders
             )
         except Exception:  # pragma: no cover - defensive: settings always loadable
             allow_unobserved_confounders = False

@@ -308,7 +308,8 @@ def _render_query_audit_entry(index: int, result: NLQueryResult, state: AppState
         icon=icon,
     ).classes("w-full").props("dense"):
         if result.summary:
-            ui.label(result.summary).classes("text-sm text-slate-600")
+            # Summary is now multi-line lay-user text (humanize_pipeline_result).
+            ui.markdown(result.summary).classes("text-sm text-slate-600")
 
         if result.error:
             ui.label(f"Error: {result.error}").classes("text-xs text-negative")
@@ -321,6 +322,62 @@ def _render_query_audit_entry(index: int, result: NLQueryResult, state: AppState
                     color = "positive" if pr.converged else "warning"
                     ui.badge(status, color=color).props("dense")
                     ui.label(f"{pr.audit_iterations} iterations").classes("text-xs text-slate-500")
+
+            # Engine threshold gate + achieved-vs-target affective intensity.
+            # Sourced from the deterministic CausalPhysicsFeedback /
+            # AffectiveStateFeedback the auditor attaches to every cycle
+            # (independent of the LLM verdict).
+            feedback = getattr(pr, "feedback_result", None)
+            if feedback is not None:
+                if feedback.engine_thresholds_passed is not None:
+                    with ui.row().classes("items-center gap-2 mt-1"):
+                        thresh_ok = feedback.engine_thresholds_passed
+                        ui.badge(
+                            "Quality thresholds: passed" if thresh_ok
+                            else "Quality thresholds: failed",
+                            color="positive" if thresh_ok else "negative",
+                        ).props("dense")
+                    if (not feedback.engine_thresholds_passed
+                            and feedback.engine_threshold_failures):
+                        with ui.column().classes("gap-0 mt-1 ml-2"):
+                            for f in feedback.engine_threshold_failures[:5]:
+                                ui.label(f"• {f}").classes(
+                                    "text-xs text-negative"
+                                )
+                ci = getattr(feedback, "change_impact", None)
+                parsed = result.parse_result.parsed if result.parse_result else None
+                req_effect = getattr(parsed, "target_effect", None) if parsed else None
+                req_intensity = getattr(parsed, "intensity", None) if parsed else None
+                if ci is not None and ci.affective_feedback is not None:
+                    af = ci.affective_feedback
+                    scores = af.emotional_trajectory_scores or {}
+                    if req_effect and req_effect in scores:
+                        achieved = scores[req_effect]
+                        with ui.row().classes("items-center gap-2 mt-1"):
+                            ui.label("Achieved intensity:").classes(
+                                "text-xs text-slate-500"
+                            )
+                            if req_intensity is not None:
+                                gap = achieved - req_intensity
+                                gap_color = (
+                                    "positive" if abs(gap) <= 0.15
+                                    else "warning"
+                                )
+                                ui.badge(
+                                    f"{req_effect}: {achieved:.2f} "
+                                    f"(asked {req_intensity:.2f}, gap {gap:+.2f})",
+                                    color=gap_color,
+                                ).props("dense")
+                            else:
+                                ui.badge(
+                                    f"{req_effect}: {achieved:.2f}",
+                                    color="primary",
+                                ).props("dense")
+                    if af.affective_loss_mse is not None:
+                        ui.label(
+                            f"Affective loss (distance from target): "
+                            f"{af.affective_loss_mse:.3f}"
+                        ).classes("text-xs text-slate-500")
 
             # Prose excerpt
             if pr.prose:
