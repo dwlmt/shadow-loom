@@ -8,7 +8,7 @@ fixed what is allowed to happen next.
 
 It integrates classical narratology (fabula vs syuzhet, Greimas, Genette),
 Pearl's ladder of causation (observation, intervention, counterfactual),
-information theory (KL surprise, Wilmot suspense), and modern LLM orchestration
+information theory (KL surprise, suspense), and modern LLM orchestration
 into a single end-to-end pipeline that ingests prose, simulates over it,
 generates new prose under provable constraints, and audits its own output —
 all inside a versioned world model.

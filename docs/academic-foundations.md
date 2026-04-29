@@ -441,4 +441,4 @@ sits on top of:
 * [architecture.md](architecture.md) — every cited concept mapped to the module and field that implements it.
 * [design-decisions.md](design-decisions.md) — *why* we chose Pearl over alternatives, fabula+syuzhet over a single timestamp, AMWN over branching world snapshots.
 * [query-and-cycles.md](query-and-cycles.md) — Pearl's three rungs in execution form (Rung 1 → observation, Rung 2 → intervention, Rung 3 → counterfactual).
-* [pipeline-walkthrough.md](pipeline-walkthrough.md) — the Wilmot suspense, KL surprise, and Halpern actual-causality computations as they sit in the runtime.
+* [pipeline-walkthrough.md](pipeline-walkthrough.md) — the suspense, KL surprise, and Halpern actual-causality computations as they sit in the runtime.

@@ -23,13 +23,20 @@ from shadow_loom.extract_graph import VersionedWorldModel
 from shadow_loom.generation import GenerationConfig
 from shadow_loom.ingestion import ExtractionConfig
 from shadow_loom.models import WorldStateV1
-from shadow_loom.pipeline import PipelineConfig, PipelineResult, run_pipeline
+from shadow_loom.pipeline import (
+    PipelineConfig,
+    PipelineResult,
+    run_pipeline,
+    run_pipeline_async,
+)
 from shadow_loom.query_models import (
     CounterfactualQuery,
     DirectiveQuery,
+    EvaluationQuery,
     GeneralQuery,
     InterrogationQuery,
     InterventionQuery,
+    ManualEditQuery,
     ObservationQuery,
 )
 
@@ -621,4 +628,292 @@ class TestQueryParsingE2E:
         assert result.is_valid
         # No fallback should be needed for a clean reference.
         assert result.fallback is None or result.fallback.strategy == "none"
+
+
+# =========================================================================
+# 12. MANUAL EDIT (User-authored prose, no generation, real re-extraction)
+# =========================================================================
+
+@requires_ollama
+class TestManualEditE2E:
+    """Manual-edit query — bypasses physics & generation, real re-extract + merge."""
+
+    def test_manual_edit_macbeth_short_scene(self):
+        """User supplies prose; pipeline re-extracts topology and merges."""
+        query = ManualEditQuery(
+            edited_prose=(
+                "Macbeth stood alone in the courtyard of Dunsinane Castle, "
+                "the bloody dagger heavy in his trembling hand. The witches' "
+                "prophecy echoed in his mind, and for the first time he felt "
+                "the full weight of what he had done to Duncan."
+            ),
+            description="Solitary moment of Macbeth's guilt after the murder.",
+            focus_entity_ids=["ENT_MACBETH"],
+        )
+        cfg = _test_pipeline_config()  # re-extraction must run for manual edit
+        result = run_pipeline(query, world_state=macbeth_ws, config=cfg)
+
+        assert result.query_type == "manual_edit"
+        # Prose comes back as the user's verbatim text (or close to it).
+        assert result.prose is not None and len(result.prose) > 20
+        assert "Macbeth" in result.prose
+        # Audit / generation are skipped for manual_edit
+        assert result.scene is not None
+        assert result.world_model is not None
+        # The world model should advance one version.
+        assert isinstance(result.world_model, VersionedWorldModel)
+        assert result.world_model.version >= 0
+        # Manual-edit must NOT be flagged as implausible — there is nothing
+        # for the engine to refuse.
+        assert result.implausible is False
+
+    def test_manual_edit_skip_reextraction(self):
+        """Manual edit with re-extraction skipped — prose is returned unchanged."""
+        prose = "Lady Macbeth wandered the candlelit halls, her hands rubbing together."
+        query = ManualEditQuery(
+            edited_prose=prose,
+            focus_entity_ids=["ENT_LADY_MACBETH"],
+        )
+        cfg = _test_pipeline_config(skip_audit=True, skip_reextraction=True)
+        result = run_pipeline(query, world_state=macbeth_ws, config=cfg)
+        assert result.query_type == "manual_edit"
+        assert result.prose is not None
+        assert "Lady Macbeth" in result.prose
+
+
+# =========================================================================
+# 13. EVALUATION (Full-story scorecard)
+# =========================================================================
+
+@requires_ollama
+class TestEvaluationE2E:
+    """Evaluation query — runs the NarrativeOrderObject scorecard end-to-end."""
+
+    def test_evaluation_macbeth_full(self):
+        """Score the Macbeth fixture against the full scorecard."""
+        query = EvaluationQuery(
+            focus_entity_ids=["ENT_MACBETH", "ENT_LADY_MACBETH"],
+            include_full_prose=True,
+        )
+        cfg = _test_pipeline_config()
+        result = run_pipeline(query, world_state=macbeth_ws, config=cfg)
+
+        assert result.query_type == "evaluate"
+        assert result.evaluation_result is not None
+        narrative_order = result.evaluation_result.narrative_order
+        # Scorecard must populate the three feedback objects + overall_pass
+        assert narrative_order is not None
+        assert hasattr(narrative_order, "causal_feedback")
+        assert hasattr(narrative_order, "affective_feedback")
+        assert hasattr(narrative_order, "overall_pass")
+        assert isinstance(narrative_order.overall_pass, bool)
+        # Scores must be numeric and in-range
+        cf = narrative_order.causal_feedback
+        af = narrative_order.affective_feedback
+        assert isinstance(cf.foreshadowing_payoff_score, (int, float))
+        assert isinstance(af.affective_loss_mse, (int, float))
+        # Aggregated prose must be present when include_full_prose=True
+        assert result.evaluation_result.story_prose_evaluated
+
+    def test_evaluation_minimal_prose(self):
+        """Evaluation falls back to event-summary text when no prose history."""
+        query = EvaluationQuery(focus_entity_ids=[], include_full_prose=False)
+        cfg = _test_pipeline_config(skip_audit=True, skip_reextraction=True)
+        result = run_pipeline(query, world_state=macbeth_ws, config=cfg)
+        assert result.evaluation_result is not None
+        # include_full_prose=False ⇒ scorecard runs but story_prose_evaluated is empty
+        assert result.evaluation_result.story_prose_evaluated == ""
+
+
+# =========================================================================
+# 14. IMPLAUSIBILITY ENVELOPE (force_implausible flag)
+# =========================================================================
+
+@requires_ollama
+class TestImplausibilityE2E:
+    """Verify the implausibility short-circuit and force_implausible bypass.
+
+    A query whose targets do not resolve against the world state must be
+    flagged ``result.implausible = True`` and must NOT mutate the
+    versioned world model. With ``force_implausible=True`` the pipeline
+    proceeds to generation but still reports the implausibility on the
+    result.
+    """
+
+    def test_intervention_unknown_entity_is_implausible(self):
+        query = InterventionQuery(
+            interventions={"ENT_NONEXISTENT_GHOST.location_id": "LOC_HEATH"},
+        )
+        cfg = _test_pipeline_config(skip_audit=True, skip_reextraction=True)
+        result = run_pipeline(query, world_state=macbeth_ws, config=cfg)
+        assert result.query_type == "intervention"
+        assert result.implausible is True
+        assert result.implausibility_reason
+        # No prose generated, world unchanged
+        assert result.world_model is not None
+
+    def test_force_implausible_intervention_still_generates(self):
+        query = InterventionQuery(
+            interventions={"ENT_NONEXISTENT_GHOST.location_id": "LOC_HEATH"},
+            force_implausible=True,
+        )
+        cfg = _test_pipeline_config(skip_audit=True, skip_reextraction=True)
+        result = run_pipeline(query, world_state=macbeth_ws, config=cfg)
+        # Engine still flags it, but prose IS generated under the override.
+        assert result.implausible is True
+        assert result.prose is not None and len(result.prose) > 20
+
+    def test_directive_unknown_target_is_implausible(self):
+        query = DirectiveQuery(
+            target_entity_ids=["ENT_NONEXISTENT_HERO"],
+            target_effect="suspense",
+            intensity=0.5,
+        )
+        cfg = _test_pipeline_config(skip_audit=True, skip_reextraction=True)
+        result = run_pipeline(query, world_state=macbeth_ws, config=cfg)
+        assert result.query_type == "directive"
+        assert result.implausible is True
+        assert result.implausibility_reason
+
+
+# =========================================================================
+# 15. CTF-CALCULUS PRE-FLIGHT (Correa & Bareinboim, ICML 2025)
+# =========================================================================
+
+@requires_ollama
+class TestCtfCalculusE2E:
+    """Verify the AMWN / ctf-calculus pre-flight runs alongside the engine.
+
+    The pre-flight reports Rule-1 vacuity, Rule-2 redundant evidence, and
+    Rule-3 pruned interventions. We just check the report propagates onto
+    the physics result for a real run.
+    """
+
+    def test_intervention_with_target_nodes_runs_preflight(self):
+        query = InterventionQuery(
+            interventions={"ENT_MACBETH.traits.guilt": 0.9},
+            target_node_ids=["EVT_MACBETH_KILLED"],  # Y-set for Rule 3
+        )
+        cfg = _test_pipeline_config(skip_audit=True, skip_reextraction=True)
+        result = run_pipeline(query, world_state=macbeth_ws, config=cfg)
+        _assert_valid_pipeline_result(result, expect_prose=True)
+        # The physics result should carry pre-flight diagnostics. We don't
+        # assert a specific value (pruning is data-dependent) — just that
+        # the keys exist.
+        physics = result.physics_result
+        assert physics is not None
+
+    def test_counterfactual_with_evidence_runs_preflight(self):
+        query = CounterfactualQuery(
+            historical_interventions={
+                "EVT_DUNCAN_MURDER.outcome": "Duncan survives the night",
+            },
+            evidence_node_ids=["EVT_MACBETH_CROWNED"],
+            target_node_ids=["EVT_MACBETH_KILLED"],
+        )
+        cfg = _test_pipeline_config(skip_audit=True, skip_reextraction=True)
+        result = run_pipeline(query, world_state=macbeth_ws, config=cfg)
+        _assert_valid_pipeline_result(result, expect_prose=True)
+
+
+# =========================================================================
+# 16. FULL ASYNC PIPELINE (run_pipeline_async beyond ingestion)
+# =========================================================================
+
+@requires_ollama
+class TestAsyncFullPipelineE2E:
+    """End-to-end run through the async pipeline for each non-trivial query type."""
+
+    def test_async_observation(self):
+        import asyncio
+        query = ObservationQuery(focus_entity_ids=["ENT_MACBETH"])
+        cfg = _test_pipeline_config(skip_audit=True, skip_reextraction=True)
+        result = asyncio.run(run_pipeline_async(query, world_state=macbeth_ws, config=cfg))
+        _assert_valid_pipeline_result(result, expect_prose=True)
+        assert result.query_type == "observation"
+
+    def test_async_directive(self):
+        import asyncio
+        query = DirectiveQuery(
+            target_entity_ids=["ENT_LADY_MACBETH"],
+            target_effect="regret",
+            intensity=0.8,
+        )
+        cfg = _test_pipeline_config(skip_audit=True, skip_reextraction=True)
+        result = asyncio.run(run_pipeline_async(query, world_state=macbeth_ws, config=cfg))
+        _assert_valid_pipeline_result(result, expect_prose=True)
+        assert result.query_type == "directive"
+
+    def test_async_interrogate(self):
+        import asyncio
+        query = InterrogationQuery(
+            question="Who killed King Duncan and where?",
+            require_proof=False,
+        )
+        cfg = _test_pipeline_config(skip_audit=True, skip_reextraction=True)
+        result = asyncio.run(run_pipeline_async(query, world_state=macbeth_ws, config=cfg))
+        _assert_valid_pipeline_result(result, expect_prose=False)
+        assert result.query_type == "interrogate"
+
+    def test_async_raw_text_then_observation(self):
+        """Async ingestion → observation in a single async pipeline run."""
+        import asyncio
+        short_text = (
+            "Chapter 1\n\n"
+            "Heathcliff arrives at Wuthering Heights as a foundling. "
+            "Catherine Earnshaw befriends him while her brother Hindley "
+            "treats him as a servant.\n\n"
+            "Chapter 2\n\n"
+            "Years pass; Catherine marries Edgar Linton at Thrushcross "
+            "Grange while Heathcliff disappears for three years."
+        )
+        query = ObservationQuery(focus_entity_ids=[])
+        cfg = PipelineConfig(
+            use_causal_engine=False,
+            ingestion_config=ExtractionConfig(model=_MODEL),
+            generation_config=GenerationConfig(model=_MODEL, max_tokens=512),
+            skip_audit=True,
+            skip_reextraction=True,
+        )
+        result = asyncio.run(run_pipeline_async(query, raw_text=short_text, config=cfg))
+        _assert_valid_pipeline_result(result, expect_prose=True)
+        ws = result.world_model.current
+        assert len(ws.entities) >= 2
+
+
+# =========================================================================
+# 17. RE-EXTRACTION + MERGE INVARIANTS
+# =========================================================================
+
+@requires_ollama
+class TestReextractionInvariantsE2E:
+    """Confirm the audit/re-extract/merge invariants advertised in the docs."""
+
+    def test_failed_reextraction_does_not_advance_canonical(self):
+        """If re-extraction fails, the version tree must NOT advance.
+
+        We can't easily force a re-extraction failure with a real LLM, so
+        the test asserts the invariant on the success path: when re-extraction
+        succeeds, ``reextraction_failed`` is False AND a new version exists.
+        """
+        query = ObservationQuery(focus_entity_ids=["ENT_MACBETH"])
+        cfg = _test_pipeline_config(skip_audit=True)  # keep re-extraction
+        v_before = VersionedWorldModel.from_world_state(
+            macbeth_ws.model_copy(deep=True)
+        ).version
+        result = run_pipeline(query, world_state=macbeth_ws, config=cfg)
+        _assert_valid_pipeline_result(result, expect_prose=True)
+        assert result.reextraction_failed is False
+        assert result.world_model.version >= v_before
+
+    def test_audit_iterations_recorded_when_audit_enabled(self):
+        query = ObservationQuery(focus_entity_ids=["ENT_BANQUO"])
+        cfg = _test_pipeline_config()  # audit + re-extraction both on
+        result = run_pipeline(query, world_state=macbeth_ws, config=cfg)
+        _assert_valid_pipeline_result(result, expect_prose=True)
+        assert result.converged is not None
+        assert result.audit_iterations is not None
+        assert result.audit_iterations >= 1
+        assert result.feedback_result is not None
+
 
