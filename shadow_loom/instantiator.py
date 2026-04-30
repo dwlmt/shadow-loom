@@ -3,6 +3,7 @@ import networkx as nx
 from typing import Dict, Any
 
 from shadow_loom.settings import get_settings as _get_settings
+from shadow_loom.models import default_relationship_metrics_dict
 
 logger = logging.getLogger(__name__)
 
@@ -434,7 +435,15 @@ class AMWNInstantiator:
                 current_val = data.get(metric, 0.0)
                 if not isinstance(current_val, (int, float)):
                     current_val = 0.0
-                rel_inertia = data.get("inertia", _relationship_inertia_default())
+                # Prefer per-axis inertia from the new ``metrics`` dict
+                # (carried through by RelationshipEdge.to_legacy_dict)
+                # so surgery on ``fear`` honours fear's volatility band
+                # rather than the edge-level min-aggregate.
+                per_metric = (data.get("metrics") or {}).get(metric) or {}
+                rel_inertia = per_metric.get(
+                    "inertia",
+                    data.get("inertia", _relationship_inertia_default()),
+                )
                 desired_shift = float(new_value) - current_val
 
                 if abs(desired_shift) <= rel_inertia + _inertia_epsilon():
@@ -452,12 +461,45 @@ class AMWNInstantiator:
                     effective_val = max(-1.0, min(1.0, effective_val))
 
                 sandbox[u][v][key][metric] = effective_val
+                # Mirror into the per-axis ``metrics`` dict so reads
+                # via the new shape stay consistent post-surgery.
+                if isinstance(data.get("metrics"), dict):
+                    # Bump fabula timestamp past the most recent recorded
+                    # axis mutation so per-axis time-slicing and the
+                    # counterfactual-rollback machinery treat the surgical
+                    # value as the latest observation. Without this bump
+                    # ``time_slice_world_state`` and
+                    # ``reconstruct_relationship_with_causal`` continue to
+                    # serve the pre-surgery value at any t >= existing max.
+                    existing_ts = [
+                        m.get("last_updated_fabula", 0)
+                        for m in data["metrics"].values()
+                        if isinstance(m, dict)
+                    ]
+                    next_ft = (max(existing_ts) + 1) if existing_ts else 1
+                    axis_state = data["metrics"].setdefault(metric, {
+                        "value": current_val,
+                        "inertia": rel_inertia,
+                        "evidence_strength": "strong",
+                        "last_updated_fabula": next_ft,
+                        "observed": True,
+                    })
+                    axis_state["value"] = effective_val
+                    axis_state["last_updated_fabula"] = next_ft
+                    # Surgery is a deliberate intervention; mark the axis
+                    # observed so downstream consumers stop treating the
+                    # value as an unobserved default.
+                    axis_state["observed"] = True
                 logger.info("[Surgery] Relationship dampened: %s->%s %s desired=%.2f, inertia=%.2f, effective=%.2f",
                              source_id, target_id, metric, new_value, rel_inertia, effective_val)
                 return
 
-        # No existing edge — create a new relationship with default metrics
+        # No existing edge — create a new relationship with full per-axis metrics
         if not found:
+            if metric == "fear":
+                primary_value = max(0.0, min(1.0, float(new_value)))
+            else:
+                primary_value = max(-1.0, min(1.0, float(new_value)))
             edge_attrs = {
                 "edge_type": "relationship",
                 "affinity": 0.0,
@@ -467,12 +509,15 @@ class AMWNInstantiator:
                 "evidence_strength": "weak",
                 "last_updated_fabula": 0,
                 "world_id": "shadow",
+                "metrics": default_relationship_metrics_dict(
+                    primary_metric=metric,
+                    primary_value=primary_value,
+                    fabula_time=0,
+                    evidence_strength="weak",
+                    inertia=_relationship_inertia_default(),
+                ),
             }
-            # Clamp the target value
-            if metric == "fear":
-                edge_attrs[metric] = max(0.0, min(1.0, float(new_value)))
-            else:
-                edge_attrs[metric] = max(-1.0, min(1.0, float(new_value)))
+            edge_attrs[metric] = primary_value
             sandbox.add_edge(source_id, target_id, **edge_attrs)
             logger.info("[Surgery] Created new relationship edge: %s->%s %s=%.2f",
                          source_id, target_id, metric, edge_attrs[metric])

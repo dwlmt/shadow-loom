@@ -452,11 +452,24 @@ def _list_item_summary(key: str, item: Any) -> str:
             f"fabula={item.get('fabula_time', '?')}"
         )
     if key == "social_topology":
-        return (
-            f"affinity={item.get('affinity', 0)} "
-            f"fear={item.get('fear', 0)} "
-            f"power={item.get('power_dynamic', 0)}"
-        )
+        # Per-metric schema: affinity / fear / power_dynamic now live
+        # under ``metrics.<axis>.value`` instead of as flat keys. Fall
+        # back to the legacy flat keys for backward-compatible payloads.
+        # Also surface per-axis evidence_strength + observed so users
+        # don't silently lose the new signal when editing.
+        metrics = item.get("metrics") or {}
+        def _axis(name: str) -> str:
+            m = metrics.get(name) or {}
+            if not m:
+                if name in item:
+                    return f"{name[0]}={item.get(name, 0)}"
+                return f"{name[0]}=–"
+            value = m.get("value", 0)
+            es = m.get("evidence_strength", "moderate")
+            es_short = {"weak": "w", "moderate": "m", "strong": "s"}.get(es, "m")
+            obs = "" if m.get("observed", True) else " unobs"
+            return f"{name[0]}={value} [{es_short}{obs}]"
+        return f"{_axis('affinity')} {_axis('fear')} {_axis('power_dynamic')}"
     if key == "spatial_topology":
         return (
             f"locked={item.get('is_locked', False)} "
@@ -794,12 +807,13 @@ def _add_social_edge(data: dict, commit: Callable, prefix: Optional[str]) -> Non
             "world_id": "factual",
             "source_entity_id": v["source_entity_id"],
             "target_entity_id": v["target_entity_id"],
-            "affinity": 0.0,
-            "fear": 0.0,
-            "power_dynamic": 0.0,
-            "inertia": 0.3,
-            "evidence_strength": "moderate",
-            "last_updated_fabula": 0,
+            # Build the edge in the new per-axis shape with an empty
+            # ``metrics`` dict — the user adds the axes they actually
+            # observed via the editor. Seeding flat ``affinity=0.0`` etc.
+            # would trip the legacy migrator into materialising every
+            # axis with ``observed=True``, indistinguishable from an
+            # LLM extraction that genuinely measured all three at zero.
+            "metrics": {},
         },
         data=data, collection_key="social_topology", commit=commit,
     )

@@ -1,9 +1,39 @@
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, model_validator, field_validator
 from typing import Any, List, Dict, Optional, Literal, Union
 
 # =====================================================================
 # PART 1: THE GRAPH DATABASE (The Reality Engine)
 # =====================================================================
+
+
+# Shared helper: coerce common LLM aliases for evidence_strength to the
+# canonical {weak, moderate, strong} vocabulary *before* Pydantic's
+# Literal validation runs. Without this the model would reject otherwise
+# salvageable LLM output (e.g. "high", "medium") and force pydantic_ai
+# to retry, wasting tokens.
+_EVIDENCE_STRENGTH_ALIASES = {
+    "weak": "weak",
+    "moderate": "moderate",
+    "strong": "strong",
+    "high": "strong",
+    "certain": "strong",
+    "definite": "strong",
+    "medium": "moderate",
+    "med": "moderate",
+    "average": "moderate",
+    "low": "weak",
+    "uncertain": "weak",
+    "speculative": "weak",
+    "implied": "weak",
+}
+
+
+def _coerce_evidence_strength(v: Any) -> Any:
+    """Map common synonyms onto {weak, moderate, strong}; pass through
+    anything we don't recognise so the Literal check still fires."""
+    if not isinstance(v, str):
+        return v
+    return _EVIDENCE_STRENGTH_ALIASES.get(v.strip().lower(), v)
 
 
 # --- 0. AMWN (Ancestral Multiverse World Network) BASE CLASS (The Multiverse Tag) ---
@@ -17,10 +47,36 @@ class AMWNNode(BaseModel):
 class TraitVector(BaseModel):
     value: float = Field(description="0.0 to 1.0 (Current level of the trait)")
     inertia: float = Field(description="0.0 to 1.0 (Force required to shatter this trait. 1.0 = permanent)")
+    evidence_strength: Literal["weak", "moderate", "strong"] = Field(
+        default="moderate",
+        description=(
+            "Engine's certainty in the *extraction* of this trait from the source text. "
+            "'strong' = directly stated/enacted, 'moderate' = inferred from behaviour, "
+            "'weak' = abductive guess from sparse cues. Distinct from ``value`` "
+            "(in-world magnitude) and ``inertia`` (resistance to change)."
+        ),
+    )
+
+    _coerce_es = field_validator("evidence_strength", mode="before")(
+        lambda v: _coerce_evidence_strength(v)
+    )
 
 class AmbientVector(BaseModel):
     value: float = Field(description="0.0 to 1.0 (How intense is this state?)")
     volatility: float = Field(description="0.0 to 1.0 (How fast does this change? 0.0 = immutable)")
+    evidence_strength: Literal["weak", "moderate", "strong"] = Field(
+        default="moderate",
+        description=(
+            "Engine's certainty in the *extraction* of this ambient condition. "
+            "'strong' = explicit textual description, 'moderate' = inferred from "
+            "scene context, 'weak' = assumed from genre/setting conventions. "
+            "Distinct from ``value`` (intensity) and ``volatility`` (rate of change)."
+        ),
+    )
+
+    _coerce_es = field_validator("evidence_strength", mode="before")(
+        lambda v: _coerce_evidence_strength(v)
+    )
 
 class Affordance(BaseModel):
     action: str = Field(description="What this object can do (e.g., 'unlock', 'kill', 'read')")
@@ -32,6 +88,21 @@ class Belief(BaseModel):
     confidence: float = Field(description="0.0 to 1.0 (How sure are they?)")
     inertia: float = Field(description="0.0 to 1.0 (How stubborn is this belief?)")
     established_at_fabula: int = Field(default=0, description="Fabula time when this belief was formed. Used for counterfactual time-slicing.")
+    evidence_strength: Literal["weak", "moderate", "strong"] = Field(
+        default="moderate",
+        description=(
+            "How reliably the engine should treat this belief as extracted. "
+            "'strong' = unambiguous textual support, 'moderate' = inferred "
+            "from context, 'weak' = abductive guess. Distinct from "
+            "``confidence`` (which is the *character's* certainty); "
+            "evidence_strength is the *engine's* certainty in the "
+            "extraction. Feeds the Bayesian abduction variance."
+        ),
+    )
+
+    _coerce_es = field_validator("evidence_strength", mode="before")(
+        lambda v: _coerce_evidence_strength(v)
+    )
 
 
 class EntityStateSnapshot(BaseModel):
@@ -176,6 +247,21 @@ class InformationEdge(AMWNEdge):
     terminated_at_fabula: Optional[int] = None
     discovered_at_syuzhet: int = 0
 
+    evidence_strength: Literal["weak", "moderate", "strong"] = Field(
+        default="moderate",
+        description=(
+            "How reliably the engine should treat this information channel "
+            "as extracted. 'strong' = direct on-page utterance, 'moderate' "
+            "= reported speech or visible exchange, 'weak' = inferred "
+            "(overheard, deduced). Used by directive-assembly's epistemic "
+            "abduction to scale knowledge-flow probability."
+        ),
+    )
+
+    _coerce_es = field_validator("evidence_strength", mode="before")(
+        lambda v: _coerce_evidence_strength(v)
+    )
+
 # ==========================================
 # 2. THE UNIVERSAL CAUSAL LINK: CausalEdge
 # ==========================================
@@ -227,6 +313,10 @@ class CausalEdge(AMWNEdge):
     evidence_strength: Literal["weak", "moderate", "strong"] = Field(
         default="moderate",
         description="Statistical confidence for Bayes variance: weak=high variance, strong=low variance.",
+    )
+
+    _coerce_es = field_validator("evidence_strength", mode="before")(
+        lambda v: _coerce_evidence_strength(v)
     )
 
     propagation_delay: int = Field(
@@ -299,30 +389,260 @@ class CausalEdge(AMWNEdge):
 # ==========================================
 # 3. THE ACCUMULATOR EDGE: RelationshipEdge
 # ==========================================
-class RelationshipEdge(AMWNEdge):
-    """Tracks continuous psychological and social metrics."""
-    source_entity_id: str = Field(description="Must be an ENT_ ID")
-    target_entity_id: str = Field(description="Must be an ENT_ ID")
-    
-    # --- SOCIAL DELTAS ---
-    affinity: float = Field(default=0.0, description="-1.0 (Hate) to 1.0 (Love)")
-    fear: float = Field(default=0.0, description="0.0 (None) to 1.0 (Terrified)")
-    power_dynamic: float = Field(default=0.0, description="-1.0 (Subservient) to 1.0 (Dominant)")
-    
-    # --- INERTIA (Resistance to relationship mutation) ---
-    inertia: float = Field(default=0.3, description="0.0 to 1.0 (Force required to shift this bond. 1.0 = unbreakable)")
-    
-    # --- STATISTICAL CONFIDENCE ---
+class RelationshipMetric(BaseModel):
+    """Per-axis state for one social metric on a RelationshipEdge.
+
+    Each axis (``affinity``, ``fear``, ``power_dynamic``) drifts at its own
+    rate, with its own evidence quality and its own staleness clock.
+    Collapsing them onto a single edge-level inertia / evidence /
+    timestamp \u2014 as the original schema did \u2014 forced a wrong-on-average
+    compromise (``fear`` spikes in seconds, ``power_dynamic`` calcifies
+    over years) and threw away per-metric Bayesian variance the engine
+    already extracts for every ``mutation_social`` causal edge.
+    """
+    value: float = Field(
+        description=(
+            "Range depends on the metric: affinity \u2208 [-1, 1], fear \u2208 "
+            "[0, 1], power_dynamic \u2208 [-1, 1]."
+        ),
+    )
+    inertia: float = Field(
+        default=0.3,
+        description=(
+            "0.0\u20131.0. Force required to shift this specific axis. "
+            "Typical bands: fear ~0.2 (volatile), affinity ~0.4, "
+            "power_dynamic ~0.6 (institutional inertia)."
+        ),
+    )
     evidence_strength: Literal["weak", "moderate", "strong"] = Field(
         default="moderate",
-        description="Statistical confidence for Bayesian variance: weak=high variance, strong=low variance."
+        description=(
+            "Statistical confidence in this specific axis: "
+            "weak=high variance, strong=low variance. Feeds the "
+            "Bayesian abduction blend independently per metric."
+        ),
     )
-    
-    # --- TEMPORAL TRACKING ---
     last_updated_fabula: int = Field(
-        default=0, 
-        description="Relationships don't 'end', they just mutate. This timestamp dictates how far back to roll for counterfactuals."
+        default=0,
+        description=(
+            "Fabula tick of the most recent mutation to this axis. "
+            "Counterfactual rollback uses this per-metric so that "
+            "intervening on a long-stale ``power_dynamic`` does not "
+            "discard recent ``fear`` mutations."
+        ),
     )
+    observed: bool = Field(
+        default=True,
+        description=(
+            "True when this metric was actually extracted from the text. "
+            "False = the metric is absent from the dyad and 0.0 should "
+            "be read as 'unknown', not as a meaningful neutral. Defends "
+            "the abduction reasoner against the zero-overload bug."
+        ),
+    )
+
+    _coerce_es = field_validator("evidence_strength", mode="before")(
+        lambda v: _coerce_evidence_strength(v)
+    )
+
+
+_REL_METRIC_NAMES = ("affinity", "fear", "power_dynamic")
+
+
+def default_relationship_metrics_dict(
+    *,
+    primary_metric: Optional[str] = None,
+    primary_value: float = 0.0,
+    fabula_time: int = 0,
+    evidence_strength: str = "weak",
+    inertia: float = 0.3,
+) -> Dict[str, dict]:
+    """Build a fully-populated per-axis ``metrics`` dict for a fallback
+    relationship edge created by the physics propagator or surgery.
+
+    All three canonical axes are always emitted so downstream readers
+    that iterate ``metrics.values()`` (auditor, viz, MCP, directive
+    assembly) never have to special-case missing keys. The axis named
+    in ``primary_metric`` carries ``primary_value`` and ``observed=True``;
+    the other axes are seeded with ``value=0.0`` and ``observed=False``
+    so the abduction layer can distinguish unobserved-zero from
+    measured-zero.
+
+    Returns plain dicts (not :class:`RelationshipMetric` instances)
+    because callers write directly into the NetworkX edge-attr dict
+    (``data["metrics"]``) without re-validating through Pydantic.
+    """
+    out: Dict[str, dict] = {}
+    for name in _REL_METRIC_NAMES:
+        is_primary = name == primary_metric
+        out[name] = {
+            "value": float(primary_value) if is_primary else 0.0,
+            "inertia": float(inertia),
+            "evidence_strength": evidence_strength if is_primary else "weak",
+            "last_updated_fabula": int(fabula_time) if is_primary else 0,
+            "observed": bool(is_primary),
+        }
+    return out
+
+
+class RelationshipEdge(AMWNEdge):
+    """Tracks continuous psychological and social metrics between two entities.
+
+    Each metric (``affinity``, ``fear``, ``power_dynamic``) is stored as a
+    :class:`RelationshipMetric` with its own value, inertia,
+    evidence_strength, and staleness timestamp. The legacy flat fields
+    (``affinity=0.7, fear=0.0, power_dynamic=0.0, inertia=0.3, ...``)
+    remain accepted as constructor kwargs and as serialised JSON via a
+    ``model_validator(mode="before")`` migration, and are exposed as
+    read-only properties so existing readers (MCP, UI viz, generation,
+    query parsing, directive assembly) continue to work unchanged.
+    """
+    source_entity_id: str = Field(description="Must be an ENT_ ID")
+    target_entity_id: str = Field(description="Must be an ENT_ ID")
+
+    metrics: Dict[
+        Literal["affinity", "fear", "power_dynamic"],
+        RelationshipMetric,
+    ] = Field(
+        default_factory=dict,
+        description=(
+            "Per-axis social metrics. Closed Literal vocabulary so the "
+            "physics router (mutation_social.trait_target) and the "
+            "ingestion sanitiser stay deterministic."
+        ),
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_flat_fields(cls, data: Any) -> Any:
+        """Coerce legacy flat constructor kwargs / serialised JSON into the
+        per-metric ``metrics`` dict.
+
+        Accepts either:
+          * the new form: ``metrics={"affinity": {"value": 0.7, ...}, ...}``
+          * the old form: ``affinity=0.7, fear=0.0, power_dynamic=0.0,
+            inertia=0.3, evidence_strength="moderate",
+            last_updated_fabula=0``
+
+        Mixed forms are merged with new-form metrics taking precedence.
+        """
+        if not isinstance(data, dict):
+            return data
+
+        # Legacy edge-level fallbacks; consumed and removed so Pydantic
+        # doesn't reject them as unknown fields.
+        legacy_inertia = data.pop("inertia", None)
+        legacy_es = data.pop("evidence_strength", None)
+        legacy_ts = data.pop("last_updated_fabula", None)
+
+        metrics: Dict[str, Any] = dict(data.get("metrics") or {})
+        for name in _REL_METRIC_NAMES:
+            if name not in data:
+                continue
+            v = data.pop(name)
+            if name in metrics:
+                # New-form already provided this axis; ignore the legacy value.
+                continue
+            entry: Dict[str, Any] = {"value": v, "observed": True}
+            if legacy_inertia is not None:
+                entry["inertia"] = legacy_inertia
+            if legacy_es is not None:
+                entry["evidence_strength"] = legacy_es
+            if legacy_ts is not None:
+                entry["last_updated_fabula"] = legacy_ts
+            metrics[name] = entry
+
+        # If the caller supplied edge-level fallbacks but no new-form keys,
+        # backfill them onto every existing metric so behaviour matches the
+        # old uniform-edge semantics.
+        if metrics and (legacy_inertia is not None or legacy_es is not None or legacy_ts is not None):
+            for name, m in metrics.items():
+                if not isinstance(m, dict):
+                    continue
+                if legacy_inertia is not None and "inertia" not in m:
+                    m["inertia"] = legacy_inertia
+                if legacy_es is not None and "evidence_strength" not in m:
+                    m["evidence_strength"] = legacy_es
+                if legacy_ts is not None and "last_updated_fabula" not in m:
+                    m["last_updated_fabula"] = legacy_ts
+
+        if metrics:
+            data["metrics"] = metrics
+        return data
+
+    # --- Per-metric helpers --------------------------------------------------
+
+    def get_metric(self, name: str) -> Optional[RelationshipMetric]:
+        """Return the per-metric record or ``None`` if the axis is unobserved."""
+        return self.metrics.get(name)  # type: ignore[arg-type]
+
+    def to_legacy_dict(self) -> dict:
+        """Flatten to the legacy edge-attribute shape used by the
+        NetworkX sandbox graph (``edge_type='relationship'`` attrs).
+
+        Aggregation rules for the *flat* keys (consumed by code that
+        only knows the legacy shape):
+          * ``affinity`` / ``fear`` / ``power_dynamic`` \u2192 their per-axis
+            ``value`` (0.0 when the axis is unobserved).
+          * edge-level ``inertia`` \u2192 minimum across observed metrics
+            (the most volatile axis dictates ease of mutation overall).
+          * edge-level ``evidence_strength`` \u2192 strongest across observed
+            axes (used only for visual emphasis and not for routing).
+          * edge-level ``last_updated_fabula`` \u2192 maximum across observed
+            axes (the most recent mutation determines the rollback horizon).
+
+        The full per-axis ``metrics`` dict is also emitted so callers
+        that *do* understand the new shape (e.g. the social
+        propagator) can read per-axis inertia / evidence / staleness
+        directly without losing precision to the aggregation.
+        """
+        d = self.model_dump()
+        # Keep the per-axis structure for precision-sensitive readers.
+        # ``model_dump()`` already serialises ``metrics`` as plain dicts.
+        d["affinity"] = self.affinity
+        d["fear"] = self.fear
+        d["power_dynamic"] = self.power_dynamic
+        d["inertia"] = self.inertia
+        d["evidence_strength"] = self.evidence_strength
+        d["last_updated_fabula"] = self.last_updated_fabula
+        return d
+
+    # --- Read-only legacy property accessors --------------------------------
+
+    @property
+    def affinity(self) -> float:
+        m = self.metrics.get("affinity")  # type: ignore[arg-type]
+        return m.value if m else 0.0
+
+    @property
+    def fear(self) -> float:
+        m = self.metrics.get("fear")  # type: ignore[arg-type]
+        return m.value if m else 0.0
+
+    @property
+    def power_dynamic(self) -> float:
+        m = self.metrics.get("power_dynamic")  # type: ignore[arg-type]
+        return m.value if m else 0.0
+
+    @property
+    def inertia(self) -> float:
+        if not self.metrics:
+            return 0.3
+        return min(m.inertia for m in self.metrics.values())
+
+    @property
+    def evidence_strength(self) -> Literal["weak", "moderate", "strong"]:
+        if not self.metrics:
+            return "moderate"
+        order = {"weak": 0, "moderate": 1, "strong": 2}
+        rev = ("weak", "moderate", "strong")
+        return rev[max(order[m.evidence_strength] for m in self.metrics.values())]  # type: ignore[return-value]
+
+    @property
+    def last_updated_fabula(self) -> int:
+        if not self.metrics:
+            return 0
+        return max(m.last_updated_fabula for m in self.metrics.values())
 
 # ==========================================
 # 4. THE EPOCH EDGE: SpatialEdge

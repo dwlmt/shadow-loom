@@ -96,7 +96,7 @@ For each entity whose traits, beliefs, status, or location changed due to events
 - `entity_id` (str): The `ENT_` ID of the entity that changed.
 - `fabula_time` (int): The fabula_time when this change occurred (should match the triggering event).
 - `triggered_by` (str | null): The `EVT_` ID that caused this change. Null for ambient/gradual changes.
-- `trait_updates` (dict): Only traits that **changed** — `{trait_name: {"value": float 0-1, "inertia": float 0-1}}`. Omit traits that stayed the same.
+- `trait_updates` (dict): Only traits that **changed** — `{trait_name: {"value": float 0-1, "inertia": float 0-1, "evidence_strength": "weak"|"moderate"|"strong"}}`. Omit traits that stayed the same. The optional `evidence_strength` (default `"moderate"`) records the engine's confidence in *this specific update* — `"strong"` when the text directly depicts the trait shift, `"moderate"` when reliably inferred, `"weak"` for abductive interpretation.
 - `new_beliefs` (list): New beliefs formed at this point. Same schema as Entity beliefs.
 - `invalidated_belief_targets` (list[str]): `target_id`s of beliefs shattered or superseded by this event. E.g. if a character discovers the cup is poisoned, invalidate their belief about that cup.
 - `new_status` (str | null): New status if changed (`"healthy"`, `"injured"`, `"ill"`, `"dead"`, `"unconscious"`). Null if unchanged.

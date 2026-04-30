@@ -21,6 +21,72 @@ from shadow_loom._agent_logging import log_agent_output
 
 logger = logging.getLogger(__name__)
 
+
+# ==========================================
+# 0. HELPERS
+# ==========================================
+def _time_slice_relationship_at(rel: Any, t: int) -> Optional[dict]:
+    """Return a per-axis time-sliced copy of a relationship, or None.
+
+    Per the per-axis refactor, each metric carries its own
+    ``last_updated_fabula`` — an edge whose ``power_dynamic`` was last
+    touched at T=2 but whose ``fear`` was touched at T=10 should still
+    expose its affinity / power axes when sliced at T=5. The previous
+    implementation keyed the whole-edge in/out decision off
+    ``max(per-axis last_updated_fabula)``, dropping the entire edge if
+    *any* axis was newer than the anchor — recreating the cross-axis
+    discard bug the refactor was meant to eliminate.
+
+    Behaviour:
+      * ``rel`` may be a :class:`RelationshipEdge` instance or a dict
+        produced by ``model_dump()`` / ``to_legacy_dict()``.
+      * Axes whose ``last_updated_fabula > t`` are filtered out (the
+        post-anchor mutation hasn't happened yet from t's perspective).
+      * If every axis is filtered out the edge is dropped (return
+        ``None``); otherwise a ``to_legacy_dict``-shaped copy is returned
+        with the surviving axes only and the flat aggregate keys
+        recomputed from the surviving subset.
+    """
+    if hasattr(rel, "to_legacy_dict"):
+        data = rel.to_legacy_dict()
+    elif isinstance(rel, dict):
+        data = copy.deepcopy(rel)
+    else:
+        return None
+
+    metrics = data.get("metrics") if isinstance(data.get("metrics"), dict) else {}
+    surviving: Dict[str, dict] = {}
+    for name, m in metrics.items():
+        if not isinstance(m, dict):
+            continue
+        if m.get("last_updated_fabula", 0) <= t:
+            surviving[name] = m
+
+    if not surviving:
+        return None
+
+    data["metrics"] = surviving
+    # Recompute the flat aggregate keys from the surviving subset so
+    # legacy readers see a consistent view.
+    for axis in ("affinity", "fear", "power_dynamic"):
+        m = surviving.get(axis)
+        data[axis] = float(m.get("value", 0.0)) if m and m.get("observed", True) else 0.0
+    inertias = [m.get("inertia", 0.3) for m in surviving.values() if isinstance(m, dict)]
+    data["inertia"] = min(inertias) if inertias else 0.3
+    es_order = {"weak": 0, "moderate": 1, "strong": 2}
+    rev = ("weak", "moderate", "strong")
+    es_levels = [
+        es_order.get(m.get("evidence_strength", "moderate"), 1)
+        for m in surviving.values() if isinstance(m, dict)
+    ]
+    data["evidence_strength"] = rev[max(es_levels)] if es_levels else "moderate"
+    data["last_updated_fabula"] = max(
+        (m.get("last_updated_fabula", 0) for m in surviving.values() if isinstance(m, dict)),
+        default=0,
+    )
+    return data
+
+
 # ==========================================
 # 1. THE OUTPUT SCHEMA
 # ==========================================
@@ -152,12 +218,18 @@ def extract_ego_graph_from_memory(
         src_in_scene = edge.source_entity_id in scene_entity_ids
         tgt_in_scene = edge.target_entity_id in scene_entity_ids
         if (src_in_focus or tgt_in_focus) and src_in_scene and tgt_in_scene:
-            # Time-slice: exclude relationships updated after the anchor
-            if temporal_anchor is not None and edge.last_updated_fabula > temporal_anchor:
-                logger.debug("[EgoGraph] Excluded relationship %s→%s: last_updated_fabula=%d > anchor=%d",
-                             edge.source_entity_id, edge.target_entity_id, edge.last_updated_fabula, temporal_anchor)
-                continue
-            relevant_relationships.append(edge.model_dump())
+            # Time-slice per-axis: keep the edge if any axis was observed
+            # at or before the anchor; drop axes whose own
+            # last_updated_fabula > anchor.
+            if temporal_anchor is not None:
+                sliced = _time_slice_relationship_at(edge, temporal_anchor)
+                if sliced is None:
+                    logger.debug("[EgoGraph] Excluded relationship %s→%s: no axis observed at or before anchor=%d",
+                                 edge.source_entity_id, edge.target_entity_id, temporal_anchor)
+                    continue
+                relevant_relationships.append(sliced)
+            else:
+                relevant_relationships.append(edge.to_legacy_dict())
 
     # 4. The Temporal Filter (Memory & Time-Slicing)
     valid_events = world_state.events
@@ -288,8 +360,11 @@ def extract_full_world_state(
             if ce.get("fabula_time", 0) <= t
         ]
         dump["social_topology"] = [
-            rel for rel in dump.get("social_topology", [])
-            if rel.get("last_updated_fabula", 0) <= t
+            sliced for sliced in (
+                _time_slice_relationship_at(rel, t)
+                for rel in dump.get("social_topology", [])
+            )
+            if sliced is not None
         ]
         dump["spatial_topology"] = [
             se for se in dump.get("spatial_topology", [])

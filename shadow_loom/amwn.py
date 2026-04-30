@@ -276,9 +276,23 @@ def build_causal_diagram(
                 g.add_edge(ce.target_id, rel_node)
                 g.add_edge(counterpart, rel_node)
     # Also seed REL nodes from the static social topology so observation-
-    # only queries still see relationship metrics in the diagram.
+    # only queries still see relationship metrics in the diagram. Skip
+    # axes that were never observed (`metrics[axis].observed is False` or
+    # the axis is absent from ``metrics``) — materialising a `REL_*`
+    # node for an unmeasured axis injects a phantom variable into
+    # latent / d-separation queries that never appeared in the source
+    # text.
     for rel in getattr(world_state, "social_topology", []) or []:
+        rel_metrics = getattr(rel, "metrics", {}) or {}
         for metric in ("affinity", "fear", "power_dynamic"):
+            m = rel_metrics.get(metric)
+            if m is None:
+                continue
+            if hasattr(m, "observed"):
+                if not m.observed:
+                    continue
+            elif isinstance(m, dict) and not m.get("observed", True):
+                continue
             rel_node = _rel_node_id(rel.source_entity_id, rel.target_entity_id, metric)
             if not g.has_node(rel_node):
                 g.add_node(rel_node)

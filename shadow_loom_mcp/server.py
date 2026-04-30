@@ -299,7 +299,14 @@ def _inspect_entity(ws: WorldStateV1, eid: str, at_time: int | None) -> dict:
         "id": eid, "name": ent.name, "type": "Entity",
         "status": ent.status,
         "location_id": ent.location_id,
-        "traits": {k: {"value": v.value, "inertia": v.inertia} for k, v in ent.traits.items()},
+        "traits": {
+            k: {
+                "value": v.value,
+                "inertia": v.inertia,
+                "evidence_strength": v.evidence_strength,
+            }
+            for k, v in ent.traits.items()
+        },
         "beliefs": [b.model_dump() for b in ent.beliefs],
         "constants": ent.constants,
         "state_timeline": [s.model_dump() for s in ent.state_timeline[-10:]],
@@ -323,8 +330,14 @@ def _inspect_location(ws: WorldStateV1, lid: str) -> dict:
     return {
         "id": lid, "name": loc.name, "type": "Location",
         "description": loc.description,
-        "ambient_state": {k: {"value": v.value, "volatility": v.volatility}
-                          for k, v in loc.ambient_state.items()},
+        "ambient_state": {
+            k: {
+                "value": v.value,
+                "volatility": v.volatility,
+                "evidence_strength": v.evidence_strength,
+            }
+            for k, v in loc.ambient_state.items()
+        },
         "occupants": occupants,
         "connections": connections,
     }
@@ -390,7 +403,11 @@ def _inspect_world_trait(ws: WorldStateV1, wid: str, at_time: int | None) -> dic
         "id": wid, "name": wt.name, "type": "WorldTrait",
         "description": wt.description,
         "category": wt.category,
-        "magnitude": {"value": wt.magnitude.value, "inertia": wt.magnitude.inertia},
+        "magnitude": {
+            "value": wt.magnitude.value,
+            "inertia": wt.magnitude.inertia,
+            "evidence_strength": wt.magnitude.evidence_strength,
+        },
         "affected_domains": wt.affected_domains,
         "state_timeline": [s.model_dump() for s in wt.state_timeline[-10:]],
     }
@@ -511,10 +528,29 @@ def get_relationships(
             {
                 "source": {"id": e.source_entity_id, "name": _name(e.source_entity_id)},
                 "target": {"id": e.target_entity_id, "name": _name(e.target_entity_id)},
+                # Aggregate edge-level views (back-compat): minimum
+                # inertia / strongest evidence / most-recent timestamp
+                # across observed metrics.
                 "affinity": e.affinity,
                 "fear": e.fear,
                 "power_dynamic": e.power_dynamic,
                 "inertia": e.inertia,
+                "evidence_strength": e.evidence_strength,
+                "last_updated_fabula": e.last_updated_fabula,
+                # Per-axis detail — clients that care about per-metric
+                # uncertainty / staleness should read here. Axes the
+                # extractor never observed are absent from the dict
+                # (distinct from a meaningful 0.0).
+                "metrics": {
+                    name: {
+                        "value": m.value,
+                        "inertia": m.inertia,
+                        "evidence_strength": m.evidence_strength,
+                        "last_updated_fabula": m.last_updated_fabula,
+                        "observed": m.observed,
+                    }
+                    for name, m in e.metrics.items()
+                },
             }
             for e in edges
         ],
@@ -878,14 +914,22 @@ def _resolve_vector_state(ws: WorldStateV1, vector_id: str) -> dict:
         target_entity, metric = parts[1], parts[2]
         for e in ws.social_topology:
             if e.source_entity_id == node_id and e.target_entity_id == target_entity:
+                # Pull per-axis state (value / inertia / evidence /
+                # staleness) when the requested metric is one of the
+                # closed RelationshipMetric axes; fall back to the
+                # edge-level aggregate property for any unknown axis.
+                m = e.metrics.get(metric) if metric in ("affinity", "fear", "power_dynamic") else None
                 return {
                     "target_vector_id": vector_id,
                     "kind": "relationship",
                     "source_id": node_id,
                     "target_id": target_entity,
                     "metric": metric,
-                    "value": getattr(e, metric, None),
-                    "inertia": e.inertia,
+                    "value": (m.value if m is not None else getattr(e, metric, None)),
+                    "inertia": (m.inertia if m is not None else e.inertia),
+                    "evidence_strength": (m.evidence_strength if m is not None else e.evidence_strength),
+                    "last_updated_fabula": (m.last_updated_fabula if m is not None else e.last_updated_fabula),
+                    "observed": (m.observed if m is not None else False),
                 }
         return {"target_vector_id": vector_id, "error": "relationship not found"}
 
@@ -1016,6 +1060,62 @@ def diff_versions(
     social_b = {f"{e.source_entity_id}->{e.target_entity_id}" for e in ws_b.social_topology}
     diff["social_edges_added"] = len(social_b - social_a)
     diff["social_edges_removed"] = len(social_a - social_b)
+
+    # Per-axis relationship metric deltas — the headline mutation surface
+    # for ``mutation_social`` and surgical ``do(rel.X.affinity=...)``
+    # interventions. Without this view a user comparing two snapshots
+    # sees zero deltas whenever the dyads' endpoint pairs are identical
+    # but the per-axis values shifted significantly.
+    rel_index_a = {
+        f"{e.source_entity_id}->{e.target_entity_id}": e
+        for e in ws_a.social_topology
+    }
+    rel_index_b = {
+        f"{e.source_entity_id}->{e.target_entity_id}": e
+        for e in ws_b.social_topology
+    }
+    rel_metric_changes: list[dict] = []
+    for key in sorted(set(rel_index_a) & set(rel_index_b)):
+        ra, rb = rel_index_a[key], rel_index_b[key]
+        for axis in ("affinity", "fear", "power_dynamic"):
+            ma = ra.metrics.get(axis)
+            mb = rb.metrics.get(axis)
+            if ma is None and mb is None:
+                continue
+            entry: dict = {"dyad": key, "axis": axis}
+            if ma is None:
+                entry["before"] = None
+                entry["after"] = {
+                    "value": mb.value, "evidence": mb.evidence_strength,
+                    "observed": mb.observed,
+                }
+            elif mb is None:
+                entry["before"] = {
+                    "value": ma.value, "evidence": ma.evidence_strength,
+                    "observed": ma.observed,
+                }
+                entry["after"] = None
+            else:
+                if (
+                    abs(ma.value - mb.value) < 1e-9
+                    and ma.evidence_strength == mb.evidence_strength
+                    and ma.observed == mb.observed
+                    and ma.last_updated_fabula == mb.last_updated_fabula
+                ):
+                    continue
+                entry["before"] = {
+                    "value": ma.value, "evidence": ma.evidence_strength,
+                    "observed": ma.observed,
+                    "last_updated_fabula": ma.last_updated_fabula,
+                }
+                entry["after"] = {
+                    "value": mb.value, "evidence": mb.evidence_strength,
+                    "observed": mb.observed,
+                    "last_updated_fabula": mb.last_updated_fabula,
+                }
+                entry["value_delta"] = round(mb.value - ma.value, 4)
+            rel_metric_changes.append(entry)
+    diff["relationship_metric_changes"] = rel_metric_changes
 
     spatial_a = {f"{e.source_id}->{e.target_id}" for e in ws_a.spatial_topology}
     spatial_b = {f"{e.source_id}->{e.target_id}" for e in ws_b.spatial_topology}

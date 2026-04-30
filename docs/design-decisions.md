@@ -133,6 +133,93 @@ in its system prompt).
 
 ---
 
+## D5c. Per-metric `RelationshipEdge` (axis-level inertia, evidence, staleness)
+
+**Decision.** A `RelationshipEdge` no longer carries flat top-level
+`affinity` / `fear` / `power_dynamic` numbers each governed by a single
+edge-level `inertia` and `evidence_strength`. Instead it carries a
+`metrics: dict[Literal["affinity","fear","power_dynamic"],
+RelationshipMetric]` where every observed axis owns its own
+`value`, `inertia`, `evidence_strength`, `last_updated_fabula`, and
+`observed` flag. The axis vocabulary stays closed so the physics router
+in `causal_physics.propagate_social` and the ingestion sanitiser in
+`ingestion._sanitize_relationship_edge` remain deterministic.
+
+**Why.** The old shape collapsed three independently-evidenced channels
+into one inertia/evidence pair, throwing away signal the Bayesian
+abduction layer was already capable of using:
+
+- A scream is **strong** evidence of a `fear` spike but only **weak**
+  evidence of a `power_dynamic` shift. The engine routes per-axis
+  `mutation_social` CausalEdges with their own evidence weights, but
+  they were being homogenised when written back to the edge.
+- `fear` is **volatile** (settles within scenes), `affinity` is
+  **moderate**, and `power_dynamic` is **institutional** (calcifies
+  over arcs). Forcing one inertia value penalised either fear (stuck
+  too high) or power dynamic (oscillates noisily).
+- Counterfactual time-slicing intervening on a long-stale `power_dynamic`
+  event was incorrectly discarding fresh `fear` mutations on the same
+  edge because both were keyed off a single `last_updated_fabula`.
+
+Distinguishing observed-zero from unobserved is also useful: an axis
+the extractor never witnessed simply omits its key from `metrics`,
+which the propagator and viz layer can treat differently from a
+neutral `value=0.0`.
+
+**Backward compatibility.** A `model_validator(mode="before")` on
+`RelationshipEdge` accepts the legacy flat kwargs (and serialised legacy
+JSON) and migrates them into `metrics`. Read-only `@property`
+accessors expose `.affinity` / `.fear` / `.power_dynamic` / `.inertia`
+/ `.evidence_strength` / `.last_updated_fabula` for every legacy
+consumer (UI viz readers, MCP `get_relationships`, generation /
+directive prompts, query parsing). A `to_legacy_dict()` flattens the
+edge for the NetworkX sandbox so `causal_physics.propagate_social`
+keeps reading flat dict keys. The 16 `example_worlds/*.py` fixtures
+were not touched. Only setter sites
+(`shadow_loom_ui/viz_helpers.py` time-slicing reconstructor, two
+narrative-physics test mutators) had to be rewritten to mutate
+`rel.metrics[axis].value` in place.
+
+**Trade-off.** Prompts and the UI legend are slightly more verbose, and
+the LLM extractor must now reason about per-axis evidence asymmetry.
+That ergonomic cost is small relative to the variance signal recovered
+downstream.
+
+---
+
+## D5d. `evidence_strength` on `TraitVector` and `AmbientVector`
+
+**Decision.** `TraitVector` (used for entity `traits` and
+`GlobalTrait.magnitude`) and `AmbientVector` (used for
+`Location.ambient_state`) carry an optional
+`evidence_strength: Literal["weak", "moderate", "strong"] = "moderate"`
+alongside `value`/`inertia` (or `value`/`volatility`). The same
+`_coerce_evidence_strength` alias map used by `Belief`,
+`InformationEdge`, `CausalEdge`, and `RelationshipMetric` is applied,
+so LLM synonyms (`high`/`low`/`certain`/…) are normalised before
+Literal validation.
+
+**Why.** The same argument that motivated `evidence_strength` on
+relationship metrics applies to traits and ambient state: the engine's
+confidence in the *extraction* is independent from the in-world
+quantity (`value`) and the in-world stickiness
+(`inertia`/`volatility`). A directly stated trait
+("Macbeth is ambitious") deserves `"strong"`; one abduced from a single
+hedged line ("seemed uneasy" → `low_courage=0.3`) is `"weak"`. Likewise
+"the moor was bleak and cold" (strong) versus "probably damp given the
+season" (weak) for ambient. Without this field the contradiction
+checker, the abduction variance, and any future audit weighting cannot
+distinguish a load-bearing extraction from a hedge.
+
+**Backward compatibility.** The field is optional with default
+`"moderate"`. Every existing fixture, snapshot, prompt response, and
+serialised JSON payload continues to validate unchanged. Ingestion's
+`_sanitize_entity_update` coerces aliases on `trait_updates` so LLM
+output can hand back `"high"`/`"low"`/etc. without retry. MCP
+`inspect_*` and the UI viz time-slicer surface the new key.
+
+---
+
 ## D6. AMWN sandboxing for all simulation
 
 **Decision.** Every Pearl rung-2 / rung-3 query runs against a NetworkX

@@ -53,7 +53,11 @@ def reconstruct_entity_with_causal(
 
     # Causal replay
     running: dict[str, dict] = {
-        k: {"value": v.value, "inertia": v.inertia}
+        k: {
+            "value": v.value,
+            "inertia": v.inertia,
+            "evidence_strength": v.evidence_strength,
+        }
         for k, v in ent.traits.items()
     }
     mutations = sorted(
@@ -68,9 +72,16 @@ def reconstruct_entity_with_causal(
         key=lambda c: c.fabula_time,
     )
     for ce in mutations:
-        cur = running.get(ce.trait_target, {"value": 0.0, "inertia": 0.5})
+        cur = running.get(
+            ce.trait_target,
+            {"value": 0.0, "inertia": 0.5, "evidence_strength": "moderate"},
+        )
         new_val = max(-1.0, min(1.0, cur["value"] + (ce.trait_delta or 0.0)))
-        running[ce.trait_target] = {"value": new_val, "inertia": cur["inertia"]}
+        running[ce.trait_target] = {
+            "value": new_val,
+            "inertia": cur["inertia"],
+            "evidence_strength": cur.get("evidence_strength", "moderate"),
+        }
 
     # Snapshot overlay (authoritative)
     snap = reconstruct_entity_at(ent, fabula_time)
@@ -110,6 +121,7 @@ def reconstruct_world_trait_with_causal(
 
     value = wt.magnitude.value
     inertia = wt.magnitude.inertia
+    evidence_strength = wt.magnitude.evidence_strength
     mutations = sorted(
         (
             ce for ce in ws.causal_topology
@@ -134,7 +146,11 @@ def reconstruct_world_trait_with_causal(
         inertia = snap_mag.get("inertia", inertia)
 
     return {
-        "magnitude": {"value": value, "inertia": inertia},
+        "magnitude": {
+            "value": value,
+            "inertia": inertia,
+            "evidence_strength": evidence_strength,
+        },
         "description": snap.get("description", wt.description),
     }
 
@@ -173,13 +189,35 @@ def reconstruct_relationship_with_causal(
     if base is None:
         return None
 
-    affinity = base.affinity
-    fear = base.fear
-    power = base.power_dynamic
+    # Per-axis baselines, cutoffs, and evidence — the per-metric refactor
+    # made each axis independently authoritative, so the cutoff for
+    # replaying mutation_social must also be per-axis (otherwise an
+    # axis updated after ``fabula_time`` smears its high
+    # ``last_updated_fabula`` onto the *aggregate* and discards
+    # mutations that legitimately preceded ``fabula_time`` on the
+    # other axes).
+    per_axis: dict[str, dict] = {}
+    for axis_name in ("affinity", "fear", "power_dynamic"):
+        m = base.metrics.get(axis_name)
+        if m is not None:
+            per_axis[axis_name] = {
+                "value": m.value,
+                "evidence_strength": m.evidence_strength,
+                "observed": m.observed,
+                "last_updated_fabula": m.last_updated_fabula,
+                "inertia": m.inertia,
+                "cutoff": min(fabula_time, m.last_updated_fabula or fabula_time),
+            }
+        else:
+            per_axis[axis_name] = {
+                "value": 0.0,
+                "evidence_strength": "weak",
+                "observed": False,
+                "last_updated_fabula": 0,
+                "inertia": 0.3,
+                "cutoff": fabula_time,
+            }
 
-    # Only count mutations established at or before the edge's own
-    # last_updated_fabula — later mutations belong to future state.
-    cutoff = min(fabula_time, base.last_updated_fabula or fabula_time)
     pair = {source_entity_id, target_entity_id}
     mutations = sorted(
         (
@@ -188,24 +226,40 @@ def reconstruct_relationship_with_causal(
             and ce.target_id in pair
             and ce.trait_target
             and ce.trait_delta is not None
-            and ce.fabula_time <= cutoff
         ),
         key=lambda c: c.fabula_time,
     )
     for ce in mutations:
         delta = float(ce.trait_delta or 0.0)
         metric = (ce.trait_target or "").lower()
-        if metric == "affinity":
-            affinity = max(-1.0, min(1.0, affinity + delta))
-        elif metric == "fear":
-            fear = max(0.0, min(1.0, fear + delta))
-        elif metric in ("power_dynamic", "power"):
-            power = max(-1.0, min(1.0, power + delta))
+        if metric == "power":
+            metric = "power_dynamic"
+        if metric not in per_axis:
+            continue
+        if ce.fabula_time > per_axis[metric]["cutoff"]:
+            continue
+        v = per_axis[metric]["value"] + delta
+        if metric == "fear":
+            v = max(0.0, min(1.0, v))
+        else:
+            v = max(-1.0, min(1.0, v))
+        per_axis[metric]["value"] = v
 
     out = base.model_dump()
-    out["affinity"] = affinity
-    out["fear"] = fear
-    out["power_dynamic"] = power
+    for axis_name, info in per_axis.items():
+        out[axis_name] = info["value"]
+    # Expose the per-axis detail so callers wanting a confidence band
+    # ("affinity 0.2 — strong evidence" vs "0.2 — weakly inferred") can
+    # render it without re-walking the model. Issue #28.
+    out["per_axis"] = {
+        name: {
+            "value": info["value"],
+            "evidence_strength": info["evidence_strength"],
+            "observed": info["observed"],
+            "last_updated_fabula": info["last_updated_fabula"],
+        }
+        for name, info in per_axis.items()
+    }
     return out
 
 
@@ -377,10 +431,18 @@ def ws_to_graph_data(
     for se in ws.spatial_topology:
         _link(se.source_id, se.target_id, "connected_to")
 
-    # Social topology
+    # Social topology — pick the per-axis metric with the largest
+    # absolute value among observed axes for edge width, so a
+    # high-fear / zero-affinity dyad isn't rendered as a flat baseline
+    # line just because the legacy aggregate keyed off ``affinity``.
     for rel in ws.social_topology:
+        observed_mags = [
+            abs(m.value) for name, m in rel.metrics.items()
+            if m.observed
+        ]
+        magnitude = max(observed_mags) if observed_mags else 0.0
         _link(rel.source_entity_id, rel.target_entity_id, "relationship",
-              width=max(1, abs(rel.affinity) * 3))
+              width=max(1, magnitude * 3))
 
     # Information topology
     for ie in ws.information_topology:
@@ -2047,7 +2109,11 @@ def snapshot_world_at(ws: WorldStateV1, t: int) -> WorldStateV1:
         # (which expects a ``WorldStateV1``) consistent with callers.
         snap = reconstruct_entity_with_causal(ws, eid, t)
         ent.traits = {
-            k: TraitVector(value=v["value"], inertia=v["inertia"])
+            k: TraitVector(
+                value=v["value"],
+                inertia=v["inertia"],
+                evidence_strength=v.get("evidence_strength", "moderate"),
+            )
             for k, v in snap["traits"].items()
         }
         ent.status = snap["status"]
@@ -2057,7 +2123,11 @@ def snapshot_world_at(ws: WorldStateV1, t: int) -> WorldStateV1:
     for wid, wt in new.world_traits.items():
         snap = reconstruct_world_trait_with_causal(ws, wid, t)
         mag = snap["magnitude"]
-        wt.magnitude = TraitVector(value=mag["value"], inertia=mag["inertia"])
+        wt.magnitude = TraitVector(
+            value=mag["value"],
+            inertia=mag["inertia"],
+            evidence_strength=mag.get("evidence_strength", "moderate"),
+        )
         if snap.get("description") is not None:
             wt.description = snap["description"]
 
@@ -2067,9 +2137,22 @@ def snapshot_world_at(ws: WorldStateV1, t: int) -> WorldStateV1:
     new.causal_topology = [
         ce for ce in new.causal_topology if ce.fabula_time <= t
     ]
-    new.social_topology = [
-        rel for rel in new.social_topology if rel.last_updated_fabula <= t
-    ]
+    # Per-axis time-slice for relationships: keep an edge if any axis was
+    # observed at or before ``t``; drop axes whose own
+    # ``last_updated_fabula > t``. Recreating the cross-axis discard bug
+    # (whole-edge in/out off ``max(per-axis last_updated_fabula)``) would
+    # lose unrelated axes the user explicitly wanted to inspect.
+    sliced_social: list = []
+    for rel in new.social_topology:
+        survivors = {
+            name: m for name, m in rel.metrics.items()
+            if m.last_updated_fabula <= t
+        }
+        if not survivors:
+            continue
+        rel.metrics = survivors  # type: ignore[assignment]
+        sliced_social.append(rel)
+    new.social_topology = sliced_social
     # Replay mutation_social causal edges so affinity / fear / power
     # values reflect their state at ``t`` rather than the final-frame
     # numbers stored on the edge.
@@ -2078,9 +2161,16 @@ def snapshot_world_at(ws: WorldStateV1, t: int) -> WorldStateV1:
             ws, rel.source_entity_id, rel.target_entity_id, t,
         )
         if snap is not None:
-            rel.affinity = snap.get("affinity", rel.affinity)
-            rel.fear = snap.get("fear", rel.fear)
-            rel.power_dynamic = snap.get("power_dynamic", rel.power_dynamic)
+            # The new RelationshipEdge stores per-axis state under
+            # ``metrics``; mutate in place so existing edge identity is
+            # preserved. Falls back to the current value for any axis
+            # the reconstructor didn't touch.
+            for axis in ("affinity", "fear", "power_dynamic"):
+                if axis in snap and axis in rel.metrics:
+                    rel.metrics[axis].value = snap[axis]
+                elif axis in snap:
+                    from shadow_loom.models import RelationshipMetric
+                    rel.metrics[axis] = RelationshipMetric(value=snap[axis])
     new.spatial_topology = [
         se for se in new.spatial_topology
         if se.established_at_fabula <= t
@@ -2241,19 +2331,41 @@ def _compute_affective_scores_uncached(
 
     rels = ws.social_topology
     if rels:
-        negative = sum(1 for r in rels if r.affinity < 0)
-        scores["conflict"] = min(1.0, negative / len(rels))
-        avg_fear = sum(r.fear for r in rels) / len(rels)
-        scores["danger"] = min(1.0, max(0.0, avg_fear))
+        # Per-axis observed-aware aggregates: an axis the LLM never
+        # measured contributes nothing (issue #8). Aggregating over
+        # unobserved-zero axes silently deflates conflict / danger /
+        # tension scores.
+        observed_aff = [
+            r.metrics["affinity"].value for r in rels
+            if "affinity" in r.metrics and r.metrics["affinity"].observed
+        ]
+        observed_fear = [
+            r.metrics["fear"].value for r in rels
+            if "fear" in r.metrics and r.metrics["fear"].observed
+        ]
+        if observed_aff:
+            negative = sum(1 for v in observed_aff if v < 0)
+            scores["conflict"] = min(1.0, negative / len(observed_aff))
+        if observed_fear:
+            avg_fear = sum(observed_fear) / len(observed_fear)
+            scores["danger"] = min(1.0, max(0.0, avg_fear))
 
     # Composite narrative tension.
     if rels or ws.events:
+        observed_aff = [
+            r.metrics["affinity"].value for r in rels
+            if "affinity" in r.metrics and r.metrics["affinity"].observed
+        ]
+        observed_fear = [
+            r.metrics["fear"].value for r in rels
+            if "fear" in r.metrics and r.metrics["fear"].observed
+        ]
         avg_neg_affinity = (
-            sum(max(0.0, -r.affinity) for r in rels) / len(rels)
-            if rels else 0.0
+            sum(max(0.0, -v) for v in observed_aff) / len(observed_aff)
+            if observed_aff else 0.0
         )
         avg_fear_t = (
-            sum(r.fear for r in rels) / len(rels) if rels else 0.0
+            sum(observed_fear) / len(observed_fear) if observed_fear else 0.0
         )
         # High-force causal edges are a proxy for high-stakes mutations.
         # ``causal_force`` is on a 0-10 scale; treat >= 7 as "high stakes".
@@ -3359,8 +3471,29 @@ def _physics_metrics_from_payload(payload: dict) -> dict[str, float]:
         info = payload.get("information_topology", []) or []
         spatial = payload.get("spatial_topology", []) or []
 
-    affinities = [r.get("affinity", 0.0) for r in rels]
-    fears = [r.get("fear", 0.0) for r in rels]
+    affinities: list[float] = []
+    fears: list[float] = []
+    for r in rels:
+        # Ego-payload edges go through ``RelationshipEdge.to_legacy_dict``
+        # so the flat ``affinity``/``fear`` keys are present and authoritative.
+        # Omniscient payload edges, however, come from ``model_dump()`` of the
+        # validated WorldModel which only emits the per-axis ``metrics`` dict,
+        # so we must fall back to ``metrics[axis].value`` (and skip the axis
+        # entirely when it was never observed, instead of polluting the average
+        # with a hallucinated 0.0).
+        metrics = r.get("metrics") if isinstance(r.get("metrics"), dict) else None
+        if "affinity" in r and isinstance(r.get("affinity"), (int, float)):
+            affinities.append(float(r["affinity"]))
+        elif metrics and isinstance(metrics.get("affinity"), dict):
+            ax = metrics["affinity"]
+            if ax.get("observed", True):
+                affinities.append(float(ax.get("value", 0.0)))
+        if "fear" in r and isinstance(r.get("fear"), (int, float)):
+            fears.append(float(r["fear"]))
+        elif metrics and isinstance(metrics.get("fear"), dict):
+            ax = metrics["fear"]
+            if ax.get("observed", True):
+                fears.append(float(ax.get("value", 0.0)))
     return {
         "present_entities": float(len(present)),
         "active_relationships": float(len(rels)),

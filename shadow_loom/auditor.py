@@ -915,6 +915,28 @@ def assemble_audit_prompt(
             sections.append(f"  {a.entity_id}: {a.hidden_variable}")
         sections.append("")
 
+    # Relationship tensions: the per-axis (affinity / fear /
+    # power_dynamic) snapshot from directive assembly, with asymmetry
+    # weighted by the *minimum* per-axis evidence_strength of the two
+    # endpoints. The auditor needs this so it can flag prose that
+    # violates the measured social geometry — without this section the
+    # rendering LLM may freely invent affinity reversals or fear
+    # spikes that the directive explicitly suppressed.
+    if brief.relationship_tensions:
+        sections.append(
+            "=== RELATIONSHIP TENSIONS (per-axis social geometry that "
+            "the rendered scene MUST respect) ==="
+        )
+        for rt in brief.relationship_tensions[:25]:
+            sections.append(
+                f"  {rt.source_id}→{rt.target_id}: "
+                f"affinity={rt.affinity:+.2f} "
+                f"fear={rt.fear:.2f} "
+                f"power={rt.power_dynamic:+.2f} "
+                f"(asymmetry={rt.asymmetry_score:.2f})"
+            )
+        sections.append("")
+
     # Threat proximity for suspense/fear audit
     if brief.threat_proximity:
         tp = brief.threat_proximity

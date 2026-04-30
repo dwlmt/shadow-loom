@@ -28,7 +28,11 @@ from pydantic import BaseModel, Field
 
 from shadow_loom.amwn import CtfCalculusReport, apply_ctf_calculus, build_causal_diagram
 from shadow_loom.instantiator import AMWNInstantiator
-from shadow_loom.models import WorldStateV1, reconstruct_entity_at
+from shadow_loom.models import (
+    WorldStateV1,
+    default_relationship_metrics_dict,
+    reconstruct_entity_at,
+)
 from shadow_loom.settings import get_settings as _get_settings
 
 logger = logging.getLogger(__name__)
@@ -334,6 +338,12 @@ class CausalPhysicsEngine:
         # interventions register the sentinel ``"*"`` to mean "every trait
         # of this node is pinned."
         self._intervened_traits: set[tuple[str, str]] = set()
+        # Per-axis relationship pins. A path like
+        # ``ENT_A.relationships.ENT_B.affinity=-0.9`` adds the triple
+        # ``("ENT_A", "ENT_B", "affinity")`` so ``propagate_social`` will
+        # not silently overwrite the surgical value with a propagated
+        # delta from an inbound ``mutation_social`` edge.
+        self._intervened_relationships: set[tuple[str, str, str]] = set()
         self._hidden_deltas: Dict[str, Dict[str, float]] = {}
         self._mutations: List[TraitMutation] = []
         self._social_mutations: List[SocialMutation] = []
@@ -463,6 +473,64 @@ class CausalPhysicsEngine:
 
                 if deltas:
                     self._hidden_deltas[eid] = deltas
+
+                # Per-axis relationship abduction: blend each metric on
+                # outgoing relationship edges from the evidence entity
+                # toward the factual per-axis value, using
+                # ``metrics[axis].evidence_strength`` as the precision
+                # of the present-day prior — mirroring the per-trait
+                # Bayes blend above. Without this, counterfactual
+                # queries that treat measured present-day affinity /
+                # fear / power as evidence cannot back-propagate.
+                _es_precision = {"weak": 1.0 / 3.0, "moderate": 2.0 / 3.0, "strong": 1.0}
+                for fact_rel in self.world_state.social_topology:
+                    if fact_rel.source_entity_id != eid:
+                        continue
+                    other_id = fact_rel.target_entity_id
+                    rel_deltas: Dict[str, float] = {}
+                    for u, v, key, sandbox_data in self.sandbox.out_edges(eid, data=True, keys=True):
+                        if v != other_id or sandbox_data.get("edge_type") != "relationship":
+                            continue
+                        sandbox_metrics = sandbox_data.get("metrics")
+                        if not isinstance(sandbox_metrics, dict):
+                            break
+                        for axis_name, fact_metric in fact_rel.metrics.items():
+                            if not fact_metric.observed:
+                                continue
+                            axis_state = sandbox_metrics.get(axis_name)
+                            if not isinstance(axis_state, dict):
+                                continue
+                            old_val = float(axis_state.get("value", 0.0))
+                            target_val = float(fact_metric.value)
+                            ev_w = _es_precision.get(fact_metric.evidence_strength, 0.5)
+                            inertia_w = float(axis_state.get("inertia", 0.3))
+                            if blend_mode == "bayesian":
+                                denom = inertia_w + ev_w
+                                blended = (
+                                    inertia_w * old_val + ev_w * target_val
+                                ) / denom if denom > 0 else old_val
+                            else:
+                                blend_factor = max(0.0, min(1.0, 1.0 - inertia_w)) * ev_w
+                                blended = old_val + (target_val - old_val) * blend_factor
+                            if axis_name == "fear":
+                                blended = max(0.0, min(1.0, blended))
+                            else:
+                                blended = max(-1.0, min(1.0, blended))
+                            axis_state["value"] = blended
+                            axis_state["observed"] = True
+                            # Mirror to the flat aggregate so legacy
+                            # readers stay consistent with the per-axis
+                            # state post-blend.
+                            sandbox_data[axis_name] = blended
+                            rel_deltas[f"rel.{other_id}.{axis_name}"] = blended - old_val
+                        break
+                    if rel_deltas:
+                        existing_deltas = self._hidden_deltas.setdefault(eid, {})
+                        existing_deltas.update(rel_deltas)
+                        logger.info(
+                            "[CausalPhysics·Abduction·Rel] %s→%s deltas: %s",
+                            eid, other_id, rel_deltas,
+                        )
 
                 # Back-propagate beliefs
                 if "beliefs" not in node_data:
@@ -606,6 +674,18 @@ class CausalPhysicsEngine:
                 trait_name = parts[1] if len(parts) >= 2 else ""
                 if trait_name:
                     self._intervened_traits.add((node_id, trait_name))
+            elif sub.startswith("relationships."):
+                # ``relationships.<other>.<metric>`` — pin the per-axis
+                # relationship so propagate_social does not subsequently
+                # overwrite the surgical value with a propagated delta.
+                parts = sub.split(".")
+                if len(parts) >= 3:
+                    other_id = parts[1]
+                    metric_name = parts[2]
+                    if other_id and metric_name:
+                        self._intervened_relationships.add(
+                            (node_id, other_id, metric_name)
+                        )
             # status / location_id / beliefs / properties / etc. don't pin
             # any trait \u2014 propagation over the entity's traits is unaffected.
 
@@ -1187,6 +1267,25 @@ class CausalPhysicsEngine:
                              target_id, counterpart_id)
                 continue
 
+            # Per-axis relationship pin: a do(ENT_A.relationships.ENT_B.affinity=...)
+            # surgery freezes that specific (target, counterpart, metric)
+            # triple — propagation must not subsequently overwrite the
+            # surgical value with a propagated delta. Symmetric to the
+            # per-trait pinning logic in propagate().
+            if (target_id, counterpart_id, metric) in self._intervened_relationships:
+                logger.debug(
+                    "[CausalPhysics·SocialProp] Pinned: %s→%s %s skipped",
+                    target_id, counterpart_id, metric,
+                )
+                self._blocked.append(BlockedPropagation(
+                    node_id=target_id,
+                    trait=f"rel.{counterpart_id}.{metric}",
+                    impact=raw_delta,
+                    inertia=_relationship_inertia_default(),
+                    reason="pinned",
+                ))
+                continue
+
             # Refuse to fire any social mutation whose perspective
             # entity or counterpart sits inside a cyclic SCC of the
             # social-causal subgraph (mirrors propagate() for trait
@@ -1214,10 +1313,22 @@ class CausalPhysicsEngine:
             for ru, rv, rkey, rdata in self.sandbox.out_edges(target_id, data=True, keys=True):
                 if rv == counterpart_id and rdata.get("edge_type") == "relationship":
                     rel_found = True
-                    current_val = rdata.get(metric, 0.0)
-                    if not isinstance(current_val, (int, float)):
-                        current_val = 0.0
-                    rel_inertia = rdata.get("inertia", _relationship_inertia_default())
+                    # Prefer per-axis ``metrics[metric].value`` when present
+                    # — the per-axis dict is the source of truth in the
+                    # new schema; the flat key is a derived back-compat
+                    # mirror that may be stale on edges that did not
+                    # round-trip through ``to_legacy_dict``.
+                    per_metric = (rdata.get("metrics") or {}).get(metric) or {}
+                    if "value" in per_metric and isinstance(per_metric["value"], (int, float)):
+                        current_val = float(per_metric["value"])
+                    else:
+                        current_val = rdata.get(metric, 0.0)
+                        if not isinstance(current_val, (int, float)):
+                            current_val = 0.0
+                    rel_inertia = per_metric.get(
+                        "inertia",
+                        rdata.get("inertia", _relationship_inertia_default()),
+                    )
 
                     # Impact > Inertia gating
                     if abs(scaled_delta) <= rel_inertia + _inertia_epsilon():
@@ -1241,6 +1352,33 @@ class CausalPhysicsEngine:
                         new_val = max(-1.0, min(1.0, new_val))
 
                     self.sandbox[ru][rv][rkey][metric] = new_val
+                    # Mirror the change into the per-axis ``metrics``
+                    # dict (when present) so downstream readers that
+                    # use the new shape see the updated value too.
+                    if isinstance(rdata.get("metrics"), dict):
+                        axis_state = rdata["metrics"].setdefault(metric, {
+                            "value": current_val,
+                            "inertia": rel_inertia,
+                            "evidence_strength": d.get("evidence_strength", "weak"),
+                            "last_updated_fabula": d.get("fabula_time", 0),
+                            "observed": True,
+                        })
+                        axis_state["value"] = new_val
+                        axis_state["last_updated_fabula"] = max(
+                            axis_state.get("last_updated_fabula", 0),
+                            d.get("fabula_time", 0),
+                        )
+                        # Flip ``observed`` true: a propagated mutation is a
+                        # measurement of the post-mutation state regardless
+                        # of whether the pre-mutation axis was a measured
+                        # neutral or an unobserved default.
+                        axis_state["observed"] = True
+                        # Carry the triggering edge's evidence_strength
+                        # through so the new measurement claims no more
+                        # confidence than the cause that produced it.
+                        trigger_es = d.get("evidence_strength")
+                        if trigger_es:
+                            axis_state["evidence_strength"] = trigger_es
                     self._social_mutations.append(SocialMutation(
                         source_entity_id=target_id,
                         target_entity_id=counterpart_id,
@@ -1255,8 +1393,12 @@ class CausalPhysicsEngine:
                                 target_id, counterpart_id, metric, current_val, new_val, source_id, scaled_delta, rel_inertia)
                     break
 
-            # No existing relationship edge — create one with defaults
+            # No existing relationship edge — create one with full per-axis metrics
             if not rel_found:
+                if metric == "fear":
+                    primary_value = max(0.0, min(1.0, scaled_delta))
+                else:
+                    primary_value = max(-1.0, min(1.0, scaled_delta))
                 edge_attrs = {
                     "edge_type": "relationship",
                     "affinity": 0.0,
@@ -1266,12 +1408,15 @@ class CausalPhysicsEngine:
                     "evidence_strength": "weak",
                     "last_updated_fabula": d.get("fabula_time", 0),
                     "world_id": "shadow",
+                    "metrics": default_relationship_metrics_dict(
+                        primary_metric=metric,
+                        primary_value=primary_value,
+                        fabula_time=d.get("fabula_time", 0),
+                        evidence_strength=d.get("evidence_strength", "weak"),
+                        inertia=_relationship_inertia_default(),
+                    ),
                 }
-                # Apply the delta directly (no inertia gating on creation)
-                if metric == "fear":
-                    edge_attrs[metric] = max(0.0, min(1.0, scaled_delta))
-                else:
-                    edge_attrs[metric] = max(-1.0, min(1.0, scaled_delta))
+                edge_attrs[metric] = primary_value
                 self.sandbox.add_edge(target_id, counterpart_id, **edge_attrs)
                 self._social_mutations.append(SocialMutation(
                     source_entity_id=target_id,

@@ -3,7 +3,11 @@ import logging
 
 import networkx as nx
 
-from shadow_loom.models import WorldStateV1, reconstruct_entity_at
+from shadow_loom.models import (
+    WorldStateV1,
+    default_relationship_metrics_dict,
+    reconstruct_entity_at,
+)
 from shadow_loom.query_models import UserRequest
 from shadow_loom.extract_graph import EgoGraphPayload, extract_ego_graph_from_memory, extract_full_world_state
 from shadow_loom.instantiator import AMWNInstantiator
@@ -730,16 +734,33 @@ def _generate_directive_rules(ego_graph: Dict[str, Any], vector_target_id: str, 
             return f"Alter the state of {vector_target_id} by a trajectory of {shift:+.2f}."
         _, target_entity, metric = parts
         
-        # Locate the current metric in the localized graph
-        current_val = "unknown"
+        # Locate the current metric in the localized graph. Read from the
+        # per-axis ``metrics`` dict when present so the directive can
+        # convey the per-axis ``evidence_strength`` to the rendering LLM
+        # ("affinity currently sits at 0.2 — strong evidence" vs "0.2 —
+        # weakly inferred"). Falls back to the legacy flat key only when
+        # the per-axis state is unavailable.
+        current_val: Any = "unknown"
+        evidence_qualifier = ""
         for rel in ego_graph.get("relevant_relationships", []):
             if rel.get("source_entity_id") == node_id and rel.get("target_entity_id") == target_entity:
-                current_val = rel.get(metric, 0.0)
+                rel_metrics = rel.get("metrics") or {}
+                axis_state = rel_metrics.get(metric) if isinstance(rel_metrics, dict) else None
+                if isinstance(axis_state, dict) and "value" in axis_state:
+                    current_val = axis_state["value"]
+                    es = axis_state.get("evidence_strength", "moderate")
+                    obs = axis_state.get("observed", True)
+                    if not obs:
+                        evidence_qualifier = " (axis previously unobserved)"
+                    else:
+                        evidence_qualifier = f" ({es} evidence)"
+                else:
+                    current_val = rel.get(metric, 0.0)
                 break
-                
+
         return (
             f"[MATHEMATICAL CONSTRAINT]: The {metric.upper()} between {node_id} and {target_entity} "
-            f"currently sits at {current_val}. You MUST write the prose such that this metric is "
+            f"currently sits at {current_val}{evidence_qualifier}. You MUST write the prose such that this metric is "
             f"forcefully shifted by {shift:+.2f}. Provide clear, physical narrative evidence of this change "
             f"in their dialogue or body language."
         )
@@ -1167,10 +1188,15 @@ def _apply_social_cascade(
         for ru, rv, rkey, rdata in sandbox.out_edges(target_id, data=True, keys=True):
             if rv == counterpart_id and rdata.get("edge_type") == "relationship":
                 rel_found = True
-                current_val = rdata.get(metric, 0.0)
-                if not isinstance(current_val, (int, float)):
-                    current_val = 0.0
-                rel_inertia = rdata.get("inertia", 0.3)
+                # Prefer per-axis ``metrics[metric].value`` when present.
+                per_metric = (rdata.get("metrics") or {}).get(metric) or {}
+                if "value" in per_metric and isinstance(per_metric["value"], (int, float)):
+                    current_val = float(per_metric["value"])
+                else:
+                    current_val = rdata.get(metric, 0.0)
+                    if not isinstance(current_val, (int, float)):
+                        current_val = 0.0
+                rel_inertia = per_metric.get("inertia", rdata.get("inertia", 0.3))
 
                 # Impact > Inertia gating
                 if abs(scaled_delta) <= rel_inertia:
@@ -1190,12 +1216,35 @@ def _apply_social_cascade(
                     new_val = max(-1.0, min(1.0, new_val))
 
                 sandbox[ru][rv][rkey][metric] = new_val
+                # Mirror into the per-axis ``metrics`` dict so
+                # downstream readers using the new shape stay in sync.
+                if isinstance(rdata.get("metrics"), dict):
+                    axis_state = rdata["metrics"].setdefault(metric, {
+                        "value": current_val,
+                        "inertia": rel_inertia,
+                        "evidence_strength": ce.evidence_strength,
+                        "last_updated_fabula": ce.fabula_time,
+                        "observed": True,
+                    })
+                    axis_state["value"] = new_val
+                    axis_state["last_updated_fabula"] = max(
+                        axis_state.get("last_updated_fabula", 0), ce.fabula_time,
+                    )
+                    # Propagated mutation = a measurement; flip observed.
+                    axis_state["observed"] = True
+                    # Carry triggering edge's evidence_strength forward.
+                    if ce.evidence_strength:
+                        axis_state["evidence_strength"] = ce.evidence_strength
                 logger.info("[SocialCascade] %s→%s %s: %.3f→%.3f (trigger=%s)",
                             target_id, counterpart_id, metric, current_val, new_val, ce.source_id)
                 break
 
-        # No existing relationship edge — create one with defaults
+        # No existing relationship edge — create one with full per-axis metrics
         if not rel_found:
+            if metric == "fear":
+                primary_value = max(0.0, min(1.0, scaled_delta))
+            else:
+                primary_value = max(-1.0, min(1.0, scaled_delta))
             edge_attrs = {
                 "edge_type": "relationship",
                 "affinity": 0.0,
@@ -1205,11 +1254,15 @@ def _apply_social_cascade(
                 "evidence_strength": "weak",
                 "last_updated_fabula": ce.fabula_time,
                 "world_id": "shadow",
+                "metrics": default_relationship_metrics_dict(
+                    primary_metric=metric,
+                    primary_value=primary_value,
+                    fabula_time=ce.fabula_time,
+                    evidence_strength=ce.evidence_strength,
+                    inertia=0.3,
+                ),
             }
-            if metric == "fear":
-                edge_attrs[metric] = max(0.0, min(1.0, scaled_delta))
-            else:
-                edge_attrs[metric] = max(-1.0, min(1.0, scaled_delta))
+            edge_attrs[metric] = primary_value
             sandbox.add_edge(target_id, counterpart_id, **edge_attrs)
             logger.info("[SocialCascade] Created relationship %s→%s with %s=%.3f (trigger=%s)",
                         target_id, counterpart_id, metric, edge_attrs[metric], ce.source_id)

@@ -30,6 +30,7 @@ from pydantic_ai import Agent, ModelRetry, NativeOutput, RunContext
 from shadow_loom.settings import get_settings as _get_settings, resolve_model as _resolve_model
 
 from shadow_loom.models import (
+    AmbientVector,
     Belief,
     CausalEdge,
     Entity,
@@ -229,6 +230,36 @@ _TOLERATED_MECHANISMS: set[str] = {
     "ritual", "biological", "environmental",
 }
 _RELATIONSHIP_METRICS: set[str] = {"affinity", "fear", "power_dynamic"}
+# Common LLM synonyms that should map to a canonical relationship axis
+# rather than triggering ``mutation_social`` edge rejection. The
+# Pydantic ``RelationshipMetric.metrics`` keys are a closed Literal so
+# the LLM can't inject a synonym there directly, but ``CausalEdge.
+# trait_target`` is a free string and the ``mutation_social`` validator
+# only accepts the canonical names. Without this map a perfectly valid
+# ``mutation_social`` edge whose trait_target reads "trust" or "power"
+# is silently dropped instead of repaired.
+_RELATIONSHIP_METRIC_ALIASES: dict[str, str] = {
+    # Direct truncations / informal forms.
+    "power": "power_dynamic",
+    "dominance": "power_dynamic",
+    "authority": "power_dynamic",
+    "control": "power_dynamic",
+    "trust": "affinity",
+    "love": "affinity",
+    "friendship": "affinity",
+    "rapport": "affinity",
+    "intimacy": "affinity",
+    # Negative-direction synonyms map to the same axis; the sign is
+    # carried by ``trait_delta`` (the LLM is instructed to use a
+    # negative delta for hostility / contempt, etc.).
+    "hostility": "affinity",
+    "contempt": "affinity",
+    "resentment": "affinity",
+    "fearfulness": "fear",
+    "dread": "fear",
+    "terror": "fear",
+    "anxiety": "fear",
+}
 _VALID_STATUSES: set[str] = {"healthy", "injured", "ill", "dead", "unconscious"}
 
 
@@ -653,6 +684,10 @@ def extract_ontology(text: str, config: ExtractionConfig | None = None) -> Globa
         entities=ent_register.entities,
         world_traits=wt_register.world_traits,
     )
+    sanitisation_notes: List[str] = []
+    register = _sanitize_register(register, sanitisation_notes)
+    for note in sanitisation_notes:
+        logger.info(note)
     logger.info(
         "[Step 1] Ontology extracted — %d locations, %d objects, %d entities, %d world traits.",
         len(register.locations), len(register.objects), len(register.entities),
@@ -745,6 +780,10 @@ async def extract_ontology_async(
         entities=ent_register.entities,
         world_traits=wt_register.world_traits,
     )
+    sanitisation_notes: List[str] = []
+    register = _sanitize_register(register, sanitisation_notes)
+    for note in sanitisation_notes:
+        logger.info(note)
     logger.info(
         "[Step 1] Ontology extracted — %d locations, %d objects, %d entities, %d world traits.",
         len(register.locations), len(register.objects), len(register.entities),
@@ -1007,12 +1046,24 @@ def _sanitize_causal_edge(
     # validator already requires rel_counterpart_id; we strengthen here.
     if ce.causality_type == "mutation_social":
         if ce.trait_target and ce.trait_target not in _RELATIONSHIP_METRICS:
-            notes.append(
-                f"[Auto-Fix] Dropped mutation_social edge {ce.source_id}→{ce.target_id}: "
-                f"trait_target '{ce.trait_target}' is not one of "
-                f"{sorted(_RELATIONSHIP_METRICS)}."
+            # Try to repair via the alias map before dropping.
+            alias = _RELATIONSHIP_METRIC_ALIASES.get(
+                str(ce.trait_target).lower().strip()
             )
-            return None
+            if alias:
+                notes.append(
+                    f"[Auto-Fix] mutation_social trait_target "
+                    f"'{ce.trait_target}' → '{alias}' "
+                    f"({ce.source_id}→{ce.target_id})"
+                )
+                updates["trait_target"] = alias
+            else:
+                notes.append(
+                    f"[Auto-Fix] Dropped mutation_social edge {ce.source_id}→{ce.target_id}: "
+                    f"trait_target '{ce.trait_target}' is not one of "
+                    f"{sorted(_RELATIONSHIP_METRICS)}."
+                )
+                return None
         if ce.rel_counterpart_id and ce.rel_counterpart_id == ce.target_id:
             notes.append(
                 f"[Auto-Fix] Dropped mutation_social edge {ce.source_id}→{ce.target_id}: "
@@ -1053,25 +1104,169 @@ def _sanitize_causal_edge(
 def _sanitize_relationship_edge(
     re_edge: RelationshipEdge, notes: List[str],
 ) -> RelationshipEdge:
-    """Clamp the metric and inertia ranges on a RelationshipEdge."""
-    updates: dict = {}
-    for field, lo, hi in (
-        ("affinity", -1.0, 1.0),
-        ("fear", 0.0, 1.0),
-        ("power_dynamic", -1.0, 1.0),
-        ("inertia", 0.0, 1.0),
-    ):
-        cur = getattr(re_edge, field)
-        if cur is None:
-            continue
-        if not (lo <= cur <= hi):
-            clamped = _clamp(cur, lo, hi)
+    """Clamp per-metric value/inertia ranges and coerce evidence_strength.
+
+    Operates on the new ``metrics`` dict structure. Each axis has its
+    own range:
+      * affinity \u2208 [-1, 1]
+      * fear \u2208 [0, 1]
+      * power_dynamic \u2208 [-1, 1]
+      * inertia \u2208 [0, 0.99] (1.0 would freeze the metric forever)
+    """
+    metric_ranges = {
+        "affinity": (-1.0, 1.0),
+        "fear": (0.0, 1.0),
+        "power_dynamic": (-1.0, 1.0),
+    }
+    es_aliases = {
+        "high": "strong", "low": "weak", "medium": "moderate",
+        "med": "moderate", "uncertain": "weak", "certain": "strong",
+    }
+
+    new_metrics: dict = {}
+    changed = False
+    for name, m in re_edge.metrics.items():
+        m_updates: dict = {}
+        # Clamp the metric value to its native range.
+        lo, hi = metric_ranges.get(name, (-1.0, 1.0))
+        if not (lo <= m.value <= hi):
+            clamped = _clamp(m.value, lo, hi)
             notes.append(
-                f"[Auto-Fix] Clamped RelationshipEdge.{field} {cur} → {clamped} "
-                f"({re_edge.source_entity_id}→{re_edge.target_entity_id})"
+                f"[Auto-Fix] Clamped RelationshipEdge.metrics['{name}'].value "
+                f"{m.value} \u2192 {clamped} "
+                f"({re_edge.source_entity_id}\u2192{re_edge.target_entity_id})"
             )
-            updates[field] = clamped
-    return re_edge.model_copy(update=updates) if updates else re_edge
+            m_updates["value"] = clamped
+        # Per-metric inertia clamp; cap at 0.99 so propagation never freezes.
+        if not (0.0 <= m.inertia <= 1.0):
+            clamped_in = _clamp(m.inertia, 0.0, 0.99)
+            notes.append(
+                f"[Auto-Fix] Clamped RelationshipEdge.metrics['{name}'].inertia "
+                f"{m.inertia} \u2192 {clamped_in} "
+                f"({re_edge.source_entity_id}\u2192{re_edge.target_entity_id})"
+            )
+            m_updates["inertia"] = clamped_in
+        elif m.inertia >= 1.0:
+            notes.append(
+                f"[Auto-Fix] Capped RelationshipEdge.metrics['{name}'].inertia "
+                f"at 0.99 ({re_edge.source_entity_id}\u2192"
+                f"{re_edge.target_entity_id}) \u2014 1.0 would freeze the axis."
+            )
+            m_updates["inertia"] = 0.99
+        # Coerce evidence_strength aliases.
+        if m.evidence_strength not in ("weak", "moderate", "strong"):
+            alias = es_aliases.get(str(m.evidence_strength).lower().strip())
+            if alias:
+                notes.append(
+                    f"[Auto-Fix] RelationshipEdge.metrics['{name}']."
+                    f"evidence_strength '{m.evidence_strength}' \u2192 "
+                    f"'{alias}' ({re_edge.source_entity_id}\u2192"
+                    f"{re_edge.target_entity_id})"
+                )
+                m_updates["evidence_strength"] = alias
+            else:
+                m_updates["evidence_strength"] = "moderate"
+        if m_updates:
+            new_metrics[name] = m.model_copy(update=m_updates)
+            changed = True
+        else:
+            new_metrics[name] = m
+
+    if changed:
+        return re_edge.model_copy(update={"metrics": new_metrics})
+    return re_edge
+
+
+def _sanitize_register(register: "GlobalRegister", notes: List[str]) -> "GlobalRegister":
+    """Clamp baseline numeric ranges on Step-1 ontology records.
+
+    Pydantic ``field_validator``s already coerce ``evidence_strength``
+    aliases on :class:`TraitVector`, :class:`AmbientVector`,
+    :class:`Belief`, and :class:`InformationEdge` at construction time,
+    so this pass focuses on numeric ranges that the LLM occasionally
+    overshoots (``value``, ``inertia``, ``volatility``, ``confidence``)
+    and caps inertia / volatility at ``0.99`` so propagation is never
+    literally frozen by a bad ``1.0`` extraction.
+    """
+    # Entities: traits + beliefs
+    for ent in register.entities.values():
+        new_traits: Dict[str, TraitVector] = {}
+        for tname, tv in ent.traits.items():
+            new_value = _clamp(tv.value, 0.0, 1.0)
+            new_inertia = _clamp(tv.inertia, 0.0, 1.0)
+            if new_inertia >= 1.0:
+                new_inertia = 0.99
+                notes.append(
+                    f"[Auto-Fix] Capped baseline trait '{ent.id}.{tname}' inertia at 0.99 "
+                    f"\u2014 1.0 would freeze the trait for the whole story."
+                )
+            if new_value != tv.value or new_inertia != tv.inertia:
+                if new_value != tv.value or new_inertia != tv.inertia:
+                    notes.append(
+                        f"[Auto-Fix] Clamped baseline trait '{ent.id}.{tname}' "
+                        f"value/inertia {tv.value:.2f}/{tv.inertia:.2f} \u2192 "
+                        f"{new_value:.2f}/{new_inertia:.2f}"
+                    )
+            new_traits[tname] = TraitVector(
+                value=new_value,
+                inertia=new_inertia,
+                evidence_strength=tv.evidence_strength,
+            )
+        ent.traits = new_traits
+
+        new_beliefs: List[Belief] = []
+        for b in ent.beliefs:
+            updates: dict = {}
+            new_conf = _clamp(b.confidence, 0.0, 1.0)
+            new_in = _clamp(b.inertia, 0.0, 1.0)
+            if new_in >= 1.0:
+                new_in = 0.99
+            if new_conf != b.confidence:
+                updates["confidence"] = new_conf
+            if new_in != b.inertia:
+                updates["inertia"] = new_in
+            new_beliefs.append(b.model_copy(update=updates) if updates else b)
+        ent.beliefs = new_beliefs
+
+    # Locations: ambient_state
+    for loc in register.locations.values():
+        new_ambient = {}
+        for aname, av in loc.ambient_state.items():
+            new_value = _clamp(av.value, 0.0, 1.0)
+            new_volatility = _clamp(av.volatility, 0.0, 1.0)
+            if new_value != av.value or new_volatility != av.volatility:
+                notes.append(
+                    f"[Auto-Fix] Clamped ambient '{loc.id}.{aname}' "
+                    f"value/volatility {av.value:.2f}/{av.volatility:.2f} \u2192 "
+                    f"{new_value:.2f}/{new_volatility:.2f}"
+                )
+            new_ambient[aname] = AmbientVector(
+                value=new_value,
+                volatility=new_volatility,
+                evidence_strength=av.evidence_strength,
+            )
+        loc.ambient_state = new_ambient
+
+    # World traits: magnitude (TraitVector)
+    for wt in register.world_traits.values():
+        mag = wt.magnitude
+        new_value = _clamp(mag.value, 0.0, 1.0)
+        new_inertia = _clamp(mag.inertia, 0.0, 1.0)
+        if new_inertia >= 1.0:
+            new_inertia = 0.99
+        if new_value != mag.value or new_inertia != mag.inertia:
+            notes.append(
+                f"[Auto-Fix] Clamped world-trait '{wt.id}.magnitude' "
+                f"value/inertia {mag.value:.2f}/{mag.inertia:.2f} \u2192 "
+                f"{new_value:.2f}/{new_inertia:.2f}"
+            )
+            wt.magnitude = TraitVector(
+                value=new_value,
+                inertia=new_inertia,
+                evidence_strength=mag.evidence_strength,
+            )
+
+    return register
 
 
 def _sanitize_entity_update(
@@ -1112,6 +1307,10 @@ def _sanitize_entity_update(
     # Clamp trait values + inertia to [0, 1]; physics asserts these.
     if eu.trait_updates:
         cleaned: Dict[str, TraitVector] = {}
+        es_aliases = {
+            "high": "strong", "low": "weak", "medium": "moderate",
+            "med": "moderate", "uncertain": "weak", "certain": "strong",
+        }
         for tname, tv in eu.trait_updates.items():
             new_value = _clamp(tv.value, 0.0, 1.0)
             new_inertia = _clamp(tv.inertia, 0.0, 1.0)
@@ -1129,7 +1328,17 @@ def _sanitize_entity_update(
                     f"{new_value:.2f}/{new_inertia:.2f} "
                     f"({eu.entity_id}@{eu.fabula_time})"
                 )
-            cleaned[tname] = TraitVector(value=new_value, inertia=new_inertia)
+            new_es = tv.evidence_strength
+            if new_es not in ("weak", "moderate", "strong"):
+                new_es = es_aliases.get(str(new_es).lower().strip(), "moderate")
+                notes.append(
+                    f"[Auto-Fix] EntityUpdate trait '{tname}' evidence_strength "
+                    f"'{tv.evidence_strength}' → '{new_es}' "
+                    f"({eu.entity_id}@{eu.fabula_time})"
+                )
+            cleaned[tname] = TraitVector(
+                value=new_value, inertia=new_inertia, evidence_strength=new_es,
+            )
         if cleaned != eu.trait_updates:
             updates["trait_updates"] = cleaned
 
@@ -1150,6 +1359,17 @@ def _sanitize_entity_update(
             # own fabula_time so downstream time-slicing works.
             if not b.established_at_fabula and eu.fabula_time > 0:
                 b_updates["established_at_fabula"] = eu.fabula_time
+            # Coerce evidence_strength aliases (high/low/medium → strong/weak/moderate).
+            if b.evidence_strength not in ("weak", "moderate", "strong"):
+                alias = {
+                    "high": "strong", "low": "weak", "medium": "moderate",
+                    "med": "moderate", "uncertain": "weak", "certain": "strong",
+                }.get(str(b.evidence_strength).lower().strip(), "moderate")
+                b_updates["evidence_strength"] = alias
+                notes.append(
+                    f"[Auto-Fix] Belief.evidence_strength '{b.evidence_strength}' → "
+                    f"'{alias}' ({eu.entity_id} re: {b.target_id})"
+                )
             cleaned_beliefs.append(b.model_copy(update=b_updates) if b_updates else b)
         updates["new_beliefs"] = cleaned_beliefs
 
@@ -1417,6 +1637,17 @@ def _build_social_agent(config: ExtractionConfig) -> Agent[_SocialDeps, SocialEx
                 continue
             if fixed_targets != list(ie.target_ids):
                 updates["target_ids"] = fixed_targets
+            # Coerce evidence_strength aliases (high/low/medium → strong/weak/moderate).
+            if ie.evidence_strength not in ("weak", "moderate", "strong"):
+                alias = {
+                    "high": "strong", "low": "weak", "medium": "moderate",
+                    "med": "moderate", "uncertain": "weak", "certain": "strong",
+                }.get(str(ie.evidence_strength).lower().strip(), "moderate")
+                updates["evidence_strength"] = alias
+                fixes.append(
+                    f"[Auto-Fix] InformationEdge.evidence_strength "
+                    f"'{ie.evidence_strength}' → '{alias}' (from {src})"
+                )
             fixed_info.append(ie.model_copy(update=updates) if updates else ie)
 
         # --- Fix relationship edge IDs ---
@@ -1437,7 +1668,24 @@ def _build_social_agent(config: ExtractionConfig) -> Agent[_SocialDeps, SocialEx
                 fixes.append(f"[Auto-Fix] Dropped self-referencing RelationshipEdge '{src}'→'{tgt}'")
             else:
                 rebuilt = re_edge.model_copy(update=updates) if updates else re_edge
-                fixed_social.append(_sanitize_relationship_edge(rebuilt, fixes))
+                sanitized = _sanitize_relationship_edge(rebuilt, fixes)
+                # Drop dyads with no observed metrics — an edge whose
+                # ``metrics`` dict is empty (or contains only
+                # ``observed=False`` axes) is structurally valid but
+                # contributes no signal: every aggregator returns 0.0
+                # indistinguishable from a measured neutral, polluting
+                # asymmetry / tension / propagation pipelines downstream.
+                observed_axes = [
+                    name for name, m in sanitized.metrics.items() if m.observed
+                ]
+                if not observed_axes:
+                    fixes.append(
+                        f"[Auto-Fix] Dropped RelationshipEdge "
+                        f"{src}→{tgt} with no observed metrics "
+                        f"(metrics={list(sanitized.metrics.keys())})."
+                    )
+                    continue
+                fixed_social.append(sanitized)
 
         if fixes:
             logger.info("[Validator·Social] Auto-fixed %d issue(s): %s", len(fixes), "; ".join(fixes))
@@ -1857,6 +2105,47 @@ def extract_topology(
                         )
                 except Exception:
                     logger.exception("[Step 3b] Chunk %d info retry FAILED.", i + 1)
+
+            # Symmetric retry on empty social_topology when the chunk's
+            # events involve multiple distinct entities — the per-axis
+            # observation requirement makes per-edge omissions much
+            # more likely under the new schema, and the social
+            # propagator is a no-op without at least one edge.
+            multi_entity_events = [
+                e for e in physics.events
+                if len(set(e.actor_ids) | set(e.target_ids)) >= 2
+            ]
+            if multi_entity_events and not social.social_topology:
+                logger.info(
+                    "[Step 3b] Chunk %d: 0 social edges across %d "
+                    "multi-entity event(s) — retrying with emphasis …",
+                    i + 1, len(multi_entity_events),
+                )
+                retry_rel_msg = (
+                    "IMPORTANT: The previous extraction returned zero "
+                    "RelationshipEdge entries despite the chunk containing "
+                    "events with multiple distinct participants. For each "
+                    "such event, infer the *minimum* relationship axes the "
+                    "text supports — even one observed axis per dyad is "
+                    "valuable. Use ``observed=True`` for axes the text "
+                    "speaks to, and omit unobserved axes entirely (do not "
+                    "fabricate neutral zeros).\n\n" + social_msg
+                )
+                try:
+                    rel_retry_result = social_agent.run_sync(retry_rel_msg, deps=social_deps)
+                    rel_retry = rel_retry_result.output
+                    log_agent_output(logger, f"SocialExtraction[chunk={i + 1},rel_retry]", rel_retry)
+                    if rel_retry.social_topology:
+                        social = SocialExtraction(
+                            information_topology=social.information_topology,
+                            social_topology=rel_retry.social_topology,
+                        )
+                        logger.info(
+                            "[Step 3b] Chunk %d: rel retry recovered %d social edges.",
+                            i + 1, len(social.social_topology),
+                        )
+                except Exception:
+                    logger.exception("[Step 3b] Chunk %d social retry FAILED.", i + 1)
         else:
             logger.info("[Step 3b] Chunk %d: skipping social pass (no events).", i + 1)
 
@@ -2349,8 +2638,11 @@ def _shift_fabula_times(topo: ChunkTopology, shift: int) -> None:
         if ie.terminated_at_fabula is not None and ie.terminated_at_fabula > 0:
             ie.terminated_at_fabula += shift
     for se in topo.social_topology:
-        if se.last_updated_fabula > 0:
-            se.last_updated_fabula += shift
+        # last_updated_fabula is now per-axis; shift each observed
+        # metric independently to preserve relative ordering.
+        for m in se.metrics.values():
+            if m.last_updated_fabula > 0:
+                m.last_updated_fabula += shift
     for sp in topo.spatial_topology:
         if sp.established_at_fabula > 0:
             sp.established_at_fabula += shift
@@ -2462,7 +2754,8 @@ def _normalize_fabula_times(ws: WorldStateV1, spacing: int = 1000) -> WorldState
         if se.destroyed_at_fabula is not None:
             all_times.add(se.destroyed_at_fabula)
     for re_edge in ws.social_topology:
-        all_times.add(re_edge.last_updated_fabula)
+        for m in re_edge.metrics.values():
+            all_times.add(m.last_updated_fabula)
     for ent in ws.entities.values():
         for b in ent.beliefs:
             all_times.add(b.established_at_fabula)
@@ -2501,12 +2794,16 @@ def _normalize_fabula_times(ws: WorldStateV1, spacing: int = 1000) -> WorldState
         })
         for ie in ws.information_topology
     ]
-    new_social = [
-        re_edge.model_copy(update={
-            "last_updated_fabula": _map(re_edge.last_updated_fabula) or re_edge.last_updated_fabula,
-        })
-        for re_edge in ws.social_topology
-    ]
+    new_social = []
+    for re_edge in ws.social_topology:
+        # Remap each per-axis last_updated_fabula independently.
+        new_metrics = {
+            name: m.model_copy(update={
+                "last_updated_fabula": _map(m.last_updated_fabula) or m.last_updated_fabula,
+            })
+            for name, m in re_edge.metrics.items()
+        }
+        new_social.append(re_edge.model_copy(update={"metrics": new_metrics}))
     new_spatial = [
         se.model_copy(update={
             "established_at_fabula": _map(se.established_at_fabula) or se.established_at_fabula,
@@ -2565,12 +2862,27 @@ def _normalize_fabula_times(ws: WorldStateV1, spacing: int = 1000) -> WorldState
 # =====================================================================
 
 def _deduplicate_social(edges: List[RelationshipEdge]) -> List[RelationshipEdge]:
-    """Keep only the most recent edge per (source, target) pair."""
+    """Merge multiple edges for the same (source, target) pair into one.
+
+    Under the per-metric ``RelationshipEdge`` schema, two extractions of
+    the same dyad may carry *different* observed axes (e.g. one chunk
+    only mutated ``fear``, another only ``power_dynamic``). Naively
+    keeping the most recent whole edge would discard the older axis.
+    Instead we merge per-axis, picking the metric with the larger
+    ``last_updated_fabula`` for each axis independently.
+    """
     best: dict[tuple[str, str], RelationshipEdge] = {}
     for e in edges:
         key = (e.source_entity_id, e.target_entity_id)
-        if key not in best or e.last_updated_fabula > best[key].last_updated_fabula:
+        if key not in best:
             best[key] = e
+            continue
+        merged_metrics = dict(best[key].metrics)
+        for name, m in e.metrics.items():
+            existing = merged_metrics.get(name)
+            if existing is None or m.last_updated_fabula > existing.last_updated_fabula:
+                merged_metrics[name] = m
+        best[key] = best[key].model_copy(update={"metrics": merged_metrics})
     return list(best.values())
 
 

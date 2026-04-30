@@ -15,7 +15,7 @@ import logging
 import math
 import re
 from copy import deepcopy
-from typing import Any, Dict, List, Optional, Literal
+from typing import Any, Dict, List, Optional, Literal, Tuple
 
 import networkx as nx
 from pydantic import BaseModel, Field
@@ -378,9 +378,37 @@ class DirectiveAssembler:
     # Relationship tension computation
     # ------------------------------------------------------------------
     def compute_relationship_tensions(self, entity_ids: List[str]) -> List[RelationshipTension]:
-        """Compute relationship tensions involving the given entities."""
+        """Compute relationship tensions involving the given entities.
+
+        Per-axis observed/evidence-aware:
+          * Axes whose ``observed`` flag is False contribute nothing to
+            the asymmetry score (an unmeasured axis is not a measurable
+            asymmetry — the previous all-axes-equal-weight average
+            silently inflated the score with hallucinated zeros).
+          * Each contributing axis is weighted by the *minimum* of the
+            two endpoints' evidence strengths (weak=1/3, moderate=2/3,
+            strong=1) so a strongly-evidenced asymmetry anchors the
+            score and a weak-vs-strong pair is not averaged into the
+            middle. The reported per-axis values still come from the
+            forward edge for backward compatibility.
+        """
         tensions: List[RelationshipTension] = []
         eid_set = set(entity_ids)
+        es_weight = {"weak": 1.0 / 3.0, "moderate": 2.0 / 3.0, "strong": 1.0}
+
+        def _axis(rel: dict, axis: str) -> tuple[float, str, bool]:
+            metrics = rel.get("metrics") if isinstance(rel.get("metrics"), dict) else None
+            if metrics and isinstance(metrics.get(axis), dict):
+                m = metrics[axis]
+                return (
+                    float(m.get("value", 0.0)),
+                    str(m.get("evidence_strength", "moderate")),
+                    bool(m.get("observed", True)),
+                )
+            # Legacy fallback: flat key, assume observed if present.
+            if axis in rel and isinstance(rel.get(axis), (int, float)):
+                return float(rel[axis]), "moderate", True
+            return 0.0, "weak", False
 
         for rel in self.ego.get("relevant_relationships", []):
             src = rel.get("source_entity_id", "")
@@ -388,26 +416,38 @@ class DirectiveAssembler:
             if src not in eid_set and tgt not in eid_set:
                 continue
 
-            aff = rel.get("affinity", 0.0)
-            fear = rel.get("fear", 0.0)
-            power = rel.get("power_dynamic", 0.0)
+            aff, aff_es, aff_obs = _axis(rel, "affinity")
+            fear, fear_es, fear_obs = _axis(rel, "fear")
+            power, power_es, power_obs = _axis(rel, "power_dynamic")
 
-            # Asymmetry: check for a reverse edge
-            reverse_aff = 0.0
-            reverse_fear = 0.0
-            reverse_power = 0.0
+            # Locate the reverse edge once.
+            reverse: dict = {}
             for rev in self.ego.get("relevant_relationships", []):
                 if rev.get("source_entity_id") == tgt and rev.get("target_entity_id") == src:
-                    reverse_aff = rev.get("affinity", 0.0)
-                    reverse_fear = rev.get("fear", 0.0)
-                    reverse_power = rev.get("power_dynamic", 0.0)
+                    reverse = rev
                     break
+            r_aff, r_aff_es, r_aff_obs = _axis(reverse, "affinity")
+            r_fear, r_fear_es, r_fear_obs = _axis(reverse, "fear")
+            r_power, r_power_es, r_power_obs = _axis(reverse, "power_dynamic")
 
-            asymmetry = (
-                abs(aff - reverse_aff)
-                + abs(fear - reverse_fear)
-                + abs(power + reverse_power)  # power should be anti-symmetric
-            ) / 3.0
+            contributions: list[tuple[float, float]] = []  # (delta, weight)
+            if aff_obs and r_aff_obs:
+                w = min(es_weight[aff_es], es_weight[r_aff_es])
+                contributions.append((abs(aff - r_aff), w))
+            if fear_obs and r_fear_obs:
+                w = min(es_weight[fear_es], es_weight[r_fear_es])
+                contributions.append((abs(fear - r_fear), w))
+            if power_obs and r_power_obs:
+                w = min(es_weight[power_es], es_weight[r_power_es])
+                # power should be anti-symmetric (A dominates B ⇒ B
+                # dominated by A), so the *sum* registers asymmetry.
+                contributions.append((abs(power + r_power), w))
+
+            if contributions:
+                total_w = sum(w for _, w in contributions) or 1.0
+                asymmetry = sum(d * w for d, w in contributions) / total_w
+            else:
+                asymmetry = 0.0
 
             tensions.append(RelationshipTension(
                 source_id=src, target_id=tgt,
@@ -506,9 +546,29 @@ class DirectiveAssembler:
         """Build a weighted causal DiGraph from the world state topology."""
         _STRENGTH_W = {"weak": 0.25, "moderate": 0.5, "strong": 0.75}
         _scaling = _get_settings().physics.causal_force_scaling
+        # Pre-index relationship per-axis evidence so ``mutation_social``
+        # edges can attenuate their weight by the strength of the actual
+        # measured relationship axis they target. Without this, chains
+        # passing through a relationship metric (mutation_social →
+        # mutation cascades) weight the relationship-touching link by
+        # the CausalEdge's own evidence_strength only, ignoring whether
+        # the underlying axis was strongly or weakly observed.
+        rel_axis_es: Dict[Tuple[str, str, str], str] = {}
+        for rel in self.world_state.social_topology:
+            for axis_name, m in rel.metrics.items():
+                if m.observed:
+                    rel_axis_es[(rel.source_entity_id, rel.target_entity_id, axis_name)] = m.evidence_strength
         g = nx.DiGraph()
         for ce in self.world_state.causal_topology:
             evidence_w = _STRENGTH_W.get(ce.evidence_strength, 0.5)
+            # For mutation_social edges, multiply by the per-axis
+            # relationship evidence as a precision floor.
+            if ce.causality_type == "mutation_social" and ce.rel_counterpart_id and ce.trait_target:
+                rel_es = rel_axis_es.get(
+                    (ce.target_id, ce.rel_counterpart_id, ce.trait_target)
+                )
+                if rel_es is not None:
+                    evidence_w = min(evidence_w, _STRENGTH_W.get(rel_es, 0.5))
             force_scale = ce.causal_force / _scaling
             w = evidence_w * force_scale
             if g.has_edge(ce.source_id, ce.target_id):
@@ -818,7 +878,14 @@ class DirectiveAssembler:
                 marginal_count[tname] = marginal_count.get(tname, 0) + 1
 
         def _trait_marginal(name: str) -> float:
-            if marginal_count.get(name, 0) == 0:
+            # Need at least 2 entities for a marginal to be meaningful as a
+            # "what an uninformed reader would guess" baseline — with one
+            # entity the marginal is identically the entity's own value,
+            # collapsing the prior onto the posterior and zeroing KL even
+            # when the cause is genuinely hidden. Fall back to maximum
+            # entropy (0.5) so single-entity scenarios still register
+            # surprise from extreme trait values.
+            if marginal_count.get(name, 0) < 2:
                 return 0.5
             return marginal_sum[name] / marginal_count[name]
 

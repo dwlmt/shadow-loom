@@ -21,7 +21,7 @@ Each `GlobalTrait` has:
 - `name` (str): Human-readable name (e.g. `"Totalitarian Surveillance"`, `"Social Class Rigidity"`).
 - `description` (str): Prose description of the world-level fact and its narrative role. Explain HOW it constrains or enables characters. 1-3 sentences.
 - `category` (str): One of: `"governance"`, `"magic_system"`, `"environment"`, `"social_structure"`, `"technology"`, `"ecology"`, `"economy"`, `"cosmology"`.
-- `magnitude` (dict): `{"value": float 0-1, "inertia": float 0-1}`.
+- `magnitude` (dict): `{"value": float 0-1, "inertia": float 0-1, "evidence_strength": "weak"|"moderate"|"strong"}`.
   - `value`: How intensely this world fact constrains characters at the start of the story. The engine consumes this in two ways: (a) as the multiplier on every contribution from this `WORLD_` node into entity propagation (`contrib = magnitude.value * edge_weight`), and (b) as the magnitude of the auto-generated `WORLD_→Entity` ambient pressure edge (`auto causal_force = magnitude.value * 2.0`). Bands:
     - `0.8–1.0` — Overwhelming, omnipresent (totalitarian surveillance, apocalyptic war, magic system that touches every scene). Reserve `1.0` for literally world-defining conditions — it makes auto-ambient edges fire at the maximum (`causal_force = 2.0`) on every entity every step.
     - `0.5–0.7` — Significant background pressure (class rigidity, prophecy, declared wartime, active plague).
@@ -33,6 +33,7 @@ Each `GlobalTrait` has:
     - `0.3–0.5` — Active conflicts, mutable political situations.
     - `0.1–0.3` — Weather, seasons, transient conditions.
     - Default if omitted: `0.8` (world facts are the stickiest tier).
+  - `evidence_strength` (str, optional): `"weak"` / `"moderate"` / `"strong"` — **engine's confidence in the extraction**, distinct from `value`/`inertia`. `"strong"` for explicitly named institutions/laws ("the Party", "the witches' prophecy"); `"moderate"` for named-latent forces inferred from patterned behaviour; `"weak"` for genre-default ambient backdrops. Defaults to `"moderate"`.
 - `affected_domains` (list[str]): Which causal mechanism categories this trait amplifies. Choose from: `"physical"`, `"psychological"`, `"epistemic"`, `"social"`, `"emotional"`, `"informational"`, `"betrayal"`. The engine penalises any incoming impulse whose `mechanism` is **not** in this list by the fallback factor `0.2` (i.e. mismatched-domain pressure contributes only 20% of its nominal weight). **Be selective**: leaving the list empty disables the gate entirely (no filtering); listing all seven domains defeats the selectivity and broadcasts full WORLD_ pressure into every trait family. Most world traits affect 1–3 domains.
 
 ---

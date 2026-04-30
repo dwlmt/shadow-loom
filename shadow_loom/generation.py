@@ -519,6 +519,25 @@ def build_intervention_brief(
                 trait_name = prop.split(".", 1)[1]
                 tv = world_state.entities[node_id].traits.get(trait_name)
                 old_state = f"{tv.value:.2f}" if tv else "unknown"
+            elif prop.startswith("relationships."):
+                # ``relationships.<other>.<axis>`` — walk social_topology
+                # for the per-axis baseline. Without this branch the
+                # InterventionMechanism block sent to the rendering LLM
+                # and the auditor reports ``old_state="unknown"`` and
+                # ``mechanism="physical"`` for any social do-surgery.
+                rel_parts = prop.split(".")
+                if len(rel_parts) >= 3:
+                    other_id = rel_parts[1]
+                    axis = rel_parts[2]
+                    for rel in world_state.social_topology:
+                        if (
+                            rel.source_entity_id == node_id
+                            and rel.target_entity_id == other_id
+                        ):
+                            m = rel.metrics.get(axis)
+                            if m is not None:
+                                old_state = f"{m.value:+.2f}"
+                            break
         elif node_id in world_state.objects:
             old_state = world_state.objects[node_id].properties.get(prop, "unknown")
 
@@ -526,6 +545,8 @@ def build_intervention_brief(
         mechanism = "physical"
         if prop.startswith("traits."):
             mechanism = "psychological force overcoming inertia"
+        elif prop.startswith("relationships."):
+            mechanism = "social pressure overcoming relationship inertia"
         elif prop == "status":
             mechanism = "physical force or environmental change"
         elif prop == "location_id":
@@ -538,6 +559,20 @@ def build_intervention_brief(
             tv = world_state.entities[node_id].traits.get(trait_name)
             if tv:
                 inertia = tv.inertia
+        elif node_id in world_state.entities and prop.startswith("relationships."):
+            rel_parts = prop.split(".")
+            if len(rel_parts) >= 3:
+                other_id = rel_parts[1]
+                axis = rel_parts[2]
+                for rel in world_state.social_topology:
+                    if (
+                        rel.source_entity_id == node_id
+                        and rel.target_entity_id == other_id
+                    ):
+                        m = rel.metrics.get(axis)
+                        if m is not None:
+                            inertia = m.inertia
+                        break
 
         mechanisms.append(InterventionMechanism(
             node_id=node_id,

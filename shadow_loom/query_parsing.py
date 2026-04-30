@@ -297,14 +297,31 @@ def _build_graph_summary(world_state: WorldStateV1) -> str:
                 f"actors=[{actors}] targets=[{targets}] — {evt.description[:80]}"
             )
 
-    # Relationships
+    # Relationships — emit per-axis evidence + observed flag so the
+    # planner LLM can distinguish ``affinity=0 (observed, strong)`` from
+    # ``affinity=0 (unobserved)`` when reasoning about the world. The
+    # legacy flat property accessors collapse both cases to the same
+    # 0.00 string and silently lose the new signal.
     if world_state.social_topology:
         sections.append("RELATIONSHIPS:")
+        es_short = {"weak": "w", "moderate": "m", "strong": "s"}
         for rel in world_state.social_topology:
+            parts = []
+            for axis_short, axis_name in (
+                ("aff", "affinity"), ("fear", "fear"), ("pow", "power_dynamic"),
+            ):
+                m = rel.metrics.get(axis_name)
+                if m is None:
+                    parts.append(f"{axis_short}=–")
+                elif not m.observed:
+                    parts.append(f"{axis_short}=? (unobs)")
+                else:
+                    parts.append(
+                        f"{axis_short}={m.value:+.2f}[{es_short.get(m.evidence_strength, 'm')}]"
+                    )
             sections.append(
                 f"  {rel.source_entity_id}→{rel.target_entity_id}: "
-                f"affinity={rel.affinity:.2f}, fear={rel.fear:.2f}, "
-                f"power={rel.power_dynamic:.2f}"
+                + ", ".join(parts)
             )
 
     # World Traits

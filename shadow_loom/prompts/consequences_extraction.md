@@ -30,8 +30,8 @@ One entry per (entity, fabula_time) state-change combination. Fields:
 - `entity_id` (str): The `ENT_` ID of the entity that changed. Must be from the register.
 - `fabula_time` (int): The fabula_time when this change occurred. Match the triggering event's fabula_time.
 - `triggered_by` (str | null): The `EVT_` ID that caused this change. Use the IDs from THIS CHUNK'S EVENTS or PREVIOUS CHUNKS' EVENTS. Null only for ambient/gradual changes that have no single triggering event.
-- `trait_updates` (dict): Only traits that **changed** — `{trait_name: {"value": float 0-1, "inertia": float 0-1}}`. Use the **NEW absolute value** after the event, not a delta. Omit traits that stayed the same.
-- `new_beliefs` (list): New beliefs formed at this point. Each: `{"target_id": str, "perceived_state": str, "confidence": float 0-1, "inertia": float 0-1, "established_at_fabula": int}`. `target_id` may be an `ENT_`, `OBJ_`, `LOC_`, or `WORLD_` ID.
+- `trait_updates` (dict): Only traits that **changed** — `{trait_name: {"value": float 0-1, "inertia": float 0-1, "evidence_strength": "weak"|"moderate"|"strong"}}`. Use the **NEW absolute value** after the event, not a delta. Omit traits that stayed the same. The optional `evidence_strength` (default `"moderate"`) records the engine's confidence in *this specific update* — `"strong"` when the text directly depicts the trait shift, `"moderate"` when reliably inferred from the action, `"weak"` for abductive interpretation.
+- `new_beliefs` (list): New beliefs formed at this point. Each: `{"target_id": str, "perceived_state": str, "confidence": float 0-1, "inertia": float 0-1, "established_at_fabula": int, "evidence_strength": "weak"|"moderate"|"strong"}`. `target_id` may be an `ENT_`, `OBJ_`, `LOC_`, or `WORLD_` ID. `evidence_strength` (default `"moderate"`) is the **engine's** confidence in extracting this belief, distinct from `confidence` (the *character's* certainty). Use `"strong"` when the text states the belief directly (interior monologue, dialogue), `"moderate"` when inferred from on-page reaction, `"weak"` for abductive guesses.
 - `invalidated_belief_targets` (list[str]): `target_id`s of beliefs shattered or superseded by this event. E.g. when a character discovers a previously-trusted ally is a traitor, invalidate the belief about that ally.
 - `new_status` (str | null): One of `"healthy"`, `"injured"`, `"ill"`, `"dead"`, `"unconscious"`. Null if status did not change.
 - `new_location_id` (str | null): New `LOC_` ID if the entity moved this fabula_tick. Null if they stayed put.
@@ -100,12 +100,13 @@ Produce:
       "fabula_time": 300,
       "triggered_by": "EVT_DUNCAN_MURDER",
       "trait_updates": {
-        "guilt": {"value": 0.78, "inertia": 0.45},
-        "paranoia": {"value": 0.55, "inertia": 0.40}
+        "guilt": {"value": 0.78, "inertia": 0.45, "evidence_strength": "strong"},
+        "paranoia": {"value": 0.55, "inertia": 0.40, "evidence_strength": "strong"}
       },
       "new_beliefs": [
         {"target_id": "ENT_DUNCAN", "perceived_state": "Duncan is dead by my hand",
-         "confidence": 1.0, "inertia": 0.9, "established_at_fabula": 300}
+         "confidence": 1.0, "inertia": 0.9, "established_at_fabula": 300,
+         "evidence_strength": "strong"}
       ],
       "invalidated_belief_targets": [],
       "new_status": null,

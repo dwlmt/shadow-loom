@@ -49,7 +49,23 @@ verifier = DebugTokenVerifier(validate=_validate_bearer_token)
 # ── User resolution from Context ─────────────────────────────────
 
 def _open_mode_enabled() -> bool:
-    """Return True if the MCP server is in open (dev/test) mode."""
+    """Return True if the MCP server is in open (dev/test) mode.
+
+    Reads ``MCP_ALLOW_OPEN_MODE`` directly from the environment rather
+    than via :func:`shadow_loom.settings.get_settings`, which is
+    ``@lru_cache``'d for the lifetime of the process. The cached form
+    captures the env at first access, so any test that imports settings
+    before this module sets the env var would freeze the flag at
+    ``False`` and silently break every later open-mode test in the same
+    pytest session. Going straight to ``os.environ`` keeps the toggle
+    honest while still falling back to the cached settings value when
+    the env var is unset.
+    """
+    import os
+
+    raw = os.environ.get("MCP_ALLOW_OPEN_MODE")
+    if raw is not None:
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
     try:
         from shadow_loom.settings import get_settings
         return bool(getattr(get_settings().mcp, "allow_open_mode", False))

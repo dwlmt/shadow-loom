@@ -19,18 +19,18 @@ Pydantic v2 with `model_validator` constraints.
 
 | Class | Prefix | Purpose |
 |---|---|---|
-| `Location` | `LOC_` | Spatial container with `ambient_state: Dict[str, AmbientVector]`. |
+| `Location` | `LOC_` | Spatial container with `ambient_state: Dict[str, AmbientVector]` (each ambient owns `value`, `volatility`, `evidence_strength`). |
 | `NarrativeObject` | `OBJ_` | Inanimate item with `affordances: List[Affordance]`. |
-| `Entity` | `ENT_` | Character / agent with `traits`, `beliefs`, `status`, `state_timeline`. |
+| `Entity` | `ENT_` | Character / agent with `traits` (per-trait `TraitVector{value, inertia, evidence_strength}`), `beliefs`, `status`, `state_timeline`. |
 | `EventNode` | `EVT_` | Atomic happening anchored on both `fabula_time` and `syuzhet_index`. |
-| `GlobalTrait` | `WORLD_` | World-level fact / law / regime ("magic system", "surveillance state"). |
+| `GlobalTrait` | `WORLD_` | World-level fact / law / regime ("magic system", "surveillance state"). `magnitude` is a `TraitVector` (`value`, `inertia`, `evidence_strength`). |
 
 ### Edges
 
 | Class | Topology | Notes |
 |---|---|---|
 | `CausalEdge` | event⇄event / event→state / state→event / state→state | Single class with five `causality_type` modalities; validator enforces source/target type matches modality. |
-| `RelationshipEdge` | entity⇄entity | Continuous `affinity`, `fear`, `power_dynamic`, `inertia`. |
+| `RelationshipEdge` | entity⇄entity | Per-axis `metrics` dict (`affinity` / `fear` / `power_dynamic`); each axis owns its own `value`, `inertia`, `evidence_strength`, `last_updated_fabula`. Read via flat back-compat properties. |
 | `SpatialEdge` | location→location | Optional `is_locked` + `barrier_item_id`. |
 | `InformationEdge` | (entity\|object)→entities | Communication channel with `medium`, `is_encrypted`, `discovered_at_syuzhet`. |
 
@@ -145,7 +145,7 @@ the ego-graph. Mutations are confined to the sandbox until they are explicitly
 committed back. Edge types laid down:
 
 * `located_in`, `owned_by` — spatial / inventory topology
-* `relationship` — psycho-social metrics (affinity / fear / power_dynamic / inertia)
+* `relationship` — psycho-social metrics, per-axis (`affinity` / `fear` / `power_dynamic` each with their own `value`, `inertia`, `evidence_strength`, `last_updated_fabula`)
 * `causal` — `mechanism`, `evidence_strength`, `causal_force`,
   `propagation_delay`
 * `connected_to` — spatial, with `is_locked` and `barrier_item_id`

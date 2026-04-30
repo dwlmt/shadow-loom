@@ -258,8 +258,17 @@ class TestIntervention:
 
     def test_social_intervention_affinity(self):
         """Relationship surgery must alter the affinity metric, dampened by inertia."""
-        # Macbeth→Lady Macbeth: affinity=0.8, default inertia=0.3
-        # Requesting -1.0 → shift=-1.8, |1.8|>0.3 → dampened: -1.8+0.3=-1.5 → 0.8-1.5=-0.7
+        # Read actual per-axis inertia from the fixture so this test stays
+        # robust to per-metric inertia tuning.
+        edge = next(
+            r for r in macbeth_ws.social_topology
+            if r.source_entity_id == "ENT_MACBETH" and r.target_entity_id == "ENT_LADY_MACBETH"
+        )
+        m = edge.metrics["affinity"]
+        # shift = -1.0 - m.value, dampened by m.inertia toward zero
+        shift = -1.0 - m.value
+        effective = shift + m.inertia  # shift is negative, dampening adds inertia toward 0
+        expected = m.value + effective
         query = InterventionQuery(
             interventions={"ENT_MACBETH.relationships.ENT_LADY_MACBETH.affinity": -1.0}
         )
@@ -268,7 +277,8 @@ class TestIntervention:
         found = False
         for _, v, d in G.out_edges("ENT_MACBETH", data=True):
             if v == "ENT_LADY_MACBETH" and d.get("edge_type") == "relationship":
-                assert -0.71 <= d["affinity"] <= -0.69, f"Expected ~-0.70, got {d['affinity']}"
+                assert abs(d["affinity"] - expected) < 0.01, \
+                    f"Expected ~{expected:.2f} (inertia={m.inertia}), got {d['affinity']}"
                 found = True
                 break
         assert found, "Relationship edge ENT_MACBETH→ENT_LADY_MACBETH not found"
@@ -1423,13 +1433,21 @@ class TestSchemaCompleteness:
         assert ce.evidence_strength == "moderate"
 
     def test_relationship_edge_evidence_strength(self):
-        """RelationshipEdge must have evidence_strength field."""
-        from shadow_loom.models import RelationshipEdge
+        """RelationshipEdge must surface per-axis evidence_strength.
+
+        Per the per-metric refactor (D5c), evidence_strength now lives
+        on each RelationshipMetric inside ``metrics`` rather than as a
+        flat edge field. The aggregated ``evidence_strength`` property
+        returns the strongest observed axis (default ``"moderate"`` if
+        no metrics are present).
+        """
+        from shadow_loom.models import RelationshipEdge, RelationshipMetric
         re_ = RelationshipEdge(
             source_entity_id="ENT_A", target_entity_id="ENT_B",
-            evidence_strength="weak"
+            metrics={"affinity": RelationshipMetric(value=0.5, evidence_strength="weak")},
         )
         assert re_.evidence_strength == "weak"
+        assert re_.metrics["affinity"].evidence_strength == "weak"
 
     def test_query_models_no_dead_fields(self):
         """ObservationQuery must not have time_steps; InterventionQuery must not have commit_to_factual."""
@@ -1615,9 +1633,14 @@ class TestRelationshipInertia:
 
     def test_relationship_inertia_dampens_large_shift(self):
         """A large relationship shift must be dampened by inertia."""
-        # Default inertia=0.3, affinity=0.8, requesting -1.0
-        # shift = -1.0 - 0.8 = -1.8, |1.8| > 0.3 → passes
-        # effective = -1.8 - (-1)*0.3 = -1.5, val = 0.8 - 1.5 = -0.7
+        # Read per-axis inertia from the fixture; assert the dampening formula.
+        edge = next(
+            r for r in macbeth_ws.social_topology
+            if r.source_entity_id == "ENT_MACBETH" and r.target_entity_id == "ENT_LADY_MACBETH"
+        )
+        m = edge.metrics["affinity"]
+        shift = -1.0 - m.value
+        expected = m.value + (shift + m.inertia)  # negative shift dampened toward 0
         query = InterventionQuery(
             interventions={"ENT_MACBETH.relationships.ENT_LADY_MACBETH.affinity": -1.0}
         )
@@ -1625,7 +1648,8 @@ class TestRelationshipInertia:
         G = nx.node_link_graph(result["physics_state"])
         for _, v, d in G.out_edges("ENT_MACBETH", data=True):
             if v == "ENT_LADY_MACBETH" and d.get("edge_type") == "relationship":
-                assert -0.71 <= d["affinity"] <= -0.69, f"Expected ~-0.70, got {d['affinity']}"
+                assert abs(d["affinity"] - expected) < 0.01, \
+                    f"Expected ~{expected:.2f} (inertia={m.inertia}), got {d['affinity']}"
                 break
 
     def test_relationship_inertia_schema_field(self):
@@ -2167,10 +2191,14 @@ class TestExtractGraphEdgeCases:
         from copy import deepcopy
         from shadow_loom.extract_graph import extract_ego_graph_from_memory
         ws = deepcopy(macbeth_ws)
-        # Set one relationship to be updated in the far future
+        # Set one relationship to be updated in the far future. The
+        # property is read-only; mutate the underlying per-axis metric
+        # instead. Touch every observed axis so the aggregated
+        # `last_updated_fabula` (max across axes) becomes 9999.
         for rel in ws.social_topology:
             if rel.source_entity_id == "ENT_MACBETH":
-                rel.last_updated_fabula = 9999
+                for m in rel.metrics.values():
+                    m.last_updated_fabula = 9999
                 break
         ego = extract_ego_graph_from_memory(ws, ["ENT_MACBETH"], temporal_anchor=5)
         # The relationship updated at T=9999 should be excluded
