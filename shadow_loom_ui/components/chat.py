@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, List
 from nicegui import ui
 
 from shadow_loom_ui.state import AppState, NLQueryResult, StateEvent
+from shadow_loom_ui.config import MAX_INGEST_WORDS, count_words
 from shadow_loom_ui.task_helpers import capture_logs_to_task, notify_task_complete
 from shadow_loom_ui.theme import feather
 
@@ -143,6 +144,34 @@ def _build_command_bar(state: AppState) -> None:
                 "unelevated round dense color=primary"
             ).classes("shadow-sm").style("height: 40px; width: 40px;")
 
+            # Help icon \u2014 hover overlay explains what the channel does.
+            with ui.icon("help_outline").classes(
+                "text-slate-400 cursor-help text-base"
+            ):
+                ui.tooltip(
+                    "Channel \u2014 your natural-language conduit to the world "
+                    "model. Ask questions, run counterfactuals, request "
+                    "interventions, or write canon prose. Inputs are capped "
+                    f"at {MAX_INGEST_WORDS:,} words to keep latency "
+                    "interactive."
+                ).classes("max-w-md text-sm")
+
+        # Live word counter for the channel input \u2014 turns red past the cap.
+        word_count_label = ui.label("").classes(
+            "text-xs text-slate-400 q-px-md"
+        )
+
+        def _refresh_chat_word_count():
+            n = count_words(text_input.value or "")
+            if n == 0:
+                word_count_label.set_text("")
+                return
+            colour = "text-rose-600" if n > MAX_INGEST_WORDS else "text-slate-400"
+            word_count_label.classes(replace=f"text-xs {colour} q-px-md")
+            word_count_label.set_text(f"{n:,} / {MAX_INGEST_WORDS:,} words")
+
+        text_input.on("update:model-value", lambda _e: _refresh_chat_word_count())
+
         # ── Keyboard shortcut ─────────────────────────────────────
         text_input.on(
             "keydown.enter",
@@ -201,6 +230,19 @@ def _build_command_bar(state: AppState) -> None:
                     "manual": use_manual,
                     "forced": False,
                 })
+
+            # Word-count gate \u2014 channel inputs share the ingestion cap
+            # so writing-prose ("manual edit") and very long pasted prompts
+            # never bypass the limit through the chat surface.
+            n_words = count_words(text)
+            if n_words > MAX_INGEST_WORDS:
+                ui.notify(
+                    f"Input is {n_words:,} words \u2014 the channel limit is "
+                    f"{MAX_INGEST_WORDS:,} words. Trim it down or split the "
+                    "prompt across multiple turns.",
+                    type="negative",
+                )
+                return
 
             _is_running["v"] = True
             if not force:

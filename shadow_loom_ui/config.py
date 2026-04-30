@@ -28,3 +28,19 @@ OAUTH_REDIRECT_BASE: str = _settings.oauth.oauth_redirect_base
 
 AUTH_ENABLED: bool = _settings.oauth.auth_enabled
 OAUTH_PROVIDERS: list[dict] = _settings.oauth.oauth_providers
+
+# ── Input limits ──────────────────────────────────────────────────
+# Maximum number of whitespace-separated tokens accepted by the
+# ingestion textarea, file upload, sample loader, and chat input.
+# Shadow-Loom is designed for short summaries, synopses, and scenario
+# sketches \u2014 not full novels or shooting scripts. Long inputs make
+# the per-chunk LLM passes prohibitively slow and produce graphs that
+# are too dense for interactive counterfactual exploration.
+MAX_INGEST_WORDS: int = 10_000
+
+
+def count_words(text: str) -> int:
+    """Whitespace-tokenised word count used by the input gates."""
+    if not text:
+        return 0
+    return len(text.split())

@@ -11,6 +11,7 @@ from nicegui import ui
 
 from shadow_loom.ingestion import ExtractionConfig, run_extraction
 from shadow_loom_ui import db
+from shadow_loom_ui.config import MAX_INGEST_WORDS, count_words
 from shadow_loom_ui.state import StateEvent
 from shadow_loom_ui.task_helpers import capture_logs_to_task, notify_task_complete
 from shadow_loom_ui.theme import feather
@@ -30,27 +31,64 @@ def build_ingest_dialog(state: AppState) -> ui.dialog:
         "w-full max-w-3xl bg-white border border-slate-200 "
         "rounded-xl shadow-sm p-6"
     ):
-        ui.label("Ingest Narrative Text").classes(
-            "text-2xl font-bold text-slate-800"
-        )
+        with ui.row().classes("w-full items-center gap-2"):
+            ui.label("Ingest Narrative Text").classes(
+                "text-2xl font-bold text-slate-800"
+            )
+            with ui.icon("help_outline").classes(
+                "text-slate-400 cursor-help text-lg"
+            ):
+                ui.tooltip(
+                    "Paste a short summary, synopsis, or scenario sketch "
+                    f"(up to {MAX_INGEST_WORDS:,} words). Shadow-Loom is "
+                    "optimised for compact narrative material \u2014 full "
+                    "novels and shooting scripts will be too slow to "
+                    "explore interactively."
+                ).classes("max-w-md text-sm")
         ui.label(
             "Paste or upload raw story text. The pipeline will extract "
-            "entities, events, locations, objects, and all topology edges."
+            "entities, events, locations, objects, and all topology edges. "
+            f"Inputs are capped at {MAX_INGEST_WORDS:,} words."
         ).classes("text-sm text-slate-500 mb-2")
 
         project_name = ui.input("Project Name", value="New Story").classes("w-full")
         text_area = ui.textarea(
             "Story Text",
-            placeholder="Paste the full narrative text here...",
+            placeholder="Paste a short summary or synopsis here \u2014 "
+                        f"max {MAX_INGEST_WORDS:,} words...",
         ).classes("w-full").props("rows=15")
+
+        # Live word counter \u2014 turns red once the cap is exceeded so the
+        # user sees it before clicking Ingest.
+        word_count_label = ui.label(
+            f"0 / {MAX_INGEST_WORDS:,} words"
+        ).classes("text-xs text-slate-400 mt-1")
+
+        def _refresh_word_count() -> int:
+            n = count_words(text_area.value or "")
+            colour = "text-rose-600" if n > MAX_INGEST_WORDS else "text-slate-400"
+            word_count_label.classes(replace=f"text-xs {colour} mt-1")
+            word_count_label.set_text(f"{n:,} / {MAX_INGEST_WORDS:,} words")
+            return n
+
+        text_area.on("update:model-value", lambda _e: _refresh_word_count())
 
         # File upload option
         ui.label("Or upload a .txt file:").classes("text-xs text-slate-500 mt-2")
 
         async def _handle_upload(e):
             content = e.content.read().decode("utf-8")
+            n = count_words(content)
+            if n > MAX_INGEST_WORDS:
+                ui.notify(
+                    f"File has {n:,} words \u2014 exceeds the "
+                    f"{MAX_INGEST_WORDS:,}-word ingest limit.",
+                    type="negative",
+                )
+                return
             text_area.value = content
-            ui.notify(f"Loaded {len(content)} characters")
+            _refresh_word_count()
+            ui.notify(f"Loaded {len(content)} characters ({n:,} words)")
 
         ui.upload(on_upload=_handle_upload, auto_upload=True).props(
             "accept=.txt flat dense"
@@ -79,8 +117,18 @@ def build_ingest_dialog(state: AppState) -> ui.dialog:
                     if safe_path is None:
                         ui.notify("Invalid sample selection", type="warning")
                         return
-                    text_area.value = safe_path.read_text(encoding="utf-8")
+                    content = safe_path.read_text(encoding="utf-8")
+                    n = count_words(content)
+                    if n > MAX_INGEST_WORDS:
+                        ui.notify(
+                            f"Sample has {n:,} words \u2014 exceeds the "
+                            f"{MAX_INGEST_WORDS:,}-word ingest limit.",
+                            type="negative",
+                        )
+                        return
+                    text_area.value = content
                     project_name.value = safe_path.stem.replace("_", " ").title()
+                    _refresh_word_count()
 
                 sample_select.on("update:model-value", _load_sample)
 
@@ -123,6 +171,16 @@ def build_ingest_dialog(state: AppState) -> ui.dialog:
             text = text_area.value.strip()
             if not text:
                 ui.notify("Enter some text first", type="warning")
+                return
+
+            n_words = count_words(text)
+            if n_words > MAX_INGEST_WORDS:
+                ui.notify(
+                    f"Input is {n_words:,} words \u2014 the ingest limit is "
+                    f"{MAX_INGEST_WORDS:,}. Trim the text or paste a "
+                    "shorter synopsis.",
+                    type="negative",
+                )
                 return
 
             pname = (project_name.value or "Untitled").strip()

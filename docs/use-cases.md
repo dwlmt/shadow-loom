@@ -4,25 +4,40 @@ Shadow-Loom is built around a single capability: **treat a story as a graph
 with physics**, then use that graph to answer questions, generate scenes, or
 audit existing prose. The capabilities below all fall out of that core idea.
 
+> **Scope — Shadow-Loom is for *short* narrative material.**
+> The pipeline is optimised for **summaries, synopses, treatments,
+> outlines, scene briefs, and scenario sketches** — typically up to a
+> few thousand words, and hard-capped at **10,000 words** in the UI
+> ingestion textbox, file upload, and channel input. Feeding it a full
+> 50,000-word novel or a feature-length shooting script is technically
+> possible via the library API but will be **prohibitively slow** (each
+> chunk runs three sequential LLM passes) and produces a graph too dense
+> for interactive counterfactual exploration. The intended workflow is
+> to ingest a *condensed* version of the story, then explore *what-ifs*
+> against that compact world model.
+
 ---
 
-## 1. AI-assisted long-form fiction
+## 1. AI-assisted scenario exploration
 
-**Audience:** novelists, screenwriters, game writers, IF authors.
+**Audience:** novelists, screenwriters, game writers, IF authors,
+worldbuilders working from outlines and treatments.
 
-The author writes a chapter; Shadow-Loom ingests it into a `WorldStateV1`.
-From there:
+The author writes a **short synopsis or scene brief** (a chapter outline,
+a treatment paragraph, a one-page scenario); Shadow-Loom ingests it into a
+`WorldStateV1`. From there:
 
 * They ask the system *"what could plausibly happen next that maximises
   dramatic irony for the reader?"* — Shadow-Loom enumerates candidate
   interventions, rejects the ones that violate causal physics or affordance
   rules, ranks the survivors by the affective scorer, and returns a
   `CreativeBrief` plus a constrained-LLM rendered scene.
-* They edit a scene by hand → re-ingest → diff against the previous version
-  in the version tree.
-* They protect against continuity errors: the auditor flags miracle steps
-  ("character X teleported"), broken belief states ("Y knew this in chapter
-  3 but acts ignorant in chapter 5"), and dead-actor violations.
+* They edit a synopsis by hand → re-ingest → diff against the previous
+  version in the version tree.
+* They protect against continuity errors at the *outline* level: the
+  auditor flags miracle steps ("character X teleported"), broken belief
+  states ("Y knew this in chapter 3 but acts ignorant in chapter 5"), and
+  dead-actor violations — *before* a single scene is drafted in full.
 
 This is the primary use case driving the architecture.
 
@@ -145,6 +160,12 @@ memory** rather than a stateless completion box.
 
 ## What Shadow-Loom is *not* for
 
+* **Full-length novels, screenplays, or shooting scripts** as a single
+  ingest. The UI caps inputs at 10,000 words; the library accepts more
+  but each chunk requires three sequential LLM passes (Socratic +
+  Physics + Social/Consequences), so a 50K-word manuscript can take
+  many hours to ingest and yields a graph too large to explore
+  interactively. Condense to a synopsis or per-chapter outline first.
 * Real-time per-token streaming generation in latency-critical loops.
   The simulation is heavy enough that one scene can take many seconds.
 * Replacing human authorial judgement. The audit catches inconsistencies

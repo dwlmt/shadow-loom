@@ -44,6 +44,50 @@ _TABS = [
     ("export", "ios_share", "Export"),
 ]
 
+# Hover-overlay help text shown on each tab. Kept short so the tooltip
+# fits inside one or two lines on smaller viewports.
+_TAB_HELP: dict[str, str] = {
+    "story": (
+        "Story \u2014 read the canonical narrative for the active version, "
+        "scrub the syuzhet timeline, and inspect per-event affective scores."
+    ),
+    "explorer": (
+        "Explorer \u2014 browse entities, locations, objects, and world traits "
+        "in a navigable register. Drill into any node to see its state at a "
+        "chosen fabula time."
+    ),
+    "world": (
+        "World \u2014 the world-state-at-time inspector. Slide the time cursor "
+        "to see how every entity's traits, beliefs, status, and location "
+        "evolve across the fabula."
+    ),
+    "causality": (
+        "Causality \u2014 visualise the typed causal/social/spatial/information "
+        "graph and the affective-dashboard heatmaps (suspense, irony, "
+        "surprise) over the syuzhet."
+    ),
+    "reasoning": (
+        "Reasoning \u2014 run natural-language queries against the world model "
+        "and inspect the engine's step-by-step reasoning trace, including "
+        "abduction, intervention, and counterfactual replay."
+    ),
+    "audit": (
+        "Audit \u2014 the activity log for this project: every ingestion, "
+        "query, manual edit, and version save with diffs and the LLM "
+        "auditor's verdict."
+    ),
+    "editor": (
+        "Edit \u2014 manually add, remove, or modify any node or edge in the "
+        "world model. Validate before saving \u2014 errors block, warnings can "
+        "be acknowledged."
+    ),
+    "export": (
+        "Export \u2014 download the current world state as JSON, render the "
+        "story to plain prose, or export the causal graph for external "
+        "analysis."
+    ),
+}
+
 
 def build_workspace(state: AppState, project_id: int) -> None:
     """Load a project and render the workspace."""
@@ -222,7 +266,10 @@ def build_workspace(state: AppState, project_id: int) -> None:
                     "w-full bg-white border-b border-slate-200 px-4"
                 ) as tabs:
                     for key, icon_name, label in _TABS:
-                        ui.tab(key, label=label, icon=icon_name)
+                        with ui.tab(key, label=label, icon=icon_name):
+                            ui.tooltip(_TAB_HELP[key]).classes(
+                                "max-w-xs text-xs"
+                            )
 
                 # Track which top-level tab is visible so component
                 # panels can skip refreshing when they're off-screen.
