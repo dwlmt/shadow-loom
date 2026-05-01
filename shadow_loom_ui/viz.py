@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025-2026 David Rae Wilmot
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """ECharts-based visualization renderers for Shadow-Loom.
 
 Each function returns a ``nicegui.ui.echart`` element configured with the

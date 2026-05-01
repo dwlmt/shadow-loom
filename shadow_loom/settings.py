@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025-2026 David Rae Wilmot
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Centralised settings for Shadow-Loom.
 
 All hardcoded defaults are externalised here as Pydantic Settings objects.
@@ -467,6 +470,11 @@ class UISettings(BaseSettings):
     title: str = Field(default="Shadow Loom")
     dark_mode: bool = Field(default=False)
     reload: bool = Field(default=False)
+    # AGPLv3 § 13: hosted instances must offer users the corresponding
+    # source code. The footer link points here. Operators running a
+    # modified build MUST update this URL to point at the modified
+    # source for compliance.
+    source_url: str = Field(default="https://github.com/dwlmt/shadow-loom")
 
     @model_validator(mode="after")
     def _honour_platform_port(self) -> "UISettings":

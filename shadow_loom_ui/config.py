@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025-2026 David Rae Wilmot
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Environment-based configuration for the Shadow-Loom UI.
 
 Thin adapter over the centralised ``shadow_loom.settings`` module.

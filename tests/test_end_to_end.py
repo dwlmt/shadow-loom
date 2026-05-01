@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025-2026 David Rae Wilmot
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """
 End-to-end pipeline tests: plot models → graph extraction → physics/affective
 engines → generation → audit loop → prose re-extraction → merge.

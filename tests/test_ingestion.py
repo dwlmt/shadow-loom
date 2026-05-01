@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025-2026 David Rae Wilmot
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """
 Unit tests for shadow_loom.ingestion — chunking, validation, assembly,
 and deduplication. No LLM calls are made; all tests are deterministic.

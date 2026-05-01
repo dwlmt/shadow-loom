@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025-2026 David Rae Wilmot
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Re-export shared DB layer from shadow_loom.db.
 
 This shim exists so that existing ``from shadow_loom_ui.db import ...``

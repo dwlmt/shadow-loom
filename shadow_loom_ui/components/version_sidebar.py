@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025-2026 David Rae Wilmot
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Left sidebar — version-history tree.
 
 Always-visible left rail showing the project's version DAG. Clicking a

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025-2026 David Rae Wilmot
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 from pydantic import BaseModel, Field
 from typing import Any, Optional, Literal, Union, Dict, List
 

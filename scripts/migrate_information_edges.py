@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025-2026 David Rae Wilmot
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """One-shot migrator: rewrite legacy ``information_topology=[InformationEdge(...)]``
 blocks in ``example_worlds/*.py`` to the new ``channels={CHN_X: Channel(...)}``
 form, plus optionally an ``EVT_*`` utterance event for one-shot messages.

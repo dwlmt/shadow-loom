@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025-2026 David Rae Wilmot
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Reasoning Trace rail.
 
 Renders the structured output of a rung-2 (intervention) or rung-3

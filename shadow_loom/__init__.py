@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025-2026 David Rae Wilmot
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 from shadow_loom.causal_physics import CausalPhysicsEngine, CausalPhysicsResult, SocialMutation
 from shadow_loom.amwn import (
     CounterfactualVar, CtfCalculusReport,

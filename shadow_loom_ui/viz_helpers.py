@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025-2026 David Rae Wilmot
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Data transformation helpers: WorldStateV1 → ECharts option dicts.
 
 Pure functions that convert Shadow-Loom world model objects into the

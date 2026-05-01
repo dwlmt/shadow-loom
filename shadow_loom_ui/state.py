@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025-2026 David Rae Wilmot
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Shared application state for the Shadow-Loom UI.
 
 Holds the current project, world model, and pipeline runner.

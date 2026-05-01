@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025-2026 David Rae Wilmot
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Data transforms for Shadow-Loom's *reasoning-trace* views.
 
 These helpers convert the structured outputs of the causal physics

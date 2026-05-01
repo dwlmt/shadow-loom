@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025-2026 David Rae Wilmot
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Shadow-Loom NiceGUI web application — main entry point.
 
 Multi-page routing:
@@ -189,6 +192,36 @@ def _build_app_header(state: AppState, *, show_back: bool = False):
                         ui.label("Sign in")
 
 
+def _build_app_footer() -> None:
+    """Render the shared footer with AGPLv3 § 13 source-code link.
+
+    Shadow Loom is licensed under AGPL-3.0-or-later; § 13 of that
+    licence requires hosted instances to offer the corresponding
+    source code to interacting users. The link target is configurable
+    via the ``UI_SOURCE_URL`` environment variable so operators of a
+    modified build can point users at *their* corresponding source,
+    as the licence requires.
+    """
+    source_url = _ui_settings.source_url
+    with ui.footer().classes(
+        "bg-white border-t border-slate-200 px-6 py-2 "
+        "flex items-center justify-between text-xs text-slate-500"
+    ).props("elevated=false flat"):
+        ui.label(
+            "Shadow Loom — AGPL-3.0-or-later. "
+            "This is free software with NO WARRANTY."
+        )
+        with ui.row().classes("items-center gap-3"):
+            ui.link("Source", source_url, new_tab=True).classes(
+                "text-slate-600 hover:text-slate-900 underline"
+            )
+            ui.link(
+                "Licence",
+                f"{source_url.rstrip('/')}/blob/main/LICENSE",
+                new_tab=True,
+            ).classes("text-slate-600 hover:text-slate-900 underline")
+
+
 def _brand_copper() -> str:
     """Late import so theme module is initialised."""
     from shadow_loom_ui.theme import PRIMARY
@@ -206,6 +239,7 @@ def login_page():
 
     apply_theme(_ui_settings.dark_mode)
     build_login_page()
+    _build_app_footer()
 
 
 @ui.page("/")
@@ -217,6 +251,7 @@ def dashboard_page():
     apply_theme(_ui_settings.dark_mode)
     _build_app_header(state)
     build_dashboard(state)
+    _build_app_footer()
 
 
 @ui.page("/project/{project_id}")
@@ -228,6 +263,7 @@ def workspace_page(project_id: int):
     apply_theme(_ui_settings.dark_mode)
     _build_app_header(state, show_back=True)
     build_workspace(state, project_id)
+    _build_app_footer()
 
 
 @ui.page("/settings")
@@ -239,6 +275,7 @@ def settings_page():
     apply_theme(_ui_settings.dark_mode)
     _build_app_header(state, show_back=True)
     build_settings(state)
+    _build_app_footer()
 
 
 # =====================================================================

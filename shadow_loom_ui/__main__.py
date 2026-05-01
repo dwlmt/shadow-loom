@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025-2026 David Rae Wilmot
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Allow running as: python -m shadow_loom_ui"""
 from shadow_loom_ui.app import config, ui, _ui_settings  # noqa: F401
 

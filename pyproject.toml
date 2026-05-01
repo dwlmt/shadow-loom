@@ -1,9 +1,14 @@
 [project]
 name = "shadow-loom"
 version = "0.1.0"
-description = "Add your description here"
+description = "Neuro-symbolic causal narrative AI framework."
 readme = "README.md"
 requires-python = ">=3.13"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE", "COPYRIGHT", "COMMERCIAL-LICENSE.md", "CLA.md"]
+authors = [
+    { name = "David Rae Wilmot", email = "david.wilmot@gmail.com" },
+]
 dependencies = [
     "cognee",
     "datasets>=4.8.4",

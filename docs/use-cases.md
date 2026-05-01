@@ -170,7 +170,7 @@ memory** rather than a stateless completion box.
 
 ---
 
-# Beyond fiction
+## Beyond fiction
 
 The engine has no fiction-specific assumptions baked into the schema —
 `WorldStateV1` is just typed entities, events, channels, beliefs, and

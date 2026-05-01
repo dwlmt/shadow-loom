@@ -1,0 +1,39 @@
+version = 1
+
+# REUSE configuration for Shadow Loom.
+# See https://reuse.software/spec-3.3/ for the specification.
+#
+# Python source files carry SPDX headers inline. This file covers the
+# remaining Covered Files (markdown docs, prompts, sample plots, shell
+# scripts, configuration, Dockerfile, etc.) that either cannot
+# conveniently carry headers or for which a sweeping declaration is
+# clearer than per-file headers.
+
+[[annotations]]
+path = [
+    "docs/**",
+    "shadow_loom/prompts/**",
+    "scripts/**.sh",
+    "Dockerfile",
+    "railway.toml",
+    "pyproject.toml",
+    "config.env",
+    "README.md",
+    "CONTRIBUTING.md",
+    "CLA.md",
+    "COMMERCIAL-LICENSE.md",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2025-2026 David Rae Wilmot"
+SPDX-License-Identifier = "AGPL-3.0-or-later"
+
+# Sample plot summaries are original prose written by the maintainer
+# describing public-domain or third-party works. The summaries
+# themselves are licensed under AGPL-3.0-or-later as part of Shadow
+# Loom; rights in the underlying novels and films remain with their
+# respective rights holders and are not asserted here.
+[[annotations]]
+path = "sample_plots/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2025-2026 David Rae Wilmot"
+SPDX-License-Identifier = "AGPL-3.0-or-later"

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025-2026 David Rae Wilmot
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """ECharts renderers for the new reasoning-trace surfaces.
 
 Companion to :mod:`shadow_loom_ui.reasoning_helpers`. Each function

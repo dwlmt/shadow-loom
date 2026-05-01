@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025-2026 David Rae Wilmot
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Story tab — prose reader, generation results, and source text.
 
 Reading pane shows all generated prose from DB + session history.

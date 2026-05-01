@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025-2026 David Rae Wilmot
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Auth helpers for Shadow-Loom MCP — bearer token → user resolution, scope checks.
 
 All tools resolve the authenticated user from the bearer token implicitly.

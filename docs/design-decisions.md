@@ -62,8 +62,8 @@ than in entity count.
 **Invariant.** `state_timeline` is monotonic in `fabula_time`. Reconstruction
 is deterministic and side-effect-free.
 
-See [`/memories/repo/hybrid-45-implementation.md`](../memories/repo/hybrid-45-implementation.md)
-for implementation notes.
+See [architecture.md](architecture.md) and [pipeline-by-example.md§ 1.3](pipeline-by-example.md#13-entities--traits-beliefs-state-timeline)
+for the on-disk shape and a worked Macbeth example.
 
 ---
 
@@ -101,7 +101,8 @@ has to special-case `WORLD_` source IDs.
 
 **Invariant.** Counterfactuals can ask "what if the war ended?" and propagate
 the consequences through `affected_domains` and `MECHANISM_TRAIT_MAP`. See
-[`/memories/repo/architecture.md`](../memories/repo/architecture.md) §"CTF-Calculus".
+[academic-foundations.md §2.2](academic-foundations.md#22-ancestral-multi-world-networks-and-ctf-calculus--correa--bareinboim-icml-2025)
+for the AMWN / ctf-calculus framework this implements.
 
 ---
 

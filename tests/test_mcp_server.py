@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025-2026 David Rae Wilmot
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Integration tests for the Shadow-Loom MCP server (v2).
 
 Tests the 20 MCP tools and 5 resources against an in-memory SQLite DB

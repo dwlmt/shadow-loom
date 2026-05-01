@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025-2026 David Rae Wilmot
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Shared SQLModel persistence layer for Shadow-Loom.
 
 Used by both the NiceGUI web UI and the MCP server.

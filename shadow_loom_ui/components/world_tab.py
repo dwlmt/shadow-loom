@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025-2026 David Rae Wilmot
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """World tab — multi-view ECharts exploration with click-to-inspect.
 
 View modes: Overview | Social | Spatial | Ego | Temporal | Composition |

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025-2026 David Rae Wilmot
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 from pydantic import BaseModel, Field, model_validator, field_validator
 from typing import Any, List, Dict, Optional, Literal, Union
 

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025-2026 David Rae Wilmot
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """NiceGUI UI component modules."""
 
 from shadow_loom_ui.components.login import build_login_page

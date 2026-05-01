@@ -38,8 +38,18 @@ links into all three rather than re-explaining them.
 | 6 | [1984](#6-1984--global-traits-and-ambient-propagation) | World traits, regime as common cause, ambient edges |
 | 7 | [A Fish Called Wanda](#7-a-fish-called-wanda--objects-affordances-and-chain-reactions) | Objects, affordance gates, chain-reaction cascades |
 | 8 | [Frankenstein](#8-frankenstein--social-mutation-and-relationship-decay) | `mutation_social`, per-axis `RelationshipMetric`, inertia |
+| 9 | [Persuasion](#9-persuasion--observation-queries-and-economic-common-causes) | `ObservationQuery` (Rung 1), overheard-conversation channel, `WORLD_PRIMOGENITURE` as economic constraint |
+| 10 | [Great Gatsby](#10-great-gatsby--interrogation-queries-and-asymmetric-belief-topology) | `InterrogationQuery`, asymmetric bidirectional beliefs, ambient-as-licensor |
+| 11 | [Wuthering Heights](#11-wuthering-heights--multi-generational-time-and-manualeditquery) | Multi-generational `state_timeline`, inherited grievance, `ManualEditQuery` |
+| 12 | [Great Expectations](#12-great-expectations--abduction-with-hidden-benefactor--evaluationquery) | Hidden-benefactor abduction, moral over-determination, `EvaluationQuery` scorecard |
+| 13 | [Apocalypse Now](#13-apocalypse-now--stacked-world_-traits-and-ambient-cognition) | Four parallel `WORLD_*` traits, noisy-OR ambient stacking, monotone spatial topology |
+| 14 | [Brief Encounter](#14-brief-encounter--wilmot-suspense-the-despair-boundary-and-regret) | Suspense → despair collapse, `regret` emotion target, constant-supervision channel |
+| 15 | [A Court of Thorns and Roses](#15-a-court-of-thorns-and-roses--magical-affordances-and-branch-promotion) | Magic-as-affordance, `WORLD_*` trait timelines, branch promotion |
+| 16 | [Dad's Army](#16-dads-army--generalquery-and-the-comic-ensemble-graph) | `GeneralQuery`, repeated comic chain-reactions, sitcom suspense ceiling |
 
-A consolidated **feature-to-example matrix** lives at the
+A query-type-to-fixture cross-reference lives
+[just before the cross-cutting summary](#query-types-in-action--fixture-cross-reference);
+a consolidated **feature-to-example matrix** lives at the
 [end of this document](#feature-to-example-matrix).
 
 ---
@@ -516,6 +526,613 @@ audit catches prose that flattens the asymmetry.
 
 ---
 
+## 9. Persuasion — observation queries and economic common-causes
+
+**Fixture:** [`example_worlds/persuasion.py`](../example_worlds/persuasion.py) ·
+**Plot:** [`sample_plots/persuasion.txt`](../sample_plots/persuasion.txt)
+
+Austen is the cleanest test of `ObservationQuery` — Pearl's Rung 1, the
+"natural progression" cycle. The story turns on what people **observe and
+infer** without anyone intervening, and on the economic and class
+machinery (`WORLD_PRIMOGENITURE`, `WORLD_REGENCY_RANK`,
+`WORLD_NAPOLEONIC_PRIZE_ECONOMY`) that *constrains every choice from
+above*.
+
+### `ObservationQuery` — Rung 1 in action
+
+```python
+from shadow_loom.query_models import ObservationQuery
+from example_worlds.persuasion import world_state
+from shadow_loom.pipeline import run_pipeline
+
+result = run_pipeline(
+    world_state=world_state,
+    query=ObservationQuery(
+        original_query="Anne sees Wentworth in the White Hart drawing room.",
+        observations={
+            "ENT_ANNE.location_id":      "LOC_WHITE_HART",
+            "ENT_WENTWORTH.location_id": "LOC_WHITE_HART",
+            "ENT_HARVILLE.location_id":  "LOC_WHITE_HART",
+        },
+        focus_entity_ids=["ENT_ANNE", "ENT_WENTWORTH"],
+    ),
+)
+```
+
+No `do(·)` operator runs. The router calls `extract_graph.build_ego_payload`
+to compute the ego-graph at the observation, propagates the **ambient
+state of `LOC_WHITE_HART`** into the focus entities (the `bustle=0.7`
+ambient pushes audibility up; this is what makes the overheard
+conversation possible), and lets the social cascade decide whether
+Wentworth registers Anne's voice across the room.
+
+The cycle still produces prose — but the brief carries no `must` events,
+only a constraint envelope ("character locations pinned, channel
+intelligibility recomputed, no new causal edges allowed").
+
+### The overheard-conversation channel
+
+The pivotal scene is a `Channel` with deliberately *asymmetric*
+intelligibility:
+
+```python
+"CHN_ANNE_HARVILLE_OVERHEARD": Channel(
+    id="CHN_ANNE_HARVILLE_OVERHEARD",
+    participant_ids=["ENT_ANNE", "ENT_HARVILLE", "ENT_WENTWORTH"],
+    intelligibility={
+        "ENT_ANNE":      1.0,    # speaker
+        "ENT_HARVILLE":  1.0,    # her direct interlocutor
+        "ENT_WENTWORTH": 0.85,   # eavesdropping at his writing desk
+    },
+)
+```
+
+Wentworth is **not in `addressee_ids`** but his intelligibility is above
+`physics.intelligibility_threshold`, so `propagate_social()` updates his
+`Belief(target_id=ENT_ANNE, perceived_state="loves me yet")` from
+`confidence=0.20` to `≈0.95` in a single pass. The result is the famous
+hand-delivered letter — and the engine flags the belief flip as the
+single mutation that licenses the climax. No murder, no surprise reveal:
+just observation + channel physics + belief update. *That* is the Rung-1
+cycle at full power.
+
+### `WORLD_PRIMOGENITURE` as economic constraint
+
+Sir Walter's debts are **not** an event in the timeline; they are a
+standing pressure encoded as a `GlobalTrait` value of 0.8 on
+`WORLD_PRIMOGENITURE` plus an `ambient_propagation` edge into
+`LOC_KELLYNCH_HALL.fiscal_strain`. Every later choice — the let to the
+Crofts, the move to Bath, Elizabeth's competition with Mrs Clay — has a
+licensing edge that traces back to this single constant. Run
+`do(WORLD_PRIMOGENITURE = 0.1)` and the engine cleanly cascades the
+counterfactual ("Sir Walter inherits in trust, not absolutely") through
+every downstream estate-decision event.
+
+This is why the Austen fixture is the textbook example for the
+`WORLD_*`-as-common-cause-parent pattern in
+[architecture.md §3](architecture.md): the economic constraint is
+*literally* the cause of every plot beat, and it is modelled as one node
+with one timeline.
+
+---
+
+## 10. Great Gatsby — interrogation queries and asymmetric belief topology
+
+**Fixture:** [`example_worlds/great_gatsby.py`](../example_worlds/great_gatsby.py) ·
+**Plot:** [`sample_plots/great_gatsby.txt`](../sample_plots/great_gatsby.txt)
+
+Gatsby is the **`InterrogationQuery`** showcase — graph-RAG-with-proof
+over the AMWN, no time advance, no prose. The story is *about* who
+knows what, who *thinks* the other knows what, and who is wrong on both
+counts. Three of those four answers can be returned by a single query:
+
+```python
+from shadow_loom.query_models import InterrogationQuery
+
+result = run_pipeline(
+    world_state=world_state,
+    query=InterrogationQuery(
+        original_query="Who at the Plaza Suite knows that Daisy was driving?",
+        require_proof=True,
+    ),
+)
+for path in result.physics_result["proof_paths"]:
+    print(path)
+```
+
+The router runs no `do(·)`, no abduction, no propagation, no scoring,
+no LLM. It executes pure graph search:
+
+1. Find `EVT_DAISY_DRIVES_INTO_MYRTLE` in the events table.
+2. For each entity at `LOC_PLAZA_SUITE`, walk the channel graph and
+   the `Belief` index for any node whose `target_id` references the
+   event.
+3. Return a `ProofPath` per entity: `(entity, belief, evidence_chain)`.
+
+For Gatsby this returns: Gatsby (direct witness), Daisy (actor),
+**not** Tom (his belief is the `truth_value="false"` cover from
+Gatsby), **not** Wilson. The query *also* returns the missing edge —
+the absence is what the next directive can target.
+
+### Bidirectional asymmetric beliefs
+
+The Gatsby fixture's centrepiece is the asymmetric Daisy/Gatsby
+relationship: each holds a `Belief(target_id=other, …)` whose
+`perceived_state` is in continuous tension with the *truth*. Per the
+[Frankenstein pattern (§8)](#8-frankenstein--social-mutation-and-relationship-decay)
+the `RelationshipEdge` is bidirectional and per-axis:
+
+```python
+RelationshipEdge(
+    source_id="ENT_GATSBY", target_id="ENT_DAISY",
+    metrics={
+        "affinity":      RelationshipMetric(value=+0.95, inertia=0.85),
+        "idealisation":  RelationshipMetric(value=+0.90, inertia=0.7),
+    },
+),
+RelationshipEdge(
+    source_id="ENT_DAISY", target_id="ENT_GATSBY",
+    metrics={
+        "affinity":      RelationshipMetric(value=+0.55, inertia=0.4),
+        "fear_of_scandal": RelationshipMetric(value=+0.70, inertia=0.6),
+    },
+),
+```
+
+Gatsby's idealisation is high-inertia and survives every contrary signal;
+Daisy's affinity is low-inertia and can be flipped by a single
+`mutation_social` shock (Tom's revelations at the Plaza). The novel's
+ending is exactly this asymmetry working out — and it is detectable from
+the graph alone via two parallel `compute_trait_trajectories()` calls.
+
+### The Valley of Ashes ambient
+
+`LOC_VALLEY_OF_ASHES.moral_emptiness=0.85` is wired into every event
+that physically passes through the location via
+`ambient_propagation`. That is what makes Myrtle's death *causally* the
+moral pivot it reads as: the `mutation` edge from
+`EVT_DAISY_DRIVES_INTO_MYRTLE → ENT_TOM.callousness` is amplified by
+the ambient, so Tom's small but real spike in callousness is what the
+engine forwards into `EVT_TOM_LEADS_WILSON_TO_GATSBY`. Without the
+ambient, the Tom→Wilson edge would not fire — Tom's prior callousness
+is below the activation impulse alone. This is *atmosphere as physics*,
+the same machinery as 1984's surveillance ambient
+([§6](#6-1984--global-traits-and-ambient-propagation)) but inverted:
+1984's ambient suppresses behaviour, Gatsby's enables it.
+
+---
+
+## 11. Wuthering Heights — multi-generational time and `ManualEditQuery`
+
+**Fixture:** [`example_worlds/wuthering_heights.py`](../example_worlds/wuthering_heights.py) ·
+**Plot:** [`sample_plots/wuthering_heights.txt`](../sample_plots/wuthering_heights.txt)
+
+Wuthering Heights is the **time-depth** fixture: events span thirty
+years, two generations, a death, an exhumation, and a posthumous
+reconciliation. It is also the cleanest demonstration of
+`ManualEditQuery` — the cycle where the user *supplies the prose* and
+the engine reverses-engineers the world-state delta.
+
+### `state_timeline` across decades
+
+`ENT_HEATHCLIFF.state_timeline` carries snapshots at
+`fabula_time = 5000` (childhood, brought from Liverpool),
+`14000` (overhears Catherine's marriage decision, flees),
+`22000` (returns rich and vengeful — `ruthlessness` jumps from 0.4 to
+0.85, `inertia` is bumped to 0.7), `40000` (acquires Wuthering Heights
+mortgage), `52000` (death, status="dead"). `reconstruct_entity_at` is
+deterministic across *all* of those — the ego-graph for a query at
+`fabula_time=45000` reconstructs Heathcliff as the rich, vengeful
+landlord, not the orphan.
+
+The crucial design choice ([architecture.md
+§2](architecture.md#hybrid-45-timeline)): the long gaps are **not**
+filled in. Snapshots are journalled only when a causal edge fires;
+between snapshots the engine interpolates by holding the last value.
+This is what keeps the graph small (Wuthering Heights has ~60 events
+spanning 50 000 fabula ticks) while still letting causal physics rewind
+to any point.
+
+### Multi-generational `mutation_social` cascades
+
+The second-generation plot (Cathy / Linton / Hareton) is licensed by
+`mutation_social` edges whose source events are in the first
+generation. `EVT_HEATHCLIFF_FORCES_LINTON_MARRIAGE → REL(CATHY,
+HARETON).affinity` fires *across a generation* because Hareton's
+`bitterness_at_dispossession` was set decades earlier by
+`EVT_HINDLEY_DEGRADES_HEATHCLIFF`. The graph correctly treats
+inherited grievance as a propagation chain — not a copied trait — so
+the directive engine can ask "what if Hindley had treated the orphan
+Heathcliff as a brother?" and watch the second-generation reconciliation
+arrive *for free* via abduction + propagation, with no hand-coded
+"Hareton is now nice" patch.
+
+### `ManualEditQuery` — the user supplies prose
+
+The user can write a chapter themselves and hand it to Shadow-Loom for
+ingestion-into-canon:
+
+```python
+from shadow_loom.query_models import ManualEditQuery
+
+result = run_pipeline(
+    versioned_model=vwm,
+    query=ManualEditQuery(
+        original_query="Add a final chapter where Lockwood revisits Gimmerton",
+        edited_prose=lockwood_revisit_text,   # user's own text
+        description="Lockwood revisits the Heights eighteen months later",
+        focus_entity_ids=["ENT_LOCKWOOD", "ENT_NELLY", "ENT_CATHY", "ENT_HARETON"],
+    ),
+)
+```
+
+The pipeline **skips** Steps 2–5 (no physics, no brief, no LLM
+generation, no audit). The user's prose is the answer. Step 6
+(prose → topology re-extraction) runs as normal: the chapter is parsed
+into new `EventNode`s, `Channel`s, beliefs and trait deltas, and Step 7
+merges them onto the canon branch. The `ManualEditStepRecord` notes
+that this version's prose is *user-authored* so the Editor tab can
+mark it accordingly and the auditor's miracle-step check is **off** for
+this version (the user is the ground truth).
+
+This is the cycle a human author uses when they want the engine to
+keep their own prose in the world model — Shadow-Loom becomes a
+graph-aware editor rather than a generator.
+
+---
+
+## 12. Great Expectations — abduction with hidden benefactor + `EvaluationQuery`
+
+**Fixture:** [`example_worlds/great_expectations.py`](../example_worlds/great_expectations.py) ·
+**Plot:** [`sample_plots/great_expectations.txt`](../sample_plots/great_expectations.txt)
+
+The novel's structural engine is one fact Pip does not know — that his
+benefactor is Magwitch, not Miss Havisham. Every page until the reveal is
+*reader-side abduction* against missing evidence; every page after is
+*character-side abduction* of why the early chapters happened. This is
+the textbook **Pearl Rung 3** scenario.
+
+### The hidden-benefactor counterfactual
+
+```python
+from shadow_loom.query_models import CounterfactualQuery
+
+result = run_pipeline(
+    world_state=world_state,
+    query=CounterfactualQuery(
+        original_query="What if Pip had been told Magwitch was his benefactor "
+                       "from the start?",
+        historical_interventions={
+            "EVT_JAGGERS_VISITS_FORGE.actor_ids":
+                ["ENT_JAGGERS", "ENT_MAGWITCH"],   # Magwitch arrives in person
+            "EVT_JAGGERS_VISITS_FORGE.content":
+                "Your great expectations come from a transported convict.",
+        },
+        evidence_node_ids=[
+            "ENT_PIP",          # condition on what we eventually observed:
+            "ENT_ESTELLA",      # Pip's snobbery, Estella's revealed parentage,
+            "ENT_MAGWITCH",     # Magwitch's eventual capture and confession.
+        ],
+    ),
+)
+```
+
+The engine runs:
+
+1. **Abduction** — given the late-novel state of Pip (`snobbery=0.7`,
+   `shame=0.85`), Estella (`reveal_parentage=Magwitch`), and Magwitch
+   (`status=dying`), back-propagate hidden ancestor deltas onto the
+   sandbox at `fabula_time=1000` (Pip's childhood).
+2. **Intervention** — replace the Jaggers visit with the truthful
+   variant.
+3. **Re-propagate** forward.
+
+The result is a sandbox where Pip's `snobbery` trajectory peaks at
+`0.4` instead of `0.7` (low-inertia trait, snaps to evidence), but
+Estella's parentage line and Magwitch's deportation chain are
+**unchanged** (high-inertia historical structure). The engine
+correctly reports *moral over-determination*: revealing the benefactor
+early changes Pip but does not save Magwitch, because the legal-system
+chain is forced by `WORLD_LAWS_REACH_OVER_CRIMINAL_CLASS` rather than
+Pip's awareness.
+
+### `EvaluationQuery` — the full-story scorecard
+
+After enough Pip chapters have been ingested, run:
+
+```python
+from shadow_loom.query_models import EvaluationQuery
+
+result = run_pipeline(
+    versioned_model=vwm,
+    query=EvaluationQuery(
+        original_query="Score the current Pip arc.",
+        focus_entity_ids=["ENT_PIP", "ENT_MAGWITCH", "ENT_ESTELLA"],
+        include_full_prose=True,
+    ),
+)
+print(result.physics_result["narrative_order"])
+```
+
+The router calls `_run_evaluation_branch`. No prose is written, no
+version is committed. What comes back is a `NarrativeOrderObject`:
+
+* **Causal physics feedback** — count of miracle steps, blocked
+  propagations, average activation pressure across acts.
+* **Affective feedback** — full mystery / dramatic-irony / suspense /
+  surprise trajectories per focus entity, plus the six emotion targets
+  scored across the syuzhet.
+* **LLM literary critique** — a single Pydantic-AI agent comparing the
+  prose against the brief targets.
+* **`overall_pass`** — boolean gate combining the three.
+
+For Great Expectations this is how you verify that the
+hidden-benefactor abduction structure is *actually* delivering the
+mystery score the novel needs — `compute_mystery_score(["ENT_PIP"],
+syuzhet_anchor=N)` should climb monotonically until `EVT_MAGWITCH_REVEAL`
+and then collapse to ≈0. The evaluation query is the test that
+confirms it.
+
+---
+
+## 13. Apocalypse Now — stacked WORLD_ traits and ambient cognition
+
+**Fixture:** [`example_worlds/apocalypse_now.py`](../example_worlds/apocalypse_now.py) ·
+**Plot:** [`sample_plots/apocalypse_now.txt`](../sample_plots/apocalypse_now.txt)
+
+Where 1984 has *one* dominant `WORLD_*` trait (the regime), Apocalypse
+Now has **four in parallel**, each pressuring every event:
+
+```python
+"WORLD_VIETNAM_WAR":         GlobalTrait(...)   # the proxy theatre
+"WORLD_HEART_OF_DARKNESS":   GlobalTrait(...)   # Conradian moral abyss
+"WORLD_CHAIN_OF_COMMAND":    GlobalTrait(...)   # sanctioned-murder protocol
+"WORLD_RIVER_AS_FATE":       GlobalTrait(...)   # upriver predestination
+```
+
+Every event downstream of the Saigon hotel has *all four* as
+common-cause parents. This stresses the
+`MECHANISM_TRAIT_MAP` gating in `causal_physics.py`: a `WORLD_*`
+trait can only mutate traits whose family is in its
+`affected_domains`. `WORLD_CHAIN_OF_COMMAND.affected_domains =
+{"obedience", "duty", "moral_disengagement"}` so it is licensed to
+shift Willard's `obedience` but **not** his `dissociation`; that
+latter mutation is forced by `WORLD_HEART_OF_DARKNESS` instead. The
+intersection lets the engine attribute each character beat to the
+*right* common-cause for the brief.
+
+### Ambient stacking on cognition
+
+The PBR carries a stack of three ambients —
+`isolation=0.85`, `humidity=0.95`, `drug_haze=0.7` — and Willard's
+`paranoia` and `dissociation` traits are mutated by **the noisy-OR
+aggregate** of the three ambient pressures over each fabula tick spent
+on the boat:
+
+$$\text{impulse}_{paranoia}(t) = 1 - \prod_{a \in \text{ambients}}\bigl(1 - w_a \cdot v_a(t)\bigr)$$
+
+…where `w_a` is the trait's per-ambient weight from `_ambient_force_multiplier`
+and `v_a(t)` is the ambient value at that tick. This is what produces the
+film's monotone descent: every river-tick adds a small impulse, the
+trait inertia is kept low so the impulses *accumulate*, and by Kurtz's
+compound Willard is effectively a different person from the one in
+Saigon. The engine can show this trajectory in the **Trait Trajectories**
+tab without the LLM ever being asked "is Willard losing his mind?".
+
+### The river as monotone spatial constraint
+
+`SpatialEdge`s on the Nung river form a **strict total order** — the
+PBR cannot return to Hau Phat once it has reached Do Lung Bridge.
+`do(EVT_PBR_TURNS_BACK = trigger)` therefore fails the plausibility
+gate (`_check_intervention_plausibility` finds no licensing
+`SpatialEdge(direction="downstream")`). The renderer is forbidden the
+fictional "they could just turn around" escape, and the brief surfaces
+the spatial constraint as a `must-not` block. This is the first
+fixture where pure spatial topology blocks a plot move — and it is the
+right block: the film's *point* is that retreat is not an option.
+
+---
+
+## 14. Brief Encounter — Wilmot suspense, the despair boundary, and regret
+
+**Fixture:** [`example_worlds/brief_encounter.py`](../example_worlds/brief_encounter.py) ·
+**Plot:** [`sample_plots/brief_encounter.txt`](../sample_plots/brief_encounter.txt)
+
+Lean's chamber drama is the cleanest test of the **Wilmot suspense →
+despair boundary**. There is no murder, no chase, no reveal — just two
+people who could choose to take the next train together and don't. The
+forward causal graph eventually runs out of *hope* events for the
+focal couple, and `compute_suspense_score` returns 0 not because the
+characters are safe but because their futures have closed.
+
+### Suspense climbing then collapsing
+
+For `entity_ids=["ENT_LAURA", "ENT_ALEC"]` at successive
+`syuzhet_anchor` values:
+
+```text
+syuzhet_anchor    P(threat)    P(hope)    suspense
+   8 (botanical)     0.45        0.70       0.00     # hope dominates
+  14 (kardomah)      0.62        0.65       0.00     # near-equal
+  21 (flat)          0.85        0.55       0.30     # threat overtakes
+  28 (returns home)  0.95        0.10       0.85     # peak suspense
+  31 (Dolly arrives) 1.00        0.00       0.00     # despair: hope = 0
+```
+
+The final `0.0` is the engine *correctly* refusing to call this scene
+suspenseful — see the `if hope_prob <= 0.0: return 0.0` early-return in
+[`directive_assembly.py::compute_suspense_score`](../shadow_loom/directive_assembly.py)
+and [academic-foundations.md
+§3.1](academic-foundations.md#31-suspense-as-uncertainty-reduction--wilmot--keller-acl-2020).
+The auditor flags any prose that *reads* as suspenseful at this
+syuzhet point as having mistaken despair for tension.
+
+### The `regret` emotion target
+
+After the train scene the directive cycle's natural target is
+`target_effect="regret"` (per the `_EFFECT_TRAIT_MAP` in
+[directive_assembly.py:1095+](../shadow_loom/directive_assembly.py)
+that maps regret onto `{guilt, remorse, despair}`). Brief Encounter's
+strength is that the trait values are *already* close to their
+regret-saturation targets after `EVT_DOLLY_INTERRUPTS_FAREWELL`, so the
+directive enumerator has very little room to add events — the winning
+candidate is usually `EVT_LAURA_HOME_BY_FIRESIDE_INTERIOR_MONOLOGUE`,
+which adds zero new causal edges and just reweights the syuzhet. The
+brief becomes almost pure constraint with one suggested beat. This is
+what the engine *should* do when the world has converged on its target
+emotion: not invent more plot.
+
+### Constant-supervision channel
+
+`LOC_REFRESHMENT_ROOM.constant_supervision=0.85` plus a
+`CHN_TEAROOM_BYSTANDERS` channel with all bystanders as participants
+at `intelligibility=0.6` means *every utterance* between Laura and
+Alec is partly overheard. This is what makes their inability to speak
+plainly a structural fact, not a stylistic choice — the directive
+engine cannot raise `dramatic_irony` by picking utterances the
+characters know are private, because no such utterance is licensed.
+
+---
+
+## 15. A Court of Thorns and Roses — magical affordances and branch promotion
+
+**Fixture:** [`example_worlds/a_court_of_thorn_and_roses.py`](../example_worlds/a_court_of_thorn_and_roses.py) ·
+**Plot:** [`sample_plots/a_court_of_thorn_and_roses.txt`](../sample_plots/a_court_of_thorn_and_roses.txt)
+
+Fantasy is the test of *named magic-as-affordance*. Magic is not a free
+pass — it is encoded as `WORLD_*` traits with `affected_domains`,
+specific objects with magical `Affordance`s, and `Channel`s with
+non-physical `intelligibility` semantics.
+
+### Named magic systems as `WORLD_*` traits
+
+Four magic-system latents drive every supernatural event:
+
+```python
+"WORLD_TREATY_WALL":      GlobalTrait(value=0.95, ...)   # ancient compact
+"WORLD_AMARANTHAS_CURSE": GlobalTrait(value=0.85, ...,
+                              state_timeline=[
+                                  WorldTraitSnapshot(fabula_time=12000, value=0.95),
+                                  WorldTraitSnapshot(fabula_time=22000, value=0.10),
+                              ])
+"WORLD_MATING_BOND":      GlobalTrait(value=0.7, ...)
+"WORLD_FAE_MORTAL_DIVIDE":GlobalTrait(value=0.85, ...)
+```
+
+The `WORLD_AMARANTHAS_CURSE` *itself has a timeline* —
+`WorldTraitSnapshot` entries at the moments the curse intensifies and
+when it breaks. The engine therefore treats "the Blight is spreading"
+as a first-class evolving state rather than as scenery, and a
+`do(WORLD_AMARANTHAS_CURSE = 0.0)` counterfactual cleanly cascades the
+removal of the curse-driven `mutation` edges *for every event after the
+target fabula time*.
+
+### Magic as affordance, not deus ex machina
+
+Magical objects expose their power as ordinary `Affordance`s:
+
+```python
+NarrativeObject(
+    id="OBJ_MATING_BOND_MARK", ...,
+    affordances=[
+        Affordance(action="bind_souls",       target_type="Entity"),
+        Affordance(action="sense_distress",   target_type="Entity"),
+    ],
+)
+```
+
+A scene where Rhysand senses Feyre's distress across the continent is
+licensed only if the bond-mark affordance is satisfied at both ends.
+The auditor's miracle-step check rejects any prose where a character
+"just knows" without a licensing affordance. Magic obeys the same
+gating as a knife — exactly the design-intent in
+[design-decisions.md](design-decisions.md).
+
+### Branch promotion for "what if" canon
+
+Counterfactual queries on this fixture default to landing on a
+`world_id="shadow"` branch — useful because readers of fantasy often
+want to explore "what if Feyre had refused the bargain?" without
+losing canon. The MCP `list_branches` tool surfaces all such shadows;
+the `promote_branch` tool moves one to `factual` if the author wants
+it adopted. The full per-branch diff is journalled, so promotions are
+reversible. (See [mcp-guide.md](mcp-guide.md) for the tool list.)
+
+---
+
+## 16. Dad's Army — `GeneralQuery` and the comic ensemble graph
+
+**Fixture:** [`example_worlds/dads_army.py`](../example_worlds/dads_army.py) ·
+**Plot:** [`sample_plots/dads_army.txt`](../sample_plots/dads_army.txt)
+
+Sitcom is a stress test for the **`GeneralQuery`** — open-ended
+omniscient Q&A that returns the full extracted world state for a
+downstream LLM to riff over. It is also a low-stakes demo of repeated
+`chain_reaction` cascades that resolve harmlessly (the Wilson suspense
+gate is *meant* to collapse).
+
+### `GeneralQuery` — full graph back to the caller
+
+```python
+from shadow_loom.query_models import GeneralQuery
+
+result = run_pipeline(
+    world_state=world_state,
+    query=GeneralQuery(
+        original_query="Summarise the platoon's hierarchy and mutual disdain.",
+        include_topology=True,
+    ),
+)
+# result.physics_result["world_state"] contains the full WorldStateV1
+# result.physics_result["query_type"] == "general"
+# No prose written, no version committed.
+```
+
+The router does **no** simulation. It returns the entire `WorldStateV1`
+(or the topology slice when `include_topology=False`) for the calling
+agent to reason over. Use this from an MCP client when a downstream
+agent wants to ask the LLM five questions about the world without
+spinning up the physics engine each time.
+
+### Repeated comic chain-reactions
+
+Dad's Army ingests cleanly because *every* episode is the same
+`chain_reaction` shape: Mainwaring asserts authority → Wilson gently
+questions → Pike says something stupid → Jones offers fixed-bayonet
+solution → Frazer prophesies doom → resolution. The fixture wires this
+as a recurring `chain_reaction` chain with `propagation_delay`
+controlling the comic timing. Run `compute_suspense_score` on
+`ENT_MAINWARING` and you'll see it climb to ≈0.4 mid-chain and collapse
+back to ≈0.05 — exactly the low-stakes ceiling sitcom requires, and
+exactly what `WORLD_HOME_FRONT_SPIRIT.value=0.7` (a *protective* world
+trait) damps it to.
+
+This is a useful negative-space example: the engine *can* score sitcom,
+and what it scores is *correct* (sitcom suspense should not climb above
+0.5). The directive engine refuses to push it higher because doing so
+would require violating the home-front-spirit common-cause.
+
+---
+
+## Query types in action — fixture cross-reference
+
+Every query type in [query-and-cycles.md §1](query-and-cycles.md#1-the-eight-query-types)
+is best illustrated by a particular fixture. If you want to see one
+type at full power:
+
+| Query type | Best fixture | Section |
+|---|---|---|
+| `ObservationQuery` (Rung 1) | Persuasion | [§9](#9-persuasion--observation-queries-and-economic-common-causes) |
+| `InterventionQuery` (Rung 2) | Macbeth | [§1](#1-macbeth--causal-physics-and-counterfactuals) |
+| `CounterfactualQuery` (Rung 3) | Great Expectations, Macbeth | [§12](#12-great-expectations--abduction-with-hidden-benefactor--evaluationquery), [§1](#1-macbeth--causal-physics-and-counterfactuals) |
+| `DirectiveQuery` (affective) | Romeo and Juliet, ACOTAR | [§4](#4-romeo-and-juliet--directives-and-the-affective-scorer), [§15](#15-a-court-of-thorns-and-roses--magical-affordances-and-branch-promotion) |
+| `InterrogationQuery` (graph RAG) | Great Gatsby | [§10](#10-great-gatsby--interrogation-queries-and-asymmetric-belief-topology) |
+| `GeneralQuery` (Q&A passthrough) | Dad's Army | [§16](#16-dads-army--generalquery-and-the-comic-ensemble-graph) |
+| `ManualEditQuery` (user prose) | Wuthering Heights | [§11](#11-wuthering-heights--multi-generational-time-and-manualeditquery) |
+| `EvaluationQuery` (scorecard) | Great Expectations | [§12](#12-great-expectations--abduction-with-hidden-benefactor--evaluationquery) |
+
+---
+
 ## Cross-cutting: what every example shows about the pipeline
 
 Independent of which fixture you load, **every** `run_pipeline` call
@@ -542,32 +1159,41 @@ A reverse index — *if you want to see feature X work, load fixture Y*:
 
 | Feature | Best example | Where in this doc |
 |---|---|---|
-| `chain_reaction` edges | Macbeth, A Fish Called Wanda | [§1](#1-macbeth--causal-physics-and-counterfactuals), [§7](#7-a-fish-called-wanda--objects-affordances-and-chain-reactions) |
-| `mutation` edges (trait shock) | Macbeth | [§1](#1-macbeth--causal-physics-and-counterfactuals) |
-| `mutation_social` edges | Frankenstein | [§8](#8-frankenstein--social-mutation-and-relationship-decay) |
-| `affordance_gate` edges | A Fish Called Wanda | [§7](#7-a-fish-called-wanda--objects-affordances-and-chain-reactions) |
-| `ambient_propagation` edges | 1984 | [§6](#6-1984--global-traits-and-ambient-propagation) |
-| `Channel` + intelligibility | Death on the Nile | [§2](#2-death-on-the-nile--epistemic-physics-and-dramatic-irony) |
+| `chain_reaction` edges | Macbeth, A Fish Called Wanda, Dad's Army | [§1](#1-macbeth--causal-physics-and-counterfactuals), [§7](#7-a-fish-called-wanda--objects-affordances-and-chain-reactions), [§16](#16-dads-army--generalquery-and-the-comic-ensemble-graph) |
+| `mutation` edges (trait shock) | Macbeth, Great Gatsby | [§1](#1-macbeth--causal-physics-and-counterfactuals), [§10](#10-great-gatsby--interrogation-queries-and-asymmetric-belief-topology) |
+| `mutation_social` edges | Frankenstein, Wuthering Heights (multi-generation) | [§8](#8-frankenstein--social-mutation-and-relationship-decay), [§11](#11-wuthering-heights--multi-generational-time-and-manualeditquery) |
+| `affordance_gate` edges | A Fish Called Wanda, ACOTAR (magical) | [§7](#7-a-fish-called-wanda--objects-affordances-and-chain-reactions), [§15](#15-a-court-of-thorns-and-roses--magical-affordances-and-branch-promotion) |
+| `ambient_propagation` edges | 1984, Apocalypse Now (stacked), Persuasion (Kellynch fiscal_strain) | [§6](#6-1984--global-traits-and-ambient-propagation), [§13](#13-apocalypse-now--stacked-world_-traits-and-ambient-cognition), [§9](#9-persuasion--observation-queries-and-economic-common-causes) |
+| `Channel` + intelligibility | Death on the Nile, Persuasion (overheard), Brief Encounter (constant supervision) | [§2](#2-death-on-the-nile--epistemic-physics-and-dramatic-irony), [§9](#9-persuasion--observation-queries-and-economic-common-causes), [§14](#14-brief-encounter--wilmot-suspense-the-despair-boundary-and-regret) |
 | Utterances with `truth_value` | Gone Girl, Death on the Nile | [§5](#5-gone-girl--false-beliefs-and-the-audit-loop), [§2](#2-death-on-the-nile--epistemic-physics-and-dramatic-irony) |
-| Two-clock fabula vs syuzhet | Reservoir Dogs | [§3](#3-reservoir-dogs--syuzhet-vs-fabula-and-information-flow) |
-| `GlobalTrait` + `WorldTraitSnapshot` | 1984 | [§6](#6-1984--global-traits-and-ambient-propagation) |
-| Per-axis `RelationshipMetric` | Frankenstein | [§8](#8-frankenstein--social-mutation-and-relationship-decay) |
-| `EntityStateSnapshot` timeline (Hybrid 4+5) | Macbeth | [§1](#1-macbeth--causal-physics-and-counterfactuals) |
-| Pearl rung-2 intervention | Macbeth | [§1](#1-macbeth--causal-physics-and-counterfactuals) |
-| Pearl rung-3 counterfactual | Macbeth, Romeo and Juliet | [§1](#1-macbeth--causal-physics-and-counterfactuals), [§4](#4-romeo-and-juliet--directives-and-the-affective-scorer) |
-| AMWN sandbox + shadow branch | Macbeth, Romeo and Juliet | [§1](#1-macbeth--causal-physics-and-counterfactuals), [§4](#4-romeo-and-juliet--directives-and-the-affective-scorer) |
-| Directive enumeration + scoring | Romeo and Juliet | [§4](#4-romeo-and-juliet--directives-and-the-affective-scorer) |
+| Two-clock fabula vs syuzhet | Reservoir Dogs, Wuthering Heights (multi-decade) | [§3](#3-reservoir-dogs--syuzhet-vs-fabula-and-information-flow), [§11](#11-wuthering-heights--multi-generational-time-and-manualeditquery) |
+| `GlobalTrait` + `WorldTraitSnapshot` | 1984, ACOTAR (curse timeline), Apocalypse Now | [§6](#6-1984--global-traits-and-ambient-propagation), [§15](#15-a-court-of-thorns-and-roses--magical-affordances-and-branch-promotion), [§13](#13-apocalypse-now--stacked-world_-traits-and-ambient-cognition) |
+| Per-axis `RelationshipMetric` | Frankenstein, Great Gatsby (asymmetric) | [§8](#8-frankenstein--social-mutation-and-relationship-decay), [§10](#10-great-gatsby--interrogation-queries-and-asymmetric-belief-topology) |
+| `EntityStateSnapshot` timeline (Hybrid 4+5) | Macbeth, Wuthering Heights | [§1](#1-macbeth--causal-physics-and-counterfactuals), [§11](#11-wuthering-heights--multi-generational-time-and-manualeditquery) |
+| Pearl Rung 1 observation | Persuasion | [§9](#9-persuasion--observation-queries-and-economic-common-causes) |
+| Pearl Rung 2 intervention | Macbeth | [§1](#1-macbeth--causal-physics-and-counterfactuals) |
+| Pearl Rung 3 counterfactual | Macbeth, Romeo and Juliet, Great Expectations | [§1](#1-macbeth--causal-physics-and-counterfactuals), [§4](#4-romeo-and-juliet--directives-and-the-affective-scorer), [§12](#12-great-expectations--abduction-with-hidden-benefactor--evaluationquery) |
+| Abduction (Rung 3 backward) | Macbeth, Great Expectations | [§1](#1-macbeth--causal-physics-and-counterfactuals), [§12](#12-great-expectations--abduction-with-hidden-benefactor--evaluationquery) |
+| AMWN sandbox + shadow branch | Macbeth, Romeo and Juliet, ACOTAR (branch promotion) | [§1](#1-macbeth--causal-physics-and-counterfactuals), [§4](#4-romeo-and-juliet--directives-and-the-affective-scorer), [§15](#15-a-court-of-thorns-and-roses--magical-affordances-and-branch-promotion) |
+| Directive enumeration + scoring | Romeo and Juliet, Brief Encounter (regret target) | [§4](#4-romeo-and-juliet--directives-and-the-affective-scorer), [§14](#14-brief-encounter--wilmot-suspense-the-despair-boundary-and-regret) |
+| Affective scorer (mystery) | Macbeth, Great Expectations | [§1](#1-macbeth--causal-physics-and-counterfactuals), [§12](#12-great-expectations--abduction-with-hidden-benefactor--evaluationquery) |
 | Affective scorer (dramatic irony) | Death on the Nile | [§2](#2-death-on-the-nile--epistemic-physics-and-dramatic-irony) |
+| Affective scorer (suspense, despair boundary) | Romeo and Juliet, Brief Encounter, Dad's Army (sitcom ceiling) | [§4](#4-romeo-and-juliet--directives-and-the-affective-scorer), [§14](#14-brief-encounter--wilmot-suspense-the-despair-boundary-and-regret), [§16](#16-dads-army--generalquery-and-the-comic-ensemble-graph) |
 | Affective scorer (surprise / KL) | Reservoir Dogs | [§3](#3-reservoir-dogs--syuzhet-vs-fabula-and-information-flow) |
-| Plausibility gate | Romeo and Juliet | [§4](#4-romeo-and-juliet--directives-and-the-affective-scorer) |
+| Plausibility gate | Romeo and Juliet, Apocalypse Now (spatial) | [§4](#4-romeo-and-juliet--directives-and-the-affective-scorer), [§13](#13-apocalypse-now--stacked-world_-traits-and-ambient-cognition) |
 | Brief assembly (`ConstraintBlock`) | Romeo and Juliet | [§4](#4-romeo-and-juliet--directives-and-the-affective-scorer) |
 | Constrained generation | A Fish Called Wanda, Frankenstein | [§7](#7-a-fish-called-wanda--objects-affordances-and-chain-reactions), [§8](#8-frankenstein--social-mutation-and-relationship-decay) |
-| Causal audit (miracle step) | Gone Girl | [§5](#5-gone-girl--false-beliefs-and-the-audit-loop) |
+| Causal audit (miracle step) | Gone Girl, ACOTAR (magic-without-affordance) | [§5](#5-gone-girl--false-beliefs-and-the-audit-loop), [§15](#15-a-court-of-thorns-and-roses--magical-affordances-and-branch-promotion) |
 | Abduction audit | Gone Girl | [§5](#5-gone-girl--false-beliefs-and-the-audit-loop) |
 | Affective audit | Death on the Nile, Gone Girl | [§2](#2-death-on-the-nile--epistemic-physics-and-dramatic-irony), [§5](#5-gone-girl--false-beliefs-and-the-audit-loop) |
 | Engine-threshold deterministic gate | Gone Girl | [§5](#5-gone-girl--false-beliefs-and-the-audit-loop) |
+| `ObservationQuery` (Rung 1 cycle) | Persuasion | [§9](#9-persuasion--observation-queries-and-economic-common-causes) |
+| `InterrogationQuery` (graph RAG) | Great Gatsby | [§10](#10-great-gatsby--interrogation-queries-and-asymmetric-belief-topology) |
+| `GeneralQuery` (Q&A passthrough) | Dad's Army | [§16](#16-dads-army--generalquery-and-the-comic-ensemble-graph) |
+| `ManualEditQuery` (user-supplied prose) | Wuthering Heights | [§11](#11-wuthering-heights--multi-generational-time-and-manualeditquery) |
+| `EvaluationQuery` (`NarrativeOrderObject`) | Great Expectations | [§12](#12-great-expectations--abduction-with-hidden-benefactor--evaluationquery) |
 | Re-extraction + versioned merge | All | [pipeline-walkthrough.md](pipeline-walkthrough.md#steps-67--prose-re-extraction--merge) |
-| Branch-routing (`auto`/`mainline`/`shadow`) | Macbeth (counterfactual) | [§1](#1-macbeth--causal-physics-and-counterfactuals) |
+| Branch-routing (`auto`/`mainline`/`shadow`) | Macbeth (counterfactual), ACOTAR (promotion) | [§1](#1-macbeth--causal-physics-and-counterfactuals), [§15](#15-a-court-of-thorns-and-roses--magical-affordances-and-branch-promotion) |
 
 ---
 
