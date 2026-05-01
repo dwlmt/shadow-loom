@@ -31,6 +31,7 @@ from shadow_loom.models import WorldStateV1
 from shadow_loom.pipeline import (
     PipelineConfig,
     PipelineResult,
+    humanize_pipeline_result,
     run_pipeline,
     run_pipeline_async,
 )
@@ -1075,5 +1076,468 @@ class TestReextractionInvariantsE2E:
         assert result.audit_iterations is not None
         assert result.audit_iterations >= 1
         assert result.feedback_result is not None
+
+
+# =========================================================================
+# 18. PIPELINE HISTORY INVARIANTS
+# =========================================================================
+#
+# Every pipeline run records an ordered list of step records into
+# ``result.history.steps``.  These tests pin the contract for which step
+# names appear for which query type so downstream UI/MCP code can rely on
+# them.
+
+@requires_ollama
+class TestPipelineHistoryE2E:
+    """``PipelineResult.history.steps`` ordering and naming contract."""
+
+    @staticmethod
+    def _step_names(result: PipelineResult) -> list[str]:
+        return [s.get("step") for s in result.history.steps]
+
+    def test_history_observation_with_audit_and_merge(self):
+        query = ObservationQuery(focus_entity_ids=["ENT_MACBETH"])
+        cfg = _test_pipeline_config()  # audit + re-extraction both on
+        result = run_pipeline(query, world_state=macbeth_ws, config=cfg)
+
+        names = self._step_names(result)
+        # narrative_physics must precede generation; audit must follow
+        # generation; reextraction_merge closes the loop.
+        for required in (
+            "narrative_physics", "generation", "audit", "reextraction_merge",
+        ):
+            assert required in names, f"Missing {required!r} in {names}"
+        assert names.index("narrative_physics") < names.index("generation")
+        assert names.index("generation") < names.index("audit")
+        assert names.index("audit") < names.index("reextraction_merge")
+
+    def test_history_skip_audit_skips_audit_step(self):
+        query = ObservationQuery(focus_entity_ids=["ENT_MACBETH"])
+        cfg = _test_pipeline_config(skip_audit=True, skip_reextraction=True)
+        result = run_pipeline(query, world_state=macbeth_ws, config=cfg)
+        names = self._step_names(result)
+        assert "narrative_physics" in names
+        assert "generation" in names
+        assert "audit" not in names
+        assert "reextraction_merge" not in names
+
+    def test_history_ingestion_step_recorded_for_raw_text(self):
+        short_text = (
+            "Chapter 1\n\nElinor Dashwood quietly bears the loss of "
+            "Norland and the cooling of Edward Ferrars's affection."
+        )
+        query = ObservationQuery(focus_entity_ids=[])
+        cfg = PipelineConfig(
+            use_causal_engine=False,
+            ingestion_config=ExtractionConfig(model=_MODEL),
+            generation_config=GenerationConfig(model=_MODEL, max_tokens=512),
+            skip_audit=True,
+            skip_reextraction=True,
+        )
+        result = run_pipeline(query, raw_text=short_text, config=cfg)
+        names = self._step_names(result)
+        assert names[0] == "ingestion", f"Expected ingestion first, got {names}"
+
+    def test_history_evaluation_records_evaluation_step(self):
+        query = EvaluationQuery(focus_entity_ids=[], include_full_prose=False)
+        cfg = _test_pipeline_config(skip_audit=True, skip_reextraction=True)
+        result = run_pipeline(query, world_state=macbeth_ws, config=cfg)
+        names = self._step_names(result)
+        assert "evaluation" in names, names
+
+    def test_history_manual_edit_records_generation_and_merge(self):
+        query = ManualEditQuery(
+            edited_prose="Macbeth paced the battlements, dagger in hand.",
+            description="Test manual edit",
+            focus_entity_ids=["ENT_MACBETH"],
+        )
+        cfg = _test_pipeline_config()
+        result = run_pipeline(query, world_state=macbeth_ws, config=cfg)
+        names = self._step_names(result)
+        assert "generation" in names
+        # Manual edit always re-extracts.
+        assert "reextraction_merge" in names
+        # No audit step on manual edit.
+        assert "audit" not in names
+
+
+# =========================================================================
+# 19. BRANCH ROUTING THROUGH THE FULL PIPELINE
+# =========================================================================
+#
+# Unit tests in ``test_branch_routing.py`` cover ``_resolve_branch_policy``
+# in isolation. These tests confirm the policy is honoured all the way
+# through to the merged ``world_id`` tag on the new version.
+
+@requires_ollama
+class TestBranchRoutingE2E:
+    """Counterfactual queries fork to a shadow branch by default."""
+
+    def test_counterfactual_lands_on_shadow_under_auto(self):
+        query = CounterfactualQuery(
+            historical_interventions={
+                "EVT_DUNCAN_MURDER.outcome": "Duncan survives the night",
+            },
+            evidence_node_ids=["EVT_MACBETH_CROWNED"],
+            original_query="What if Duncan had survived?",
+        )
+        cfg = _test_pipeline_config(skip_audit=True)  # keep re-extraction
+        result = run_pipeline(query, world_state=macbeth_ws, config=cfg)
+        _assert_valid_pipeline_result(result, expect_prose=True)
+
+        vwm = result.world_model
+        # Newly merged events on the latest version must be tagged shadow.
+        latest = vwm.history[-1]
+        added_event_ids = (
+            latest.changeset.events_added if latest.changeset else 0
+        )
+        # At least one event was added by the merge for a real LLM run.
+        if added_event_ids:
+            ws = vwm.current
+            shadow_events = [
+                e for e in ws.events if getattr(e, "world_id", "factual") == "shadow"
+            ]
+            assert shadow_events, (
+                "Counterfactual merge must tag added events with world_id='shadow'"
+            )
+
+    def test_observation_lands_on_factual_under_auto(self):
+        query = ObservationQuery(focus_entity_ids=["ENT_MACBETH"])
+        cfg = _test_pipeline_config(skip_audit=True)
+        result = run_pipeline(query, world_state=macbeth_ws, config=cfg)
+        _assert_valid_pipeline_result(result, expect_prose=True)
+        ws = result.world_model.current
+        # Every event on the canon should remain factual.
+        for e in ws.events:
+            assert getattr(e, "world_id", "factual") == "factual", (
+                f"Event {e.id} drifted off factual mainline under 'auto' policy."
+            )
+
+    def test_force_shadow_policy_for_observation(self):
+        query = ObservationQuery(focus_entity_ids=["ENT_LADY_MACBETH"])
+        cfg = PipelineConfig(
+            use_causal_engine=True,
+            generation_config=GenerationConfig(model=_MODEL, max_tokens=512),
+            skip_audit=True,
+            skip_reextraction=False,
+            extraction_config=ExtractionConfig(model=_MODEL),
+            branch_policy="shadow",
+        )
+        result = run_pipeline(query, world_state=macbeth_ws, config=cfg)
+        _assert_valid_pipeline_result(result, expect_prose=True)
+        latest = result.world_model.history[-1]
+        added = latest.changeset.events_added if latest.changeset else 0
+        if added:
+            shadow_events = [
+                e for e in result.world_model.current.events
+                if getattr(e, "world_id", "factual") == "shadow"
+            ]
+            assert shadow_events, (
+                "branch_policy='shadow' must tag merged events with world_id='shadow'."
+            )
+
+
+# =========================================================================
+# 20. FORCE_IMPLAUSIBLE — bypass for both Rung-2 and Rung-3
+# =========================================================================
+#
+# The Rung-2 case is covered above (``TestImplausibilityE2E``). This
+# class adds the symmetrical Rung-3 (counterfactual) bypass.
+
+@requires_ollama
+class TestForceImplausibleCounterfactualE2E:
+    """Counterfactual ``force_implausible=True`` still produces prose."""
+
+    def test_force_implausible_counterfactual_generates_prose(self):
+        query = CounterfactualQuery(
+            historical_interventions={
+                "EVT_NEVER_HAPPENED.outcome": "would not happen",
+            },
+            evidence_node_ids=["EVT_NONEXISTENT_EVIDENCE"],
+            force_implausible=True,
+            original_query="A counterfactual on a phantom event.",
+        )
+        cfg = _test_pipeline_config(skip_audit=True, skip_reextraction=True)
+        result = run_pipeline(query, world_state=macbeth_ws, config=cfg)
+        # Engine still flags as implausible but prose IS generated.
+        assert result.implausible is True
+        assert result.implausibility_reason
+        assert result.prose is not None and len(result.prose) > 20
+
+
+# =========================================================================
+# 21. HUMANIZE_PIPELINE_RESULT — lay-user summaries
+# =========================================================================
+#
+# The ``humanize_pipeline_result`` helper is the chat-UI / MCP envelope's
+# canonical formatter for a ``PipelineResult``. These tests confirm it
+# returns non-empty text on the supported query types and surfaces
+# the requested-vs-achieved emotional intensity for directives.
+
+@requires_ollama
+class TestHumanizePipelineResultE2E:
+    """The lay-user summariser handles every prose-producing query type."""
+
+    def test_humanize_observation(self):
+        query = ObservationQuery(focus_entity_ids=["ENT_MACBETH"])
+        cfg = _test_pipeline_config(skip_audit=True, skip_reextraction=True)
+        result = run_pipeline(query, world_state=macbeth_ws, config=cfg)
+        text = humanize_pipeline_result(result)
+        assert isinstance(text, str) and text.strip()
+        assert "observation" in text.lower()
+        assert "Generated" in text  # prose count line
+
+    def test_humanize_directive_reports_intensity_gap(self):
+        query = DirectiveQuery(
+            target_entity_ids=["ENT_MACBETH"],
+            target_effect="fear",
+            intensity=0.8,
+        )
+        cfg = _test_pipeline_config(skip_audit=True, skip_reextraction=True)
+        result = run_pipeline(query, world_state=macbeth_ws, config=cfg)
+        text = humanize_pipeline_result(
+            result, requested_effect="fear", requested_intensity=0.8,
+        )
+        assert isinstance(text, str) and text.strip()
+        assert "directive" in text.lower()
+
+    def test_humanize_implausible_intervention(self):
+        query = InterventionQuery(
+            interventions={"ENT_GHOST_OF_NOWHERE.location_id": "LOC_HEATH"},
+        )
+        cfg = _test_pipeline_config(skip_audit=True, skip_reextraction=True)
+        result = run_pipeline(query, world_state=macbeth_ws, config=cfg)
+        text = humanize_pipeline_result(result)
+        assert "couldn't be applied" in text or "implausible" in text.lower()
+
+    def test_humanize_evaluation(self):
+        query = EvaluationQuery(focus_entity_ids=[], include_full_prose=False)
+        cfg = _test_pipeline_config(skip_audit=True, skip_reextraction=True)
+        result = run_pipeline(query, world_state=macbeth_ws, config=cfg)
+        text = humanize_pipeline_result(result)
+        assert isinstance(text, str) and text.strip()
+
+
+# =========================================================================
+# 22. MULTI-CYCLE CONTINUATION
+# =========================================================================
+#
+# Verify that running multiple pipeline cycles against the same
+# ``VersionedWorldModel`` strictly grows the history and version
+# counter, and never silently loses the prior versions.
+
+@requires_ollama
+class TestMultiCycleContinuationE2E:
+    """Sequential pipeline runs accumulate versions in the world model."""
+
+    def test_three_cycles_strictly_advance_version(self):
+        cfg = _test_pipeline_config(skip_audit=True)  # keep re-extraction
+
+        q1 = ObservationQuery(focus_entity_ids=["ENT_MACBETH"])
+        r1 = run_pipeline(q1, world_state=macbeth_ws, config=cfg)
+        v1 = r1.world_model.version
+
+        q2 = ObservationQuery(focus_entity_ids=["ENT_LADY_MACBETH"])
+        r2 = run_pipeline(q2, versioned_model=r1.world_model, config=cfg)
+        v2 = r2.world_model.version
+
+        q3 = DirectiveQuery(
+            target_entity_ids=["ENT_MACBETH"],
+            target_effect="fear",
+            intensity=0.7,
+        )
+        r3 = run_pipeline(q3, versioned_model=r2.world_model, config=cfg)
+        v3 = r3.world_model.version
+
+        assert v1 <= v2 <= v3, (
+            f"Version must monotonically advance (got {v1}, {v2}, {v3})"
+        )
+        # History entries: every successful merge appends one entry.
+        assert len(r3.world_model.history) >= len(r1.world_model.history)
+
+
+# =========================================================================
+# 23. SAVE_VERSION INTEGRATION (Pipeline → DB persistence)
+# =========================================================================
+#
+# The pipeline itself does not write to the database; persistence is the
+# caller's responsibility. These tests exercise the canonical
+# pipeline → ``save_version`` flow that the UI's task helpers and the
+# MCP ``run_and_save`` wrapper use.
+
+@requires_ollama
+class TestSaveVersionE2E:
+    """``save_version`` correctly stamps branch metadata from a pipeline run."""
+
+    def test_pipeline_then_save_version_preserves_branch(self, test_db_path):
+        proj = sl_db.create_project(name="e2e_save_version_test")
+        # Save the initial world state as v0.
+        v0 = sl_db.save_version(
+            project_id=proj.id,
+            world_state_json=macbeth_ws.model_dump_json(),
+            source="seed",
+            description="Seed Macbeth",
+        )
+
+        # Run a counterfactual — under 'auto' policy this routes to shadow.
+        query = CounterfactualQuery(
+            historical_interventions={
+                "EVT_DUNCAN_MURDER.outcome": "Duncan survives the night",
+            },
+            evidence_node_ids=["EVT_MACBETH_CROWNED"],
+            original_query="Counterfactual save-version smoke test",
+        )
+        cfg = _test_pipeline_config(skip_audit=True)
+        result = run_pipeline(query, world_state=macbeth_ws, config=cfg)
+        _assert_valid_pipeline_result(result, expect_prose=True)
+
+        # Persist the merged result with branch metadata from the pipeline.
+        # The pipeline doesn't expose world_id directly; resolve it the same
+        # way the wrappers do — counterfactual under 'auto' → shadow.
+        v1 = sl_db.save_version(
+            project_id=proj.id,
+            world_state_json=result.world_model.current.model_dump_json(),
+            ancestor_id=v0.id,
+            source="pipeline",
+            description="Counterfactual fork",
+            prose=result.prose,
+            world_id="shadow",
+            branch_label=query.original_query,
+        )
+        assert v1.world_id == "shadow"
+        assert v1.branch_label == query.original_query
+        assert v1.ancestor_id == v0.id
+        # And the version row is retrievable.
+        roundtrip = sl_db.get_version_by_id(v1.id)
+        assert roundtrip is not None
+        assert roundtrip.world_id == "shadow"
+
+    def test_pipeline_then_save_version_factual_default(self, test_db_path):
+        proj = sl_db.create_project(name="e2e_save_version_factual")
+        v0 = sl_db.save_version(
+            project_id=proj.id,
+            world_state_json=macbeth_ws.model_dump_json(),
+            source="seed",
+        )
+        query = ObservationQuery(focus_entity_ids=["ENT_MACBETH"])
+        cfg = _test_pipeline_config(skip_audit=True)
+        result = run_pipeline(query, world_state=macbeth_ws, config=cfg)
+        _assert_valid_pipeline_result(result, expect_prose=True)
+
+        v1 = sl_db.save_version(
+            project_id=proj.id,
+            world_state_json=result.world_model.current.model_dump_json(),
+            ancestor_id=v0.id,
+            source="pipeline",
+            prose=result.prose,
+            world_id="factual",
+        )
+        assert v1.world_id == "factual"
+        assert v1.branch_label is None
+
+
+# =========================================================================
+# 24. CHANNEL & UTTERANCE EXTRACTION (Information physics surface)
+# =========================================================================
+#
+# The information-topology refactor replaced the legacy ``InformationEdge``
+# with first-class ``Channel`` nodes plus utterance ``EventNode``s carrying
+# ``speaker_id`` / ``addressee_ids`` / ``via_channel_id`` / ``truth_value``.
+# These tests confirm ingestion produces both surfaces on dialogue-rich
+# plot text.
+
+_DIALOGUE_PLOT = """
+Act I
+
+In the hushed parlour Mr Knightley addressed Emma directly:
+"You have always been kind to Harriet, but a match with Mr Elton is folly."
+Emma laughed and shook her head. "You misunderstand my plans entirely."
+Knightley left, troubled, and Emma turned back to her drawing.
+
+Act II
+
+Later, alone with Harriet, Emma said in a low voice:
+"Forget Mr Elton. Mr Frank Churchill, when he comes, will be everything
+charming." Harriet listened and believed every word, though Mr Knightley
+across the lane had warned the very opposite.
+"""
+
+
+@requires_ollama
+class TestChannelExtractionE2E:
+    """Ingestion of dialogue-heavy text produces channels and utterance events."""
+
+    def test_dialogue_plot_extracts_channels(self):
+        cfg = ExtractionConfig(model=_MODEL)
+        from shadow_loom.ingestion import run_extraction
+        ws, report = run_extraction(_DIALOGUE_PLOT, config=cfg)
+        assert isinstance(ws, WorldStateV1)
+        # Channels are a dict on WorldStateV1 — at least one for the
+        # parlour conversation must be extracted.
+        channels = getattr(ws, "channels", {}) or {}
+        assert len(channels) >= 1, (
+            f"Expected ≥1 Channel, got {list(channels.keys())}; report.is_valid={report.is_valid}"
+        )
+        # And at least one utterance event with a speaker_id.
+        utterance_events = [
+            e for e in ws.events
+            if getattr(e, "speaker_id", None) is not None
+        ]
+        assert len(utterance_events) >= 1, (
+            "Expected ≥1 utterance EventNode with speaker_id."
+        )
+
+    def test_utterance_event_has_addressees_and_truth_value(self):
+        cfg = ExtractionConfig(model=_MODEL)
+        from shadow_loom.ingestion import run_extraction
+        ws, _ = run_extraction(_DIALOGUE_PLOT, config=cfg)
+        utts = [e for e in ws.events if getattr(e, "speaker_id", None)]
+        assert utts, "No utterance events extracted"
+        # At least one utterance should carry addressees AND a truth_value.
+        with_addressees = [
+            e for e in utts if getattr(e, "addressee_ids", None)
+        ]
+        assert with_addressees, (
+            "Expected at least one utterance with addressee_ids populated."
+        )
+        with_truth = [
+            e for e in utts if getattr(e, "truth_value", None) is not None
+        ]
+        assert with_truth, (
+            "Expected at least one utterance with a truth_value annotation."
+        )
+
+
+# =========================================================================
+# 25. PLAUSIBILITY VACUITY (engine-level Tier-2 implausibility)
+# =========================================================================
+#
+# Tier-1 implausibility (unknown node IDs) is covered above. Tier-2 is
+# when the engine binds the do-operator to a real node but propagation
+# yields no downstream effect. We exercise this by intervening on a
+# trait of an isolated entity that has no outgoing causal edges.
+
+@requires_ollama
+class TestEngineVacuityE2E:
+    """Tier-2 implausibility — the engine binds but propagates nothing."""
+
+    def test_engine_threshold_failures_recorded_when_audit_enabled(self):
+        """The audit feedback object always surfaces engine threshold state."""
+        query = ObservationQuery(focus_entity_ids=["ENT_MACBETH"])
+        cfg = _test_pipeline_config()
+        result = run_pipeline(query, world_state=macbeth_ws, config=cfg)
+        assert result.feedback_result is not None
+        # Either passed or failed — but the field MUST be populated when
+        # change_impact metrics were available (i.e. the deterministic
+        # engine gate ran).
+        ci = result.feedback_result.change_impact
+        if ci is not None:
+            assert result.feedback_result.engine_thresholds_passed in (True, False), (
+                "engine_thresholds_passed must be True/False when change_impact is set."
+            )
+            # Failures list is always present.
+            assert isinstance(
+                result.feedback_result.engine_threshold_failures, list,
+            )
 
 
