@@ -316,7 +316,7 @@ Research project; APIs are stable enough to use but evolve between minor
 versions. See [docs/design-decisions.md](docs/design-decisions.md) for the
 choices that shape the public surface and what we deliberately rejected.
 
-**Copyright © 2025–2026 David Rae Wilmot.** Shadow Loom is **dual-licensed**:
+**Copyright © 2026 David Rae Wilmot.** Shadow Loom is **dual-licensed**:
 
 * **Open source** under the [GNU Affero General Public License v3.0](LICENSE)
   (AGPLv3). If you modify Shadow Loom or make it available to users over a
