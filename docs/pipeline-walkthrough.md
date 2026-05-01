@@ -94,8 +94,8 @@ in async mode because both depend only on the Physics output.
 | Step | Agent | Output | Prompt |
 |---|---|---|---|
 | 2 | Socratic scaffold | `SocraticScaffold` — Who/What/Where/When/Why/How QA pairs that surface implicit motivations, hidden state, and abductive inferences before structured extraction. Inspired by the Socratic method (see [academic-foundations.md §6.5](academic-foundations.md#65-computational-narratology-and-story-understanding)) and modern Socratic-QA / chain-of-thought prompting. | `prompts/socratic_scaffolding.md` |
-| 3a | Physics agent | `PhysicsExtraction` — `EventNode`s, `CausalEdge`s, `SpatialEdge`s, plus a fallback set of `EntityUpdate`s | `prompts/physics_extraction.md` |
-| 3b | Social agent | `SocialExtraction` — `RelationshipEdge`s, `InformationEdge`s | `prompts/social_extraction.md` |
+| 3a | Physics agent | `PhysicsExtraction` — `EventNode`s (including `utterance` events with `content`/`speaker_id`/`addressee_ids`/`via_channel_id`/`truth_value`), `CausalEdge`s, `SpatialEdge`s, plus a fallback set of `EntityUpdate`s | `prompts/physics_extraction.md` |
+| 3b | Social agent | `SocialExtraction` — `RelationshipEdge`s, `Channel`s (with per-participant `intelligibility`) | `prompts/social_extraction.md` |
 | 3c | Consequences agent | `ConsequencesExtraction` — authoritative `EntityUpdate`s (trait/belief/status/location deltas) anchored to Physics events + mutation edges. Toggle via `ExtractionConfig.enable_consequences_agent` (default **on**); when enabled it overrides Physics's own `entity_updates` output. | `prompts/consequences_extraction.md` |
 
 Each agent's output validator runs a **sanitiser layer** that auto-clamps

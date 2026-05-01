@@ -72,6 +72,7 @@ from shadow_loom.models import (
 from shadow_loom.narrative_physics import calculate_narrative_physics
 from shadow_loom.pipeline import PipelineConfig, PipelineResult, run_pipeline
 from shadow_loom.projections import (
+    filter_world_state_for_pov,
     project_channel,
     project_event,
     trace_information_flow,
@@ -272,18 +273,25 @@ def inspect(
     project_name: Optional[str] = None,
     version: Optional[int] = None,
     at_time: Optional[int] = None,
+    pov_entity_id: Optional[str] = None,
 ) -> dict:
     """Inspect any node in the world model by ID.
 
     Auto-detects the node type from the ID prefix:
-      ENT_  → entity (traits, beliefs, constants, state timeline)
-      LOC_  → location (ambient state, connections, occupants)
-      EVT_  → event (actors, targets, causal causes/effects)
-      OBJ_  → object (owner, location, affordances, properties)
-      WORLD_ → world trait (magnitude, domains, timeline)
+      ENT_  \u2192 entity (traits, beliefs, constants, state timeline)
+      LOC_  \u2192 location (ambient state, connections, occupants)
+      EVT_  \u2192 event (actors, targets, causal causes/effects)
+      OBJ_  \u2192 object (owner, location, affordances, properties)
+      CHN_  \u2192 channel (participants, intelligibility, utterances)
+      WORLD_ \u2192 world trait (magnitude, domains, timeline)
 
-    Optionally provide at_time (fabula_time) to see the reconstructed
+    Optionally provide ``at_time`` (fabula_time) to see the reconstructed
     state at a specific point in the story's timeline.
+
+    ``pov_entity_id`` (scaffold): if set, the world is filtered through that
+    character's epistemic lens before inspection \u2014 utterances they could
+    not plausibly hear and channels they don't participate in are pruned.
+    Use this for limited-omniscience views.
     """
     err = require_scope(ctx, "read")
     if err:
@@ -296,6 +304,12 @@ def inspect(
     ws, _ = load_world_state(pid, version, ctx=ctx)
     if ws is None:
         return {"error": "No world model found."}
+
+    if pov_entity_id:
+        ws = filter_world_state_for_pov(
+            ws, pov_entity_id,
+            intelligibility_threshold=_settings.physics.intelligibility_threshold,
+        )
 
     if node_id.startswith("ENT_"):
         return _inspect_entity(ws, node_id, at_time)
@@ -442,11 +456,17 @@ def search(
     project_id: Optional[int] = None,
     project_name: Optional[str] = None,
     version: Optional[int] = None,
+    node_type: Optional[str] = None,
 ) -> dict:
     """Fuzzy search across all nodes in the world model.
 
-    Searches entity names, location names, event descriptions, object names,
-    and world trait names. Returns ranked results with relevance scores.
+    Searches entity names, location names, event descriptions and utterance
+    content, object names, world trait names, and channel names/media.
+    Returns ranked results with relevance scores.
+
+    Optional ``node_type`` filter restricts results to one of:
+    ``entity``, ``location``, ``event``, ``utterance``, ``object``,
+    ``world_trait``, ``channel``.
     """
     err = require_scope(ctx, "read")
     if err:
@@ -461,51 +481,82 @@ def search(
         return {"error": "No world model found."}
 
     q = query.lower()
+    nt = (node_type or "").lower().strip() or None
     results = []
 
-    for eid, ent in ws.entities.items():
-        score = SequenceMatcher(None, q, ent.name.lower()).ratio()
-        # Also check traits and constants for keyword matches
-        for c in ent.constants:
-            s2 = SequenceMatcher(None, q, c.lower()).ratio()
-            score = max(score, s2 * 0.8)
-        if score > 0.3:
-            results.append({"id": eid, "name": ent.name, "type": "Entity",
-                            "relevance": round(score, 3), "snippet": f"Status: {ent.status}"})
+    def _accept(kind: str) -> bool:
+        return nt is None or nt == kind
 
-    for lid, loc in ws.locations.items():
-        score = SequenceMatcher(None, q, loc.name.lower()).ratio()
-        if loc.description:
-            s2 = SequenceMatcher(None, q, loc.description.lower()).ratio()
-            score = max(score, s2 * 0.7)
-        if score > 0.3:
-            results.append({"id": lid, "name": loc.name, "type": "Location",
-                            "relevance": round(score, 3),
-                            "snippet": (loc.description or "")[:80]})
+    if _accept("entity"):
+        for eid, ent in ws.entities.items():
+            score = SequenceMatcher(None, q, ent.name.lower()).ratio()
+            # Also check traits and constants for keyword matches
+            for c in ent.constants:
+                s2 = SequenceMatcher(None, q, c.lower()).ratio()
+                score = max(score, s2 * 0.8)
+            if score > 0.3:
+                results.append({"id": eid, "name": ent.name, "type": "Entity",
+                                "relevance": round(score, 3), "snippet": f"Status: {ent.status}"})
+
+    if _accept("location"):
+        for lid, loc in ws.locations.items():
+            score = SequenceMatcher(None, q, loc.name.lower()).ratio()
+            if loc.description:
+                s2 = SequenceMatcher(None, q, loc.description.lower()).ratio()
+                score = max(score, s2 * 0.7)
+            if score > 0.3:
+                results.append({"id": lid, "name": loc.name, "type": "Location",
+                                "relevance": round(score, 3),
+                                "snippet": (loc.description or "")[:80]})
 
     for evt in ws.events:
+        is_utt = getattr(evt, "event_type", None) == "utterance"
+        kind = "utterance" if is_utt else "event"
+        if not _accept(kind):
+            continue
         desc = evt.description or ""
+        content = getattr(evt, "content", None) or ""
         score = SequenceMatcher(None, q, desc.lower()).ratio()
+        if content:
+            s2 = SequenceMatcher(None, q, content.lower()).ratio()
+            score = max(score, s2)
         if score > 0.3:
-            results.append({"id": evt.id, "name": desc[:50], "type": "EventNode",
+            label = (content or desc)[:50] if is_utt else desc[:50]
+            snippet_bits = [f"t={evt.fabula_time}", evt.event_type]
+            if is_utt and getattr(evt, "via_channel_id", None):
+                snippet_bits.append(f"via {evt.via_channel_id}")
+            results.append({"id": evt.id, "name": label, "type": "EventNode",
                             "relevance": round(score, 3),
-                            "snippet": f"t={evt.fabula_time} {evt.event_type}"})
+                            "snippet": " ".join(snippet_bits)})
 
-    for oid, obj in ws.objects.items():
-        score = SequenceMatcher(None, q, obj.name.lower()).ratio()
-        if score > 0.3:
-            results.append({"id": oid, "name": obj.name, "type": "NarrativeObject",
-                            "relevance": round(score, 3), "snippet": ""})
+    if _accept("object"):
+        for oid, obj in ws.objects.items():
+            score = SequenceMatcher(None, q, obj.name.lower()).ratio()
+            if score > 0.3:
+                results.append({"id": oid, "name": obj.name, "type": "NarrativeObject",
+                                "relevance": round(score, 3), "snippet": ""})
 
-    for wid, wt in ws.world_traits.items():
-        score = SequenceMatcher(None, q, wt.name.lower()).ratio()
-        if wt.description:
-            s2 = SequenceMatcher(None, q, wt.description.lower()).ratio()
-            score = max(score, s2 * 0.7)
-        if score > 0.3:
-            results.append({"id": wid, "name": wt.name, "type": "WorldTrait",
-                            "relevance": round(score, 3),
-                            "snippet": f"magnitude={wt.magnitude.value:.2f}"})
+    if _accept("world_trait"):
+        for wid, wt in ws.world_traits.items():
+            score = SequenceMatcher(None, q, wt.name.lower()).ratio()
+            if wt.description:
+                s2 = SequenceMatcher(None, q, wt.description.lower()).ratio()
+                score = max(score, s2 * 0.7)
+            if score > 0.3:
+                results.append({"id": wid, "name": wt.name, "type": "WorldTrait",
+                                "relevance": round(score, 3),
+                                "snippet": f"magnitude={wt.magnitude.value:.2f}"})
+
+    if _accept("channel"):
+        for cid, ch in ws.channels.items():
+            score = SequenceMatcher(None, q, ch.name.lower()).ratio()
+            if ch.medium:
+                s2 = SequenceMatcher(None, q, ch.medium.lower()).ratio()
+                score = max(score, s2 * 0.8)
+            if score > 0.3:
+                results.append({"id": cid, "name": ch.name, "type": "Channel",
+                                "relevance": round(score, 3),
+                                "snippet": f"medium={ch.medium} participants={len(ch.participant_ids)}"})
 
     results.sort(key=lambda r: r["relevance"], reverse=True)
     return {"results": results[:20], "total": len(results)}
@@ -575,6 +626,204 @@ def get_relationships(
             }
             for e in edges
         ],
+    }
+
+
+@mcp.tool()
+@_safe_tool
+def list_channels(
+    ctx: Context,
+    project_id: Optional[int] = None,
+    project_name: Optional[str] = None,
+    entity_id: Optional[str] = None,
+    medium: Optional[str] = None,
+    version: Optional[int] = None,
+) -> dict:
+    """Enumerate communication channels with participant names + utterance counts.
+
+    Optional filters:
+      * ``entity_id`` \u2014 only channels in which the entity participates.
+      * ``medium`` \u2014 substring match on channel medium (e.g. ``"telephone"``).
+    """
+    err = require_scope(ctx, "read")
+    if err:
+        return {"error": err}
+
+    pid, err = resolve_project(project_id, project_name, ctx)
+    if err:
+        return {"error": err}
+
+    ws, _ = load_world_state(pid, version, ctx=ctx)
+    if ws is None:
+        return {"error": "No world model found."}
+
+    def _name(nid: str) -> str:
+        if nid in ws.entities:
+            return ws.entities[nid].name
+        if nid in ws.objects:
+            return ws.objects[nid].name
+        return nid
+
+    # Pre-count utterances per channel.
+    utt_counts: dict[str, int] = {}
+    for evt in ws.events:
+        if evt.event_type == "utterance" and evt.via_channel_id:
+            utt_counts[evt.via_channel_id] = utt_counts.get(evt.via_channel_id, 0) + 1
+
+    medium_q = (medium or "").lower().strip()
+    out = []
+    for cid, ch in ws.channels.items():
+        if entity_id and entity_id not in ch.participant_ids:
+            continue
+        if medium_q and medium_q not in (ch.medium or "").lower():
+            continue
+        out.append({
+            "id": cid,
+            "name": ch.name,
+            "medium": ch.medium,
+            "directionality": ch.directionality,
+            "participants": [
+                {"id": pid_, "name": _name(pid_)} for pid_ in ch.participant_ids
+            ],
+            "intelligibility": dict(ch.intelligibility),
+            "established_at_fabula": ch.established_at_fabula,
+            "utterance_count": utt_counts.get(cid, 0),
+        })
+    out.sort(key=lambda r: (-r["utterance_count"], r["id"]))
+    return {"channels": out, "total": len(out)}
+
+
+@mcp.tool()
+@_safe_tool
+def get_channel_history(
+    ctx: Context,
+    channel_id: str,
+    project_id: Optional[int] = None,
+    project_name: Optional[str] = None,
+    version: Optional[int] = None,
+    limit: int = 100,
+) -> dict:
+    """All utterances carried by ``channel_id``, in chronological order.
+
+    Each row carries ``content``, ``truth_value``, ``speaker``, ``addressees``,
+    ``fabula_time``, and ``syuzhet_index``.
+    """
+    err = require_scope(ctx, "read")
+    if err:
+        return {"error": err}
+
+    pid, err = resolve_project(project_id, project_name, ctx)
+    if err:
+        return {"error": err}
+
+    ws, _ = load_world_state(pid, version, ctx=ctx)
+    if ws is None:
+        return {"error": "No world model found."}
+
+    if channel_id not in ws.channels:
+        return {"error": f"Channel {channel_id} not found."}
+
+    ch = ws.channels[channel_id]
+
+    def _name(nid: str) -> str:
+        if nid in ws.entities:
+            return ws.entities[nid].name
+        if nid in ws.objects:
+            return ws.objects[nid].name
+        return nid
+
+    utts = [
+        evt for evt in ws.events
+        if evt.event_type == "utterance" and evt.via_channel_id == channel_id
+    ]
+    utts.sort(key=lambda e: (e.fabula_time, e.syuzhet_index))
+
+    rows = []
+    for evt in utts[:limit]:
+        speaker = evt.speaker_id or (evt.actor_ids[0] if evt.actor_ids else None)
+        rows.append({
+            "id": evt.id,
+            "fabula_time": evt.fabula_time,
+            "syuzhet_index": evt.syuzhet_index,
+            "speaker": {"id": speaker, "name": _name(speaker)} if speaker else None,
+            "addressees": [
+                {"id": aid, "name": _name(aid)} for aid in evt.addressee_ids
+            ],
+            "content": evt.content,
+            "truth_value": evt.truth_value,
+            "description": evt.description,
+        })
+    return {
+        "channel": {
+            "id": channel_id,
+            "name": ch.name,
+            "medium": ch.medium,
+            "directionality": ch.directionality,
+        },
+        "utterances": rows,
+        "total": len(utts),
+        "returned": len(rows),
+    }
+
+
+@mcp.tool()
+@_safe_tool
+def who_can_hear(
+    ctx: Context,
+    channel_id: str,
+    project_id: Optional[int] = None,
+    project_name: Optional[str] = None,
+    version: Optional[int] = None,
+    threshold: Optional[float] = None,
+) -> dict:
+    """Participants whose intelligibility on ``channel_id`` meets ``threshold``.
+
+    Default threshold is ``physics.intelligibility_threshold`` from settings.
+    Missing intelligibility entries default to 1.0 (fully intelligible).
+    Result rows are split into ``addressable`` (intelligibility \u2265 threshold)
+    and ``opaque`` (below threshold) for symmetry.
+    """
+    err = require_scope(ctx, "read")
+    if err:
+        return {"error": err}
+
+    pid, err = resolve_project(project_id, project_name, ctx)
+    if err:
+        return {"error": err}
+
+    ws, _ = load_world_state(pid, version, ctx=ctx)
+    if ws is None:
+        return {"error": "No world model found."}
+
+    if channel_id not in ws.channels:
+        return {"error": f"Channel {channel_id} not found."}
+
+    thr = float(threshold) if threshold is not None else float(
+        _settings.physics.intelligibility_threshold
+    )
+    ch = ws.channels[channel_id]
+
+    def _name(nid: str) -> str:
+        if nid in ws.entities:
+            return ws.entities[nid].name
+        if nid in ws.objects:
+            return ws.objects[nid].name
+        return nid
+
+    addressable: list[dict] = []
+    opaque: list[dict] = []
+    for pid_ in ch.participant_ids:
+        intel = float(ch.intelligibility.get(pid_, 1.0))
+        row = {"id": pid_, "name": _name(pid_), "intelligibility": intel}
+        (addressable if intel >= thr else opaque).append(row)
+    addressable.sort(key=lambda r: -r["intelligibility"])
+    opaque.sort(key=lambda r: -r["intelligibility"])
+    return {
+        "channel_id": channel_id,
+        "channel_name": ch.name,
+        "threshold": thr,
+        "addressable": addressable,
+        "opaque": opaque,
     }
 
 
@@ -837,6 +1086,7 @@ def ask(
     project_id: Optional[int] = None,
     project_name: Optional[str] = None,
     version: Optional[int] = None,
+    pov_entity_id: Optional[str] = None,
 ) -> dict:
     """Ask a read-only question about the story world.
 
@@ -848,6 +1098,10 @@ def ask(
       "What does Macbeth believe about Lady Macbeth?"
       "Who is at the castle right now?"
       "What are the causal consequences of the murder?"
+
+    ``pov_entity_id`` (scaffold): if set, the world is filtered through that
+    character's epistemic lens before analysis (utterances they could not
+    plausibly hear and channels they don't participate in are pruned).
     """
     err = require_scope(ctx, "read")
     if err:
@@ -860,6 +1114,12 @@ def ask(
     ws, _ = load_world_state(pid, version, ctx=ctx)
     if ws is None:
         return {"error": "No world model found."}
+
+    if pov_entity_id:
+        ws = filter_world_state_for_pov(
+            ws, pov_entity_id,
+            intelligibility_threshold=_settings.physics.intelligibility_threshold,
+        )
 
     # Parse the question to resolve IDs
     parse_result = parse_query(
@@ -924,6 +1184,7 @@ def compute_tension(
     version: Optional[int] = None,
     syuzhet_anchor: Optional[int] = None,
     target_vector_id: Optional[str] = None,
+    pov_entity_id: Optional[str] = None,
 ) -> dict:
     """Compute narrative tension scores for the story or specific entities.
 
@@ -961,6 +1222,12 @@ def compute_tension(
     ws, _ = load_world_state(pid, version, ctx=ctx)
     if ws is None:
         return {"error": "No world model found."}
+
+    if pov_entity_id:
+        ws = filter_world_state_for_pov(
+            ws, pov_entity_id,
+            intelligibility_threshold=_settings.physics.intelligibility_threshold,
+        )
 
     if not entity_ids:
         entity_ids = list(ws.entities.keys())[:6]
@@ -1295,6 +1562,9 @@ async def narrate(
     version: Optional[int] = None,
     skip_audit: bool = _settings.mcp.skip_audit,
     force_implausible: bool = False,
+    speaker_id: Optional[str] = None,
+    addressee_ids: Optional[List[str]] = None,
+    via_channel_id: Optional[str] = None,
 ) -> dict:
     """Generate prose and advance the story using natural language.
 
@@ -1305,12 +1575,21 @@ async def narrate(
     Args:
         instruction: Natural language instruction (e.g., "Continue the
             story from Macbeth's perspective" or "Kill Duncan").
-        mode: Force a query type — 'observe', 'intervene', 'counterfactual',
+        mode: Force a query type \u2014 'observe', 'intervene', 'counterfactual',
               or None for auto-detect.
         skip_audit: Skip the audit loop for faster results (default True).
         force_implausible: For Rung-2/3 queries, generate prose even when the
             engine cannot resolve the requested targets against the world
             (the implausibility reason is still reported on the response).
+        speaker_id: Optional ENT_ id constraining the utterance event the
+            generator may produce. Useful for "X says Y to Z via the coded
+            telegram" prompts where the parser would otherwise have to
+            infer the channel from prose.
+        addressee_ids: Optional list of ENT_ ids the speaker intends to
+            reach (distinct from overhearers, which are derived from
+            channel intelligibility).
+        via_channel_id: Optional CHN_ id pinning the utterance to a
+            specific standing channel.
 
     Reports progress via MCP progress notifications.
     """
@@ -1327,6 +1606,30 @@ async def narrate(
         return {"error": "No world model found. Use 'ingest' first."}
 
     user_row_id = get_user_id(ctx)
+
+    # Append structured channel/speaker hints to the instruction so the
+    # parser produces an utterance-typed event with the requested
+    # provenance. Validated against the loaded ws so callers get fast
+    # feedback on stale ids.
+    hints: list[str] = []
+    if speaker_id:
+        if speaker_id not in ws.entities:
+            return {"error": f"speaker_id {speaker_id} not in world entities."}
+        hints.append(f"speaker_id={speaker_id}")
+    if addressee_ids:
+        bad = [a for a in addressee_ids if a not in ws.entities]
+        if bad:
+            return {"error": f"addressee_ids not found: {bad}"}
+        hints.append("addressee_ids=" + ",".join(addressee_ids))
+    if via_channel_id:
+        if via_channel_id not in ws.channels:
+            return {"error": f"via_channel_id {via_channel_id} not in world channels."}
+        hints.append(f"via_channel_id={via_channel_id}")
+    if hints:
+        instruction = (
+            f"{instruction}\n\n"
+            f"[utterance constraints: {'; '.join(hints)}]"
+        )
 
     # Map mode to query_type
     mode_map = {

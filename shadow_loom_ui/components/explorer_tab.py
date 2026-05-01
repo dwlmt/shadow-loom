@@ -625,6 +625,13 @@ def _inspector_suggestions(
             (f"How does {name} affect the story?", "interrogate"),
             (f"Increase {name} dramatically", "intervention"),
         ]
+    elif node_type == "Channel":
+        suggestions = [
+            (f"What does {name} reveal about characters' beliefs?", "interrogate"),
+            (f"Who can intercept {name}?", "interrogate"),
+            (f"What if {name} never existed?", "counterfactual"),
+            (f"Sever {name}", "intervention"),
+        ]
 
     if suggestions:
         ui.separator().classes("q-my-sm")

@@ -15,6 +15,7 @@ from nicegui import ui
 
 from shadow_loom_ui.state import AppState, StateEvent
 from shadow_loom_ui.viz import (
+    render_causal_sankey,
     render_comparison_view,
     render_ego_graph,
     render_entity_lifelines,
@@ -38,7 +39,8 @@ from shadow_loom_ui.viz_helpers import (
     ws_to_causal_rows,
     ws_to_entity_rows,
     ws_to_event_rows,
-    ws_to_info_rows,
+    ws_to_channel_rows,
+    ws_to_utterance_rows,
     ws_to_object_rows,
     ws_to_social_rows,
     ws_to_spatial_rows,
@@ -55,6 +57,7 @@ _VIEW_MODES = {
     "overview": "Overview",
     "social": "Social",
     "spatial": "Spatial",
+    "information": "Information",
     "ego": "Ego-Graph",
     "temporal": "Temporal",
     "composition": "Composition",
@@ -381,6 +384,20 @@ def build_world_tab(state: AppState) -> None:
                             ),
                             title="Spatial map",
                         )
+                    elif mode == "information":
+                        # Channels + utterance flow as a Sankey: who
+                        # transmits what, through which channel, to
+                        # whom. Complements the info topology table
+                        # (added in F11) with a graph view.
+                        with_expand(
+                            lambda h: render_causal_sankey(
+                                ws,
+                                on_click=_on_graph_click,
+                                height=h,
+                                aspect="information",
+                            ),
+                            title="Information flow (channels & utterances)",
+                        )
                     elif mode == "ego":
                         focus = ego_select.value
                         if focus:
@@ -646,19 +663,36 @@ def _build_data_tables(state: AppState) -> None:
             ).props(_table_props).classes("w-full")
 
         with ui.tab_panel("info"):
-            info_table = ui.table(
+            ui.label("Channels (standing capabilities)").classes(
+                "text-xs uppercase tracking-wide text-slate-500 mt-1"
+            )
+            channel_table = ui.table(
                 columns=[
-                    {"name": "kind", "label": "Kind", "field": "kind", "sortable": True},
                     {"name": "id", "label": "ID", "field": "id", "sortable": True},
-                    {"name": "participants", "label": "Participants", "field": "participants"},
+                    {"name": "name", "label": "Name", "field": "name", "sortable": True},
                     {"name": "medium", "label": "Medium", "field": "medium", "sortable": True},
                     {"name": "directionality", "label": "Directionality", "field": "directionality", "sortable": True},
-                    {
-                        "name": "min_intelligibility",
-                        "label": "Min intel.",
-                        "field": "min_intelligibility",
-                        "sortable": True,
-                    },
+                    {"name": "participants", "label": "Participants", "field": "participants"},
+                    {"name": "min_intelligibility", "label": "Min intel.", "field": "min_intelligibility", "sortable": True},
+                    {"name": "established_at_fabula", "label": "Established", "field": "established_at_fabula", "sortable": True},
+                ],
+                rows=[],
+                pagination={"rowsPerPage": 10},
+            ).props(_table_props).classes("w-full")
+
+            ui.label("Utterances (discrete messages)").classes(
+                "text-xs uppercase tracking-wide text-slate-500 mt-3"
+            )
+            utterance_table = ui.table(
+                columns=[
+                    {"name": "id", "label": "ID", "field": "id", "sortable": True},
+                    {"name": "fabula_time", "label": "t", "field": "fabula_time", "sortable": True},
+                    {"name": "syuzhet_index", "label": "syu", "field": "syuzhet_index", "sortable": True},
+                    {"name": "speaker", "label": "Speaker", "field": "speaker", "sortable": True},
+                    {"name": "addressees", "label": "Addressees", "field": "addressees"},
+                    {"name": "via_channel_id", "label": "Channel", "field": "via_channel_id", "sortable": True},
+                    {"name": "truth_value", "label": "Truth", "field": "truth_value", "sortable": True},
+                    {"name": "content", "label": "Content", "field": "content"},
                 ],
                 rows=[],
                 pagination={"rowsPerPage": 10},
@@ -676,7 +710,8 @@ def _build_data_tables(state: AppState) -> None:
         causal_table.rows = ws_to_causal_rows(ws)
         spatial_table.rows = ws_to_spatial_rows(ws)
         social_table.rows = ws_to_social_rows(ws)
-        info_table.rows = ws_to_info_rows(ws)
+        channel_table.rows = ws_to_channel_rows(ws)
+        utterance_table.rows = ws_to_utterance_rows(ws)
 
     _refresh_tables()
     state.on(StateEvent.WORLD_STATE_CHANGED, _refresh_tables)

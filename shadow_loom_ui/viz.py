@@ -1924,7 +1924,28 @@ def render_entity_belief_chart(
                                 "px-2 py-0.5 rounded-full bg-slate-200 "
                                 "text-slate-600 font-mono"
                             )
-                    # Confidence bar — visual reinforcement of the band.
+                    # Provenance row \u2014 how the belief was acquired.
+                    via_chn = r.get("acquired_via_channel_name") or r.get(
+                        "acquired_via_channel_id"
+                    )
+                    via_evt = r.get("acquired_via_event_label") or r.get(
+                        "acquired_via_event_id"
+                    )
+                    if via_chn or via_evt:
+                        with ui.row().classes(
+                            "w-full items-center gap-2 text-xs text-slate-500"
+                        ):
+                            if via_chn:
+                                ui.label(f"via {via_chn}").classes(
+                                    "px-2 py-0.5 rounded-full "
+                                    "bg-violet-50 text-violet-700 "
+                                    "border border-violet-200"
+                                )
+                            if via_evt:
+                                ui.label(f"\u2190 {via_evt}").classes(
+                                    "italic truncate"
+                                )
+                    # Confidence bar \u2014 visual reinforcement of the band.
                     with ui.element("div").classes(
                         "w-full h-1.5 rounded-full bg-slate-200 overflow-hidden"
                     ):

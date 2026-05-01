@@ -28,8 +28,9 @@ graph → simulation → constraint → prose.
 ## D2. Fabula vs syuzhet are distinct first-class fields
 
 **Decision.** Every event carries both `fabula_time` (chronological) and
-`syuzhet_index` (presentation order); information edges carry
-`discovered_at_syuzhet` separately from `established_at_fabula`.
+`syuzhet_index` (presentation order); reader-side discovery is derived from
+the utterance event's `syuzhet_index` while character-side belief uptake is
+recorded on `Belief.established_at_fabula`.
 
 **Alternative.** A single timestamp would be simpler.
 
@@ -195,7 +196,7 @@ downstream.
 `evidence_strength: Literal["weak", "moderate", "strong"] = "moderate"`
 alongside `value`/`inertia` (or `value`/`volatility`). The same
 `_coerce_evidence_strength` alias map used by `Belief`,
-`InformationEdge`, `CausalEdge`, and `RelationshipMetric` is applied,
+`Channel`, `CausalEdge`, and `RelationshipMetric` is applied,
 so LLM synonyms (`high`/`low`/`certain`/…) are normalised before
 Literal validation.
 

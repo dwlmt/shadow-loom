@@ -22,8 +22,9 @@ Pydantic v2 with `model_validator` constraints.
 | `Location` | `LOC_` | Spatial container with `ambient_state: Dict[str, AmbientVector]` (each ambient owns `value`, `volatility`, `evidence_strength`). |
 | `NarrativeObject` | `OBJ_` | Inanimate item with `affordances: List[Affordance]`. |
 | `Entity` | `ENT_` | Character / agent with `traits` (per-trait `TraitVector{value, inertia, evidence_strength}`), `beliefs`, `status`, `state_timeline`. |
-| `EventNode` | `EVT_` | Atomic happening anchored on both `fabula_time` and `syuzhet_index`. |
+| `EventNode` | `EVT_` | Atomic happening anchored on both `fabula_time` and `syuzhet_index`. `event_type="utterance"` carries `content`, `speaker_id`, `addressee_ids`, `via_channel_id`, `truth_value`. |
 | `GlobalTrait` | `WORLD_` | World-level fact / law / regime ("magic system", "surveillance state"). `magnitude` is a `TraitVector` (`value`, `inertia`, `evidence_strength`). |
+| `Channel` | `CHN_` | Standing communication capability between participants. `medium`, `directionality` (`broadcast`/`duplex`/`simplex`), per-participant `intelligibility ∈ [0,1]` (replaces the legacy `is_encrypted` boolean), `established_at_fabula`. |
 
 ### Edges
 
@@ -32,7 +33,8 @@ Pydantic v2 with `model_validator` constraints.
 | `CausalEdge` | event⇄event / event→state / state→event / state→state | Single class with five `causality_type` modalities; validator enforces source/target type matches modality. |
 | `RelationshipEdge` | entity⇄entity | Per-axis `metrics` dict (`affinity` / `fear` / `power_dynamic`); each axis owns its own `value`, `inertia`, `evidence_strength`, `last_updated_fabula`. Read via flat back-compat properties. |
 | `SpatialEdge` | location→location | Optional `is_locked` + `barrier_item_id`. |
-| `InformationEdge` | (entity\|object)→entities | Communication channel with `medium`, `is_encrypted`, `discovered_at_syuzhet`. |
+
+Note: communication is no longer modelled as an edge. Standing capability lives on the `Channel` *node*; discrete messages are first-class `EventNode`s with `event_type="utterance"` referencing a channel via `via_channel_id`.
 
 ### Temporal sub-models (the "Hybrid 4+5" design)
 
@@ -85,8 +87,8 @@ abductive inferences before structured extraction — see
 [academic-foundations.md §6.5](academic-foundations.md#65-computational-narratology-and-story-understanding)
 for the lineage), then dispatches three specialist agents:
 
-* `PhysicsExtraction` — `EventNode`s, `CausalEdge`s, `SpatialEdge`s, fallback `EntityUpdate`s
-* `SocialExtraction` — `RelationshipEdge`s, `InformationEdge`s
+* `PhysicsExtraction` — `EventNode`s (including `utterance` events), `CausalEdge`s, `SpatialEdge`s, fallback `EntityUpdate`s
+* `SocialExtraction` — `RelationshipEdge`s, `Channel`s
 * `ConsequencesExtraction` — authoritative `EntityUpdate`s anchored to the Physics events + mutation edges (default-on; overrides the Physics agent's own `entity_updates`). Toggle via `ExtractionConfig.enable_consequences_agent`.
 
 In async mode Physics runs first; Social and Consequences are dispatched
@@ -100,10 +102,12 @@ auto-repaired (`_auto_repair`), and validated (`_programmatic_validation`
 
 ### Step 3: Epistemic synchronisation
 
-`Belief.established_at_fabula` and `InformationEdge.discovered_at_syuzhet`
-record *when* a fact entered each character's awareness vs the reader's. The
-ingestion prompts (`prompts/social_extraction.md`) explicitly request both
-axes for any communication event.
+`Belief.established_at_fabula` records *when* a fact entered each character's
+awareness; `Belief.acquired_via_event_id` and `Belief.acquired_via_channel_id`
+track the provenance utterance and channel. The reader's awareness is
+governed by `EventNode.syuzhet_index`. The ingestion prompts
+(`prompts/social_extraction.md`) explicitly request both axes for any
+communication event.
 
 ### Step 4: Director intent
 
@@ -129,7 +133,7 @@ the slice relevant to the focal characters and time anchor:
 * `RelationshipEdge`s and `Belief`s **time-sliced via
   `reconstruct_entity_at(temporal_anchor)`** so beliefs formed in the future
   do not leak in
-* relevant `InformationEdge`s and `WORLD_*` traits
+* relevant `Channel`s and `WORLD_*` traits
 
 This both saves LLM context window and prevents temporal contamination of
 counterfactuals.
@@ -149,8 +153,8 @@ committed back. Edge types laid down:
 * `causal` — `mechanism`, `evidence_strength`, `causal_force`,
   `propagation_delay`
 * `connected_to` — spatial, with `is_locked` and `barrier_item_id`
-* `communicating_with` — informational, with `medium` and `is_encrypted`
-* `eavesdropped_by` — auto-derived for unencrypted channels (epistemic leakage)
+* `communicating_with` — informational, derived from `Channel` participants and per-participant `intelligibility`
+* `eavesdropped_by` — auto-derived for participants whose `intelligibility >= physics.intelligibility_threshold` but who are *not* in an utterance's `addressee_ids` (epistemic leakage)
 
 ### Step 7: Causal Physics ([`causal_physics.py`](../shadow_loom/causal_physics.py))
 
@@ -187,7 +191,7 @@ Four structural-effect scorers operate purely on the graph geometry:
 
 | Effect | Formula |
 |---|---|
-| **Mystery** | $\dfrac{\#\text{hidden ancestors}}{\#\text{total ancestors}}$ for each known effect; walks back through `causal_topology` and filters by `discovered_at_syuzhet > syuzhet_anchor`. |
+| **Mystery** | $\dfrac{\#\text{hidden ancestors}}{\#\text{total ancestors}}$ for each known effect; walks back through `causal_topology` and filters by ancestor events with `syuzhet_index > syuzhet_anchor`. |
 | **Dramatic Irony** | $\dfrac{\#\text{irony gaps}}{\#\text{total connections}}$; an irony gap is a revealed causal edge where the source event is not in the focal entity's belief set at `temporal_anchor`. |
 | **Suspense** | $P(\text{threat}) - P(\text{hope})$; threat = unrevealed events targeting the entity, hope = unrevealed events authored by the entity. `evidence_strength` is the probability proxy. Returns 0 when hope is extinguished (despair, not suspense). Inspired directly by Wilmot & Keller (2020); see [academic-foundations.md §3.1](academic-foundations.md#31-suspense-as-uncertainty-reduction--wilmot--keller-acl-2020). |
 | **Surprise** | Per-trait binary KL divergence $D_\text{KL}(p \| q) = p\log\tfrac{p}{q} + (1-p)\log\tfrac{1-p}{1-q}$. Prior $q$ starts at maximum entropy 0.5 and is updated toward truth for each revealed causal edge; posterior $p$ is the actual trait. See [academic-foundations.md §3.3](academic-foundations.md#33-surprise-as-kl-divergence). |

@@ -269,6 +269,47 @@ def render_reasoning_trace(
                                 "text-[10px] text-slate-500 font-mono"
                             )
 
+        # 9. Information provenance subgraph (utterance/channel flow
+        # rooted at the focal node). Renders as a table for now; the
+        # underlying ``information_flow`` dict is also force-graph
+        # ready when a richer view is wanted.
+        info_flow = trace.get("information_flow")
+        if info_flow and info_flow.get("edges"):
+            with ui.expansion(
+                f"Information provenance \u2014 {len(info_flow['edges'])} edges",
+                icon="forum",
+                value=expanded,
+            ).props("dense").classes("w-full bg-violet-50 rounded-lg"):
+                ui.label(
+                    f"Who-told-whom around {info_flow.get('focal_label') or info_flow.get('focal_id')}. "
+                    "Walks utterance addressees, channel participants, and "
+                    "speaker links so the epistemic path utterance \u2192 belief "
+                    "is visible alongside the structural cascade."
+                ).classes("text-xs text-slate-600")
+                for e in info_flow["edges"][:30]:
+                    with ui.row().classes("items-baseline gap-2"):
+                        ui.badge(e.get("source_label") or e.get("source")).props(
+                            "dense color=purple"
+                        )
+                        ui.label(e.get("kind") or "\u2192").classes(
+                            "text-[10px] text-slate-500 font-mono"
+                        )
+                        ui.badge(e.get("target_label") or e.get("target")).props(
+                            "dense color=purple-7"
+                        )
+                        if e.get("channel_id"):
+                            ui.label(f"via {e['channel_id']}").classes(
+                                "text-[10px] text-slate-500"
+                            )
+                        if e.get("truth_value"):
+                            ui.label(e["truth_value"]).classes(
+                                "text-[10px] text-slate-500 italic"
+                            )
+                        if e.get("intelligibility") is not None:
+                            ui.label(
+                                f"intel {float(e['intelligibility']):.2f}"
+                            ).classes("text-[10px] text-slate-500 font-mono")
+
     return container
 
 

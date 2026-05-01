@@ -278,6 +278,8 @@ def extract_reasoning_trace(
         "pruned_beliefs_count": 0,
         "pruned_utterance_event_ids": [],
         "disabled_channel_ids": [],
+        # Information provenance: who-told-whom subgraph rooted at focal node
+        "information_flow": None,
     }
     if not physics_result:
         return out
@@ -432,6 +434,54 @@ def extract_reasoning_trace(
             "node_id": str(cid),
             "label": label(str(cid)),
         })
+
+    # ── Information provenance subgraph ───────────────────────────
+    # Walk the utterance/channel graph rooted at the most salient
+    # focal node (a do-set target, an evidence node, or a pruned
+    # utterance). Renders alongside the structural cascade so the
+    # epistemic path utterance \u2192 belief is legible.
+    if ws is not None:
+        focal_id: Optional[str] = None
+        if out["do_set"]:
+            focal_id = out["do_set"][0].get("node_id")
+        elif out["evidence"]:
+            focal_id = out["evidence"][0].get("node_id")
+        elif out["pruned_utterance_event_ids"]:
+            focal_id = out["pruned_utterance_event_ids"][0].get("node_id")
+        elif out["disabled_channel_ids"]:
+            focal_id = out["disabled_channel_ids"][0].get("node_id")
+        if focal_id:
+            try:
+                from shadow_loom.projections import trace_information_flow
+
+                flow = trace_information_flow(ws, focal_id, depth=2)
+                # Decorate edges with human labels for the renderer.
+                edge_rows = []
+                node_ids: set[str] = set()
+                for e in flow.get("edges", []):
+                    s, t = e.get("source"), e.get("target")
+                    if not (s and t):
+                        continue
+                    node_ids.add(s)
+                    node_ids.add(t)
+                    edge_rows.append({
+                        "source": s,
+                        "target": t,
+                        "source_label": label(s),
+                        "target_label": label(t),
+                        "kind": e.get("kind"),
+                        "channel_id": e.get("channel_id"),
+                        "truth_value": e.get("truth_value"),
+                        "intelligibility": e.get("intelligibility"),
+                    })
+                out["information_flow"] = {
+                    "focal_id": focal_id,
+                    "focal_label": label(focal_id),
+                    "edges": edge_rows,
+                    "node_count": len(node_ids),
+                }
+            except Exception:  # pragma: no cover - defensive UI path
+                out["information_flow"] = None
 
     return out
 
@@ -1405,6 +1455,8 @@ def _node_type(ws: WorldStateV1, nid: str) -> str:
         return "NarrativeObject"
     if nid in ws.world_traits:
         return "WorldTrait"
+    if nid in ws.channels:
+        return "Channel"
     if any(evt.id == nid for evt in ws.events):
         return "EventNode"
     return "unknown"
@@ -1431,6 +1483,8 @@ def _label_fn_for(ws: Optional[WorldStateV1]):
             return ws.objects[nid].name
         if nid in ws.world_traits:
             return ws.world_traits[nid].name
+        if nid in ws.channels:
+            return ws.channels[nid].name
         if nid in event_map:
             evt = event_map[nid]
             desc = (evt.description or evt.id)[:40]

@@ -85,8 +85,9 @@ the user can:
 
 * Ask *"raise the suspense in chapter 7 to 0.8 without revealing the
   betrayal"* and the directive assembler will choose interventions that move
-  the threat-vs-hope ratio while protecting the relevant
-  `InformationEdge.discovered_at_syuzhet` constraints.
+  the threat-vs-hope ratio while respecting the reveal ordering encoded by
+  utterance `EventNode.syuzhet_index` and the per-participant
+  `Channel.intelligibility` map.
 * Compare two manuscripts on the same affective axes.
 * Build heatmaps of suspense, irony and surprise across an existing book —
   see the **Causality → Affective Dashboard** in the UI.

@@ -340,10 +340,17 @@ These ground the six emotion targets (`grief`, `rage`, `joy`, `regret`,
 
 ## 6. Information theory and epistemic state
 
-### 6.1 `InformationEdge`, `is_encrypted`, eavesdropping
+### 6.1 `Channel`, `intelligibility`, eavesdropping
 
-The volatile information topology is a discrete, narrative-domain analogue
-of:
+The information topology is modelled as a `Channel` *node* (standing
+capability between participants) plus discrete utterance `EventNode`s
+(messages) referencing the channel via `via_channel_id`. Per-participant
+`intelligibility \u2208 [0,1]` replaces the legacy `is_encrypted` boolean —
+encryption is one limiting case (low intelligibility for non-keyholders),
+foreign language and partial overhearing are others on the same axis.
+Eavesdropping is derived: any non-addressee participant whose
+`intelligibility >= physics.intelligibility_threshold` learns the
+utterance. This is a discrete, narrative-domain analogue of:
 
 * Shannon, C. E. (1948). "A mathematical theory of communication". *Bell System Technical Journal* 27: 379–423, 623–656. — channel + medium + noise.
 * Fagin, R., Halpern, J. Y., Moses, Y., Vardi, M. Y. (1995). *Reasoning About Knowledge*. MIT Press. — multi-agent epistemic logic, the formal basis for our `Belief.confidence` and `Belief.inertia`.

@@ -249,3 +249,89 @@ def trace_information_flow(
         "nodes": sorted(visited | {node_id}),
         "edges": edges,
     }
+
+
+# ---------------------------------------------------------------------------
+# POV intelligibility filter (scaffold)
+# ---------------------------------------------------------------------------
+
+def pov_visible_event_ids(
+    ws: WorldStateV1,
+    pov_entity_id: str,
+    *,
+    intelligibility_threshold: float = 0.3,
+) -> set[str]:
+    """Return the EVT_ ids the POV character could plausibly know about.
+
+    Scaffold for per-POV "limited omniscience" filtering. An utterance
+    is visible to ``pov_entity_id`` when:
+      * the POV is the speaker, **or**
+      * the POV is in ``addressee_ids``, **or**
+      * the POV is a participant in ``via_channel_id`` whose
+        ``intelligibility[pov_entity_id]`` >= ``intelligibility_threshold``
+        (missing entry defaults to 1.0 = fully intelligible).
+
+    Non-utterance events are visible when the POV is in ``actor_ids`` or
+    ``target_ids``. This is intentionally conservative: a richer
+    implementation would also consult ``Belief.acquired_via_event_id`` and
+    spatial co-location, but this minimum primitive unblocks the
+    ``pov_entity_id`` API surface.
+    """
+    visible: set[str] = set()
+    if not pov_entity_id:
+        return visible
+    for evt in ws.events:
+        if evt.event_type == "utterance":
+            if evt.speaker_id == pov_entity_id:
+                visible.add(evt.id)
+                continue
+            if pov_entity_id in evt.addressee_ids:
+                visible.add(evt.id)
+                continue
+            ch = ws.channels.get(evt.via_channel_id) if evt.via_channel_id else None
+            if ch and pov_entity_id in ch.participant_ids:
+                intel = float(ch.intelligibility.get(pov_entity_id, 1.0))
+                if intel >= intelligibility_threshold:
+                    visible.add(evt.id)
+        else:
+            if pov_entity_id in (evt.actor_ids or []) or pov_entity_id in (
+                evt.target_ids or []
+            ):
+                visible.add(evt.id)
+    return visible
+
+
+def filter_world_state_for_pov(
+    ws: WorldStateV1,
+    pov_entity_id: Optional[str],
+    *,
+    intelligibility_threshold: float = 0.3,
+) -> WorldStateV1:
+    """Return ``ws`` filtered through ``pov_entity_id``'s epistemic lens.
+
+    Scaffold: currently restricts ``ws.events`` to those visible to the POV
+    via :func:`pov_visible_event_ids` and prunes channels the POV does not
+    participate in. Callers that pass ``pov_entity_id=None`` get the world
+    unchanged.
+
+    TODO: also filter
+      * other entities' ``beliefs`` (the POV cannot read minds);
+      * ``causal_topology`` edges where both endpoints are POV-invisible;
+      * ``Channel.intelligibility`` map entries for non-POV participants.
+    """
+    if not pov_entity_id or pov_entity_id not in ws.entities:
+        return ws
+    visible_evt_ids = pov_visible_event_ids(
+        ws, pov_entity_id,
+        intelligibility_threshold=intelligibility_threshold,
+    )
+    visible_chn_ids = {
+        cid for cid, ch in ws.channels.items()
+        if pov_entity_id in ch.participant_ids
+    }
+    filtered = ws.model_copy(deep=True)
+    filtered.events = [e for e in filtered.events if e.id in visible_evt_ids]
+    filtered.channels = {
+        cid: ch for cid, ch in filtered.channels.items() if cid in visible_chn_ids
+    }
+    return filtered

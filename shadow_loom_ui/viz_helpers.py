@@ -274,6 +274,7 @@ NODE_COLORS: dict[str, str] = {
     "EventNode": "#F5B43C",       # Amber
     "NarrativeObject": "#8A5CF0", # Iris
     "WorldTrait": "#2EA6A0",      # Teal
+    "Channel": "#C46BD9",         # Orchid
 }
 
 EDGE_COLORS: dict[str, str] = {
@@ -310,6 +311,7 @@ NODE_SYMBOLS: dict[str, str] = {
     "EventNode": "triangle",
     "NarrativeObject": "diamond",
     "WorldTrait": "pin",
+    "Channel": "roundRect",
 }
 
 NODE_SIZES: dict[str, int] = {
@@ -318,6 +320,7 @@ NODE_SIZES: dict[str, int] = {
     "EventNode": 20,
     "NarrativeObject": 18,
     "WorldTrait": 22,
+    "Channel": 22,
 }
 
 CATEGORIES: list[dict[str, str]] = [
@@ -326,6 +329,7 @@ CATEGORIES: list[dict[str, str]] = [
     {"name": "EventNode"},
     {"name": "NarrativeObject"},
     {"name": "WorldTrait"},
+    {"name": "Channel"},
 ]
 
 _CATEGORY_INDEX = {c["name"]: i for i, c in enumerate(CATEGORIES)}
@@ -444,13 +448,23 @@ def ws_to_graph_data(
         _link(rel.source_entity_id, rel.target_entity_id, "relationship",
               width=max(1, magnitude * 3))
 
-    # Channels (standing comms capabilities) — link every participant pair.
-    for ch in ws.channels.values():
-        for src in ch.participant_ids:
-            for tgt in ch.participant_ids:
-                if src == tgt:
-                    continue
-                _link(src, tgt, "communicating_with", dash="dashed")
+    # Channels (standing comms capabilities) — render as first-class
+    # nodes so a click can select the channel itself; participants are
+    # linked to the channel node with dashed amber lines.
+    for cid, ch in ws.channels.items():
+        intel_summary = ", ".join(
+            f"{pid}={p:.2f}" for pid, p in list(ch.intelligibility.items())[:3]
+        ) if ch.intelligibility else "all 1.0"
+        _node(
+            cid, ch.name, "Channel",
+            medium=ch.medium,
+            directionality=ch.directionality,
+            participants=str(len(ch.participant_ids)),
+            intelligibility=intel_summary,
+            _sl_node_type="Channel",
+        )
+        for pid in ch.participant_ids:
+            _link(pid, cid, "communicating_with", dash="dashed")
     # Discrete utterance events: actor (or speaker) → each addressee.
     for evt in ws.events:
         if evt.event_type != "utterance":
@@ -1268,6 +1282,23 @@ def ws_to_entity_belief_rows(
             target_name = ws.locations[b.target_id].name
         else:
             target_name = b.target_id
+
+        # Provenance: how did this entity acquire the belief?
+        via_evt_id = getattr(b, "acquired_via_event_id", None)
+        via_chn_id = getattr(b, "acquired_via_channel_id", None)
+        via_channel_name = (
+            ws.channels[via_chn_id].name
+            if via_chn_id and via_chn_id in ws.channels
+            else None
+        )
+        via_event_label = None
+        if via_evt_id:
+            evt = next((e for e in ws.events if e.id == via_evt_id), None)
+            if evt is not None:
+                via_event_label = (
+                    (evt.content or evt.description or evt.id)[:60]
+                )
+
         rows.append({
             "target_id": b.target_id,
             "target_name": target_name,
@@ -1275,6 +1306,10 @@ def ws_to_entity_belief_rows(
             "confidence": round(float(b.confidence), 2),
             "inertia": round(float(b.inertia), 2),
             "established": int(getattr(b, "established_at_fabula", 0) or 0),
+            "acquired_via_event_id": via_evt_id,
+            "acquired_via_channel_id": via_chn_id,
+            "acquired_via_channel_name": via_channel_name,
+            "acquired_via_event_label": via_event_label,
         })
     # Sort by confidence desc so high-conviction beliefs are visually salient.
     rows.sort(key=lambda r: (-r["confidence"], r["target_name"]))
@@ -1328,7 +1363,19 @@ def ws_to_social_rows(ws: WorldStateV1) -> list[dict]:
 
 
 def ws_to_info_rows(ws: WorldStateV1) -> list[dict]:
-    """Communication signals as table rows: standing channels and utterance events."""
+    """Communication signals as table rows: standing channels and utterance events.
+
+    Combined view kept for back-compat (single-table consumers). Channel
+    rows fill the channel-shaped columns; utterance rows additionally
+    fill ``content``, ``syuzhet_index``, ``truth_value``, and
+    ``acquired_via_channel_id`` while leaving channel-only columns
+    (``directionality``, ``min_intelligibility``) blank to avoid the
+    earlier mismatch where ``truth_value`` was stuffed into the
+    ``directionality`` column.
+
+    Prefer :func:`ws_to_channel_rows` and :func:`ws_to_utterance_rows`
+    for split tables.
+    """
     rows: list[dict] = []
     for ch in ws.channels.values():
         rows.append({
@@ -1341,6 +1388,10 @@ def ws_to_info_rows(ws: WorldStateV1) -> list[dict]:
                 round(min(ch.intelligibility.values()), 2)
                 if ch.intelligibility else 1.0
             ),
+            "content": "",
+            "syuzhet_index": None,
+            "truth_value": "",
+            "via_channel_id": "",
         })
     for evt in ws.events:
         if evt.event_type != "utterance":
@@ -1349,16 +1400,59 @@ def ws_to_info_rows(ws: WorldStateV1) -> list[dict]:
             "kind": "utterance",
             "id": evt.id,
             "participants": (
-                f"{evt.speaker_id or ''} → " + ", ".join(evt.addressee_ids)
+                f"{evt.speaker_id or ''} \u2192 " + ", ".join(evt.addressee_ids)
             ),
             "medium": (
                 ws.channels[evt.via_channel_id].medium
                 if evt.via_channel_id and evt.via_channel_id in ws.channels
                 else "unmediated"
             ),
-            "directionality": evt.truth_value or "",
-            "min_intelligibility": 1.0,
+            "directionality": "",
+            "min_intelligibility": None,
+            "content": (evt.content or "")[:120],
+            "syuzhet_index": evt.syuzhet_index,
+            "truth_value": evt.truth_value or "",
+            "via_channel_id": evt.via_channel_id or "",
         })
+    return rows
+
+
+def ws_to_channel_rows(ws: WorldStateV1) -> list[dict]:
+    """Standing communication channels as table rows."""
+    return [
+        {
+            "id": ch.id,
+            "name": ch.name,
+            "medium": ch.medium,
+            "directionality": ch.directionality,
+            "participants": ", ".join(ch.participant_ids),
+            "min_intelligibility": (
+                round(min(ch.intelligibility.values()), 2)
+                if ch.intelligibility else 1.0
+            ),
+            "established_at_fabula": ch.established_at_fabula,
+        }
+        for ch in ws.channels.values()
+    ]
+
+
+def ws_to_utterance_rows(ws: WorldStateV1) -> list[dict]:
+    """Discrete utterance events as table rows."""
+    rows: list[dict] = []
+    for evt in ws.events:
+        if evt.event_type != "utterance":
+            continue
+        rows.append({
+            "id": evt.id,
+            "fabula_time": evt.fabula_time,
+            "syuzhet_index": evt.syuzhet_index,
+            "speaker": evt.speaker_id or "",
+            "addressees": ", ".join(evt.addressee_ids),
+            "via_channel_id": evt.via_channel_id or "",
+            "truth_value": evt.truth_value or "",
+            "content": (evt.content or "")[:120],
+        })
+    rows.sort(key=lambda r: (r["fabula_time"], r["syuzhet_index"]))
     return rows
 
 
