@@ -141,7 +141,10 @@ world_state = WorldStateV1(
             ],
             constants=["intellect", "social_privilege"],
             state_timeline=[
-                EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_VICTOR_LEAVES_GENEVA",
+                EntityStateSnapshot(fabula_time=500, triggered_by="EVT_CAROLINE_DIES",
+                    traits={
+                        "obsession": TraitVector(value=1.00, inertia=0.50, evidence_strength="moderate"),
+                    }),EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_VICTOR_LEAVES_GENEVA",
                     location_id="LOC_INGOLSTADT"),
                 EntityStateSnapshot(fabula_time=3000, triggered_by="EVT_CREATION",
                     location_id="LOC_LABORATORY",
@@ -183,6 +186,7 @@ world_state = WorldStateV1(
                     location_id="LOC_ARCTIC"),
                 EntityStateSnapshot(fabula_time=15000, triggered_by="EVT_VICTOR_DIES",
                     location_id="LOC_WALTONS_SHIP", status="dead"),
+                
             ],
         ),
         "ENT_CREATURE": Entity(
@@ -378,9 +382,13 @@ world_state = WorldStateV1(
                        confidence=0.6, inertia=0.5, evidence_strength="moderate"),
             ],
             state_timeline=[
-                EntityStateSnapshot(fabula_time=13200, triggered_by="EVT_ALPHONSE_DIES",
+                EntityStateSnapshot(fabula_time=13000, triggered_by="EVT_ELIZABETH_MURDERED",
+                    traits={
+                        "frailty": TraitVector(value=1.00, inertia=0.50, evidence_strength="moderate"),
+                    }),EntityStateSnapshot(fabula_time=13200, triggered_by="EVT_ALPHONSE_DIES",
                     traits={"frailty": TraitVector(value=1.0, inertia=0.65, evidence_strength="strong")},
                     status="dead"),
+                
             ],
             constants=["frankenstein_patriarch"],
         ),
@@ -504,7 +512,7 @@ world_state = WorldStateV1(
                   content="Notebook entries describing the assembly and animation of the Creature from charnel-house parts.",
                   speaker_id="OBJ_VICTOR_NOTES",
                   addressee_ids=["ENT_CREATURE"],
-                  actor_ids=["ENT_CREATURE"],
+                  actor_ids=["ENT_CREATURE", "OBJ_VICTOR_NOTES"],
                   target_ids=["EVT_CREATION", "EVT_CHARNEL_GATHERING", "ENT_VICTOR"],
                   via_channel_id=None, truth_value="true"),
         EventNode(id="EVT_UTT_CREATURE_NARRATES_LIFE", fabula_time=9000, syuzhet_index=27,
@@ -587,9 +595,15 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_CREATURE_LEARNS", target_id="EVT_CREATURE_FINDS_NOTES",
                    causality_type="chain_reaction", mechanism="epistemic", evidence_strength="strong",
                    causal_force=6.0, fabula_time=6000, propagation_delay=1000),
-        CausalEdge(source_id="EVT_CREATURE_FINDS_NOTES", target_id="EVT_WILLIAM_MURDERED",
-                   causality_type="chain_reaction", mechanism="psychological", evidence_strength="strong",
-                   causal_force=8.0, fabula_time=7000, propagation_delay=-3000),
+        # NOTE: this fixture artistically compresses William's murder (f=4000) to occur
+        # before the creature reads Victor's notes (f=7000). In the novel the notes-
+        # reading motivates the murder; here the on-loose creature kills William out of
+        # post-creation bitterness, with the notes-reading retrospectively explaining
+        # the framing of Justine. We therefore wire CREATURE_FLEES → WILLIAM_MURDERED
+        # directly (positive delay) and drop the impossible negative-delay edge.
+        CausalEdge(source_id="EVT_CREATURE_FLEES", target_id="EVT_WILLIAM_MURDERED",
+                   causality_type="chain_reaction", mechanism="psychological", evidence_strength="moderate",
+                   causal_force=7.0, fabula_time=3500, propagation_delay=500),
         CausalEdge(source_id="EVT_CREATURE_LEARNS", target_id="EVT_CREATURE_APPROACHES_DELACEY",
                    causality_type="chain_reaction", mechanism="emotional", evidence_strength="strong",
                    causal_force=7.0, fabula_time=6000, propagation_delay=1800),
@@ -791,6 +805,38 @@ world_state = WorldStateV1(
         CausalEdge(source_id="WORLD_PATERNAL_DUTY", target_id="EVT_MATE_DESTROYED",
                    causality_type="chain_reaction", mechanism="psychological", evidence_strength="moderate",
                    causal_force=4.0, fabula_time=11000),
+
+        # ── orphan utterance wirings ──
+        CausalEdge(source_id="EVT_UTT_ELIZABETH_LETTER_NEWS_FROM_HOME", target_id="EVT_VICTOR_DISCOVERS_PRINCIPLE",
+                   causality_type="chain_reaction", mechanism="emotional", evidence_strength="weak",
+                   causal_force=2.0, fabula_time=1800, propagation_delay=200),
+        CausalEdge(source_id="EVT_WILLIAM_MURDERED", target_id="EVT_UTT_ALPHONSE_LETTER_WILLIAM_DEAD",
+                   causality_type="chain_reaction", mechanism="informational", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=4000, propagation_delay=200),
+        CausalEdge(source_id="EVT_UTT_ALPHONSE_LETTER_WILLIAM_DEAD", target_id="EVT_JUSTINE_EXECUTED",
+                   causality_type="chain_reaction", mechanism="informational", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=4200, propagation_delay=800),
+        CausalEdge(source_id="EVT_UTT_VICTOR_NOTES_REVEAL_ORIGIN", target_id="EVT_CREATURE_FINDS_NOTES",
+                   causality_type="chain_reaction", mechanism="informational", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=7000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_CREATURE_NARRATES_LIFE", target_id="EVT_UTT_CREATURE_DEMANDS_FEMALE_MATE",
+                   causality_type="chain_reaction", mechanism="emotional", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=9000, propagation_delay=100),
+        CausalEdge(source_id="EVT_UTT_CREATURE_DEMANDS_FEMALE_MATE", target_id="EVT_VICTOR_BEGINS_MATE",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=9100, propagation_delay=900),
+        CausalEdge(source_id="EVT_UTT_CREATURE_WEDDING_NIGHT_THREAT", target_id="EVT_ELIZABETH_MURDERED",
+                   causality_type="chain_reaction", mechanism="performative", evidence_strength="strong",
+                   causal_force=9.0, fabula_time=11100, propagation_delay=1900),
+        CausalEdge(source_id="EVT_UTT_VICTOR_DEATHBED_NARRATIVE", target_id="EVT_VICTOR_DIES",
+                   causality_type="chain_reaction", mechanism="informational", evidence_strength="strong",
+                   causal_force=4.0, fabula_time=14700, propagation_delay=300),
+        CausalEdge(source_id="EVT_VICTOR_DIES", target_id="EVT_UTT_WALTON_LETTER_REPORTS_VICTORS_DEATH",
+                   causality_type="chain_reaction", mechanism="informational", evidence_strength="strong",
+                   causal_force=4.0, fabula_time=15000, propagation_delay=600),
+        CausalEdge(source_id="EVT_CREATURE_DEPARTS", target_id="EVT_UTT_CREATURE_FAREWELL_TO_WALTON",
+                   causality_type="chain_reaction", mechanism="emotional", evidence_strength="strong",
+                   causal_force=4.0, fabula_time=15500, propagation_delay=150),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────

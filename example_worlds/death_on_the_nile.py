@@ -180,10 +180,18 @@ world_state = WorldStateV1(
                        confidence=0.8, inertia=0.7, established_at_fabula=1000, evidence_strength="moderate"),
             ],
             state_timeline=[
+                EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_HONEYMOON_STALKING",
+                    traits={
+                        "self_assurance": TraitVector(value=0.75, inertia=0.85, evidence_strength="moderate"),
+                    }),
                 EntityStateSnapshot(fabula_time=4000, triggered_by="EVT_BOARD_KARNAK",
                     location_id="LOC_KARNAK_LOUNGE"),
-                EntityStateSnapshot(fabula_time=9000, triggered_by="EVT_LINNET_KILLED",
+                EntityStateSnapshot(fabula_time=6000, triggered_by="EVT_BOULDER",
+                    traits={
+                        "moral_blindness": TraitVector(value=0.65, inertia=0.70, evidence_strength="moderate"),
+                    }),EntityStateSnapshot(fabula_time=9000, triggered_by="EVT_LINNET_KILLED",
                     status="dead", location_id="LOC_KARNAK_LINNET_CABIN"),
+                
             ],
         ),
         "ENT_SIMON": Entity(
@@ -205,12 +213,20 @@ world_state = WorldStateV1(
                        confidence=0.95, inertia=0.85, established_at_fabula=1000, evidence_strength="strong"),
             ],
             state_timeline=[
+                EntityStateSnapshot(fabula_time=500, triggered_by="EVT_LINNET_STEALS_SIMON",
+                    traits={
+                        "greed": TraitVector(value=1.00, inertia=0.80, evidence_strength="moderate"),
+                    }),
                 EntityStateSnapshot(fabula_time=4000, triggered_by="EVT_BOARD_KARNAK",
                     location_id="LOC_KARNAK_LOUNGE"),
                 EntityStateSnapshot(fabula_time=8500, triggered_by="EVT_FAKE_LEG_WOUND",
                     status="ill", location_id="LOC_KARNAK_BESSNER_CABIN"),
-                EntityStateSnapshot(fabula_time=14000, triggered_by="EVT_JACQUELINE_SUICIDE_PACT",
+                EntityStateSnapshot(fabula_time=9000, triggered_by="EVT_LINNET_KILLED",
+                    traits={
+                        "low_cunning": TraitVector(value=0.85, inertia=0.70, evidence_strength="moderate"),
+                    }),EntityStateSnapshot(fabula_time=14000, triggered_by="EVT_JACQUELINE_SUICIDE_PACT",
                     status="dead", location_id="LOC_SHELLAL"),
+                
             ],
         ),
         "ENT_JACQUELINE": Entity(
@@ -229,12 +245,24 @@ world_state = WorldStateV1(
                        confidence=1.0, inertia=0.9, established_at_fabula=500, evidence_strength="strong"),
             ],
             state_timeline=[
+                EntityStateSnapshot(fabula_time=500, triggered_by="EVT_LINNET_STEALS_SIMON",
+                    traits={
+                        "performed_grievance": TraitVector(value=1.00, inertia=0.70, evidence_strength="moderate"),
+                    }),
                 EntityStateSnapshot(fabula_time=4000, triggered_by="EVT_BOARD_KARNAK",
                     location_id="LOC_KARNAK_LOUNGE"),
+                EntityStateSnapshot(fabula_time=8000, triggered_by="EVT_LOUNGE_SHOOTING",
+                    traits={
+                        "performed_grievance": TraitVector(value=1.00, inertia=0.70, evidence_strength="moderate"),
+                    }),
                 EntityStateSnapshot(fabula_time=9500, triggered_by="EVT_LOUISE_KILLED",
                     location_id="LOC_KARNAK_LOUISE_CABIN"),
-                EntityStateSnapshot(fabula_time=14000, triggered_by="EVT_JACQUELINE_SUICIDE_PACT",
+                EntityStateSnapshot(fabula_time=10000, triggered_by="EVT_OTTERBOURNE_KILLED",
+                    traits={
+                        "passion": TraitVector(value=1.00, inertia=0.85, evidence_strength="moderate"),
+                    }),EntityStateSnapshot(fabula_time=14000, triggered_by="EVT_JACQUELINE_SUICIDE_PACT",
                     status="dead", location_id="LOC_SHELLAL"),
+                
             ],
         ),
         "ENT_RACE": Entity(
@@ -760,6 +788,44 @@ world_state = WorldStateV1(
         CausalEdge(source_id="WORLD_DETECTIVE_EPISTEMOLOGY", target_id="EVT_POIROT_SOLVES",
                    causality_type="chain_reaction", mechanism="epistemic", evidence_strength="strong",
                    causal_force=8.0, fabula_time=13000),
+
+        # ── orphan utterance wirings ──
+        CausalEdge(source_id="EVT_HONEYMOON_STALKING", target_id="EVT_UTT_LINNET_HIRES_POIROT",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=1000, propagation_delay=500),
+        CausalEdge(source_id="EVT_UTT_LINNET_HIRES_POIROT", target_id="EVT_POIROT_REFUSES_LINNET",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=1500, propagation_delay=500),
+        CausalEdge(source_id="EVT_POIROT_REFUSES_LINNET", target_id="EVT_UTT_POIROT_WARNS_JACQUELINE",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_RACE_BRIEFS_POIROT_AGITATOR", target_id="EVT_RACE_IDS_RICHETTI",
+                   causality_type="chain_reaction", mechanism="informational", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=7000, propagation_delay=4500),
+        CausalEdge(source_id="EVT_UTT_JACQUELINE_DRUNK_OUTBURST", target_id="EVT_LOUNGE_SHOOTING",
+                   causality_type="chain_reaction", mechanism="emotional", evidence_strength="strong",
+                   causal_force=7.0, fabula_time=8000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_LOUISE_HINTS_BLACKMAIL", target_id="EVT_LOUISE_KILLED",
+                   causality_type="chain_reaction", mechanism="performative", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=9400, propagation_delay=100),
+        CausalEdge(source_id="EVT_UTT_BOWERS_RETURNS_PEARLS", target_id="EVT_REAL_PEARLS_RECOVERED",
+                   causality_type="chain_reaction", mechanism="informational", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=9700, propagation_delay=1300),
+        CausalEdge(source_id="EVT_UTT_OTTERBOURNE_DENUNCIATION", target_id="EVT_UTT_SIMON_LOUD_SIGNAL",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=10000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_SIMON_LOUD_SIGNAL", target_id="EVT_OTTERBOURNE_KILLED",
+                   causality_type="chain_reaction", mechanism="performative", evidence_strength="strong",
+                   causal_force=10.0, fabula_time=10000, propagation_delay=0),
+        CausalEdge(source_id="EVT_POIROT_SOLVES", target_id="EVT_UTT_POIROT_REVEALS_SOLUTION",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=13000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_POIROT_REVEALS_SOLUTION", target_id="EVT_UTT_SIMON_CONFESSES",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=13000, propagation_delay=200),
+        CausalEdge(source_id="EVT_UTT_SIMON_CONFESSES", target_id="EVT_ARRESTS",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=13200, propagation_delay=600),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -818,7 +884,7 @@ world_state = WorldStateV1(
             description="The system of trustees, settlements, foreign holdings and marriage contracts that surrounds the Ridgeway fortune. Operates as common-cause parent over Pennington's speculation, Linnet's conspicuous appeal as a target, and the entire economic motive for Simon and Jacqueline's plot.",
             category="economy",
             magnitude=TraitVector(value=0.95, inertia=0.9, evidence_strength="strong"),
-            affected_domains=["economic", "social"],
+            affected_domains=["social"],
         ),
         "WORLD_CLOSED_SOCIETY": GlobalTrait(
             id="WORLD_CLOSED_SOCIETY",

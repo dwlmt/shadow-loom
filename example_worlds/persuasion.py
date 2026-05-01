@@ -116,6 +116,9 @@ world_state = WorldStateV1(
                 "self_effacement": TraitVector(value=0.8, inertia=0.7,  evidence_strength="strong"),
                 "regret":        TraitVector(value=0.75, inertia=0.6,  evidence_strength="strong"),
                 "moral_courage": TraitVector(value=0.7,  inertia=0.65, evidence_strength="moderate"),
+                "suspicion":     TraitVector(value=0.1,  inertia=0.4,  evidence_strength="moderate"),
+                "loyalty":       TraitVector(value=0.7,  inertia=0.7,  evidence_strength="strong"),
+                "hope":          TraitVector(value=0.2,  inertia=0.45, evidence_strength="moderate"),
             },
             beliefs=[
                 Belief(target_id="ENT_WENTWORTH",
@@ -126,6 +129,15 @@ world_state = WorldStateV1(
                        confidence=0.8,  inertia=0.7, established_at_fabula=2000, evidence_strength="strong"),
             ],
             state_timeline=[
+                EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_BROKEN_ENGAGEMENT",
+                    traits={
+                        "regret": TraitVector(value=1.00, inertia=0.60, evidence_strength="moderate"),
+                        "self_effacement": TraitVector(value=1.00, inertia=0.70, evidence_strength="moderate"),
+                    }),
+                EntityStateSnapshot(fabula_time=3000, triggered_by="EVT_KELLYNCH_LET",
+                    traits={
+                        "self_effacement": TraitVector(value=0.95, inertia=0.70, evidence_strength="moderate"),
+                    }),
                 EntityStateSnapshot(fabula_time=4000, triggered_by="EVT_ANNE_VISITS_UPPERCROSS",
                     location_id="LOC_UPPERCROSS"),
                 EntityStateSnapshot(fabula_time=6000, triggered_by="EVT_LYME_VISIT",
@@ -136,13 +148,25 @@ world_state = WorldStateV1(
                     }),
                 EntityStateSnapshot(fabula_time=8000, triggered_by="EVT_ANNE_TO_BATH",
                     location_id="LOC_BATH"),
+                EntityStateSnapshot(fabula_time=8600, triggered_by="EVT_WILLIAM_RETURNS_TO_FAMILY",
+                    traits={
+                        "suspicion": TraitVector(value=0.50, inertia=0.40, evidence_strength="moderate"),
+                    }),
+                EntityStateSnapshot(fabula_time=10100, triggered_by="EVT_ANNE_VISITS_MRS_SMITH",
+                    traits={
+                        "moral_courage": TraitVector(value=0.85, inertia=0.65, evidence_strength="moderate"),
+                        "loyalty": TraitVector(value=0.95, inertia=0.70, evidence_strength="moderate"),
+                    }),
                 EntityStateSnapshot(fabula_time=10500, triggered_by="EVT_MRS_SMITH_REVEALS_ELLIOT",
                     beliefs_added=[
                         Belief(target_id="ENT_WILLIAM_ELLIOT",
                                perceived_state="cold, calculating; courts me only to forestall Mrs Clay",
                                confidence=0.95, inertia=0.7, established_at_fabula=10500, evidence_strength="strong"),
                     ]),
-                EntityStateSnapshot(fabula_time=12000, triggered_by="EVT_RECONCILIATION",
+                EntityStateSnapshot(fabula_time=11920, triggered_by="EVT_WENTWORTHS_LETTER",
+                    traits={
+                        "hope": TraitVector(value=1.00, inertia=0.45, evidence_strength="moderate"),
+                    }),EntityStateSnapshot(fabula_time=12000, triggered_by="EVT_RECONCILIATION",
                     traits={
                         "regret": TraitVector(value=0.1, inertia=0.6, evidence_strength="strong"),
                     },
@@ -152,6 +176,7 @@ world_state = WorldStateV1(
                                perceived_state="he loves me as constantly as ever",
                                confidence=1.0, inertia=0.85, established_at_fabula=12000, evidence_strength="strong"),
                     ]),
+                
             ],
         ),
         "ENT_WENTWORTH": Entity(
@@ -163,6 +188,7 @@ world_state = WorldStateV1(
                 "resentment":    TraitVector(value=0.8,  inertia=0.55, evidence_strength="strong"),
                 "constancy":     TraitVector(value=0.85, inertia=0.75, evidence_strength="moderate"),
                 "self_knowledge": TraitVector(value=0.5, inertia=0.55, evidence_strength="moderate"),
+                "hope":          TraitVector(value=0.2,  inertia=0.45, evidence_strength="moderate"),
             },
             beliefs=[
                 Belief(target_id="ENT_ANNE",
@@ -170,6 +196,11 @@ world_state = WorldStateV1(
                        confidence=0.85, inertia=0.5, established_at_fabula=4000, evidence_strength="strong"),
             ],
             state_timeline=[
+                EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_BROKEN_ENGAGEMENT",
+                    traits={
+                        "resentment": TraitVector(value=1.00, inertia=0.55, evidence_strength="moderate"),
+                        "ambition": TraitVector(value=1.00, inertia=0.70, evidence_strength="moderate"),
+                    }),
                 EntityStateSnapshot(fabula_time=4000, triggered_by="EVT_WENTWORTH_RETURNS",
                     location_id="LOC_UPPERCROSS"),
                 EntityStateSnapshot(fabula_time=5500, triggered_by="EVT_WENTWORTH_LEARNS_ANNE_REFUSED_CHARLES",
@@ -193,10 +224,15 @@ world_state = WorldStateV1(
                     }),
                 EntityStateSnapshot(fabula_time=11000, triggered_by="EVT_WENTWORTH_TO_BATH",
                     location_id="LOC_BATH"),
-                EntityStateSnapshot(fabula_time=12000, triggered_by="EVT_RECONCILIATION",
+                EntityStateSnapshot(fabula_time=11850, triggered_by="EVT_HARVILLE_ANNE_CONVERSATION",
+                    traits={
+                        "hope": TraitVector(value=0.90, inertia=0.45, evidence_strength="moderate"),
+                        "resentment": TraitVector(value=0.40, inertia=0.55, evidence_strength="moderate"),
+                    }),EntityStateSnapshot(fabula_time=12000, triggered_by="EVT_RECONCILIATION",
                     traits={
                         "resentment": TraitVector(value=0.05, inertia=0.6, evidence_strength="strong"),
                     }),
+                
             ],
         ),
         "ENT_LADY_RUSSELL": Entity(
@@ -233,6 +269,7 @@ world_state = WorldStateV1(
                 "rank_snobbery": TraitVector(value=0.95, inertia=0.9,  evidence_strength="strong"),
                 "fiscal_imprudence": TraitVector(value=0.85, inertia=0.8, evidence_strength="strong"),
                 "paternal_affection": TraitVector(value=0.2, inertia=0.6, evidence_strength="moderate"),
+                "humiliation":   TraitVector(value=0.0,  inertia=0.5, evidence_strength="weak"),
             },
             beliefs=[],
             state_timeline=[
@@ -256,6 +293,10 @@ world_state = WorldStateV1(
             state_timeline=[
                 EntityStateSnapshot(fabula_time=3000, triggered_by="EVT_KELLYNCH_LET",
                     location_id="LOC_BATH"),
+                EntityStateSnapshot(fabula_time=8600, triggered_by="EVT_WILLIAM_RETURNS_TO_FAMILY",
+                    traits={
+                        "vanity": TraitVector(value=0.90, inertia=0.85, evidence_strength="moderate"),
+                    }),
             ],
         ),
         "ENT_MARY": Entity(
@@ -283,6 +324,7 @@ world_state = WorldStateV1(
             traits={
                 "amiability":     TraitVector(value=0.8, inertia=0.6, evidence_strength="strong"),
                 "suggestibility": TraitVector(value=0.7, inertia=0.55, evidence_strength="moderate"),
+                "self_knowledge": TraitVector(value=0.25, inertia=0.5, evidence_strength="moderate"),
             },
             beliefs=[
                 Belief(target_id="ENT_CHARLES_HAYTER",
@@ -293,6 +335,10 @@ world_state = WorldStateV1(
                 EntityStateSnapshot(fabula_time=5200, triggered_by="EVT_HAYTER_WITHDRAWS",
                     traits={
                         "suggestibility": TraitVector(value=0.5, inertia=0.6, evidence_strength="moderate"),
+                    }),
+                EntityStateSnapshot(fabula_time=5200, triggered_by="EVT_HAYTER_WITHDRAWS",
+                    traits={
+                        "self_knowledge": TraitVector(value=0.50, inertia=0.50, evidence_strength="moderate"),
                     }),
             ],
         ),
@@ -400,6 +446,10 @@ world_state = WorldStateV1(
                     location_id="LOC_BATH"),
                 EntityStateSnapshot(fabula_time=13000, triggered_by="EVT_WILLIAM_LEAVES_BATH",
                     location_id=None),
+                EntityStateSnapshot(fabula_time=13250, triggered_by="EVT_MRS_CLAY_FOLLOWS_WILLIAM",
+                    traits={
+                        "duplicity": TraitVector(value=0.90, inertia=0.80, evidence_strength="moderate"),
+                    }),
             ],
         ),
         "ENT_MRS_CLAY": Entity(
@@ -469,7 +519,7 @@ world_state = WorldStateV1(
                   event_type="choice", actor_ids=["ENT_SIR_WALTER"], target_ids=["ENT_ADMIRAL_CROFT"],
                   description="Pressed by debts, Sir Walter is persuaded to let Kellynch Hall to Admiral and Mrs Croft and remove with Elizabeth and Mrs Clay to Bath."),
         EventNode(id="EVT_ANNE_VISITS_UPPERCROSS", fabula_time=4000, syuzhet_index=4,
-                  event_type="choice", actor_ids=["ENT_ANNE"], target_ids=[],
+                  event_type="choice", actor_ids=["ENT_ANNE", "ENT_CHARLES_MUSGROVE"], target_ids=[],
                   description="Anne goes to Uppercross to nurse Mary, putting her in the social orbit of the Crofts and the returning Wentworth."),
         EventNode(id="EVT_WENTWORTH_RETURNS", fabula_time=4200, syuzhet_index=5,
                   event_type="outcome", actor_ids=["ENT_WENTWORTH"], target_ids=[],
@@ -478,13 +528,13 @@ world_state = WorldStateV1(
                   event_type="choice", actor_ids=["ENT_CHARLES_HAYTER"], target_ids=["ENT_HENRIETTA"],
                   description="Hurt by Henrietta's apparent interest in Wentworth, Charles Hayter stops visiting Uppercross."),
         EventNode(id="EVT_WENTWORTH_LEARNS_ANNE_REFUSED_CHARLES", fabula_time=5500, syuzhet_index=7,
-                  event_type="revelation", actor_ids=["ENT_LOUISA"], target_ids=["ENT_WENTWORTH"],
+                  event_type="outcome", actor_ids=["ENT_LOUISA"], target_ids=["ENT_WENTWORTH"],
                   description="Anne overhears Louisa telling Wentworth that Anne refused Charles Musgrove's first proposal, revealing Anne's continued unmarried state and disturbing Wentworth's settled view of her."),
         EventNode(id="EVT_LYME_VISIT", fabula_time=6000, syuzhet_index=8,
                   event_type="choice", actor_ids=["ENT_WENTWORTH", "ENT_ANNE"], target_ids=[],
                   description="The Uppercross party visits Captain Harville's family at Lyme Regis; Anne's looks attract the notice of a stranger who turns out to be William Elliot."),
         EventNode(id="EVT_WILLIAM_ADMIRES_ANNE_AT_LYME", fabula_time=6500, syuzhet_index=9,
-                  event_type="revelation", actor_ids=["ENT_WILLIAM_ELLIOT"], target_ids=["ENT_ANNE"],
+                  event_type="outcome", actor_ids=["ENT_WILLIAM_ELLIOT"], target_ids=["ENT_ANNE"],
                   description="At Lyme, William Elliot — heir presumptive to Kellynch — sees and silently admires Anne, planting his later courtship."),
         EventNode(id="EVT_LOUISA_FALLS", fabula_time=7000, syuzhet_index=10,
                   event_type="outcome", actor_ids=["ENT_LOUISA"], target_ids=["ENT_LOUISA"],
@@ -502,7 +552,7 @@ world_state = WorldStateV1(
                   event_type="choice", actor_ids=["ENT_ANNE"], target_ids=["ENT_MRS_SMITH"],
                   description="Against her father's snobbish disapproval, Anne calls on her impoverished old school friend Mrs Smith in Westgate Buildings."),
         EventNode(id="EVT_MRS_SMITH_REVEALS_ELLIOT", fabula_time=10500, syuzhet_index=15,
-                  event_type="revelation", actor_ids=["ENT_MRS_SMITH"], target_ids=["ENT_ANNE"],
+                  event_type="outcome", actor_ids=["ENT_MRS_SMITH"], target_ids=["ENT_ANNE"],
                   description="Mrs Smith reveals William Elliot's history of cold opportunism, his refusal to act as her husband's executor, and that his real motive in courting Anne is to forestall Mrs Clay marrying Sir Walter and bearing a displacing male heir."),
         EventNode(id="EVT_WENTWORTH_TO_BATH", fabula_time=11000, syuzhet_index=16,
                   event_type="choice", actor_ids=["ENT_WENTWORTH"], target_ids=[],
@@ -846,6 +896,26 @@ world_state = WorldStateV1(
         CausalEdge(source_id="WORLD_PRIMOGENITURE_ENTAIL", target_id="EVT_MRS_CLAY_FOLLOWS_WILLIAM",
                    causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
                    causal_force=5.0, fabula_time=13200),
+
+        # ── orphan utterance wirings ──
+        CausalEdge(source_id="EVT_UTT_LOUISA_TELLS_WENTWORTH", target_id="EVT_WENTWORTH_LEARNS_ANNE_REFUSED_CHARLES",
+                   causality_type="chain_reaction", mechanism="informational", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=5500, propagation_delay=0),
+        CausalEdge(source_id="EVT_WILLIAM_RETURNS_TO_FAMILY", target_id="EVT_UTT_WILLIAM_FLATTERS_ANNE",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=8500, propagation_delay=1000),
+        CausalEdge(source_id="EVT_UTT_MRS_SMITH_REVEALS_WILLIAM", target_id="EVT_MRS_SMITH_REVEALS_ELLIOT",
+                   causality_type="chain_reaction", mechanism="informational", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=10500, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_ADMIRAL_CROFT_BENWICK_NEWS", target_id="EVT_WENTWORTH_TO_BATH",
+                   causality_type="chain_reaction", mechanism="informational", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=10800, propagation_delay=200),
+        CausalEdge(source_id="EVT_UTT_ANNE_WOMEN_CONSTANCY", target_id="EVT_WENTWORTHS_LETTER",
+                   causality_type="chain_reaction", mechanism="emotional", evidence_strength="strong",
+                   causal_force=10.0, fabula_time=11800, propagation_delay=100),
+        CausalEdge(source_id="EVT_UTT_WENTWORTHS_LETTER", target_id="EVT_RECONCILIATION",
+                   causality_type="chain_reaction", mechanism="emotional", evidence_strength="strong",
+                   causal_force=10.0, fabula_time=11900, propagation_delay=100),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -912,7 +982,7 @@ world_state = WorldStateV1(
             description="The wartime British system under which captured enemy ships are sold and the proceeds shared among officers and crew. Wentworth's twenty-five thousand pounds — and the very fact of the Crofts' Kellynch tenancy — flow from this institution, which is the engine that returns Wentworth to Anne's social circle as an eligible match.",
             category="economy",
             magnitude=TraitVector(value=0.85, inertia=0.85, evidence_strength="strong"),
-            affected_domains=["social", "economic"],
+            affected_domains=["social"],
         ),
         "WORLD_PRIMOGENITURE_ENTAIL": GlobalTrait(
             id="WORLD_PRIMOGENITURE_ENTAIL",

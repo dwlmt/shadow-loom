@@ -3940,6 +3940,52 @@ def _programmatic_validation(ws: WorldStateV1) -> List[ValidationIssue]:
                 ),
             ))
 
+    # --- Mutation-parity check ---
+    #
+    # Surfaces the single largest gap the 2026-05-01 plot-models audit found:
+    # 75 mutation/mutation_social edges declared a (trait_target, trait_delta)
+    # but the target entity had no corresponding state_timeline snapshot at
+    # the edge's fabula_time. Without the snapshot the physics engine has
+    # nothing to anchor downstream propagation and abduction reads to, and
+    # the mutation effectively vanishes after one tick.
+    #
+    # We allow ±1 fabula tick of slack so authors can co-locate a snapshot
+    # at a near-by event boundary (the engine's interpolation handles tiny
+    # offsets cleanly).
+    if ws.events and ws.causal_topology:
+        snapshots_by_entity: Dict[str, set[int]] = {}
+        for eid, ent in ws.entities.items():
+            snapshots_by_entity[eid] = {snap.fabula_time for snap in ent.state_timeline}
+        unmatched: List[str] = []
+        for ce in ws.causal_topology:
+            if ce.causality_type not in ("mutation", "mutation_social"):
+                continue
+            if ce.trait_target is None or ce.trait_delta is None:
+                continue
+            if ce.target_id not in entity_ids:
+                continue
+            snaps = snapshots_by_entity.get(ce.target_id, set())
+            # ±1 tick slack to tolerate authoring co-location.
+            if not any(abs(t - ce.fabula_time) <= 1 for t in snaps):
+                unmatched.append(
+                    f"{ce.source_id}\u2192{ce.target_id} "
+                    f"({ce.trait_target}, fabula={ce.fabula_time})"
+                )
+        if unmatched:
+            sample = unmatched[:5]
+            issues.append(ValidationIssue(
+                severity="warning", category="mutation_parity",
+                detail=(
+                    f"{len(unmatched)} mutation edge(s) declare a "
+                    f"trait_target+trait_delta but the target entity has no "
+                    f"state_timeline snapshot at the edge's fabula_time "
+                    f"(\u00b11 tick slack): {sample}"
+                    f"{'\u2026' if len(unmatched) > 5 else ''}. The mutation "
+                    f"is recorded on the edge but never anchored on the "
+                    f"entity, so propagation and abduction will under-read it."
+                ),
+            ))
+
     # --- Time validation ---
     issues.extend(_validate_time_ordering(ws))
 

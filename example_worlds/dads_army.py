@@ -64,9 +64,9 @@ world_state = WorldStateV1(
                 "ecclesiastical_resentment": AmbientVector(value=0.6, volatility=0.2, evidence_strength="moderate"),
             },
         ),
-        "LOC_AIRFIELD": Location(
-            name="Local Airfield",
-            description="Small grass airfield near Walmington commandeered for joint exercises and dressing-downs from regular-Army brass.",
+        "LOC_EXERCISE_GROUND": Location(
+            name="War-Games Exercise Ground",
+            description="The field with pontoon bridge and tent encampment used for the regular-army training weekend; also where Major-General Fullard delivers his dressing-downs.",
             ambient_state={
                 "danger": AmbientVector(value=0.4, volatility=0.4, evidence_strength="moderate"),
                 "formality": AmbientVector(value=0.5, volatility=0.3, evidence_strength="strong"),
@@ -102,12 +102,6 @@ world_state = WorldStateV1(
             location_id="LOC_CHURCH_HALL", owner_id="ENT_MAINWARING",
             properties={"state": "polished", "function": "command_signal"},
             affordances=[Affordance(action="command", target_type="Entity")],
-        ),
-        "OBJ_SWASTIKA_FLAG": NarrativeObject(
-            id="OBJ_SWASTIKA_FLAG", name="Captured Swastika Flag",
-            location_id=None, owner_id=None,
-            properties={"state": "captured", "function": "trophy_of_war"},
-            affordances=[Affordance(action="display_as_trophy", target_type="Location")],
         ),
     },
 
@@ -252,7 +246,7 @@ world_state = WorldStateV1(
             traits={
                 "naivety":    TraitVector(value=0.8,  inertia=0.45, evidence_strength="strong"),
                 "enthusiasm": TraitVector(value=0.75, inertia=0.5, evidence_strength="strong"),
-                "youth":      TraitVector(value=0.95, inertia=0.95, evidence_strength="strong"),
+                "youth":      TraitVector(value=0.95, inertia=0.8, evidence_strength="strong"),
             },
             beliefs=[
                 Belief(target_id="ENT_WILSON",
@@ -261,11 +255,15 @@ world_state = WorldStateV1(
             ],
             constants=["bank_clerk", "wears_scarf", "mothers_boy"],
             state_timeline=[
-                EntityStateSnapshot(fabula_time=13000, triggered_by="EVT_PIKE_REFUSES_NAME",
+                EntityStateSnapshot(fabula_time=6000, triggered_by="EVT_PIKE_SCARF_INCIDENT",
+                    traits={
+                        "enthusiasm": TraitVector(value=0.70, inertia=0.50, evidence_strength="moderate"),
+                    }),EntityStateSnapshot(fabula_time=13000, triggered_by="EVT_PIKE_REFUSES_NAME",
                     traits={
                         "naivety":    TraitVector(value=0.6, inertia=0.45, evidence_strength="moderate"),
                         "enthusiasm": TraitVector(value=0.85, inertia=0.55, evidence_strength="strong"),
                     }),
+                
             ],
         ),
         "ENT_HODGES": Entity(
@@ -283,13 +281,17 @@ world_state = WorldStateV1(
             ],
             constants=["greengrocer", "arp_warden", "rival_authority"],
             state_timeline=[
-                EntityStateSnapshot(fabula_time=14000, triggered_by="EVT_HODGES_GRUDGING_RESPECT",
+                EntityStateSnapshot(fabula_time=5000, triggered_by="EVT_HODGES_CONFRONTATION",
+                    traits={
+                        "belligerence": TraitVector(value=0.90, inertia=0.60, evidence_strength="moderate"),
+                    }),EntityStateSnapshot(fabula_time=14000, triggered_by="EVT_HODGES_GRUDGING_RESPECT",
                     traits={"belligerence": TraitVector(value=0.6, inertia=0.55, evidence_strength="moderate")},
                     beliefs_added=[
                         Belief(target_id="ENT_MAINWARING",
                                perceived_state="the bank manager actually held his nerve under fire",
                                confidence=0.65, inertia=0.4, established_at_fabula=14000, evidence_strength="moderate"),
                     ]),
+                
             ],
         ),
         "ENT_WALKER": Entity(
@@ -310,7 +312,7 @@ world_state = WorldStateV1(
         ),
         "ENT_FULLARD": Entity(
             id="ENT_FULLARD", name="Major-General Fullard",
-            location_id="LOC_AIRFIELD", status="healthy",
+            location_id="LOC_EXERCISE_GROUND", status="healthy",
             traits={
                 "arrogance":    TraitVector(value=0.9,  inertia=0.8, evidence_strength="strong"),
                 "competence":   TraitVector(value=0.7,  inertia=0.65, evidence_strength="moderate"),
@@ -323,12 +325,14 @@ world_state = WorldStateV1(
             ],
             constants=["regular_army", "general_staff", "upper_class"],
             state_timeline=[
-                EntityStateSnapshot(fabula_time=14000, triggered_by="EVT_HODGES_GRUDGING_RESPECT",
+                # Fullard is left stunned by the Home Guard's German-officer surrender;
+                # the attitude shift is anchored to that moment, not to Hodges's later praise.
+                EntityStateSnapshot(fabula_time=10000, triggered_by="EVT_PARACHUTIST_CAPTURED",
                     traits={"arrogance": TraitVector(value=0.75, inertia=0.7, evidence_strength="moderate")},
                     beliefs_added=[
                         Belief(target_id="ENT_MAINWARING",
                                perceived_state="the platoon may have been underestimated after all",
-                               confidence=0.6, inertia=0.4, established_at_fabula=14000, evidence_strength="moderate"),
+                               confidence=0.6, inertia=0.4, established_at_fabula=10000, evidence_strength="moderate"),
                     ]),
             ],
         ),
@@ -349,7 +353,11 @@ world_state = WorldStateV1(
         ),
         "ENT_GERMAN_OFFICER": Entity(
             id="ENT_GERMAN_OFFICER", name="Luftwaffe Officer",
-            location_id="LOC_AIRFIELD", status="healthy",
+            # First on-page location is the church hall, which the Luftwaffe crew
+            # enter as hostage-takers after their reconnaissance aircraft is shot
+            # down; their off-page point of origin (the French coast) is not a
+            # modelled location in this fixture.
+            location_id="LOC_CHURCH_HALL", status="healthy",
             traits={
                 "menace":      TraitVector(value=0.7,  inertia=0.55, evidence_strength="strong"),
                 "discipline":  TraitVector(value=0.85, inertia=0.7, evidence_strength="strong"),
@@ -361,6 +369,14 @@ world_state = WorldStateV1(
                        confidence=0.7, inertia=0.5, established_at_fabula=10000, evidence_strength="moderate"),
             ],
             constants=["wehrmacht_officer", "downed_airman"],
+            state_timeline=[
+                # Parity with mutation_social EVT_PARACHUTIST_CAPTURED → ENT_GERMAN_OFFICER fear toward Mainwaring.
+                EntityStateSnapshot(fabula_time=10000, triggered_by="EVT_PARACHUTIST_CAPTURED",
+                    location_id="LOC_CHURCH_HALL", status="healthy",
+                    traits={
+                        "frustration": TraitVector(value=0.85, inertia=0.5, evidence_strength="strong"),
+                    }),
+            ],
         ),
     },
 
@@ -384,7 +400,7 @@ world_state = WorldStateV1(
         EventNode(id="EVT_PIKE_SCARF_INCIDENT", fabula_time=6000, syuzhet_index=15, event_type="outcome",
                   actor_ids=["ENT_PIKE"], target_ids=["ENT_MAINWARING"],
                   description="Pike insists on wearing his scarf during drill, testing Mainwaring's patience and prompting the immortal 'stupid boy'."),
-        EventNode(id="EVT_WILSON_OUTRANKS_REVELATION", fabula_time=7000, syuzhet_index=5, event_type="revelation",
+        EventNode(id="EVT_WILSON_OUTRANKS_REVELATION", fabula_time=7000, syuzhet_index=5, event_type="outcome",
                   actor_ids=["ENT_WILSON"], target_ids=["ENT_MAINWARING"],
                   description="Wilson casually reveals his higher social standing, humiliating Mainwaring on the most sensitive of all axes."),
         EventNode(id="EVT_JONES_BAYONET_CHARGE", fabula_time=8000, syuzhet_index=6, event_type="choice",
@@ -394,12 +410,13 @@ world_state = WorldStateV1(
                   actor_ids=["ENT_MAINWARING", "ENT_JONES"], target_ids=[],
                   description="Mainwaring and Jones patrol the beach after the exercises, mistaking a buoy for a sea-mine."),
         EventNode(id="EVT_PARACHUTIST_CAPTURED", fabula_time=10000, syuzhet_index=7, event_type="outcome",
-                  actor_ids=["ENT_FRAZER", "ENT_GODFREY", "ENT_PIKE"], target_ids=["ENT_GERMAN_OFFICER"],
-                  description="The platoon improbably captures a downed Luftwaffe crew on the beach after an aircraft is shot down."),
+                  actor_ids=["ENT_MAINWARING", "ENT_WILSON", "ENT_JONES", "ENT_FRAZER", "ENT_GODFREY", "ENT_PIKE"],
+                  target_ids=["ENT_GERMAN_OFFICER"],
+                  description="The platoon infiltrates the church hall through the crypt in choir surplices and Mainwaring confronts the Luftwaffe officer at gunpoint; the Germans surrender, with Fullard left stunned outside."),
         EventNode(id="EVT_MAINWARING_STANDS_FIRM", fabula_time=11000, syuzhet_index=8, event_type="choice",
-                  actor_ids=["ENT_MAINWARING"], target_ids=["ENT_FULLARD"],
-                  description="Mainwaring stands up to Major-General Fullard, who is threatening to disband the platoon for poor showing on exercise."),
-        EventNode(id="EVT_GODFREY_HERO", fabula_time=12000, syuzhet_index=9, event_type="revelation",
+                  actor_ids=["ENT_MAINWARING"], target_ids=["ENT_GERMAN_OFFICER"],
+                  description="Inside the church hall Mainwaring stands his ground at the count of three, warning the Luftwaffe officer that seven men will take his place if he dies."),
+        EventNode(id="EVT_GODFREY_HERO", fabula_time=12000, syuzhet_index=9, event_type="outcome",
                   actor_ids=["ENT_GODFREY"], target_ids=["ENT_MAINWARING"],
                   description="Godfrey quietly reveals his Great-War medal for bravery as a stretcher-bearer, earning the platoon's astonished respect."),
         EventNode(id="EVT_PIKE_REFUSES_NAME", fabula_time=13000, syuzhet_index=10, event_type="choice",
@@ -430,7 +447,7 @@ world_state = WorldStateV1(
                   description="Wilson casually lets slip his higher social standing in front of Mainwaring during a quiet moment in the church hall.",
                   content="Actually, sir, my people had a place in the country — Brigadier so-and-so was my father's cousin, frightful old bore really.",
                   speaker_id="ENT_WILSON", addressee_ids=["ENT_MAINWARING", "ENT_PIKE"], actor_ids=["ENT_WILSON"],
-                  target_ids=[], via_channel_id="CHN_VILLAGE_GOSSIP", truth_value="true",
+                  target_ids=[], via_channel_id=None, truth_value="true",
                   fabula_time=7000, syuzhet_index=18),
         EventNode(id="EVT_UTT_JONES_DONT_PANIC", event_type="utterance",
                   description="Jones bellows his catchphrase as he leads the bayonet charge during the war-games exercise.",
@@ -445,7 +462,7 @@ world_state = WorldStateV1(
                   content="Mainwaring, your platoon's showing was an utter disgrace. I shall be recommending you be relieved of command forthwith.",
                   speaker_id="ENT_FULLARD", addressee_ids=["ENT_MAINWARING"], actor_ids=["ENT_FULLARD"],
                   target_ids=["EVT_MAINWARING_STANDS_FIRM"], via_channel_id=None, truth_value="performative",
-                  fabula_time=11000, syuzhet_index=20),
+                  fabula_time=9500, syuzhet_index=20),
         EventNode(id="EVT_UTT_GODFREY_REVEALS_MEDAL", event_type="utterance",
                   description="Godfrey gently mentions his Great-War medal for bravery as a stretcher-bearer.",
                   content="It was nothing really — just a small decoration for fetching a few chaps in from no-man's-land, that's all.",
@@ -453,9 +470,9 @@ world_state = WorldStateV1(
                   target_ids=[], via_channel_id=None, truth_value="true",
                   fabula_time=12000, syuzhet_index=21),
         EventNode(id="EVT_UTT_DONT_TELL_HIM_PIKE", event_type="utterance",
-                  description="Mainwaring barks the immortal order at Pike not to give his name to the captured German officer.",
+                  description="Mainwaring barks the immortal order at Pike not to give his name to the captured German officer; the German overhears Pike's name as a side-effect.",
                   content="Don't tell him your name, Pike!",
-                  speaker_id="ENT_MAINWARING", addressee_ids=["ENT_PIKE", "ENT_GERMAN_OFFICER"],
+                  speaker_id="ENT_MAINWARING", addressee_ids=["ENT_PIKE"],
                   actor_ids=["ENT_MAINWARING"], target_ids=["EVT_PIKE_REFUSES_NAME"],
                   via_channel_id="CHN_PLATOON_CHAIN_OF_COMMAND", truth_value="performative",
                   fabula_time=13000, syuzhet_index=22),
@@ -471,6 +488,16 @@ world_state = WorldStateV1(
                   speaker_id="ENT_MAINWARING", addressee_ids=["ENT_WILSON"], actor_ids=["ENT_MAINWARING"],
                   target_ids=["EVT_PARACHUTIST_CAPTURED"], via_channel_id=None, truth_value="true",
                   fabula_time=15000, syuzhet_index=24),
+        # Wilson's quiet revelation that the German officer's gun was empty — the
+        # cue Mainwaring's 'So was mine' replies to. Without this utterance the
+        # exchange in the .txt has no first half.
+        EventNode(id="EVT_UTT_WILSON_EMPTY_PISTOL", event_type="utterance",
+                  description="Wilson quietly informs Mainwaring that the German officer's Luger had been empty all along.",
+                  content="You know, sir, his pistol was empty the whole time.",
+                  speaker_id="ENT_WILSON", addressee_ids=["ENT_MAINWARING"], actor_ids=["ENT_WILSON"],
+                  target_ids=["ENT_GERMAN_OFFICER", "EVT_PARACHUTIST_CAPTURED"],
+                  via_channel_id=None, truth_value="true",
+                  fabula_time=14900, syuzhet_index=25),
     ],
 
     # ── CAUSAL TOPOLOGY ────────────────────────────────────────────────
@@ -619,7 +646,7 @@ world_state = WorldStateV1(
         CausalEdge(source_id="LOC_BEACH", target_id="ENT_JONES",
                    causality_type="ambient_propagation", mechanism="psychological", evidence_strength="weak",
                    causal_force=2.0, fabula_time=9000),
-        CausalEdge(source_id="LOC_AIRFIELD", target_id="ENT_MAINWARING",
+        CausalEdge(source_id="LOC_EXERCISE_GROUND", target_id="ENT_MAINWARING",
                    causality_type="ambient_propagation", mechanism="psychological", evidence_strength="moderate",
                    causal_force=3.0, fabula_time=11000),
         CausalEdge(source_id="LOC_TOWN_SQUARE", target_id="ENT_MAINWARING",
@@ -654,6 +681,35 @@ world_state = WorldStateV1(
         CausalEdge(source_id="WORLD_CLASS_COMEDY", target_id="EVT_GODFREY_HERO",
                    causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
                    causal_force=4.0, fabula_time=12000),
+
+        # ── orphan utterance wirings ──
+        CausalEdge(source_id="EVT_VICAR_COMPLAINS", target_id="EVT_UTT_VICAR_HALL_COMPLAINT",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=4000, propagation_delay=0),
+        CausalEdge(source_id="EVT_HODGES_CONFRONTATION", target_id="EVT_UTT_HODGES_BLACKOUT_CHALLENGE",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=5000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_WILSON_OUTRANKS_ASIDE", target_id="EVT_WILSON_OUTRANKS_REVELATION",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=4.0, fabula_time=7000, propagation_delay=0),
+        CausalEdge(source_id="EVT_JONES_BAYONET_CHARGE", target_id="EVT_UTT_JONES_DONT_PANIC",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=4.0, fabula_time=8000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_FULLARD_DRESSDOWN", target_id="EVT_MAINWARING_STANDS_FIRM",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=11000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_GODFREY_REVEALS_MEDAL", target_id="EVT_GODFREY_HERO",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=4.0, fabula_time=12000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_DONT_TELL_HIM_PIKE", target_id="EVT_PIKE_REFUSES_NAME",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=13000, propagation_delay=0),
+        CausalEdge(source_id="EVT_HODGES_GRUDGING_RESPECT", target_id="EVT_UTT_HODGES_GRUDGING_PRAISE",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=4.0, fabula_time=14000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PARACHUTIST_CAPTURED", target_id="EVT_UTT_MAINWARING_SO_WAS_MINE",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=10000, propagation_delay=5000),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -667,7 +723,7 @@ world_state = WorldStateV1(
         SpatialEdge(source_id="LOC_HIGH_STREET", target_id="LOC_TOWN_SQUARE"),
         SpatialEdge(source_id="LOC_TOWN_SQUARE", target_id="LOC_HIGH_STREET"),
         SpatialEdge(source_id="LOC_HIGH_STREET", target_id="LOC_BEACH"),
-        SpatialEdge(source_id="LOC_TOWN_SQUARE", target_id="LOC_AIRFIELD"),
+        SpatialEdge(source_id="LOC_TOWN_SQUARE", target_id="LOC_EXERCISE_GROUND"),
     ],
 
     # ── INFORMATION TOPOLOGY ────────────────────────────────────────────

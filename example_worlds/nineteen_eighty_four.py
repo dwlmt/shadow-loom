@@ -881,7 +881,7 @@ world_state = WorldStateV1(
             description="The endless rotating war between Oceania, Eurasia and Eastasia that consumes the surplus product, justifies austerity, and licenses the mid-sentence revision of who is friend and who is enemy. The hidden engine of Hate Week and of Winston's revisionist labour.",
             category="economy",
             magnitude=TraitVector(value=0.95, inertia=0.9, evidence_strength="strong"),
-            affected_domains=["social", "economic"],
+            affected_domains=["social"],
         ),
         "WORLD_PANOPTICON": GlobalTrait(
             id="WORLD_PANOPTICON",

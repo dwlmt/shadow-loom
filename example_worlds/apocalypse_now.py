@@ -73,14 +73,6 @@ world_state = WorldStateV1(
                 "psychedelic_war": AmbientVector(value=0.9, volatility=0.4, evidence_strength="strong"),
             },
         ),
-        "LOC_FRENCH_PLANTATION": Location(
-            name="The French Plantation",
-            description="A spectral colonial estate the river briefly disgorges: candlelit dinner, faded tricolore, and the widow Roxanne — the ghost of an earlier Indochina war.",
-            ambient_state={
-                "colonial_ghost": AmbientVector(value=0.9, volatility=0.1, evidence_strength="moderate"),
-                "melancholy":     AmbientVector(value=0.85, volatility=0.2, evidence_strength="moderate"),
-            },
-        ),
         "LOC_KURTZ_COMPOUND": Location(
             name="Kurtz's Compound",
             description="A ruined Khmer temple complex on the upper Nung: severed heads on stakes, hanged bodies in the trees, Montagnard worshippers at every door.",
@@ -108,23 +100,11 @@ world_state = WorldStateV1(
             properties={"state": "classified", "function": "biographical_seduction"},
             affordances=[Affordance(action="reveal_kurtz_humanity", target_type="Entity")],
         ),
-        "OBJ_LANCE_SURFBOARD": NarrativeObject(
-            id="OBJ_LANCE_SURFBOARD", name="Lance Johnson's Surfboard",
-            location_id="LOC_PBR_RIVER", owner_id="ENT_LANCE",
-            properties={"state": "fibreglass_yellow", "function": "totem_of_california"},
-            affordances=[Affordance(action="anchor_pre_war_self", target_type="Entity")],
-        ),
         "OBJ_NAPALM": NarrativeObject(
             id="OBJ_NAPALM", name="Napalm Payload",
             location_id="LOC_KILGORE_BEACH", owner_id="ENT_KILGORE",
             properties={"state": "armed", "function": "treeline_clearance"},
             affordances=[Affordance(action="incinerate_jungle", target_type="Location")],
-        ),
-        "OBJ_KURTZ_MANIFESTO": NarrativeObject(
-            id="OBJ_KURTZ_MANIFESTO", name="Kurtz's Typescript / Manifesto",
-            location_id="LOC_TEMPLE_INTERIOR", owner_id="ENT_KURTZ",
-            properties={"state": "annotated_in_pencil", "function": "philosophical_testament"},
-            affordances=[Affordance(action="indict_the_war", target_type="Entity")],
         ),
         "OBJ_MACHETE": NarrativeObject(
             id="OBJ_MACHETE", name="Sacrificial Machete",
@@ -132,8 +112,8 @@ world_state = WorldStateV1(
             properties={"state": "honed"},
             affordances=[Affordance(action="execute_kurtz", target_type="Entity")],
         ),
-        "OBJ_WATER_BUFFALO": NarrativeObject(
-            id="OBJ_WATER_BUFFALO", name="Sacrificial Water-Buffalo",
+        "OBJ_CARIBOU": NarrativeObject(
+            id="OBJ_CARIBOU", name="Sacrificial Caribou",
             location_id="LOC_KURTZ_COMPOUND", owner_id=None,
             properties={"state": "garlanded_for_slaughter", "function": "ritual_substitute"},
             affordances=[Affordance(action="be_ritually_slaughtered", target_type="Entity")],
@@ -177,6 +157,18 @@ world_state = WorldStateV1(
                                perceived_state="we cut them in half with a machine gun and give them a Band-Aid; the line is a lie",
                                confidence=0.85, inertia=0.7, established_at_fabula=3500, evidence_strength="strong"),
                     ]),
+                # Parity snapshots for EVT_DO_LUNG_BRIDGE and EVT_WILLARD_CAGED social mutations.
+                EntityStateSnapshot(fabula_time=4500, triggered_by="EVT_DO_LUNG_BRIDGE",
+                    location_id="LOC_DO_LUNG_BRIDGE",
+                    beliefs_added=[
+                        Belief(target_id="ENT_COLBY",
+                               perceived_state="the army's previous assassin is now operating with Kurtz",
+                               confidence=0.95, inertia=0.7, established_at_fabula=4500,
+                               acquired_via_event_id="EVT_DO_LUNG_BRIDGE",
+                               evidence_strength="strong"),
+                    ]),
+                EntityStateSnapshot(fabula_time=6500, triggered_by="EVT_WILLARD_CAGED",
+                    location_id="LOC_KURTZ_COMPOUND", status="injured"),
                 EntityStateSnapshot(fabula_time=7000, triggered_by="EVT_WILLARD_READS_DOSSIER",
                     traits={
                         "fascination_with_kurtz": TraitVector(value=0.85, inertia=0.8, evidence_strength="strong"),
@@ -247,6 +239,10 @@ world_state = WorldStateV1(
                        confidence=0.95, inertia=0.95, established_at_fabula=1500, evidence_strength="strong"),
             ],
             constants=["air_cavalry", "stetson_and_yellow_scarf"],
+            state_timeline=[
+                EntityStateSnapshot(fabula_time=1800, triggered_by="EVT_NAPALM_SURF_RAID",
+                    location_id="LOC_KILGORE_BEACH"),
+            ],
         ),
         "ENT_CHIEF": Entity(
             id="ENT_CHIEF", name="Chief Petty Officer Phillips",
@@ -326,10 +322,19 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_WILLARD",
                        perceived_state="never should have got off the boat — and his mission is what got us off",
-                       confidence=0.85, inertia=0.7, established_at_fabula=6000, evidence_strength="strong"),
+                       confidence=0.85, inertia=0.7, established_at_fabula=3000, evidence_strength="strong"),
             ],
             constants=["new_orleans_saucier", "draftee"],
             state_timeline=[
+                # Witness belief from the on-page sampan massacre.
+                EntityStateSnapshot(fabula_time=3500, triggered_by="EVT_SAMPAN_MASSACRE",
+                    beliefs_added=[
+                        Belief(target_id="ENT_WILLARD",
+                               perceived_state="he killed the wounded woman in cold blood to keep us moving",
+                               confidence=0.95, inertia=0.8, established_at_fabula=3500,
+                               acquired_via_event_id="EVT_SAMPAN_MASSACRE",
+                               evidence_strength="strong"),
+                    ]),
                 EntityStateSnapshot(fabula_time=6500, triggered_by="EVT_WILLARD_CAGED",
                     status="dead", location_id="LOC_KURTZ_COMPOUND"),
             ],
@@ -367,6 +372,13 @@ world_state = WorldStateV1(
                        confidence=0.95, inertia=0.9, established_at_fabula=6000, evidence_strength="strong"),
             ],
             constants=["american_freelance", "amphetamines"],
+            state_timeline=[
+                # Parity for EVT_ARRIVE_COMPOUND → ENT_PHOTOJOURNALIST affinity toward Willard.
+                EntityStateSnapshot(fabula_time=6000, triggered_by="EVT_ARRIVE_COMPOUND",
+                    location_id="LOC_KURTZ_COMPOUND"),
+                EntityStateSnapshot(fabula_time=6050, triggered_by="EVT_UTT_PHOTOJOURNALIST_PROPHESIES",
+                    location_id="LOC_KURTZ_COMPOUND"),
+            ],
         ),
         "ENT_COLBY": Entity(
             id="ENT_COLBY", name="Captain Richard Colby",
@@ -382,17 +394,10 @@ world_state = WorldStateV1(
                        confidence=0.95, inertia=0.95, established_at_fabula=4500, evidence_strength="strong"),
             ],
             constants=["previous_assassin", "went_native"],
-        ),
-        "ENT_ROXANNE": Entity(
-            id="ENT_ROXANNE", name="Roxanne Sarrault",
-            location_id="LOC_FRENCH_PLANTATION", status="healthy",
-            traits={
-                "melancholy":   TraitVector(value=0.85, inertia=0.85, evidence_strength="strong"),
-                "lucidity":     TraitVector(value=0.85, inertia=0.8, evidence_strength="moderate"),
-                "war_widowhood": TraitVector(value=0.9, inertia=0.95, evidence_strength="strong"),
-            },
-            beliefs=[],
-            constants=["french_colonial_widow"],
+            state_timeline=[
+                EntityStateSnapshot(fabula_time=6000, triggered_by="EVT_ARRIVE_COMPOUND",
+                    location_id="LOC_KURTZ_COMPOUND"),
+            ],
         ),
         # The Nha Trang briefing party (two officers + a CIA man) modelled as a
         # single composite entity — they speak with one voice, hand Willard the
@@ -415,7 +420,7 @@ world_state = WorldStateV1(
                   event_type="outcome", actor_ids=["ENT_WILLARD"], target_ids=[],
                   description="Willard, drunk and stripped to his shorts in a Saigon hotel room, smashes a mirror with his fist and weeps for a mission."),
         EventNode(id="EVT_NHA_TRANG_BRIEFING", fabula_time=500, syuzhet_index=2,
-                  event_type="revelation", actor_ids=["ENT_WILLARD"], target_ids=["ENT_KURTZ"],
+                  event_type="outcome", actor_ids=["ENT_NHA_TRANG_BRASS"], target_ids=["ENT_WILLARD", "ENT_KURTZ"],
                   description="At Nha Trang two officers and a CIA man brief Willard on Colonel Kurtz, Green-Beret-gone-native in Cambodia, and order him to terminate Kurtz's command — with extreme prejudice."),
         EventNode(id="EVT_BOARD_PBR", fabula_time=1000, syuzhet_index=3,
                   event_type="choice", actor_ids=["ENT_WILLARD", "ENT_CHIEF", "ENT_LANCE", "ENT_CHEF", "ENT_CLEAN"], target_ids=[],
@@ -433,13 +438,13 @@ world_state = WorldStateV1(
                   event_type="outcome", actor_ids=["ENT_CHIEF", "ENT_CHEF", "ENT_CLEAN", "ENT_WILLARD"], target_ids=[],
                   description="Chief insists on stopping a peasant sampan; a sudden movement panics Mr Clean into firing — every civilian dies; Willard finishes the surviving woman with a single shot to keep the mission moving."),
         EventNode(id="EVT_DO_LUNG_BRIDGE", fabula_time=4500, syuzhet_index=8,
-                  event_type="revelation", actor_ids=["ENT_WILLARD"], target_ids=["ENT_COLBY"],
+                  event_type="outcome", actor_ids=["ENT_WILLARD"], target_ids=["ENT_COLBY"],
                   description="At Do Lung Bridge — the last American outpost — there is no commanding officer; in a packet of mail Willard reads a letter revealing that Captain Colby, sent on the same mission, is now operating with Kurtz."),
         EventNode(id="EVT_MR_CLEAN_DEATH", fabula_time=4800, syuzhet_index=9,
-                  event_type="outcome", actor_ids=["ENT_CLEAN"], target_ids=[],
+                  event_type="outcome", actor_ids=[], target_ids=["ENT_CLEAN"],
                   description="As Mr Clean listens to a tape from his mother on the family Sears stereo, a Vietcong ambush rakes the boat; he is shot dead mid-tape."),
         EventNode(id="EVT_CHIEF_SPEARED", fabula_time=5500, syuzhet_index=10,
-                  event_type="outcome", actor_ids=["ENT_CHIEF"], target_ids=["ENT_WILLARD"],
+                  event_type="outcome", actor_ids=[], target_ids=["ENT_CHIEF", "ENT_WILLARD"],
                   description="Primitive natives onshore loose a storm of arrows at the PBR; Chief is impaled with a thrown spear and, dying, tries to pull Willard onto the point with him."),
         EventNode(id="EVT_ARRIVE_COMPOUND", fabula_time=6000, syuzhet_index=11,
                   event_type="outcome", actor_ids=["ENT_WILLARD", "ENT_LANCE", "ENT_CHEF"], target_ids=["ENT_KURTZ", "ENT_PHOTOJOURNALIST"],
@@ -448,11 +453,11 @@ world_state = WorldStateV1(
                   event_type="outcome", actor_ids=["ENT_KURTZ"], target_ids=["ENT_WILLARD", "ENT_CHEF"],
                   description="Kurtz's people drag Willard through the mud and lock him in a tiger cage; in the night Kurtz drops Chef's severed head into Willard's lap."),
         EventNode(id="EVT_WILLARD_READS_DOSSIER", fabula_time=7000, syuzhet_index=13,
-                  event_type="revelation", actor_ids=["ENT_WILLARD"], target_ids=["ENT_KURTZ"],
+                  event_type="outcome", actor_ids=["ENT_WILLARD"], target_ids=["ENT_KURTZ"],
                   description="Freed and given the run of the compound, Willard re-reads the Kurtz dossier and listens to days of Kurtz's philosophising; his contempt curdles into recognition."),
         EventNode(id="EVT_BUFFALO_RITUAL", fabula_time=8000, syuzhet_index=14,
                   event_type="outcome", actor_ids=["ENT_WILLARD"], target_ids=["ENT_KURTZ"],
-                  description="As the Montagnards ritually slaughter a garlanded water-buffalo, Willard, mud-streaked, rises from the river and enters Kurtz's chamber with a machete."),
+                  description="As the Montagnards ritually slaughter a garlanded caribou, Willard, mud-streaked, rises from the river and enters Kurtz's chamber with a machete."),
         EventNode(id="EVT_KURTZ_KILLED", fabula_time=8100, syuzhet_index=15,
                   event_type="outcome", actor_ids=["ENT_WILLARD"], target_ids=["ENT_KURTZ"],
                   description="Willard hacks Kurtz down with the machete, intercut with the buffalo's slaughter; Kurtz's last words are 'the horror, the horror.'"),
@@ -522,13 +527,13 @@ world_state = WorldStateV1(
             addressee_ids=["ENT_WILLARD"],
             actor_ids=["ENT_KURTZ"],
             target_ids=["ENT_KURTZ", "WORLD_VIETNAM_WAR"],
-            via_channel_id="CHN_KURTZ_MANIFESTO",
+            via_channel_id=None,
             truth_value="performative",
-            description="Across days in the compound Kurtz reads aloud from his annotated typescript and the recorded manifesto, instructing Willard in the metaphysics of horror.",
+            description="Across days in the compound Kurtz reads aloud his doctrine of horror to Willard, instructing him in the metaphysics of unrestrained war.",
             content="Kurtz expounds the doctrine that horror and moral terror are friends, that one must make a friend of horror, and that the army's failure is squeamishness disguised as virtue.",
         ),
         EventNode(
-            id="EVT_UTT_KURTZ_LAST_WORDS", fabula_time=8120, syuzhet_index=23,
+            id="EVT_UTT_KURTZ_LAST_WORDS", fabula_time=8095, syuzhet_index=23,
             event_type="utterance", speaker_id="ENT_KURTZ",
             addressee_ids=["ENT_WILLARD"],
             actor_ids=["ENT_KURTZ"],
@@ -672,21 +677,15 @@ world_state = WorldStateV1(
         CausalEdge(source_id="OBJ_MISSION_DOSSIER", target_id="EVT_WILLARD_READS_DOSSIER",
                    causality_type="affordance_gate", mechanism="epistemic", evidence_strength="strong",
                    causal_force=8.0, fabula_time=7000),
-        CausalEdge(source_id="OBJ_LANCE_SURFBOARD", target_id="EVT_NAPALM_SURF_RAID",
-                   causality_type="affordance_gate", mechanism="physical", evidence_strength="strong",
-                   causal_force=6.0, fabula_time=1800),
         CausalEdge(source_id="OBJ_NAPALM", target_id="EVT_NAPALM_SURF_RAID",
                    causality_type="affordance_gate", mechanism="physical", evidence_strength="strong",
                    causal_force=10.0, fabula_time=1800),
         CausalEdge(source_id="OBJ_MACHETE", target_id="EVT_KURTZ_KILLED",
                    causality_type="affordance_gate", mechanism="physical", evidence_strength="strong",
                    causal_force=10.0, fabula_time=8100),
-        CausalEdge(source_id="OBJ_WATER_BUFFALO", target_id="EVT_BUFFALO_RITUAL",
+        CausalEdge(source_id="OBJ_CARIBOU", target_id="EVT_BUFFALO_RITUAL",
                    causality_type="affordance_gate", mechanism="social", evidence_strength="strong",
                    causal_force=8.0, fabula_time=8000),
-        CausalEdge(source_id="OBJ_KURTZ_MANIFESTO", target_id="EVT_WILLARD_READS_DOSSIER",
-                   causality_type="affordance_gate", mechanism="epistemic", evidence_strength="moderate",
-                   causal_force=5.0, fabula_time=7000),
 
         # ── ambient_propagation (LOC → ENT) ──
         CausalEdge(source_id="LOC_SAIGON_HOTEL", target_id="ENT_WILLARD",
@@ -766,6 +765,33 @@ world_state = WorldStateV1(
         CausalEdge(source_id="WORLD_RIVER_AS_FATE", target_id="EVT_ARRIVE_COMPOUND",
                    causality_type="chain_reaction", mechanism="psychological", evidence_strength="strong",
                    causal_force=8.0, fabula_time=6000, propagation_delay=0),
+
+        # ── orphan utterance wirings ──
+        CausalEdge(source_id="EVT_NHA_TRANG_BRIEFING", target_id="EVT_UTT_NHA_TRANG_KILL_ORDER",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=500, propagation_delay=50),
+        CausalEdge(source_id="EVT_UTT_NHA_TRANG_KILL_ORDER", target_id="EVT_BOARD_PBR",
+                   causality_type="chain_reaction", mechanism="performative", evidence_strength="strong",
+                   causal_force=7.0, fabula_time=550, propagation_delay=450),
+        CausalEdge(source_id="EVT_UTT_DOSSIER_PROFILES_KURTZ", target_id="EVT_WILLARD_READS_DOSSIER",
+                   causality_type="chain_reaction", mechanism="informational", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=3000, propagation_delay=4000),
+        CausalEdge(source_id="EVT_UTT_KILGORE_AIR_ASSAULT_ORDER", target_id="EVT_NAPALM_SURF_RAID",
+                   causality_type="chain_reaction", mechanism="performative", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=1780, propagation_delay=20),
+        CausalEdge(source_id="EVT_NAPALM_SURF_RAID", target_id="EVT_UTT_KILGORE_NAPALM_SOLILOQUY",
+                   causality_type="chain_reaction", mechanism="emotional", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=1800, propagation_delay=300),
+        CausalEdge(source_id="EVT_ARRIVE_COMPOUND", target_id="EVT_UTT_PHOTOJOURNALIST_PROPHESIES",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=4.0, fabula_time=6000, propagation_delay=50),
+        CausalEdge(source_id="EVT_UTT_KURTZ_HORROR_DOCTRINE", target_id="EVT_BUFFALO_RITUAL",
+                   causality_type="chain_reaction", mechanism="psychological", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=7200, propagation_delay=800),
+        # Kurtz's last words are uttered DURING the killing (machete strikes), not after
+        # his death snapshot. They are a parallel consequence of his mortal realization,
+        # not caused by the death-finalisation. The earlier KURTZ_KILLED -> LAST_WORDS
+        # edge would imply post-mortem speech, so we drop it.
     ],
 
     # ── SPATIAL TOPOLOGY ───────────────────────────────────────────────
@@ -776,8 +802,6 @@ world_state = WorldStateV1(
         SpatialEdge(source_id="LOC_KILGORE_BEACH", target_id="LOC_PBR_RIVER"),
         SpatialEdge(source_id="LOC_PBR_RIVER", target_id="LOC_HAU_PHAT_USO"),
         SpatialEdge(source_id="LOC_HAU_PHAT_USO", target_id="LOC_PBR_RIVER"),
-        SpatialEdge(source_id="LOC_PBR_RIVER", target_id="LOC_FRENCH_PLANTATION"),
-        SpatialEdge(source_id="LOC_FRENCH_PLANTATION", target_id="LOC_PBR_RIVER"),
         SpatialEdge(source_id="LOC_PBR_RIVER", target_id="LOC_DO_LUNG_BRIDGE"),
         SpatialEdge(source_id="LOC_DO_LUNG_BRIDGE", target_id="LOC_PBR_RIVER"),
         SpatialEdge(source_id="LOC_PBR_RIVER", target_id="LOC_KURTZ_COMPOUND"),
@@ -806,22 +830,6 @@ world_state = WorldStateV1(
                              'OBJ_MISSION_DOSSIER': 1.0},
             established_at_fabula=500,
             terminated_at_fabula=8500,
-            evidence_strength='strong',
-        ),
-        'CHN_KURTZ_MANIFESTO': Channel(
-            id='CHN_KURTZ_MANIFESTO',
-            name="Kurtz's annotated typescript and recorded manifesto",
-            medium='recorded_manifesto',
-            # Kurtz authored it; anyone in the compound who finds the typescript
-            # or the tapes is a potential listener.
-            participant_ids=['OBJ_KURTZ_MANIFESTO', 'ENT_KURTZ', 'ENT_WILLARD',
-                             'ENT_PHOTOJOURNALIST'],
-            directionality='broadcast',
-            intelligibility={'ENT_KURTZ': 1.0, 'ENT_WILLARD': 0.7,
-                             'ENT_PHOTOJOURNALIST': 0.6,
-                             'OBJ_KURTZ_MANIFESTO': 1.0},
-            established_at_fabula=6000,
-            terminated_at_fabula=None,
             evidence_strength='strong',
         ),
         'CHN_AIR_CAV_RADIO': Channel(

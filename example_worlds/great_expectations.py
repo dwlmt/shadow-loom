@@ -154,11 +154,24 @@ world_state = WorldStateV1(
             ],
             constants=["orphan"],
             state_timeline=[
+                EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_PIP_MEETS_CONVICT",
+                    traits={
+                        "fear": TraitVector(value=0.70, inertia=0.30, evidence_strength="moderate"),
+                        "compassion": TraitVector(value=0.75, inertia=0.50, evidence_strength="moderate"),
+                    }),
+                EntityStateSnapshot(fabula_time=2000, triggered_by="EVT_CONVICTS_RECAPTURED",
+                    traits={
+                        "guilt": TraitVector(value=0.50, inertia=0.35, evidence_strength="moderate"),
+                    }),
                 EntityStateSnapshot(fabula_time=4000, triggered_by="EVT_PIP_VISITS_SATIS",
                     location_id="LOC_SATIS_HOUSE",
                     traits={
                         "shame": TraitVector(value=0.7, inertia=0.4, evidence_strength="strong"),
                         "ambition": TraitVector(value=0.7, inertia=0.5, evidence_strength="strong"),
+                    }),
+                EntityStateSnapshot(fabula_time=4800, triggered_by="EVT_HAVISHAM_PAYS_PREMIUM",
+                    traits={
+                        "gratitude_to_havisham": TraitVector(value=0.75, inertia=0.40, evidence_strength="moderate"),
                     }),
                 EntityStateSnapshot(fabula_time=8000, triggered_by="EVT_JAGGERS_REVEALS_FORTUNE",
                     location_id="LOC_LONDON",
@@ -166,9 +179,17 @@ world_state = WorldStateV1(
                         "snobbery": TraitVector(value=0.7, inertia=0.5, evidence_strength="strong"),
                         "ambition": TraitVector(value=0.85, inertia=0.55, evidence_strength="strong"),
                     }),
+                EntityStateSnapshot(fabula_time=8500, triggered_by="EVT_MRS_JOE_DIES",
+                    traits={
+                        "guilt": TraitVector(value=0.55, inertia=0.35, evidence_strength="moderate"),
+                    }),
                 EntityStateSnapshot(fabula_time=9000, triggered_by="EVT_JOE_VISITS_LONDON",
                     traits={
                         "shame": TraitVector(value=0.85, inertia=0.45, evidence_strength="strong"),
+                    }),
+                EntityStateSnapshot(fabula_time=12000, triggered_by="EVT_DRUMMLE_TOAST",
+                    traits={
+                        "shame": TraitVector(value=0.35, inertia=0.30, evidence_strength="moderate"),
                     }),
                 EntityStateSnapshot(fabula_time=13000, triggered_by="EVT_MAGWITCH_REVEALS_HIMSELF",
                     traits={
@@ -179,7 +200,14 @@ world_state = WorldStateV1(
                     beliefs_invalidated=["ENT_HAVISHAM"]),
                 EntityStateSnapshot(fabula_time=15000, triggered_by="EVT_ESTELLA_MARRIES_DRUMMLE",
                     beliefs_invalidated=["ENT_ESTELLA"]),
-                EntityStateSnapshot(fabula_time=17000, triggered_by="EVT_MAGWITCH_DIES",
+                EntityStateSnapshot(fabula_time=16000, triggered_by="EVT_ORLICK_LURES_PIP",
+                    traits={
+                        "naivety": TraitVector(value=0.45, inertia=0.40, evidence_strength="moderate"),
+                    }),
+                EntityStateSnapshot(fabula_time=16200, triggered_by="EVT_PIP_RESCUED",
+                    traits={
+                        "compassion": TraitVector(value=0.80, inertia=0.50, evidence_strength="moderate"),
+                    }),EntityStateSnapshot(fabula_time=17000, triggered_by="EVT_MAGWITCH_DIES",
                     traits={
                         "compassion": TraitVector(value=0.95, inertia=0.6, evidence_strength="strong"),
                     }),
@@ -193,6 +221,7 @@ world_state = WorldStateV1(
                     location_id="LOC_CAIRO", status="healthy"),
                 EntityStateSnapshot(fabula_time=21000, triggered_by="EVT_PIP_MEETS_ESTELLA_AGAIN",
                     location_id="LOC_SATIS_HOUSE"),
+                
             ],
         ),
         "ENT_JOE": Entity(
@@ -210,11 +239,15 @@ world_state = WorldStateV1(
                        confidence=0.95, inertia=0.7, evidence_strength="strong"),
             ],
             state_timeline=[
-                EntityStateSnapshot(fabula_time=20000, triggered_by="EVT_JOE_MARRIES_BIDDY",
+                EntityStateSnapshot(fabula_time=8500, triggered_by="EVT_MRS_JOE_DIES",
+                    traits={
+                        "grief": TraitVector(value=0.75, inertia=0.40, evidence_strength="moderate"),
+                    }),EntityStateSnapshot(fabula_time=20000, triggered_by="EVT_JOE_MARRIES_BIDDY",
                     beliefs_added=[
                         Belief(target_id="ENT_BIDDY", perceived_state="Biddy is my wife and partner",
                                confidence=1.0, inertia=0.7, established_at_fabula=20000, evidence_strength="strong"),
                     ]),
+                
             ],
         ),
         "ENT_MRS_JOE": Entity(
@@ -310,10 +343,14 @@ world_state = WorldStateV1(
                     traits={
                         "tenderness": TraitVector(value=0.85, inertia=0.6, evidence_strength="strong"),
                     }),
-                EntityStateSnapshot(fabula_time=16500, triggered_by="EVT_MAGWITCH_CAPTURED",
+                EntityStateSnapshot(fabula_time=14000, triggered_by="EVT_PIP_PLANS_ESCAPE",
+                    traits={
+                        "tenderness": TraitVector(value=0.60, inertia=0.45, evidence_strength="moderate"),
+                    }),EntityStateSnapshot(fabula_time=16500, triggered_by="EVT_MAGWITCH_CAPTURED",
                     location_id="LOC_NEWGATE", status="ill"),
                 EntityStateSnapshot(fabula_time=17000, triggered_by="EVT_MAGWITCH_DIES",
                     status="dead"),
+                
             ],
         ),
         "ENT_HERBERT": Entity(
@@ -332,8 +369,12 @@ world_state = WorldStateV1(
             state_timeline=[
                 EntityStateSnapshot(fabula_time=7500, triggered_by="EVT_PIP_MOVES_TO_LONDON",
                     location_id="LOC_BARNARDS_INN"),
-                EntityStateSnapshot(fabula_time=17500, triggered_by="EVT_HERBERT_LEAVES_FOR_CAIRO",
+                EntityStateSnapshot(fabula_time=10000, triggered_by="EVT_PIP_HELPS_HERBERT",
+                    traits={
+                        "gratitude": TraitVector(value=0.80, inertia=0.50, evidence_strength="moderate"),
+                    }),EntityStateSnapshot(fabula_time=17500, triggered_by="EVT_HERBERT_LEAVES_FOR_CAIRO",
                     location_id="LOC_CAIRO"),
+                
             ],
         ),
         "ENT_JAGGERS": Entity(
@@ -900,6 +941,32 @@ world_state = WorldStateV1(
         CausalEdge(source_id="WORLD_LAW_AND_TRANSPORTATION", target_id="EVT_MAGWITCH_DIES",
                    causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
                    causal_force=5.0, fabula_time=17000),
+
+        # ── orphan utterance wirings ──
+        CausalEdge(source_id="EVT_PIP_MEETS_CONVICT", target_id="EVT_UTT_MAGWITCH_THREATENS_PIP",
+                   causality_type="chain_reaction", mechanism="performative", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_JAGGERS_REVEALS_FORTUNE", target_id="EVT_UTT_JAGGERS_ANNOUNCES_FORTUNE",
+                   causality_type="chain_reaction", mechanism="performative", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=7000, propagation_delay=0),
+        CausalEdge(source_id="EVT_MAGWITCH_REVEALS_HIMSELF", target_id="EVT_UTT_MAGWITCH_REVEALS_PATRONAGE",
+                   causality_type="chain_reaction", mechanism="informational", evidence_strength="strong",
+                   causal_force=10.0, fabula_time=13000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_WEMMICK_WARNS_PIP", target_id="EVT_PIP_PLANS_ESCAPE",
+                   causality_type="chain_reaction", mechanism="informational", evidence_strength="strong",
+                   causal_force=7.0, fabula_time=13800, propagation_delay=200),
+        CausalEdge(source_id="EVT_HAVISHAM_REPENTS", target_id="EVT_UTT_HAVISHAM_REPENTS_TO_PIP",
+                   causality_type="chain_reaction", mechanism="emotional", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=15200, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_ANONYMOUS_LURE_LETTER", target_id="EVT_ORLICK_LURES_PIP",
+                   causality_type="chain_reaction", mechanism="performative", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=15900, propagation_delay=100),
+        CausalEdge(source_id="EVT_ORLICK_LURES_PIP", target_id="EVT_UTT_ORLICK_CONFESSES_TO_PIP",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=16000, propagation_delay=100),
+        CausalEdge(source_id="EVT_MAGWITCH_DIES", target_id="EVT_UTT_PIP_TELLS_MAGWITCH_OF_ESTELLA",
+                   causality_type="chain_reaction", mechanism="emotional", evidence_strength="strong",
+                   causal_force=4.0, fabula_time=17000, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────

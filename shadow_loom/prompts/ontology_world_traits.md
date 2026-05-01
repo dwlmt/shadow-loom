@@ -35,6 +35,7 @@ Each `GlobalTrait` has:
     - Default if omitted: `0.8` (world facts are the stickiest tier).
   - `evidence_strength` (str, optional): `"weak"` / `"moderate"` / `"strong"` — **engine's confidence in the extraction**, distinct from `value`/`inertia`. `"strong"` for explicitly named institutions/laws ("the Party", "the witches' prophecy"); `"moderate"` for named-latent forces inferred from patterned behaviour; `"weak"` for genre-default ambient backdrops. Defaults to `"moderate"`.
 - `affected_domains` (list[str]): Which causal mechanism categories this trait amplifies. Choose from: `"physical"`, `"psychological"`, `"epistemic"`, `"social"`, `"emotional"`, `"informational"`, `"betrayal"`. The engine penalises any incoming impulse whose `mechanism` is **not** in this list by the fallback factor `0.2` (i.e. mismatched-domain pressure contributes only 20% of its nominal weight). **Be selective**: leaving the list empty disables the gate entirely (no filtering); listing all seven domains defeats the selectivity and broadcasts full WORLD_ pressure into every trait family. Most world traits affect 1–3 domains.
+  - **Map intuitive labels onto the canonical seven**: `"economic"` / `"economics"` / `"financial"` / `"political"` → `"social"`; `"moral"` / `"ethical"` / `"supernatural"` / `"magical"` → `"psychological"`; `"ideological"` / `"religious"` / `"spiritual"` → `"epistemic"`. The model layer auto-coerces these aliases, but emitting the canonical short form keeps audit reports and prompt round-trips consistent.
 
 ---
 

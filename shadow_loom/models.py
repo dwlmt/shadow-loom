@@ -36,6 +36,61 @@ def _coerce_evidence_strength(v: Any) -> Any:
     return _EVIDENCE_STRENGTH_ALIASES.get(v.strip().lower(), v)
 
 
+# Map common but off-vocabulary mechanism-domain labels onto canonical
+# MECHANISM_TRAIT_MAP keys. Without this, a GlobalTrait whose
+# affected_domains contains "economic" silently fails to match the
+# pressure-routing gate (which keys on the canonical list), losing ~80%
+# of its ambient pressure on dependent edges.
+_DOMAIN_ALIASES = {
+    "economic": "social",
+    "economics": "social",
+    "financial": "social",
+    "political": "social",
+    "moral": "psychological",
+    "ethical": "psychological",
+    "ideological": "epistemic",
+    "religious": "epistemic",
+    "spiritual": "epistemic",
+    "supernatural": "psychological",
+    "magical": "psychological",
+}
+
+
+def _coerce_domain(v: Any) -> Any:
+    """Map common synonyms onto canonical MECHANISM_TRAIT_MAP keys."""
+    if not isinstance(v, str):
+        return v
+    return _DOMAIN_ALIASES.get(v.strip().lower(), v)
+
+
+def _coerce_domain_list(v: Any) -> Any:
+    if not isinstance(v, list):
+        return v
+    return [_coerce_domain(item) for item in v]
+
+
+# Map common LLM / hand-authored ``mechanism`` labels onto the short
+# canonical keys used throughout the codebase. The longer ``_revelation``
+# / ``_coercion`` / ``_force`` suffixes are still recognised by
+# ``causal_physics.MECHANISM_TRAIT_MAP`` for backward compatibility, but
+# we canonicalize on the model boundary so that downstream pretty-prints,
+# audit reports, and prompt-snippet round-trips all see the same token.
+# Off-list mechanism labels (``kinetic``, ``chemical``, ``seduction`` …)
+# are intentionally NOT mapped: they are a documented escape hatch that
+# bypasses mechanism-trait routing.
+_MECHANISM_ALIASES = {
+    "physical_force": "physical",
+    "epistemic_revelation": "epistemic",
+    "social_coercion": "social",
+}
+
+
+def _coerce_mechanism(v: Any) -> Any:
+    if not isinstance(v, str):
+        return v
+    return _MECHANISM_ALIASES.get(v.strip().lower(), v)
+
+
 # --- 0. AMWN (Ancestral Multiverse World Network) BASE CLASS (The Multiverse Tag) ---
 class AMWNNode(BaseModel):
     world_id: Literal["factual", "shadow"] = Field(
@@ -189,14 +244,25 @@ class GlobalTrait(AMWNNode):
                     "Physics laws ~0.95, political situations ~0.4)."
     )
     affected_domains: List[str] = Field(
-        description="Which causal mechanism categories this trait influences. "
-                    "Keys from MECHANISM_TRAIT_MAP: 'physical', 'psychological', "
-                    "'epistemic', 'social', 'emotional', 'informational', 'betrayal'."
+        description=(
+            "Which causal mechanism categories this trait influences. "
+            "Use the canonical short keys from MECHANISM_TRAIT_MAP: "
+            "'physical', 'psychological', 'epistemic', 'social', 'emotional', "
+            "'informational', 'betrayal'. Common off-list labels "
+            "('economic', 'political', 'moral', 'ideological', 'religious', "
+            "'supernatural', 'magical', …) are auto-mapped onto these via "
+            "_DOMAIN_ALIASES so legacy fixtures keep routing correctly, but "
+            "new content should emit the canonical form directly."
+        ),
     )
     state_timeline: List[WorldTraitSnapshot] = Field(
         default_factory=list,
         description="Chronological snapshots of state changes through the story. "
                     "Empty = trait unchanged throughout narrative.",
+    )
+
+    _coerce_domains = field_validator("affected_domains", mode="before")(
+        lambda v: _coerce_domain_list(v)
     )
 
 
@@ -427,8 +493,17 @@ class CausalEdge(AMWNEdge):
 
     mechanism: str = Field(
         description=(
-            "The 'how' of the causality. e.g., 'physical_force', 'epistemic_revelation', "
-            "'social_coercion', 'psychological', 'emotional', 'kinetic', 'chemical'"
+            "The 'how' of the causality. Canonical short keys (recommended): "
+            "'physical', 'psychological', 'epistemic', 'social', 'emotional', "
+            "'informational', 'betrayal' — these route the impulse onto the "
+            "matching trait family via causal_physics.MECHANISM_TRAIT_MAP. "
+            "Long-form aliases ('physical_force', 'epistemic_revelation', "
+            "'social_coercion') are auto-canonicalized. Off-list labels "
+            "('kinetic', 'chemical', 'seduction', 'coercion', 'deduction') "
+            "are tolerated as an explicit escape hatch — they bypass "
+            "mechanism-trait routing entirely (no 20% fallback penalty), so "
+            "only use them when you specifically want the impulse to apply "
+            "uniformly across all of the target's traits."
         ),
     )
     evidence_strength: Literal["weak", "moderate", "strong"] = Field(
@@ -438,6 +513,9 @@ class CausalEdge(AMWNEdge):
 
     _coerce_es = field_validator("evidence_strength", mode="before")(
         lambda v: _coerce_evidence_strength(v)
+    )
+    _coerce_mech = field_validator("mechanism", mode="before")(
+        lambda v: _coerce_mechanism(v)
     )
 
     propagation_delay: int = Field(

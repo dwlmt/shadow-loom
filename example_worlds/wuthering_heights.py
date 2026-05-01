@@ -109,6 +109,10 @@ world_state = WorldStateV1(
             state_timeline=[
                 EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_EARNSHAW_BRINGS_HEATHCLIFF",
                     location_id="LOC_WUTHERING_HEIGHTS"),
+                EntityStateSnapshot(fabula_time=3500, triggered_by="EVT_OLD_EARNSHAW_DIES",
+                    traits={
+                        "vulnerability": TraitVector(value=0.50, inertia=0.50, evidence_strength="moderate"),
+                    }),
                 EntityStateSnapshot(fabula_time=4000, triggered_by="EVT_HINDLEY_DEMOTES_HEATHCLIFF",
                     traits={
                         "vengefulness": TraitVector(value=0.7, inertia=0.6, evidence_strength="strong"),
@@ -126,7 +130,7 @@ world_state = WorldStateV1(
                     }),
                 EntityStateSnapshot(fabula_time=7500, triggered_by="EVT_HEATHCLIFF_FLEES",
                     location_id=None),
-                EntityStateSnapshot(fabula_time=9000, triggered_by="EVT_HEATHCLIFF_RETURNS",
+                EntityStateSnapshot(fabula_time=9700, triggered_by="EVT_HEATHCLIFF_RETURNS",
                     location_id="LOC_THRUSHCROSS_GRANGE",
                     traits={
                         "cruelty": TraitVector(value=0.7, inertia=0.55, evidence_strength="strong"),
@@ -143,7 +147,10 @@ world_state = WorldStateV1(
                                perceived_state="Be with me always — take any form — drive me mad!",
                                confidence=1.0, inertia=0.9, established_at_fabula=11000, evidence_strength="strong"),
                     ]),
-                EntityStateSnapshot(fabula_time=19000, triggered_by="EVT_HEATHCLIFF_STOPS_EATING",
+                EntityStateSnapshot(fabula_time=18500, triggered_by="EVT_HEATHCLIFF_OPENS_GRAVE_AGAIN",
+                    traits={
+                        "vengefulness": TraitVector(value=0.00, inertia=0.45, evidence_strength="moderate"),
+                    }),EntityStateSnapshot(fabula_time=19000, triggered_by="EVT_HEATHCLIFF_STOPS_EATING",
                     status="ill",
                     traits={
                         "vengefulness": TraitVector(value=0.2, inertia=0.7, evidence_strength="strong"),
@@ -151,6 +158,7 @@ world_state = WorldStateV1(
                     }),
                 EntityStateSnapshot(fabula_time=19500, triggered_by="EVT_HEATHCLIFF_DIES",
                     status="dead", location_id="LOC_WUTHERING_HEIGHTS"),
+                
             ],
         ),
         "ENT_CATHERINE": Entity(
@@ -169,6 +177,10 @@ world_state = WorldStateV1(
                        confidence=1.0, inertia=0.85, established_at_fabula=2000, evidence_strength="strong"),
             ],
             state_timeline=[
+                EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_EARNSHAW_BRINGS_HEATHCLIFF",
+                    traits={
+                        "bond": TraitVector(value=0.50, inertia=0.50, evidence_strength="moderate"),
+                    }),
                 EntityStateSnapshot(fabula_time=6000, triggered_by="EVT_CATHERINE_AT_LINTONS",
                     traits={
                         "vanity": TraitVector(value=0.85, inertia=0.65, evidence_strength="strong"),
@@ -187,8 +199,12 @@ world_state = WorldStateV1(
                     traits={
                         "self_division": TraitVector(value=1.0, inertia=0.7, evidence_strength="strong"),
                     }),
-                EntityStateSnapshot(fabula_time=11000, triggered_by="EVT_CATHERINE_DIES",
+                EntityStateSnapshot(fabula_time=10900, triggered_by="EVT_HEATHCLIFF_VISITS_DYING_CATHERINE",
+                    traits={
+                        "anguish": TraitVector(value=0.80, inertia=0.50, evidence_strength="moderate"),
+                    }),EntityStateSnapshot(fabula_time=11000, triggered_by="EVT_CATHERINE_DIES",
                     status="dead", location_id="LOC_GIMMERTON_KIRK"),
+                
             ],
         ),
         "ENT_HINDLEY": Entity(
@@ -206,17 +222,29 @@ world_state = WorldStateV1(
                        confidence=0.95, inertia=0.75, evidence_strength="strong"),
             ],
             state_timeline=[
+                EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_EARNSHAW_BRINGS_HEATHCLIFF",
+                    traits={
+                        "jealousy": TraitVector(value=1.00, inertia=0.60, evidence_strength="moderate"),
+                    }),
                 EntityStateSnapshot(fabula_time=3500, triggered_by="EVT_OLD_EARNSHAW_DIES",
                     traits={
                         "brutality": TraitVector(value=0.85, inertia=0.7, evidence_strength="strong"),
+                    }),
+                EntityStateSnapshot(fabula_time=3500, triggered_by="EVT_OLD_EARNSHAW_DIES",
+                    traits={
+                        "tyranny": TraitVector(value=0.60, inertia=0.50, evidence_strength="moderate"),
                     }),
                 EntityStateSnapshot(fabula_time=5500, triggered_by="EVT_FRANCES_DIES",
                     traits={
                         "addiction_to_drink": TraitVector(value=0.85, inertia=0.6, evidence_strength="strong"),
                         "self_pity": TraitVector(value=0.9, inertia=0.65, evidence_strength="strong"),
                     }),
-                EntityStateSnapshot(fabula_time=12000, triggered_by="EVT_HINDLEY_DIES",
+                EntityStateSnapshot(fabula_time=9900, triggered_by="EVT_HEATHCLIFF_TAKES_HEIGHTS_MORTGAGE",
+                    traits={
+                        "despair": TraitVector(value=0.60, inertia=0.50, evidence_strength="moderate"),
+                    }),EntityStateSnapshot(fabula_time=12000, triggered_by="EVT_HINDLEY_DIES",
                     status="dead"),
+                
             ],
         ),
         "ENT_EDGAR": Entity(
@@ -230,12 +258,16 @@ world_state = WorldStateV1(
             },
             beliefs=[],
             state_timeline=[
-                EntityStateSnapshot(fabula_time=11000, triggered_by="EVT_CATHERINE_DIES",
+                EntityStateSnapshot(fabula_time=8000, triggered_by="EVT_LINTON_PARENTS_DIE",
+                    traits={
+                        "grief": TraitVector(value=0.60, inertia=0.50, evidence_strength="moderate"),
+                    }),EntityStateSnapshot(fabula_time=11000, triggered_by="EVT_CATHERINE_DIES",
                     traits={
                         "devotion": TraitVector(value=0.95, inertia=0.85, evidence_strength="strong"),
                     }),
                 EntityStateSnapshot(fabula_time=15000, triggered_by="EVT_EDGAR_DIES",
                     status="dead"),
+                
             ],
         ),
         "ENT_ISABELLA": Entity(
@@ -252,7 +284,10 @@ world_state = WorldStateV1(
                        confidence=0.7, inertia=0.4, established_at_fabula=9000, evidence_strength="moderate"),
             ],
             state_timeline=[
-                EntityStateSnapshot(fabula_time=10000, triggered_by="EVT_ISABELLA_ELOPES",
+                EntityStateSnapshot(fabula_time=8000, triggered_by="EVT_LINTON_PARENTS_DIE",
+                    traits={
+                        "grief": TraitVector(value=0.60, inertia=0.50, evidence_strength="moderate"),
+                    }),EntityStateSnapshot(fabula_time=10000, triggered_by="EVT_ISABELLA_ELOPES",
                     location_id="LOC_WUTHERING_HEIGHTS",
                     traits={
                         "infatuation": TraitVector(value=0.9, inertia=0.5, evidence_strength="strong"),
@@ -267,6 +302,7 @@ world_state = WorldStateV1(
                     ]),
                 EntityStateSnapshot(fabula_time=14000, triggered_by="EVT_ISABELLA_DIES",
                     status="dead"),
+                
             ],
         ),
         "ENT_NELLY": Entity(
@@ -325,10 +361,18 @@ world_state = WorldStateV1(
                        confidence=0.7, inertia=0.55, established_at_fabula=13000, evidence_strength="strong"),
             ],
             state_timeline=[
+                EntityStateSnapshot(fabula_time=12000, triggered_by="EVT_HINDLEY_DIES",
+                    traits={
+                        "loyalty": TraitVector(value=0.90, inertia=0.55, evidence_strength="moderate"),
+                    }),
                 EntityStateSnapshot(fabula_time=18500, triggered_by="EVT_CATHY_TEACHES_HARETON",
                     traits={
                         "shame": TraitVector(value=0.15, inertia=0.55, evidence_strength="strong"),
                         "neglected_dignity": TraitVector(value=0.3, inertia=0.65, evidence_strength="strong"),
+                    }),
+                EntityStateSnapshot(fabula_time=19500, triggered_by="EVT_HEATHCLIFF_DIES",
+                    traits={
+                        "loyalty": TraitVector(value=0.90, inertia=0.55, evidence_strength="moderate"),
                     }),
             ],
         ),
@@ -346,10 +390,14 @@ world_state = WorldStateV1(
                        confidence=0.95, inertia=0.55, established_at_fabula=15000, evidence_strength="strong"),
             ],
             state_timeline=[
-                EntityStateSnapshot(fabula_time=15000, triggered_by="EVT_LINTON_TAKEN_BY_FATHER",
+                EntityStateSnapshot(fabula_time=14000, triggered_by="EVT_ISABELLA_DIES",
+                    traits={
+                        "fear": TraitVector(value=1.00, inertia=0.40, evidence_strength="moderate"),
+                    }),EntityStateSnapshot(fabula_time=15000, triggered_by="EVT_LINTON_TAKEN_BY_FATHER",
                     location_id="LOC_WUTHERING_HEIGHTS"),
                 EntityStateSnapshot(fabula_time=17000, triggered_by="EVT_LINTON_DIES",
                     status="dead"),
+                
             ],
         ),
         "ENT_CATHY": Entity(
@@ -363,15 +411,23 @@ world_state = WorldStateV1(
             },
             beliefs=[],
             state_timeline=[
+                EntityStateSnapshot(fabula_time=15000, triggered_by="EVT_EDGAR_DIES",
+                    traits={
+                        "resilience": TraitVector(value=0.90, inertia=0.55, evidence_strength="moderate"),
+                    }),
                 EntityStateSnapshot(fabula_time=16000, triggered_by="EVT_CATHY_FORCED_MARRIAGE",
                     location_id="LOC_WUTHERING_HEIGHTS",
                     traits={
                         "courage": TraitVector(value=0.85, inertia=0.6, evidence_strength="strong"),
                     }),
-                EntityStateSnapshot(fabula_time=18500, triggered_by="EVT_CATHY_TEACHES_HARETON",
+                EntityStateSnapshot(fabula_time=17000, triggered_by="EVT_LINTON_DIES",
+                    traits={
+                        "warmth": TraitVector(value=0.65, inertia=0.60, evidence_strength="moderate"),
+                    }),EntityStateSnapshot(fabula_time=18500, triggered_by="EVT_CATHY_TEACHES_HARETON",
                     traits={
                         "warmth": TraitVector(value=0.95, inertia=0.65, evidence_strength="strong"),
                     }),
+                
             ],
         ),
         "ENT_LOCKWOOD": Entity(
@@ -417,10 +473,10 @@ world_state = WorldStateV1(
         EventNode(id="EVT_CATHERINE_MARRIES_EDGAR", fabula_time=9500, syuzhet_index=11,
                   event_type="choice", actor_ids=["ENT_CATHERINE", "ENT_EDGAR"], target_ids=[],
                   description="Catherine marries Edgar Linton and becomes mistress of Thrushcross Grange."),
-        EventNode(id="EVT_HEATHCLIFF_RETURNS", fabula_time=9000, syuzhet_index=12,
+        EventNode(id="EVT_HEATHCLIFF_RETURNS", fabula_time=9700, syuzhet_index=12,
                   event_type="outcome", actor_ids=["ENT_HEATHCLIFF"], target_ids=[],
                   description="Three years after fleeing, Heathcliff returns mysteriously wealthy and re-enters the lives of the Earnshaws and Lintons."),
-        EventNode(id="EVT_HEATHCLIFF_TAKES_HEIGHTS_MORTGAGE", fabula_time=9800, syuzhet_index=13,
+        EventNode(id="EVT_HEATHCLIFF_TAKES_HEIGHTS_MORTGAGE", fabula_time=9900, syuzhet_index=13,
                   event_type="choice", actor_ids=["ENT_HEATHCLIFF"], target_ids=["ENT_HINDLEY"],
                   description="Heathcliff exploits Hindley's gambling addiction to become mortgagee of Wuthering Heights."),
         EventNode(id="EVT_ISABELLA_ELOPES", fabula_time=10000, syuzhet_index=14,
@@ -519,7 +575,7 @@ world_state = WorldStateV1(
             id="EVT_UTT_LOCKWOOD_READS_DIARY",
             event_type="utterance", fabula_time=18000, syuzhet_index=35,
             speaker_id="OBJ_CATHERINES_DIARY", addressee_ids=["ENT_LOCKWOOD"],
-            actor_ids=["ENT_LOCKWOOD"], target_ids=["ENT_CATHERINE", "ENT_HINDLEY", "ENT_HEATHCLIFF"],
+            actor_ids=["ENT_LOCKWOOD", "OBJ_CATHERINES_DIARY"], target_ids=["ENT_CATHERINE", "ENT_HINDLEY", "ENT_HEATHCLIFF"],
             description="Snowed in at the Heights, Lockwood reads Catherine's childhood diary entries chronicling Hindley's tyranny and her bond with Heathcliff.",
             content="H. and I are going to rebel — we took our initiatory step this evening... an awful Sunday!",
             via_channel_id="CHN_CATHERINES_DIARY", truth_value="true",
@@ -570,13 +626,13 @@ world_state = WorldStateV1(
                    causal_force=4.0, fabula_time=8000, propagation_delay=1500),
         CausalEdge(source_id="EVT_HEATHCLIFF_RETURNS", target_id="EVT_HEATHCLIFF_TAKES_HEIGHTS_MORTGAGE",
                    causality_type="chain_reaction", mechanism="psychological", evidence_strength="strong",
-                   causal_force=7.0, fabula_time=9000, propagation_delay=800),
+                   causal_force=7.0, fabula_time=9700, propagation_delay=200),
         CausalEdge(source_id="EVT_HEATHCLIFF_RETURNS", target_id="EVT_ISABELLA_ELOPES",
                    causality_type="chain_reaction", mechanism="psychological", evidence_strength="strong",
-                   causal_force=7.0, fabula_time=9000, propagation_delay=1000),
+                   causal_force=7.0, fabula_time=9700, propagation_delay=300),
         CausalEdge(source_id="EVT_HEATHCLIFF_RETURNS", target_id="EVT_CATHERINE_LOCKS_HERSELF",
                    causality_type="chain_reaction", mechanism="emotional", evidence_strength="strong",
-                   causal_force=8.0, fabula_time=9000, propagation_delay=1500),
+                   causal_force=8.0, fabula_time=9700, propagation_delay=800),
         CausalEdge(source_id="EVT_CATHERINE_LOCKS_HERSELF", target_id="EVT_HEATHCLIFF_VISITS_DYING_CATHERINE",
                    causality_type="chain_reaction", mechanism="emotional", evidence_strength="strong",
                    causal_force=8.0, fabula_time=10500, propagation_delay=400),
@@ -588,7 +644,7 @@ world_state = WorldStateV1(
                    causal_force=7.0, fabula_time=10000, propagation_delay=1500),
         CausalEdge(source_id="EVT_HEATHCLIFF_TAKES_HEIGHTS_MORTGAGE", target_id="EVT_HINDLEY_DIES",
                    causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
-                   causal_force=4.0, fabula_time=9800, propagation_delay=2200),
+                   causal_force=4.0, fabula_time=9900, propagation_delay=2100),
         CausalEdge(source_id="EVT_CATHERINE_DIES", target_id="EVT_HEATHCLIFF_OPENS_GRAVE",
                    causality_type="chain_reaction", mechanism="psychological", evidence_strength="strong",
                    causal_force=8.0, fabula_time=11000, propagation_delay=2000),
@@ -653,7 +709,7 @@ world_state = WorldStateV1(
                    trait_target="vengefulness", trait_delta=0.55),
         CausalEdge(source_id="EVT_HEATHCLIFF_RETURNS", target_id="ENT_HEATHCLIFF",
                    causality_type="mutation", mechanism="psychological", evidence_strength="strong",
-                   causal_force=7.0, fabula_time=9000,
+                   causal_force=7.0, fabula_time=9700,
                    trait_target="cruelty", trait_delta=0.5),
         CausalEdge(source_id="EVT_FRANCES_DIES", target_id="ENT_HINDLEY",
                    causality_type="mutation", mechanism="emotional", evidence_strength="strong",
@@ -714,7 +770,7 @@ world_state = WorldStateV1(
                    trait_target="grief", trait_delta=0.6),
         CausalEdge(source_id="EVT_HEATHCLIFF_TAKES_HEIGHTS_MORTGAGE", target_id="ENT_HINDLEY",
                    causality_type="mutation", mechanism="psychological", evidence_strength="strong",
-                   causal_force=8.0, fabula_time=9800,
+                   causal_force=8.0, fabula_time=9900,
                    trait_target="despair", trait_delta=0.6),
         CausalEdge(source_id="EVT_HEATHCLIFF_VISITS_DYING_CATHERINE", target_id="ENT_CATHERINE",
                    causality_type="mutation", mechanism="emotional", evidence_strength="strong",
@@ -789,7 +845,7 @@ world_state = WorldStateV1(
                    causal_force=7.0, fabula_time=18000),
         CausalEdge(source_id="OBJ_HEIGHTS_MORTGAGE", target_id="EVT_HEATHCLIFF_TAKES_HEIGHTS_MORTGAGE",
                    causality_type="affordance_gate", mechanism="social", evidence_strength="strong",
-                   causal_force=8.0, fabula_time=9800),
+                   causal_force=8.0, fabula_time=9900),
         CausalEdge(source_id="OBJ_GRANGE_DEED", target_id="EVT_CATHY_FORCED_MARRIAGE",
                    causality_type="affordance_gate", mechanism="social", evidence_strength="strong",
                    causal_force=8.0, fabula_time=16000),
@@ -832,7 +888,7 @@ world_state = WorldStateV1(
                    causal_force=6.0, fabula_time=16000),
         CausalEdge(source_id="WORLD_PRIMOGENITURE_ENTAIL", target_id="EVT_HEATHCLIFF_TAKES_HEIGHTS_MORTGAGE",
                    causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
-                   causal_force=5.0, fabula_time=9800),
+                   causal_force=5.0, fabula_time=9900),
         CausalEdge(source_id="WORLD_PRIMOGENITURE_ENTAIL", target_id="EVT_CATHY_HARETON_INHERIT",
                    causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
                    causal_force=5.0, fabula_time=20000),
@@ -845,6 +901,29 @@ world_state = WorldStateV1(
         CausalEdge(source_id="WORLD_HAUNTED_MOORS", target_id="EVT_HEATHCLIFF_STOPS_EATING",
                    causality_type="chain_reaction", mechanism="psychological", evidence_strength="strong",
                    causal_force=5.0, fabula_time=19000),
+
+        # ── orphan utterance wirings ──
+        CausalEdge(source_id="EVT_UTT_CATHERINE_CONFESSES_TO_NELLY", target_id="EVT_HEATHCLIFF_OVERHEARS",
+                   causality_type="chain_reaction", mechanism="informational", evidence_strength="strong",
+                   causal_force=10.0, fabula_time=7000, propagation_delay=0),
+        CausalEdge(source_id="EVT_ISABELLA_FLEES_SOUTH", target_id="EVT_UTT_ISABELLA_LETTER_TO_NELLY",
+                   causality_type="chain_reaction", mechanism="informational", evidence_strength="strong",
+                   causal_force=4.0, fabula_time=11500, propagation_delay=0),
+        CausalEdge(source_id="EVT_LINTON_TAKEN_BY_FATHER", target_id="EVT_UTT_HEATHCLIFF_COERCES_LINTON",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=15000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_HEATHCLIFF_COERCES_LINTON", target_id="EVT_UTT_LINTON_COERCED_LETTERS_TO_CATHY",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=15000, propagation_delay=800),
+        CausalEdge(source_id="EVT_UTT_LINTON_COERCED_LETTERS_TO_CATHY", target_id="EVT_CATHY_FORCED_MARRIAGE",
+                   causality_type="chain_reaction", mechanism="emotional", evidence_strength="moderate",
+                   causal_force=5.0, fabula_time=15800, propagation_delay=200),
+        CausalEdge(source_id="EVT_UTT_LOCKWOOD_READS_DIARY", target_id="EVT_LOCKWOOD_DREAMS",
+                   causality_type="chain_reaction", mechanism="psychological", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=18000, propagation_delay=0),
+        CausalEdge(source_id="EVT_LOCKWOOD_DREAMS", target_id="EVT_UTT_NELLY_NARRATES_TO_LOCKWOOD",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=4.0, fabula_time=18000, propagation_delay=100),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────

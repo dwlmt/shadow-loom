@@ -166,7 +166,14 @@ world_state = WorldStateV1(
             ],
             constants=["origin_north_dakota_farm", "wartime_officer"],
             state_timeline=[
-                EntityStateSnapshot(fabula_time=9000, triggered_by="EVT_GATSBY_DAISY_REUNION",
+                EntityStateSnapshot(fabula_time=500, triggered_by="EVT_GATSBY_MEETS_DAISY_1917",
+                    traits={
+                        "longing": TraitVector(value=1.00, inertia=0.85, evidence_strength="moderate"),
+                    }),
+                EntityStateSnapshot(fabula_time=800, triggered_by="EVT_DAISY_MARRIES_TOM",
+                    traits={
+                        "self_invention": TraitVector(value=1.00, inertia=0.85, evidence_strength="moderate"),
+                    }),EntityStateSnapshot(fabula_time=9000, triggered_by="EVT_GATSBY_DAISY_REUNION",
                     traits={
                         "hope": TraitVector(value=1.0, inertia=0.85, evidence_strength="strong"),
                     }),
@@ -182,6 +189,7 @@ world_state = WorldStateV1(
                     ]),
                 EntityStateSnapshot(fabula_time=15000, triggered_by="EVT_GATSBY_KILLED",
                     status="dead", location_id="LOC_GATSBYS_MANSION"),
+                
             ],
         ),
         "ENT_DAISY": Entity(
@@ -245,6 +253,10 @@ world_state = WorldStateV1(
                 "athletic_poise": TraitVector(value=0.85, inertia=0.8, evidence_strength="strong"),
             },
             beliefs=[],
+            state_timeline=[
+                EntityStateSnapshot(fabula_time=8200, triggered_by="EVT_UTT_JORDAN_REVEALS_HISTORY",
+                    location_id="LOC_NEW_YORK_APT"),
+            ],
         ),
         "ENT_MYRTLE": Entity(
             id="ENT_MYRTLE", name="Myrtle Wilson",
@@ -332,6 +344,10 @@ world_state = WorldStateV1(
                 "patronage":     TraitVector(value=0.85, inertia=0.8, evidence_strength="strong"),
             },
             beliefs=[],
+            state_timeline=[
+                EntityStateSnapshot(fabula_time=15000, triggered_by="EVT_GATSBY_KILLED",
+                    location_id="LOC_NEW_YORK_APT"),
+            ],
         ),
     },
 
@@ -659,6 +675,43 @@ world_state = WorldStateV1(
         CausalEdge(source_id="WORLD_LOST_GENERATION", target_id="EVT_NICK_RETURNS_WEST",
                    causality_type="chain_reaction", mechanism="psychological", evidence_strength="strong",
                    causal_force=6.0, fabula_time=17000),
+
+        # ── orphan utterance wirings ──
+        CausalEdge(source_id="EVT_NICK_DINES_AT_BUCHANANS", target_id="EVT_UTT_JORDAN_REVEALS_MISTRESS",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=2000, propagation_delay=200),
+        CausalEdge(source_id="EVT_UTT_JORDAN_REVEALS_MISTRESS", target_id="EVT_TOM_TAKES_NICK_TO_NY",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=2200, propagation_delay=1300),
+        CausalEdge(source_id="EVT_UTT_GATSBY_WAR_TALES", target_id="EVT_UTT_JORDAN_REVEALS_HISTORY",
+                   causality_type="chain_reaction", mechanism="informational", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=7500, propagation_delay=700),
+        CausalEdge(source_id="EVT_UTT_JORDAN_REVEALS_HISTORY", target_id="EVT_GATSBY_DAISY_REUNION",
+                   causality_type="chain_reaction", mechanism="informational", evidence_strength="strong",
+                   causal_force=7.0, fabula_time=8200, propagation_delay=800),
+        CausalEdge(source_id="EVT_UTT_DAISY_INTIMATE_ADDRESS", target_id="EVT_TOM_DISCOVERS_AFFAIR",
+                   causality_type="chain_reaction", mechanism="emotional", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=12000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_GATSBY_DEMANDS_DENIAL", target_id="EVT_PLAZA_CONFRONTATION",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=13000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_TOM_EXPOSES_BOOTLEG", target_id="EVT_MYRTLE_KILLED",
+                   causality_type="chain_reaction", mechanism="emotional", evidence_strength="moderate",
+                   causal_force=5.0, fabula_time=13100, propagation_delay=1400),
+        CausalEdge(source_id="EVT_UTT_GATSBY_CONFESSES_BLAME", target_id="EVT_NICK_RETURNS_WEST",
+                   causality_type="chain_reaction", mechanism="emotional", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=14600, propagation_delay=2400),
+        CausalEdge(source_id="EVT_UTT_TOM_DIRECTS_GEORGE", target_id="EVT_GATSBY_KILLED",
+                   causality_type="chain_reaction", mechanism="performative", evidence_strength="strong",
+                   causal_force=10.0, fabula_time=14850, propagation_delay=150),
+        # The Eckleburg billboard's blank god-eyes preside over the Valley
+        # of Ashes; in George's broken theology they witness Myrtle's
+        # death and license his vengeance. Modelled as an affordance gate
+        # whose epistemic affordance ("God sees everything") supplies the
+        # cosmic warrant for the Gatsby killing.
+        CausalEdge(source_id="OBJ_ECKLEBURG_BILLBOARD", target_id="EVT_GATSBY_KILLED",
+                   causality_type="affordance_gate", mechanism="epistemic", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=14900),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -731,7 +784,7 @@ world_state = WorldStateV1(
             description="The 1920s Volstead-Act-driven shadow economy that funds Gatsby's mansion via Wolfshiem's drugstore-fronts and gives Tom the moral ammunition to destroy him. Operates as a high-magnitude latent that makes Gatsby's wealth and his vulnerability one and the same.",
             category="economy",
             magnitude=TraitVector(value=0.85, inertia=0.85, evidence_strength="strong"),
-            affected_domains=["economic", "social"],
+            affected_domains=["social"],
         ),
         "WORLD_LOST_GENERATION": GlobalTrait(
             id="WORLD_LOST_GENERATION",

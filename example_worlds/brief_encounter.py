@@ -49,7 +49,7 @@ world_state = WorldStateV1(
         ),
         "LOC_STEPHENS_FLAT": Location(
             name="Stephen Lynn's Flat",
-            description="The borrowed Bayswater flat where Laura and Alec almost cross the line — and where Stephen's early return makes their meeting impossible.",
+            description="The borrowed flat of Alec's friend Stephen where Laura and Alec almost cross the line — and where Stephen's early return makes their meeting impossible.",
             ambient_state={
                 "borrowed_secrecy":   AmbientVector(value=0.85, volatility=0.4, evidence_strength="strong"),
                 "humiliation_risk":   AmbientVector(value=0.85, volatility=0.4, evidence_strength="strong"),
@@ -134,6 +134,11 @@ world_state = WorldStateV1(
                         "longing":      TraitVector(value=0.7, inertia=0.55, evidence_strength="strong"),
                         "love_for_alec": TraitVector(value=0.55, inertia=0.5, evidence_strength="strong"),
                     }),
+                # Parity snapshot for EVT_FRIENDS_SEE_THEM mutation → guilt +0.25.
+                EntityStateSnapshot(fabula_time=5000, triggered_by="EVT_FRIENDS_SEE_THEM",
+                    traits={
+                        "guilt": TraitVector(value=0.5, inertia=0.5, evidence_strength="strong"),
+                    }),
                 EntityStateSnapshot(fabula_time=7000, triggered_by="EVT_STEPHEN_RETURNS",
                     location_id="LOC_STEPHENS_FLAT",
                     traits={
@@ -156,6 +161,11 @@ world_state = WorldStateV1(
                 EntityStateSnapshot(fabula_time=12000, triggered_by="EVT_RETURN_TO_FRED",
                     location_id="LOC_LAURAS_HOME",
                     traits={
+                        # Longing partly relaxes after she chooses Fred — matches the
+                        # CausalEdge EVT_RETURN_TO_FRED → ENT_LAURA longing -0.4.
+                        "longing":         TraitVector(value=0.55, inertia=0.6, evidence_strength="strong"),
+                        # Love for Alec persists undimmed (no edge erases it); kept as
+                        # the high-inertia residue she carries home.
                         "love_for_alec":   TraitVector(value=0.95, inertia=0.85, evidence_strength="strong"),
                         "marital_loyalty": TraitVector(value=0.95, inertia=0.9, evidence_strength="strong"),
                     },
@@ -287,6 +297,18 @@ world_state = WorldStateV1(
             },
             beliefs=[],
         ),
+        # Group entity: Laura's middle-class Milford acquaintances who catch
+        # her and Alec coming out of the cinema. Distinct from Dolly Messiter,
+        # who only enters at the final refreshment-room scene.
+        "ENT_LAURAS_ACQUAINTANCES": Entity(
+            id="ENT_LAURAS_ACQUAINTANCES", name="Laura's Milford Acquaintances",
+            location_id="LOC_KARDOMAH", status="healthy",
+            traits={
+                "social_observation": TraitVector(value=0.8, inertia=0.7, evidence_strength="strong"),
+                "gossip_propensity":  TraitVector(value=0.7, inertia=0.7, evidence_strength="moderate"),
+            },
+            beliefs=[],
+        ),
     },
 
     # ── EVENTS ──────────────────────────────────────────────────────────
@@ -304,7 +326,7 @@ world_state = WorldStateV1(
                   event_type="choice", actor_ids=["ENT_LAURA", "ENT_ALEC"], target_ids=[],
                   description="They have lunch at the Kardomah and a matinée together; Alec admits, and Laura half-admits, that they are in love."),
         EventNode(id="EVT_FRIENDS_SEE_THEM", fabula_time=5000, syuzhet_index=6,
-                  event_type="outcome", actor_ids=[], target_ids=["ENT_LAURA"],
+                  event_type="outcome", actor_ids=["ENT_LAURAS_ACQUAINTANCES"], target_ids=["ENT_LAURA", "ENT_ALEC"],
                   description="Coming out of the cinema they are caught by Laura's acquaintances; Laura makes the first of many small, fluent lies."),
         EventNode(id="EVT_BORROW_FLAT_PLAN", fabula_time=6000, syuzhet_index=7,
                   event_type="choice", actor_ids=["ENT_ALEC"], target_ids=["ENT_STEPHEN"],
@@ -336,9 +358,9 @@ world_state = WorldStateV1(
     
         # ── UTTERANCES (on-page speech-acts) ──
         EventNode(id='EVT_UTT_LAURA_LIES_TO_FRIENDS', event_type='utterance',
-                  description="Caught coming out of the cinema, Laura tells a small fluent lie to her acquaintance about who Alec is and why they are together.",
+                  description="Caught coming out of the cinema, Laura tells a small fluent lie to her acquaintances about who Alec is and why they are together.",
                   content="Oh — this is Dr Harvey, a friend; we ran into each other quite by chance.",
-                  speaker_id='ENT_LAURA', addressee_ids=['ENT_DOLLY'], actor_ids=['ENT_LAURA'],
+                  speaker_id='ENT_LAURA', addressee_ids=['ENT_LAURAS_ACQUAINTANCES'], actor_ids=['ENT_LAURA'],
                   target_ids=['ENT_ALEC', 'EVT_KARDOMAH_CINEMA'],
                   via_channel_id=None, truth_value='false', fabula_time=5000, syuzhet_index=15),
         EventNode(id='EVT_UTT_STEPHEN_CHASTISES_ALEC', event_type='utterance',
@@ -575,6 +597,44 @@ world_state = WorldStateV1(
                    causality_type="mutation_social", mechanism="social", evidence_strength="moderate",
                    causal_force=4.0, fabula_time=6000,
                    trait_target="affinity", trait_delta=0.2, rel_counterpart_id="ENT_STANLEY"),
+
+        # ── orphan utterance wirings ──
+        CausalEdge(source_id="EVT_FRIENDS_SEE_THEM", target_id="EVT_UTT_LAURA_LIES_TO_FRIENDS",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=5000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_LAURA_LIES_TO_FRIENDS", target_id="EVT_BORROW_FLAT_PLAN",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=5000, propagation_delay=1000),
+        CausalEdge(source_id="EVT_STEPHEN_RETURNS", target_id="EVT_UTT_STEPHEN_CHASTISES_ALEC",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=7000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_STEPHEN_CHASTISES_ALEC", target_id="EVT_WANDER_STREETS",
+                   causality_type="chain_reaction", mechanism="emotional", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=7000, propagation_delay=500),
+        CausalEdge(source_id="EVT_WANDER_STREETS", target_id="EVT_UTT_POLICEMAN_URGES_HOME",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=4.0, fabula_time=7500, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_POLICEMAN_URGES_HOME", target_id="EVT_AGREE_TO_END",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=7500, propagation_delay=1500),
+        CausalEdge(source_id="EVT_DOLLY_INTRUDES", target_id="EVT_UTT_DOLLY_CHATTERS",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=4.0, fabula_time=10000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_DOLLY_CHATTERS", target_id="EVT_ALEC_DEPARTS",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=10000, propagation_delay=200),
+        CausalEdge(source_id="EVT_DOLLY_INTRUDES", target_id="EVT_UTT_ALEC_SHOULDER_SQUEEZE",
+                   causality_type="chain_reaction", mechanism="emotional", evidence_strength="strong",
+                   causal_force=4.0, fabula_time=10000, propagation_delay=200),
+        CausalEdge(source_id="EVT_UTT_ALEC_SHOULDER_SQUEEZE", target_id="EVT_NEAR_SUICIDE",
+                   causality_type="chain_reaction", mechanism="emotional", evidence_strength="strong",
+                   causal_force=7.0, fabula_time=10200, propagation_delay=300),
+        CausalEdge(source_id="EVT_RETURN_TO_FRED", target_id="EVT_UTT_FRED_THANKS_LAURA",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=12000, propagation_delay=0),
+        CausalEdge(source_id="EVT_RETURN_TO_FRED", target_id="EVT_UTT_LAURA_INTERIOR_CONFESSION",
+                   causality_type="chain_reaction", mechanism="emotional", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=12000, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────

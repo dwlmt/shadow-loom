@@ -20,7 +20,7 @@ world_state = WorldStateV1(
     # ── LOCATIONS ──────────────────────────────────────────────────────
     locations={
         "LOC_DINER": Location(
-            name="Uncle Bob's Diner",
+            name="Coffee Shop",
             description="Coffee-shop where the crew has breakfast before the heist; tipping debate exposes their personalities.",
             ambient_state={
                 "camaraderie": AmbientVector(value=0.6, volatility=0.3, evidence_strength="moderate"),
@@ -29,7 +29,7 @@ world_state = WorldStateV1(
         ),
         "LOC_WAREHOUSE": Location(
             name="Rendezvous Warehouse",
-            description="Abandoned mortuary-warehouse where the surviving crew regroups after the botched heist; the slaughterhouse of the third act.",
+            description="Abandoned warehouse where the surviving crew regroups after the botched heist; the slaughterhouse of the third act.",
             ambient_state={
                 "tension": AmbientVector(value=0.85, volatility=0.4, evidence_strength="strong"),
                 "danger": AmbientVector(value=0.8, volatility=0.4, evidence_strength="strong"),
@@ -37,7 +37,7 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_DIAMOND_STORE": Location(
-            name="Karina's Diamond Store",
+            name="Jewelry Store",
             description="The jewelry store targeted for the heist; a silent alarm trips and turns the job into a slaughter.",
             ambient_state={
                 "danger": AmbientVector(value=0.95, volatility=0.3, evidence_strength="strong"),
@@ -45,8 +45,8 @@ world_state = WorldStateV1(
             },
         ),
         "LOC_JOE_OFFICE": Location(
-            name="Joe Cabot's Office",
-            description="Crime boss Joe Cabot's office where the heist is planned and the crew is hand-picked from old contacts and prison parolees.",
+            name="Joe Cabot's Planning Room",
+            description="Crime boss Joe Cabot's planning room where the heist is laid out and the crew is hand-picked from old contacts and prison parolees.",
             ambient_state={
                 "authority": AmbientVector(value=0.8, volatility=0.2, evidence_strength="strong"),
                 "old_school_loyalty": AmbientVector(value=0.75, volatility=0.15, evidence_strength="moderate"),
@@ -58,14 +58,6 @@ world_state = WorldStateV1(
             ambient_state={
                 "desperation": AmbientVector(value=0.85, volatility=0.4, evidence_strength="strong"),
                 "siren_wail": AmbientVector(value=0.7, volatility=0.5, evidence_strength="moderate"),
-            },
-        ),
-        "LOC_ORANGE_APARTMENT": Location(
-            name="Mr Orange's Apartment",
-            description="The cover apartment where undercover officer Freddy Newandyke is coached by Holdaway and rehearses his identity.",
-            ambient_state={
-                "deception": AmbientVector(value=0.75, volatility=0.4, evidence_strength="strong"),
-                "rehearsal_anxiety": AmbientVector(value=0.7, volatility=0.4, evidence_strength="moderate"),
             },
         ),
     },
@@ -86,12 +78,6 @@ world_state = WorldStateV1(
                 Affordance(action="threaten", target_type="Entity"),
                 Affordance(action="kill", target_type="Entity"),
             ],
-        ),
-        "OBJ_POLICE_BADGE": NarrativeObject(
-            id="OBJ_POLICE_BADGE", name="Mr Orange's Police Badge",
-            location_id="LOC_ORANGE_APARTMENT", owner_id="ENT_ORANGE",
-            properties={"state": "hidden"},
-            affordances=[Affordance(action="identify", target_type="Entity")],
         ),
         "OBJ_RAZOR": NarrativeObject(
             id="OBJ_RAZOR", name="Blonde's Straight Razor",
@@ -185,9 +171,6 @@ world_state = WorldStateV1(
                 Belief(target_id="ENT_WHITE",
                        perceived_state="White genuinely cares about me — which makes the betrayal worse",
                        confidence=0.85, inertia=0.5, established_at_fabula=4000, evidence_strength="strong"),
-                Belief(target_id="ENT_HOLDAWAY",
-                       perceived_state="my handler will extract me if I keep cover until the bust",
-                       confidence=0.8, inertia=0.6, established_at_fabula=1000, evidence_strength="strong"),
             ],
             constants=["undercover_cop", "uses_alias_freddy_newandyke"],
             state_timeline=[
@@ -303,7 +286,11 @@ world_state = WorldStateV1(
                                confidence=0.95, inertia=0.7, established_at_fabula=8000, evidence_strength="strong"),
                     ]),
                 EntityStateSnapshot(fabula_time=8000, triggered_by="EVT_MEXICAN_STANDOFF",
-                    status="dead", location_id="LOC_WAREHOUSE"),
+                    status="dead", location_id="LOC_WAREHOUSE",
+                    traits={
+                        # Parity with mutation edge EVT_MEXICAN_STANDOFF → ENT_JOE instinct -1.0.
+                        "instinct": TraitVector(value=0.0, inertia=0.7, evidence_strength="strong"),
+                    }),
             ],
         ),
         "ENT_EDDIE": Entity(
@@ -325,7 +312,11 @@ world_state = WorldStateV1(
             constants=["joes_son"],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=8000, triggered_by="EVT_MEXICAN_STANDOFF",
-                    status="dead", location_id="LOC_WAREHOUSE"),
+                    status="dead", location_id="LOC_WAREHOUSE",
+                    traits={
+                        # Parity with mutation edge EVT_MEXICAN_STANDOFF → ENT_EDDIE bravado -1.0.
+                        "bravado": TraitVector(value=0.0, inertia=0.55, evidence_strength="strong"),
+                    }),
             ],
         ),
         "ENT_MARVIN": Entity(
@@ -343,7 +334,7 @@ world_state = WorldStateV1(
             ],
             constants=["police_officer", "lapd"],
             state_timeline=[
-                EntityStateSnapshot(fabula_time=5000, triggered_by="EVT_BLONDE_TORTURES_COP",
+                EntityStateSnapshot(fabula_time=5000, triggered_by="EVT_WAREHOUSE_REGROUP",
                     status="injured", location_id="LOC_WAREHOUSE",
                     traits={
                         "fear": TraitVector(value=0.95, inertia=0.55, evidence_strength="strong"),
@@ -353,7 +344,7 @@ world_state = WorldStateV1(
                     traits={
                         "fear": TraitVector(value=0.99, inertia=0.6, evidence_strength="strong"),
                     }),
-                EntityStateSnapshot(fabula_time=7500, triggered_by="EVT_EDDIE_KILLS_NASH",
+                EntityStateSnapshot(fabula_time=7600, triggered_by="EVT_EDDIE_KILLS_NASH",
                     status="dead"),
             ],
         ),
@@ -384,21 +375,6 @@ world_state = WorldStateV1(
                 EntityStateSnapshot(fabula_time=7500, triggered_by="EVT_BLUE_KILLED_OFFSCREEN",
                     status="dead"),
             ],
-        ),
-        "ENT_HOLDAWAY": Entity(
-            id="ENT_HOLDAWAY", name="Sergeant Holdaway",
-            location_id="LOC_ORANGE_APARTMENT", status="healthy",
-            traits={
-                "professionalism": TraitVector(value=0.9, inertia=0.7, evidence_strength="strong"),
-                "protectiveness":  TraitVector(value=0.75, inertia=0.6, evidence_strength="strong"),
-                "shrewdness":      TraitVector(value=0.85, inertia=0.7, evidence_strength="strong"),
-            },
-            beliefs=[
-                Belief(target_id="ENT_ORANGE",
-                       perceived_state="Orange must commit to the cover totally — performance, not memorisation, is what survives a room of pros",
-                       confidence=0.9, inertia=0.7, established_at_fabula=1000, evidence_strength="strong"),
-            ],
-            constants=["police_handler", "lapd_sergeant"],
         ),
     },
 
@@ -474,30 +450,8 @@ world_state = WorldStateV1(
             target_ids=["OBJ_DIAMONDS", "LOC_DIAMOND_STORE"],
             via_channel_id="CHN_CREW_PLANNING",
             truth_value="true",
-            description="At his office Joe walks the hand-picked crew through the Karina diamond-store score and lays down the colour-code aliases that keep them strangers to each other.",
+            description="At his planning room Joe walks the hand-picked crew through the diamond-store score and lays down the colour-code aliases that keep them strangers to each other.",
             content="Joe outlines the diamond-store target, his vetted six-man roster, and the rule that nobody uses real names — only Mr White, Blonde, Orange, Pink, Brown, Blue.",
-        ),
-        EventNode(
-            id="EVT_UTT_ORANGE_COMMODE_STORY", fabula_time=1150, syuzhet_index=14,
-            event_type="utterance", speaker_id="ENT_ORANGE",
-            addressee_ids=["ENT_JOE", "ENT_EDDIE", "ENT_WHITE"],
-            actor_ids=["ENT_ORANGE"],
-            target_ids=["ENT_ORANGE"],
-            via_channel_id="CHN_CREW_PLANNING",
-            truth_value="false",
-            description="Orange recites his rehearsed 'commode story' about almost being busted in a men's room with a duffel of dope, cementing his cover as a working drug dealer.",
-            content="Orange claims he once walked into a station-house bathroom carrying a bag of marijuana and bluffed his way past four cops and a German shepherd — a fabricated criminal CV.",
-        ),
-        EventNode(
-            id="EVT_UTT_ORANGE_DEBRIEFS_HOLDAWAY", fabula_time=1250, syuzhet_index=15,
-            event_type="utterance", speaker_id="ENT_ORANGE",
-            addressee_ids=["ENT_HOLDAWAY"],
-            actor_ids=["ENT_ORANGE"],
-            target_ids=["ENT_JOE", "ENT_EDDIE", "ENT_WHITE", "ENT_BLONDE", "ENT_PINK", "ENT_BLUE", "ENT_BROWN", "OBJ_DIAMONDS"],
-            via_channel_id="CHN_UNDERCOVER_REPORTING",
-            truth_value="true",
-            description="At the cover apartment Orange (Det. Newandyke) reports the assembled roster and the diamond-store plan to his handler Holdaway.",
-            content="Orange tells Holdaway that Joe Cabot has greenlit a Karina's diamond-store hit with White, Blonde, Pink, Brown and Blue, and that the crew suspects nothing about him.",
         ),
         EventNode(
             id="EVT_UTT_PINK_DEMANDS_NO_DOCTOR", fabula_time=5100, syuzhet_index=16,
@@ -531,6 +485,31 @@ world_state = WorldStateV1(
             truth_value="true",
             description="Cradled in White's arms after the standoff, the dying Orange whispers the confession that retroactively reframes every paternal act of loyalty.",
             content="Orange tells White, 'I'm a cop, Larry. I'm so sorry,' confirming Joe's accusation.",
+        ),
+        # Orange discloses to Nash that he is an undercover police officer
+        # — the first on-page airing of his identity, before Joe arrives.
+        EventNode(
+            id="EVT_UTT_ORANGE_DISCLOSES_TO_NASH", fabula_time=7050, syuzhet_index=19,
+            event_type="utterance", speaker_id="ENT_ORANGE",
+            addressee_ids=["ENT_MARVIN"],
+            actor_ids=["ENT_ORANGE"],
+            target_ids=["ENT_ORANGE", "ENT_JOE"],
+            via_channel_id=None,
+            truth_value="true",
+            description="Orange tells the wounded Nash that he is an undercover police officer and that the LAPD will move when Joe arrives at the warehouse.",
+            content="I'm a cop. The police will be here when Joe shows up — hold on.",
+        ),
+        # Nash reveals he had recognised Orange and protected his cover under torture.
+        EventNode(
+            id="EVT_UTT_NASH_RECOGNISED_ORANGE", fabula_time=7080, syuzhet_index=20,
+            event_type="utterance", speaker_id="ENT_MARVIN",
+            addressee_ids=["ENT_ORANGE"],
+            actor_ids=["ENT_MARVIN"],
+            target_ids=["ENT_ORANGE"],
+            via_channel_id=None,
+            truth_value="true",
+            description="Nash replies that he recognised Orange from the start and refused to give him up under Blonde's razor.",
+            content="I knew who you were. I wasn't going to give you up.",
         ),
     ],
 
@@ -671,9 +650,6 @@ world_state = WorldStateV1(
         CausalEdge(source_id="OBJ_GASOLINE", target_id="EVT_ORANGE_KILLS_BLONDE",
                    causality_type="affordance_gate", mechanism="physical", evidence_strength="strong",
                    causal_force=7.0, fabula_time=7000),
-        CausalEdge(source_id="OBJ_POLICE_BADGE", target_id="EVT_ORANGE_REVEALED",
-                   causality_type="affordance_gate", mechanism="epistemic", evidence_strength="moderate",
-                   causal_force=5.0, fabula_time=9000),
         CausalEdge(source_id="OBJ_DIAMONDS", target_id="EVT_HEIST_PLANNED",
                    causality_type="affordance_gate", mechanism="physical", evidence_strength="strong",
                    causal_force=7.0, fabula_time=1000),
@@ -685,12 +661,6 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_HEIST_PLANNED", target_id="EVT_UTT_JOE_PITCHES_HEIST",
                    causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
                    causal_force=5.0, fabula_time=1000, propagation_delay=50),
-        CausalEdge(source_id="EVT_UTT_ORANGE_COMMODE_STORY", target_id="EVT_HEIST_GOES_WRONG",
-                   causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
-                   causal_force=3.0, fabula_time=1150, propagation_delay=1850),
-        CausalEdge(source_id="EVT_UTT_ORANGE_DEBRIEFS_HOLDAWAY", target_id="EVT_HEIST_GOES_WRONG",
-                   causality_type="chain_reaction", mechanism="informational", evidence_strength="moderate",
-                   causal_force=4.0, fabula_time=1250, propagation_delay=1750),
         CausalEdge(source_id="EVT_WAREHOUSE_REGROUP", target_id="EVT_UTT_PINK_DEMANDS_NO_DOCTOR",
                    causality_type="chain_reaction", mechanism="psychological", evidence_strength="strong",
                    causal_force=5.0, fabula_time=5000, propagation_delay=100),
@@ -748,7 +718,6 @@ world_state = WorldStateV1(
         SpatialEdge(source_id="LOC_DINER", target_id="LOC_DIAMOND_STORE"),
         SpatialEdge(source_id="LOC_DIAMOND_STORE", target_id="LOC_ORANGE_CAR"),
         SpatialEdge(source_id="LOC_ORANGE_CAR", target_id="LOC_WAREHOUSE"),
-        SpatialEdge(source_id="LOC_ORANGE_APARTMENT", target_id="LOC_JOE_OFFICE"),
         SpatialEdge(source_id="LOC_JOE_OFFICE", target_id="LOC_WAREHOUSE"),
     ],
 
@@ -758,19 +727,6 @@ world_state = WorldStateV1(
     # Marvin's badge-recognition glance) are modelled as utterance EventNodes
     # with via_channel_id=None, not as one-instant Channels.
     channels={
-        'CHN_UNDERCOVER_REPORTING': Channel(
-            id='CHN_UNDERCOVER_REPORTING',
-            name="Orange↔Holdaway undercover debriefing pipeline",
-            medium='undercover_reporting',
-            participant_ids=['ENT_ORANGE', 'ENT_HOLDAWAY'],
-            directionality='duplex',
-            # Two-party private channel; the crew is not a participant, so
-            # crew intelligibility is enforced by absence rather than a key.
-            intelligibility={'ENT_ORANGE': 1.0, 'ENT_HOLDAWAY': 1.0},
-            established_at_fabula=500,
-            terminated_at_fabula=9000,
-            evidence_strength='strong',
-        ),
         'CHN_CREW_PLANNING': Channel(
             id='CHN_CREW_PLANNING',
             name="Cabot crew heist-planning channel",
@@ -783,17 +739,6 @@ world_state = WorldStateV1(
                              'ENT_BLUE': 1.0, 'ENT_BROWN': 1.0},
             established_at_fabula=500,
             terminated_at_fabula=3000,
-            evidence_strength='strong',
-        ),
-        'CHN_WAREHOUSE_RADIO': Channel(
-            id='CHN_WAREHOUSE_RADIO',
-            name="K-Billy's Super Sounds of the 70s warehouse broadcast",
-            medium='radio_broadcast',
-            participant_ids=['OBJ_RADIO', 'ENT_BLONDE', 'ENT_MARVIN', 'ENT_ORANGE'],
-            directionality='broadcast',
-            intelligibility={'ENT_BLONDE': 1.0, 'ENT_MARVIN': 1.0, 'ENT_ORANGE': 0.5},
-            established_at_fabula=5500,
-            terminated_at_fabula=7200,
             evidence_strength='strong',
         ),
     },
@@ -961,21 +906,6 @@ world_state = WorldStateV1(
             metrics={
                 "affinity": RelationshipMetric(value=-0.95, inertia=0.5, evidence_strength="strong", last_updated_fabula=6000),
                 "fear":     RelationshipMetric(value=1.0, inertia=0.25, evidence_strength="strong", last_updated_fabula=6000),
-            },
-        ),
-        # Holdaway ↔ Orange — handler bond.
-        RelationshipEdge(
-            source_entity_id="ENT_HOLDAWAY", target_entity_id="ENT_ORANGE",
-            metrics={
-                "affinity":      RelationshipMetric(value=0.5, inertia=0.55, evidence_strength="strong", last_updated_fabula=1000),
-                "power_dynamic": RelationshipMetric(value=0.65, inertia=0.7, evidence_strength="strong", last_updated_fabula=1000),
-            },
-        ),
-        RelationshipEdge(
-            source_entity_id="ENT_ORANGE", target_entity_id="ENT_HOLDAWAY",
-            metrics={
-                "affinity":      RelationshipMetric(value=0.55, inertia=0.55, evidence_strength="strong", last_updated_fabula=1000),
-                "power_dynamic": RelationshipMetric(value=-0.65, inertia=0.7, evidence_strength="strong", last_updated_fabula=1000),
             },
         ),
         # Brown / Blue — minor edges to Joe.

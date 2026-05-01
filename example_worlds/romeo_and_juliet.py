@@ -66,7 +66,7 @@ world_state = WorldStateV1(
         ),
         "LOC_MANTUA": Location(
             name="Mantua",
-            description="Neighbouring city where Romeo lives in exile after killing Tybalt; cut off from Verona by plague-quarantine.",
+            description="Neighbouring city where Romeo lives in exile after killing Tybalt.",
             ambient_state={
                 "isolation": AmbientVector(value=0.75, volatility=0.3, evidence_strength="strong"),
             },
@@ -151,6 +151,11 @@ world_state = WorldStateV1(
                        confidence=0.85, inertia=0.45, evidence_strength="moderate"),
             ],
             state_timeline=[
+                EntityStateSnapshot(fabula_time=1200, triggered_by="EVT_BENVOLIO_PERSUADES_ROMEO",
+                    traits={
+                        "distraction": TraitVector(value=0.80, inertia=0.30, evidence_strength="moderate"),
+                        "hope": TraitVector(value=0.80, inertia=0.30, evidence_strength="moderate"),
+                    }),
                 EntityStateSnapshot(fabula_time=2000, triggered_by="EVT_ROMEO_MEETS_JULIET",
                     traits={
                         "devotion": TraitVector(value=0.95, inertia=0.55, evidence_strength="strong"),
@@ -163,6 +168,10 @@ world_state = WorldStateV1(
                     ]),
                 EntityStateSnapshot(fabula_time=4000, triggered_by="EVT_SECRET_MARRIAGE",
                     location_id="LOC_FRIAR_CELL"),
+                EntityStateSnapshot(fabula_time=5000, triggered_by="EVT_TYBALT_CHALLENGES_ROMEO",
+                    traits={
+                        "shame": TraitVector(value=0.70, inertia=0.30, evidence_strength="moderate"),
+                    }),
                 EntityStateSnapshot(fabula_time=7000, triggered_by="EVT_ROMEO_KILLS_TYBALT",
                     traits={
                         "guilt": TraitVector(value=0.7, inertia=0.4, evidence_strength="strong"),
@@ -178,9 +187,13 @@ world_state = WorldStateV1(
                         Belief(target_id="ENT_JULIET", perceived_state="Juliet is dead",
                                confidence=0.95, inertia=0.85, established_at_fabula=14500, evidence_strength="strong"),
                     ]),
-                EntityStateSnapshot(fabula_time=16000, triggered_by="EVT_ROMEO_DRINKS_POISON",
+                EntityStateSnapshot(fabula_time=15500, triggered_by="EVT_ROMEO_KILLS_PARIS",
+                    traits={
+                        "guilt": TraitVector(value=0.30, inertia=0.25, evidence_strength="moderate"),
+                    }),EntityStateSnapshot(fabula_time=16000, triggered_by="EVT_ROMEO_DRINKS_POISON",
                     status="dead",
                     location_id="LOC_CAPULET_CRYPT"),
+                
             ],
         ),
         "ENT_JULIET": Entity(
@@ -200,6 +213,10 @@ world_state = WorldStateV1(
                        confidence=0.9, inertia=0.6, evidence_strength="strong"),
             ],
             state_timeline=[
+                EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_PARIS_PROPOSAL",
+                    traits={
+                        "dread": TraitVector(value=0.40, inertia=0.25, evidence_strength="moderate"),
+                    }),
                 EntityStateSnapshot(fabula_time=2000, triggered_by="EVT_ROMEO_MEETS_JULIET",
                     traits={
                         "devotion": TraitVector(value=0.95, inertia=0.55, evidence_strength="strong"),
@@ -211,14 +228,17 @@ world_state = WorldStateV1(
                     ]),
                 EntityStateSnapshot(fabula_time=4000, triggered_by="EVT_SECRET_MARRIAGE",
                     location_id="LOC_FRIAR_CELL"),
-                EntityStateSnapshot(fabula_time=8000, triggered_by="EVT_ROMEO_SPENDS_NIGHT",
+                EntityStateSnapshot(fabula_time=9500, triggered_by="EVT_ROMEO_SPENDS_NIGHT",
                     location_id="LOC_JULIETS_CHAMBER"),
                 EntityStateSnapshot(fabula_time=10000, triggered_by="EVT_CAPULET_PROMISES_PARIS",
                     traits={
                         "desperation": TraitVector(value=0.85, inertia=0.4, evidence_strength="strong"),
                         "obedience": TraitVector(value=0.2, inertia=0.55, evidence_strength="strong"),
                     }),
-                EntityStateSnapshot(fabula_time=12000, triggered_by="EVT_JULIET_TAKES_POTION",
+                EntityStateSnapshot(fabula_time=11500, triggered_by="EVT_FRIAR_GIVES_POTION",
+                    traits={
+                        "resolve": TraitVector(value=1.00, inertia=0.40, evidence_strength="moderate"),
+                    }),EntityStateSnapshot(fabula_time=12000, triggered_by="EVT_JULIET_TAKES_POTION",
                     status="unconscious",
                     traits={
                         "courage": TraitVector(value=0.85, inertia=0.55, evidence_strength="strong"),
@@ -226,9 +246,16 @@ world_state = WorldStateV1(
                 EntityStateSnapshot(fabula_time=13000, triggered_by="EVT_JULIET_LAID_IN_CRYPT",
                     location_id="LOC_CAPULET_CRYPT"),
                 EntityStateSnapshot(fabula_time=16500, triggered_by="EVT_JULIET_AWAKES",
-                    status="healthy"),
+                    status="healthy",
+                    beliefs_added=[
+                        Belief(target_id="ENT_ROMEO", perceived_state="Romeo is dead beside me",
+                               confidence=1.0, inertia=0.95, established_at_fabula=16500,
+                               acquired_via_event_id="EVT_JULIET_AWAKES",
+                               evidence_strength="strong"),
+                    ]),
                 EntityStateSnapshot(fabula_time=17000, triggered_by="EVT_JULIET_STABS_SELF",
                     status="dead"),
+                
             ],
         ),
         "ENT_TYBALT": Entity(
@@ -245,10 +272,14 @@ world_state = WorldStateV1(
                        confidence=0.95, inertia=0.7, established_at_fabula=3000, evidence_strength="strong"),
             ],
             state_timeline=[
-                EntityStateSnapshot(fabula_time=6000, triggered_by="EVT_TYBALT_KILLS_MERCUTIO",
+                EntityStateSnapshot(fabula_time=5000, triggered_by="EVT_TYBALT_CHALLENGES_ROMEO",
+                    traits={
+                        "fury": TraitVector(value=1.00, inertia=0.35, evidence_strength="moderate"),
+                    }),EntityStateSnapshot(fabula_time=6000, triggered_by="EVT_TYBALT_KILLS_MERCUTIO",
                     traits={"aggression": TraitVector(value=1.0, inertia=0.7, evidence_strength="strong")}),
                 EntityStateSnapshot(fabula_time=7000, triggered_by="EVT_ROMEO_KILLS_TYBALT",
                     status="dead"),
+                
             ],
         ),
         "ENT_MERCUTIO": Entity(
@@ -315,6 +346,10 @@ world_state = WorldStateV1(
             state_timeline=[
                 EntityStateSnapshot(fabula_time=14000, triggered_by="EVT_PLAGUE_QUARANTINE_FRIAR_JOHN",
                     traits={"obedience": TraitVector(value=0.7, inertia=0.55, evidence_strength="moderate")}),
+                EntityStateSnapshot(fabula_time=14000, triggered_by="EVT_PLAGUE_QUARANTINE_FRIAR_JOHN",
+                    traits={
+                        "helplessness": TraitVector(value=0.80, inertia=0.30, evidence_strength="moderate"),
+                    }),
             ],
         ),
         "ENT_BALTHASAR": Entity(
@@ -349,14 +384,26 @@ world_state = WorldStateV1(
                        confidence=0.7, inertia=0.55, evidence_strength="moderate"),
             ],
             state_timeline=[
+                EntityStateSnapshot(fabula_time=800, triggered_by="EVT_PRINCE_DECREE",
+                    traits={
+                        "restraint": TraitVector(value=0.70, inertia=0.40, evidence_strength="moderate"),
+                    }),
+                EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_PARIS_PROPOSAL",
+                    traits={
+                        "expectation": TraitVector(value=0.90, inertia=0.40, evidence_strength="moderate"),
+                    }),
                 EntityStateSnapshot(fabula_time=11000, triggered_by="EVT_JULIET_REFUSES_PARIS",
                     traits={
                         "anger": TraitVector(value=0.9, inertia=0.5, evidence_strength="strong"),
                     }),
-                EntityStateSnapshot(fabula_time=17500, triggered_by="EVT_FAMILIES_RECONCILE",
+                EntityStateSnapshot(fabula_time=13000, triggered_by="EVT_JULIET_LAID_IN_CRYPT",
+                    traits={
+                        "grief": TraitVector(value=0.75, inertia=0.30, evidence_strength="moderate"),
+                    }),EntityStateSnapshot(fabula_time=17500, triggered_by="EVT_FAMILIES_RECONCILE",
                     traits={
                         "family_honour": TraitVector(value=0.5, inertia=0.55, evidence_strength="strong"),
                     }),
+                
             ],
         ),
         "ENT_LADY_CAPULET": Entity(
@@ -391,10 +438,14 @@ world_state = WorldStateV1(
             },
             beliefs=[],
             state_timeline=[
-                EntityStateSnapshot(fabula_time=17500, triggered_by="EVT_FAMILIES_RECONCILE",
+                EntityStateSnapshot(fabula_time=800, triggered_by="EVT_PRINCE_DECREE",
+                    traits={
+                        "restraint": TraitVector(value=0.70, inertia=0.40, evidence_strength="moderate"),
+                    }),EntityStateSnapshot(fabula_time=17500, triggered_by="EVT_FAMILIES_RECONCILE",
                     traits={
                         "family_honour": TraitVector(value=0.5, inertia=0.55, evidence_strength="strong"),
                     }),
+                
             ],
         ),
         "ENT_PRINCE_ESCALUS": Entity(
@@ -423,7 +474,7 @@ world_state = WorldStateV1(
                        confidence=0.6, inertia=0.45, evidence_strength="moderate"),
             ],
             state_timeline=[
-                EntityStateSnapshot(fabula_time=15000, triggered_by="EVT_ROMEO_KILLS_PARIS",
+                EntityStateSnapshot(fabula_time=15500, triggered_by="EVT_ROMEO_KILLS_PARIS",
                     status="dead",
                     location_id="LOC_CAPULET_CRYPT"),
             ],
@@ -451,7 +502,7 @@ world_state = WorldStateV1(
                   event_type="choice", actor_ids=["ENT_PARIS"], target_ids=["ENT_CAPULET"],
                   description="Paris asks Capulet for Juliet's hand; Capulet asks him to wait and invites him to the ball."),
         EventNode(id="EVT_BENVOLIO_PERSUADES_ROMEO", fabula_time=1200, syuzhet_index=4,
-                  event_type="choice", actor_ids=["ENT_BENVOLIO"], target_ids=["ENT_ROMEO"],
+                  event_type="choice", actor_ids=["ENT_BENVOLIO", "ENT_MERCUTIO"], target_ids=["ENT_ROMEO"],
                   description="Benvolio and Mercutio persuade the lovesick Romeo to crash the Capulet ball to see Rosaline."),
         EventNode(id="EVT_CAPULET_BALL", fabula_time=1800, syuzhet_index=5,
                   event_type="outcome", actor_ids=["ENT_CAPULET"], target_ids=[],
@@ -480,14 +531,14 @@ world_state = WorldStateV1(
         EventNode(id="EVT_ROMEO_EXILED", fabula_time=9000, syuzhet_index=13,
                   event_type="choice", actor_ids=["ENT_PRINCE_ESCALUS"], target_ids=["ENT_ROMEO"],
                   description="The Prince banishes Romeo from Verona on pain of death."),
-        EventNode(id="EVT_ROMEO_SPENDS_NIGHT", fabula_time=8000, syuzhet_index=14,
+        EventNode(id="EVT_ROMEO_SPENDS_NIGHT", fabula_time=9500, syuzhet_index=14,
                   event_type="choice", actor_ids=["ENT_ROMEO", "ENT_JULIET"], target_ids=[],
-                  description="Before fleeing to Mantua, Romeo secretly spends the wedding night with Juliet."),
+                  description="Before fleeing to Mantua under sentence of exile, Romeo secretly spends the wedding night with Juliet."),
         EventNode(id="EVT_CAPULET_PROMISES_PARIS", fabula_time=10000, syuzhet_index=15,
                   event_type="choice", actor_ids=["ENT_CAPULET"], target_ids=["ENT_JULIET", "ENT_PARIS"],
                   description="Misreading her grief, Capulet promises Juliet to Paris and accelerates the wedding."),
         EventNode(id="EVT_JULIET_REFUSES_PARIS", fabula_time=11000, syuzhet_index=16,
-                  event_type="choice", actor_ids=["ENT_JULIET"], target_ids=["ENT_CAPULET"],
+                  event_type="choice", actor_ids=["ENT_JULIET", "ENT_CAPULET", "ENT_LADY_CAPULET"], target_ids=["ENT_CAPULET", "ENT_LADY_CAPULET"],
                   description="Juliet refuses; Capulet threatens to disown her, and Lady Capulet rejects her plea for delay."),
         EventNode(id="EVT_FRIAR_GIVES_POTION", fabula_time=11500, syuzhet_index=17,
                   event_type="choice", actor_ids=["ENT_FRIAR_LAURENCE"], target_ids=["ENT_JULIET"],
@@ -922,6 +973,12 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_UTT_FRIAR_FINAL_CONFESSION", target_id="EVT_FAMILIES_RECONCILE",
                    causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
                    causal_force=8.0, fabula_time=17500, propagation_delay=0),
+        # The rope ladder is the material affordance that lets the
+        # secretly-married Romeo physically reach Juliet's chamber for
+        # the consummated wedding night before exile.
+        CausalEdge(source_id="OBJ_ROPE_LADDER", target_id="EVT_ROMEO_SPENDS_NIGHT",
+                   causality_type="affordance_gate", mechanism="physical", evidence_strength="strong",
+                   causal_force=7.0, fabula_time=9500),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────

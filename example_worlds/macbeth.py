@@ -172,7 +172,10 @@ world_state = WorldStateV1(
                     traits={
                         "ambition": TraitVector(value=0.85, inertia=0.65, evidence_strength="strong"),
                     }),
-                EntityStateSnapshot(fabula_time=6000, triggered_by="EVT_DUNCAN_MURDER",
+                EntityStateSnapshot(fabula_time=5000, triggered_by="EVT_LADY_MACBETH_PERSUADES",
+                    traits={
+                        "ruthlessness": TraitVector(value=0.80, inertia=0.45, evidence_strength="moderate"),
+                    }),EntityStateSnapshot(fabula_time=6000, triggered_by="EVT_DUNCAN_MURDER",
                     traits={
                         "guilt": TraitVector(value=0.7, inertia=0.4, evidence_strength="strong"),
                         "paranoia": TraitVector(value=0.55, inertia=0.4, evidence_strength="strong"),
@@ -210,6 +213,7 @@ world_state = WorldStateV1(
                     beliefs_invalidated=["ENT_MACDUFF"]),
                 EntityStateSnapshot(fabula_time=19000, triggered_by="EVT_MACBETH_KILLED",
                     status="dead"),
+                
             ],
         ),
         "ENT_LADY_MACBETH": Entity(
@@ -406,6 +410,36 @@ world_state = WorldStateV1(
                     ]),
             ],
         ),
+        "ENT_DOCTOR": Entity(
+            id="ENT_DOCTOR", name="Scottish Doctor",
+            location_id="LOC_DUNSINANE_CASTLE", status="healthy",
+            traits={
+                "discretion": TraitVector(value=0.75, inertia=0.6, evidence_strength="moderate"),
+                "fear": TraitVector(value=0.6, inertia=0.4, evidence_strength="moderate"),
+            },
+            beliefs=[],
+            state_timeline=[
+                EntityStateSnapshot(fabula_time=16000, triggered_by="EVT_UTT_LADY_MACBETH_SLEEPWALK_CONFESSION",
+                    beliefs_added=[
+                        Belief(target_id="ENT_LADY_MACBETH", perceived_state="Her trouble is moral, not medical — she has confessed to murder",
+                               confidence=0.85, inertia=0.7, established_at_fabula=16000,
+                               acquired_via_event_id="EVT_UTT_LADY_MACBETH_SLEEPWALK_CONFESSION",
+                               evidence_strength="strong"),
+                    ]),
+            ],
+        ),
+        "ENT_GENTLEWOMAN": Entity(
+            id="ENT_GENTLEWOMAN", name="Lady Macbeth's Gentlewoman",
+            location_id="LOC_DUNSINANE_CASTLE", status="healthy",
+            traits={
+                "loyalty": TraitVector(value=0.7, inertia=0.55, evidence_strength="moderate"),
+                "discretion": TraitVector(value=0.8, inertia=0.65, evidence_strength="strong"),
+            },
+            beliefs=[
+                Belief(target_id="ENT_LADY_MACBETH", perceived_state="My mistress walks and talks in her sleep most nights",
+                       confidence=0.95, inertia=0.8, established_at_fabula=15500, evidence_strength="strong"),
+            ],
+        ),
     },
 
     # ── EVENTS ──────────────────────────────────────────────────────────
@@ -522,7 +556,7 @@ world_state = WorldStateV1(
                   fabula_time=13000, syuzhet_index=21),
         EventNode(id="EVT_UTT_LADY_MACBETH_SLEEPWALK_CONFESSION", event_type="utterance",
                   description="In a guilt-trance at Dunsinane, Lady Macbeth confesses the regicide and the slaughter of Macduff's wife while a doctor and gentlewoman watch unseen.",
-                  speaker_id="ENT_LADY_MACBETH", addressee_ids=[],
+                  speaker_id="ENT_LADY_MACBETH", addressee_ids=["ENT_DOCTOR", "ENT_GENTLEWOMAN"],
                   actor_ids=["ENT_LADY_MACBETH"], target_ids=["EVT_DUNCAN_MURDER", "EVT_BANQUO_MURDERED", "EVT_MACDUFF_FAMILY_SLAUGHTERED"],
                   content="Out, damned spot — yet who would have thought the old man to have had so much blood in him? The Thane of Fife had a wife: where is she now?",
                   via_channel_id=None, truth_value="true",
@@ -785,6 +819,39 @@ world_state = WorldStateV1(
         CausalEdge(source_id="WORLD_DIVINE_RIGHT", target_id="EVT_LADY_MACBETH_SLEEPWALKING",
                    causality_type="chain_reaction", mechanism="psychological", evidence_strength="moderate",
                    causal_force=4.0, fabula_time=16000),
+
+        # ── orphan utterance wirings ──
+        CausalEdge(source_id="EVT_WITCHES_PROPHECY_1", target_id="EVT_UTT_PROPHECY_HEATH",
+                   causality_type="chain_reaction", mechanism="performative", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_CAWDOR_TITLE", target_id="EVT_UTT_DUNCAN_BESTOWS_CAWDOR",
+                   causality_type="chain_reaction", mechanism="performative", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=3000, propagation_delay=0),
+        CausalEdge(source_id="EVT_DUNCAN_DISCOVERED_MURDERED", target_id="EVT_UTT_MACDUFF_ALARM",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=7.0, fabula_time=7000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WITCHES_PROPHECY_2", target_id="EVT_UTT_PROPHECY_CAVERN",
+                   causality_type="chain_reaction", mechanism="performative", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=13000, propagation_delay=0),
+        CausalEdge(source_id="EVT_LADY_MACBETH_SLEEPWALKING", target_id="EVT_UTT_LADY_MACBETH_SLEEPWALK_CONFESSION",
+                   causality_type="chain_reaction", mechanism="psychological", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=16000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_MACBETH_INVINCIBILITY_TAUNT", target_id="EVT_MACBETH_KILLED",
+                   causality_type="chain_reaction", mechanism="performative", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=19000, propagation_delay=0),
+        # Iconic-symbol affordance gates: each object materially enables
+        # its anchor event (no letter, no remote persuasion; no crown, no
+        # legitimate kingship to lose; no cauldron, no second prophecy
+        # ritual to stage).
+        CausalEdge(source_id="OBJ_LETTER", target_id="EVT_LETTER_SENT",
+                   causality_type="affordance_gate", mechanism="informational", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=4000),
+        CausalEdge(source_id="OBJ_CROWN", target_id="EVT_MACBETH_CROWNED",
+                   causality_type="affordance_gate", mechanism="social", evidence_strength="strong",
+                   causal_force=7.0, fabula_time=10000),
+        CausalEdge(source_id="OBJ_CAULDRON", target_id="EVT_WITCHES_PROPHECY_2",
+                   causality_type="affordance_gate", mechanism="psychological", evidence_strength="moderate",
+                   causal_force=5.0, fabula_time=13000),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────

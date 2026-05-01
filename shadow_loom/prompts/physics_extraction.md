@@ -9,10 +9,12 @@ You are given:
 
 > **Hard contract surface (the downstream physics engine assumes these without warning):**
 > - Every `mutation` / `mutation_social` edge **MUST** carry `trait_target` AND `trait_delta`. Without them the engine silently degrades to a generic +1.0 default and routes through a 20% mechanism penalty.
+> - Every `mutation` edge whose target is an `ENT_` **MUST** be paired with an `entity_updates` entry on the same entity at the same `fabula_time`, listing the new value of `trait_target` in `trait_updates`. Edges declare *what changed*, snapshots declare *the new state* — without the snapshot the mutation is recorded on the edge but never anchored on the entity, and downstream propagation/abduction will under-read it. Programmatic validation now flags this as a `mutation_parity` warning.
 > - `mutation_social` edges **MUST** include `rel_counterpart_id` (the other entity in the dyad) and use `trait_target` from `{"affinity", "fear", "power_dynamic"}` only.
 > - Self-loops (`source_id == target_id`) are dropped on ingest. Don't author them.
-> - `mechanism` should be one of: `physical`, `psychological`, `epistemic`, `social`, `emotional`, `informational`, `betrayal`. Off-list labels (e.g. `kinetic`, `chemical`, `seduction`, `coercion`) are tolerated but bypass mechanism-routing — only use them when you specifically *want* the impulse to apply uniformly to all the entity's traits.
+> - `mechanism` should be one of: `physical`, `psychological`, `epistemic`, `social`, `emotional`, `informational`, `betrayal`. Long-form aliases (`physical_force`, `epistemic_revelation`, `social_coercion`) are auto-canonicalized to the short form. Off-list labels (e.g. `kinetic`, `chemical`, `seduction`, `coercion`) are tolerated but bypass mechanism-routing — only use them when you specifically *want* the impulse to apply uniformly to all the entity's traits.
 > - `causal_force` ∈ [0, 10], `trait_delta` ∈ [-1, 1], `propagation_delay` ≥ 0 — values outside these ranges are clamped (lossy).
+> - On `chain_reaction` edges (event→event), the target's `fabula_time` MUST be ≥ source `fabula_time + propagation_delay`. Inverted timing is rejected by `_validate_time_ordering` (e.g. an utterance can't be caused by an event that hasn't happened yet).
 
 ---
 
