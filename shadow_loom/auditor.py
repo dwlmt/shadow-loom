@@ -531,9 +531,12 @@ def compute_causal_feedback(
                     and ce.causality_type == "chain_reaction"
                 ):
                     resolved_ids.add(ce.source_id)
+            # Denominator must match the numerator's set semantics —
+            # using ``len(withheld)`` (the list) double-counts duplicate
+            # ``event_id`` references and biases the score low.
             foreshadowing_score = (
-                len(resolved_ids) / len(withheld)
-                if withheld
+                len(resolved_ids) / len(withheld_ids)
+                if withheld_ids
                 else 1.0
             )
         elif withheld:

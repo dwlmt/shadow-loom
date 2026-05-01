@@ -1012,6 +1012,22 @@ async def run_pipeline_async(
         result.prose = scene.prose
     else:
         if brief is not None:
+            # Reconstruct an assembler so engine-side affective metrics
+            # (trajectory_scores, KL, affective_loss) flow into the
+            # per-cycle audit. Mirrors the sync ``run_pipeline`` branch
+            # — without this the async loop loses the affective half of
+            # ``ChangeImpactMetrics``.
+            _assembler = None
+            if query.query_type == "directive":
+                try:
+                    from shadow_loom.extract_graph import extract_ego_graph_from_memory
+                    _ego = extract_ego_graph_from_memory(ws, brief.target_entities)
+                    _assembler = DirectiveAssembler(
+                        sandbox=None, ego_payload=_ego.model_dump(), world_state=ws,
+                    )
+                except Exception:
+                    logger.debug("[Pipeline·Async] Could not build assembler for engine metrics.")
+
             feedback = render_and_audit(
                 brief=brief, world_state=ws,
                 auditor_config=cfg.auditor_config,
@@ -1019,6 +1035,7 @@ async def run_pipeline_async(
                 query_type=query.query_type,
                 physics_state=physics_state,
                 physics_result=physics_result.get("_causal_physics_result"),
+                assembler=_assembler,
             )
         else:
             gen_cfg = cfg.generation_config or GenerationConfig()

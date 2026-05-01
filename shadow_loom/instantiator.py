@@ -215,9 +215,8 @@ class AMWNInstantiator:
         # use the same edge_type as before. ``intelligibility`` is
         # per-recipient: an edge from S→T carries ``intelligibility``
         # equal to the channel's intelligibility for T (default 1.0
-        # — fully comprehensible). The legacy ``is_encrypted`` flag is
-        # preserved as ``intelligibility < 0.5`` for backwards
-        # compatibility with consumers that still read it.
+        # — fully comprehensible).
+        intel_thresh = _physics_settings().intelligibility_threshold
         for ch in ego_payload.get("relevant_channels", []):
             medium = ch.get("medium", "unknown")
             participants = ch.get("participant_ids", [])
@@ -242,18 +241,21 @@ class AMWNInstantiator:
                         edge_type="communicating_with",
                         medium=medium,
                         intelligibility=intel,
-                        is_encrypted=intel < 0.5,
                         channel_id=channel_id,
                         world_id=target_world_id,
                     )
 
         # G. Epistemic Leakage (eavesdropping on intelligible channels).
         # An edge is eavesdroppable when its per-recipient intelligibility
-        # is at least 0.5 (i.e. not encrypted/obfuscated for the listener).
+        # meets the configured threshold
+        # (``physics.intelligibility_threshold`` — default 0.3 — kept in
+        # sync with ``directive_assembly`` and ``causal_physics`` so
+        # hidden-channel detection sees the same edge set the runtime
+        # engines reason over).
         comms_edges = [
             (u, v, d) for u, v, d in sandbox.edges(data=True)
             if d.get("edge_type") == "communicating_with"
-            and float(d.get("intelligibility", 1.0)) >= 0.5
+            and float(d.get("intelligibility", 1.0)) >= intel_thresh
         ]
         for src, tgt, cdata in comms_edges:
             src_loc = sandbox.nodes.get(src, {}).get("location_id")
