@@ -14,8 +14,16 @@ citations — Correa & Bareinboim 2025 (AMWN + ctf-calculus, ICML 2025
 spotlight, OpenReview Z1qZoHa6ql), Wilmot & Keller 2020 (ACL pp. 1763–1788),
 Wilmot & Keller 2021 (EMNLP pp. 851–865), Wilmot 2022 (PhD, arXiv:2206.09708),
 and Tian et al. 2024 (EMNLP Outstanding Paper, pp. 17659–17681) — were each
-verified directly. Where a citation could not be verified online (older
-monographs, working papers) the entry is marked accordingly.
+verified directly. Recent (2023–2026) LLM-era references added to §1.5,
+§2.2, §4.3 and §6.5 — Kıcıman et al. 2024 (TMLR, arXiv:2305.00050),
+Kim et al. 2023 (FANToM, EMNLP, arXiv:2310.15421), Cross et al. 2024
+(Hypothetical Minds, arXiv:2407.07086), Gu et al. 2024 (LLM-as-a-Judge
+survey, arXiv:2411.15594), Gu et al. 2024/2026 (SimpleToM, ICLR 2026,
+arXiv:2410.13648), Yang et al. 2023 (DOC, ACL, arXiv:2212.10077), and
+Xu et al. 2025 (Echoes in AI, PNAS 122(35) e2504966122, arXiv:2501.00273)
+— were each verified directly against their arXiv records and journal
+pages. Where a citation could not be verified online (older monographs,
+working papers) the entry is marked accordingly.
 
 ---
 
@@ -98,6 +106,12 @@ that readers do when tracking who knows what.
 * Goodman, N. D. & Frank, M. C. (2016). "Pragmatic language interpretation as probabilistic inference". *Trends in Cognitive Sciences* 20(11): 818–829. DOI 10.1016/j.tics.2016.08.005. — the Rational Speech Act framework, conceptually parallel to `Belief.confidence`.
 * Baker, C. L., Saxe, R., Tenenbaum, J. B. (2009). "Action understanding as inverse planning". *Cognition* 113(3): 329–349. DOI 10.1016/j.cognition.2009.07.005.
 
+Recent (2023–2026) — LLM-era benchmarks for narrative ToM and belief tracking, directly relevant to how `Belief.confidence` / `inertia` should behave when an LLM ingests prose:
+
+* Kim, H. *et al.* (2023). "FANToM: A Benchmark for Stress-testing Machine Theory of Mind in Interactions". *EMNLP 2023*. arXiv:2310.15421. — information-asymmetric multi-party conversation as a ToM stress test; the per-channel `intelligibility` model in §6.1 is partly a response to this paper's failure modes.
+* Cross, L. *et al.* (2024). "Hypothetical Minds: Scaffolding Theory of Mind for Multi-Agent Tasks with Large Language Models". arXiv:2407.07086. — explicit hypothesis-generation-and-refinement over other agents' strategies; conceptual cousin of the auditor's belief-consistency checks.
+* Gu, Y. *et al.* (2024/2026). "SimpleToM: Exposing the Gap between Explicit ToM Inference and Implicit ToM Application in LLMs". *ICLR 2026*. arXiv:2410.13648. — shows LLMs can answer "what does X believe?" but fail to *act* on that belief in behaviour prediction; motivates our separate audit pass for belief-consistent character action.
+
 ---
 
 ## 2. Causal inference (Pearl's ladder, AMWN, ctf-calculus)
@@ -172,6 +186,10 @@ a narrative setting.
 * Richardson, T. S. & Robins, J. M. (2013). "Single World Intervention Graphs (SWIGs): A unification of the counterfactual and graphical approaches to causality". CSSS Working Paper 128, Univ. of Washington. *(working paper widely cited in this exact form; PDF availability fluctuates)*.
 * Correa, J. D., Lee, S., Bareinboim, E. (2021). "Nested counterfactual identification from arbitrary surrogate experiments". *NeurIPS 2021*. arXiv:2107.03190. — algorithmic counterpart to the ctf-calculus.
 * Bareinboim, E. & Pearl, J. (2016). "Causal inference and the data-fusion problem". *Proc. Natl. Acad. Sci.* 113(27): 7345–7352. DOI 10.1073/pnas.1510507113. — transportability across populations — the conceptual basis for AMWN-style multi-world reasoning.
+
+Recent (2023–2026) — LLMs as causal reasoners, complementary to (not a replacement for) the structural machinery above:
+
+* Kıcıman, E., Ness, R., Sharma, A., Tan, C. (2024). "Causal Reasoning and Large Language Models: Opening a New Frontier for Causality". *Transactions on Machine Learning Research*. arXiv:2305.00050. — benchmarks LLMs on pairwise causal discovery, counterfactual reasoning, and necessary/sufficient cause attribution; supports our hybrid stance of using LLMs to *propose* edges (`extract_graph.py`) while keeping identification logic in typed code (`causal_physics.py`).
 
 ### 2.3 Abduction (`CausalPhysicsEngine.abduction_update`)
 
@@ -303,6 +321,7 @@ slower LLM as a critic for the output of a weaker / faster generator.
 * Zheng, L. *et al.* (2023). "Judging LLM-as-a-judge with MT-Bench and Chatbot Arena". *NeurIPS 2023 Datasets & Benchmarks*.
 * Bai, Y. *et al.* (2022). "Constitutional AI: Harmlessness from AI Feedback". arXiv:2212.08073. — the recursive critique-and-revise structure we adapt for narrative consistency rather than safety.
 * Madaan, A. *et al.* (2023). "Self-Refine: Iterative refinement with self-feedback". *NeurIPS 2023*.
+* Gu, J. *et al.* (2024). "A Survey on LLM-as-a-Judge". arXiv:2411.15594. — comprehensive survey of bias-mitigation, calibration, and reliability strategies for the judge-loop pattern; the audit step in our pipeline is a domain-specialised instance of these methods, restricted to narrative-structural rather than safety/quality criteria.
 
 ### 4.4 Constrained decoding (rejected — see [design-decisions.md](design-decisions.md) D-rejected)
 
@@ -414,6 +433,8 @@ context into all three downstream extraction agents.
 * Akoury, N. *et al.* (2020). "STORIUM: A dataset and evaluation platform for machine-in-the-loop story generation". *EMNLP 2020*.
 * Yang, K. *et al.* (2022). "Re3: Generating longer stories with recursive reprompting and revision". *EMNLP 2022*. — recursive plan-then-revise; conceptual cousin of Steps 9–12.
 * Tian, Y. *et al.* (2024). "Are large language models capable of generating human-level narratives?". *EMNLP 2024* — the gap between fluent prose and tight causal/affective structure that motivates this project's existence.
+* Yang, K., Klein, D., Peng, N., Tian, Y. (2023). "DOC: Improving Long Story Coherence With Detailed Outline Control". *ACL 2023*. arXiv:2212.10077. — hierarchical outline + per-passage controller; our brief (Step 9) plus channel-aware draft (Step 10) is a typed, causal-graph-conditioned variant of the same plan-then-render pattern.
+* Xu, W., Jojic, N., Rao, S., Brockett, C., Dolan, B. (2025). "Echoes in AI: Quantifying lack of plot diversity in LLM outputs". *PNAS* 122(35): e2504966122. arXiv:2501.00273. — empirical evidence that unconditioned LLM story generation collapses onto a small set of shared plot tropes; reinforces the case for an externally-supplied causal/character graph that breaks the prior.
 
 ### Reading-as-simulation (psychology of fiction)
 
@@ -440,9 +461,12 @@ context into all three downstream extraction agents.
 | `directive_assembly.py::compute_mystery_score` | Sternberg 1978 |
 | `directive_assembly.py::compute_dramatic_irony_score` | Gerrig 1993, Booth 1974 |
 | `viz_helpers.py` (affective trajectories) | Reagan et al. 2016 |
-| `pipeline.py` (Step 11/12 audit loop) | Madaan et al. 2023, Bai et al. 2022 |
-| `generation.py` (brief → constrained render) | Yao et al. 2019, Goldfarb-Tarrant et al. 2020 |
-| `query_models.py` (Pearl rungs) | Pearl & Mackenzie 2018, Bareinboim et al. 2022 |
+| `pipeline.py` (Step 11/12 audit loop) | Madaan et al. 2023, Bai et al. 2022; Gu et al. 2024 (LLM-as-a-Judge survey) |
+| `generation.py` (brief → constrained render) | Yao et al. 2019, Goldfarb-Tarrant et al. 2020, Yang et al. 2023 (DOC) |
+| `query_models.py` (Pearl rungs) | Pearl & Mackenzie 2018, Bareinboim et al. 2022; Kıcıman et al. 2024 (LLM causal benchmarks) |
+| `models.py` (Belief, beliefs_added/invalidated) | Fagin et al. 1995; Kim et al. 2023 (FANToM); Gu et al. 2024 (SimpleToM) |
+| `extract_graph.py` (LLM-extracted causal edges) | Kıcıman et al. 2024 |
+| Project motivation (graph-first vs prior-collapse) | Tian et al. 2024; Xu et al. 2025 ("Echoes in AI") |
 
 ---
 
