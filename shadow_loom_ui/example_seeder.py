@@ -30,12 +30,45 @@ from shadow_loom.models import WorldStateV1
 logger = logging.getLogger(__name__)
 
 _EXAMPLES_PACKAGE = "example_worlds"
-_SAMPLE_PLOTS_DIR = Path(__file__).resolve().parents[1] / "sample_plots"
+
+
+def _sample_plots_dir() -> Path | None:
+    """Locate the directory containing ``<slug>.txt`` sample plots.
+
+    Tries, in order:
+      1. The installed ``sample_plots`` package (works for ``pip install .``
+         in production containers — files travel as package data).
+      2. The repo-root ``sample_plots/`` directory two levels up from
+         this file (works for editable installs and direct ``python``
+         execution from the repo).
+      3. ``$PWD/sample_plots`` as a last-resort fallback.
+    Returns ``None`` if none of these exist.
+    """
+    try:
+        pkg = importlib.import_module("sample_plots")
+        pkg_path = Path(next(iter(pkg.__path__)))
+        if pkg_path.is_dir():
+            return pkg_path
+    except (ImportError, StopIteration, AttributeError):
+        pass
+
+    repo_local = Path(__file__).resolve().parents[1] / "sample_plots"
+    if repo_local.is_dir():
+        return repo_local
+
+    cwd_local = Path.cwd() / "sample_plots"
+    if cwd_local.is_dir():
+        return cwd_local
+
+    return None
 
 
 def _load_sample_plot(slug: str) -> str | None:
     """Return the contents of sample_plots/<slug>.txt if it exists."""
-    path = _SAMPLE_PLOTS_DIR / f"{slug}.txt"
+    base = _sample_plots_dir()
+    if base is None:
+        return None
+    path = base / f"{slug}.txt"
     if not path.is_file():
         return None
     try:

@@ -10,18 +10,14 @@ authors = [
     { name = "David Rae Wilmot", email = "david.wilmot@gmail.com" },
 ]
 dependencies = [
-    "cognee",
-    "datasets>=4.8.4",
-    "gradio>=6.13.0",
-    "huggingface-hub>=1.11.0",
+    # Core engine
     "networkx>=3.6.1",
     "ollama>=0.6.1",
     "pydantic-ai>=1.84.1",
-    "sentence-transformers>=5.4.1",
-    "transformers>=5.5.4",
     # UI
     "nicegui>=2.0",
     "sqlalchemy>=2.0",
+    "sqlmodel>=0.0.22",
     "psycopg[binary]>=3.2",
     "authlib>=1.4",
     "itsdangerous>=2.2",
@@ -30,3 +26,37 @@ dependencies = [
     # MCP
     "fastmcp>=3.0",
 ]
+
+[project.optional-dependencies]
+# Development tooling — install with: pip install -e ".[dev]"
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.7",
+    "mypy>=1.13",
+]
+
+# ─────────────────────────────────────────────────────────────────
+# Build configuration
+# ─────────────────────────────────────────────────────────────────
+# Explicit package list — `sample_plots/` and `example_worlds/` are
+# data directories that look like packages to setuptools' flat-layout
+# auto-discovery, so we name the real Python packages instead.
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = [
+    "shadow_loom",
+    "shadow_loom.prompts",
+    "shadow_loom_ui",
+    "shadow_loom_ui.components",
+    "shadow_loom_mcp",
+    "example_worlds",
+    "sample_plots",
+]
+
+[tool.setuptools.package-data]
+"shadow_loom" = ["prompts/*.md"]
+"sample_plots" = ["*.txt"]

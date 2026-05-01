@@ -1,0 +1,133 @@
+# =====================================================================
+# Shadow-Loom — Render Blueprint
+# =====================================================================
+# https://render.com/docs/blueprint-spec
+#
+# One-click deploy:
+#   1. Push this repo to GitHub.
+#   2. Click "New" → "Blueprint" in the Render dashboard and select the
+#      repo. Render reads this file and provisions both services.
+#   3. Fill in the secrets marked `sync: false` in the dashboard
+#      (OAuth client ids, OPENROUTER_API_KEY, etc.). See
+#      docs/render-deployment.md for the full walkthrough.
+#
+# Render automatically:
+#   • injects $PORT into the web service (the UI honours it via
+#     UISettings._honour_platform_port);
+#   • generates a 32-byte STORAGE_SECRET on first deploy.
+#
+# Notes:
+#   • The Postgres add-on is provisioned as a managed `databases:` entry;
+#     `connectionString` (the libpq URL) is injected into the web service
+#     as DATABASE_URL via fromDatabase. SQLModel + psycopg accept it
+#     after the `postgres://` → `postgresql+psycopg://` rewrite handled
+#     in shadow_loom/db.py.
+#   • Default models are OpenRouter Claude 3.5 — you only need to set
+#     OPENROUTER_API_KEY in the dashboard. Override per-stage models via
+#     env vars if you want a different mix.
+# =====================================================================
+
+databases:
+  - name: shadow-loom-pg
+    plan: basic-256mb            # smallest paid tier with daily backups
+    postgresMajorVersion: "16"
+    ipAllowList: []              # private to Render only
+
+services:
+  - type: web
+    name: shadow-loom
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter                # 512MB — bump to standard for real workloads
+    region: frankfurt            # change to oregon/singapore as needed
+    autoDeployTrigger: commit
+    healthCheckPath: /
+    numInstances: 1
+
+    envVars:
+      # ─ Database ─────────────────────────────────────────────────
+      - key: DATABASE_URL
+        fromDatabase:
+          name: shadow-loom-pg
+          property: connectionString
+
+      # ─ Session signing (auto-generated, never re-roll without warning) ─
+      - key: STORAGE_SECRET
+        generateValue: true
+
+      # ─ Public URL for OAuth callbacks ───────────────────────────
+      # Leave blank on first deploy, then set in the dashboard once
+      # Render assigns the *.onrender.com hostname (or your custom
+      # domain). Format: https://<host> (no trailing slash).
+      - key: OAUTH_REDIRECT_BASE
+        sync: false
+
+      # ─ LLM provider — OpenRouter (recommended for PaaS) ─────────
+      # Get a key at https://openrouter.ai/keys, then paste it into
+      # the Render dashboard. Local dev can use ollama: prefixes; on
+      # Render you almost always want openrouter: because the box has
+      # no GPU.
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENROUTER_BASE_URL
+        value: https://openrouter.ai/api/v1
+      - key: DEFAULT_MODEL
+        value: openrouter:anthropic/claude-3.5-sonnet
+      - key: GENERATION_MODEL
+        value: openrouter:anthropic/claude-3.5-sonnet
+      - key: AUDITOR_MODEL
+        value: openrouter:anthropic/claude-3.5-sonnet
+      - key: AUDITOR_GENERATION_MODEL
+        value: openrouter:anthropic/claude-3.5-sonnet
+      - key: EXTRACTION_MODEL
+        value: openrouter:anthropic/claude-3.5-sonnet
+      - key: QUERY_PARSING_MODEL
+        value: openrouter:anthropic/claude-3.5-haiku
+
+      # Token caps tuned for Claude 3.5 / GPT-4o-class output limits.
+      - key: GENERATION_MAX_TOKENS
+        value: "8000"
+      - key: AUDITOR_MAX_TOKENS
+        value: "4000"
+      - key: AUDITOR_MAX_TOKENS_GENERATION
+        value: "8000"
+      - key: QUERY_PARSING_MAX_TOKENS
+        value: "4000"
+
+      # ─ OAuth providers (set at least one; rest can stay blank) ──
+      - key: GITHUB_CLIENT_ID
+        sync: false
+      - key: GITHUB_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: DISCORD_CLIENT_ID
+        sync: false
+      - key: DISCORD_CLIENT_SECRET
+        sync: false
+      - key: MICROSOFT_CLIENT_ID
+        sync: false
+      - key: MICROSOFT_CLIENT_SECRET
+        sync: false
+
+      # ─ AGPL § 13: source URL displayed in the UI footer ─────────
+      - key: UI_SOURCE_URL
+        value: https://github.com/dwlmt/shadow-loom
+
+      # ─ UI / pipeline production defaults ────────────────────────
+      - key: UI_RELOAD
+        value: "false"
+      - key: PIPELINE_SKIP_AUDIT
+        value: "false"
+      - key: MCP_ALLOW_OPEN_MODE
+        value: "false"
+
+      # ─ Optional: Langfuse tracing ───────────────────────────────
+      - key: LANGFUSE_SECRET_KEY
+        sync: false
+      - key: LANGFUSE_PUBLIC_KEY
+        sync: false
+      - key: LANGFUSE_BASE_URL
+        value: https://cloud.langfuse.com

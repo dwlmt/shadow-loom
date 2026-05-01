@@ -41,6 +41,7 @@ Every doc has a **See also** footer cross-linking its closest neighbours.
 | [docs/design-decisions.md](docs/design-decisions.md) | The key choices that shape the architecture and what we deliberately rejected. |
 | [docs/settings.md](docs/settings.md) | Every runtime knob: env vars, defaults, tuning recipes, model-provider switching. |
 | [docs/railway-deployment.md](docs/railway-deployment.md) | Step-by-step recipe for deploying to Railway with managed Postgres, OAuth, and OpenRouter. |
+| [docs/render-deployment.md](docs/render-deployment.md) | Equivalent Render Blueprint deploy — single-click via [`render.yaml`](render.yaml). |
 | [docs/academic-foundations.md](docs/academic-foundations.md) | The literature behind every named concept — Pearl, Genette, Greimas, Sternberg, Halpern, Wilmot, Correa & Bareinboim, etc. |
 
 ### Reading paths
@@ -66,7 +67,7 @@ Pick the path that matches what you're trying to do.
 [model-examples.md](docs/model-examples.md) → [pipeline-by-example.md](docs/pipeline-by-example.md).
 
 **"I want to deploy / tune / configure."**
-[settings.md](docs/settings.md) → [railway-deployment.md](docs/railway-deployment.md).
+[settings.md](docs/settings.md) → [railway-deployment.md](docs/railway-deployment.md) or [render-deployment.md](docs/render-deployment.md).
 
 If none of these fit, the safe default is [architecture.md](docs/architecture.md) —
 it links into every other document.
@@ -160,26 +161,104 @@ end-to-end orchestrator is
 
 ## Quick start
 
+### Prerequisites
+
+* **Python 3.13+** (3.14 recommended; see [.python-version](.python-version)).
+* **An LLM backend.** One of:
+  * **[Ollama](https://ollama.com/download)** for local inference (default).
+    After install: `ollama serve` then `ollama pull qwen3.6:27b`.
+    Smaller models work too — set `DEFAULT_MODEL` in `.env`.
+  * **OpenRouter** — set `OPENROUTER_API_KEY` and a `*_MODEL` value
+    starting with `openrouter:` in `.env`.
+  * **OpenAI** — set `OPENAI_API_KEY` and use `openai:gpt-…` model strings.
+* **Optional:** Docker / Docker Compose for the containerised stack;
+  Postgres if you don't want SQLite.
+
+### Option A — one-shot bootstrap (recommended)
+
 ```bash
-# Environment
-# Environment (the repo is packaged via pyproject.toml; no environment.yml)
-conda activate shadow-loom
-pip install -e .
-
-# Tests (~978 tests; live LLM e2e excluded by default)
-python -m pytest tests/ --ignore=tests/test_live_e2e.py -q
-
-# UI
-python -m shadow_loom_ui                 # NiceGUI workspace on http://localhost:8080
-
-# MCP server (FastMCP, stdio)
-python -m shadow_loom_mcp
+git clone https://github.com/dwlmt/shadow-loom.git
+cd shadow-loom
+make setup            # creates .venv, installs in editable mode, copies .env, checks Ollama
+source .venv/bin/activate
+make ui               # http://localhost:7860
 ```
+
+`make setup` is idempotent — re-run any time. See `make help` for all
+targets (`ui`, `mcp`, `pipeline`, `test`, `lint`, `docker-up`, …).
+
+### Option B — manual
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -e .
+cp .env.example .env                # then edit if needed
+
+ollama pull qwen3.6:27b              # if using Ollama (default)
+
+python -m shadow_loom_ui              # NiceGUI workspace → http://localhost:7860
+python -m shadow_loom_mcp             # MCP server (stdio)
+python run_pipeline.py                # end-to-end demo
+python -m pytest tests/ --ignore=tests/test_live_e2e.py -q   # ~978 tests
+```
+
+### Option C — Docker Compose (Postgres included)
+
+```bash
+cp .env.example .env                  # set STORAGE_SECRET to anything random
+docker compose up --build             # → http://localhost:7860 backed by Postgres
+```
+
+The compose stack reaches an Ollama running on the host via
+`host.docker.internal`. To run fully containerised, switch
+`DEFAULT_MODEL` to a hosted provider in `.env`.
+
+### Configuration
+
+Every runtime knob lives in [`.env`](.env.example) (local) or
+real environment variables (production). Defaults are baked into
+[`shadow_loom/settings.py`](shadow_loom/settings.py) so a blank `.env`
+already works for local Ollama. The full reference is in
+[docs/settings.md](docs/settings.md).
 
 See [docs/ui-guide.md](docs/ui-guide.md) for the workspace tour,
 [docs/mcp-guide.md](docs/mcp-guide.md) for the MCP tool catalogue and the
 Claude Desktop / Cursor configuration snippet, and
 [docs/testing.md](docs/testing.md) for the test-suite layout.
+
+---
+
+## Deploy to a PaaS
+
+Shadow-Loom ships infrastructure-as-code for two managed targets that
+share the same [`Dockerfile`](Dockerfile). Pick whichever you prefer
+— there is no functional difference between the two.
+
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy?template=https://github.com/dwlmt/shadow-loom)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/dwlmt/shadow-loom)
+
+| Target | Config | Walkthrough |
+| --- | --- | --- |
+| **Railway** | [`railway.toml`](railway.toml) | [docs/railway-deployment.md](docs/railway-deployment.md) |
+| **Render** | [`render.yaml`](render.yaml) | [docs/render-deployment.md](docs/render-deployment.md) |
+
+Both blueprints provision managed Postgres 16, generate a stable
+`STORAGE_SECRET`, and inject `$PORT` into the container. You only
+need to fill in `OPENROUTER_API_KEY`, `OAUTH_REDIRECT_BASE` and at
+least one OAuth provider's `_CLIENT_ID` / `_CLIENT_SECRET` in the
+platform dashboard.
+
+On first boot the example seeder
+([`shadow_loom_ui/example_seeder.py`](shadow_loom_ui/example_seeder.py))
+automatically loads every fixture from
+[`example_worlds/`](example_worlds/) with the matching prose from
+[`sample_plots/`](sample_plots/), so the dashboard is populated with
+ready-to-fork example projects (Macbeth, Death on the Nile, Reservoir
+Dogs, …) the moment the deploy goes live.
+
+For production you'll typically want OpenRouter (Render and Railway
+web services have no GPU) — copy [`.env.production.example`](.env.production.example)
+into the dashboard or use the defaults baked into the blueprint.
 
 ---
 
