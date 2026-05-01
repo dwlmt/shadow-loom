@@ -87,6 +87,29 @@ VIOLATION_EXPLANATIONS: Dict[str, str] = {
         "A counterfactual claim could not be reconciled with present-day "
         "evidence. The implied past contradicts what we know is true now."
     ),
+    "utterance_truth_contradiction": (
+        "An on-page utterance was rendered as sincere when the world "
+        "graph marks its content as a lie or as performative. The "
+        "narrator should foreground the gap between what is said and "
+        "what is true."
+    ),
+    "channel_intelligibility_violation": (
+        "A character acquired a high-confidence belief through a "
+        "channel where their intelligibility is low (encrypted line, "
+        "foreign tongue, partial overhearing). Either lower the "
+        "confidence or surface the partial decoding in the prose."
+    ),
+    "withheld_utterance_leak": (
+        "An utterance whose syuzhet_index is still in the future was "
+        "quoted, paraphrased, or implied in the current scene. The "
+        "narrator pre-emptively revealed information the reader has "
+        "not yet been given."
+    ),
+    "belief_provenance_contradiction": (
+        "A character cited a belief whose provenance (acquired_via_event "
+        "or acquired_via_channel) does not match how the prose said "
+        "they came to know it. Reconcile the source of the knowledge."
+    ),
 }
 
 

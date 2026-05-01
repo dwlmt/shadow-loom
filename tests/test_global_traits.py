@@ -477,22 +477,31 @@ class TestEngineDomainFiltering:
 
 class TestPlotModelWorldTraits:
     def test_macbeth_has_world_traits(self):
-        assert len(macbeth_ws.world_traits) == 2
+        # Fixture grew during the 2026-05-01 audit (WORLD_DIVINE_RIGHT
+        # added). Pin the canonical pair the engine relies on rather
+        # than the exact count.
+        assert len(macbeth_ws.world_traits) >= 2
         assert "WORLD_FEUDAL_HIERARCHY" in macbeth_ws.world_traits
         assert "WORLD_SUPERNATURAL_PROPHECY" in macbeth_ws.world_traits
 
     def test_orwell_has_world_traits(self):
+        # Fixture renamed WORLD_SURVEILLANCE_STATE → WORLD_PANOPTICON
+        # during the audit; same role (panoptic surveillance regime),
+        # same magnitude band.
         assert len(orwell_ws.world_traits) == 3
-        assert "WORLD_SURVEILLANCE_STATE" in orwell_ws.world_traits
-        assert orwell_ws.world_traits["WORLD_SURVEILLANCE_STATE"].magnitude.value == 0.95
+        assert "WORLD_PANOPTICON" in orwell_ws.world_traits
+        assert orwell_ws.world_traits["WORLD_PANOPTICON"].magnitude.value == 0.95
 
     def test_persuasion_has_world_traits(self):
-        assert len(persuasion_ws.world_traits) == 2
-        assert "WORLD_SOCIAL_RIGIDITY" in persuasion_ws.world_traits
+        # Fixture renamed WORLD_SOCIAL_RIGIDITY → WORLD_REGENCY_RANK
+        # and grew with WORLD_NAVAL_PRIZE_ECONOMY +
+        # WORLD_PRIMOGENITURE_ENTAIL during the audit.
+        assert len(persuasion_ws.world_traits) >= 2
+        assert "WORLD_REGENCY_RANK" in persuasion_ws.world_traits
 
     def test_macbeth_world_traits_in_ego_graph(self):
         payload = extract_ego_graph_from_memory(macbeth_ws, ["ENT_MACBETH"])
-        assert len(payload.world_traits) == 2
+        assert len(payload.world_traits) >= 2
         ids = {wt["id"] for wt in payload.world_traits}
         assert "WORLD_FEUDAL_HIERARCHY" in ids
         assert "WORLD_SUPERNATURAL_PROPHECY" in ids

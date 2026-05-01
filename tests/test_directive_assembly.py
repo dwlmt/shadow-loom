@@ -125,7 +125,9 @@ class TestRelationshipTensions:
 
         assert len(tensions) >= 1
         for t in tensions:
-            assert "ENT_MACBETH" in t.participant_ids or t.target_id == "ENT_MACBETH"
+            # RelationshipTension uses source_id / target_id (dyadic)
+            # rather than the legacy participant_ids list.
+            assert "ENT_MACBETH" in (t.source_id, t.target_id)
 
     def test_asymmetry_score_non_negative(self):
         """Asymmetry score must be >= 0."""
@@ -303,18 +305,18 @@ class TestNarrativeTension:
     """compute_narrative_tension must detect fabula/syuzhet displacement."""
 
     def test_brief_encounter_frame_story_displacement(self):
-        """EVT_FINAL_MEETING (fabula=9, syuzhet=1) should have negative displacement
-        (shown before its chronological position)."""
+        """EVT_DOLLY_INTRUDES (fabula=10000, syuzhet=1) opens the frame story
+        but happens chronologically near the end — large negative displacement."""
         ego = _ego_payload(brief_encounter_ws, ["ENT_LAURA"])
         assembler = DirectiveAssembler(None, ego, brief_encounter_ws)
         tensions = assembler.compute_narrative_tension()
 
         tension_map = {t.event_id: t for t in tensions}
-        assert "EVT_FINAL_MEETING" in tension_map
-        fm = tension_map["EVT_FINAL_MEETING"]
-        # fabula=9 → high rank, syuzhet=1 → low rank ⇒ negative displacement
+        assert "EVT_DOLLY_INTRUDES" in tension_map
+        fm = tension_map["EVT_DOLLY_INTRUDES"]
+        # high fabula rank, low syuzhet rank ⇒ negative displacement
         assert fm.displacement < 0, (
-            f"EVT_FINAL_MEETING should have negative displacement, got {fm.displacement}"
+            f"EVT_DOLLY_INTRUDES should have negative displacement, got {fm.displacement}"
         )
 
     def test_brief_encounter_grit_positive_displacement(self):
@@ -358,21 +360,22 @@ class TestNarrativeTension:
         as 'linear' regardless of displacement."""
         ego = _ego_payload(brief_encounter_ws, ["ENT_LAURA"])
         assembler = DirectiveAssembler(None, ego, brief_encounter_ws)
-        # Anchor at 2: EVT_FRED_UNDERSTANDS (s=1) and EVT_FINAL_MEETING (s=2)
-        # are revealed, so they should be 'linear' even though displaced.
+        # Anchor at 2: EVT_DOLLY_INTRUDES (s=1, displaced) and
+        # EVT_GRIT_IN_EYE (s=2, displaced) are both revealed, so they
+        # should be 'linear' even though displaced.
         tensions = assembler.compute_narrative_tension(syuzhet_anchor=2)
 
         tension_map = {t.event_id: t for t in tensions}
-        assert tension_map["EVT_FRED_UNDERSTANDS"].tension_type == "linear"
-        assert tension_map["EVT_FINAL_MEETING"].tension_type == "linear"
+        assert tension_map["EVT_DOLLY_INTRUDES"].tension_type == "linear"
+        assert tension_map["EVT_GRIT_IN_EYE"].tension_type == "linear"
 
     def test_syuzhet_anchor_unrevealed_events_flagged(self):
         """Events NOT yet revealed (syuzhet_index > anchor) should keep their
         displacement-based tension_type."""
         ego = _ego_payload(brief_encounter_ws, ["ENT_LAURA"])
         assembler = DirectiveAssembler(None, ego, brief_encounter_ws)
-        # Anchor at 2: EVT_GRIT_IN_EYE (s=3) is unrevealed, displacement > 0
-        tensions = assembler.compute_narrative_tension(syuzhet_anchor=2)
+        # Anchor at 1: EVT_GRIT_IN_EYE (s=2) is unrevealed, displacement > 0
+        tensions = assembler.compute_narrative_tension(syuzhet_anchor=1)
 
         tension_map = {t.event_id: t for t in tensions}
         grit = tension_map["EVT_GRIT_IN_EYE"]
@@ -475,7 +478,7 @@ class TestSyuzhetAwareConstraints:
         assert len(brief.narrative_tensions) == len(brief_encounter_ws.events)
         # Frame events should be marked linear (already revealed)
         tension_map = {t.event_id: t for t in brief.narrative_tensions}
-        assert tension_map["EVT_FINAL_MEETING"].tension_type == "linear"
+        assert tension_map["EVT_DOLLY_INTRUDES"].tension_type == "linear"
 
     def test_narrative_physics_with_syuzhet_anchor(self):
         """calculate_narrative_physics with syuzhet_anchor must pass through."""

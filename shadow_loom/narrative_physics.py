@@ -63,6 +63,7 @@ def _check_intervention_plausibility(
         | set(ws.objects.keys())
         | set(ws.locations.keys())
         | set(getattr(ws, "world_traits", {}).keys())
+        | set(getattr(ws, "channels", {}).keys())
     )
 
     unresolved: List[Dict[str, str]] = []
