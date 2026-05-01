@@ -3619,7 +3619,7 @@ PHYSICS_METRIC_COLORS: dict[str, str] = {
     "avg_affinity": "#16A085",
     "avg_fear": "#C0392B",
     "causal_edges_in_scope": "#E67E22",
-    "info_edges_in_scope": "#2C7BB6",
+    "channel_edges_in_scope": "#2C7BB6",
     "spatial_edges_in_scope": "#7F8C8D",
 }
 
@@ -3693,7 +3693,7 @@ def _physics_metrics_from_payload(payload: dict) -> dict[str, float]:
             float(sum(fears)) / len(fears) if fears else 0.0
         ),
         "causal_edges_in_scope": float(len(causal)),
-        "info_edges_in_scope": float(len(info)),
+        "channel_edges_in_scope": float(len(info)),
         "spatial_edges_in_scope": float(len(spatial)),
     }
 

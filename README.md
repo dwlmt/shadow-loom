@@ -292,6 +292,24 @@ docs/                       # long-form documentation
 
 ---
 
+## Upgrading from pre-Channel projects
+
+If you have stored projects that pre-date the `Channel` / `utterance`
+refactor (their `world_state_json` blobs contain
+`information_topology=[InformationEdge(...)]`), `WorldStateV1` will now
+refuse to load them with a clear error. Run the one-shot migrator
+once to rewrite each fixture in place:
+
+```bash
+python scripts/migrate_information_edges.py path/to/file_or_dir
+```
+
+The script splits each legacy `InformationEdge` into a `Channel`
+(standing capability) plus an `EventNode(event_type='utterance', ...)`
+(discrete message) and updates the relevant imports.
+
+---
+
 ## Status & licence
 
 Research project; APIs are stable enough to use but evolve between minor
@@ -316,5 +334,36 @@ Contributions are accepted under the [Developer Certificate of Origin](https://d
 plus a copyright licence-back to the maintainer that lets contributions
 be redistributed under both licences — see
 [COMMERCIAL-LICENSE.md § 5](COMMERCIAL-LICENSE.md#5-contributor-licensing).
+
+### What can I do with Shadow Loom?
+
+Quick guide — **not legal advice**. The authoritative texts are
+[LICENSE](LICENSE), [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md) and
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
+**Open-source use (AGPLv3) plus Non-Commercial Clause:**
+
+- [x] Use it for personal projects, research, and learning.
+- [x] Read, modify, and fork the source code.
+- [x] Run it on your own machine without restriction.
+- [x] Redistribute it — as long as you keep it under AGPL-3.0-or-later.
+- [ ] ⚠ Host it as a network service (SaaS, MCP server, hosted UI):
+      you must offer the complete corresponding source code (including
+      your modifications) to your users under AGPLv3.
+- [ ] ⚠ Embed or link it into a larger product: the whole combined
+      work must also be released under AGPLv3.
+- [ ] ✗ Use it commercially without complying with AGPLv3 § 13
+      (network-use disclosure) — that requires a paid commercial
+      licence.
+- [ ] ✗ Re-license it under a more permissive licence, or ship it
+      inside closed-source software, without a commercial licence.
+
+**Contributing:**
+
+- [x] Open issues and pull requests on GitHub.
+- [x] Contributions are accepted under the Developer Certificate of
+      Origin (DCO) plus a copyright licence-back so they can ship
+      under both the AGPL and the commercial licence.
+- [x] Sign your commits with `git commit -s` to certify the DCO.
 
 Contact: `david.wilmot@gmail.com`

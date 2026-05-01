@@ -141,6 +141,13 @@ def build_audit_tab(state: AppState) -> None:
             _refresh_history()
             state.on(StateEvent.PIPELINE_RESULT, _refresh_history)
             state.on(StateEvent.PROJECT_LOADED, _refresh_history)
+            # World-state mutations (manual edit, rollback, branch
+            # switch) can invalidate the displayed audit entries —
+            # e.g. version numbers referenced in headers / diffs no
+            # longer match the live world. Re-render so the audit
+            # panel stays in lockstep with the rest of the UI.
+            state.on(StateEvent.WORLD_STATE_CHANGED, _refresh_history)
+            state.on(StateEvent.VERSION_CHANGED, _refresh_history)
 
 
 # =====================================================================

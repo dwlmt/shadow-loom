@@ -220,6 +220,140 @@ def _build_app_footer() -> None:
                 f"{source_url.rstrip('/')}/blob/main/LICENSE",
                 new_tab=True,
             ).classes("text-slate-600 hover:text-slate-900 underline")
+            licence_dialog = _build_licence_guide_dialog(source_url)
+            ui.button(
+                "What can I do?",
+                on_click=licence_dialog.open,
+            ).props("flat dense no-caps size=sm color=primary").classes(
+                "text-xs"
+            )
+
+
+def _build_licence_guide_dialog(source_url: str):
+    """Build a popup with a checkbox guide to AGPLv3 + commercial use.
+
+    Plain-language summary of what users can and can't do under
+    Shadow Loom's dual-licence model. Not legal advice — links out
+    to the canonical LICENSE, COMMERCIAL-LICENSE.md, CONTRIBUTING.md
+    and README for the authoritative text.
+    """
+    base = source_url.rstrip("/")
+    readme_url = f"{base}#readme"
+    licence_url = f"{base}/blob/main/LICENSE"
+    commercial_url = f"{base}/blob/main/COMMERCIAL-LICENSE.md"
+    contributing_url = f"{base}/blob/main/CONTRIBUTING.md"
+
+    # ✓ allowed under AGPLv3, ✗ requires commercial licence / forbidden,
+    # ⚠ allowed but with obligations.
+    permissions = [
+        ("check_circle", "positive", "Use it for personal projects, research, and learning."),
+        ("check_circle", "positive", "Read, modify, and fork the source code."),
+        ("check_circle", "positive", "Run it on your own machine without restriction."),
+        ("check_circle", "positive", "Redistribute it — as long as you keep it under AGPL-3.0-or-later."),
+        (
+            "warning",
+            "warning",
+            "Host it as a network service (SaaS, MCP server, hosted UI): "
+            "you must offer the complete corresponding source code "
+            "(including your modifications) to your users under AGPLv3.",
+        ),
+        (
+            "warning",
+            "warning",
+            "Embed or link it into a larger product: the whole combined "
+            "work must also be released under AGPLv3.",
+        ),
+        (
+            "cancel",
+            "negative",
+            "Use it commercially without complying with AGPLv3 § 13 "
+            "(network-use disclosure) — that requires a paid commercial licence.",
+        ),
+        (
+            "cancel",
+            "negative",
+            "Re-license it under a more permissive licence, or ship it "
+            "inside closed-source software, without a commercial licence.",
+        ),
+    ]
+
+    contributing_items = [
+        ("check_circle", "positive", "Open issues and pull requests on GitHub."),
+        (
+            "info",
+            "info",
+            "Contributions are accepted under the Developer Certificate of "
+            "Origin (DCO) plus a copyright licence-back so they can ship "
+            "under both the AGPL and the commercial licence.",
+        ),
+        (
+            "info",
+            "info",
+            "Sign your commits with `git commit -s` to certify the DCO.",
+        ),
+    ]
+
+    with ui.dialog() as dialog, ui.card().classes(
+        "w-full max-w-2xl bg-white rounded-xl"
+    ):
+        with ui.row().classes("items-center gap-2 w-full"):
+            ui.icon("gavel", color="primary")
+            ui.label("What can I do with Shadow Loom?").classes(
+                "text-lg font-semibold text-slate-800"
+            )
+            ui.space()
+            ui.button(icon="close", on_click=dialog.close).props(
+                "flat dense round size=sm color=secondary"
+            )
+
+        ui.label(
+            "Shadow Loom is dual-licensed under AGPL-3.0-or-later and a "
+            "commercial licence. Quick guide — not legal advice."
+        ).classes("text-xs text-slate-500")
+
+        ui.separator()
+
+        ui.label("Open-source use (AGPLv3)").classes(
+            "text-sm font-semibold text-slate-700 mt-2"
+        )
+        with ui.column().classes("gap-1 w-full"):
+            for icon_name, color, text in permissions:
+                with ui.row().classes("items-start gap-2 w-full no-wrap"):
+                    ui.icon(icon_name, color=color).classes("mt-0.5")
+                    ui.label(text).classes("text-sm text-slate-700 flex-1")
+
+        ui.separator().classes("mt-2")
+
+        ui.label("Contributing").classes(
+            "text-sm font-semibold text-slate-700 mt-2"
+        )
+        with ui.column().classes("gap-1 w-full"):
+            for icon_name, color, text in contributing_items:
+                with ui.row().classes("items-start gap-2 w-full no-wrap"):
+                    ui.icon(icon_name, color=color).classes("mt-0.5")
+                    ui.label(text).classes("text-sm text-slate-700 flex-1")
+
+        ui.separator().classes("mt-2")
+
+        with ui.row().classes("items-center gap-3 mt-2 flex-wrap"):
+            ui.link("README", readme_url, new_tab=True).classes(
+                "text-sm text-primary underline"
+            )
+            ui.link("Full licence (AGPLv3)", licence_url, new_tab=True).classes(
+                "text-sm text-primary underline"
+            )
+            ui.link(
+                "Commercial licence",
+                commercial_url,
+                new_tab=True,
+            ).classes("text-sm text-primary underline")
+            ui.link(
+                "Contributing guide",
+                contributing_url,
+                new_tab=True,
+            ).classes("text-sm text-primary underline")
+
+    return dialog
 
 
 def _brand_copper() -> str:

@@ -508,7 +508,9 @@ class TestSyuzhetAwareConstraints:
 # HIDDEN INFORMATION CHANNELS
 # =====================================================================
 class TestHiddenChannels:
-    """compute_hidden_channels must detect undiscovered InformationEdges."""
+    """compute_hidden_channels must detect undiscovered Channels and
+    future utterance EventNodes (the post-refactor replacement for the
+    legacy ``InformationEdge``)."""
 
     def test_no_hidden_channels_without_anchor(self):
         """Without a syuzhet_anchor, no channels should be hidden."""

@@ -40,6 +40,7 @@ from shadow_loom.query_parsing import (
 from shadow_loom.db import (
     save_version,
     get_latest_version,
+    get_version_by_id,
     log_activity,
     set_active_version,
 )
@@ -727,6 +728,21 @@ class AppState:
         self.fabula_cursor = None
         self.syuzhet_cursor = None
         self.load_world_state(world_state)
+        # Resolve the version *number* for the loaded row so the
+        # version sidebar / header label can render "v{N}" without
+        # waiting for the next save or rollback. Without this emit
+        # the label keeps showing the previous project's version.
+        if version_row_id is not None:
+            try:
+                row = get_version_by_id(version_row_id)
+            except Exception:
+                logger.exception(
+                    "[AppState] Failed to resolve version_row_id=%s on load_project",
+                    version_row_id,
+                )
+                row = None
+            if row is not None:
+                self.emit(StateEvent.VERSION_CHANGED, version=row.version)
         self.emit(StateEvent.PROJECT_LOADED, project_id=project_id)
 
     def rollback_to(self, version: int) -> None:

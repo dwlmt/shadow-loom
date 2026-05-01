@@ -3583,6 +3583,28 @@ def _programmatic_validation(ws: WorldStateV1) -> List[ValidationIssue]:
     for evt in ws.events:
         if evt.event_type != "utterance":
             continue
+        # Required fields for utterances. The Pydantic model marks
+        # these Optional so that non-utterance events can omit them,
+        # but for ``event_type='utterance'`` an absent speaker or
+        # empty addressees breaks downstream consumers (belief
+        # propagation, channel intelligibility routing, the social
+        # propagator that mirrors speaker_id into actor_ids).
+        if not evt.speaker_id:
+            issues.append(ValidationIssue(
+                severity="error", category="missing_field",
+                detail=(
+                    f"Utterance '{evt.id}' is missing required field "
+                    f"'speaker_id'."
+                ),
+            ))
+        if not evt.addressee_ids:
+            issues.append(ValidationIssue(
+                severity="error", category="missing_field",
+                detail=(
+                    f"Utterance '{evt.id}' is missing required field "
+                    f"'addressee_ids' (must contain at least one ENT_ id)."
+                ),
+            ))
         if evt.via_channel_id and evt.via_channel_id not in valid_channel_ids:
             issues.append(ValidationIssue(
                 severity="error", category="broken_link",

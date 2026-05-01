@@ -598,6 +598,16 @@ def _add_dialog_list(
                     value=default if default is not None else 0,
                     format="%.0f",
                 ).classes("w-full")
+            elif kind == "float":
+                # Free-form text so the user can leave the field empty
+                # to mean "not applicable" (e.g. trait_delta on a
+                # chain_reaction edge); the builder validates and
+                # coerces. ``ui.number`` would force a value of 0.0
+                # which is semantically different from "unset".
+                w = ui.input(
+                    label=label,
+                    value="" if default is None else str(default),
+                ).classes("w-full")
             else:
                 w = ui.input(label=label, value=default or "").classes("w-full")
             widgets[key] = (w, kind)
@@ -612,6 +622,19 @@ def _add_dialog_list(
                     except (TypeError, ValueError):
                         ui.notify(f"{key} must be an integer", type="warning")
                         return
+                elif kind == "float":
+                    raw = (v or "").strip() if isinstance(v, str) else v
+                    if raw in ("", None):
+                        v = None
+                    else:
+                        try:
+                            v = float(raw)
+                        except (TypeError, ValueError):
+                            ui.notify(
+                                f"{key} must be a number (or blank)",
+                                type="warning",
+                            )
+                            return
                 else:
                     v = (v or "").strip()
                 values[key] = v
@@ -814,6 +837,25 @@ def _add_causal_edge(data: dict, commit: Callable, prefix: Optional[str]) -> Non
             ),
             ("mechanism", "mechanism", "text", "physical"),
             ("fabula_time", "fabula_time", "int", _next_fabula_time(data) - 100 or 0),
+            # mutation / mutation_social only. trait_target =
+            # affected trait name (for mutation, e.g. 'guilt') OR
+            # the social axis (for mutation_social: 'affinity',
+            # 'fear', 'power_dynamic'). trait_delta is the signed
+            # change. rel_counterpart_id is the *other* entity in
+            # the dyad and is REQUIRED for mutation_social by the
+            # CausalEdge model validator.
+            (
+                "trait_target (mutation only — trait name or social axis)",
+                "trait_target", "text", "",
+            ),
+            (
+                "trait_delta (mutation only — signed magnitude, blank=N/A)",
+                "trait_delta", "float", None,
+            ),
+            (
+                "rel_counterpart_id (mutation_social only — other ENT_ in dyad)",
+                "rel_counterpart_id", "text", "",
+            ),
         ],
         build_skeleton=_build_causal_skeleton,
         data=data, collection_key="causal_topology", commit=commit,
@@ -830,6 +872,27 @@ def _build_causal_skeleton(v: dict) -> dict:
     }
     if ct not in valid_ct:
         raise ValueError(f"causality_type must be one of {sorted(valid_ct)}")
+    trait_target = (v.get("trait_target") or "").strip() or None
+    trait_delta = v.get("trait_delta")  # already float|None from dialog
+    rel_counterpart = (v.get("rel_counterpart_id") or "").strip() or None
+    if ct == "mutation_social":
+        if not rel_counterpart:
+            raise ValueError(
+                "mutation_social requires rel_counterpart_id (the other "
+                "ENT_ in the dyad)."
+            )
+        if not trait_target:
+            # The model accepts None but the social propagator and
+            # auditor both key on this; warn the user up-front.
+            raise ValueError(
+                "mutation_social requires trait_target — one of "
+                "'affinity', 'fear', 'power_dynamic'."
+            )
+        if trait_target not in ("affinity", "fear", "power_dynamic"):
+            raise ValueError(
+                "mutation_social trait_target must be one of "
+                "'affinity', 'fear', 'power_dynamic'."
+            )
     return {
         "world_id": "factual",
         "source_id": v["source_id"],
@@ -840,9 +903,9 @@ def _build_causal_skeleton(v: dict) -> dict:
         "evidence_strength": "moderate",
         "propagation_delay": 0,
         "fabula_time": v["fabula_time"],
-        "trait_target": None,
-        "trait_delta": None,
-        "rel_counterpart_id": None,
+        "trait_target": trait_target,
+        "trait_delta": trait_delta,
+        "rel_counterpart_id": rel_counterpart,
     }
 
 

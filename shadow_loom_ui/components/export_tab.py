@@ -71,8 +71,9 @@ def build_export_tab(state: AppState) -> None:
                 )
 
             ui.label(
-                "Download the currently loaded world model version with both "
-                "its prose and world model JSON in a single file."
+                "Download the currently loaded world model version. You can "
+                "grab the prose and world model JSON separately, or both "
+                "together in a single combined file."
             ).classes("text-sm text-slate-500")
 
             def _build_version_payload() -> dict | None:
@@ -109,20 +110,25 @@ def build_export_tab(state: AppState) -> None:
                     payload["prose"] = None
                 return payload
 
+            def _version_filename_stem() -> str:
+                stem = state.project_name.replace(" ", "_") if state.project_name else "project"
+                row = None
+                if state.current_version_row_id is not None:
+                    row = db.get_version_by_id(state.current_version_row_id)
+                elif state.project_id is not None:
+                    row = db.get_latest_version(state.project_id)
+                if row is not None:
+                    stem += f"_v{row.version}"
+                return stem
+
             def _export_version_json():
                 payload = _build_version_payload()
                 if payload is None:
                     return
                 data = json.dumps(payload, indent=2, default=str)
-                version_label = ""
-                if payload.get("version"):
-                    version_label = f"_v{payload['version']['version']}"
                 ui.download(
                     data.encode("utf-8"),
-                    filename=(
-                        f"{state.project_name.replace(' ', '_')}"
-                        f"{version_label}_version.json"
-                    ),
+                    filename=f"{_version_filename_stem()}_version.json",
                 )
                 ui.notify("Version exported!", type="positive")
 
@@ -136,16 +142,51 @@ def build_export_tab(state: AppState) -> None:
                 )
                 ui.notify("Copied to clipboard!", type="positive")
 
-            with ui.row().classes("gap-2"):
+            def _export_version_prose():
+                payload = _build_version_payload()
+                if payload is None:
+                    return
+                prose = payload.get("prose")
+                if not prose:
+                    ui.notify("This version has no prose", type="info")
+                    return
+                ui.download(
+                    prose.encode("utf-8"),
+                    filename=f"{_version_filename_stem()}_prose.md",
+                )
+                ui.notify("Prose exported!", type="positive")
+
+            def _export_version_world_model():
+                if state.world_state is None:
+                    ui.notify("No world model loaded", type="warning")
+                    return
+                data = state.world_state.model_dump_json(indent=2)
+                ui.download(
+                    data.encode("utf-8"),
+                    filename=f"{_version_filename_stem()}_world.json",
+                )
+                ui.notify("World model exported!", type="positive")
+
+            with ui.row().classes("gap-2 flex-wrap"):
                 ui.button(
-                    "Download Version (JSON)",
+                    "Download Prose (Markdown)",
+                    icon="article",
+                    on_click=_export_version_prose,
+                ).props("no-caps outline color=primary").classes("rounded-lg")
+                ui.button(
+                    "Download World Model (JSON)",
+                    icon="data_object",
+                    on_click=_export_version_world_model,
+                ).props("no-caps outline color=primary").classes("rounded-lg")
+                ui.button(
+                    "Download Combined (JSON)",
                     icon="download",
                     on_click=_export_version_json,
                 ).props("unelevated no-caps color=primary").classes(
                     "rounded-lg shadow-sm"
                 )
                 ui.button(
-                    "Copy to Clipboard",
+                    "Copy Combined",
                     icon="content_copy",
                     on_click=_copy_version_json,
                 ).props("no-caps outline color=secondary").classes("rounded-lg")
