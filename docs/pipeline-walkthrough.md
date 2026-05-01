@@ -315,6 +315,15 @@ Merges the topology delta into a versioned **deep copy** of the model:
   `ReextractionStepRecord`.
 * Bumps `vwm.version`; the new `VersionedWorldModel` replaces
   `result.world_model`.
+* **Branch routing.** `PipelineConfig.branch_policy`
+  (`"auto"` / `"mainline"` / `"shadow"`, default `"auto"`) decides whether
+  the merged version lands on the factual mainline or on a shadow fork.
+  Under `"auto"`, counterfactual queries fork to a fresh shadow `world_id`
+  and everything else stays factual; `merge(world_id=..., branch_label=...)`
+  re-tags the merged nodes/edges so per-branch retrieval stays clean. The
+  resolved `(world_id, branch_label, ancestor_id)` is surfaced on every
+  pipeline result so the persistence layer can stamp it onto the new
+  `VersionRow`.
 
 If re-extraction or merge raises, the pipeline:
 
@@ -337,7 +346,16 @@ caller's responsibility:
 
 * The UI's task helpers and the MCP `run_and_save` wrapper both call
   `save_version(...)` with the new world state JSON, the ancestor row id
-  (the version the user was on), and `source="pipeline"`.
+  (the version the user was on), and `source="pipeline"`. The new row's
+  `world_id` and `branch_label` come from the pipeline result, so a
+  shadow-branch counterfactual lands on its own fork rather than
+  overwriting factual canon.
+* MCP responses additionally include a `branch` envelope
+  (`{world_id, branch_label, ancestor_id}`); when the merged world model
+  is byte-identical to the ancestor (e.g. a `direct` call that produced
+  prose without graph advancement) `run_and_save` returns a
+  `world_model_unchanged` / `version_skipped` flag instead of writing a
+  duplicate row.
 * `set_active_version(...)` then advances the per-user `ActiveVersionRow`
   pointer so subsequent calls resolve against the new tip.
 * The `original_query` field on every query type is preserved and stored on
@@ -383,6 +401,7 @@ already coordinate their own concurrency internally.
 ## See also
 
 * [architecture.md](architecture.md) — the conceptual map of the same 12-step pipeline (data model, modules, persistence).
+* [model-examples.md](model-examples.md) — each step illustrated on real bundled plots (Macbeth, Death on the Nile, Reservoir Dogs, …).
 * [query-and-cycles.md](query-and-cycles.md) — the **per-query-type** walkthrough of Step 2 (router) through Step 7 (merge).
 * [mcp-guide.md](mcp-guide.md) §5 — the `run_and_save` versioning contract that wraps every `run_pipeline` call from MCP.
 * [design-decisions.md](design-decisions.md) — *why* re-extraction is mandatory, *why* implausibility short-circuits, *why* the auditor is separate from the renderer.

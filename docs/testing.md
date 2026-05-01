@@ -1,9 +1,9 @@
 # Testing
 
-Shadow-Loom ships with **~978 pytest tests** spread across 17 files in
+Shadow-Loom ships with a large pytest suite spread across **19 files** in
 [`tests/`](../tests/). The suite is organised by pipeline phase: every major
 module in [`shadow_loom/`](../shadow_loom/) has a focused unit-test file, and
-three integration files exercise the engines together end-to-end. All LLM
+several integration files exercise the engines together end-to-end. All LLM
 calls are mocked by default; one optional file ([`test_live_e2e.py`](../tests/test_live_e2e.py))
 runs against a real Ollama instance.
 
@@ -12,7 +12,7 @@ runs against a real Ollama instance.
 ## Running the suite
 
 ```bash
-# Fast path — everything except live LLM tests (~978 tests)
+# Fast path — everything except live LLM tests
 python -m pytest tests/ --ignore=tests/test_live_e2e.py -q
 
 # A single module
@@ -24,8 +24,11 @@ python -m pytest tests/test_narrative_physics.py::test_intervention_query_macbet
 # With coverage
 python -m pytest tests/ --ignore=tests/test_live_e2e.py --cov=shadow_loom --cov=shadow_loom_mcp --cov=shadow_loom_ui
 
-# The live tier (requires Ollama at localhost:11434 with qwen3.6:27b pulled)
+# The live tier (requires Ollama at localhost:11434 with qwen3.6:27b pulled).
+# scripts/run_live_e2e.sh is a convenience wrapper that spawns it detached and
+# logs to logs/live_e2e_<ts>.log so the suite can run in the background.
 python -m pytest tests/test_live_e2e.py -v
+bash scripts/run_live_e2e.sh
 ```
 
 The mocked tiers are deterministic and run in roughly a minute on a developer
@@ -47,6 +50,8 @@ Counts below are the number of `test_*` functions in each file.
 | [test_causal_physics.py](../tests/test_causal_physics.py) | 62 | Three-rung CTF simulation: rung-2 do-operator + graph surgery, rung-3 abduction with `hidden_deltas` and topological-sort cascade, Impact > Inertia gating, bidirectional trait shifts, spatial-affordance blocking, intervened-node preservation. | [`causal_physics.py`](../shadow_loom/causal_physics.py) |
 | [test_directive_assembly.py](../tests/test_directive_assembly.py) | 67 | Epistemic-gap computation, trait trajectories, relationship tensions, full `CreativeBrief` assembly for each directive effect. | [`directive_assembly.py`](../shadow_loom/directive_assembly.py) |
 | [test_narrative_physics.py](../tests/test_narrative_physics.py) | 156 | All five core query types (observation, intervention, counterfactual, directive, interrogation) against real plot models; verifies returned graph structures reflect expected mutations. Largest unit-test file. | [`narrative_physics.py`](../shadow_loom/narrative_physics.py) |
+| [test_branch_routing.py](../tests/test_branch_routing.py) | 10 | `_resolve_branch_policy`, `VersionedWorldModel.merge(world_id=…)` re-tagging, `db.list_branches` DAG walk, and `db.promote_branch` lifecycle. Covers the factual / shadow split that backs the AMWN persisted branches. | [`pipeline.py`](../shadow_loom/pipeline.py), [`extract_graph.py`](../shadow_loom/extract_graph.py), [`db.py`](../shadow_loom/db.py) |
+| [test_channel_belief_integration.py](../tests/test_channel_belief_integration.py) | 22 | End-to-end coverage of the channel/utterance refactor: parser handling of `channel.*` / `utterance_event_ids` interventions, instantiator preservation of utterance attrs through sandboxing, causal-physics belief-provenance pruning, AMWN channel-as-node d-separation, generation-prompt fidelity block, auditor leak detection, and intelligibility-weighted hidden channels in directive assembly. | cross-cutting |
 | [test_query_parsing.py](../tests/test_query_parsing.py) | 115 | Natural-language → typed query, dynamic Literal ID grounding, parser fallbacks. | [`query_parsing.py`](../shadow_loom/query_parsing.py) |
 | [test_generation.py](../tests/test_generation.py) | 22 | Helper functions in the constrained renderer — prompt assembly, retry logic, output validation. | [`generation.py`](../shadow_loom/generation.py) |
 | [test_auditor.py](../tests/test_auditor.py) | 79 | Audit prompt assembly; graph versioning via deep-copy isolation; `AuditResult` / `AuditViolation` construction; mocked feedback-loop orchestration; effect → audit-category mapping. | [`auditor.py`](../shadow_loom/auditor.py) |

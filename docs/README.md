@@ -24,8 +24,9 @@ file is the canonical entry point.
 |---|---|
 | [architecture.md](architecture.md) | Deep technical walkthrough of the 12-step pipeline, data model, modules, and runtime flow. |
 | [pipeline-walkthrough.md](pipeline-walkthrough.md) | End-to-end code-level tour of one pipeline run — ingestion, physics, generation, audit, re-extraction, merge. |
+| [model-examples.md](model-examples.md) | Worked examples on real bundled plots (Macbeth, Death on the Nile, Reservoir Dogs, …) showing each pipeline stage and feature in action. |
 | [query-and-cycles.md](query-and-cycles.md) | The eight query types, how natural language is parsed into them, and how each is realised in a pipeline cycle. |
-| [mcp-guide.md](mcp-guide.md) | The `shadow_loom_mcp` server — 25 tools, 5 resources, auth, scopes, versioning contract, agent workflow. |
+| [mcp-guide.md](mcp-guide.md) | The `shadow_loom_mcp` server — 31 tools, 5 resources, auth, scopes, versioning contract, agent workflow. |
 | [ui-guide.md](ui-guide.md) | NiceGUI workspace walkthrough, including the manual-editing **Editor** tab. |
 | [testing.md](testing.md) | Test-suite organisation, what each file covers, how to run the live-LLM tier. |
 | [use-cases.md](use-cases.md) | What the system is *for* — author tooling, AI-assisted fiction, narrative QA, simulation research. |
@@ -40,6 +41,7 @@ Quick links by intent:
 |---|---|
 | Understand the data model and the 12-step pipeline at a high level | [architecture.md](architecture.md) |
 | Follow one request end-to-end through the code (ingestion → merge) | [pipeline-walkthrough.md](pipeline-walkthrough.md) |
+| See the engine working on real story plots, feature by feature | [model-examples.md](model-examples.md) |
 | Learn the eight query types and how natural language becomes one | [query-and-cycles.md](query-and-cycles.md) |
 | Drive Shadow-Loom from Claude Desktop, Cursor, or any MCP client | [mcp-guide.md](mcp-guide.md) |
 | Use the NiceGUI workspace (story / explorer / world / causality / …) | [ui-guide.md](ui-guide.md) |
@@ -81,8 +83,15 @@ that cross-links its closest neighbours.
 
 You hand Shadow-Loom raw narrative text. It runs a five-pass extraction to
 build a typed `WorldStateV1` — entities with `TraitVector`s, events anchored
-on both `fabula_time` and `syuzhet_index`, beliefs, locations with ambient
-state, and four kinds of edge (causal, social, spatial, informational). You
+on both `fabula_time` and `syuzhet_index`, beliefs (with explicit
+`acquired_via_event_id` / `acquired_via_channel_id` provenance), locations
+with ambient state, three kinds of edge (causal, social, spatial), and
+`Channel` nodes plus `utterance` events that carry the speech-act layer
+(replacing the legacy `InformationEdge`; see
+[`scripts/migrate_information_edges.py`](../scripts/migrate_information_edges.py)).
+Versions are persisted on a DAG with a `world_id` / `branch_label` so that
+counterfactual explorations fork to a *shadow* branch and can be promoted
+to factual canon. You
 then issue a query: an observation, a do-calculus intervention, an abductive
 counterfactual, an affective directive ("maximise dramatic irony for character
 X"), or a graph Q&A. Shadow-Loom forks an Ancestral Multi-World Network
@@ -163,16 +172,16 @@ end-to-end orchestrator is
 ## Quick start
 
 ```bash
-# Environment
-conda env create -f environment.yml      # or use the existing `shadow-loom` env
+# Environment (the repo is packaged via pyproject.toml; no environment.yml)
+conda create -n shadow-loom python=3.13 -y
 conda activate shadow-loom
 pip install -e .
 
-# Tests (~978 tests; live LLM e2e excluded by default)
+# Tests (live LLM e2e excluded by default)
 python -m pytest tests/ --ignore=tests/test_live_e2e.py -q
 
 # UI
-python -m shadow_loom_ui                 # NiceGUI workspace on http://localhost:8080
+python -m shadow_loom_ui                 # NiceGUI workspace on http://localhost:7860
 
 # MCP server (FastMCP, stdio)
 python -m shadow_loom_mcp
@@ -204,11 +213,11 @@ shadow_loom/                # core engine
   db.py                     # SQLModel persistence + version tree
   settings.py               # config loader
 
-shadow_loom_mcp/            # FastMCP server (25 tools, 5 resources)
+shadow_loom_mcp/            # FastMCP server (31 tools, 5 resources)
 shadow_loom_ui/             # NiceGUI workspace (8 tabs)
 example_worlds/             # 16 scripted worlds for tests + demos
 sample_plots/               # raw plot summaries for ingestion demos
-tests/                      # ~978 pytest tests — see testing.md
+tests/                      # pytest suite — see testing.md
 docs/                       # this folder
 ```
 
@@ -219,113 +228,3 @@ docs/                       # this folder
 Research project; APIs are stable enough to use but evolve between minor
 versions. See [design-decisions.md](design-decisions.md) for the choices that
 shape the public surface and what we deliberately rejected.
-# Shadow-Loom Documentation
-
-Shadow-Loom is a **neuro-symbolic causal narrative AI framework**. It treats a
-story as a graph of typed entities, events and edges with explicit physics
-(causality, beliefs, information flow, spatial topology) and uses a Large
-Language Model only as a constrained renderer once mathematical simulation has
-fixed what is allowed to happen next.
-
-This documentation set is organised as follows:
-
-| Document | Purpose |
-|---|---|
-| [architecture.md](architecture.md) | Deep technical walkthrough of the 12-step pipeline, data model, modules, and runtime flow. |
-| [pipeline-walkthrough.md](pipeline-walkthrough.md) | End-to-end code-level tour of one pipeline run — ingestion, physics, generation, audit, re-extraction, merge. |
-| [query-and-cycles.md](query-and-cycles.md) | The eight query types, how natural language is parsed into them, and how each is realised in a pipeline cycle. |
-| [mcp-guide.md](mcp-guide.md) | The `shadow_loom_mcp` server — 25 tools, 5 resources, auth, scopes, versioning contract, agent workflow. |
-| [use-cases.md](use-cases.md) | What the system is *for* — author tooling, AI-assisted fiction, narrative QA, simulation research. |
-| [design-decisions.md](design-decisions.md) | The key choices that shape the architecture (graph-first, fabula vs syuzhet, AMWN sandboxing, hybrid 4+5 timelines, manual editing, etc.) and what we rejected. |
-| [settings.md](settings.md) | Every runtime knob: env vars, defaults, tuning recipes, model-provider switching. |
-| [railway-deployment.md](railway-deployment.md) | Step-by-step recipe for deploying to Railway with managed Postgres, OAuth, and OpenRouter. |
-| [academic-foundations.md](academic-foundations.md) | The literature behind every named concept: Pearl, Genette, Greimas, Sternberg, Halpern, etc. |
-| [ui-guide.md](ui-guide.md) | NiceGUI workspace walkthrough, including the new manual-editing **Editor** tab. |
-
-The top-level [`../README.md`](../README.md) is the executive summary; this
-folder is the long-form technical and conceptual reference.
-
-## Reading paths
-
-Pick the path that matches what you're trying to do.
-
-**"I just want to understand the system."**
-[architecture.md](architecture.md) → [academic-foundations.md](academic-foundations.md) → [design-decisions.md](design-decisions.md).
-
-**"I want to drive it from an agent / build a client."**
-[mcp-guide.md](mcp-guide.md) → [query-and-cycles.md](query-and-cycles.md) → [pipeline-walkthrough.md](pipeline-walkthrough.md).
-
-**"I want to use the workspace as a human author."**
-[use-cases.md](use-cases.md) → [ui-guide.md](ui-guide.md) → [query-and-cycles.md](query-and-cycles.md).
-
-**"I want to extend the engine or contribute code."**
-[architecture.md](architecture.md) → [pipeline-walkthrough.md](pipeline-walkthrough.md) → [design-decisions.md](design-decisions.md) → the module the change touches.
-
-**"I'm writing a paper or comparing to prior work."**
-[academic-foundations.md](academic-foundations.md) → [design-decisions.md](design-decisions.md) → [architecture.md](architecture.md).
-
-## TL;DR architecture
-
-```
-       (narrative text)
-              │
-              ▼
-   ┌──────────────────────┐         Phase 1: Initialisation
-   │  Ingestion (LLM)     │  ─────  Steps 1–5
-   │  → WorldStateV1      │         (ontology, fabula, syuzhet,
-   └──────────┬───────────┘          beliefs, ego-graph)
-              │
-              ▼
-   ┌──────────────────────┐         Phase 2: Simulation
-   │  AMWN sandbox        │  ─────  Steps 6–8
-   │  Causal Physics (CTF)│         (Pearl rungs 2 & 3,
-   │  Affective Calculus  │          Wilmot suspense, KL surprise)
-   └──────────┬───────────┘
-              │
-              ▼
-   ┌──────────────────────┐         Phase 3: Constraint
-   │  Directive Assembly  │  ─────  Step 9
-   │  → CreativeBrief     │         (envelope of possibilities)
-   └──────────┬───────────┘
-              │
-              ▼
-   ┌──────────────────────┐         Phase 4: Generation
-   │  Constrained LLM     │  ─────  Step 10
-   │  prose render        │
-   └──────────┬───────────┘
-              │
-              ▼
-   ┌──────────────────────┐         Phase 5: Audit
-   │  LLM-as-judge        │  ─────  Steps 11–12
-   │  + refinement loop   │         (causal / abductive / affective)
-   └──────────┬───────────┘
-              │
-              ▼
-       (verified prose +
-        committed world state)
-```
-
-## Quick start
-
-```bash
-# Environment
-conda env create -f environment.yml      # or use the existing `shadow-loom` env
-conda activate shadow-loom
-pip install -e .
-
-# Tests (954 tests; excludes live-LLM e2e)
-python -m pytest tests/ --ignore=tests/test_live_e2e.py -q
-
-# UI
-python -m shadow_loom_ui                 # NiceGUI workspace on http://localhost:8080
-
-# MCP server
-python -m shadow_loom_mcp                # FastMCP stdio server
-```
-
-## Where to start reading
-
-If the structured reading paths above don't fit your situation, the safe
-default is [architecture.md](architecture.md) — it links into every other
-document where appropriate. Each doc also has a **See also** footer that
-cross-links its closest neighbours.

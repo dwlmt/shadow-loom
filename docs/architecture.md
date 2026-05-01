@@ -98,7 +98,10 @@ clamps numeric ranges, drops self-loops, coerces status enum aliases, and
 fuzzy-fixes ID typos before falling back to a `ModelRetry`. Results are
 merged in `assemble_world_state`, normalised (`_normalize_fabula_times`),
 auto-repaired (`_auto_repair`), and validated (`_programmatic_validation`
-→ optional LLM correction loop).
+→ optional LLM correction loop). Chunk order is treated as syuzhet order
+only; each chunk's events keep their LLM-extracted `fabula_time`, so
+flashbacks and flashforwards are preserved across chunk boundaries instead
+of being re-sorted into reading order.
 
 ### Step 3: Epistemic synchronisation
 
@@ -111,7 +114,7 @@ communication event.
 
 ### Step 4: Director intent
 
-`shadow_loom/query_models.py` defines five query types — the user picks one to
+`shadow_loom/query_models.py` defines eight query types — the user picks one to
 drive a generation cycle:
 
 | Query | Pearl rung | Purpose |
@@ -121,6 +124,9 @@ drive a generation cycle:
 | `CounterfactualQuery` | 3 | "What if the past had been different?" — abduction + intervention. |
 | `DirectiveQuery` | — | High-level emotional target (`mystery`, `suspense`, `surprise`, `dramatic_irony`, plus emotion targets). |
 | `InterrogationQuery` | — | Graph RAG over the world model for Q&A. |
+| `GeneralQuery` | — | Free-form NL Q&A over the graph (ungrounded discussion). |
+| `ManualEditQuery` | — | User-supplied prose; routes to re-extraction without rendering. |
+| `EvaluationQuery` | — | Recompute affective metrics across all versions for scoring. |
 
 ### Step 5: Ego-graph extraction ([`extract_graph.py`](../shadow_loom/extract_graph.py))
 
@@ -153,7 +159,7 @@ committed back. Edge types laid down:
 * `causal` — `mechanism`, `evidence_strength`, `causal_force`,
   `propagation_delay`
 * `connected_to` — spatial, with `is_locked` and `barrier_item_id`
-* `communicating_with` — informational, derived from `Channel` participants and per-participant `intelligibility`
+* `communicating_with` — informational, derived from `Channel` participants and per-participant `intelligibility`. `Channel` carries `medium`, `directionality`, `participant_ids`, an `intelligibility` map, `established_at_fabula`, `terminated_at_fabula` (None while still open), `discovered_at_syuzhet` (for hidden-channel detection) and `evidence_strength`.
 * `eavesdropped_by` — auto-derived for participants whose `intelligibility >= physics.intelligibility_threshold` but who are *not* in an utterance's `addressee_ids` (epistemic leakage)
 
 ### Step 7: Causal Physics ([`causal_physics.py`](../shadow_loom/causal_physics.py))
@@ -263,7 +269,7 @@ world state is committed back to the canonical graph.
 | [`instantiator.py`](../shadow_loom/instantiator.py) | 592 | AMWN sandbox builder. |
 | [`causal_physics.py`](../shadow_loom/causal_physics.py) | — | 3-rung CTF engine. |
 | [`directive_assembly.py`](../shadow_loom/directive_assembly.py) | — | Affective scorers + brief assembly. |
-| [`narrative_physics.py`](../shadow_loom/narrative_physics.py) | 1 216 | Pipeline orchestrator routing the five query types. |
+| [`narrative_physics.py`](../shadow_loom/narrative_physics.py) | 1 216 | Pipeline orchestrator routing the eight query types. |
 | [`generation.py`](../shadow_loom/generation.py) | 982 | LLM render + brief formatter. |
 | [`auditor.py`](../shadow_loom/auditor.py) | — | LLM-as-judge with structured loss. |
 | [`pipeline.py`](../shadow_loom/pipeline.py) | 1 223 | End-to-end runner with versioning. |
@@ -280,13 +286,26 @@ default (`shadow_loom.db`).
 * `ProjectRow` — name + owner + raw text.
 * `VersionRow` — JSON-serialised `WorldStateV1`, with `ancestor_id` forming
   a **directed acyclic version tree**. `source` records how the version was
-  created (`ingestion`, `pipeline`, `manual_edit`, etc.).
+  created (`ingestion`, `pipeline`, `manual_edit`, etc.). Two extra columns,
+  `world_id` (`factual` / `shadow`) and `branch_label`, tag every row with
+  its AMWN branch so counterfactual forks can be browsed and promoted
+  independently of the factual mainline.
 * `ActiveVersionRow(project_id, user_id) → version_row_id` — the per-user
   pointer that the UI and MCP read by default.
 
 Version writes go through `save_version(...)`; pointer updates through
 `set_active_version(...)`. Deletion is rejoin-aware (`delete_version`
-re-parents children atomically).
+re-parents children atomically). `db.list_branches(project_id)` walks the
+DAG and yields one summary per branch (root, head, fork-point ancestor,
+version count); `db.promote_branch(version_row_id)` copies a shadow version
+onto a new factual `VersionRow` whose ancestor is the current factual head.
+
+Which branch a pipeline run lands on is decided by
+`PipelineConfig.branch_policy: Literal["auto", "mainline", "shadow"]`
+(default `"auto"`). Under `auto`, counterfactual queries fork to a fresh
+shadow `world_id`; everything else stays on the factual mainline.
+`VersionedWorldModel.merge(world_id=..., branch_label=...)` re-tags the
+merged nodes/edges so per-branch retrieval stays clean.
 
 ---
 
@@ -313,7 +332,11 @@ the world model as tools and resources. Highlights:
 
 * `open_project` / `set_active_version` / `get_active_version`
 * `run_and_save` — executes a query against the active version and
-  auto-advances the active pointer to the new version row.
+  auto-advances the active pointer to the new version row. Every response
+  carries a `branch` envelope (`{world_id, branch_label, ancestor_id}`).
+* Channel-aware reads: `list_channels`, `get_channel_history`, `who_can_hear`.
+* Branch lifecycle: `list_branches`, `promote_branch`, `export_prose`
+  (which can walk a specific lineage through the AMWN DAG).
 * `get_entity`, `get_event`, `get_world_trait`, etc. — typed read tools.
 * `helpers.load_world_state(pid, version, *, ctx=None)` resolves the active
   version per-user when `ctx` is provided; resources skip auth.

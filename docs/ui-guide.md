@@ -2,11 +2,16 @@
 
 The Shadow-Loom UI is a NiceGUI workspace
 ([`shadow_loom_ui/app.py`](../shadow_loom_ui/app.py)) reachable on
-`http://localhost:8080`:
+`http://localhost:7860` (override with `UI_PORT`):
 
 ```bash
 python -m shadow_loom_ui
 ```
+
+Query results, intervention runs, and Editor saves are **autosaved** as new
+version rows; there is no longer an explicit workspace-level Save button.
+Manual saves still exist on the Story tab (Save & Re-ingest) and the Editor
+tab (Save / Save Anyway), as documented below.
 
 The workspace is composed of a left-hand **version sidebar** and eight tabs
 defined in [`components/workspace.py`](../shadow_loom_ui/components/workspace.py):
@@ -28,13 +33,20 @@ a pub/sub event bus. Every tab subscribes to the events it cares about
 
 * Tree of every `VersionRow` in the project, rooted at the original
   ingestion. Branches reflect manual edits, pipeline runs, and counterfactual
-  branches.
+  branches. **Factual** rows render in green; **shadow** branches (the
+  persisted forks produced by counterfactual queries under
+  `branch_policy=auto`) render in violet.
 * Click a row to swap the active version (`AppState.load_db_version`).
   Cursors are reset; every tab re-renders.
 * Toolbar:
   * **Delete** — rejoin-aware (`db.delete_version` re-parents children).
   * **Reparent** — change a version's `ancestor_id` (rejected if it would
     multi-root the tree).
+  * **Promote to canon** (shadow rows only) — calls `db.promote_branch` /
+    the matching MCP tool to copy the shadow version onto a new factual
+    `VersionRow`.
+  * **Diff against factual** (shadow rows only) — opens a structured diff
+    against the current factual head.
 
 The active pointer is mirrored to `ActiveVersionRow` so the MCP server
 shows the same version as the UI for that user.
@@ -131,12 +143,16 @@ One panel per collection, with item rows showing summaries:
 * **Locations** — `LOC_*`
 * **Entities** — `ENT_*`
 * **Objects** — `OBJ_*`
-* **Events** — `EVT_*`
+* **Events** — `EVT_*` (event_type `choice` / `outcome` / `revelation` /
+  `utterance`; utterance events expose `speaker_id`, `addressee_ids`,
+  `via_channel_id`, `truth_value`, and `content` fields in the add
+  dialog and validate that the speaker and addressees resolve)
 * **World Traits** — `WORLD_*`
 * **Causal Edges** — `source_id → target_id [causality_type]`
 * **Relationship Edges** — `source ↔ target  affinity / fear / power`
 * **Spatial Edges** — `source → target  locked=…`
-* **Information Edges** — `source → [targets]  medium=…`
+* **Channels** — `participants  medium=…  intelligibility=…` (the
+  speech-act layer that replaces the legacy `InformationEdge` collection)
 
 Each row has a **delete** button → confirmation dialog warning about
 broken references → removal → re-validate.
@@ -147,9 +163,11 @@ required fields:
 * IDs auto-prefixed and uppercased (e.g. typing `"foo bar"` in an event ID
   field becomes `EVT_FOO_BAR`).
 * Events: `fabula_time` and `syuzhet_index` auto-suggested from the next
-  free slot.
+  free slot. Choosing `event_type=utterance` makes `speaker_id` and at
+  least one `addressee_id` mandatory.
 * Causal edges: enum-validated `causality_type`; both endpoints required.
-* Information edges: comma-separated `target_ids` parsed into a list.
+* Channels: comma-separated `participant_ids` parsed into a list; the
+  `intelligibility` map is editable as JSON.
 
 All builders raise `ValueError` on missing or invalid fields, surfaced as
 toasts. Newly-added items pass `WorldStateV1.model_validate` round-trip.

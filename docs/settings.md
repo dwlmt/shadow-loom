@@ -156,6 +156,39 @@ academic backing in
 | `PHYSICS_INERTIA_EPSILON` | `0.0` | Small perturbation added to inertia to prevent stalling. |
 | `PHYSICS_EGO_MEMORY_LIMIT` | `5` | How many prior events the ego-graph keeps for the focal entity. |
 
+### Probabilistic propagation, Monte-Carlo and Bayesian abduction
+
+These knobs were added with the channel/utterance and Bayesian-abduction
+refactor; defaults preserve previous behaviour for everything except
+`abduction_blend_mode` (which now defaults to `bayesian`).
+
+| Variable | Default | Notes |
+|---|---|---|
+| `PHYSICS_PROPAGATION_MODE` | `noisy_or` | `deterministic` keeps the legacy weighted-average + `\|impact\| > inertia` gate. `noisy_or` treats each incoming edge as an independent Bernoulli attempt to overcome inertia. |
+| `PHYSICS_NOISY_OR_TEMPERATURE` | `0.25` | Sigmoid temperature for the per-edge gate. Lower = sharper threshold. |
+| `PHYSICS_NOISY_OR_THRESHOLD` | `0.5` | Aggregate noisy-OR probability above which a trait is considered to have shifted (deterministic noisy-OR path). |
+| `PHYSICS_CAUSAL_FORCE_SIGMA_WEAK` | `0.30` | Std-dev (fraction of nominal force) for `evidence_strength="weak"` edges in Monte-Carlo CTF. |
+| `PHYSICS_CAUSAL_FORCE_SIGMA_MODERATE` | `0.15` | Same for `evidence_strength="moderate"`. |
+| `PHYSICS_CAUSAL_FORCE_SIGMA_STRONG` | `0.05` | Same for `evidence_strength="strong"`. |
+| `PHYSICS_MONTE_CARLO_SAMPLES` | `0` | If > 0, `CausalPhysicsEngine.execute_distribution` returns a distribution over post-propagation trait values (mean / p5 / p50 / p95) instead of a point estimate. |
+| `PHYSICS_MONTE_CARLO_SEED` | unset | Optional RNG seed for reproducible Monte-Carlo runs. |
+| `PHYSICS_ABDUCTION_BLEND_MODE` | `bayesian` | `legacy`: `blended = old + delta * (1 - inertia)`. `bayesian`: `posterior = (inertia*old + ev_precision*evidence) / (inertia + ev_precision)`. |
+| `PHYSICS_ABDUCTION_EVIDENCE_PRECISION` | `1.0` | Precision (1/variance) of present-day evidence in the Bayesian abduction blend. |
+| `PHYSICS_ENTITY_TRAIT_INERTIA_DEFAULT` | `0.5` | Fallback inertia for an Entity trait when extraction is silent. |
+| `PHYSICS_BELIEF_INERTIA_DEFAULT` | `0.3` | Fallback inertia for a Belief. |
+| `PHYSICS_WORLD_TRAIT_INERTIA_DEFAULT` | `0.8` | Fallback inertia for a `WORLD_` trait magnitude. |
+| `PHYSICS_EVENT_STATE_INERTIA_DEFAULT` | `0.0` | Quoted by the auditor when contrasting event volatility with character stability. |
+| `PHYSICS_ENTITY_TRAIT_BASELINE_DRIFT_RATE` | `0.0` | If > 0, after each step entity traits drift back toward their `state_timeline` baseline by `(1 - inertia) * rate`. |
+| `PHYSICS_RULE3_PRUNING_MODE` | `advisory` | `advisory` reports Rule-3 pruned interventions but still executes the do-surgery; `prune` drops them. Use `prune` only when the extracted causal topology is known to be confounder-complete. |
+| `PHYSICS_ALLOW_UNOBSERVED_CONFOUNDERS` | `false` | Safety-net debugging toggle that injects synthetic latent parents for every pair of nodes sharing an observed cause. Combinatorial — leave off in normal use; the extraction prompts elicit named latents as `WORLD_*` traits instead. |
+| `PHYSICS_INTELLIGIBILITY_THRESHOLD` | `0.3` | Per-recipient channel intelligibility below which a belief acquired through that channel is treated as epistemically invalid (used in abduction belief back-prop and directive-assembly leak risk). |
+
+### Ingress word cap (UI / chat / MCP)
+
+| Variable | Default | Notes |
+|---|---|---|
+| `PHYSICS_MAX_INGEST_WORDS` | `10000` | Maximum whitespace tokens accepted by any user-facing ingest (NiceGUI Story tab, chat box, MCP `ingest` / `narrate` / `write`). Enforced uniformly so a payload that's too large fails fast at the boundary instead of mid-pipeline. |
+
 These constants are the dial-board of the
 [`CausalPhysicsEngine`](../shadow_loom/causal_physics.py). Their motivation
 is laid out in
@@ -174,7 +207,7 @@ and [§5.1 (Trait + inertia model)](academic-foundations.md#51-trait--inertia-mo
 | Variable | Default | Notes |
 |---|---|---|
 | `MCP_SKIP_AUDIT` | `true` | MCP defaults to no audit (latency-sensitive). Override per-call when needed. |
-| `MCP_INGEST_FABULA_TIME_SPACING` | `100` | Tighter than the pipeline default — MCP ingest tends to be incremental. |
+| `MCP_INGEST_FABULA_TIME_SPACING` | `1000` | Initial gap between fabula-time stamps for MCP ingest (matches the pipeline default; leaves room for flashbacks/inserts). |
 | `MCP_INGEST_MAX_CORRECTION_RETRIES` | `5` | Validation-repair passes during MCP ingest. |
 | `MCP_ALLOW_OPEN_MODE` | `false` | **Production must keep this false.** When true, scope checks pass when no scopes are resolved (dev/local mode only). |
 

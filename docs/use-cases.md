@@ -69,7 +69,12 @@ Pearl rung-3 counterfactuals in a literary setting:
   ⊘)` and replay forward physics. The system reports which downstream events
   collapse, which character traits diverge, and which beliefs never form.
 * The AMWN sandbox tags everything `world_id="shadow"` so the canonical
-  graph is never polluted.
+  graph is never polluted. Under `PipelineConfig.branch_policy="auto"`
+  these shadow runs are **persisted** as their own branch in the version
+  DAG and can be browsed, diffed against the factual mainline, and — once
+  the analyst is convinced — promoted onto canon via
+  `db.promote_branch` / the MCP `promote_branch` tool / the “Promote to
+  canon” button in the UI version sidebar.
 * For game designers this means programmatically estimating which player
   choices have meaningful narrative consequences vs which are cosmetic.
 
@@ -154,8 +159,133 @@ can:
 * propose interventions, read back the auditor's loss
 * commit a new version when the audit passes
 
+The per-user `ActiveVersionRow` pointer is shared between the UI and the
+MCP server (`set_active_version` / `get_active_version`), so a human
+selecting a branch in the workspace and an agent calling `narrate` against
+the same key both work from the same selected branch tip without having to
+pass `version=` on every call.
+
 This is how a chat-style writing assistant becomes a true **co-author with
 memory** rather than a stateless completion box.
+
+---
+
+# Beyond fiction
+
+The engine has no fiction-specific assumptions baked into the schema —
+`WorldStateV1` is just typed entities, events, channels, beliefs, and
+edges with physics. Anywhere a domain can be summarised as *"agents,
+what they know, what they did, why, and what changed because of it"*,
+Shadow-Loom can ingest a synopsis-length sketch of it and run the same
+observation / intervention / counterfactual / directive cycles.
+
+## 9. Historical counterfactuals
+
+**Audience:** historians, history teachers, military / strategic analysts,
+alt-history authors, podcasters preparing "what if" episodes.
+
+History is structurally a story: actors with goals and beliefs, channels
+they used to coordinate, decisions made under uncertainty, downstream
+consequences gated by the inertia of institutions and geography. Ingest a
+condensed account of an episode (the run-up to the Cuban Missile Crisis,
+the Schlieffen Plan, the dissolution of the Soviet Union) and:
+
+* Run *"what if Khrushchev had refused to back down?"* as a
+  `CounterfactualQuery`. Abduction back-fills hidden variables (Politburo
+  pressure, ICBM readiness `WORLD_*` traits) from observed present-day
+  evidence; the do-surgery flips the historical decision; forward
+  propagation reports which downstream events collapse, which
+  `RelationshipEdge`s invert, and which beliefs (held by which leaders)
+  never form. The shadow branch persists alongside factual canon so a
+  classroom can compare both DAGs side-by-side.
+* Sever a channel — `do(CHN_RED_TELEPHONE.intelligibility = 0)` — to
+  study the role of communication infrastructure in escalation.
+* Use the auditor as a **plausibility check on alt-history prose**: if a
+  user-supplied counterfactual scene posits Stalin signing a peace treaty
+  in 1942 with no licensing causal edge in the brief, the auditor flags
+  it as a Miracle Step.
+
+The 10,000-word ingest cap maps naturally to encyclopedia-article-length
+historical summaries; full archival corpora are out of scope.
+
+## 10. News, current events, and intelligence-style analysis
+
+**Audience:** analysts, investigative journalists, OSINT practitioners,
+policy desks, scenario planners.
+
+A breaking story is a partially-observed graph: actors whose motives are
+guessed, events whose causal links are contested, channels (press
+conferences, leaked memos, encrypted chats) of varying intelligibility.
+Ingest a multi-source brief and:
+
+* **Disambiguate competing narratives.** Encode each rival theory as a
+  small set of historical interventions (`do(EVT_LEAK.actor_ids =
+  ['ENT_INSIDER_A'])` vs `['ENT_INSIDER_B']`), let abduction reconcile
+  each with the same evidence, and compare which fork explains more of
+  the observed downstream events with fewer unresolved targets.
+* **Stress-test scenarios.** Use `DirectiveQuery` with `target_effect=
+  "surprise"` to find low-probability, high-KL events the engine can
+  construct from current trait trajectories — a structured form of
+  red-team brainstorming.
+* **Audit information provenance.** `Belief.acquired_via_event_id` /
+  `acquired_via_channel_id` make it explicit *which utterance through
+  which channel* gave each actor each belief; an analyst can ask the
+  MCP `who_can_hear` tool which other actors plausibly received the same
+  signal, and the auditor's `withheld_utterance_leak` check flags prose
+  summaries that quote things their notional sources couldn't have
+  known.
+* **Track narrative drift over time.** Ingest the same story weekly as a
+  new project version; `diff_versions` shows where attribution, motive,
+  or timeline shifted between updates.
+
+The system is **not a fact-checker** — it cannot verify whether an
+ingested claim is true. It enforces *internal coherence* of a stated
+account and surfaces structural asymmetries between competing accounts.
+
+## 11. Tabletop / role-playing game design and live play
+
+**Audience:** TTRPG game masters, campaign designers, LARP organisers,
+interactive-fiction authors, video-game narrative designers.
+
+Campaigns are exactly the workload Shadow-Loom was built for: a small
+cast of NPCs and PCs, a handful of locations, evolving relationships,
+secrets that some characters know and others don't, and a GM constantly
+asking *"if the party does X, what does NPC Y do?"*
+
+* **Session prep.** Ingest the published adventure synopsis (or your own
+  one-page outline). The Editor tab lets you fill in NPC trait vectors,
+  motivations, and standing channels (the spy network, the temple's
+  prophetic dreams, the merchants' gossip) before the session.
+* **Live GM oracle.** During play, ask `narrate("the rogue tries to
+  intimidate the captain into revealing the smuggling route")` against
+  the current version. The physics engine resolves it against trait
+  inertia, fear, and power-dynamic edges; the auditor flags any prose
+  that contradicts what the captain actually knows. The shadow-branch
+  mechanism means you can speculatively roll forward two or three
+  party choices, see which one produces the most dramatically interesting
+  scorecard, and only **promote to canon** the branch the table actually
+  takes.
+* **Secret-keeping and dramatic irony.** `Channel.intelligibility` plus
+  per-character `Belief` provenance encode *who knows what*. The directive
+  assembler will refuse to leak a secret to an in-scene NPC who has no
+  channel through which they could plausibly have learned it, and the
+  `compute_tension(target_effect="dramatic_irony")` tool quantifies the
+  asymmetry between what the players know and what their characters
+  know.
+* **Persistent campaign canon.** The version DAG is the campaign log:
+  every session promotes a new factual version; counterfactual branches
+  ("what if the king *had* trusted us?") stay browsable for retro or
+  flashback episodes.
+* **Procedural quest seeds.** `DirectiveQuery` with `target_effect=
+  "mystery"` over the current world picks a hidden-ancestor-rich event
+  the GM can dangle as the next plot hook, with the licensing graph
+  pre-built so the resolution is already coherent.
+
+For digital RPGs and visual novels the MCP surface is the integration
+point: the game engine calls `narrate` / `direct` per scene transition
+and uses the returned `physics_state` and `prose` to drive its own
+renderer. The 10,000-word cap is per-ingest, not per-campaign — a
+long-running game just accumulates many small versions on the DAG.
 
 ---
 

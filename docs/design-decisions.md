@@ -112,7 +112,16 @@ specialist agents, preceded by a **Socratic-QA scaffold** (see
 [academic-foundations.md §6.5](academic-foundations.md#socratic-qa-scaffolding-ingestion-step-2)):
 
 * **Step 3a — Physics agent**: events, causal edges, spatial edges.
-* **Step 3b — Social agent**: relationship edges, information edges.
+* **Step 3b — Social agent**: relationship edges plus `Channel` nodes (the
+  speech-act surface area; standing communication capability between
+  participants, with a per-recipient `intelligibility` map). Discrete
+  utterances themselves are extracted as `EventNode`s with
+  `event_type="utterance"`, carrying `speaker_id`, `addressee_ids`,
+  `via_channel_id`, `truth_value`, and `content` so beliefs can record
+  explicit `acquired_via_event_id` / `acquired_via_channel_id` provenance.
+  This replaces the legacy `InformationEdge` collection — see
+  [scripts/migrate_information_edges.py](../scripts/migrate_information_edges.py)
+  for the one-shot migration of older databases.
 * **Step 3c — Consequences agent**: `EntityUpdate`s (trait/belief/status/location deltas) anchored to the events + mutation edges Physics produced. Default-on; overrides Physics's own `entity_updates` when enabled. Toggle: `ExtractionConfig.enable_consequences_agent`.
 
 **Alternative.** A single "do everything" agent per chunk — the original

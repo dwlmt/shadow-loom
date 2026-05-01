@@ -64,6 +64,16 @@ Forces variables to specific states **simultaneously**, severs incoming
 causal edges, and propagates forward. Genesis spawns are signalled by the
 `.spawn` suffix on the key.
 
+*Channel and utterance interventions* are first-class: the parser accepts
+intervention keys like `CHN_RAVEN.intelligibility`,
+`CHN_RAVEN.participant_ids`, or `EVT_PROPHECY.truth_value`, and accepts
+`channel_ids` / `utterance_event_ids` lists. So
+`{"CHN_RAVEN.intelligibility": {"ENT_LADY_M": 0.0}}` cuts Lady Macbeth out
+of the raven channel, and `{"EVT_PROPHECY.via_channel_id": null}` removes
+the witches’ broadcast altogether — with belief-provenance pruning in the
+causal physics engine cleaning up any beliefs whose
+`acquired_via_channel_id` referenced the severed channel.
+
 ### 3. `CounterfactualQuery` — Rung 3, "abduction + intervention"
 
 ```python
@@ -76,6 +86,16 @@ class CounterfactualQuery:
 
 Goes back in time, abducts hidden variables from present-day evidence,
 applies the historical interventions, then re-propagates forward.
+
+Under the default `PipelineConfig.branch_policy="auto"`, counterfactual
+results are persisted on a fresh **shadow** branch (`world_id="shadow"`)
+rather than overwriting factual canon. The MCP `list_branches` /
+`promote_branch` tools and the UI version-sidebar Promote-to-canon button
+govern when (or whether) the shadow becomes mainline. Historical targets
+can name channel and utterance ids the same way as intervention keys, so
+“what if Macbeth never told Lady Macbeth about the prophecy” resolves to a
+historical removal of the relevant `EVT_*` (or `CHN_*`) without needing to
+fabricate an entity-level surrogate.
 
 ### 4. `DirectiveQuery` — affective optimisation
 

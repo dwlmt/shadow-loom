@@ -2,7 +2,7 @@
 
 Shadow-Loom ships a [Model Context Protocol](https://modelcontextprotocol.io)
 server that exposes the entire causal narrative engine — ingestion, simulation,
-generation, audit, version management — as **25 tools and 5 resources** that any
+generation, audit, version management — as **31 tools and 5 resources** that any
 MCP-aware agent (Claude Desktop, Cursor, Continue, custom clients) can drive
 directly.
 
@@ -29,7 +29,7 @@ The server reads its configuration from `config.env` /
 | `SHADOW_LOOM_DATABASE_URL` | SQLite / Postgres URL backing the version store. |
 | `MCP_ALLOW_OPEN_MODE` | If `true`, falls back to the most-recently-cached token when a request arrives without an active context (dev/test only — fail-open). Default `false`. |
 | `MCP_SKIP_AUDIT` | Default value of the `skip_audit` flag on `narrate` / `direct`. |
-| `MCP_INGEST_FABULA_TIME_SPACING` | Spacing for fabula ticks during `ingest` (default 100). |
+| `MCP_INGEST_FABULA_TIME_SPACING` | Spacing for fabula ticks during `ingest` (default 1000). |
 | `MCP_INGEST_MAX_CORRECTION_RETRIES` | Programmatic-validation correction retries during `ingest`. |
 
 ### Connecting from Claude Desktop / Cursor
@@ -60,8 +60,8 @@ database. See [`shadow_loom_mcp/auth.py`](../shadow_loom_mcp/auth.py).
 
 | Scope | Tool groups |
 |---|---|
-| `read` | ORIENT + EXPLORE + REASON + JUDGE |
-| `write` | CREATE + most MANAGE (branch, fork, delete, set/get active version, …) |
+| `read` | ORIENT + EXPLORE + REASON + JUDGE + `set_active_version` / `get_active_version` |
+| `write` | CREATE + most MANAGE (branch, fork, delete, promote_branch, …) |
 | `admin` | `share`, `update_project_tool` |
 
 Resources (`world://…`) skip scope checks — they are intended for read-only
@@ -74,24 +74,29 @@ rather than executing if the bearer token is unknown or under-scoped.
 
 ---
 
-## 3. The 25 tools, by cognitive task
+## 3. The 31 tools, by cognitive task
 
 ### ORIENT — "What stories exist? What's in this one?"
 
 | Tool | Scope | Purpose |
 |---|---|---|
 | `list_projects` | read | List every project the user can access. |
-| `open_project` | read | Returns a full **manifest**: entity/location/object/event IDs with names, topology counts, current version. **Always call this first.** |
+| `open_project` | read | Returns a full **manifest**: entity/location/object/event/world-trait IDs with names, topology counts (including `channels` and `utterance_events`), `current_version` (the version actually loaded — honours the active-version pointer or an explicit `version=`) and `latest_version` (the project tip). **Always call this first.** |
 
-### EXPLORE — "Tell me about this character / event / place."
+### EXPLORE — "Tell me about this character / event / place / channel."
 
 | Tool | Scope | Purpose |
 |---|---|---|
-| `inspect(node_id, at_time=None)` | read | Auto-routes by ID prefix (`ENT_`, `LOC_`, `EVT_`, `OBJ_`, `WORLD_`). Pass `at_time` to time-slice an entity / world trait via `reconstruct_entity_at`. |
+| `inspect(node_id, at_time=None)` | read | Auto-routes by ID prefix (`ENT_`, `LOC_`, `EVT_`, `OBJ_`, `CHN_`, `WORLD_`). Pass `at_time` to time-slice an entity / world trait via `reconstruct_entity_at`. |
 | `search(query, kinds=…)` | read | Fuzzy + substring search across nodes. |
 | `get_relationships(entity_id)` | read | Affinity / fear / power / inertia table for an entity. |
+| `list_channels(entity_id=None, medium=None)` | read | Enumerate `Channel` nodes with participants, intelligibility map, medium, and per-channel utterance count. |
+| `get_channel_history(channel_id)` | read | Ordered list of `utterance` events on a channel, with speaker / addressees / `truth_value` / `content`. |
+| `who_can_hear(speaker_id, at_time=None)` | read | Resolves the audience reachable from a speaker via current channels, weighted by per-recipient intelligibility. |
 | `trace_causality(node_id, …)` | read | Walks `causal_topology` ancestors and descendants up to a depth. |
 | `get_history(node_id)` | read | Timeline of state changes for an entity or world trait. |
+| `list_branches()` | read | Walks the version DAG and returns one summary per branch (`world_id` `factual` / `shadow`, `branch_label`, root + head version, fork-point ancestor, version count). |
+| `export_prose(branch_path=None)` | read | Returns prose across versions — either implicit linear order, or a specific lineage when `branch_path` (a list of `version_row_id`s) is supplied. |
 
 ### REASON — "Answer questions, run what-ifs without writing prose."
 
@@ -105,7 +110,7 @@ rather than executing if the bearer token is unknown or under-scoped.
 
 | Tool | Scope | Notes |
 |---|---|---|
-| `narrate(instruction, mode=None, skip_audit, force_implausible)` | write | The main creation entry point. NL → `parse_query` → `run_pipeline` → version write → active pointer advance. `mode` can pin the query type to `observe` / `intervene` / `counterfactual`. |
+| `narrate(instruction, mode=None, skip_audit, force_implausible, speaker_id=None, addressee_ids=None, via_channel_id=None)` | write | The main creation entry point. NL → `parse_query` → `run_pipeline` → version write → active pointer advance. `mode` can pin the query type to `observe` / `intervene` / `counterfactual`. The `speaker_id` / `addressee_ids` / `via_channel_id` hints constrain the parser to emit a properly-typed `utterance` event with channel provenance. |
 | `direct(target_effect, entity_ids=…, intensity=0.8, …)` | write | Builds a `DirectiveQuery` directly (no NL parse) and runs the affective optimisation pipeline. |
 | `write(prose, description="")` | write | Manual edit — supplies user prose, runs prose → topology re-extraction, merges into a new version (skips physics + LLM rendering). |
 | `ingest(text, project_name, label=None)` | write | Creates a brand new project and runs the 5-step ingestion to produce v0. |
@@ -127,11 +132,18 @@ MCP client can show a progress bar.
 | `branch`, `fork`, `share` | write / write / admin |
 | `update_project_tool` | admin |
 | `delete_project`, `delete_version`, `reparent_version` | write |
-| `set_active_version`, `get_active_version` | write / read |
+| `promote_branch(version_row_id)` | write |
+| `set_active_version`, `get_active_version` | read / read |
 
 `set_active_version` updates the per-user `ActiveVersionRow` pointer, so every
 subsequent `narrate` / `inspect` / etc. resolves against that version unless
-overridden by an explicit `version=` argument.
+overridden by an explicit `version=` argument. The same pointer is read by
+the NiceGUI workspace, so an agent and a human author always converge on the
+same branch tip.
+
+`promote_branch` copies a shadow-branch version onto a new factual `VersionRow`
+so the chosen counterfactual becomes canon while the shadow source stays
+browsable for diffing.
 
 ---
 
@@ -162,12 +174,17 @@ Every write tool funnels through
 3. If `result.implausible` → return the explanation, **do not write a version**.
 4. If `result.reextraction_failed` → return the prose with a warning, **do not
    write a version** (prose and world model are out of sync).
-5. Otherwise `save_version(...)` with `ancestor_id = ancestor_row_id` and call
+5. If the merged world model is byte-identical to the ancestor (for example a
+   `direct` call that produced no graph change) → return the prose with a
+   `world_model_unchanged` / `version_skipped` flag, **do not write a version**.
+6. Otherwise `save_version(...)` with `ancestor_id = ancestor_row_id` and call
    `set_active_version(...)` so the user's pointer follows the new tip.
 
 The response always includes `version`, `ancestor_id`, `prose`,
-`physics_state`, and the auditor verdict — enough for the agent to decide what
-to do next without re-querying.
+`physics_state`, the auditor verdict, **and a `branch` envelope**
+(`{world_id, branch_label, ancestor_id}`) so the agent can tell whether the
+new version landed on factual mainline or on a shadow fork — enough for the
+agent to decide what to do next without re-querying.
 
 ---
 
