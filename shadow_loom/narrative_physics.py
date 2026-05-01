@@ -276,6 +276,16 @@ def calculate_narrative_physics(
                 "rule2_redundant_evidence": list(
                     physics_result.rule2_redundant_evidence
                 ),
+                # Channels & beliefs subsystem: surface what the
+                # do-surgery epistemically removed so the auditor and UI
+                # can reason about belief / utterance side-effects.
+                "pruned_beliefs_count": physics_result.pruned_beliefs_count,
+                "pruned_utterance_event_ids": list(
+                    physics_result.pruned_utterance_event_ids
+                ),
+                "disabled_channel_ids": list(
+                    physics_result.disabled_channel_ids
+                ),
                 # Typed object stashed under a private key so the pipeline
                 # can forward it to the auditor (which needs the full
                 # CausalPhysicsResult, not the JSON-serialised slices).
@@ -418,6 +428,18 @@ def calculate_narrative_physics(
                 "rule3_pruning_mode": physics_result.rule3_pruning_mode,
                 "rule2_redundant_evidence": list(
                     physics_result.rule2_redundant_evidence
+                ),
+                # Channels & beliefs subsystem: counterfactual surgeries
+                # on past utterances / channels propagate as belief
+                # provenance pruning. Surface the totals so downstream
+                # consumers can render "by removing this utterance N
+                # downstream beliefs evaporate" diagnostics.
+                "pruned_beliefs_count": physics_result.pruned_beliefs_count,
+                "pruned_utterance_event_ids": list(
+                    physics_result.pruned_utterance_event_ids
+                ),
+                "disabled_channel_ids": list(
+                    physics_result.disabled_channel_ids
                 ),
                 # Typed object stashed for the pipeline → auditor handoff;
                 # see the intervention branch for rationale.

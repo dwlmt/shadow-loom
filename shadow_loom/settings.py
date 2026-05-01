@@ -377,6 +377,18 @@ class CausalPhysicsSettings(BaseSettings):
         ),
     )
 
+    intelligibility_threshold: float = Field(
+        default=0.3,
+        description=(
+            "Per-recipient channel intelligibility below which a belief "
+            "acquired through that channel is considered epistemically "
+            "invalid for the holder. Used in abduction belief back-prop "
+            "(skip the belief) and in directive assembly's hidden-channel "
+            "leak risk. Range 0.0 (anything goes) to 1.0 (only fully "
+            "intelligible channels carry beliefs)."
+        ),
+    )
+
     @property
     def strength_multiplier(self) -> dict[str, float]:
         return {
@@ -399,7 +411,7 @@ class MCPSettings(BaseSettings):
     )
 
     skip_audit: bool = Field(default=True)
-    ingest_fabula_time_spacing: int = Field(default=100)
+    ingest_fabula_time_spacing: int = Field(default=1000)
     ingest_max_correction_retries: int = Field(default=5)
     # When True, scope checks pass when no scopes are resolved (dev/local mode).
     # In production this MUST stay False so that misconfigured auth fails closed.

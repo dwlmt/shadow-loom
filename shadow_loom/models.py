@@ -88,6 +88,22 @@ class Belief(BaseModel):
     confidence: float = Field(description="0.0 to 1.0 (How sure are they?)")
     inertia: float = Field(description="0.0 to 1.0 (How stubborn is this belief?)")
     established_at_fabula: int = Field(default=0, description="Fabula time when this belief was formed. Used for counterfactual time-slicing.")
+    acquired_via_event_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional EVT_ id of the event (typically an utterance or revelation) "
+            "that posted this belief. Lets counterfactual surgery prune downstream "
+            "beliefs whose causing event no longer fires."
+        ),
+    )
+    acquired_via_channel_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional CHN_ id of the standing communication channel through which "
+            "the belief was acquired. Lets counterfactual surgery on a channel "
+            "(e.g. line tapped, cipher broken, bond severed) prune downstream beliefs."
+        ),
+    )
     evidence_strength: Literal["weak", "moderate", "strong"] = Field(
         default="moderate",
         description=(
@@ -221,40 +237,145 @@ class EventNode(AMWNNode):
     syuzhet_index: int = Field(
         description="The sequence this appears in the text (e.g., Chapter 4, Paragraph 2). Used for Suspense."
     )
-    event_type: Literal["choice", "outcome", "revelation"]
+    event_type: Literal["choice", "outcome", "revelation", "utterance"] = Field(
+        description=(
+            "choice = a deliberate decision; outcome = a physical/situational "
+            "happening; revelation = the audience or a character learns a "
+            "hitherto-hidden fact (syuzhet-side); utterance = a discrete "
+            "speech-act / message transmitted between characters (fabula-side). "
+            "Utterance and revelation are distinct: an utterance can occur "
+            "long before its content is revealed to the audience."
+        ),
+    )
     actor_ids: List[str] = Field(default_factory=list, description="Who did it? Empty if natural event. Supports joint actions (e.g., ['ENT_MACBETH', 'ENT_LADY_MACBETH']).")
     target_ids: List[str] = Field(default_factory=list, description="Who/what was acted upon? e.g., ['ENT_DUNCAN'] in a murder event. Supports diffuse effects.")
     description: str
+
+    # --- Utterance / revelation payload (optional, mainly for event_type='utterance' or 'revelation') ---
+    content: Optional[str] = Field(
+        default=None,
+        description=(
+            "For utterance/revelation events: the proposition transmitted or "
+            "revealed (e.g., 'Kurtz has gone rogue in Cambodia'). Distinct "
+            "from ``description`` (which narrates the event); ``content`` is "
+            "the *epistemic payload* downstream beliefs reference. Null for "
+            "choice/outcome events with no informational content."
+        ),
+    )
+    via_channel_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "For utterance events: optional CHN_ id of the standing channel the "
+            "message travelled over (telephone, mind-link, classified pipeline). "
+            "Null when the event is its own channel — direct speech, in-person "
+            "observation, an isolated letter."
+        ),
+    )
+    speaker_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "For utterance events: the single ENT_/OBJ_ id of the speaker. "
+            "Disambiguates among joint ``actor_ids`` (e.g. a chorus where "
+            "only one character actually voices the line). Should be a member "
+            "of ``actor_ids`` when both are populated."
+        ),
+    )
+    addressee_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "For utterance events: ENT_ ids the speaker intends to reach. "
+            "Distinct from ``target_ids`` (which is generic 'acted upon'); "
+            "addressees are the *intended* recipients, while overhearers "
+            "are picked up via channel intelligibility / location overlap."
+        ),
+    )
+    truth_value: Optional[Literal["true", "false", "unknown", "performative"]] = Field(
+        default=None,
+        description=(
+            "For utterance events: whether ``content`` is true in the storyworld. "
+            "'true' = sincere accurate assertion, 'false' = lie / mistake / "
+            "deception, 'unknown' = speaker themselves uncertain, 'performative' "
+            "= speech-act not truth-apt (a vow, an order, a curse). Drives the "
+            "Bayesian abduction layer's confidence on the resulting beliefs."
+        ),
+    )
 
 class AMWNEdge(BaseModel):
     """Base class for all topology edges. Distinct from AMWNNode."""
     world_id: str = Field(default="factual", description="Allows edges to exist only in shadow branches.")
 
 # ==========================================
-# 1. THE VOLATILE INTERVAL: InformationEdge
+# 1. THE STANDING CAPABILITY: Channel
 # ==========================================
-class InformationEdge(AMWNEdge):
-    source_id: str = Field(description="Must be an ENT_ or OBJ_ ID")
-    target_ids: List[str] = Field(description="Allows 1-to-Many broadcasting")
-    
-    # UPGRADE: Freeform string with suggestions
-    medium: str = Field(
-        description="The channel of communication. e.g., 'telephone', 'telepathy', 'shouting', 'magic_mirror', 'carrier_pigeon'"
-    )
-    is_encrypted: bool = Field(default=False, description="If False, triggers Eavesdropping Leakage.")
-    
-    established_at_fabula: int
-    terminated_at_fabula: Optional[int] = None
-    discovered_at_syuzhet: int = 0
+class Channel(AMWNNode):
+    """A persistent communication *capability* between participants.
 
+     a Channel models who
+    *can* communicate with whom over what medium for the duration of an
+    interval. Discrete *messages* are first-class
+    :class:`EventNode` instances with ``event_type='utterance'``,
+    optionally referencing a Channel via ``via_channel_id``.
+
+    Promoted to a node (not an edge) so that:
+      * EventNodes and Beliefs can name a channel by id;
+      * the channel itself can carry per-participant intelligibility
+      * counterfactual surgery on the channel (cipher broken, line tapped,
+        bond severed) cleanly cascades through ``Belief.acquired_via_channel_id``
+        and ``EventNode.via_channel_id``.
+    """
+    id: str = Field(description="Unique ID with CHN_ prefix, e.g., CHN_DOSSIER_PIPELINE.")
+    name: str = Field(description="Human-readable name, e.g., 'MACV-SOG Classified Dossier Pipeline'.")
+    medium: str = Field(
+        description=(
+            "The channel medium: e.g., 'telephone', 'telepathy', 'classified_pipeline', "
+            "'mail_correspondence', 'mind_link', 'shared_language', 'magic_mirror'."
+        ),
+    )
+    participant_ids: List[str] = Field(
+        description=(
+            "ENT_ / OBJ_ ids of channel participants. n-ary; the channel is "
+            "undirected by default — see ``directionality`` for asymmetric "
+            "channels (broadcasts, simplex links)."
+        ),
+    )
+    directionality: Literal["broadcast", "duplex", "simplex"] = Field(
+        default="duplex",
+        description=(
+            "'duplex' = any participant can speak to any other (default for 2-party); "
+            "'broadcast' = first participant speaks, the rest only listen "
+            "(loudspeaker, telescreen, public proclamation); "
+            "'simplex' = first→second only (one-way courier, dead-drop)."
+        ),
+    )
+    intelligibility: Dict[str, float] = Field(
+        default_factory=dict,
+        description=(
+            "Per-participant decode probability \u2208 [0, 1]. A missing key "
+            "means fully intelligible (1.0). 0.0 = opaque (foreign language, "
+            "unbroken cipher, jargon outside the listener's competence); "
+            "0.5 = partial (overhearing through a wall, lossy translation). "
+            "Replaces the legacy ``is_encrypted`` boolean: encryption is "
+            "modelled as low intelligibility for non-keyholders."
+        ),
+    )
+    established_at_fabula: int = Field(
+        default=0,
+        description="Fabula tick the channel becomes available (0 = pre-story).",
+    )
+    terminated_at_fabula: Optional[int] = Field(
+        default=None,
+        description=(
+            "Fabula tick the channel is severed (line cut, bond broken, courier killed). "
+            "Null = still active at the end of the narrative."
+        ),
+    )
     evidence_strength: Literal["weak", "moderate", "strong"] = Field(
         default="moderate",
         description=(
-            "How reliably the engine should treat this information channel "
-            "as extracted. 'strong' = direct on-page utterance, 'moderate' "
-            "= reported speech or visible exchange, 'weak' = inferred "
-            "(overheard, deduced). Used by directive-assembly's epistemic "
-            "abduction to scale knowledge-flow probability."
+            "Engine's certainty in the *extraction* of this channel from the source text. "
+            "'strong' = the channel is named/used on-page repeatedly, 'moderate' = "
+            "the channel is implied by repeated communication, 'weak' = inferred from "
+            "a single exchange. Feeds the directive-assembly epistemic abduction layer."
         ),
     )
 
@@ -757,5 +878,36 @@ class WorldStateV1(BaseModel):
     )
     causal_topology: List[CausalEdge]
     spatial_topology: List[SpatialEdge] = Field(default_factory=list)
-    information_topology: List[InformationEdge] = Field(default_factory=list)
+    channels: Dict[str, Channel] = Field(
+        default_factory=dict,
+        description=(
+            "Standing communication channels keyed by CHN_ id. Replaces the "
+            "legacy ``information_topology`` collection; discrete messages "
+            "that previously appeared as InformationEdges now appear as "
+            "EventNodes with event_type='utterance'."
+        ),
+    )
     social_topology: List[RelationshipEdge] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_legacy_information_topology(cls, data: Any) -> Any:
+        """Fail loudly when callers supply the removed ``information_topology`` field.
+
+        The information-topology refactor split the legacy ``InformationEdge``
+        into a ``Channel`` node (capability) and an ``EventNode(event_type=
+        'utterance')`` (discrete message). There is intentionally no auto-
+        migration: silent translation would mis-classify single-shot utterances
+        as standing channels and vice-versa. Callers must explicitly rewrite.
+        """
+        if isinstance(data, dict) and "information_topology" in data:
+            raise ValueError(
+                "WorldStateV1.information_topology has been removed. Replace "
+                "each legacy InformationEdge with either (a) a Channel node "
+                "in WorldStateV1.channels (for standing capabilities) or "
+                "(b) an EventNode(event_type='utterance', content=..., "
+                "speaker_id=..., addressee_ids=[...]) appended to "
+                "WorldStateV1.events (for discrete messages). See "
+                "shadow_loom/models.py::Channel for the new schema."
+            )
+        return data

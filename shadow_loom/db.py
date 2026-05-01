@@ -122,6 +122,14 @@ class VersionRow(SQLModel, table=True):
     label: Optional[str] = Field(default=None, max_length=128)
     is_bookmarked: bool = Field(default=False)
 
+    # AMWN branch metadata (Story-integration plan, Step 2). ``world_id``
+    # tags every version onto either the canonical mainline
+    # (``"factual"``) or a counterfactual fork (``"shadow"``).
+    # ``branch_label`` is an optional human-readable name typically only
+    # set on the first version of a shadow fork, e.g. "What if Duncan lived".
+    world_id: str = Field(default="factual", max_length=16, index=True)
+    branch_label: Optional[str] = Field(default=None, max_length=256)
+
     world_state_json: str = Field(sa_column=Column(Text, nullable=False))
     changeset_json: Optional[str] = Field(default=None, sa_column=Column(Text))
 
@@ -299,8 +307,73 @@ def init_db(database_url: str = "sqlite:///shadow_loom.db") -> None:
                 cur.close()
 
     SQLModel.metadata.create_all(_engine)
+    _run_lightweight_migrations(_engine)
     ensure_example_user()
     logger.info("[DB] Tables initialised on %s", database_url)
+
+
+def _run_lightweight_migrations(engine) -> None:  # noqa: ANN001
+    """Apply additive column migrations that ``create_all`` cannot handle.
+
+    ``SQLModel.metadata.create_all`` only creates *missing* tables; it
+    never adds new columns to existing ones. This helper inspects the
+    live ``versions`` table and adds any of the AMWN branch metadata
+    columns that pre-date their introduction (Story-integration plan,
+    Step 2). Idempotent: each ALTER is guarded by a column-existence
+    check so the helper is safe to run on every startup.
+    """
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "versions" not in insp.get_table_names():
+        return
+    existing_cols = {c["name"] for c in insp.get_columns("versions")}
+    backend = engine.dialect.name  # "sqlite" | "postgresql" | ...
+
+    statements: list[str] = []
+    if "world_id" not in existing_cols:
+        # Both SQLite and Postgres accept this exact form; existing rows
+        # are backfilled to 'factual' which matches WorldModelVersion's
+        # default and preserves the pre-AMWN linear semantics.
+        statements.append(
+            "ALTER TABLE versions ADD COLUMN world_id VARCHAR(16) "
+            "NOT NULL DEFAULT 'factual'"
+        )
+        # Index the new column so the version-tree queries stay cheap.
+        if backend == "sqlite":
+            statements.append(
+                "CREATE INDEX IF NOT EXISTS ix_versions_world_id "
+                "ON versions (world_id)"
+            )
+        elif backend == "postgresql":
+            statements.append(
+                "CREATE INDEX IF NOT EXISTS ix_versions_world_id "
+                "ON versions (world_id)"
+            )
+    if "branch_label" not in existing_cols:
+        statements.append(
+            "ALTER TABLE versions ADD COLUMN branch_label VARCHAR(256)"
+        )
+
+    if not statements:
+        return
+
+    with engine.begin() as conn:
+        for sql in statements:
+            try:
+                conn.execute(text(sql))
+            except Exception:  # noqa: BLE001
+                # Concurrent migrators (multiple workers booting in
+                # parallel) may race the ALTER. Re-inspect rather than
+                # propagate so the second arrival just no-ops.
+                logger.exception(
+                    "[DB·migrate] Failed to apply: %s (treating as already applied).",
+                    sql,
+                )
+    logger.info(
+        "[DB·migrate] Applied %d additive column migration(s) to 'versions'.",
+        len(statements),
+    )
 
 
 # =====================================================================
@@ -1065,6 +1138,8 @@ def save_version(
     user_id: int | None = None,
     version: int | None = None,
     label: str | None = None,
+    world_id: str = "factual",
+    branch_label: str | None = None,
 ) -> VersionRow:
     """Persist a new version node in the version tree.
 
@@ -1095,6 +1170,8 @@ def save_version(
                 parsed_query_json=parsed_query_json,
                 prose=prose,
                 user_id=user_id,
+                world_id=world_id,
+                branch_label=branch_label,
             )
             s.add(row)
 
@@ -1167,6 +1244,8 @@ def list_versions(project_id: int) -> list[dict]:
                 "has_changeset": r.changeset_json is not None,
                 "user_id": r.user_id,
                 "created_at": str(r.created_at),
+                "world_id": r.world_id,
+                "branch_label": r.branch_label,
             }
             for r in rows
         ]
@@ -1205,6 +1284,8 @@ def get_version_tree(project_id: int) -> list[dict]:
                     "changeset_summary": changeset_summary,
                     "user_id": r.user_id,
                     "created_at": str(r.created_at),
+                    "world_id": r.world_id,
+                    "branch_label": r.branch_label,
                 }
             )
         return result
@@ -1267,6 +1348,139 @@ def get_version_children(version_row_id: int) -> list[dict]:
             }
             for r in rows
         ]
+
+
+# =====================================================================
+# AMWN branches (Story-integration plan, Step 6)
+# =====================================================================
+
+
+def list_branches(project_id: int) -> list[dict]:
+    """Return one summary per distinct AMWN branch in the project's DAG.
+
+    A *branch* is a maximal contiguous chain of versions sharing the same
+    ``world_id``. The factual mainline is always present (``world_id =
+    'factual'``); each shadow fork shows up as a separate branch rooted
+    at its first ``world_id == 'shadow'`` version.
+
+    Each summary carries:
+      * ``world_id``                — 'factual' or 'shadow'
+      * ``branch_label``            — human-readable (None for mainline)
+      * ``root_version_row_id``     — id of the first version on the branch
+      * ``root_ancestor_id``        — fork point (None for mainline)
+      * ``head_version_row_id``     — id of the latest version on the branch
+      * ``head_version_number``     — monotonic version number of the head
+      * ``version_count``           — number of versions on the branch
+    """
+    with get_session() as s:
+        rows = s.exec(
+            select(VersionRow)
+            .where(VersionRow.project_id == project_id)
+            .order_by(VersionRow.version.asc())
+        ).all()
+    if not rows:
+        return []
+
+    by_id: dict[int, VersionRow] = {r.id: r for r in rows}
+    # A version is a *branch root* when it has no ancestor (mainline v0)
+    # or when its ancestor lives on a different world_id.
+    branches: list[dict] = []
+    for r in rows:
+        parent = by_id.get(r.ancestor_id) if r.ancestor_id is not None else None
+        is_root = parent is None or parent.world_id != r.world_id
+        if not is_root:
+            continue
+        # Walk forward along same-world_id direct descendants to find the head.
+        head = r
+        version_count = 1
+        # Children are not pre-indexed; do a simple linear search per branch.
+        # Branches are typically shallow so the cost stays small.
+        while True:
+            same_branch_children = [
+                c for c in rows
+                if c.ancestor_id == head.id and c.world_id == head.world_id
+            ]
+            if not same_branch_children:
+                break
+            # If a branch fans out (multiple children on the same world_id),
+            # pick the highest-version child as the canonical head and stop —
+            # downstream ``get_version_children`` exposes the rest.
+            same_branch_children.sort(key=lambda c: c.version)
+            head = same_branch_children[-1]
+            version_count += 1
+            if len(same_branch_children) > 1:
+                break
+        branches.append({
+            "world_id": r.world_id,
+            "branch_label": r.branch_label,
+            "root_version_row_id": r.id,
+            "root_version_number": r.version,
+            "root_ancestor_id": r.ancestor_id,
+            "head_version_row_id": head.id,
+            "head_version_number": head.version,
+            "version_count": version_count,
+        })
+    return branches
+
+
+def promote_branch(
+    version_row_id: int,
+    *,
+    user_id: int | None = None,
+    description: str | None = None,
+) -> VersionRow:
+    """Copy a shadow-branch version onto the factual mainline as a new version.
+
+    Creates a *new* mainline VersionRow whose ``world_state_json`` and
+    ``prose`` come verbatim from the shadow source, but whose
+    ``ancestor_id`` points at the current factual head and whose
+    ``world_id`` is forced to ``'factual'``. The shadow source is left
+    untouched so the fork remains browsable.
+
+    Raises ``VersionMutationError`` if the source version does not exist
+    or already lives on the factual mainline (use the standard
+    save/branch flows for those cases).
+    """
+    with get_session() as s:
+        src = s.get(VersionRow, version_row_id)
+        if src is None:
+            raise VersionMutationError(
+                f"Version row {version_row_id} not found."
+            )
+        if src.world_id == "factual":
+            raise VersionMutationError(
+                f"Version {version_row_id} already lives on the factual "
+                "mainline; nothing to promote."
+            )
+
+        # Find the current factual head for this project.
+        factual_head = s.exec(
+            select(VersionRow)
+            .where(VersionRow.project_id == src.project_id)
+            .where(VersionRow.world_id == "factual")
+            .order_by(VersionRow.version.desc())
+        ).first()
+        ancestor_id = factual_head.id if factual_head is not None else None
+
+    promoted_desc = description or (
+        f"Promoted shadow v{src.version}"
+        + (f" ({src.branch_label})" if src.branch_label else "")
+        + " to factual mainline"
+    )
+    return save_version(
+        project_id=src.project_id,
+        world_state_json=src.world_state_json,
+        ancestor_id=ancestor_id,
+        source="promote_branch",
+        description=promoted_desc,
+        changeset_json=src.changeset_json,
+        raw_query=src.raw_query,
+        parsed_query_json=src.parsed_query_json,
+        prose=src.prose,
+        user_id=user_id,
+        world_id="factual",
+        branch_label=None,
+    )
 
 
 # =====================================================================
@@ -1617,20 +1831,43 @@ def clear_active_version(project_id: int, user_id: int) -> bool:
         return True
 
 
-def get_all_prose(project_id: int) -> list[dict]:
+def get_all_prose(
+    project_id: int,
+    *,
+    branch_path: list[int] | None = None,
+) -> list[dict]:
     """Return all versions with prose, ordered by version number.
 
     Useful for exporting the full story.
+
+    When ``branch_path`` is supplied, the result is filtered to *only*
+    those version_row_ids (in the order they appear in ``branch_path``).
+    This lets MCP clients walk a specific lineage through the AMWN DAG —
+    e.g. a shadow fork's prose plus the factual prefix it diverged
+    from — instead of getting the implicit linear ``ORDER BY version``
+    that mixes branches together (Story-integration plan, Step 6).
     """
     with get_session() as s:
-        rows = s.exec(
-            select(VersionRow)
-            .where(
-                VersionRow.project_id == project_id,
-                VersionRow.prose.isnot(None),
-            )
-            .order_by(VersionRow.version.asc())
-        ).all()
+        if branch_path is not None:
+            rows = s.exec(
+                select(VersionRow)
+                .where(
+                    VersionRow.project_id == project_id,
+                    VersionRow.id.in_(branch_path),
+                    VersionRow.prose.isnot(None),
+                )
+            ).all()
+            order = {rid: i for i, rid in enumerate(branch_path)}
+            rows = sorted(rows, key=lambda r: order.get(r.id, 1 << 30))
+        else:
+            rows = s.exec(
+                select(VersionRow)
+                .where(
+                    VersionRow.project_id == project_id,
+                    VersionRow.prose.isnot(None),
+                )
+                .order_by(VersionRow.version.asc())
+            ).all()
         return [
             {
                 "version": r.version,
@@ -1638,6 +1875,9 @@ def get_all_prose(project_id: int) -> list[dict]:
                 "description": r.description,
                 "prose": r.prose,
                 "created_at": str(r.created_at),
+                "world_id": r.world_id,
+                "branch_label": r.branch_label,
+                "version_row_id": r.id,
             }
             for r in rows
         ]

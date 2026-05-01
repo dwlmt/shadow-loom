@@ -421,6 +421,42 @@ def assemble_rendering_prompt(
                 )
             sections.append("")
 
+    # === Utterance & Channel Fidelity ===
+    # Hidden channels (carrier capabilities + future utterances) and
+    # on-page utterance metadata (truth_value, intelligibility) impose
+    # *fidelity* constraints on the prose:
+    #   * Withheld utterance content must NOT be quoted, paraphrased,
+    #     or summarised in narration.
+    #   * On-page utterances marked truth_value='false' must read as a
+    #     known lie within the narrative voice — the narrator must not
+    #     assert their content as fact.
+    #   * Per-recipient intelligibility < 0.3 means the addressee
+    #     could not have understood; the prose must not show
+    #     comprehension on their side.
+    if brief.hidden_channels:
+        sections.append(
+            "=== UTTERANCE & CHANNEL FIDELITY (HARD) ==="
+        )
+        for hc in brief.hidden_channels:
+            if hc.kind == "channel":
+                sections.append(
+                    f"  - HIDDEN CHANNEL {hc.channel_id} ({hc.medium}, "
+                    f"participants={hc.participant_ids}): exists in the "
+                    f"world but the reader has not yet seen any utterance "
+                    f"on it. Do not name it, quote from it, or imply its "
+                    f"presence."
+                )
+            else:
+                sections.append(
+                    f"  - HIDDEN UTTERANCE {hc.utterance_event_id} "
+                    f"({hc.medium} from {hc.speaker_id} to "
+                    f"{hc.addressee_ids} at syuzhet="
+                    f"{hc.discovered_at_syuzhet}): the message itself "
+                    f"comes later in narration order. Do not reveal its "
+                    f"content."
+                )
+        sections.append("")
+
     sections.append(
         "=== TASK ===\n"
         "Write the prose passage now. Honour ALL hard constraints. "

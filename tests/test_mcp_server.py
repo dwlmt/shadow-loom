@@ -768,3 +768,147 @@ class TestResources:
         _, pid, _ = _seed_project(is_public=False)
         data = json.loads(resource_project(pid))
         assert "error" in data
+
+
+# =====================================================================
+# AMWN BRANCHES (Story-integration plan, Step 6 / Step 8)
+# =====================================================================
+
+
+class TestListBranchesTool:
+    def test_factual_only_returns_one_branch(self):
+        from shadow_loom_mcp.server import list_branches as mcp_list_branches
+
+        _uid, pid, _v0 = _seed_project()
+        result = mcp_list_branches(_ctx(), project_id=pid)
+        assert "error" not in result
+        assert result["project_id"] == pid
+        assert len(result["branches"]) == 1
+        b = result["branches"][0]
+        assert b["world_id"] == "factual"
+        assert b["version_count"] == 1
+
+    def test_shadow_fork_appears(self):
+        from shadow_loom_mcp.server import list_branches as mcp_list_branches
+
+        uid, pid, v0_id = _seed_project()
+        save_version(
+            project_id=pid,
+            world_state_json="{}",
+            version=1,
+            source="counterfactual",
+            description="What-if",
+            user_id=uid,
+            ancestor_id=v0_id,
+            world_id="shadow",
+            branch_label="What-if Duncan lived",
+        )
+        result = mcp_list_branches(_ctx(), project_id=pid)
+        worlds = {b["world_id"] for b in result["branches"]}
+        assert worlds == {"factual", "shadow"}
+        shadow = next(b for b in result["branches"] if b["world_id"] == "shadow")
+        assert shadow["branch_label"] == "What-if Duncan lived"
+        assert shadow["root_ancestor_id"] == v0_id
+
+    def test_unknown_project(self):
+        from shadow_loom_mcp.server import list_branches as mcp_list_branches
+
+        result = mcp_list_branches(_ctx(), project_id=99999)
+        assert "error" in result
+
+
+class TestPromoteBranchTool:
+    def test_promote_appends_factual_version(self):
+        from shadow_loom_mcp.server import promote_branch as mcp_promote_branch
+
+        uid, pid, v0_id = _seed_project()
+        shadow = save_version(
+            project_id=pid,
+            world_state_json="{}",
+            version=1,
+            source="counterfactual",
+            description="What-if",
+            user_id=uid,
+            ancestor_id=v0_id,
+            world_id="shadow",
+            branch_label="alt",
+        )
+        result = mcp_promote_branch(
+            _ctx(), version_row_id=shadow.id, project_id=pid,
+            description="canonised",
+        )
+        assert "error" not in result
+        assert result["branch"]["world_id"] == "factual"
+        assert result["ancestor_id"] == v0_id
+
+    def test_promote_factual_rejected(self):
+        from shadow_loom_mcp.server import promote_branch as mcp_promote_branch
+
+        _uid, pid, v0_id = _seed_project()
+        result = mcp_promote_branch(
+            _ctx(), version_row_id=v0_id, project_id=pid,
+        )
+        assert "error" in result
+
+    def test_promote_unknown_version_rejected(self):
+        from shadow_loom_mcp.server import promote_branch as mcp_promote_branch
+
+        _uid, pid, _ = _seed_project()
+        result = mcp_promote_branch(
+            _ctx(), version_row_id=999_999, project_id=pid,
+        )
+        assert "error" in result
+
+
+class TestExportProseTool:
+    def test_returns_linear_history_by_default(self):
+        from shadow_loom_mcp.server import export_prose as mcp_export_prose
+
+        uid, pid, v0_id = _seed_project()
+        save_version(
+            project_id=pid, world_state_json="{}", version=1,
+            source="narrate", description="ch1", user_id=uid,
+            ancestor_id=v0_id, prose="The castle stood silent.",
+        )
+        save_version(
+            project_id=pid, world_state_json="{}", version=2,
+            source="narrate", description="ch2", user_id=uid,
+            ancestor_id=v0_id, prose="Macbeth approached the chamber.",
+        )
+        result = mcp_export_prose(_ctx(), project_id=pid)
+        assert "error" not in result
+        prose = [e["prose"] for e in result["entries"]]
+        assert prose == [
+            "The castle stood silent.",
+            "Macbeth approached the chamber.",
+        ]
+
+    def test_branch_path_filters_to_lineage(self):
+        from shadow_loom_mcp.server import export_prose as mcp_export_prose
+
+        uid, pid, v0_id = _seed_project()
+        v1 = save_version(
+            project_id=pid, world_state_json="{}", version=1,
+            source="narrate", description="factual", user_id=uid,
+            ancestor_id=v0_id, prose="Factual continuation.",
+        )
+        shadow = save_version(
+            project_id=pid, world_state_json="{}", version=2,
+            source="counterfactual", description="shadow",
+            user_id=uid, ancestor_id=v0_id,
+            world_id="shadow", branch_label="alt",
+            prose="Shadow continuation.",
+        )
+        result = mcp_export_prose(
+            _ctx(), project_id=pid,
+            branch_path=[shadow.id, v1.id],
+        )
+        prose = [e["prose"] for e in result["entries"]]
+        # Order honours the supplied branch_path, not the version number.
+        assert prose == ["Shadow continuation.", "Factual continuation."]
+
+    def test_unknown_project(self):
+        from shadow_loom_mcp.server import export_prose as mcp_export_prose
+
+        result = mcp_export_prose(_ctx(), project_id=99999)
+        assert "error" in result

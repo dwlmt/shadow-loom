@@ -102,6 +102,35 @@ def _render_versions(state: AppState, container) -> None:
                 ).props("flat dense color=primary").tooltip(
                     "Move current version under a different ancestor"
                 )
+                # Branch-aware actions (only meaningful on a shadow
+                # version; cheap to render the buttons unconditionally
+                # and disable when not applicable).
+                current = next(
+                    (v for v in tree_data
+                     if v["id"] == state.current_version_row_id),
+                    None,
+                )
+                is_shadow = bool(
+                    current and (current.get("world_id") == "shadow")
+                )
+                ui.button(
+                    icon="publish",
+                    on_click=lambda: _open_promote_dialog(
+                        state, current, container,
+                    ),
+                ).props(
+                    f"flat dense color=secondary {'' if is_shadow else 'disable'}"
+                ).tooltip(
+                    "Promote this shadow branch onto the factual mainline"
+                )
+                ui.button(
+                    icon="compare",
+                    on_click=lambda: _open_diff_dialog(
+                        state, current, tree_data,
+                    ),
+                ).props(
+                    f"flat dense {'' if is_shadow else 'disable'}"
+                ).tooltip("Diff this shadow version against factual head")
 
         orient_toggle = ui.toggle(
             {"vertical": "Vertical", "radial": "Radial"},
@@ -398,3 +427,148 @@ def _do_reparent_version(
         type="positive",
     )
     _render_versions(state, container)
+
+
+# =====================================================================
+# Branch promotion + diff (Story-integration plan, Step 3)
+# =====================================================================
+
+
+def _open_promote_dialog(
+    state: AppState, current: dict | None, container,
+) -> None:
+    """Confirm promoting a shadow branch onto the factual mainline."""
+    if current is None or current.get("world_id") != "shadow":
+        ui.notify("Only shadow versions can be promoted", type="warning")
+        return
+
+    label = current.get("branch_label") or "(unlabelled)"
+    desc_holder = {"value": ""}
+    with ui.dialog() as dialog, ui.card():
+        ui.label(f"Promote shadow v{current['version']} to canon?").classes(
+            "text-base font-semibold"
+        )
+        ui.label(
+            f"Branch: {label}. A new factual version will be appended "
+            "to the mainline, copying this version's world state and "
+            "prose. The original shadow version stays browsable."
+        ).classes("text-xs text-slate-500")
+        ui.input(
+            label="Promotion note (optional)",
+            on_change=lambda e: desc_holder.update(value=str(e.value or "")),
+        ).classes("w-full").props("dense")
+        with ui.row().classes("justify-end gap-2 mt-2"):
+            ui.button("Cancel", on_click=dialog.close).props("flat")
+            ui.button(
+                "Promote",
+                on_click=lambda: _do_promote(
+                    state, current, desc_holder["value"], container, dialog,
+                ),
+            ).props("color=secondary unelevated")
+    dialog.open()
+
+
+def _do_promote(
+    state: AppState, current: dict, description: str, container, dialog,
+) -> None:
+    try:
+        promoted = db.promote_branch(
+            current["id"],
+            user_id=state.user_id,
+            description=description or None,
+        )
+    except db.VersionMutationError as exc:
+        ui.notify(f"Promote failed: {exc}", type="negative")
+        return
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Branch promotion failed")
+        ui.notify(f"Promote failed: {exc}", type="negative")
+        return
+
+    dialog.close()
+    ui.notify(
+        f"Promoted shadow v{current['version']} \u2192 factual v{promoted.version}",
+        type="positive",
+    )
+
+    # Hop the UI onto the new factual head so the user sees the result.
+    from shadow_loom.models import WorldStateV1
+    try:
+        ws = WorldStateV1.model_validate_json(promoted.world_state_json)
+        state.load_db_version(
+            ws, promoted.id, version_number=promoted.version,
+        )
+        if state.user_id is not None and state.project_id is not None:
+            try:
+                db.set_active_version(
+                    state.project_id, state.user_id, promoted.id,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to update active-version pointer after promote"
+                )
+    except Exception:
+        logger.exception("Failed to load promoted version")
+
+    _render_versions(state, container)
+
+
+def _open_diff_dialog(
+    state: AppState, current: dict | None, tree_data: list[dict],
+) -> None:
+    """Side-by-side comparison of a shadow version against factual head."""
+    if current is None or current.get("world_id") != "shadow":
+        ui.notify("Diff is only available on shadow versions", type="warning")
+        return
+    if state.project_id is None:
+        return
+
+    factual_head = None
+    for v in sorted(
+        tree_data, key=lambda r: r.get("version", 0), reverse=True,
+    ):
+        if (v.get("world_id") or "factual") == "factual":
+            factual_head = v
+            break
+    if factual_head is None:
+        ui.notify("No factual version to compare against", type="warning")
+        return
+
+    shadow_row = db.get_version_by_id(current["id"])
+    factual_row = db.get_version_by_id(factual_head["id"])
+    if shadow_row is None or factual_row is None:
+        ui.notify("Version row missing", type="warning")
+        return
+
+    label = current.get("branch_label") or "(unlabelled)"
+    with ui.dialog() as dialog, ui.card().classes("min-w-[80vw]"):
+        with ui.row().classes("w-full items-baseline gap-3"):
+            ui.label("Branch diff").classes("text-base font-semibold")
+            ui.label(
+                f"shadow v{current['version']} ({label}) "
+                f"vs factual v{factual_head['version']}"
+            ).classes("text-xs text-slate-500")
+        with ui.row().classes("w-full gap-3 mt-2"):
+            with ui.column().classes("flex-1 gap-1"):
+                ui.label("Factual head").classes(
+                    "text-xs font-semibold text-emerald-700"
+                )
+                ui.markdown(
+                    factual_row.prose or "_(no prose)_",
+                ).classes(
+                    "text-sm bg-emerald-50 p-2 rounded border "
+                    "border-emerald-200 max-h-[60vh] overflow-auto"
+                )
+            with ui.column().classes("flex-1 gap-1"):
+                ui.label("Shadow branch").classes(
+                    "text-xs font-semibold text-violet-700"
+                )
+                ui.markdown(
+                    shadow_row.prose or "_(no prose)_",
+                ).classes(
+                    "text-sm bg-violet-50 p-2 rounded border "
+                    "border-violet-200 max-h-[60vh] overflow-auto"
+                )
+        with ui.row().classes("justify-end mt-2"):
+            ui.button("Close", on_click=dialog.close).props("flat")
+    dialog.open()

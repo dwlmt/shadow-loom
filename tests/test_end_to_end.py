@@ -51,7 +51,6 @@ from shadow_loom.models import (
     Entity,
     EntityStateSnapshot,
     EventNode,
-    InformationEdge,
     RelationshipEdge,
     SpatialEdge,
     TraitVector,
@@ -1041,7 +1040,8 @@ class TestExtractTopologyFromProse:
             causal_topology=[],
         )
         social_output = SocialExtraction(
-            information_topology=[],
+            channels={},
+            utterance_events=[],
             social_topology=[],
         )
 

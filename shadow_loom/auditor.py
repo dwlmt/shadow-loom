@@ -41,7 +41,7 @@ from shadow_loom.generation import (
     _GenerationDeps,
     _build_generation_agent,
 )
-from shadow_loom.models import WorldStateV1
+from shadow_loom.models import EventNode, WorldStateV1
 
 from shadow_loom.settings import get_settings as _get_settings, resolve_model as _resolve_model
 from shadow_loom._agent_logging import log_agent_output
@@ -266,6 +266,11 @@ class AuditViolation(BaseModel):
         "empathy_weight",
         "miracle_step",
         "abduction_failure",
+        # Utterance / channel fidelity (Channels & Beliefs subsystem).
+        "utterance_truth_contradiction",
+        "channel_intelligibility_violation",
+        "withheld_utterance_leak",
+        "belief_provenance_contradiction",
     ]
     severity: Literal["critical", "major", "minor"]
     description: str = Field(
@@ -803,6 +808,8 @@ def assemble_audit_prompt(
     audit_categories: List[str],
     prior_feedback: Optional[List[str]] = None,
     causal_feedback: Optional[CausalPhysicsFeedback] = None,
+    *,
+    world_state: Optional[WorldStateV1] = None,
 ) -> str:
     """Build the full prompt for the auditor LLM.
 
@@ -1035,6 +1042,75 @@ def assemble_audit_prompt(
             for ev in causal_feedback.rule2_redundant_evidence:
                 sections.append(f"    - {ev}")
         sections.append("")
+
+    # --- Utterance fidelity (truth_value & intelligibility) ---
+    # The auditor needs to know which on-page utterances are explicitly
+    # marked false / performative so it can flag prose that quietly
+    # treats them as fact ("she said X" → narrator endorses X).  It
+    # also needs the per-listener intelligibility of each channel so it
+    # can flag prose where a listener with intelligibility < 0.5
+    # nonetheless cleanly understands the message.
+    if world_state is not None:
+        non_factual_utts: List[EventNode] = [
+            evt for evt in world_state.events
+            if evt.event_type == "utterance"
+            and evt.truth_value in {"false", "performative"}
+        ]
+        if non_factual_utts:
+            sections.append(
+                "=== UTTERANCE FIDELITY (truth_value rules — prose must "
+                "NOT present these as narratorial fact) ==="
+            )
+            for evt in non_factual_utts[:25]:
+                content = (evt.content or "").strip().replace("\n", " ")
+                if len(content) > 120:
+                    content = content[:117] + "..."
+                sections.append(
+                    f"  {evt.id} [{evt.truth_value}] "
+                    f"speaker={evt.speaker_id} → "
+                    f"addressees={list(evt.addressee_ids)}: "
+                    f"\"{content}\""
+                )
+            sections.append(
+                "  Rule: 'false' utterances are lies/errors; the "
+                "narrator must not endorse their content. "
+                "'performative' utterances (vows, declarations, "
+                "promises) are neither true nor false — flag prose "
+                "that treats them as factual claims about the world."
+            )
+            sections.append("")
+
+        opaque_channels = [
+            ch for ch in world_state.channels.values()
+            if ch.intelligibility and any(
+                v < 0.5 for v in ch.intelligibility.values()
+            )
+        ]
+        if opaque_channels:
+            sections.append(
+                "=== CHANNEL INTELLIGIBILITY (listeners who cannot "
+                "fully understand — prose must NOT let them cleanly "
+                "comprehend) ==="
+            )
+            for ch in opaque_channels[:25]:
+                opaque = [
+                    f"{lid}={score:.2f}"
+                    for lid, score in ch.intelligibility.items()
+                    if score < 0.5
+                ]
+                sections.append(
+                    f"  {ch.id} ({ch.medium}, "
+                    f"participants={list(ch.participant_ids)}): "
+                    f"low for {opaque}"
+                )
+            sections.append(
+                "  Rule: a listener with intelligibility<0.5 hears "
+                "the channel but cannot reliably parse it. Flag prose "
+                "where such a listener nonetheless quotes, "
+                "paraphrases, or acts on the content with full "
+                "comprehension."
+            )
+            sections.append("")
 
     sections.append(
         "=== TASK ===\n"
@@ -1385,12 +1461,63 @@ def run_evaluation(
 # Single Audit Pass
 # =====================================================================
 
+def _withheld_utterance_leak_violations(
+    prose: str,
+    world_state: Optional[WorldStateV1],
+    syuzhet_anchor: Optional[int],
+) -> List[AuditViolation]:
+    """Deterministic pre-check: scan prose for verbatim leaks of
+    withheld utterance content.
+
+    A withheld utterance is any ``EventNode(event_type='utterance')``
+    whose ``syuzhet_index > syuzhet_anchor``. The check is intentionally
+    conservative — it only flags substring matches of length >= 12
+    characters, which avoids false positives on common phrases like
+    "yes" or character names that happen to appear in withheld lines.
+    The LLM auditor remains responsible for paraphrase-level leaks.
+    """
+    if world_state is None or syuzhet_anchor is None or not prose:
+        return []
+    issues: List[AuditViolation] = []
+    prose_lower = prose.lower()
+    seen: set[str] = set()
+    for evt in getattr(world_state, "events", []) or []:
+        if getattr(evt, "event_type", None) != "utterance":
+            continue
+        if getattr(evt, "syuzhet_index", -1) <= syuzhet_anchor:
+            continue
+        content = (getattr(evt, "content", None) or "").strip()
+        if len(content) < 12:
+            continue
+        needle = content.lower()
+        if needle in prose_lower and needle not in seen:
+            seen.add(needle)
+            issues.append(AuditViolation(
+                violation_type="withheld_utterance_leak",
+                severity="critical",
+                description=(
+                    f"Prose verbatim quotes withheld utterance "
+                    f"{evt.id} (syuzhet={evt.syuzhet_index} > anchor "
+                    f"{syuzhet_anchor}); content must not surface yet."
+                ),
+                evidence_quote=content[:200],
+                feedback=(
+                    f"Remove the line attributed to {getattr(evt, 'speaker_id', 'unknown')}. "
+                    f"This utterance happens later in narration order and "
+                    f"the reader has not yet encountered it."
+                ),
+            ))
+    return issues
+
+
 def run_audit(
     prose: str,
     brief: CreativeBrief,
     config: AuditorConfig | None = None,
     prior_feedback: Optional[List[str]] = None,
     causal_feedback: Optional[CausalPhysicsFeedback] = None,
+    *,
+    world_state: Optional[WorldStateV1] = None,
 ) -> AuditResult:
     """Execute a single audit pass (Step 11).
 
@@ -1418,6 +1545,7 @@ def run_audit(
 
     audit_prompt = assemble_audit_prompt(
         prose, brief, categories, prior_feedback, causal_feedback,
+        world_state=world_state,
     )
 
     logger.info(
@@ -1471,6 +1599,37 @@ def run_audit(
 
     audit = result.output
     log_agent_output(logger, "Auditor", audit)
+
+    # Deterministic withheld-utterance leak check. Runs even when the
+    # LLM call succeeded — a verbatim leak is a hard failure that we
+    # don't want to entrust to the auditor's free-form judgement. The
+    # syuzhet anchor is read from brief.scene_context if present; we
+    # fall back to the max syuzhet_index of any recent_memory event.
+    syuzhet_anchor: Optional[int] = None
+    sc = getattr(brief, "scene_context", {}) or {}
+    if isinstance(sc, dict):
+        if isinstance(sc.get("syuzhet_anchor"), int):
+            syuzhet_anchor = sc["syuzhet_anchor"]
+        else:
+            recent = sc.get("recent_memory") or []
+            if isinstance(recent, list):
+                indices = [
+                    e.get("syuzhet_index") for e in recent
+                    if isinstance(e, dict) and isinstance(e.get("syuzhet_index"), int)
+                ]
+                if indices:
+                    syuzhet_anchor = max(indices)
+    leak_violations = _withheld_utterance_leak_violations(
+        prose, world_state, syuzhet_anchor,
+    )
+    if leak_violations:
+        audit.violations = list(audit.violations) + leak_violations
+        audit.passed = False
+        audit.audit_summary = (
+            f"{audit.audit_summary} [+{len(leak_violations)} deterministic "
+            f"withheld-utterance leak(s)]"
+        ).strip()
+
     logger.info(
         "[Auditor] Audit complete: passed=%s violations=%d summary=%s",
         audit.passed, len(audit.violations), audit.audit_summary,
@@ -1630,6 +1789,7 @@ def run_feedback_loop(
             config=auditor_config,
             prior_feedback=accumulated_feedback if iteration > 0 else None,
             causal_feedback=cycle_causal,
+            world_state=world_state,
         )
 
         # Snapshot the current state

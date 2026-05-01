@@ -54,7 +54,7 @@ One entry per (entity, fabula_time) state-change combination. Fields:
     - **Implicit resolve / determination** when a character commits to a difficult plan.
     - **Implicit love / affection** during intimate or vulnerable moments.
 
-5. **Belief formation from witnessing.** If an entity is PRESENT when an event occurs (check baseline location vs. event location/actors), they now hold a belief about that event. Emit it as a `new_beliefs` entry with `confidence` near 1.0 (direct witness). If the entity is ABSENT, do NOT create a belief here — they can only learn about the event through an InformationEdge (which the Social Agent handles separately).
+5. **Belief formation from witnessing.** If an entity is PRESENT when an event occurs (check baseline location vs. event location/actors), they now hold a belief about that event. Emit it as a `new_beliefs` entry with `confidence` near 1.0 (direct witness) and set `acquired_via_event_id` to the witnessed event's id. If the entity is ABSENT, do NOT create a belief here — they can only learn about the event through an utterance event or Channel (which the Social Agent handles separately); when that utterance is on-page in the same chunk you may set `acquired_via_event_id` to that utterance's id and `acquired_via_channel_id` to the channel it travelled over.
 
 6. **Belief invalidation on revelation.** When a `revelation` event reveals that a previously-believed thing is false, emit `invalidated_belief_targets` listing the target_ids of the now-broken beliefs. Optionally pair with `new_beliefs` carrying the corrected belief.
 

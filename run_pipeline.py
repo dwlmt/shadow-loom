@@ -54,7 +54,8 @@ def run_on_file(plot_path: str, output_dir: str = "pipeline_output"):
     n_events = len(ws.events)
     n_causal = len(ws.causal_topology)
     n_spatial = len(ws.spatial_topology)
-    n_info = len(ws.information_topology)
+    n_channels = len(ws.channels)
+    n_utterances = sum(1 for e in ws.events if e.event_type == "utterance")
     n_social = len(ws.social_topology)
 
     # Count causality types
@@ -92,7 +93,8 @@ TOPOLOGY:
   Causal edges:  {n_causal}
     {', '.join(f'{k}: {v}' for k, v in sorted(ct_counts.items()))}
   Spatial edges:  {n_spatial}
-  Info edges:     {n_info}
+  Channels:       {n_channels}
+  Utterances:     {n_utterances}
   Social edges:   {n_social}
 
 VALIDATION: {'PASS' if report.is_valid else 'FAIL'}

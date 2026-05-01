@@ -639,10 +639,14 @@ class AppState:
             # concurrent project load).
             ws_json = pipeline_result.world_model.current.model_dump_json()
             changeset_json = None
+            branch_world_id = "factual"
+            branch_label = None
             if pipeline_result.world_model.history:
                 last_entry = pipeline_result.world_model.history[-1]
                 if last_entry.changeset:
                     changeset_json = last_entry.changeset.model_dump_json()
+                branch_world_id = last_entry.world_id
+                branch_label = last_entry.branch_label
 
             ver = save_version(
                 project_id=proj_id,
@@ -655,6 +659,8 @@ class AppState:
                 parsed_query_json=parsed_query_json,
                 prose=pipeline_result.prose,
                 user_id=save_user_id,
+                world_id=branch_world_id,
+                branch_label=branch_label,
             )
             # Only mutate session state if the user is still on the same
             # project as when the query started.

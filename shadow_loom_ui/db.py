@@ -57,6 +57,8 @@ from shadow_loom.db import (  # noqa: F401 — re-exports
     delete_version,
     reparent_version,
     VersionMutationError,
+    list_branches,
+    promote_branch,
     bookmark_version,
     label_version,
     set_active_version,

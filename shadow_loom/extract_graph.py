@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import logging
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Set
 
 from pydantic import BaseModel, Field
 
@@ -99,7 +99,8 @@ class EgoGraphPayload(BaseModel):
     relevant_relationships: List[dict]
     relevant_causal_edges: List[dict]
     relevant_spatial_edges: List[dict]
-    relevant_information_edges: List[dict]
+    relevant_channels: List[dict]
+    relevant_utterance_events: List[dict] = Field(default_factory=list)
     recent_memory: List[dict]
     world_traits: List[dict] = Field(default_factory=list)
 
@@ -252,27 +253,38 @@ def extract_ego_graph_from_memory(
                     continue
             relevant_spatial_edges.append(se.model_dump())
 
-    # 6. The Information Filter (Comms links involving focus entities, time-sliced)
-    relevant_information_edges = []
-    for ie in world_state.information_topology:
-        # Participant filter: source or any target must be a focus entity
-        participants = {ie.source_id} | set(ie.target_ids)
-        if not participants & focus_id_set:
+    # 6. The Channel Filter (standing comms capabilities involving focus entities)
+    relevant_channels: List[dict] = []
+    for cid, ch in world_state.channels.items():
+        # Participant filter: any focus entity must be a participant
+        if not set(ch.participant_ids) & focus_id_set:
             continue
-        # Temporal filter: link must have been established by the anchor
-        if temporal_anchor is not None and ie.established_at_fabula > temporal_anchor:
+        # Temporal filter: channel must have been established by the anchor
+        if temporal_anchor is not None and ch.established_at_fabula > temporal_anchor:
             continue
-        # Skip terminated links (anchor past termination, or no anchor but link is terminated)
-        if ie.terminated_at_fabula is not None:
-            if temporal_anchor is not None and ie.terminated_at_fabula <= temporal_anchor:
-                logger.debug("[EgoGraph] Excluded info edge %s→%s: terminated_at_fabula=%d <= anchor=%d",
-                             ie.source_id, ie.target_ids, ie.terminated_at_fabula, temporal_anchor)
+        if ch.terminated_at_fabula is not None:
+            if temporal_anchor is not None and ch.terminated_at_fabula <= temporal_anchor:
+                logger.debug("[EgoGraph] Excluded channel %s: terminated_at_fabula=%d <= anchor=%d",
+                             cid, ch.terminated_at_fabula, temporal_anchor)
                 continue
             if temporal_anchor is None:
-                logger.debug("[EgoGraph] Excluded info edge %s→%s: terminated (no anchor)",
-                             ie.source_id, ie.target_ids)
+                logger.debug("[EgoGraph] Excluded channel %s: terminated (no anchor)", cid)
                 continue
-        relevant_information_edges.append(ie.model_dump())
+        relevant_channels.append(ch.model_dump())
+
+    # 6b. Utterance events involving focus entities (time-sliced).
+    relevant_utterance_events: List[dict] = []
+    for evt in world_state.events:
+        if evt.event_type != "utterance":
+            continue
+        if temporal_anchor is not None and evt.fabula_time > temporal_anchor:
+            continue
+        participants = set(evt.actor_ids) | set(evt.target_ids) | set(evt.addressee_ids)
+        if evt.speaker_id:
+            participants.add(evt.speaker_id)
+        if not participants & focus_id_set:
+            continue
+        relevant_utterance_events.append(evt.model_dump())
 
     # 7. The Causal Filter (CausalEdges where both endpoints are in the scene)
     # Include WORLD_ IDs so causal edges from world traits pass the filter
@@ -311,15 +323,17 @@ def extract_ego_graph_from_memory(
         relevant_relationships=relevant_relationships,
         relevant_causal_edges=relevant_causal_edges,
         relevant_spatial_edges=relevant_spatial_edges,
-        relevant_information_edges=relevant_information_edges,
+        relevant_channels=relevant_channels,
+        relevant_utterance_events=relevant_utterance_events,
         recent_memory=recent_memory,
         world_traits=world_traits_payload,
     )
 
-    logger.info("Multi-Ego GraphRAG complete — %d focus, %d locations, %d co-present, %d objects, %d relationships, %d causal, %d spatial, %d info, %d memory",
+    logger.info("Multi-Ego GraphRAG complete — %d focus, %d locations, %d co-present, %d objects, %d relationships, %d causal, %d spatial, %d channels, %d utterances, %d memory",
                  len(focus_entities), len(current_locations), len(present_entities),
                  len(present_objects), len(relevant_relationships), len(relevant_causal_edges),
-                 len(relevant_spatial_edges), len(relevant_information_edges), len(recent_memory))
+                 len(relevant_spatial_edges), len(relevant_channels),
+                 len(relevant_utterance_events), len(recent_memory))
     return payload
 
 
@@ -342,7 +356,7 @@ def extract_full_world_state(
       * ``causal_topology``: ``fabula_time <= t``
       * ``social_topology``: ``last_updated_fabula <= t``
       * ``spatial_topology``: established by ``t`` and not yet destroyed at ``t``
-      * ``information_topology``: established by ``t`` and not yet terminated at ``t``
+      * ``channels``: established by ``t`` and not yet terminated at ``t``
 
     Without an anchor, only dead/terminated information edges are pruned;
     every other list comes through untouched.
@@ -374,30 +388,30 @@ def extract_full_world_state(
                 or se["destroyed_at_fabula"] > t
             )
         ]
-        dump["information_topology"] = [
-            ie for ie in dump.get("information_topology", [])
-            if ie.get("established_at_fabula", 0) <= t
+        dump["channels"] = {
+            cid: ch for cid, ch in dump.get("channels", {}).items()
+            if ch.get("established_at_fabula", 0) <= t
             and (
-                ie.get("terminated_at_fabula") is None
-                or ie["terminated_at_fabula"] > t
+                ch.get("terminated_at_fabula") is None
+                or ch["terminated_at_fabula"] > t
             )
-        ]
+        }
         logger.info(
             "Omniscient Graph extracted — %d entities, %d locations, "
-            "%d/%d events, %d causal, %d social, %d spatial, %d info "
+            "%d/%d events, %d causal, %d social, %d spatial, %d channels "
             "(anchor T=%d)",
             len(dump["entities"]), len(dump["locations"]),
             len(dump["events"]), pre_count,
             len(dump["causal_topology"]), len(dump["social_topology"]),
-            len(dump["spatial_topology"]), len(dump["information_topology"]),
+            len(dump["spatial_topology"]), len(dump["channels"]),
             t,
         )
     else:
-        # Without an anchor, exclude terminated comms (they are dead links)
-        dump["information_topology"] = [
-            ie for ie in dump.get("information_topology", [])
-            if ie.get("terminated_at_fabula") is None
-        ]
+        # Without an anchor, exclude terminated channels (dead links)
+        dump["channels"] = {
+            cid: ch for cid, ch in dump.get("channels", {}).items()
+            if ch.get("terminated_at_fabula") is None
+        }
         logger.info("Omniscient Graph extracted — %d entities, %d locations, %d events (no anchor)",
                      len(dump["entities"]), len(dump["locations"]), len(dump["events"]))
 
@@ -474,19 +488,19 @@ def extract_topology_from_prose(
     log_agent_output(logger, "SocialExtraction", social_result)
 
     topology = ChunkTopology(
-        events=physics_result.events,
+        events=physics_result.events + social_result.utterance_events,
         causal_topology=physics_result.causal_topology,
         spatial_topology=physics_result.spatial_topology,
         entity_updates=physics_result.entity_updates,
-        information_topology=social_result.information_topology,
+        channels=social_result.channels,
         social_topology=social_result.social_topology,
     )
 
     logger.info(
         "Prose extraction complete — %d events, %d causal, %d spatial, "
-        "%d info, %d social edges, %d entity updates.",
+        "%d channels, %d social edges, %d entity updates.",
         len(topology.events), len(topology.causal_topology),
-        len(topology.spatial_topology), len(topology.information_topology),
+        len(topology.spatial_topology), len(topology.channels),
         len(topology.social_topology), len(topology.entity_updates),
     )
     return topology
@@ -501,7 +515,7 @@ class MergeChangeset(BaseModel):
     events_added: int = 0
     causal_edges_added: int = 0
     spatial_edges_added: int = 0
-    information_edges_added: int = 0
+    information_edges_added: int = 0  # retained for backwards-compat name in summaries
     social_edges_added: int = 0
     entity_updates_applied: int = 0
     entity_updates_skipped: List[str] = Field(default_factory=list)
@@ -522,6 +536,23 @@ class WorldModelVersion(BaseModel):
     prose: Optional[str] = Field(
         default=None,
         description="Generated/edited prose associated with this version, if any.",
+    )
+    world_id: Literal["factual", "shadow"] = Field(
+        default="factual",
+        description=(
+            "AMWN branch this version belongs to. 'factual' = canonical "
+            "mainline; 'shadow' = counterfactual fork. Set by the pipeline "
+            "based on PipelineConfig.branch_policy. All AMWN nodes/edges "
+            "added in this version inherit this tag."
+        ),
+    )
+    branch_label: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional human-readable name for the branch this version sits on "
+            "(e.g. 'What if Duncan lived'). Typically only set on the first "
+            "version of a shadow fork."
+        ),
     )
 
 
@@ -668,23 +699,46 @@ class VersionedWorldModel(BaseModel):
         source: str = "merge_topology",
         description: str = "",
         prose: Optional[str] = None,
+        world_id: Literal["factual", "shadow"] = "factual",
+        branch_label: Optional[str] = None,
     ) -> "VersionedWorldModel":
         """Merge a topology into the world model, returning a **new** VersionedWorldModel.
 
         The current ``WorldStateV1`` is deep-copied, the topology is merged
         into the copy, and a new version record is appended.  ``self`` is
         never mutated.
+
+        ``world_id`` tags all nodes/edges added by this merge (events,
+        causal/spatial/social edges, channels, entity-state snapshots) so
+        downstream readers can filter by AMWN branch. ``branch_label`` is
+        a human-readable name carried on the version record (typically
+        only set on the first version of a shadow fork).
         """
         from shadow_loom.ingestion import (
             ChunkTopology,
             EntityUpdate,
+            _apply_channel_forwarding,
+            _deduplicate_channels_with_map,
             deduplicate_causal,
-            deduplicate_info,
             deduplicate_social,
             deduplicate_spatial,
         )
 
         merged = copy.deepcopy(self.current)
+        # Deep-copy the incoming topology so re-tagging world_id below
+        # never mutates the caller's object.
+        topology = copy.deepcopy(topology)
+        if world_id != "factual":
+            for evt in topology.events:
+                evt.world_id = world_id
+            for ce in topology.causal_topology:
+                ce.world_id = world_id
+            for se in topology.spatial_topology:
+                se.world_id = world_id
+            for re in topology.social_topology:
+                re.world_id = world_id
+            for ch in topology.channels.values():
+                ch.world_id = world_id
         changeset = MergeChangeset()
 
         # --- Events (deduplicate by ID, keep existing) ---
@@ -715,11 +769,24 @@ class VersionedWorldModel(BaseModel):
         merged.spatial_topology = deduplicate_spatial(merged.spatial_topology)
         changeset.spatial_edges_added = len(merged.spatial_topology) - pre_spatial
 
-        # --- Information edges ---
-        pre_info = len(merged.information_topology)
-        merged.information_topology.extend(topology.information_topology)
-        merged.information_topology = deduplicate_info(merged.information_topology)
-        changeset.information_edges_added = len(merged.information_topology) - pre_info
+        # --- Channels (with forwarding map for via_channel_id rewrites) ---
+        pre_info = len(merged.channels)
+        merged_channels, channel_forwarding = _deduplicate_channels_with_map(
+            [merged.channels, topology.channels],
+        )
+        merged.channels = merged_channels
+        if channel_forwarding:
+            # Rewrite stale via_channel_id on every event in the merged
+            # world AND on belief provenance carried by the incoming
+            # entity_updates so the snapshots created below pick up the
+            # canonical id.
+            _apply_channel_forwarding(channel_forwarding, events=merged.events)
+            _apply_channel_forwarding(
+                channel_forwarding,
+                events=[],
+                entity_updates=topology.entity_updates,
+            )
+        changeset.information_edges_added = len(merged.channels) - pre_info
 
         # --- Social edges ---
         pre_social = len(merged.social_topology)
@@ -758,6 +825,8 @@ class VersionedWorldModel(BaseModel):
                 description=description or f"Merged topology: +{changeset.events_added} events.",
                 changeset=changeset,
                 prose=prose,
+                world_id=world_id,
+                branch_label=branch_label,
             ),
         ]
 

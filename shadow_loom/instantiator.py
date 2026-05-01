@@ -83,6 +83,18 @@ class AMWNInstantiator:
         for evt in ego_payload.get("recent_memory", []):
             add_amwn_node(evt, "EventNode")
 
+        # Utterance events (event_type='utterance') from the ego-payload's
+        # ``relevant_utterance_events`` channel. They may overlap with
+        # ``recent_memory`` (then ``add_amwn_node`` is a no-op via
+        # MultiDiGraph node identity) or be additional context
+        # surfaced specifically because they belong to a relevant
+        # channel. Either way the sandbox MUST carry their utterance
+        # metadata (``via_channel_id``, ``speaker_id``, ``addressee_ids``,
+        # ``truth_value``, ``content``) for the auditor's leak detector,
+        # the directive assembler, and channel-surgery prune logic.
+        for utt in ego_payload.get("relevant_utterance_events", []):
+            add_amwn_node(utt, "EventNode")
+
         # World Trait nodes (always global — no spatial filtering)
         world_trait_ids = set()
         for wt in ego_payload.get("world_traits", []):
@@ -193,22 +205,52 @@ class AMWNInstantiator:
                                  is_locked=is_locked, barrier_item_id=barrier_item_id,
                                  world_id=target_world_id)
 
-        # F. Information / Communication Edges (InformationEdge)
-        for ie in ego_payload.get("relevant_information_edges", []):
-            src = ie.get("source_id")
-            medium = ie.get("medium", "unknown")
-            is_encrypted = ie.get("is_encrypted", False)
-            for tgt in ie.get("target_ids", []):
-                if src and tgt and sandbox.has_node(src) and sandbox.has_node(tgt):
-                    sandbox.add_edge(src, tgt, edge_type="communicating_with",
-                                     medium=medium, is_encrypted=is_encrypted,
-                                     world_id=target_world_id)
+        # F. Channels (standing comms capabilities) and on-page utterances.
+        # Channels are nodes in the world model but materialise into the
+        # sandbox as per-participant-pair ``communicating_with`` edges so
+        # downstream graph queries (eavesdropping, mutation_social) can
+        # use the same edge_type as before. ``intelligibility`` is
+        # per-recipient: an edge from S→T carries ``intelligibility``
+        # equal to the channel's intelligibility for T (default 1.0
+        # — fully comprehensible). The legacy ``is_encrypted`` flag is
+        # preserved as ``intelligibility < 0.5`` for backwards
+        # compatibility with consumers that still read it.
+        for ch in ego_payload.get("relevant_channels", []):
+            medium = ch.get("medium", "unknown")
+            participants = ch.get("participant_ids", [])
+            intelligibility = ch.get("intelligibility", {}) or {}
+            directionality = ch.get("directionality", "duplex")
+            channel_id = ch.get("id")
+            for src in participants:
+                if not sandbox.has_node(src):
+                    continue
+                for tgt in participants:
+                    if src == tgt or not sandbox.has_node(tgt):
+                        continue
+                    # ``simplex`` channels carry information one way only;
+                    # the convention is that participant_ids[0] is the
+                    # sender. ``broadcast`` and ``duplex`` carry both
+                    # directions.
+                    if directionality == "simplex" and src != participants[0]:
+                        continue
+                    intel = float(intelligibility.get(tgt, 1.0))
+                    sandbox.add_edge(
+                        src, tgt,
+                        edge_type="communicating_with",
+                        medium=medium,
+                        intelligibility=intel,
+                        is_encrypted=intel < 0.5,
+                        channel_id=channel_id,
+                        world_id=target_world_id,
+                    )
 
-        # G. Epistemic Leakage (Eavesdropping on unencrypted comms)
-        # Any entity co-located with a comms participant can overhear unencrypted channels.
+        # G. Epistemic Leakage (eavesdropping on intelligible channels).
+        # An edge is eavesdroppable when its per-recipient intelligibility
+        # is at least 0.5 (i.e. not encrypted/obfuscated for the listener).
         comms_edges = [
             (u, v, d) for u, v, d in sandbox.edges(data=True)
-            if d.get("edge_type") == "communicating_with" and not d.get("is_encrypted", False)
+            if d.get("edge_type") == "communicating_with"
+            and float(d.get("intelligibility", 1.0)) >= 0.5
         ]
         for src, tgt, cdata in comms_edges:
             src_loc = sandbox.nodes.get(src, {}).get("location_id")
@@ -620,15 +662,28 @@ class AMWNInstantiator:
         if isinstance(target_ids, str):
             target_ids = [target_ids]
 
-        # Sever all existing comms from this source
+        # Sever all existing comms from this source. Capture which
+        # channel_ids are being torn down so we can prune any
+        # downstream beliefs whose provenance pointed at those edges.
         edges_to_remove = []
+        severed_channel_ids: set[str] = set()
+        severed_pairs: set[tuple[str, str]] = set()
         for u, v, key, data in sandbox.out_edges(source_id, data=True, keys=True):
             if data.get("edge_type") == "communicating_with":
                 edges_to_remove.append((u, v, key))
+                cid = data.get("channel_id")
+                if cid:
+                    severed_channel_ids.add(cid)
+                severed_pairs.add((u, v))
         sandbox.remove_edges_from(edges_to_remove)
 
         if not target_ids:
             logger.info("[Surgery] Severed all comms from %s", source_id)
+            AMWNInstantiator._prune_beliefs_by_provenance(
+                sandbox,
+                removed_channel_ids=severed_channel_ids,
+                severed_speaker_addressee_pairs=severed_pairs,
+            )
             return
 
         for tgt in target_ids:
@@ -636,3 +691,106 @@ class AMWNInstantiator:
                 sandbox.add_edge(source_id, tgt, edge_type="communicating_with",
                                  medium="unknown", world_id="shadow")
         logger.info("[Surgery] Opened comms: %s → %s", source_id, target_ids)
+        # Beliefs that were acquired through channels we just severed
+        # should be pruned regardless of whether new pairs were added.
+        AMWNInstantiator._prune_beliefs_by_provenance(
+            sandbox,
+            removed_channel_ids=severed_channel_ids,
+            severed_speaker_addressee_pairs=severed_pairs - {
+                (source_id, t) for t in target_ids
+            },
+        )
+
+    # ==========================================
+    # PROVENANCE PRUNE HELPER
+    # ==========================================
+    @staticmethod
+    def _prune_beliefs_by_provenance(
+        sandbox: nx.MultiDiGraph,
+        *,
+        removed_event_ids: set[str] | None = None,
+        removed_channel_ids: set[str] | None = None,
+        severed_speaker_addressee_pairs: set[tuple[str, str]] | None = None,
+    ) -> int:
+        """Drop beliefs whose ``acquired_via_*`` provenance has been
+        invalidated by graph surgery.
+
+        A belief is removed when ANY of the following matches:
+          * ``acquired_via_event_id`` is in ``removed_event_ids``;
+          * ``acquired_via_channel_id`` is in ``removed_channel_ids``;
+          * the belief's holder is the addressee of a (speaker, addressee)
+            pair whose ``communicating_with`` edge has just been severed,
+            and the belief's ``acquired_via_event_id`` resolves to an
+            utterance whose ``speaker_id`` matches the severed sender.
+
+        Mirrored on entity-node ``beliefs`` and on every snapshot in
+        ``state_timeline[*].beliefs_added``. Returns the number of
+        beliefs pruned.
+        """
+        removed_event_ids = set(removed_event_ids or ())
+        removed_channel_ids = set(removed_channel_ids or ())
+        severed_pairs = set(severed_speaker_addressee_pairs or ())
+
+        if not (removed_event_ids or removed_channel_ids or severed_pairs):
+            return 0
+
+        # Build a quick lookup of utterance speakers from the sandbox
+        # so we can resolve the third match condition without a full
+        # WorldState pass.
+        utterance_speaker: dict[str, str] = {}
+        for n, ndata in sandbox.nodes(data=True):
+            if ndata.get("event_type") == "utterance":
+                sp = ndata.get("speaker_id")
+                if sp:
+                    utterance_speaker[n] = sp
+
+        def _is_dangling(belief: dict, holder_id: str) -> bool:
+            ev = belief.get("acquired_via_event_id")
+            ch = belief.get("acquired_via_channel_id")
+            if ev and ev in removed_event_ids:
+                return True
+            if ch and ch in removed_channel_ids:
+                return True
+            if ev and ev in utterance_speaker:
+                speaker = utterance_speaker[ev]
+                if (speaker, holder_id) in severed_pairs:
+                    return True
+            return False
+
+        pruned = 0
+        for n, ndata in sandbox.nodes(data=True):
+            if ndata.get("node_type") != "Entity":
+                continue
+            beliefs = ndata.get("beliefs")
+            if isinstance(beliefs, list):
+                kept = []
+                for b in beliefs:
+                    if isinstance(b, dict) and _is_dangling(b, n):
+                        pruned += 1
+                        continue
+                    kept.append(b)
+                ndata["beliefs"] = kept
+            timeline = ndata.get("state_timeline")
+            if isinstance(timeline, list):
+                for snap in timeline:
+                    if not isinstance(snap, dict):
+                        continue
+                    added = snap.get("beliefs_added")
+                    if not isinstance(added, list):
+                        continue
+                    kept_snap = []
+                    for b in added:
+                        if isinstance(b, dict) and _is_dangling(b, n):
+                            pruned += 1
+                            continue
+                        kept_snap.append(b)
+                    snap["beliefs_added"] = kept_snap
+        if pruned:
+            logger.info(
+                "[Surgery·ProvenancePrune] Removed %d belief(s) whose "
+                "provenance was invalidated (events=%d, channels=%d, "
+                "severed_pairs=%d).",
+                pruned, len(removed_event_ids), len(removed_channel_ids),
+                len(severed_pairs),
+            )
+        return pruned

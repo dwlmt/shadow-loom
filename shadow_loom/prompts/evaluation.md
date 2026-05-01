@@ -38,7 +38,7 @@ Assess these dimensions and synthesize into a single paragraph:
 - **Causal Graph Fidelity**: Does the prose accurately reflect the causal edges? Are chain_reaction sequences rendered in the correct order? Do mutation effects manifest in the prose?
 - **Temporal Consistency**: Does the narrative respect fabula_time ordering? Are flashbacks properly framed as retrospective?
 - **Character Voice Consistency**: Do characters' dialogue and actions remain consistent with their trait vectors and belief states?
-- **Spatial Logic**: Are characters only interacting when they share a location or have an active information channel?
+- **Spatial Logic**: Are characters only interacting when they share a location or have an active Channel?
 - **Event Completeness**: Are all events in the relevant fabula_time window accounted for in the prose?
 
 ### 2. Reward Hacking Diagnostics

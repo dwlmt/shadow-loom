@@ -16,7 +16,7 @@ import networkx as nx
 
 from shadow_loom.models import (
     WorldStateV1, Location, Entity, EventNode, NarrativeObject,
-    CausalEdge, SpatialEdge, RelationshipEdge, InformationEdge,
+    CausalEdge, SpatialEdge, RelationshipEdge,
     TraitVector, Affordance, Belief,
 )
 from shadow_loom.extract_graph import extract_ego_graph_from_memory

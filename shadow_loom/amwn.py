@@ -258,6 +258,20 @@ def build_causal_diagram(
         g.add_node(nid)
     for nid in getattr(world_state, "world_traits", {}) or {}:
         g.add_node(nid)
+    # Channels are first-class diagram nodes so d-separation reasoning
+    # over channel surgery (Rule 3) and channel-mediated evidence
+    # relevance (Rule 2) flows through them. Each utterance event
+    # gets a directed edge speaker → utterance → channel → addressee
+    # so removing the channel cuts every downstream addressee belief
+    # path the channel was carrying. Channels with no participants
+    # are seeded as isolates (still queryable, never carry flow).
+    for cid, ch in (getattr(world_state, "channels", {}) or {}).items():
+        g.add_node(cid)
+        for pid in getattr(ch, "participant_ids", []) or []:
+            # Bidirectional standing capability: any participant can be
+            # source or sink. Exact directionality of an utterance is
+            # captured per-utterance below.
+            g.add_edge(cid, pid)
     for ce in world_state.causal_topology:
         if ce.source_id == ce.target_id:
             continue
@@ -298,6 +312,34 @@ def build_causal_diagram(
                 g.add_node(rel_node)
                 g.add_edge(rel.source_entity_id, rel_node)
                 g.add_edge(rel.target_entity_id, rel_node)
+
+    # Per-utterance routing: speaker → utterance → channel → addressees.
+    # An utterance event is the *vehicle* for information flow; without
+    # this wiring a Rule 3 surgery on the channel would only break the
+    # standing-capability edges (``channel → participant``) and miss
+    # the per-utterance content path. With both layers present the
+    # AMWN can answer "if we sever this channel, which addressee
+    # beliefs become unreachable?" by checking d-separation against
+    # the channel node.
+    for evt in world_state.events:
+        if getattr(evt, "event_type", None) != "utterance":
+            continue
+        ch_id = getattr(evt, "via_channel_id", None)
+        sp_id = getattr(evt, "speaker_id", None)
+        addressees = getattr(evt, "addressee_ids", []) or []
+        if sp_id and g.has_node(sp_id):
+            g.add_edge(sp_id, evt.id)
+        if ch_id:
+            if not g.has_node(ch_id):
+                g.add_node(ch_id)
+            g.add_edge(evt.id, ch_id)
+            for aid in addressees:
+                if g.has_node(aid):
+                    g.add_edge(ch_id, aid)
+        else:
+            for aid in addressees:
+                if g.has_node(aid):
+                    g.add_edge(evt.id, aid)
 
     # Optional: inject explicit ``U_*`` latent confounders. For every pair
     # of distinct nodes that share at least one *observed* parent in the

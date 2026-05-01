@@ -361,6 +361,11 @@ def _collect_typed_ids(world_state: WorldStateV1) -> Dict[str, list[str]]:
         "location_ids": list(world_state.locations.keys()),
         "event_ids": [e.id for e in world_state.events],
         "world_trait_ids": list(world_state.world_traits.keys()),
+        "channel_ids": list(getattr(world_state, "channels", {}).keys()),
+        "utterance_event_ids": [
+            e.id for e in world_state.events
+            if getattr(e, "event_type", None) == "utterance"
+        ],
     }
 
 
@@ -430,11 +435,26 @@ _CONSTRAINED_QUERY_TYPES: set[str] = {
 #: prompt and (loosely) validated by ``_validate_property_path``. Keep
 #: in sync with ``_VALID_PROPERTY_ROOTS`` further down.
 _PROPERTIES_BY_PREFIX: Dict[str, list[str]] = {
-    "ENT": ["status", "location_id", "traits", "beliefs", "constants", "spawn"],
+    "ENT": [
+        "status", "location_id", "traits", "beliefs", "constants",
+        "communicating_with", "spawn",
+    ],
     "OBJ": ["owner_id", "location_id", "properties", "affordances", "spawn"],
     "LOC": ["ambient_state", "description", "spawn"],
-    "EVT": ["event_type", "description", "actor_ids", "target_ids", "outcome", "spawn"],
+    "EVT": [
+        "event_type", "description", "actor_ids", "target_ids", "outcome",
+        # Utterance-specific fields (event_type == 'utterance').
+        "via_channel_id", "speaker_id", "addressee_ids", "truth_value",
+        "content", "spawn",
+    ],
     "WORLD": ["magnitude", "description", "affected_domains", "spawn"],
+    # Communication channels are first-class graph nodes; they support
+    # surgery on participant set, intelligibility map, status, and the
+    # standing capability itself.
+    "CHAN": [
+        "medium", "participant_ids", "intelligibility", "directionality",
+        "status", "spawn",
+    ],
 }
 
 
@@ -546,26 +566,47 @@ def _build_counterfactual_dynamic_model(world_state: WorldStateV1):
     """Per-call model for *counterfactual*: historical_interventions
     are constrained to events; evidence_node_ids to any valid ID."""
     typed = _collect_typed_ids(world_state)
-    event_lit = _make_id_literal(typed["event_ids"])
+    # Historical interventions may target events (including utterance
+    # events) OR communication channels. The latter unlocks queries
+    # like "what if the ravens never carried Macbeth's letter" where
+    # the surgery is on the standing capability, not on a single
+    # discrete event.
+    historical_target_ids = (
+        typed["event_ids"] + typed.get("channel_ids", [])
+    )
+    historical_lit = _make_id_literal(historical_target_ids)
     all_ids = (
         typed["entity_ids"] + typed["object_ids"] + typed["location_ids"]
         + typed["event_ids"] + typed["world_trait_ids"]
+        + typed.get("channel_ids", [])
     )
     all_lit = _make_id_literal(all_ids)
 
     HistoricalItem = create_model(
         "HistoricalInterventionItem",
         target_id=(
-            event_lit,
-            Field(..., description="Event ID (EVT_*) to alter. MUST be exact."),
+            historical_lit,
+            Field(
+                ...,
+                description=(
+                    "Event ID (EVT_*) or Channel ID (CHAN_*) to alter. "
+                    "MUST be exact. Utterance events (event_type='utterance') "
+                    "are addressed by their EVT_* id; channel-level "
+                    "surgery (sever/establish/change intelligibility) uses "
+                    "the CHAN_* id."
+                ),
+            ),
         ),
         property=(
             str,
             Field(
                 ...,
                 description=(
-                    "Event property to mutate. Common: 'event_type', "
-                    "'description', 'outcome', 'actor_ids', 'target_ids'."
+                    "Property to mutate. For events: 'event_type', "
+                    "'description', 'outcome', 'actor_ids', 'target_ids', "
+                    "and (utterances) 'truth_value', 'addressee_ids', "
+                    "'via_channel_id', 'content'. For channels: 'status', "
+                    "'participant_ids', 'intelligibility', 'medium'."
                 ),
             ),
         ),
@@ -906,6 +947,20 @@ suffix are INVALID and will be rejected. Common forms:
 
 If you only know that an event should be "changed" or "prevented" without a
 specific attribute in mind, default to `.event_type`.
+
+**UTTERANCE & CHANNEL counterfactuals.**
+Past communications are first-class targets:
+
+  - "What if Macbeth never told Lady M about the prophecy" →
+    `"EVT_MACBETH_TELLS_LADY.truth_value": "performative"` or
+    `"EVT_MACBETH_TELLS_LADY.event_type": "prevented"`.
+  - "What if the message had been a lie" →
+    `"EVT_LETTER_DELIVERED.truth_value": "false"`.
+  - "What if the ravens couldn't carry messages" →
+    `"CHAN_RAVENS.status": "severed"` or
+    `"CHAN_RAVENS.intelligibility": {{"ENT_LADY_M": 0.0}}`.
+  - "What if Banquo had eavesdropped" →
+    `"CHAN_PROPHECY.participant_ids": ["ENT_MACBETH","ENT_BANQUO"]`.
 """,
     "directive": """\
 ## DIRECTIVE QUERY
@@ -974,10 +1029,10 @@ _SYSTEM_PROMPT = """\
 You are a query parsing agent for a narrative simulation engine called Shadow Loom.
 
 Your job is to take a natural-language user request about a story world and \
-classify it into exactly one of six query types, then extract the structured \
+classify it into exactly one of the supported query types, then extract the structured \
 parameters needed to execute that query.
 
-## THE SIX QUERY TYPES
+## SUPPORTED QUERY TYPES
 
 1. **observation** — "What happens next?" / "Show me the scene from X's perspective."
    Advances time naturally. May condition on observed facts. May lock POV to specific entities.
@@ -1453,7 +1508,7 @@ def _format_mentions_hint(
 _VALID_PROPERTY_ROOTS: Dict[str, set[str]] = {
     "ENT": {
         "status", "location_id", "traits", "beliefs", "constants",
-        "spawn",
+        "communicating_with", "spawn",
     },
     "OBJ": {
         "owner_id", "location_id", "properties", "affordances", "spawn",
@@ -1461,9 +1516,14 @@ _VALID_PROPERTY_ROOTS: Dict[str, set[str]] = {
     "LOC": {"ambient_state", "description", "spawn"},
     "EVT": {
         "event_type", "description", "actor_ids", "target_ids",
-        "outcome", "spawn",
+        "outcome", "via_channel_id", "speaker_id", "addressee_ids",
+        "truth_value", "content", "spawn",
     },
     "WORLD": {"magnitude", "description", "affected_domains", "spawn"},
+    "CHAN": {
+        "medium", "participant_ids", "intelligibility", "directionality",
+        "status", "spawn",
+    },
 }
 
 

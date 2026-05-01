@@ -408,6 +408,25 @@ def _append_result(messages: List[dict], result: NLQueryResult) -> None:
                 if card["caveats"]:
                     cav_lines = "\n".join(f"- {c}" for c in card["caveats"])
                     parts.append(f"**Caveats:**\n{cav_lines}")
+                if card.get("rule2_redundant_evidence"):
+                    r2_lines = "\n".join(
+                        f"- `{e['node_id']}` \u2014 {e['label']}"
+                        for e in card["rule2_redundant_evidence"][:5]
+                    )
+                    parts.append(
+                        "**Rule-2 \u2014 redundant evidence pruned:**\n"
+                        + r2_lines
+                    )
+                if card.get("rule3_pruned_interventions"):
+                    r3_lines = "\n".join(
+                        f"- {p['label']}"
+                        + (f" \u2014 *{p['reason']}*" if p.get("reason") else "")
+                        for p in card["rule3_pruned_interventions"][:5]
+                    )
+                    parts.append(
+                        "**Rule-3 \u2014 interventions pruned (back-door blocked):**\n"
+                        + r3_lines
+                    )
             # Rung-2/rung-3 trace summary
             if pr.query_type in ("intervention", "counterfactual") and pr.physics_result:
                 from shadow_loom_ui.reasoning_helpers import (

@@ -126,7 +126,11 @@ def build_export_tab(state: AppState) -> None:
                         ("Causal Edges", len(ws.causal_topology)),
                         ("Spatial Edges", len(ws.spatial_topology)),
                         ("Social Edges", len(ws.social_topology)),
-                        ("Info Edges", len(ws.information_topology)),
+                        ("Channels", len(ws.channels)),
+                        (
+                            "Utterances",
+                            sum(1 for e in ws.events if e.event_type == "utterance"),
+                        ),
                     ]
                     with ui.row().classes("gap-4 flex-wrap mt-2"):
                         for label, count in stats:

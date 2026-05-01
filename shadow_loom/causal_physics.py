@@ -204,6 +204,34 @@ class CausalPhysicsResult(BaseModel):
             "abduction on it cannot change the counterfactual distribution."
         ),
     )
+    pruned_beliefs_count: int = Field(
+        default=0,
+        description=(
+            "Number of beliefs removed from sandbox entities because their "
+            "``acquired_via_event_id`` / ``acquired_via_channel_id`` "
+            "provenance pointed at an event or channel that the do-surgery "
+            "removed. Surfaces the epistemic side-effect of channel / "
+            "utterance interventions."
+        ),
+    )
+    pruned_utterance_event_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Utterance event IDs that the do-surgery rendered "
+            "epistemically inert (event_type set to 'prevented' or "
+            "truth_value coerced to 'false'/'performative'). Used by "
+            "narrative_physics and the auditor to know which on-page "
+            "utterances must NOT propagate as factual evidence."
+        ),
+    )
+    disabled_channel_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Channel IDs that the do-surgery severed (status='severed' "
+            "or all participants removed). Downstream consumers should "
+            "treat any utterance routed through these as non-occurring."
+        ),
+    )
     # ------------------------------------------------------------------
     # Probabilistic outputs (populated only when the corresponding modes
     # are active in CausalPhysicsSettings; empty under default settings).
@@ -532,19 +560,42 @@ class CausalPhysicsEngine:
                             eid, other_id, rel_deltas,
                         )
 
-                # Back-propagate beliefs
+                # Back-propagate beliefs.
+                #
+                # Intelligibility guard: a belief whose provenance is a
+                # channel where the holder cannot understand the medium
+                # (per-recipient intelligibility < threshold) is not
+                # epistemically valid evidence — the holder shouldn't
+                # have learned it through that channel. We skip those
+                # so abduction doesn't reinstate beliefs that the
+                # current world topology says could not have been heard.
                 if "beliefs" not in node_data:
                     node_data["beliefs"] = []
                 existing = node_data["beliefs"]
+                intel_thresh = _physics_settings().intelligibility_threshold
                 for belief in target_beliefs:
-                    b_target_id = belief.get("target_id") if isinstance(belief, dict) else belief.target_id
-                    b_state = belief.get("perceived_state") if isinstance(belief, dict) else belief.perceived_state
+                    b_dict = belief if isinstance(belief, dict) else belief.model_dump()
+                    ch_id = b_dict.get("acquired_via_channel_id")
+                    if ch_id:
+                        ch = self.world_state.channels.get(ch_id)
+                        if ch is not None:
+                            intel_val = ch.intelligibility.get(eid, 1.0)
+                            if float(intel_val) < intel_thresh:
+                                logger.debug(
+                                    "[CausalPhysics·Abduction·Belief] Skipping belief "
+                                    "for %s acquired via low-intelligibility "
+                                    "channel %s (intel=%.2f < %.2f).",
+                                    eid, ch_id, intel_val, intel_thresh,
+                                )
+                                continue
+                    b_target_id = b_dict.get("target_id")
+                    b_state = b_dict.get("perceived_state")
                     if not any(
                         b.get("target_id") == b_target_id
                         and b.get("perceived_state") == b_state
                         for b in existing
                     ):
-                        existing.append(belief if isinstance(belief, dict) else belief.model_dump())
+                        existing.append(b_dict)
 
                 logger.info("[CausalPhysics·Abduction] Conditioned entity %s (deltas: %s).", eid, deltas)
 
@@ -552,6 +603,26 @@ class CausalPhysicsEngine:
             elif self.sandbox.has_node(eid):
                 node_data = self.sandbox.nodes[eid]
                 if node_data.get("node_type") == "EventNode":
+                    # Truth-value guard for utterance events. An
+                    # utterance whose ``truth_value`` is ``false`` or
+                    # ``performative`` does NOT produce factual belief
+                    # reinforcement — a known lie can't be evidence
+                    # for the proposition it carries, and a performative
+                    # (greeting, command, oath) doesn't assert a truth-
+                    # apt content at all. Skip the propagation. The event
+                    # node itself remains in the graph as a social fact;
+                    # only its causal back-prop is gated.
+                    if (
+                        node_data.get("event_type") == "utterance"
+                        and node_data.get("truth_value") in ("false", "performative")
+                    ):
+                        logger.info(
+                            "[CausalPhysics·Abduction] Skipping back-prop for "
+                            "utterance %s (truth_value=%s).",
+                            eid, node_data.get("truth_value"),
+                        )
+                        self._abducted_event_evidence.add(eid)
+                        continue
                     # Mark this event so propagate() skips its outgoing edges
                     # — we have just applied them directly during abduction.
                     self._abducted_event_evidence.add(eid)
@@ -693,6 +764,58 @@ class CausalPhysicsEngine:
             "[CausalPhysics·do] Surgeries applied. Intervened roots: %s; pinned traits: %s",
             self._intervened_nodes, self._intervened_traits,
         )
+
+    # ------------------------------------------------------------------
+    # Provenance invalidation
+    # ------------------------------------------------------------------
+    def _collect_provenance_invalidations(
+        self, interventions: Dict[str, Any],
+    ) -> tuple[set[str], set[str]]:
+        """Identify event/channel IDs that the do-surgery has rendered
+        epistemically inert.
+
+        Returns ``(removed_event_ids, removed_channel_ids)``.
+
+        Heuristics, kept conservative (we only remove provenance when
+        the surgery is unambiguously *destructive*; mere relabelling
+        such as ``EVT_X.outcome="reworded"`` does not invalidate
+        provenance):
+
+        * Event ID ``EVT_*`` is removed when:
+            - ``EVT_X.event_type`` is set to ``"prevented"``,
+              ``"never_happened"``, or ``"removed"``;
+            - ``EVT_X.truth_value`` is set to ``"false"`` or
+              ``"performative"`` (utterance carries no factual signal).
+        * Channel ID ``CHAN_*`` is removed when:
+            - ``CHAN_Y.status`` is set to ``"severed"`` /
+              ``"disabled"`` / ``"down"``;
+            - ``CHAN_Y.participant_ids`` is set to ``[]`` (no listeners
+              left, so the channel cannot deliver anything).
+        * Entity-level ``ENT_X.communicating_with`` surgery is handled
+          inline by ``AMWNInstantiator._intervene_comms``; we don't
+          re-derive its prune set here.
+        """
+        removed_events: set[str] = set()
+        removed_channels: set[str] = set()
+        DESTRUCTIVE_EVENT_TYPES = {"prevented", "never_happened", "removed"}
+        DESTRUCTIVE_TRUTH = {"false", "performative"}
+        DESTRUCTIVE_STATUS = {"severed", "disabled", "down"}
+
+        for path, value in (interventions or {}).items():
+            if "." not in path:
+                continue
+            node_id, prop = path.split(".", 1)
+            if node_id.startswith("EVT_"):
+                if prop == "event_type" and isinstance(value, str) and value in DESTRUCTIVE_EVENT_TYPES:
+                    removed_events.add(node_id)
+                elif prop == "truth_value" and isinstance(value, str) and value in DESTRUCTIVE_TRUTH:
+                    removed_events.add(node_id)
+            elif node_id.startswith(("CHN_", "CHAN_")):
+                if prop == "status" and isinstance(value, str) and value in DESTRUCTIVE_STATUS:
+                    removed_channels.add(node_id)
+                elif prop == "participant_ids" and isinstance(value, list) and len(value) == 0:
+                    removed_channels.add(node_id)
+        return removed_events, removed_channels
 
     # ------------------------------------------------------------------
     # Forward Propagation (the new physics)
@@ -1649,6 +1772,25 @@ class CausalPhysicsEngine:
         if rung >= 2 and interventions:
             self.apply_do_operator(interventions)
 
+        # Step B.5 — Provenance prune.
+        # Walk the (possibly filtered) intervention set and identify any
+        # surgeries that *epistemically remove* an event or channel
+        # (e.g. ``EVT_X.event_type='prevented'``,
+        # ``EVT_X.truth_value='false'``, ``CHAN_Y.status='severed'``).
+        # Beliefs whose ``acquired_via_*`` provenance pointed at those
+        # IDs are no longer justifiable in the counterfactual world,
+        # so we drop them from the sandbox before propagation.
+        pruned_evt_ids, disabled_ch_ids = (
+            self._collect_provenance_invalidations(interventions)
+        )
+        beliefs_pruned = 0
+        if pruned_evt_ids or disabled_ch_ids:
+            beliefs_pruned = AMWNInstantiator._prune_beliefs_by_provenance(
+                self.sandbox,
+                removed_event_ids=pruned_evt_ids,
+                removed_channel_ids=disabled_ch_ids,
+            )
+
         # Step C — Forward propagation
         self.propagate()
 
@@ -1666,6 +1808,9 @@ class CausalPhysicsEngine:
             rule3_pruning_mode=rule3_mode,
             rule2_redundant_evidence=ctf_report.rule2_redundant_evidence,
             noisy_or_probabilities=self._noisy_or_records,
+            pruned_beliefs_count=beliefs_pruned,
+            pruned_utterance_event_ids=sorted(pruned_evt_ids),
+            disabled_channel_ids=sorted(disabled_ch_ids),
         )
         _log_physics_result(rung, interventions, evidence_node_ids, result)
         return result

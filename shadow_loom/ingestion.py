@@ -33,11 +33,11 @@ from shadow_loom.models import (
     AmbientVector,
     Belief,
     CausalEdge,
+    Channel,
     Entity,
     EntityStateSnapshot,
     EventNode,
     GlobalTrait,
-    InformationEdge,
     Location,
     NarrativeObject,
     RelationshipEdge,
@@ -115,10 +115,18 @@ class WorldTraitsRegister(BaseModel):
 
 
 class ChunkTopology(BaseModel):
-    """Merged output per chunk: events + all edge types. Used by assembly."""
+    """Merged output per chunk: events + all edge types. Used by assembly.
+
+    ``events`` includes both Physics-extracted events AND any
+    ``event_type='utterance'`` events emitted by the Social Agent
+    (utterance EventNodes are merged in by ``_extract_single_chunk*``).
+    ``channels`` carries standing :class:`Channel` capabilities
+    extracted by the Social Agent, replacing the legacy
+    ``information_topology`` field.
+    """
     events: List[EventNode] = Field(default_factory=list)
     causal_topology: List[CausalEdge] = Field(default_factory=list)
-    information_topology: List[InformationEdge] = Field(default_factory=list)
+    channels: Dict[str, Channel] = Field(default_factory=dict)
     social_topology: List[RelationshipEdge] = Field(default_factory=list)
     spatial_topology: List[SpatialEdge] = Field(default_factory=list)
     entity_updates: List["EntityUpdate"] = Field(default_factory=list)
@@ -151,8 +159,21 @@ class PhysicsExtraction(BaseModel):
 
 
 class SocialExtraction(BaseModel):
-    """Step 3b output: information + relationship edges from the Social Agent."""
-    information_topology: List[InformationEdge] = Field(default_factory=list)
+    """Step 3b output from the Social Agent.
+
+    Replaces the legacy ``information_topology`` field with a two-part
+    split that mirrors the model:
+      * ``channels`` — standing :class:`Channel` capabilities
+        (telephone, mind-link, classified pipeline, ongoing
+        correspondence). Keyed by CHN_ id.
+      * ``utterance_events`` — discrete
+        :class:`EventNode` records with ``event_type='utterance'``
+        modelling on-page speech-acts. These are merged into the
+        global ``events`` list during chunk-topology assembly so they
+        participate in normal causal/temporal physics.
+    """
+    channels: Dict[str, Channel] = Field(default_factory=dict)
+    utterance_events: List[EventNode] = Field(default_factory=list)
     social_topology: List[RelationshipEdge] = Field(default_factory=list)
 
 
@@ -859,12 +880,22 @@ class _ConsequencesDeps(BaseModel):
     Receives the events and mutation/mutation_social edges already produced
     by the Physics Agent so that every EntityUpdate it emits is anchored
     to a concrete event and aligned with the causal mutations.
+
+    Also receives the Social Agent's ``chunk_channels`` and
+    ``chunk_utterance_events`` (when Step 3b has already run) so that
+    any beliefs the agent emits can correctly populate
+    ``acquired_via_event_id`` (the utterance) and
+    ``acquired_via_channel_id`` (the standing capability the utterance
+    rode over). Without this injection the prompt's belief-provenance
+    fields are unfillable.
     """
     model_config = {"protected_namespaces": ()}
     global_register: GlobalRegister
     scaffold: SocraticScaffold
     chunk_events: List[EventNode] = Field(default_factory=list)
     chunk_causal: List[CausalEdge] = Field(default_factory=list)
+    chunk_channels: Dict[str, "Channel"] = Field(default_factory=dict)
+    chunk_utterance_events: List[EventNode] = Field(default_factory=list)
     previous_event_ids: List[str] = Field(default_factory=list)
 
 
@@ -877,6 +908,31 @@ def _format_scaffold(scaffold: SocraticScaffold) -> str:
         lines.append(f"  [{qa.category.upper()}] Q: {qa.question}")
         lines.append(f"           A: {qa.answer}")
     return "\n".join(lines)
+
+
+# Verbs / cue-tokens that strongly imply on-page speech-acts. The Social
+# retry quality gate uses this to avoid retrying on legitimate pure-action
+# chunks (chases, silent set-pieces, scenic description) where zero
+# channels and zero utterances is the *correct* answer.
+_SPEECH_CUE_RE = re.compile(
+    r'(?:["\u201c\u201d\u2018\u2019]|\b('
+    r'said|says|told|tells|asked|asks|replied|replies|whispered|whispers|'
+    r'shouted|shouts|cried|cries|murmured|murmurs|muttered|mutters|'
+    r'declared|declares|announced|announces|warned|warns|promised|promises|'
+    r'confessed|confesses|admitted|admits|wrote|writes|read|reads|'
+    r'letter|letters|note|notes|message|messages|prophecy|prophesied|'
+    r'order|orders|command|commands|rumour|rumor|gossip'
+    r')\b)',
+    re.IGNORECASE,
+)
+
+
+def _chunk_likely_contains_speech(chunk_text: str) -> bool:
+    """Return True if the chunk shows linguistic evidence of dialogue or
+    written/transmitted communication. Cheap heuristic used by the
+    Social Agent's empty-result retry gate.
+    """
+    return bool(_SPEECH_CUE_RE.search(chunk_text))
 
 
 def _build_valid_id_set(reg: GlobalRegister, event_ids: List[str] | None = None) -> set[str]:
@@ -1606,49 +1662,115 @@ def _build_social_agent(config: ExtractionConfig) -> Agent[_SocialDeps, SocialEx
         fixes: List[str] = []
         bad: List[str] = []
 
-        # --- Fix information edge IDs ---
-        fixed_info: List[InformationEdge] = []
-        for ie in result.information_topology:
+        # --- Fix Channel participants ---
+        fixed_channels: Dict[str, Channel] = {}
+        for cid, ch in result.channels.items():
             updates: dict = {}
-            src, _ = _fix_id(ie.source_id, node_ids, "InformationEdge.source_id", fixes)
-            if src != ie.source_id:
-                updates["source_id"] = src
-            if src not in node_ids:
-                bad.append(f"InformationEdge source_id '{ie.source_id}' is not a valid entity/object.")
-                continue
-            fixed_targets = []
-            for tid in ie.target_ids:
-                t, _ = _fix_id(tid, node_ids, "InformationEdge.target_id", fixes)
-                if t in node_ids:
-                    if t == src:
-                        # self-broadcast: information cannot flow to itself
-                        fixes.append(
-                            f"[Auto-Fix] Dropped self-targeting InformationEdge target "
-                            f"'{src}' on edge from '{src}'."
-                        )
-                        continue
-                    fixed_targets.append(t)
+            new_pids: List[str] = []
+            for pid in ch.participant_ids:
+                p, _ = _fix_id(pid, node_ids, "Channel.participant_ids", fixes)
+                if p in node_ids:
+                    if p not in new_pids:
+                        new_pids.append(p)
                 else:
-                    bad.append(f"InformationEdge target_id '{tid}' is not a valid entity/object.")
-            if not fixed_targets:
+                    bad.append(f"Channel '{cid}' participant_id '{pid}' is not a valid entity/object.")
+            if len(new_pids) < 2:
                 fixes.append(
-                    f"[Auto-Fix] Dropped InformationEdge from '{src}' — no valid targets remain."
+                    f"[Auto-Fix] Dropped Channel '{cid}' — fewer than 2 valid participants."
                 )
                 continue
-            if fixed_targets != list(ie.target_ids):
-                updates["target_ids"] = fixed_targets
-            # Coerce evidence_strength aliases (high/low/medium → strong/weak/moderate).
-            if ie.evidence_strength not in ("weak", "moderate", "strong"):
+            if new_pids != list(ch.participant_ids):
+                updates["participant_ids"] = new_pids
+            # Drop intelligibility entries for participants we removed
+            if ch.intelligibility:
+                pruned_intel = {k: v for k, v in ch.intelligibility.items() if k in new_pids}
+                if pruned_intel != dict(ch.intelligibility):
+                    updates["intelligibility"] = pruned_intel
+            if ch.evidence_strength not in ("weak", "moderate", "strong"):
                 alias = {
                     "high": "strong", "low": "weak", "medium": "moderate",
                     "med": "moderate", "uncertain": "weak", "certain": "strong",
-                }.get(str(ie.evidence_strength).lower().strip(), "moderate")
+                }.get(str(ch.evidence_strength).lower().strip(), "moderate")
                 updates["evidence_strength"] = alias
                 fixes.append(
-                    f"[Auto-Fix] InformationEdge.evidence_strength "
-                    f"'{ie.evidence_strength}' → '{alias}' (from {src})"
+                    f"[Auto-Fix] Channel.evidence_strength "
+                    f"'{ch.evidence_strength}' → '{alias}' (on {cid})"
                 )
-            fixed_info.append(ie.model_copy(update=updates) if updates else ie)
+            fixed_channels[cid] = ch.model_copy(update=updates) if updates else ch
+
+        # --- Fix utterance EventNode ids (speaker, addressees, channel) ---
+        valid_channel_ids = set(fixed_channels.keys())
+        all_evt_ids = set(ctx.deps.previous_event_ids) | set(ctx.deps.chunk_event_ids)
+        fixed_utterances: List[EventNode] = []
+        seen_utt_ids: set[str] = set()
+        for ev in result.utterance_events:
+            if ev.event_type != "utterance":
+                fixes.append(
+                    f"[Auto-Fix] Coerced utterance_events entry '{ev.id}' "
+                    f"event_type from '{ev.event_type}' to 'utterance'."
+                )
+                ev = ev.model_copy(update={"event_type": "utterance"})
+            updates: dict = {}
+            # --- Enforce EVT_UTT_ prefix to avoid collisions with Physics ids ---
+            new_id = ev.id
+            if not new_id.startswith("EVT_UTT_"):
+                if new_id.startswith("EVT_"):
+                    new_id = "EVT_UTT_" + new_id[len("EVT_"):]
+                else:
+                    new_id = "EVT_UTT_" + re.sub(r"[^A-Z0-9_]+", "_", new_id.upper()).strip("_")
+                fixes.append(
+                    f"[Auto-Fix] Renamed utterance '{ev.id}' → '{new_id}' "
+                    f"(EVT_UTT_ prefix is required)."
+                )
+            # Resolve collisions with Physics-extracted ids OR previous-chunk ids
+            # OR an earlier utterance in this same batch.
+            if new_id in all_evt_ids or new_id in seen_utt_ids:
+                base = new_id
+                suffix = 2
+                while f"{base}_{suffix}" in all_evt_ids or f"{base}_{suffix}" in seen_utt_ids:
+                    suffix += 1
+                renamed = f"{base}_{suffix}"
+                fixes.append(
+                    f"[Auto-Fix] Renamed utterance '{new_id}' → '{renamed}' "
+                    f"(id collided with an existing event)."
+                )
+                new_id = renamed
+            seen_utt_ids.add(new_id)
+            if new_id != ev.id:
+                updates["id"] = new_id
+            # speaker_id
+            if ev.speaker_id:
+                sp, _ = _fix_id(ev.speaker_id, node_ids, "EventNode.speaker_id", fixes)
+                if sp not in node_ids:
+                    bad.append(f"Utterance '{ev.id}' speaker_id '{ev.speaker_id}' is not a valid entity/object.")
+                elif sp != ev.speaker_id:
+                    updates["speaker_id"] = sp
+            # addressee_ids
+            new_addrs: List[str] = []
+            for aid in ev.addressee_ids:
+                a, _ = _fix_id(aid, node_ids, "EventNode.addressee_ids", fixes)
+                if a in node_ids and a not in new_addrs:
+                    new_addrs.append(a)
+                elif a not in node_ids:
+                    bad.append(f"Utterance '{ev.id}' addressee_ids entry '{aid}' is not a valid entity/object.")
+            if new_addrs != list(ev.addressee_ids):
+                updates["addressee_ids"] = new_addrs
+            # via_channel_id
+            if ev.via_channel_id and ev.via_channel_id not in valid_channel_ids:
+                # Drop the broken channel reference rather than fail — the
+                # utterance is still valid as an unmediated speech-act.
+                fixes.append(
+                    f"[Auto-Fix] Utterance '{ev.id}' via_channel_id "
+                    f"'{ev.via_channel_id}' is not in the chunk's channels; "
+                    f"clearing reference."
+                )
+                updates["via_channel_id"] = None
+            # actor_ids consistency: if speaker present, ensure it appears in actor_ids
+            if ev.speaker_id and ev.speaker_id not in ev.actor_ids:
+                merged_actors = list(ev.actor_ids)
+                merged_actors.append(updates.get("speaker_id", ev.speaker_id))
+                updates["actor_ids"] = merged_actors
+            fixed_utterances.append(ev.model_copy(update=updates) if updates else ev)
 
         # --- Fix relationship edge IDs ---
         fixed_social: List[RelationshipEdge] = []
@@ -1697,7 +1819,8 @@ def _build_social_agent(config: ExtractionConfig) -> Agent[_SocialDeps, SocialEx
             )
 
         return SocialExtraction(
-            information_topology=fixed_info,
+            channels=fixed_channels,
+            utterance_events=fixed_utterances,
             social_topology=fixed_social,
         )
 
@@ -1773,6 +1896,29 @@ def _build_consequences_agent(
 
         chunk_evt_ids = [e.id for e in ctx.deps.chunk_events]
 
+        # Compact channels + utterances summary so the agent can wire
+        # belief provenance through ``acquired_via_event_id`` and
+        # ``acquired_via_channel_id``.
+        chn_lines: List[str] = []
+        for cid, ch in ctx.deps.chunk_channels.items():
+            chn_lines.append(
+                f"  - {cid} (medium={ch.medium}, "
+                f"participants={ch.participant_ids}, "
+                f"directionality={ch.directionality})"
+            )
+        channels_block = "\n".join(chn_lines) if chn_lines else "  (no channels in this chunk)"
+
+        utt_lines: List[str] = []
+        for u in ctx.deps.chunk_utterance_events:
+            utt_lines.append(
+                f"  - {u.id} (fabula={u.fabula_time}, "
+                f"speaker={u.speaker_id}, addressees={u.addressee_ids}, "
+                f"via={u.via_channel_id}, truth={u.truth_value}): {u.description}"
+            )
+        utterances_block = (
+            "\n".join(utt_lines) if utt_lines else "  (no utterance events in this chunk)"
+        )
+
         return (
             "=== VALID ID REGISTER (from Step 1) ===\n"
             f"ENTITY IDs: {entity_ids}\n"
@@ -1796,6 +1942,19 @@ def _build_consequences_agent(
             "\n"
             "=== MUTATION EDGES FROM PHYSICS (each implies an EntityUpdate) ===\n"
             f"{mutations_block}\n"
+            "\n"
+            "=== CHANNELS EXTRACTED FROM THIS CHUNK (by Social Agent) ===\n"
+            f"{channels_block}\n"
+            "\n"
+            "=== UTTERANCE EVENTS EXTRACTED FROM THIS CHUNK (by Social Agent) ===\n"
+            f"{utterances_block}\n"
+            "\n"
+            "When you emit a `new_beliefs` entry whose source is one of the "
+            "utterance events above, set `acquired_via_event_id` to that "
+            "utterance's id, and (when the utterance has a `via_channel_id`) "
+            "set `acquired_via_channel_id` to the channel id. This lets "
+            "counterfactual surgery prune downstream beliefs cleanly when "
+            "the channel is severed or the utterance is rewritten.\n"
             "\n"
             "=== SOCRATIC SCAFFOLD (semantic pre-analysis) ===\n"
             f"{scaffold_text}\n"
@@ -2079,29 +2238,46 @@ def extract_topology(
             except Exception:
                 logger.exception("[Step 3b] Chunk %d FAILED — returning empty social.", i + 1)
 
-            # Retry if zero info edges with multiple events (quality gate)
-            if len(physics.events) >= 2 and not social.information_topology:
-                logger.info("[Step 3b] Chunk %d: 0 info edges — retrying with emphasis …", i + 1)
+            # Retry if zero channels AND zero utterance events with multiple events (quality gate).
+            # Most narrative chunks contain at least one piece of communication, but
+            # pure-action chunks (chases, silent set-pieces) do not — only retry
+            # when the chunk text shows linguistic evidence of speech / writing.
+            if (
+                len(physics.events) >= 2
+                and not social.channels
+                and not social.utterance_events
+                and _chunk_likely_contains_speech(chunk)
+            ):
+                logger.info(
+                    "[Step 3b] Chunk %d: 0 channels and 0 utterance events — retrying with emphasis …",
+                    i + 1,
+                )
                 retry_social_msg = (
-                    "IMPORTANT: The previous extraction returned zero InformationEdge "
-                    "entries. Most narrative chunks contain conversations, prophecies, "
-                    "letters, confessions, orders, announcements, or rumours — each "
-                    "one MUST produce an InformationEdge. Re-read the text and extract "
-                    "ALL information flows.\n\n" + social_msg
+                    "IMPORTANT: The previous extraction returned zero Channel "
+                    "entries AND zero utterance events. Most narrative chunks "
+                    "contain conversations, prophecies, letters, confessions, "
+                    "orders, announcements, or rumours — each one MUST produce "
+                    "either an EventNode(event_type='utterance') (for a "
+                    "discrete on-page message) or a Channel (for a standing "
+                    "capability such as a telephone link, mind-bond, or "
+                    "classified pipeline). Re-read the text and extract ALL "
+                    "information flows.\n\n" + social_msg
                 )
                 try:
                     retry_result = social_agent.run_sync(retry_social_msg, deps=social_deps)
                     retry_social = retry_result.output
                     log_agent_output(logger, f"SocialExtraction[chunk={i + 1},retry]", retry_social)
-                    if retry_social.information_topology:
-                        # Merge: keep original social, take retry's info
+                    if retry_social.channels or retry_social.utterance_events:
                         social = SocialExtraction(
-                            information_topology=retry_social.information_topology,
+                            channels=retry_social.channels or social.channels,
+                            utterance_events=retry_social.utterance_events or social.utterance_events,
                             social_topology=social.social_topology,
                         )
                         logger.info(
-                            "[Step 3b] Chunk %d: retry recovered %d info edges.",
-                            i + 1, len(social.information_topology),
+                            "[Step 3b] Chunk %d: retry recovered %d channels, %d utterances.",
+                            i + 1,
+                            len(social.channels),
+                            len(social.utterance_events),
                         )
                 except Exception:
                     logger.exception("[Step 3b] Chunk %d info retry FAILED.", i + 1)
@@ -2137,7 +2313,8 @@ def extract_topology(
                     log_agent_output(logger, f"SocialExtraction[chunk={i + 1},rel_retry]", rel_retry)
                     if rel_retry.social_topology:
                         social = SocialExtraction(
-                            information_topology=social.information_topology,
+                            channels=social.channels,
+                            utterance_events=social.utterance_events,
                             social_topology=rel_retry.social_topology,
                         )
                         logger.info(
@@ -2161,8 +2338,13 @@ def extract_topology(
             consequences_deps = _ConsequencesDeps(
                 global_register=register,
                 scaffold=scaffold,
-                chunk_events=physics.events,
+                # Pass Physics events + Social utterance events — the
+                # Consequences agent needs both so beliefs can reference
+                # utterance ids in ``acquired_via_event_id``.
+                chunk_events=list(physics.events) + list(social.utterance_events),
                 chunk_causal=physics.causal_topology,
+                chunk_channels=social.channels,
+                chunk_utterance_events=social.utterance_events,
                 previous_event_ids=all_event_ids.copy(),
             )
             try:
@@ -2180,11 +2362,18 @@ def extract_topology(
                     i + 1,
                 )
 
-        # Merge into ChunkTopology
+        # Merge into ChunkTopology. Utterance events emitted by the
+        # Social Agent are appended to the chunk's event list so they
+        # participate in normal causal/temporal physics downstream.
+        merged_events = _merge_utterances_into_events(
+            physics.events, social.utterance_events,
+            chunk_label=f"Step 3b chunk {i + 1}",
+        )
+
         topo = ChunkTopology(
-            events=physics.events,
+            events=merged_events,
             causal_topology=physics.causal_topology,
-            information_topology=social.information_topology,
+            channels=social.channels,
             social_topology=social.social_topology,
             spatial_topology=physics.spatial_topology,
             entity_updates=entity_updates_final,
@@ -2195,22 +2384,26 @@ def extract_topology(
         # it tells the next chunk's prompt what the high-water mark is so
         # the LLM can place forward-marching events sensibly. We do NOT
         # shift the LLM's output, so flashbacks remain expressible.
-        syuzhet_counter += len(physics.events)
-        if physics.events:
-            chunk_max = max(e.fabula_time for e in physics.events)
+        syuzhet_counter += len(merged_events)
+        if merged_events:
+            chunk_max = max(e.fabula_time for e in merged_events)
             if chunk_max > prev_max_fabula:
                 prev_max_fabula = chunk_max
-        all_event_ids.extend(chunk_evt_ids)
+        all_event_ids.extend([e.id for e in merged_events])
 
         # Save trailing context for next chunk's coreference overlap
         if config.chunk_overlap_chars > 0:
             prev_chunk_tail = chunk[-config.chunk_overlap_chars:]
 
         logger.info(
-            "[Step 3] Chunk %d: %d events, %d causal, %d social, %d spatial, %d info edges.",
-            i + 1, len(topo.events), len(topo.causal_topology),
-            len(topo.social_topology), len(topo.spatial_topology),
-            len(topo.information_topology),
+            "[Step 3] Chunk %d: %d events (%d utterances), %d causal, %d social, %d spatial, %d channels.",
+            i + 1,
+            len(topo.events),
+            len(social.utterance_events),
+            len(topo.causal_topology),
+            len(topo.social_topology),
+            len(topo.spatial_topology),
+            len(topo.channels),
         )
 
     return topologies
@@ -2369,10 +2562,9 @@ async def _extract_single_chunk_async(
         )
     event_summary = "\n".join(event_summary_lines)
 
-    # --- Step 3b: Social Agent ---
-    # --- Step 3c: Consequences Agent (optional, parallel with Social) ---
-    # Both agents depend only on the Physics output, so we dispatch them
-    # concurrently to halve the wall-clock cost of the consequences pass.
+    # --- Step 3b: Social Agent (must complete before Consequences) ---
+    # --- Step 3c: Consequences Agent (optional, runs after Social so it
+    # can wire belief provenance through utterance / channel ids) ---
     social = SocialExtraction()
     entity_updates_final = physics.entity_updates  # legacy fallback
 
@@ -2403,35 +2595,48 @@ async def _extract_single_chunk_async(
             )
             return SocialExtraction()
 
-        # Retry if zero info edges with multiple events (quality gate)
-        if len(physics.events) >= 2 and not local_social.information_topology:
+        # Retry if zero channels AND zero utterance events (quality gate)
+        # AND the chunk shows linguistic evidence of dialogue. Pure-action
+        # chunks (chases, silent set-pieces) legitimately produce neither.
+        if (
+            len(physics.events) >= 2
+            and not local_social.channels
+            and not local_social.utterance_events
+            and _chunk_likely_contains_speech(chunk)
+        ):
             logger.info(
-                "[Step 3b·Async] Chunk %d: 0 info edges — retrying with emphasis …", i + 1,
+                "[Step 3b·Async] Chunk %d: 0 channels and 0 utterance events — retrying with emphasis …",
+                i + 1,
             )
             retry_social_msg = (
-                "IMPORTANT: The previous extraction returned zero InformationEdge "
-                "entries. Most narrative chunks contain conversations, prophecies, "
-                "letters, confessions, orders, announcements, or rumours — each "
-                "one MUST produce an InformationEdge. Re-read the text and extract "
-                "ALL information flows.\n\n" + social_msg
+                "IMPORTANT: The previous extraction returned zero Channel "
+                "entries AND zero utterance events. Most narrative chunks "
+                "contain conversations, prophecies, letters, confessions, "
+                "orders, announcements, or rumours — each one MUST produce "
+                "either an EventNode(event_type='utterance') or a Channel. "
+                "Re-read the text and extract ALL information flows.\n\n"
+                + social_msg
             )
             try:
                 retry_result = await social_agent.run(retry_social_msg, deps=social_deps)
                 retry_social = retry_result.output
-                if retry_social.information_topology:
+                if retry_social.channels or retry_social.utterance_events:
                     local_social = SocialExtraction(
-                        information_topology=retry_social.information_topology,
+                        channels=retry_social.channels or local_social.channels,
+                        utterance_events=retry_social.utterance_events or local_social.utterance_events,
                         social_topology=local_social.social_topology,
                     )
                     logger.info(
-                        "[Step 3b·Async] Chunk %d: retry recovered %d info edges.",
-                        i + 1, len(local_social.information_topology),
+                        "[Step 3b·Async] Chunk %d: retry recovered %d channels, %d utterances.",
+                        i + 1,
+                        len(local_social.channels),
+                        len(local_social.utterance_events),
                     )
             except Exception:
                 logger.exception("[Step 3b·Async] Chunk %d info retry FAILED.", i + 1)
         return local_social
 
-    async def _run_consequences() -> Optional[ConsequencesExtraction]:
+    async def _run_consequences(local_social: SocialExtraction) -> Optional[ConsequencesExtraction]:
         if consequences_agent is None or not physics.events:
             return None
         logger.info("[Step 3c·Async] Processing chunk %d/%d — consequences …", i + 1, n)
@@ -2443,8 +2648,10 @@ async def _extract_single_chunk_async(
         consequences_deps = _ConsequencesDeps(
             global_register=register,
             scaffold=scaffold,
-            chunk_events=physics.events,
+            chunk_events=list(physics.events) + list(local_social.utterance_events),
             chunk_causal=physics.causal_topology,
+            chunk_channels=local_social.channels,
+            chunk_utterance_events=local_social.utterance_events,
             previous_event_ids=[],
         )
         try:
@@ -2459,25 +2666,34 @@ async def _extract_single_chunk_async(
             )
             return None
 
-    social, consequences_out = await asyncio.gather(
-        _run_social(), _run_consequences(),
-    )
+    social = await _run_social()
+    consequences_out = await _run_consequences(social)
     if consequences_out is not None:
         entity_updates_final = consequences_out.entity_updates
 
+    # Merge utterance events from the Social Agent into the chunk's event list.
+    merged_events = _merge_utterances_into_events(
+        physics.events, social.utterance_events,
+        chunk_label=f"Step 3b·Async chunk {i + 1}",
+    )
+
     topo = ChunkTopology(
-        events=physics.events,
+        events=merged_events,
         causal_topology=physics.causal_topology,
-        information_topology=social.information_topology,
+        channels=social.channels,
         social_topology=social.social_topology,
         spatial_topology=physics.spatial_topology,
         entity_updates=entity_updates_final,
     )
     logger.info(
-        "[Step 3·Async] Chunk %d: %d events, %d causal, %d social, %d spatial, %d info edges.",
-        i + 1, len(topo.events), len(topo.causal_topology),
-        len(topo.social_topology), len(topo.spatial_topology),
-        len(topo.information_topology),
+        "[Step 3·Async] Chunk %d: %d events (%d utterances), %d causal, %d social, %d spatial, %d channels.",
+        i + 1,
+        len(topo.events),
+        len(social.utterance_events),
+        len(topo.causal_topology),
+        len(topo.social_topology),
+        len(topo.spatial_topology),
+        len(topo.channels),
     )
     return topo
 
@@ -2492,10 +2708,10 @@ def _reconcile_chunk_topologies(
        (appends ``_cN`` suffix where N is the chunk index).
     2. Re-numbers ``syuzhet_index`` globally in chunk order — syuzhet IS
        narration order, so the chunk-position assignment is canonical.
-       Per-chunk and global fallback maps are built so that any
-       ``InformationEdge.discovered_at_syuzhet`` reference resolves
-       correctly regardless of whether the LLM used a chunk-local or
-       global value.
+       Utterance events carry their own ``syuzhet_index`` and are
+       re-numbered through the same standard event-remap pass; there
+       is no longer a separate ``discovered_at_syuzhet`` field on
+       Channel that needs special handling.
 
     Note: there is intentionally NO inter-chunk ``fabula_time`` shift.
     Forcing chunk order onto fabula order would erase flashbacks (per
@@ -2535,46 +2751,12 @@ def _reconcile_chunk_topologies(
         reconciled.append(topo)
 
     # --- Pass 2: Re-number syuzhet_index globally in chunk order ---
-    # Build a per-chunk old → new syuzhet map AND a flat fallback map keyed
-    # by old syuzhet only. The flat map is used as a fallback when an
-    # ``InformationEdge.discovered_at_syuzhet`` references a value that
-    # isn't in its own chunk's local remap (e.g. the LLM cited a global
-    # syuzhet index from another chunk).
-    chunk_syuzhet_remaps: List[Dict[int, int]] = []
-    flat_syuzhet_remap: Dict[int, int] = {}
-    flat_syuzhet_ambiguous: set[int] = set()
     syuzhet_counter = 0
     for topo in reconciled:
-        remap: Dict[int, int] = {}
         sorted_events = sorted(topo.events, key=lambda e: e.syuzhet_index)
         for evt in sorted_events:
-            old = evt.syuzhet_index
-            remap[old] = syuzhet_counter
-            if old in flat_syuzhet_remap:
-                # Same chunk-local syuzhet appeared before — ambiguous as a
-                # flat fallback. Drop it.
-                if flat_syuzhet_remap[old] != syuzhet_counter:
-                    flat_syuzhet_ambiguous.add(old)
-            else:
-                flat_syuzhet_remap[old] = syuzhet_counter
             evt.syuzhet_index = syuzhet_counter
             syuzhet_counter += 1
-        chunk_syuzhet_remaps.append(remap)
-
-    # Drop ambiguous values from the flat fallback map.
-    for amb in flat_syuzhet_ambiguous:
-        flat_syuzhet_remap.pop(amb, None)
-
-    # Remap discovered_at_syuzhet — chunk-local first, then unambiguous flat.
-    for ci, topo in enumerate(reconciled):
-        local = chunk_syuzhet_remaps[ci]
-        for ie in topo.information_topology:
-            old = ie.discovered_at_syuzhet
-            if old in local:
-                ie.discovered_at_syuzhet = local[old]
-            elif old in flat_syuzhet_remap:
-                ie.discovered_at_syuzhet = flat_syuzhet_remap[old]
-            # else: out-of-range value — leave for the validator to flag.
 
     # No Pass 3: fabula_time order is intentionally free across chunks so
     # flashbacks remain expressible. Cross-chunk temporal contradictions
@@ -2584,7 +2766,12 @@ def _reconcile_chunk_topologies(
 
 
 def _apply_event_renames(topo: ChunkTopology, rmap: Dict[str, str]) -> ChunkTopology:
-    """Apply event ID renames to all fields in a ChunkTopology."""
+    """Apply event ID renames to all fields in a ChunkTopology.
+
+    Channel objects do not carry event-id references and are therefore
+    untouched. Utterance events live in ``topo.events`` and are renamed
+    through the standard event loop.
+    """
     def _r(eid: str) -> str:
         return rmap.get(eid, eid)
 
@@ -2597,22 +2784,22 @@ def _apply_event_renames(topo: ChunkTopology, rmap: Dict[str, str]) -> ChunkTopo
             "target_id": _r(ce.target_id),
         }) for ce in topo.causal_topology
     ]
-    new_info = [
-        ie.model_copy(update={
-            "source_id": _r(ie.source_id),
-            "target_ids": [_r(tid) for tid in ie.target_ids],
-        })
-        for ie in topo.information_topology
-    ]
     new_entity_updates = [
         eu.model_copy(update={
             "triggered_by": _r(eu.triggered_by) if eu.triggered_by else None,
+            "new_beliefs": [
+                b.model_copy(update={
+                    "acquired_via_event_id": _r(b.acquired_via_event_id)
+                    if b.acquired_via_event_id else None,
+                })
+                for b in eu.new_beliefs
+            ],
         }) for eu in topo.entity_updates
     ]
     return ChunkTopology(
         events=new_events,
         causal_topology=new_causal,
-        information_topology=new_info,
+        channels=topo.channels,
         social_topology=topo.social_topology,
         spatial_topology=topo.spatial_topology,
         entity_updates=new_entity_updates,
@@ -2632,11 +2819,11 @@ def _shift_fabula_times(topo: ChunkTopology, shift: int) -> None:
     for ce in topo.causal_topology:
         if ce.fabula_time > 0:
             ce.fabula_time += shift
-    for ie in topo.information_topology:
-        if ie.established_at_fabula > 0:
-            ie.established_at_fabula += shift
-        if ie.terminated_at_fabula is not None and ie.terminated_at_fabula > 0:
-            ie.terminated_at_fabula += shift
+    for ch in topo.channels.values():
+        if ch.established_at_fabula > 0:
+            ch.established_at_fabula += shift
+        if ch.terminated_at_fabula is not None and ch.terminated_at_fabula > 0:
+            ch.terminated_at_fabula += shift
     for se in topo.social_topology:
         # last_updated_fabula is now per-axis; shift each observed
         # metric independently to preserve relative ordering.
@@ -2745,10 +2932,10 @@ def _normalize_fabula_times(ws: WorldStateV1, spacing: int = 1000) -> WorldState
         all_times.add(e.fabula_time)
     for ce in ws.causal_topology:
         all_times.add(ce.fabula_time)
-    for ie in ws.information_topology:
-        all_times.add(ie.established_at_fabula)
-        if ie.terminated_at_fabula is not None:
-            all_times.add(ie.terminated_at_fabula)
+    for ch in ws.channels.values():
+        all_times.add(ch.established_at_fabula)
+        if ch.terminated_at_fabula is not None:
+            all_times.add(ch.terminated_at_fabula)
     for se in ws.spatial_topology:
         all_times.add(se.established_at_fabula)
         if se.destroyed_at_fabula is not None:
@@ -2787,13 +2974,13 @@ def _normalize_fabula_times(ws: WorldStateV1, spacing: int = 1000) -> WorldState
         ce.model_copy(update={"fabula_time": _map(ce.fabula_time) or ce.fabula_time})
         for ce in ws.causal_topology
     ]
-    new_info = [
-        ie.model_copy(update={
-            "established_at_fabula": _map(ie.established_at_fabula) or ie.established_at_fabula,
-            "terminated_at_fabula": _map(ie.terminated_at_fabula),
+    new_channels = {
+        cid: ch.model_copy(update={
+            "established_at_fabula": _map(ch.established_at_fabula) or ch.established_at_fabula,
+            "terminated_at_fabula": _map(ch.terminated_at_fabula),
         })
-        for ie in ws.information_topology
-    ]
+        for cid, ch in ws.channels.items()
+    }
     new_social = []
     for re_edge in ws.social_topology:
         # Remap each per-axis last_updated_fabula independently.
@@ -2852,7 +3039,7 @@ def _normalize_fabula_times(ws: WorldStateV1, spacing: int = 1000) -> WorldState
         world_traits=new_world_traits,
         causal_topology=new_causal,
         spatial_topology=new_spatial,
-        information_topology=new_info,
+        channels=new_channels,
         social_topology=new_social,
     )
 
@@ -2860,6 +3047,37 @@ def _normalize_fabula_times(ws: WorldStateV1, spacing: int = 1000) -> WorldState
 # =====================================================================
 # Step 3 — Assembly + Validation
 # =====================================================================
+
+
+def _merge_utterances_into_events(
+    physics_events: List[EventNode],
+    utterance_events: List[EventNode],
+    *,
+    chunk_label: str,
+) -> List[EventNode]:
+    """Append Social-agent utterance events onto the Physics event list.
+
+    Drops any utterance whose id collides with a Physics event id (the
+    validator ought to have renamed it via the EVT_UTT_ prefix rule, but
+    we belt-and-brace here so that downstream code never sees a
+    duplicate id). Returns a new list; ``physics_events`` is not
+    mutated.
+    """
+    merged: List[EventNode] = list(physics_events)
+    if not utterance_events:
+        return merged
+    existing_ids = {e.id for e in merged}
+    for uev in utterance_events:
+        if uev.id in existing_ids:
+            logger.info(
+                "[%s] dropping utterance '%s' — id collides with a Physics event.",
+                chunk_label, uev.id,
+            )
+            continue
+        merged.append(uev)
+        existing_ids.add(uev.id)
+    return merged
+
 
 def _deduplicate_social(edges: List[RelationshipEdge]) -> List[RelationshipEdge]:
     """Merge multiple edges for the same (source, target) pair into one.
@@ -2910,29 +3128,110 @@ def _deduplicate_causal(edges: List[CausalEdge]) -> List[CausalEdge]:
     return list(best.values())
 
 
-def _deduplicate_info(edges: List[InformationEdge]) -> List[InformationEdge]:
-    """Deduplicate information edges by (source, targets, medium, established_at).
+def _deduplicate_channels_with_map(
+    channel_dicts: List[Dict[str, Channel]],
+) -> Tuple[Dict[str, Channel], Dict[str, str]]:
+    """Merge per-chunk Channel dicts and also return an old→canonical id map.
 
-    When two edges share the same key, keeps the one with the later
-    ``discovered_at_syuzhet`` so that subsequent re-extractions which
-    update ``terminated_at_fabula`` (or other late-discovered fields)
-    overwrite earlier records of the same channel rather than being
-    silently dropped.
+    Keyed on ``(medium, sorted(participant_ids), established_at_fabula)``
+    rather than the LLM-generated ``CHN_`` id, because two chunks may
+    each invent their own id for the same standing capability. The
+    merged version prefers the entry with a populated
+    ``intelligibility`` map (richer signal); ties go to the later
+    entry (overwrite semantics consistent with other dedupers).
+
+    The returned ``forwarding_map`` lets callers rewrite every
+    ``EventNode.via_channel_id`` and ``Belief.acquired_via_channel_id``
+    that pointed at a now-collapsed id, so dedup never silently orphans
+    those references (which used to be nulled by ``_auto_repair``).
     """
-    best: dict[tuple, InformationEdge] = {}
-    for e in edges:
-        key = (e.source_id, tuple(sorted(e.target_ids)), e.medium, e.established_at_fabula)
-        existing = best.get(key)
-        if existing is None or e.discovered_at_syuzhet >= existing.discovered_at_syuzhet:
-            best[key] = e
-    return list(best.values())
+    best: dict[tuple, Channel] = {}
+    # Track every id ever seen for each shape-key so the forwarding map
+    # covers every collapsed alias, not just the most recent.
+    aliases: dict[tuple, list[str]] = {}
+    for chunk_channels in channel_dicts:
+        for ch in chunk_channels.values():
+            key = (
+                ch.medium,
+                tuple(sorted(ch.participant_ids)),
+                ch.established_at_fabula,
+            )
+            aliases.setdefault(key, []).append(ch.id)
+            existing = best.get(key)
+            if existing is None:
+                best[key] = ch
+                continue
+            # Prefer the entry with a non-empty intelligibility map.
+            if ch.intelligibility and not existing.intelligibility:
+                best[key] = ch
+            else:
+                best[key] = ch  # overwrite (later wins on ties)
+    deduped = {ch.id: ch for ch in best.values()}
+    forwarding: Dict[str, str] = {}
+    for key, ids in aliases.items():
+        canonical = best[key].id
+        for old in ids:
+            if old != canonical:
+                forwarding[old] = canonical
+    return deduped, forwarding
+
+
+def _deduplicate_channels(channel_dicts: List[Dict[str, Channel]]) -> Dict[str, Channel]:
+    """Backwards-compatible shim: returns just the deduped dict.
+
+    Prefer :func:`_deduplicate_channels_with_map` at call sites that
+    can apply the forwarding map to ``via_channel_id`` /
+    ``acquired_via_channel_id`` references.
+    """
+    deduped, _ = _deduplicate_channels_with_map(channel_dicts)
+    return deduped
+
+
+def _apply_channel_forwarding(
+    forwarding: Dict[str, str],
+    *,
+    events: List[EventNode],
+    entity_updates: Optional[List["EntityUpdate"]] = None,
+) -> None:
+    """Rewrite ``via_channel_id`` and ``Belief.acquired_via_channel_id`` in place.
+
+    No-op when ``forwarding`` is empty. ``events`` and any
+    ``entity_updates[*].new_beliefs`` lists are mutated; their
+    container objects are replaced via ``model_copy`` so we don't rely
+    on Pydantic's mutability semantics for nested models.
+    """
+    if not forwarding:
+        return
+    for i, evt in enumerate(events):
+        if evt.via_channel_id and evt.via_channel_id in forwarding:
+            events[i] = evt.model_copy(update={
+                "via_channel_id": forwarding[evt.via_channel_id],
+            })
+    if entity_updates:
+        for j, eu in enumerate(entity_updates):
+            new_beliefs = eu.new_beliefs
+            replaced_any = False
+            rebuilt: List[Belief] = []
+            for b in new_beliefs:
+                if (
+                    b.acquired_via_channel_id
+                    and b.acquired_via_channel_id in forwarding
+                ):
+                    rebuilt.append(b.model_copy(update={
+                        "acquired_via_channel_id": forwarding[b.acquired_via_channel_id],
+                    }))
+                    replaced_any = True
+                else:
+                    rebuilt.append(b)
+            if replaced_any:
+                entity_updates[j] = eu.model_copy(update={"new_beliefs": rebuilt})
 
 
 # Public aliases for reuse outside the ingestion pipeline
 deduplicate_social = _deduplicate_social
 deduplicate_spatial = _deduplicate_spatial
 deduplicate_causal = _deduplicate_causal
-deduplicate_info = _deduplicate_info
+deduplicate_channels = _deduplicate_channels
 
 
 def assemble_world_state(
@@ -2948,16 +3247,40 @@ def assemble_world_state(
     """
     events: List[EventNode] = []
     causal_topology: List[CausalEdge] = []
-    information_topology: List[InformationEdge] = []
+    channel_dicts: List[Dict[str, Channel]] = []
     social_topology: List[RelationshipEdge] = []
     spatial_topology: List[SpatialEdge] = []
 
     for topo in topologies:
         events.extend(topo.events)
         causal_topology.extend(topo.causal_topology)
-        information_topology.extend(topo.information_topology)
+        channel_dicts.append(topo.channels)
         social_topology.extend(topo.social_topology)
         spatial_topology.extend(topo.spatial_topology)
+
+    # --- Channel dedup with forwarding map ---
+    # Done up-front so we can rewrite stale via_channel_id /
+    # acquired_via_channel_id references on events and entity_updates
+    # before they get baked into the world state. Otherwise dedup would
+    # silently orphan those references and ``_auto_repair`` would null
+    # them out (lossy).
+    raw_channel_count = sum(len(c) for c in channel_dicts)
+    channels, channel_forwarding = _deduplicate_channels_with_map(channel_dicts)
+    if channel_forwarding:
+        # Rewrite events first (utterance.via_channel_id), then
+        # mutate each topology's entity_updates so their beliefs pick
+        # up the new channel ids before being folded into snapshots.
+        _apply_channel_forwarding(channel_forwarding, events=events)
+        for topo in topologies:
+            _apply_channel_forwarding(
+                channel_forwarding,
+                events=[],  # events already covered globally
+                entity_updates=topo.entity_updates,
+            )
+        logger.info(
+            "[Step 3] Channel dedup forwarding: %d alias(es) rewritten.",
+            len(channel_forwarding),
+        )
 
     # Collect entity updates from all chunks into state_timeline
     all_entity_updates: Dict[str, List[EntityStateSnapshot]] = {}
@@ -2978,15 +3301,14 @@ def assemble_world_state(
     events.sort(key=lambda e: e.fabula_time)
     causal_topology.sort(key=lambda c: c.fabula_time)
 
-    # Deduplicate relationship, spatial, causal, and information edges across chunks
+    # Deduplicate relationship, spatial, causal across chunks (channels
+    # were deduped earlier so the forwarding map could rewrite events).
     social_before = len(social_topology)
     social_topology = _deduplicate_social(social_topology)
     spatial_before = len(spatial_topology)
     spatial_topology = _deduplicate_spatial(spatial_topology)
     causal_before = len(causal_topology)
     causal_topology = _deduplicate_causal(causal_topology)
-    info_before = len(information_topology)
-    information_topology = _deduplicate_info(information_topology)
     deduped_parts = []
     if social_before != len(social_topology):
         deduped_parts.append(f"social {social_before}→{len(social_topology)}")
@@ -2994,8 +3316,8 @@ def assemble_world_state(
         deduped_parts.append(f"spatial {spatial_before}→{len(spatial_topology)}")
     if causal_before != len(causal_topology):
         deduped_parts.append(f"causal {causal_before}→{len(causal_topology)}")
-    if info_before != len(information_topology):
-        deduped_parts.append(f"info {info_before}→{len(information_topology)}")
+    if raw_channel_count != len(channels):
+        deduped_parts.append(f"channels {raw_channel_count}→{len(channels)}")
     if deduped_parts:
         logger.info("[Step 3] Deduplicated edges: %s.", ", ".join(deduped_parts))
 
@@ -3014,14 +3336,15 @@ def assemble_world_state(
         events=events,
         causal_topology=causal_topology,
         spatial_topology=spatial_topology,
-        information_topology=information_topology,
+        channels=channels,
         social_topology=social_topology,
     )
+    utterance_count = sum(1 for e in events if e.event_type == "utterance")
     logger.info(
-        "[Step 3] Assembled WorldStateV1 — %d events, %d causal, %d social, "
-        "%d spatial, %d info edges, %d world traits.",
-        len(ws.events), len(ws.causal_topology), len(ws.social_topology),
-        len(ws.spatial_topology), len(ws.information_topology),
+        "[Step 3] Assembled WorldStateV1 — %d events (%d utterances), %d causal, %d social, "
+        "%d spatial, %d channels, %d world traits.",
+        len(ws.events), utterance_count, len(ws.causal_topology), len(ws.social_topology),
+        len(ws.spatial_topology), len(ws.channels),
         len(ws.world_traits),
     )
     return ws
@@ -3120,20 +3443,41 @@ def _auto_repair(ws: WorldStateV1) -> Tuple[WorldStateV1, List[str]]:
         else:
             clean_spatial.append(se)
 
-    # --- Strip broken information edges ---
-    clean_info: List[InformationEdge] = []
-    for ie in ws.information_topology:
-        if ie.source_id not in node_ids:
-            repairs.append(f"Removed info edge: source '{ie.source_id}' not in entities/objects.")
+    # --- Strip broken channels ---
+    clean_channels: Dict[str, Channel] = {}
+    for cid, ch in ws.channels.items():
+        valid_pids = [p for p in ch.participant_ids if p in node_ids]
+        bad_pids = [p for p in ch.participant_ids if p not in node_ids]
+        for bp in bad_pids:
+            repairs.append(f"Removed channel '{cid}' participant '{bp}' (not in entities/objects).")
+        if len(valid_pids) < 2:
+            repairs.append(f"Removed channel '{cid}' (fewer than 2 valid participants).")
             continue
-        clean_targets = [t for t in ie.target_ids if t in node_ids]
-        bad_targets = [t for t in ie.target_ids if t not in node_ids]
-        for bt in bad_targets:
-            repairs.append(f"Removed info edge target '{bt}' (not in entities/objects).")
-        if clean_targets:
-            clean_info.append(ie.model_copy(update={"target_ids": clean_targets}))
+        if valid_pids != list(ch.participant_ids):
+            pruned_intel = {k: v for k, v in ch.intelligibility.items() if k in valid_pids}
+            clean_channels[cid] = ch.model_copy(update={
+                "participant_ids": valid_pids,
+                "intelligibility": pruned_intel,
+            })
         else:
-            repairs.append(f"Removed info edge from '{ie.source_id}' (all targets invalid).")
+            clean_channels[cid] = ch
+
+    # --- Strip utterance events whose via_channel_id no longer resolves ---
+    valid_channel_ids = set(clean_channels.keys())
+    repaired_events: List[EventNode] = []
+    for evt in clean_events:
+        if (
+            evt.event_type == "utterance"
+            and evt.via_channel_id
+            and evt.via_channel_id not in valid_channel_ids
+        ):
+            repairs.append(
+                f"Cleared dangling via_channel_id '{evt.via_channel_id}' on utterance '{evt.id}'."
+            )
+            repaired_events.append(evt.model_copy(update={"via_channel_id": None}))
+        else:
+            repaired_events.append(evt)
+    clean_events = repaired_events
 
     if repairs:
         logger.info("[Auto-Repair] Applied %d repairs.", len(repairs))
@@ -3145,7 +3489,7 @@ def _auto_repair(ws: WorldStateV1) -> Tuple[WorldStateV1, List[str]]:
             world_traits=ws.world_traits,
             causal_topology=clean_causal,
             spatial_topology=clean_spatial,
-            information_topology=clean_info,
+            channels=clean_channels,
             social_topology=clean_social,
         )
 
@@ -3207,35 +3551,224 @@ def _programmatic_validation(ws: WorldStateV1) -> List[ValidationIssue]:
                 detail=f"SpatialEdge.target_id '{se.target_id}' not in locations.",
             ))
 
-    # Check information edges
+    # Check channels
     node_ids = set(ws.entities.keys()) | set(ws.objects.keys())
-    for ie in ws.information_topology:
-        if ie.source_id not in node_ids:
-            issues.append(ValidationIssue(
-                severity="error", category="broken_link",
-                detail=f"InformationEdge.source_id '{ie.source_id}' not in entities/objects.",
-            ))
-        for tid in ie.target_ids:
-            if tid not in node_ids:
+    for cid, ch in ws.channels.items():
+        for pid in ch.participant_ids:
+            if pid not in node_ids:
                 issues.append(ValidationIssue(
                     severity="error", category="broken_link",
-                    detail=f"InformationEdge.target_id '{tid}' not in entities/objects.",
+                    detail=f"Channel '{cid}' participant_id '{pid}' not in entities/objects.",
+                ))
+        if len(ch.participant_ids) < 2:
+            issues.append(ValidationIssue(
+                severity="error", category="broken_link",
+                detail=f"Channel '{cid}' has fewer than 2 participants.",
+            ))
+        for k in ch.intelligibility.keys():
+            if k not in ch.participant_ids:
+                issues.append(ValidationIssue(
+                    severity="warning", category="broken_link",
+                    detail=(
+                        f"Channel '{cid}' intelligibility entry for '{k}' is not "
+                        f"a participant of the channel."
+                    ),
                 ))
 
-    # Check event actor_ids (must be entities) and target_ids (must be entities/objects)
-    object_ids = set(ws.objects.keys())
+    # Check utterance event references
+    valid_channel_ids = set(ws.channels.keys())
     for evt in ws.events:
+        if evt.event_type != "utterance":
+            continue
+        if evt.via_channel_id and evt.via_channel_id not in valid_channel_ids:
+            issues.append(ValidationIssue(
+                severity="error", category="broken_link",
+                detail=(
+                    f"Utterance '{evt.id}' via_channel_id '{evt.via_channel_id}' "
+                    f"not in channels."
+                ),
+            ))
+        if evt.speaker_id and evt.speaker_id not in node_ids:
+            issues.append(ValidationIssue(
+                severity="error", category="broken_link",
+                detail=f"Utterance '{evt.id}' speaker_id '{evt.speaker_id}' not in entities/objects.",
+            ))
+        for aid in evt.addressee_ids:
+            if aid not in node_ids:
+                issues.append(ValidationIssue(
+                    severity="error", category="broken_link",
+                    detail=f"Utterance '{evt.id}' addressee_ids entry '{aid}' not in entities/objects.",
+                ))
+
+    # Check belief provenance: acquired_via_event_id must point at a real
+    # event, acquired_via_channel_id at a real channel. Counterfactual
+    # surgery uses these to prune downstream beliefs when an event /
+    # channel is removed; dangling refs would silently break that.
+    valid_event_ids = {e.id for e in ws.events}
+    for eid, ent in ws.entities.items():
+        for b in ent.beliefs:
+            if (
+                b.acquired_via_event_id
+                and b.acquired_via_event_id not in valid_event_ids
+            ):
+                issues.append(ValidationIssue(
+                    severity="warning", category="broken_link",
+                    detail=(
+                        f"Entity '{eid}' belief about '{b.target_id}' has "
+                        f"acquired_via_event_id='{b.acquired_via_event_id}' "
+                        f"that is not in events."
+                    ),
+                ))
+            if (
+                b.acquired_via_channel_id
+                and b.acquired_via_channel_id not in valid_channel_ids
+            ):
+                issues.append(ValidationIssue(
+                    severity="warning", category="broken_link",
+                    detail=(
+                        f"Entity '{eid}' belief about '{b.target_id}' has "
+                        f"acquired_via_channel_id='{b.acquired_via_channel_id}' "
+                        f"that is not in channels."
+                    ),
+                ))
+        # State-timeline snapshots carry the same belief shape.
+        for snap in ent.state_timeline:
+            for b in snap.beliefs_added:
+                if (
+                    b.acquired_via_event_id
+                    and b.acquired_via_event_id not in valid_event_ids
+                ):
+                    issues.append(ValidationIssue(
+                        severity="warning", category="broken_link",
+                        detail=(
+                            f"Entity '{eid}' snapshot belief at "
+                            f"fabula={snap.fabula_time} has dangling "
+                            f"acquired_via_event_id='{b.acquired_via_event_id}'."
+                        ),
+                    ))
+                if (
+                    b.acquired_via_channel_id
+                    and b.acquired_via_channel_id not in valid_channel_ids
+                ):
+                    issues.append(ValidationIssue(
+                        severity="warning", category="broken_link",
+                        detail=(
+                            f"Entity '{eid}' snapshot belief at "
+                            f"fabula={snap.fabula_time} has dangling "
+                            f"acquired_via_channel_id='{b.acquired_via_channel_id}'."
+                        ),
+                    ))
+
+    # Belief provenance — semantic coherence checks (warnings).
+    #
+    # The structural checks above only verify the referenced IDs exist.
+    # These checks verify the *meaning* of the provenance edge:
+    #   * The referenced event should normally be an utterance or a
+    #     revelation-class event — beliefs acquired via random
+    #     unrelated events are usually extraction noise.
+    #   * When both channel and event provenance are set, they must be
+    #     consistent: the utterance event's via_channel_id should match
+    #     the belief's acquired_via_channel_id.
+    #   * High-confidence beliefs acquired through low-intelligibility
+    #     channels are epistemically suspect — flag for human review.
+    event_index = {e.id: e for e in ws.events}
+    revelation_event_types = {"utterance", "revelation", "discovery", "observation"}
+    intel_warn_threshold = 0.3
+    for eid, ent in ws.entities.items():
+        for b in ent.beliefs:
+            ev_id = b.acquired_via_event_id
+            ch_id = b.acquired_via_channel_id
+            if ev_id and ev_id in event_index:
+                src_evt = event_index[ev_id]
+                if src_evt.event_type not in revelation_event_types:
+                    issues.append(ValidationIssue(
+                        severity="warning", category="semantic_provenance",
+                        detail=(
+                            f"Entity '{eid}' belief about '{b.target_id}' "
+                            f"is acquired_via_event_id='{ev_id}' whose "
+                            f"event_type='{src_evt.event_type}' is not a "
+                            f"revelation-class event "
+                            f"({sorted(revelation_event_types)}). Likely "
+                            f"extraction noise."
+                        ),
+                    ))
+                # Cross-field coherence: if both channel and utterance
+                # are set, the utterance must travel via that channel.
+                if (
+                    ch_id
+                    and src_evt.event_type == "utterance"
+                    and src_evt.via_channel_id
+                    and src_evt.via_channel_id != ch_id
+                ):
+                    issues.append(ValidationIssue(
+                        severity="warning", category="semantic_provenance",
+                        detail=(
+                            f"Entity '{eid}' belief about '{b.target_id}' "
+                            f"declares acquired_via_channel_id='{ch_id}' "
+                            f"but the source utterance '{ev_id}' was "
+                            f"transmitted via_channel_id="
+                            f"'{src_evt.via_channel_id}'. Provenance is "
+                            f"internally inconsistent."
+                        ),
+                    ))
+            # High-confidence belief through low-intelligibility channel.
+            if ch_id and ch_id in ws.channels:
+                ch = ws.channels[ch_id]
+                intel = float(ch.intelligibility.get(eid, 1.0))
+                conf = float(getattr(b, "confidence", 1.0) or 1.0)
+                if intel < intel_warn_threshold and conf >= 0.8:
+                    issues.append(ValidationIssue(
+                        severity="warning", category="semantic_provenance",
+                        detail=(
+                            f"Entity '{eid}' holds confident belief "
+                            f"(conf={conf:.2f}) about '{b.target_id}' "
+                            f"acquired through channel '{ch_id}' where "
+                            f"its intelligibility is only {intel:.2f}. "
+                            f"Low-intelligibility channels should not "
+                            f"yield high-confidence beliefs."
+                        ),
+                    ))
+
+    # Check event actor_ids and target_ids.
+    #
+    # For non-utterance events: actor_ids must be ENT_, target_ids must
+    # be ENT_/OBJ_ (mirrors the physics_extraction prompt).
+    #
+    # For utterance events: per social_extraction.md, the speaker (and
+    # therefore actor_ids[0]) MAY be ENT_ or OBJ_ (e.g. a dossier, a
+    # telescreen broadcast); target_ids MAY additionally include EVT_,
+    # WORLD_, and LOC_ ids — utterances are *about* topics, and topics
+    # are commonly past events, world facts, or places. Restricting
+    # utterance target_ids to ENT_/OBJ_ would block the prompt's own
+    # documented "X tells Y about EVT_Z" pattern.
+    object_ids = set(ws.objects.keys())
+    world_trait_ids = set(ws.world_traits.keys())
+    event_id_set = {e.id for e in ws.events}
+    for evt in ws.events:
+        is_utterance = evt.event_type == "utterance"
+        actor_allowed = (entity_ids | object_ids) if is_utterance else entity_ids
+        target_allowed = (
+            entity_ids | object_ids | event_id_set | world_trait_ids | location_ids
+            if is_utterance
+            else entity_ids | object_ids
+        )
+        actor_label = "entity/object" if is_utterance else "entity"
+        target_label = (
+            "entity/object/event/world_trait/location"
+            if is_utterance
+            else "entity/object"
+        )
         for aid in evt.actor_ids:
-            if aid not in entity_ids:
+            if aid not in actor_allowed:
                 issues.append(ValidationIssue(
                     severity="error", category="hallucinated_id",
-                    detail=f"EventNode '{evt.id}' actor_ids entry '{aid}' is not a valid entity.",
+                    detail=f"EventNode '{evt.id}' actor_ids entry '{aid}' is not a valid {actor_label}.",
                 ))
         for tid in evt.target_ids:
-            if tid not in (entity_ids | object_ids):
+            if tid not in target_allowed:
                 issues.append(ValidationIssue(
                     severity="error", category="hallucinated_id",
-                    detail=f"EventNode '{evt.id}' target_ids entry '{tid}' is not a valid entity/object.",
+                    detail=f"EventNode '{evt.id}' target_ids entry '{tid}' is not a valid {target_label}.",
                 ))
 
     # Check entity location_id references
@@ -3324,20 +3857,26 @@ def _programmatic_validation(ws: WorldStateV1) -> List[ValidationIssue]:
                 ),
             ))
 
-    # --- Information edge density check ---
-    if len(ws.events) >= 3 and len(ws.information_topology) == 0:
-        issues.append(ValidationIssue(
-            severity="warning", category="missing_information",
-            detail="Zero information edges extracted. Most narratives contain conversations, "
-            "letters, or revelations that should produce InformationEdge entries.",
-        ))
-    elif len(ws.events) >= 5 and len(ws.information_topology) < len(ws.events) // 5:
+    # --- Information density check ---
+    utterance_count = sum(1 for e in ws.events if e.event_type == "utterance")
+    info_signal = len(ws.channels) + utterance_count
+    if len(ws.events) >= 3 and info_signal == 0:
         issues.append(ValidationIssue(
             severity="warning", category="missing_information",
             detail=(
-                f"Low information edge density: {len(ws.information_topology)} info edges "
-                f"for {len(ws.events)} events (ratio {len(ws.information_topology)/len(ws.events):.2f}). "
-                f"Expected at least 1 info edge per 5 events."
+                "Zero channels and zero utterance events extracted. Most "
+                "narratives contain conversations, letters, or revelations "
+                "that should produce a Channel or an utterance EventNode."
+            ),
+        ))
+    elif len(ws.events) >= 5 and info_signal < len(ws.events) // 5:
+        issues.append(ValidationIssue(
+            severity="warning", category="missing_information",
+            detail=(
+                f"Low information density: {len(ws.channels)} channels + "
+                f"{utterance_count} utterances for {len(ws.events)} events "
+                f"(ratio {info_signal / len(ws.events):.2f}). Expected at "
+                f"least 1 information signal per 5 events."
             ),
         ))
 
@@ -3529,15 +4068,15 @@ def _validate_time_ordering(ws: WorldStateV1) -> List[ValidationIssue]:
                 ),
             ))
 
-    # 4. Check information edges: terminated cannot precede established
-    for ie in ws.information_topology:
-        if ie.terminated_at_fabula is not None and ie.terminated_at_fabula < ie.established_at_fabula:
+    # 4. Check channels: terminated cannot precede established
+    for cid, ch in ws.channels.items():
+        if ch.terminated_at_fabula is not None and ch.terminated_at_fabula < ch.established_at_fabula:
             issues.append(ValidationIssue(
                 severity="error", category="temporal",
                 detail=(
-                    f"InformationEdge '{ie.source_id}'→{ie.target_ids}: "
-                    f"terminated_at_fabula ({ie.terminated_at_fabula}) < "
-                    f"established_at_fabula ({ie.established_at_fabula})."
+                    f"Channel '{cid}' (participants={ch.participant_ids}): "
+                    f"terminated_at_fabula ({ch.terminated_at_fabula}) < "
+                    f"established_at_fabula ({ch.established_at_fabula})."
                 ),
             ))
 

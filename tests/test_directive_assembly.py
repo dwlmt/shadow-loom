@@ -9,14 +9,14 @@ from copy import deepcopy
 
 from shadow_loom.models import (
     WorldStateV1, Location, Entity, EventNode, NarrativeObject,
-    CausalEdge, SpatialEdge, RelationshipEdge, InformationEdge,
+    CausalEdge, SpatialEdge, RelationshipEdge,
     TraitVector, Affordance, Belief,
 )
 from shadow_loom.extract_graph import extract_ego_graph_from_memory
 from shadow_loom.directive_assembly import (
     DirectiveAssembler, CreativeBrief,
     EpistemicGap, TraitTrajectory, RelationshipTension, ConstraintBlock,
-    NarrativeTension, HiddenInformationChannel,
+    NarrativeTension, HiddenChannel,
 )
 from shadow_loom.query_models import DirectiveQuery
 from shadow_loom.narrative_physics import calculate_narrative_physics
@@ -125,7 +125,7 @@ class TestRelationshipTensions:
 
         assert len(tensions) >= 1
         for t in tensions:
-            assert t.source_id == "ENT_MACBETH" or t.target_id == "ENT_MACBETH"
+            assert "ENT_MACBETH" in t.participant_ids or t.target_id == "ENT_MACBETH"
 
     def test_asymmetry_score_non_negative(self):
         """Asymmetry score must be >= 0."""
@@ -501,7 +501,7 @@ class TestSyuzhetAwareConstraints:
 # =====================================================================
 # HIDDEN INFORMATION CHANNELS
 # =====================================================================
-class TestHiddenInformationChannels:
+class TestHiddenChannels:
     """compute_hidden_channels must detect undiscovered InformationEdges."""
 
     def test_no_hidden_channels_without_anchor(self):
@@ -511,21 +511,45 @@ class TestHiddenInformationChannels:
         hidden = assembler.compute_hidden_channels()
         assert hidden == []
 
-    def test_hidden_channels_with_high_discovered_at_syuzhet(self):
-        """InformationEdges with discovered_at_syuzhet > anchor should be hidden."""
+    def test_hidden_channels_with_future_utterance(self):
+        """A Channel whose only utterance has syuzhet_index > anchor should be hidden."""
+        from shadow_loom.models import Channel, EventNode
         ws = deepcopy(orwell_ws)
-        # Inject a hidden channel that's discovered late
-        ws.information_topology[0].discovered_at_syuzhet = 99
+        # Add a fresh channel + a future utterance over it
+        ws.channels["CHN_FUTURE"] = Channel(
+            id="CHN_FUTURE", name="future", medium="speech",
+            participant_ids=["ENT_WINSTON", "ENT_OBRIEN"],
+            established_at_fabula=100,
+        )
+        ws.events.append(EventNode(
+            id="EVT_UTT_FUTURE", event_type="utterance",
+            description="future", speaker_id="ENT_WINSTON",
+            addressee_ids=["ENT_OBRIEN"], actor_ids=["ENT_WINSTON"],
+            target_ids=[], via_channel_id="CHN_FUTURE",
+            fabula_time=2000, syuzhet_index=99,
+        ))
         ego = _ego_payload(ws, ["ENT_WINSTON"])
         assembler = DirectiveAssembler(None, ego, ws)
         hidden = assembler.compute_hidden_channels(syuzhet_anchor=5)
-        assert len(hidden) >= 1
-        assert hidden[0].discovered_at_syuzhet == 99
+        assert any(h.channel_id == "CHN_FUTURE" or h.utterance_event_id == "EVT_UTT_FUTURE"
+                   for h in hidden)
 
     def test_hidden_channels_added_to_brief(self):
         """Suspense brief should include hidden channels as narrative constraints."""
+        from shadow_loom.models import Channel, EventNode
         ws = deepcopy(orwell_ws)
-        ws.information_topology[0].discovered_at_syuzhet = 99
+        ws.channels["CHN_FUTURE"] = Channel(
+            id="CHN_FUTURE", name="future", medium="speech",
+            participant_ids=["ENT_WINSTON", "ENT_OBRIEN"],
+            established_at_fabula=100,
+        )
+        ws.events.append(EventNode(
+            id="EVT_UTT_FUTURE", event_type="utterance",
+            description="future", speaker_id="ENT_WINSTON",
+            addressee_ids=["ENT_OBRIEN"], actor_ids=["ENT_WINSTON"],
+            target_ids=[], via_channel_id="CHN_FUTURE",
+            fabula_time=2000, syuzhet_index=99,
+        ))
         ego = _ego_payload(ws, ["ENT_WINSTON"])
         assembler = DirectiveAssembler(None, ego, ws)
 
@@ -538,7 +562,7 @@ class TestHiddenInformationChannels:
 
         hidden_constraints = [
             c for c in brief.constraints
-            if "HIDDEN CHANNEL" in c.instruction
+            if "HIDDEN CHANNEL" in c.instruction or "HIDDEN UTTERANCE" in c.instruction
         ]
         assert len(hidden_constraints) >= 1
 
@@ -930,8 +954,7 @@ class TestMysteryScore:
             ],
             spatial_topology=[],
             social_topology=[],
-            information_topology=[],
-        )
+            )
 
     def test_hidden_ancestors_detected(self):
         """Mystery score > 0 when syuzhet_anchor hides a causal predecessor."""
@@ -1017,8 +1040,7 @@ class TestDramaticIronyScore:
             ],
             spatial_topology=[],
             social_topology=[],
-            information_topology=[],
-        )
+            )
         ego = _ego_payload(ws, ["ENT_A"])
         assembler = DirectiveAssembler(None, ego, ws)
         score = assembler.compute_dramatic_irony_score(
@@ -1073,8 +1095,7 @@ class TestSuspenseScore:
             ],
             spatial_topology=[],
             social_topology=[],
-            information_topology=[],
-        )
+            )
 
     def test_suspense_positive_when_threat_exceeds_hope(self):
         """Suspense > 0 when P(threat) > P(hope)."""
@@ -1110,8 +1131,7 @@ class TestSuspenseScore:
             causal_topology=[],
             spatial_topology=[],
             social_topology=[],
-            information_topology=[],
-        )
+            )
         ego = _ego_payload(ws, ["ENT_X"])
         assembler = DirectiveAssembler(None, ego, ws)
         score = assembler.compute_suspense_score(["ENT_X"], syuzhet_anchor=1)
@@ -1163,8 +1183,7 @@ class TestSurpriseScore:
             ],
             spatial_topology=[],
             social_topology=[],
-            information_topology=[],
-        )
+            )
         ego = _ego_payload(ws, ["ENT_A"])
         assembler = DirectiveAssembler(None, ego, ws)
         score = assembler.compute_surprise_score(
@@ -1199,8 +1218,7 @@ class TestSurpriseScore:
             ],
             spatial_topology=[],
             social_topology=[],
-            information_topology=[],
-        )
+            )
         ego = _ego_payload(ws, ["ENT_A"])
         assembler = DirectiveAssembler(None, ego, ws)
         score_revealed = assembler.compute_surprise_score(
@@ -1244,8 +1262,7 @@ class TestSurpriseScore:
                 ],
                 spatial_topology=[],
                 social_topology=[],
-                information_topology=[],
-            )
+                )
 
         ws_moderate = _make_ws(0.7)
         ws_extreme = _make_ws(0.95)

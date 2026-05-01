@@ -11,9 +11,9 @@ import pytest
 from shadow_loom.models import (
     Belief,
     CausalEdge,
+    Channel,
     Entity,
     EventNode,
-    InformationEdge,
     Location,
     NarrativeObject,
     RelationshipEdge,
@@ -64,7 +64,6 @@ def _minimal_ws(**overrides) -> WorldStateV1:
         ],
         causal_topology=[],
         spatial_topology=[],
-        information_topology=[],
         social_topology=[],
     )
     defaults.update(overrides)
@@ -307,11 +306,12 @@ class TestProgrammaticValidation:
         errors = [i for i in issues if i.severity == "error" and "LOC_MISSING" in i.detail]
         assert len(errors) >= 1
 
-    def test_broken_info_edge_source(self):
-        ws = _minimal_ws(information_topology=[
-            InformationEdge(source_id="ENT_NOBODY", target_ids=["ENT_X"],
-                            medium="speech", established_at_fabula=100),
-        ])
+    def test_broken_channel_participant(self):
+        ws = _minimal_ws(channels={
+            "CHN_X": Channel(id="CHN_X", name="x", medium="speech",
+                              participant_ids=["ENT_NOBODY", "ENT_X"],
+                              established_at_fabula=100),
+        })
         issues = _programmatic_validation(ws)
         errors = [i for i in issues if i.severity == "error" and "ENT_NOBODY" in i.detail]
         assert len(errors) >= 1
@@ -446,12 +446,12 @@ class TestValidateTimeOrdering:
         errors = [i for i in issues if "cause" in i.detail.lower() and "effect" in i.detail.lower()]
         assert len(errors) >= 1
 
-    def test_info_edge_terminated_before_established(self):
-        ws = _minimal_ws(information_topology=[
-            InformationEdge(source_id="ENT_X", target_ids=["ENT_X"],
-                            medium="speech",
-                            established_at_fabula=200, terminated_at_fabula=100),
-        ])
+    def test_channel_terminated_before_established(self):
+        ws = _minimal_ws(channels={
+            "CHN_X": Channel(id="CHN_X", name="x", medium="speech",
+                              participant_ids=["ENT_X", "ENT_Y"],
+                              established_at_fabula=200, terminated_at_fabula=100),
+        })
         issues = _validate_time_ordering(ws)
         errors = [i for i in issues if "terminated_at_fabula" in i.detail]
         assert len(errors) >= 1
@@ -635,14 +635,23 @@ class TestAutoRepair:
         assert len(repaired.spatial_topology) == 0
         assert len(repairs) == 1
 
-    def test_removes_broken_info_edge_target(self):
-        ws = _minimal_ws(information_topology=[
-            InformationEdge(source_id="ENT_X", target_ids=["ENT_X", "ENT_GONE"],
-                            medium="speech", established_at_fabula=100),
-        ])
+    def test_removes_broken_channel_participant(self):
+        ws = _minimal_ws(
+            entities={
+                "ENT_X": Entity(id="ENT_X", name="X", location_id="LOC_A", status="healthy",
+                                traits={"t": TraitVector(value=0.5, inertia=0.5)}),
+                "ENT_Y": Entity(id="ENT_Y", name="Y", location_id="LOC_A", status="healthy",
+                                traits={"t": TraitVector(value=0.5, inertia=0.5)}),
+            },
+            channels={
+                "CHN_X": Channel(id="CHN_X", name="x", medium="speech",
+                                  participant_ids=["ENT_X", "ENT_Y", "ENT_GONE"],
+                                  established_at_fabula=100),
+            },
+        )
         repaired, repairs = _auto_repair(ws)
-        assert len(repaired.information_topology) == 1
-        assert repaired.information_topology[0].target_ids == ["ENT_X"]
+        assert len(repaired.channels) == 1
+        assert "ENT_GONE" not in repaired.channels["CHN_X"].participant_ids
         assert any("ENT_GONE" in r for r in repairs)
 
     def test_deduplicates_events(self):
@@ -663,13 +672,14 @@ class TestAutoRepair:
         assert len(repairs) == 0
         assert len(repaired.events) == len(ws.events)
 
-    def test_removes_info_edge_with_all_bad_targets(self):
-        ws = _minimal_ws(information_topology=[
-            InformationEdge(source_id="ENT_X", target_ids=["ENT_GONE"],
-                            medium="speech", established_at_fabula=100),
-        ])
+    def test_removes_channel_with_too_few_participants(self):
+        ws = _minimal_ws(channels={
+            "CHN_X": Channel(id="CHN_X", name="x", medium="speech",
+                              participant_ids=["ENT_X", "ENT_GONE"],
+                              established_at_fabula=100),
+        })
         repaired, repairs = _auto_repair(ws)
-        assert len(repaired.information_topology) == 0
+        assert len(repaired.channels) == 0
 
 
 # =====================================================================
@@ -718,18 +728,19 @@ class TestOrphanAndInfoDensity:
         info_warns = [i for i in issues if i.category == "missing_information"]
         assert len(info_warns) >= 1
 
-    def test_sufficient_info_edges_ok(self):
+    def test_sufficient_channels_ok(self):
         ws = _minimal_ws(
             events=[
                 EventNode(id=f"EVT_{i}", fabula_time=i * 100, syuzhet_index=i,
                           event_type="choice", description=f"e{i}")
                 for i in range(5)
             ],
-            information_topology=[
-                InformationEdge(source_id="ENT_X", target_ids=["ENT_X"],
-                                medium="speech", established_at_fabula=i * 100)
+            channels={
+                f"CHN_{i}": Channel(id=f"CHN_{i}", name=f"c{i}", medium="speech",
+                                     participant_ids=["ENT_X", "ENT_Y"],
+                                     established_at_fabula=i * 100)
                 for i in range(3)
-            ],
+            },
         )
         issues = _programmatic_validation(ws)
         info_warns = [i for i in issues if i.category == "missing_information"]
@@ -784,7 +795,7 @@ class TestNormalizeFabulaTimes:
         result = _normalize_fabula_times(ws, spacing=100)
         assert result.causal_topology[0].fabula_time == 100
 
-    def test_rescales_info_edges(self):
+    def test_rescales_channels(self):
         ws = _minimal_ws(
             events=[
                 EventNode(id="EVT_1", fabula_time=1, syuzhet_index=0,
@@ -792,16 +803,16 @@ class TestNormalizeFabulaTimes:
                 EventNode(id="EVT_2", fabula_time=2, syuzhet_index=1,
                           event_type="outcome", description="b"),
             ],
-            information_topology=[
-                InformationEdge(source_id="ENT_X", target_ids=["ENT_X"],
-                                medium="speech", established_at_fabula=1,
-                                terminated_at_fabula=2),
-            ],
+            channels={
+                "CHN_X": Channel(id="CHN_X", name="x", medium="speech",
+                                  participant_ids=["ENT_X", "ENT_Y"],
+                                  established_at_fabula=1, terminated_at_fabula=2),
+            },
         )
         result = _normalize_fabula_times(ws, spacing=100)
-        ie = result.information_topology[0]
-        assert ie.established_at_fabula == 100
-        assert ie.terminated_at_fabula == 200
+        ch = result.channels["CHN_X"]
+        assert ch.established_at_fabula == 100
+        assert ch.terminated_at_fabula == 200
 
     def test_rescales_social_edges(self):
         ws = _minimal_ws(
@@ -1070,20 +1081,22 @@ class TestNewPipelineModels:
 
     def test_social_extraction_empty(self):
         s = SocialExtraction()
-        assert s.information_topology == []
+        assert s.channels == {}
+        assert s.utterance_events == []
         assert s.social_topology == []
 
     def test_social_extraction_with_data(self):
-        ie = InformationEdge(
-            source_id="ENT_A", target_ids=["ENT_B"],
-            medium="speech", established_at_fabula=100,
+        ch = Channel(
+            id="CHN_X", name="x", medium="speech",
+            participant_ids=["ENT_A", "ENT_B"],
+            established_at_fabula=100,
         )
         re_edge = RelationshipEdge(
             source_entity_id="ENT_A", target_entity_id="ENT_B",
             last_updated_fabula=100,
         )
-        s = SocialExtraction(information_topology=[ie], social_topology=[re_edge])
-        assert len(s.information_topology) == 1
+        s = SocialExtraction(channels={"CHN_X": ch}, social_topology=[re_edge])
+        assert len(s.channels) == 1
         assert len(s.social_topology) == 1
 
 
@@ -1180,8 +1193,8 @@ class TestResultValidators:
         assert len(bad) == 1
         assert "EVT_HALLUCINATED" in bad[0]
 
-    def test_social_validator_catches_bad_info_source(self):
-        """A hallucinated source_id in an InformationEdge should be caught."""
+    def test_social_validator_catches_bad_channel_participant(self):
+        """A hallucinated participant_id in a Channel should be caught."""
         reg = GlobalRegister(
             locations={"LOC_A": Location(name="A", description="a", ambient_state={})},
             objects={},
@@ -1191,17 +1204,19 @@ class TestResultValidators:
             )},
         )
         social = SocialExtraction(
-            information_topology=[InformationEdge(
-                source_id="ENT_GHOST", target_ids=["ENT_X"],
-                medium="speech", established_at_fabula=100,
-            )],
+            channels={"CHN_X": Channel(
+                id="CHN_X", name="x", medium="speech",
+                participant_ids=["ENT_GHOST", "ENT_X"],
+                established_at_fabula=100,
+            )},
         )
         entity_ids = set(reg.entities.keys())
         node_ids = entity_ids | set(reg.objects.keys())
         bad = []
-        for ie in social.information_topology:
-            if ie.source_id not in node_ids:
-                bad.append(f"InformationEdge source_id '{ie.source_id}' is not a valid entity/object.")
+        for ch in social.channels.values():
+            for pid in ch.participant_ids:
+                if pid not in node_ids:
+                    bad.append(f"Channel participant_id '{pid}' is not a valid entity/object.")
         assert len(bad) == 1
         assert "ENT_GHOST" in bad[0]
 
@@ -1298,12 +1313,12 @@ class TestReconcileChunkTopologies:
     """Tests for _reconcile_chunk_topologies — syuzhet renumbering,
     fabula ordering, and duplicate event ID resolution."""
 
-    def _make_topo(self, events=None, causal=None, info=None, social=None,
+    def _make_topo(self, events=None, causal=None, channels=None, social=None,
                    spatial=None, entity_updates=None) -> ChunkTopology:
         return ChunkTopology(
             events=events or [],
             causal_topology=causal or [],
-            information_topology=info or [],
+            channels=channels or {},
             social_topology=social or [],
             spatial_topology=spatial or [],
             entity_updates=entity_updates or [],
@@ -1400,36 +1415,34 @@ class TestReconcileChunkTopologies:
         assert len(result) == 1
         assert result[0].events == []
 
-    def test_discovered_at_syuzhet_remapped(self):
-        """InformationEdge.discovered_at_syuzhet should follow syuzhet renumbering."""
+    def test_channels_preserved_across_chunks(self):
+        """Channels from different chunks should both survive reconciliation."""
         topo0 = self._make_topo(
             events=[
                 EventNode(id="EVT_A", description="a", event_type="choice",
                           fabula_time=100, syuzhet_index=0, actor_ids=[], target_ids=[]),
             ],
-            info=[
-                InformationEdge(source_id="ENT_X", target_ids=["ENT_Y"],
-                                medium="speech", established_at_fabula=100,
-                                discovered_at_syuzhet=0),
-            ],
+            channels={
+                "CHN_A": Channel(id="CHN_A", name="a", medium="speech",
+                                  participant_ids=["ENT_X", "ENT_Y"],
+                                  established_at_fabula=100),
+            },
         )
         topo1 = self._make_topo(
             events=[
                 EventNode(id="EVT_B", description="b", event_type="choice",
                           fabula_time=200, syuzhet_index=0, actor_ids=[], target_ids=[]),
             ],
-            info=[
-                InformationEdge(source_id="ENT_X", target_ids=["ENT_Y"],
-                                medium="letter", established_at_fabula=200,
-                                discovered_at_syuzhet=0),
-            ],
+            channels={
+                "CHN_B": Channel(id="CHN_B", name="b", medium="letter",
+                                  participant_ids=["ENT_X", "ENT_Y"],
+                                  established_at_fabula=200),
+            },
         )
         config = ExtractionConfig(fabula_time_spacing=100)
         result = _reconcile_chunk_topologies([topo0, topo1], config)
-        # Chunk 0's info edge should have discovered_at_syuzhet=0
-        assert result[0].information_topology[0].discovered_at_syuzhet == 0
-        # Chunk 1's info edge should have discovered_at_syuzhet=1 (renumbered)
-        assert result[1].information_topology[0].discovered_at_syuzhet == 1
+        assert "CHN_A" in result[0].channels
+        assert "CHN_B" in result[1].channels
 
     def test_fabula_shift_includes_entity_update_beliefs(self):
         """_shift_fabula_times must shift beliefs in entity_updates too,
@@ -1478,7 +1491,6 @@ class TestApplyEventRenames:
             events=[EventNode(id="EVT_OLD", description="d", event_type="choice",
                               fabula_time=100, syuzhet_index=0, actor_ids=[], target_ids=[])],
             causal_topology=[],
-            information_topology=[],
             social_topology=[],
             spatial_topology=[],
             entity_updates=[],
@@ -1494,7 +1506,6 @@ class TestApplyEventRenames:
                 causality_type="chain_reaction", mechanism="physical",
                 fabula_time=100,
             )],
-            information_topology=[],
             social_topology=[],
             spatial_topology=[],
             entity_updates=[],
@@ -1508,7 +1519,6 @@ class TestApplyEventRenames:
             events=[EventNode(id="EVT_KEEP", description="d", event_type="choice",
                               fabula_time=100, syuzhet_index=0, actor_ids=[], target_ids=[])],
             causal_topology=[],
-            information_topology=[],
             social_topology=[],
             spatial_topology=[],
             entity_updates=[],
@@ -1525,7 +1535,6 @@ class TestShiftFabulaTimes:
             events=[EventNode(id="EVT_A", description="d", event_type="choice",
                               fabula_time=100, syuzhet_index=0, actor_ids=[], target_ids=[])],
             causal_topology=[],
-            information_topology=[],
             social_topology=[],
             spatial_topology=[],
             entity_updates=[],
@@ -1541,7 +1550,6 @@ class TestShiftFabulaTimes:
                 causality_type="chain_reaction", mechanism="physical",
                 fabula_time=200,
             )],
-            information_topology=[],
             social_topology=[],
             spatial_topology=[],
             entity_updates=[],
@@ -1549,29 +1557,28 @@ class TestShiftFabulaTimes:
         _shift_fabula_times(topo, 1000)
         assert topo.causal_topology[0].fabula_time == 1200
 
-    def test_shifts_info_edges(self):
+    def test_shifts_channels(self):
         topo = ChunkTopology(
             events=[],
             causal_topology=[],
-            information_topology=[InformationEdge(
-                source_id="ENT_A", target_ids=["ENT_B"],
-                medium="speech",
+            channels={"CHN_X": Channel(
+                id="CHN_X", name="x", medium="speech",
+                participant_ids=["ENT_A", "ENT_B"],
                 established_at_fabula=100,
                 terminated_at_fabula=200,
-            )],
+            )},
             social_topology=[],
             spatial_topology=[],
             entity_updates=[],
         )
         _shift_fabula_times(topo, 300)
-        assert topo.information_topology[0].established_at_fabula == 400
-        assert topo.information_topology[0].terminated_at_fabula == 500
+        assert topo.channels["CHN_X"].established_at_fabula == 400
+        assert topo.channels["CHN_X"].terminated_at_fabula == 500
 
     def test_shifts_social_edges(self):
         topo = ChunkTopology(
             events=[],
             causal_topology=[],
-            information_topology=[],
             social_topology=[RelationshipEdge(
                 source_entity_id="ENT_A", target_entity_id="ENT_B",
                 affinity=0.5, fear=0.0, power_balance=0.0,
@@ -1587,7 +1594,6 @@ class TestShiftFabulaTimes:
         topo = ChunkTopology(
             events=[],
             causal_topology=[],
-            information_topology=[],
             social_topology=[],
             spatial_topology=[SpatialEdge(
                 source_id="LOC_A", target_id="LOC_B",

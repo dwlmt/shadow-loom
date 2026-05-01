@@ -89,13 +89,44 @@ class NarrativeTension(BaseModel):
     ] = "linear"
 
 
-class HiddenInformationChannel(BaseModel):
-    """An InformationEdge whose existence has not yet been revealed to the reader."""
-    source_id: str
-    target_ids: List[str]
+class HiddenChannel(BaseModel):
+    """A communication signal whose existence is not yet on-page for the reader.
+
+    Represents one of two cases:
+
+    * **Hidden Channel** (``kind='channel'``): a standing :class:`Channel`
+      capability that exists in the world but has not yet been disclosed
+      via any on-page utterance with ``via_channel_id == channel.id``
+      and ``syuzhet_index <= anchor``.
+    * **Hidden Utterance** (``kind='utterance'``): a discrete
+      ``EventNode(event_type='utterance')`` with ``syuzhet_index >
+      anchor`` (the message itself happens later in narration order).
+    """
+    kind: Literal["channel", "utterance"]
+    channel_id: Optional[str] = None
+    utterance_event_id: Optional[str] = None
     medium: str
-    discovered_at_syuzhet: int
-    is_encrypted: bool = False
+    participant_ids: List[str] = Field(default_factory=list)
+    addressee_ids: List[str] = Field(default_factory=list)
+    speaker_id: Optional[str] = None
+    discovered_at_syuzhet: Optional[int] = Field(
+        default=None,
+        description=(
+            "For ``kind='utterance'``, the syuzhet_index of the utterance "
+            "event itself. For ``kind='channel'``, the syuzhet_index of "
+            "the earliest utterance via this channel (None if no "
+            "utterance ever surfaces)."
+        ),
+    )
+    unintelligible_for: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Entity IDs whose per-recipient intelligibility on this "
+            "channel is below the configured threshold. Even if the "
+            "channel is on-page, these listeners cannot reliably parse "
+            "its content — a fertile source of dramatic irony."
+        ),
+    )
 
 
 class CandidateResult(BaseModel):
@@ -275,7 +306,7 @@ class CreativeBrief(BaseModel):
     constraints: List[ConstraintBlock] = Field(default_factory=list)
     epistemic_gaps: List[EpistemicGap] = Field(default_factory=list)
     narrative_tensions: List[NarrativeTension] = Field(default_factory=list)
-    hidden_channels: List[HiddenInformationChannel] = Field(default_factory=list)
+    hidden_channels: List[HiddenChannel] = Field(default_factory=list)
     trait_trajectories: List[TraitTrajectory] = Field(default_factory=list)
     relationship_tensions: List[RelationshipTension] = Field(default_factory=list)
     physics_override: Optional[str] = None
@@ -289,6 +320,38 @@ class CreativeBrief(BaseModel):
     entanglement_pairs: List[EntanglementPair] = Field(default_factory=list)
     intervention_mechanisms: List[InterventionMechanism] = Field(default_factory=list)
     abduction_truths: List[AbductionTruth] = Field(default_factory=list)
+
+    # --- AMWN branch context (Story-integration plan, Step 4) ---
+    branch_world_id: Literal["factual", "shadow"] = Field(
+        default="factual",
+        description=(
+            "Which AMWN branch this brief is being rendered onto. "
+            "'factual' = the prose extends the canonical mainline; "
+            "'shadow' = the prose lives on a counterfactual fork and "
+            "should be framed as a divergent possibility. Downstream "
+            "renderers use this to set tense/mood (e.g. subjunctive "
+            "framing, 'in this branch...' scaffolding) and to suppress "
+            "factual-mainline continuity assumptions."
+        ),
+    )
+    branch_label: Optional[str] = Field(
+        default=None,
+        description=(
+            "Human-readable label for the shadow branch, when known "
+            "(e.g. 'What if Duncan lived'). Surfaced to the generator "
+            "so the rendered prose can echo the user's framing."
+        ),
+    )
+    factual_contrast_summary: Optional[str] = Field(
+        default=None,
+        description=(
+            "Brief prose summary of what *did* happen on the factual "
+            "mainline at the same syuzhet horizon, included only when "
+            "``branch_world_id == 'shadow'``. Used by the generator "
+            "to keep the shadow branch in productive contrast with "
+            "canon rather than re-narrating identical events."
+        ),
+    )
 
 
 # =====================================================================
@@ -515,28 +578,93 @@ class DirectiveAssembler:
         return tensions
 
     # ------------------------------------------------------------------
-    # Hidden information channels (discovered_at_syuzhet)
+    # Hidden information signals (Channels + future utterances)
     # ------------------------------------------------------------------
     def compute_hidden_channels(
         self, syuzhet_anchor: Optional[int] = None,
-    ) -> List[HiddenInformationChannel]:
-        """Find InformationEdges whose existence is hidden from the reader.
+    ) -> List[HiddenChannel]:
+        """Find communication signals hidden from the reader at this anchor.
 
-        An edge is hidden when its ``discovered_at_syuzhet`` is greater
-        than the current *syuzhet_anchor*.
+        Returns two kinds of hidden signal:
+
+        * **Channels** that exist in the world but whose first on-page
+          utterance comes after ``syuzhet_anchor`` (or which never
+          surface). The mere existence of the channel is reader-secret.
+        * **Utterance events** with ``syuzhet_index > syuzhet_anchor``.
+          The message itself happens later in narration order, so its
+          content must not leak.
         """
         if syuzhet_anchor is None:
             return []
-        hidden: List[HiddenInformationChannel] = []
-        for ie in self.world_state.information_topology:
-            if ie.discovered_at_syuzhet > syuzhet_anchor:
-                hidden.append(HiddenInformationChannel(
-                    source_id=ie.source_id,
-                    target_ids=ie.target_ids,
-                    medium=ie.medium,
-                    discovered_at_syuzhet=ie.discovered_at_syuzhet,
-                    is_encrypted=ie.is_encrypted,
+
+        # Build channel_id → earliest revealed utterance syuzhet_index.
+        channel_first_utt: Dict[str, Optional[int]] = {
+            cid: None for cid in self.world_state.channels.keys()
+        }
+        for evt in self.world_state.events:
+            if evt.event_type != "utterance" or not evt.via_channel_id:
+                continue
+            cid = evt.via_channel_id
+            if cid not in channel_first_utt:
+                continue
+            current = channel_first_utt[cid]
+            if current is None or evt.syuzhet_index < current:
+                channel_first_utt[cid] = evt.syuzhet_index
+
+        hidden: List[HiddenChannel] = []
+        intel_thresh = _get_settings().physics.intelligibility_threshold
+        for cid, ch in self.world_state.channels.items():
+            unintel = sorted([
+                pid for pid in ch.participant_ids
+                if float(ch.intelligibility.get(pid, 1.0)) < intel_thresh
+            ])
+            first = channel_first_utt.get(cid)
+            if first is None:
+                # A channel that never carries an on-page utterance is
+                # ambient capability, not a withheld secret. We still
+                # surface it when at least one participant cannot
+                # reliably parse what flows through it — that
+                # asymmetry is itself a dramatic-irony lever even
+                # though the channel is technically visible.
+                if unintel:
+                    hidden.append(HiddenChannel(
+                        kind="channel",
+                        channel_id=cid,
+                        medium=ch.medium,
+                        participant_ids=list(ch.participant_ids),
+                        discovered_at_syuzhet=None,
+                        unintelligible_for=unintel,
+                    ))
+                continue
+            if first > syuzhet_anchor:
+                hidden.append(HiddenChannel(
+                    kind="channel",
+                    channel_id=cid,
+                    medium=ch.medium,
+                    participant_ids=list(ch.participant_ids),
+                    discovered_at_syuzhet=first,
+                    unintelligible_for=unintel,
                 ))
+
+        for evt in self.world_state.events:
+            if evt.event_type != "utterance":
+                continue
+            if evt.syuzhet_index <= syuzhet_anchor:
+                continue
+            ch = (
+                self.world_state.channels.get(evt.via_channel_id)
+                if evt.via_channel_id else None
+            )
+            hidden.append(HiddenChannel(
+                kind="utterance",
+                utterance_event_id=evt.id,
+                channel_id=evt.via_channel_id,
+                medium=ch.medium if ch else "unmediated",
+                participant_ids=list(ch.participant_ids) if ch else [],
+                addressee_ids=list(evt.addressee_ids),
+                speaker_id=evt.speaker_id,
+                discovered_at_syuzhet=evt.syuzhet_index,
+            ))
         return hidden
 
     # ------------------------------------------------------------------
@@ -685,26 +813,27 @@ class DirectiveAssembler:
                 continue
 
             # An entity is *aware* of an event when (a) they participate in
-            # it (actor or target — direct experience), or (b) they are the
-            # recipient of a revealed InformationEdge whose source carries
-            # the event, or (c) they hold a Belief whose target_id matches
-            # the event id. Belief.target_id is the *state* a character
-            # believes about (entity/object/event), so events with a direct
-            # belief entry are also counted.
+            # it (actor or target — direct experience), (b) a revealed
+            # utterance addressed to them refers to the event (either as a
+            # target of the utterance or via a Belief acquired through the
+            # utterance), or (c) they hold a Belief whose target_id matches
+            # the event id.
             events_known_by_character: set[str] = {
                 evt.id for evt in self.world_state.events
                 if eid in evt.actor_ids or eid in evt.target_ids
             }
-            for ie in self.world_state.information_topology:
-                if ie.discovered_at_syuzhet > syuzhet_anchor:
+            for utt in self.world_state.events:
+                if utt.event_type != "utterance":
                     continue
-                if eid not in ie.target_ids:
+                if utt.syuzhet_index > syuzhet_anchor:
                     continue
-                # Treat the source of a revealed information edge as a
-                # potential channel: if it names an event the character
-                # learns about it.
-                if ie.source_id.startswith("EVT_"):
-                    events_known_by_character.add(ie.source_id)
+                if eid not in utt.addressee_ids and eid != utt.speaker_id:
+                    continue
+                # Treat any EVT_ id mentioned in the utterance's targets as
+                # something the addressee learns about.
+                for tid in utt.target_ids:
+                    if tid.startswith("EVT_"):
+                        events_known_by_character.add(tid)
             events_known_by_character |= {
                 b.target_id for b in ent.beliefs
                 if b.target_id.startswith("EVT_")
@@ -724,15 +853,22 @@ class DirectiveAssembler:
                 if ce.source_id not in events_known_by_character:
                     irony_gaps += 1
 
-            # Revealed information edges whose existence the character
-            # cannot perceive (they are not a target). Counted as irony
-            # only when the source is an event the reader has seen.
-            for ie in self.world_state.information_topology:
-                if ie.discovered_at_syuzhet > syuzhet_anchor:
+            # Revealed utterance events whose addressees do NOT include
+            # this character. A revealed message that excludes the
+            # character but references events the reader has seen counts
+            # as dramatic irony.
+            for utt in self.world_state.events:
+                if utt.event_type != "utterance":
                     continue
-                if eid in ie.target_ids:
-                    continue  # Character is on the channel — no asymmetry
-                if not ie.source_id.startswith("EVT_") or ie.source_id not in revealed:
+                if utt.syuzhet_index > syuzhet_anchor:
+                    continue
+                if eid in utt.addressee_ids or eid == utt.speaker_id:
+                    continue
+                referenced_revealed = [
+                    tid for tid in utt.target_ids
+                    if tid.startswith("EVT_") and tid in revealed
+                ]
+                if not referenced_revealed:
                     continue
                 total_connections += 1
                 irony_gaps += 1
@@ -1301,20 +1437,36 @@ class DirectiveAssembler:
                             },
                         ))
 
-            # Hidden information channels amplify mystery
+            # Hidden information channels amplify mystery. Utterances
+            # are hard constraints (revealing the content of an unspoken
+            # line is a fidelity break) but standing channels are soft —
+            # a sealed letter or unrevealed phone tap can be teased
+            # on-page without naming what flows through it.
             if hidden_channels:
                 for hc in hidden_channels:
+                    if hc.kind == "channel":
+                        instr = (
+                            f"[HIDDEN CHANNEL]: A {hc.medium} link between "
+                            f"{hc.participant_ids} exists but is not yet "
+                            f"on-page. Do not reference it."
+                        )
+                        priority: Literal["hard", "soft"] = "soft"
+                    else:
+                        instr = (
+                            f"[HIDDEN UTTERANCE]: A {hc.medium} message "
+                            f"from {hc.speaker_id} to {hc.addressee_ids} "
+                            f"happens at syuzhet_index="
+                            f"{hc.discovered_at_syuzhet}. Do not reveal its content."
+                        )
+                        priority = "hard"
                     constraints.append(ConstraintBlock(
                         constraint_type="narrative",
-                        priority="hard",
-                        instruction=(
-                            f"[HIDDEN CHANNEL]: A {hc.medium} link from "
-                            f"{hc.source_id} to {hc.target_ids} exists but "
-                            f"is not revealed until syuzhet_index="
-                            f"{hc.discovered_at_syuzhet}. Do not reference it."
-                        ),
+                        priority=priority,
+                        instruction=instr,
                         evidence={
-                            "source_id": hc.source_id,
+                            "kind": hc.kind,
+                            "channel_id": hc.channel_id,
+                            "utterance_event_id": hc.utterance_event_id,
                             "medium": hc.medium,
                             "discovered_at_syuzhet": hc.discovered_at_syuzhet,
                         },
@@ -1376,13 +1528,16 @@ class DirectiveAssembler:
                     evt.id for evt in self.world_state.events
                     if eid in evt.actor_ids or eid in evt.target_ids
                 }
-                for ie in self.world_state.information_topology:
-                    if syuzhet_anchor is not None and ie.discovered_at_syuzhet > syuzhet_anchor:
+                for utt in self.world_state.events:
+                    if utt.event_type != "utterance":
                         continue
-                    if eid not in ie.target_ids:
+                    if syuzhet_anchor is not None and utt.syuzhet_index > syuzhet_anchor:
                         continue
-                    if ie.source_id.startswith("EVT_"):
-                        events_known_by_character.add(ie.source_id)
+                    if eid not in utt.addressee_ids and eid != utt.speaker_id:
+                        continue
+                    for tid in utt.target_ids:
+                        if tid.startswith("EVT_"):
+                            events_known_by_character.add(tid)
                 events_known_by_character |= {
                     b.target_id for b in ent.beliefs
                     if b.target_id.startswith("EVT_")
@@ -1572,21 +1727,35 @@ class DirectiveAssembler:
                             },
                         ))
 
-            # Layer 4: Hidden information channels
+            # Layer 4: Hidden information channels.  Same hard/soft
+            # split as the mystery branch above: utterances are hard
+            # (cannot be quoted before they happen), standing channels
+            # are soft (a sealed letter may be teased on-page).
             if hidden_channels:
                 for hc in hidden_channels:
+                    if hc.kind == "channel":
+                        instr = (
+                            f"[HIDDEN CHANNEL]: A {hc.medium} link between "
+                            f"{hc.participant_ids} exists but is not yet "
+                            f"on-page. Do not reference it."
+                        )
+                        priority: Literal["hard", "soft"] = "soft"
+                    else:
+                        instr = (
+                            f"[HIDDEN UTTERANCE]: A {hc.medium} message "
+                            f"from {hc.speaker_id} to {hc.addressee_ids} "
+                            f"happens at syuzhet_index="
+                            f"{hc.discovered_at_syuzhet}. Do not reveal its content."
+                        )
+                        priority = "hard"
                     constraints.append(ConstraintBlock(
                         constraint_type="narrative",
-                        priority="hard",
-                        instruction=(
-                            f"[HIDDEN CHANNEL]: A {hc.medium} link from "
-                            f"{hc.source_id} to {hc.target_ids} exists but "
-                            f"is not revealed until syuzhet_index="
-                            f"{hc.discovered_at_syuzhet}. Do not reference "
-                            f"it."
-                        ),
+                        priority=priority,
+                        instruction=instr,
                         evidence={
-                            "source_id": hc.source_id,
+                            "kind": hc.kind,
+                            "channel_id": hc.channel_id,
+                            "utterance_event_id": hc.utterance_event_id,
                             "medium": hc.medium,
                             "discovered_at_syuzhet": hc.discovered_at_syuzhet,
                         },

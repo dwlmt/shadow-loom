@@ -146,10 +146,14 @@ def run_and_save(
 
     if not short_circuited:
         changeset_json = None
+        branch_world_id = "factual"
+        branch_label = None
         if result.world_model and result.world_model.history:
             last = result.world_model.history[-1]
             if last.changeset:
                 changeset_json = last.changeset.model_dump_json()
+            branch_world_id = last.world_id
+            branch_label = last.branch_label
 
         if world_model_unchanged and result.prose:
             description = (
@@ -169,9 +173,19 @@ def run_and_save(
             parsed_query_json=query.model_dump_json(),
             prose=result.prose,
             user_id=user_row_id,
+            world_id=branch_world_id,
+            branch_label=branch_label,
         )
         response["version"] = ver.version
         response["version_row_id"] = ver.id
+        # AMWN branch envelope (Story-integration plan, Step 6): tells
+        # the MCP client which branch the new version landed on so it
+        # can render the version DAG correctly without a follow-up call.
+        response["branch"] = {
+            "world_id": ver.world_id,
+            "branch_label": ver.branch_label,
+            "ancestor_id": ver.ancestor_id,
+        }
         # Auto-advance the user's active-version pointer to the row we
         # just created so subsequent tool calls default to it.
         if user_row_id is not None:
@@ -214,6 +228,18 @@ def run_and_save(
             response["rule3_pruned_interventions"] = list(rule3)
         if rule2:
             response["rule2_redundant_evidence"] = list(rule2)
+        # Channels & beliefs subsystem: surface counterfactual side-effects
+        # on the epistemic layer (utterances neutralised, channels severed,
+        # downstream beliefs invalidated by provenance pruning).
+        pruned_utts = result.physics_result.get("pruned_utterance_event_ids") or []
+        disabled_chans = result.physics_result.get("disabled_channel_ids") or []
+        pruned_beliefs = result.physics_result.get("pruned_beliefs_count") or 0
+        if pruned_utts:
+            response["pruned_utterance_event_ids"] = list(pruned_utts)
+        if disabled_chans:
+            response["disabled_channel_ids"] = list(disabled_chans)
+        if pruned_beliefs:
+            response["pruned_beliefs_count"] = int(pruned_beliefs)
     if result.converged is not None:
         response["audit_converged"] = result.converged
         response["audit_iterations"] = result.audit_iterations

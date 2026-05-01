@@ -18,7 +18,7 @@ import networkx as nx
 
 from shadow_loom.models import (
     WorldStateV1, Location, Entity, EventNode, NarrativeObject,
-    CausalEdge, SpatialEdge, RelationshipEdge, InformationEdge,
+    CausalEdge, SpatialEdge, RelationshipEdge,
     TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
     GlobalTrait, WorldTraitSnapshot,
     reconstruct_entity_at, reconstruct_world_trait_at,

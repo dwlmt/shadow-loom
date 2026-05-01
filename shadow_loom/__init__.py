@@ -7,7 +7,7 @@ from shadow_loom.amwn import (
 )
 from shadow_loom.directive_assembly import (
     DirectiveAssembler, CreativeBrief, NarrativeTension,
-    HiddenInformationChannel, CandidateResult,
+    HiddenChannel, CandidateResult,
     RenderingDirective, CounterfactualBranch, ThreatProximity,
     CausalAttribution, EntanglementPair, InterventionMechanism,
     AbductionTruth,
@@ -37,7 +37,7 @@ from shadow_loom.ingestion import (
     PhysicsExtraction, SocialExtraction, EntityUpdate,
     ValidationReport, ExtractionConfig,
     deduplicate_social, deduplicate_spatial,
-    deduplicate_causal, deduplicate_info,
+    deduplicate_causal, deduplicate_channels,
 )
 from shadow_loom.extract_graph import (
     extract_topology_from_prose, merge_topology,
@@ -81,7 +81,7 @@ __all__ = [
     "DirectiveAssembler",
     "CreativeBrief",
     "NarrativeTension",
-    "HiddenInformationChannel",
+    "HiddenChannel",
     "CandidateResult",
     "RenderingDirective",
     "CounterfactualBranch",
@@ -132,7 +132,7 @@ __all__ = [
     "deduplicate_social",
     "deduplicate_spatial",
     "deduplicate_causal",
-    "deduplicate_info",
+    "deduplicate_channels",
     "extract_topology_from_prose",
     "merge_topology",
     "VersionedWorldModel",

@@ -29,7 +29,8 @@ Each event occurring in this chunk. Fields:
 - `event_type` (str): One of:
   - `"choice"` — A deliberate decision by a character (e.g. murder, betrayal, alliance).
   - `"outcome"` — A consequence or result (e.g. death, crowning, escape).
-  - `"revelation"` — New information is disclosed (e.g. prophecy, confession, discovery).
+  - `"revelation"` — **Reader-side narrator disclosure only**: a moment where the *narration* (not a character) lifts the veil on a previously-hidden fact. Use this for an omniscient narrator's reveal, a "Reader, I married him" aside, an unmasked-killer reveal, or a chapter-end twist whose audience is the reader. **Do NOT use `revelation` for one character telling another character something** — that is a *speech-act* and belongs to the Social Agent as `event_type="utterance"`. A confession overheard on-page is an utterance; the moment the *reader* learns who really did it is a revelation.
+  - **You MUST NOT emit `event_type="utterance"`** — utterances are the Social Agent's exclusive output. If a chunk contains dialogue / letters / prophecies / confessions / orders / rumours, leave them for Step 3b.
 - `actor_ids` (list[str]): The `ENT_` IDs of who performed or initiated this event. Empty list `[]` if it's a natural or environmental event. For joint actions, include all participants (e.g., `["ENT_MACBETH", "ENT_LADY_MACBETH"]`).
 - `target_ids` (list[str]): The `ENT_` or `OBJ_` IDs of who/what was acted upon. Empty list `[]` if not applicable. For diffuse effects, include all targets.
 - `description` (str): One-sentence description of what happened.

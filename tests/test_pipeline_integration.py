@@ -26,7 +26,7 @@ import networkx as nx
 
 from shadow_loom.models import (
     WorldStateV1, Location, Entity, EventNode, NarrativeObject,
-    CausalEdge, SpatialEdge, RelationshipEdge, InformationEdge,
+    CausalEdge, SpatialEdge, RelationshipEdge, Channel,
     TraitVector, Affordance, Belief,
 )
 from shadow_loom.extract_graph import extract_ego_graph_from_memory
@@ -198,6 +198,14 @@ def _make_nonlinear_world() -> WorldStateV1:
             EventNode(id="EVT_FRAME_START", fabula_time=5, syuzhet_index=1,
                       event_type="outcome", actor_ids=[],
                       description="Present day: the detective recalls the case"),
+            EventNode(id="EVT_UTT_CONFESSION", fabula_time=1, syuzhet_index=5,
+                      event_type="utterance", actor_ids=["ENT_SUSPECT"],
+                      target_ids=["EVT_MURDER"],
+                      speaker_id="ENT_SUSPECT",
+                      addressee_ids=["ENT_DETECTIVE"],
+                      via_channel_id="CHN_CONFESSION",
+                      truth_value="true",
+                      description="The suspect confesses to the detective"),
         ],
         causal_topology=[
             CausalEdge(source_id="EVT_MURDER",
@@ -211,15 +219,15 @@ def _make_nonlinear_world() -> WorldStateV1:
                              target_entity_id="ENT_SUSPECT",
                              affinity=-0.3, fear=0.2, power_dynamic=0.5),
         ],
-        information_topology=[
-            InformationEdge(
-                source_id="ENT_SUSPECT",
-                target_ids=["ENT_DETECTIVE"],
+        channels={
+            "CHN_CONFESSION": Channel(
+                id="CHN_CONFESSION",
+                name="confession",
                 medium="confession",
-                discovered_at_syuzhet=5,
+                participant_ids=["ENT_SUSPECT", "ENT_DETECTIVE"],
                 established_at_fabula=1,
             ),
-        ],
+        },
     )
 
 
@@ -429,16 +437,16 @@ class TestAffectiveCalculusIntegration:
         assert tmap["EVT_MURDER"].tension_type == "withheld_cause"
 
     def test_hidden_information_channel_detection(self):
-        """InformationEdge with discovered_at_syuzhet > anchor must be flagged."""
+        """A future utterance event with syuzhet_index > anchor must be flagged."""
         ws = _make_nonlinear_world()
         ego = extract_ego_graph_from_memory(ws, ["ENT_DETECTIVE"]).model_dump()
         assembler = DirectiveAssembler(None, ego, ws)
 
         hidden = assembler.compute_hidden_channels(syuzhet_anchor=2)
         assert len(hidden) >= 1
-        # The confession (discovered_at_syuzhet=5) should be hidden
-        assert hidden[0].medium == "confession"
-        assert hidden[0].discovered_at_syuzhet == 5
+        # The confession utterance (syuzhet_index=5) should be hidden
+        assert any(h.medium == "confession" for h in hidden)
+        assert any(h.discovered_at_syuzhet == 5 for h in hidden)
 
     # -- Affective Scoring (the "loss function") --
     def test_affective_score_suspense_rewards_gaps(self):

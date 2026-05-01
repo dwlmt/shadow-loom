@@ -116,6 +116,22 @@ class PipelineConfig(BaseModel):
         "in the VersionedWorldModel history (last-K).",
     )
 
+    # --- Branch policy (Story-integration plan, Step 1) ---
+    branch_policy: Literal["auto", "mainline", "shadow"] = Field(
+        default="auto",
+        description=(
+            "Where the merged version lands in the AMWN version DAG. "
+            "'auto' (default) routes counterfactual queries onto a shadow "
+            "fork (world_id='shadow') and every other generative query "
+            "onto the factual mainline. 'mainline' forces the merge onto "
+            "the factual branch regardless of query type (use with care: "
+            "promotes a counterfactual into canon). 'shadow' forces a "
+            "shadow fork even for observation/intervention/directive "
+            "queries (useful for 'what would it look like if we wrote "
+            "the next scene this way' explorations)."
+        ),
+    )
+
     @model_validator(mode="before")
     @classmethod
     def _fill_from_settings(cls, data: Any) -> Any:
@@ -403,6 +419,63 @@ def _friendly_threshold(failure: str) -> str:
     return failure
 
 
+def _resolve_branch_policy(
+    query: "UserRequest",
+    cfg: "PipelineConfig",
+) -> tuple[Literal["factual", "shadow"], Optional[str]]:
+    """Map ``cfg.branch_policy`` + ``query.query_type`` onto the AMWN
+    ``world_id`` and ``branch_label`` to attach to the merged version.
+
+    Policy table (Story-integration plan, Step 1):
+      * ``"auto"`` (default): counterfactual queries route to a shadow
+        fork; every other generative query (observation, intervention,
+        directive, manual_edit) lands on the factual mainline.
+      * ``"mainline"``: force factual mainline regardless of query type.
+      * ``"shadow"``: force a shadow fork regardless of query type.
+
+    ``branch_label`` is derived from ``query.description`` when forking
+    onto a shadow branch, otherwise ``None``.
+    """
+    policy = cfg.branch_policy
+    if policy == "shadow":
+        world_id: Literal["factual", "shadow"] = "shadow"
+    elif policy == "mainline":
+        world_id = "factual"
+    else:  # auto
+        world_id = "shadow" if query.query_type == "counterfactual" else "factual"
+
+    label: Optional[str] = None
+    if world_id == "shadow":
+        # Prefer the user's verbatim natural-language request (carried on
+        # every query via _QueryBase.original_query); fall back to the
+        # ManualEditQuery-only ``description`` field when present.
+        candidate = getattr(query, "original_query", None) or getattr(query, "description", None)
+        label = (candidate or "").strip() or None
+    return world_id, label
+
+
+def _stamp_brief_branch(
+    brief: Optional["CreativeBrief"],
+    world_id: Literal["factual", "shadow"],
+    label: Optional[str],
+) -> Optional["CreativeBrief"]:
+    """Set ``branch_world_id`` / ``branch_label`` on a CreativeBrief in-place.
+
+    Returns the same brief for chained-call ergonomics. No-op when
+    ``brief`` is ``None`` (some non-directive paths skip brief assembly
+    entirely). The ``factual_contrast_summary`` field is intentionally
+    left for the assembler/auditor to populate downstream — this helper
+    only stamps the cheap branch identifiers so the generator template
+    can switch tense/framing without re-querying the policy.
+    """
+    if brief is None:
+        return None
+    brief.branch_world_id = world_id
+    if label is not None:
+        brief.branch_label = label
+    return brief
+
+
 # =====================================================================
 # The pipeline
 # =====================================================================
@@ -600,11 +673,14 @@ def run_pipeline(
                 if query.description
                 else "Manual edit"
             )
+            _world_id, _branch_label = _resolve_branch_policy(query, cfg)
             vwm_next = vwm.merge(
                 topology,
                 source="manual_edit",
                 description=description,
                 prose=result.prose,
+                world_id=_world_id,
+                branch_label=_branch_label,
             )
             changeset = vwm_next.history[-1].changeset
             history.record("reextraction_merge", ReextractionStepRecord(
@@ -632,11 +708,16 @@ def run_pipeline(
     # =================================================================
     physics_state = physics_result.get("physics_state", {})
 
+    # Resolve branch policy once so every brief-construction site below
+    # can stamp the active branch onto the CreativeBrief.
+    _branch_world_id, _branch_label = _resolve_branch_policy(query, cfg)
+
     # For directive queries with causal engine, the brief is already built
     brief: CreativeBrief | None = None
     if query.query_type == "directive" and "creative_brief" in physics_result:
         brief_data = physics_result["creative_brief"]
         brief = CreativeBrief(**brief_data) if isinstance(brief_data, dict) else brief_data
+        _stamp_brief_branch(brief, _branch_world_id, _branch_label)
 
     if cfg.skip_audit:
         # Generate once, no audit loop
@@ -688,6 +769,7 @@ def run_pipeline(
 
             # Build a brief for the auditor from the query
             brief = _build_brief_for_query(query, physics_result, ws)
+            _stamp_brief_branch(brief, _branch_world_id, _branch_label)
 
             from shadow_loom.auditor import run_feedback_loop
             feedback = run_feedback_loop(
@@ -730,11 +812,14 @@ def run_pipeline(
                 f"Pipeline merge after {query.query_type} query"
                 f" (audit={'converged' if result.converged else 'skipped/failed'})"
             )
+            _world_id, _branch_label = _resolve_branch_policy(query, cfg)
             vwm_next = vwm.merge(
                 topology,
                 source="pipeline",
                 description=description,
                 prose=result.prose,
+                world_id=_world_id,
+                branch_label=_branch_label,
             )
             # Record the changeset
             changeset = vwm_next.history[-1].changeset
@@ -886,7 +971,11 @@ async def run_pipeline_async(
                 prose=result.prose, world_state=ws, config=cfg.extraction_config,
             )
             description = f"Manual edit: {query.description}" if query.description else "Manual edit"
-            vwm_next = vwm.merge(topology, source="manual_edit", description=description, prose=result.prose)
+            _world_id, _branch_label = _resolve_branch_policy(query, cfg)
+            vwm_next = vwm.merge(
+                topology, source="manual_edit", description=description, prose=result.prose,
+                world_id=_world_id, branch_label=_branch_label,
+            )
             changeset = vwm_next.history[-1].changeset
             history.record("reextraction_merge", ReextractionStepRecord(
                 events_added=changeset.events_added if changeset else 0,
@@ -905,10 +994,12 @@ async def run_pipeline_async(
 
     # Steps 3–4: Brief + Generation (same as sync)
     physics_state = physics_result.get("physics_state", {})
+    _branch_world_id, _branch_label = _resolve_branch_policy(query, cfg)
     brief: CreativeBrief | None = None
     if query.query_type == "directive" and "creative_brief" in physics_result:
         brief_data = physics_result["creative_brief"]
         brief = CreativeBrief(**brief_data) if isinstance(brief_data, dict) else brief_data
+        _stamp_brief_branch(brief, _branch_world_id, _branch_label)
 
     if cfg.skip_audit:
         gen_cfg = cfg.generation_config or GenerationConfig()
@@ -930,6 +1021,7 @@ async def run_pipeline_async(
             gen_cfg = cfg.generation_config or GenerationConfig()
             initial_scene = render_from_query(query, physics_result, ws, gen_cfg)
             brief = _build_brief_for_query(query, physics_result, ws)
+            _stamp_brief_branch(brief, _branch_world_id, _branch_label)
             from shadow_loom.auditor import run_feedback_loop
             feedback = run_feedback_loop(
                 initial_scene=initial_scene, brief=brief, world_state=ws,
@@ -960,7 +1052,11 @@ async def run_pipeline_async(
                 f"Pipeline merge after {query.query_type} query"
                 f" (audit={'converged' if result.converged else 'skipped/failed'})"
             )
-            vwm_next = vwm.merge(topology, source="pipeline", description=description, prose=result.prose)
+            _world_id, _branch_label = _resolve_branch_policy(query, cfg)
+            vwm_next = vwm.merge(
+                topology, source="pipeline", description=description, prose=result.prose,
+                world_id=_world_id, branch_label=_branch_label,
+            )
             changeset = vwm_next.history[-1].changeset
             history.record("reextraction_merge", ReextractionStepRecord(
                 events_added=changeset.events_added if changeset else 0,

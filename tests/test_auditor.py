@@ -16,7 +16,7 @@ import networkx as nx
 
 from shadow_loom.models import (
     WorldStateV1, Location, Entity, EventNode, NarrativeObject,
-    CausalEdge, SpatialEdge, RelationshipEdge, InformationEdge,
+    CausalEdge, SpatialEdge, RelationshipEdge,
     TraitVector, Affordance, Belief,
 )
 from shadow_loom.directive_assembly import (
@@ -611,7 +611,7 @@ class TestFeedbackLoop:
         """Prior feedback must accumulate across iterations."""
         call_args = []
 
-        def capture_audit(prose, brief, config=None, prior_feedback=None, causal_feedback=None):
+        def capture_audit(prose, brief, config=None, prior_feedback=None, causal_feedback=None, **kwargs):
             call_args.append(prior_feedback)
             if len(call_args) < 3:
                 return _make_failing_audit()

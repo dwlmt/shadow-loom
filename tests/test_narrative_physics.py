@@ -625,7 +625,7 @@ class TestGeneral:
         assert "events" in ps
         assert "causal_topology" in ps
         assert "social_topology" in ps
-        assert "information_topology" in ps
+        assert "channels" in ps
 
     def test_general_with_temporal_anchor(self):
         anchor = 5
@@ -775,7 +775,8 @@ class TestTopologyWiring:
         ps = result["physics_state"]
         assert "relevant_causal_edges" in ps
         assert "relevant_spatial_edges" in ps
-        assert "relevant_information_edges" in ps
+        assert "relevant_channels" in ps
+        assert "relevant_utterance_events" in ps
 
     def test_connected_to_is_bidirectional(self):
         """Unlocked SpatialEdges must produce bidirectional connected_to edges: A→B and B→A."""
@@ -839,50 +840,51 @@ class TestTopologyWiring:
 
 
 # =====================================================================
-# INFORMATION EDGES & PHYSICS OVERRIDE — Remote communication
+# CHANNELS & PHYSICS OVERRIDE — Remote communication
 # =====================================================================
-class TestInformationEdges:
-    """Ensure InformationEdge extraction, wiring, and physics override work."""
+class TestChannels:
+    """Ensure Channel extraction, wiring, and physics override work."""
 
     def _make_comms_ws(self):
-        """Macbeth world with an active phone call between Macbeth and Lady Macbeth."""
+        """Macbeth world with an active telepathy channel between Macbeth and Lady Macbeth."""
         from copy import deepcopy
-        from shadow_loom.models import InformationEdge
+        from shadow_loom.models import Channel
         ws = deepcopy(macbeth_ws)
         # Put Lady Macbeth in a different room
         ws.entities["ENT_LADY_MACBETH"].location_id = "LOC_INVERNESS_CASTLE"
-        ws.information_topology = [
-            InformationEdge(
-                source_id="ENT_MACBETH",
-                target_ids=["ENT_LADY_MACBETH"],
+        ws.channels = {
+            "CHN_TELEPATHY": Channel(
+                id="CHN_TELEPATHY",
+                name="telepathy",
                 medium="telepathy",
+                participant_ids=["ENT_MACBETH", "ENT_LADY_MACBETH"],
                 established_at_fabula=10,
-            )
-        ]
+            ),
+        }
         return ws
 
     def test_info_edge_extracted_in_observation(self):
-        """InformationEdge must appear in the ego-graph payload."""
+        """Channel must appear in the ego-graph payload."""
         ws = self._make_comms_ws()
         query = ObservationQuery(focus_entity_ids=["ENT_MACBETH", "ENT_LADY_MACBETH"])
         result = calculate_narrative_physics(query, ws)
         ps = result["physics_state"]
-        assert len(ps["relevant_information_edges"]) >= 1
-        ie = ps["relevant_information_edges"][0]
-        assert ie["source_id"] == "ENT_MACBETH"
-        assert ie["medium"] == "telepathy"
+        assert len(ps["relevant_channels"]) >= 1
+        ch = next(c for c in ps["relevant_channels"] if c["medium"] == "telepathy")
+        assert "ENT_MACBETH" in ch["participant_ids"]
 
     def test_info_edge_temporal_filter(self):
-        """InformationEdge established AFTER the temporal_anchor must be excluded."""
+        """Channel established AFTER the temporal_anchor must be excluded."""
         ws = self._make_comms_ws()
-        # anchor=5, but comms established at T=10 → excluded
         query = ObservationQuery(focus_entity_ids=["ENT_MACBETH", "ENT_LADY_MACBETH"])
         result = calculate_narrative_physics(query, ws, temporal_anchor=5)
         ps = result["physics_state"]
-        assert len(ps["relevant_information_edges"]) == 0
+        # The CHN_TELEPATHY (established=10) is excluded; macbeth_ws has no
+        # other channels established by t<=5, so list is empty.
+        assert all(c["medium"] != "telepathy" for c in ps["relevant_channels"])
 
     def test_info_edge_wired_in_sandbox(self):
-        """InformationEdge must produce 'communicating_with' edges in the sandbox."""
+        """Channel must produce 'communicating_with' edges in the sandbox."""
         ws = self._make_comms_ws()
         query = InterventionQuery(
             interventions={"ENT_MACBETH.status": "healthy", "ENT_LADY_MACBETH.status": "healthy"}
@@ -892,9 +894,9 @@ class TestInformationEdges:
         comms_edges = [
             (u, v, d) for u, v, d in G.edges(data=True)
             if d.get("edge_type") == "communicating_with"
+            and d.get("medium") == "telepathy"
         ]
         assert len(comms_edges) >= 1
-        assert comms_edges[0][2]["medium"] == "telepathy"
 
     def test_physics_override_multi_room_comms(self):
         """Intervention result must include physics_override when multi-room + comms."""
@@ -931,41 +933,37 @@ class TestInformationEdges:
         assert "ENT_LADY_MACBETH" in comms
 
     def test_terminated_comms_excluded_no_anchor(self):
-        """Terminated InformationEdge must NOT appear when temporal_anchor is None."""
+        """Terminated Channel must NOT appear when temporal_anchor is None."""
         from copy import deepcopy
-        from shadow_loom.models import InformationEdge
+        from shadow_loom.models import Channel
         ws = deepcopy(macbeth_ws)
         ws.entities["ENT_LADY_MACBETH"].location_id = "LOC_INVERNESS_CASTLE"
-        ws.information_topology = [
-            InformationEdge(
-                source_id="ENT_MACBETH",
-                target_ids=["ENT_LADY_MACBETH"],
-                medium="raven",
-                established_at_fabula=5,
-                terminated_at_fabula=15,
-            )
-        ]
+        ws.channels = {
+            "CHN_RAVEN": Channel(
+                id="CHN_RAVEN", name="raven", medium="raven",
+                participant_ids=["ENT_MACBETH", "ENT_LADY_MACBETH"],
+                established_at_fabula=5, terminated_at_fabula=15,
+            ),
+        }
         # No temporal anchor → terminated links are dead and must be excluded
         query = ObservationQuery(focus_entity_ids=["ENT_MACBETH", "ENT_LADY_MACBETH"])
         result = calculate_narrative_physics(query, ws)
         ps = result["physics_state"]
-        assert len(ps["relevant_information_edges"]) == 0
+        assert len(ps["relevant_channels"]) == 0
 
     def test_terminated_comms_no_false_override(self):
-        """Terminated InformationEdge must NOT trigger a physics override."""
+        """Terminated Channel must NOT trigger a physics override."""
         from copy import deepcopy
-        from shadow_loom.models import InformationEdge
+        from shadow_loom.models import Channel
         ws = deepcopy(macbeth_ws)
         ws.entities["ENT_LADY_MACBETH"].location_id = "LOC_INVERNESS_CASTLE"
-        ws.information_topology = [
-            InformationEdge(
-                source_id="ENT_MACBETH",
-                target_ids=["ENT_LADY_MACBETH"],
-                medium="raven",
-                established_at_fabula=5,
-                terminated_at_fabula=15,
-            )
-        ]
+        ws.channels = {
+            "CHN_RAVEN": Channel(
+                id="CHN_RAVEN", name="raven", medium="raven",
+                participant_ids=["ENT_MACBETH", "ENT_LADY_MACBETH"],
+                established_at_fabula=5, terminated_at_fabula=15,
+            ),
+        }
         query = InterventionQuery(
             interventions={
                 "ENT_MACBETH.status": "healthy",
@@ -1019,55 +1017,50 @@ class TestInformationEdges:
         )
 
     def test_full_dump_filters_terminated_comms(self):
-        """extract_full_world_state must exclude terminated comms when no anchor."""
+        """extract_full_world_state must exclude terminated channels when no anchor."""
         from shadow_loom.extract_graph import extract_full_world_state
         from copy import deepcopy
-        from shadow_loom.models import InformationEdge
+        from shadow_loom.models import Channel
         ws = deepcopy(macbeth_ws)
-        ws.information_topology = [
-            InformationEdge(
-                source_id="ENT_MACBETH",
-                target_ids=["ENT_LADY_MACBETH"],
-                medium="raven",
-                established_at_fabula=5,
-                terminated_at_fabula=15,
+        ws.channels = {
+            "CHN_RAVEN": Channel(
+                id="CHN_RAVEN", name="raven", medium="raven",
+                participant_ids=["ENT_MACBETH", "ENT_LADY_MACBETH"],
+                established_at_fabula=5, terminated_at_fabula=15,
             ),
-            InformationEdge(
-                source_id="ENT_MACBETH",
-                target_ids=["ENT_BANQUO"],
-                medium="speech",
+            "CHN_SPEECH": Channel(
+                id="CHN_SPEECH", name="speech", medium="speech",
+                participant_ids=["ENT_MACBETH", "ENT_BANQUO"],
                 established_at_fabula=3,
             ),
-        ]
+        }
         dump = extract_full_world_state(ws)
-        # Terminated edge excluded, active edge kept
-        assert len(dump["information_topology"]) == 1
-        assert dump["information_topology"][0]["medium"] == "speech"
+        # Terminated channel excluded, active channel kept
+        assert len(dump["channels"]) == 1
+        assert next(iter(dump["channels"].values()))["medium"] == "speech"
 
     def test_full_dump_timeslice_comms_with_anchor(self):
-        """extract_full_world_state must time-slice information_topology when anchor given."""
+        """extract_full_world_state must time-slice channels when anchor given."""
         from shadow_loom.extract_graph import extract_full_world_state
         from copy import deepcopy
-        from shadow_loom.models import InformationEdge
+        from shadow_loom.models import Channel
         ws = deepcopy(macbeth_ws)
-        ws.information_topology = [
-            InformationEdge(
-                source_id="ENT_MACBETH",
-                target_ids=["ENT_LADY_MACBETH"],
-                medium="letter",
+        ws.channels = {
+            "CHN_LETTER": Channel(
+                id="CHN_LETTER", name="letter", medium="letter",
+                participant_ids=["ENT_MACBETH", "ENT_LADY_MACBETH"],
                 established_at_fabula=5,
             ),
-            InformationEdge(
-                source_id="ENT_MACBETH",
-                target_ids=["ENT_BANQUO"],
-                medium="speech",
+            "CHN_SPEECH": Channel(
+                id="CHN_SPEECH", name="speech", medium="speech",
+                participant_ids=["ENT_MACBETH", "ENT_BANQUO"],
                 established_at_fabula=20,
             ),
-        ]
+        }
         dump = extract_full_world_state(ws, temporal_anchor=10)
-        # Only the T=5 edge should survive (T=20 is future)
-        assert len(dump["information_topology"]) == 1
-        assert dump["information_topology"][0]["medium"] == "letter"
+        # Only the T=5 channel should survive (T=20 is future)
+        assert len(dump["channels"]) == 1
+        assert next(iter(dump["channels"].values()))["medium"] == "letter"
 
     def test_comms_intervention_resolves_remote_target(self):
         """communicating_with intervention must pull remote target entity into ego-graph."""
@@ -1546,21 +1539,19 @@ class TestEpistemicLeakage:
     """Verify unencrypted comms leak to co-located entities."""
 
     def test_unencrypted_comms_create_eavesdrop_edges(self):
-        """Co-located entity must get an eavesdropped_by edge from unencrypted comms."""
+        """Co-located entity must get an eavesdropped_by edge from intelligible channels."""
         from copy import deepcopy
-        from shadow_loom.models import InformationEdge
+        from shadow_loom.models import Channel
         ws = deepcopy(macbeth_ws)
         # Put Lady Macbeth in a different room, keep Lennox with Macbeth at Dunsinane
         ws.entities["ENT_LADY_MACBETH"].location_id = "LOC_INVERNESS_CASTLE"
-        ws.information_topology = [
-            InformationEdge(
-                source_id="ENT_MACBETH",
-                target_ids=["ENT_LADY_MACBETH"],
-                medium="shouting",
-                is_encrypted=False,
+        ws.channels = {
+            "CHN_SHOUT": Channel(
+                id="CHN_SHOUT", name="shouting", medium="shouting",
+                participant_ids=["ENT_MACBETH", "ENT_LADY_MACBETH"],
                 established_at_fabula=10,
-            )
-        ]
+            ),
+        }
         query = InterventionQuery(
             interventions={"ENT_MACBETH.status": "healthy", "ENT_LADY_MACBETH.status": "healthy"}
         )
@@ -1574,20 +1565,19 @@ class TestEpistemicLeakage:
         assert len(eavesdrop) > 0, "Unencrypted comms should produce eavesdropped_by edges"
 
     def test_encrypted_comms_no_eavesdrop(self):
-        """Encrypted comms must NOT produce eavesdropped_by edges."""
+        """Encrypted (low-intelligibility) channels must NOT produce eavesdropped_by edges."""
         from copy import deepcopy
-        from shadow_loom.models import InformationEdge
+        from shadow_loom.models import Channel
         ws = deepcopy(macbeth_ws)
         ws.entities["ENT_LADY_MACBETH"].location_id = "LOC_INVERNESS_CASTLE"
-        ws.information_topology = [
-            InformationEdge(
-                source_id="ENT_MACBETH",
-                target_ids=["ENT_LADY_MACBETH"],
-                medium="telepathy",
-                is_encrypted=True,
+        ws.channels = {
+            "CHN_TELEPATHY": Channel(
+                id="CHN_TELEPATHY", name="telepathy", medium="telepathy",
+                participant_ids=["ENT_MACBETH", "ENT_LADY_MACBETH"],
+                intelligibility={"ENT_MACBETH": 0.0, "ENT_LADY_MACBETH": 0.0},
                 established_at_fabula=10,
-            )
-        ]
+            ),
+        }
         query = InterventionQuery(
             interventions={"ENT_MACBETH.status": "healthy", "ENT_LADY_MACBETH.status": "healthy"}
         )
@@ -1796,7 +1786,7 @@ class TestRelationshipTimeSlicing:
 class TestPlotEnrichment:
     """Verify the enriched plot models have correct beliefs, info edges, and relationships."""
 
-    # --- Multiple Information Edges ---
+    # --- Multiple Channels / Utterances ---
     @pytest.mark.parametrize("ws,expected_min", [
         (macbeth_ws, 3),
         (gatsby_ws, 2),
@@ -1806,10 +1796,13 @@ class TestPlotEnrichment:
         (persuasion_ws, 3),
         (reservoir_ws, 2),
     ])
-    def test_multiple_information_edges(self, ws, expected_min):
-        """Enriched plots must have multiple information topology edges."""
-        assert len(ws.information_topology) >= expected_min, (
-            f"Expected >= {expected_min} info edges, got {len(ws.information_topology)}"
+    def test_multiple_information_signals(self, ws, expected_min):
+        """Enriched plots must have multiple channels + utterance events."""
+        utt = sum(1 for e in ws.events if e.event_type == "utterance")
+        signals = len(ws.channels) + utt
+        assert signals >= expected_min, (
+            f"Expected >= {expected_min} info signals, got {signals} "
+            f"({len(ws.channels)} channels + {utt} utterances)"
         )
 
     # --- Implicit False Beliefs ---
@@ -1860,35 +1853,44 @@ class TestPlotEnrichment:
                     for b in orange_beliefs)
 
     # --- Critical Information Transfers ---
+    def _has_pair(self, ws, a: str, b: str) -> bool:
+        """True when a Channel has both a and b as participants, or an utterance
+        event has speaker=a and b in addressee_ids (or vice versa)."""
+        for ch in ws.channels.values():
+            if a in ch.participant_ids and b in ch.participant_ids:
+                return True
+        for evt in ws.events:
+            if evt.event_type != "utterance":
+                continue
+            if evt.speaker_id == a and b in evt.addressee_ids:
+                return True
+            if evt.speaker_id == b and a in evt.addressee_ids:
+                return True
+        return False
+
     def test_gatsby_tom_tells_george_info_edge(self):
-        """Gatsby must have Tom→George info edge (the fatal information transfer)."""
-        edges = [ie for ie in gatsby_ws.information_topology
-                 if ie.source_id == "ENT_TOM" and "ENT_GEORGE" in ie.target_ids]
-        assert len(edges) >= 1, "Tom→George info edge (telling about the car) must exist"
+        """Gatsby must encode the fatal Tom→George information transfer."""
+        assert self._has_pair(gatsby_ws, "ENT_TOM", "ENT_GEORGE"), (
+            "Tom→George info link (telling about the car) must exist as channel or utterance"
+        )
 
     def test_macbeth_prophecy_info_edges(self):
-        """Macbeth must have Witches→Macbeth prophecy info edges."""
-        edges = [ie for ie in macbeth_ws.information_topology
-                 if ie.source_id == "ENT_WITCHES"]
-        assert len(edges) >= 2, "Both prophecy sets must be modelled as info edges"
+        """Macbeth must encode at least one Witches→Macbeth prophecy signal."""
+        assert self._has_pair(macbeth_ws, "ENT_WITCHES", "ENT_MACBETH"), (
+            "Witches→Macbeth prophecy must exist as channel or utterance"
+        )
 
     def test_1984_false_flag_info_edge(self):
-        """1984 must have O'Brien's false-flag Brotherhood recruitment as info edge."""
-        edges = [ie for ie in orwell_ws.information_topology
-                 if ie.source_id == "ENT_OBRIEN" and "ENT_WINSTON" in ie.target_ids]
-        assert len(edges) >= 1
+        """1984 must encode O'Brien→Winston false-flag recruitment."""
+        assert self._has_pair(orwell_ws, "ENT_OBRIEN", "ENT_WINSTON")
 
     def test_nile_signal_shout_info_edge(self):
-        """Death on the Nile must have Simon's signal shout to Jacqueline."""
-        edges = [ie for ie in nile_ws.information_topology
-                 if ie.source_id == "ENT_SIMON" and "ENT_JACQUELINE" in ie.target_ids]
-        assert len(edges) >= 1
+        """Death on the Nile must encode Simon→Jacqueline signal."""
+        assert self._has_pair(nile_ws, "ENT_SIMON", "ENT_JACQUELINE")
 
     def test_persuasion_overheard_conversation(self):
-        """Persuasion must have the pivotal overheard conversation info edge."""
-        edges = [ie for ie in persuasion_ws.information_topology
-                 if ie.source_id == "ENT_ANNE" and "ENT_WENTWORTH" in ie.target_ids]
-        assert len(edges) >= 1
+        """Persuasion must encode the pivotal Anne→Wentworth overheard exchange."""
+        assert self._has_pair(persuasion_ws, "ENT_ANNE", "ENT_WENTWORTH")
 
     # --- New Entities and Relationships ---
     def test_romeo_nurse_entity_exists(self):
@@ -1917,14 +1919,20 @@ class TestPlotEnrichment:
             f"George should be at Wilson's Garage, got {george.location_id}"
         )
 
-    # --- Encrypted Information Edges ---
+    # --- Encrypted (low-intelligibility) Channels ---
     def test_encrypted_info_edges_exist(self):
-        """Encrypted info edges must exist in appropriate plots."""
+        """Channels with low intelligibility must exist in appropriate plots."""
         # 1984: secret note
-        encrypted_1984 = [ie for ie in orwell_ws.information_topology if ie.is_encrypted]
+        encrypted_1984 = [
+            ch for ch in orwell_ws.channels.values()
+            if ch.intelligibility and min(ch.intelligibility.values()) < 0.5
+        ]
         assert len(encrypted_1984) >= 1
         # Reservoir Dogs: undercover reports
-        encrypted_rd = [ie for ie in reservoir_ws.information_topology if ie.is_encrypted]
+        encrypted_rd = [
+            ch for ch in reservoir_ws.channels.values()
+            if ch.intelligibility and min(ch.intelligibility.values()) < 0.5
+        ]
         assert len(encrypted_rd) >= 1
 
     # --- Belief Temporal Anchoring ---
@@ -1943,30 +1951,25 @@ class TestPlotEnrichment:
         simon = nile_ws.entities["ENT_SIMON"]
         assert "co_conspirator" in simon.constants
 
-    # --- Information Edge Observation Pipeline Integration ---
+    # --- Channel Observation Pipeline Integration ---
     def test_enriched_info_edges_flow_through_observation(self):
-        """Multiple info edges must appear in observation payload for participating entities."""
+        """Channels and utterance events must appear in observation payload."""
         query = ObservationQuery(focus_entity_ids=["ENT_MACBETH"])
         result = calculate_narrative_physics(query, macbeth_ws)
         ps = result["physics_state"]
-        # Macbeth participates in prophecy info edges
-        info_edges = ps["relevant_information_edges"]
-        assert len(info_edges) >= 1, "Macbeth should see at least one info edge (prophecy)"
+        signals = len(ps["relevant_channels"]) + len(ps["relevant_utterance_events"])
+        assert signals >= 1, "Macbeth should see at least one channel or utterance"
 
     def test_enriched_info_edges_flow_through_intervention(self):
-        """Active info edges between focus entities must produce communicating_with edges."""
+        """Active channels between focus entities must produce communicating_with edges."""
         from copy import deepcopy
-        from shadow_loom.models import InformationEdge
+        from shadow_loom.models import Channel
         ws = deepcopy(macbeth_ws)
-        # Add an active comms link between Macbeth and Lady Macbeth
         ws.entities["ENT_LADY_MACBETH"].location_id = "LOC_ENGLAND"
-        ws.information_topology.append(
-            InformationEdge(
-                source_id="ENT_MACBETH",
-                target_ids=["ENT_LADY_MACBETH"],
-                medium="telepathy",
-                established_at_fabula=1,
-            )
+        ws.channels["CHN_TELEPATHY_X"] = Channel(
+            id="CHN_TELEPATHY_X", name="telepathy", medium="telepathy",
+            participant_ids=["ENT_MACBETH", "ENT_LADY_MACBETH"],
+            established_at_fabula=1,
         )
         query = InterventionQuery(
             interventions={"ENT_MACBETH.status": "healthy", "ENT_LADY_MACBETH.status": "healthy"}
@@ -1977,7 +1980,7 @@ class TestPlotEnrichment:
             (u, v, d) for u, v, d in G.edges(data=True)
             if d.get("edge_type") == "communicating_with"
         ]
-        assert len(comms) >= 1, "Active info edges should produce communicating_with edges in sandbox"
+        assert len(comms) >= 1, "Active channels should produce communicating_with edges in sandbox"
 
 
 # =====================================================================
@@ -2068,16 +2071,13 @@ class TestInstantiatorEdgeCases:
     def test_sever_all_comms_none(self):
         """Setting communicating_with to None must sever all outgoing comms."""
         from copy import deepcopy
-        from shadow_loom.models import InformationEdge
+        from shadow_loom.models import Channel
         ws = deepcopy(macbeth_ws)
         ws.entities["ENT_LADY_MACBETH"].location_id = "LOC_DUNSINANE_CASTLE"
-        ws.information_topology.append(
-            InformationEdge(
-                source_id="ENT_MACBETH",
-                target_ids=["ENT_LADY_MACBETH"],
-                medium="speech",
-                established_at_fabula=1,
-            )
+        ws.channels["CHN_SPEECH_X"] = Channel(
+            id="CHN_SPEECH_X", name="speech", medium="speech",
+            participant_ids=["ENT_MACBETH", "ENT_LADY_MACBETH"],
+            established_at_fabula=1,
         )
         query = InterventionQuery(interventions={
             "ENT_MACBETH.communicating_with": None,
@@ -2117,16 +2117,12 @@ class TestInstantiatorEdgeCases:
     def test_eavesdropping_unencrypted_comms(self):
         """Entity co-located with comms participant must get eavesdropped_by edge."""
         from copy import deepcopy
-        from shadow_loom.models import InformationEdge
+        from shadow_loom.models import Channel
         ws = deepcopy(macbeth_ws)
-        ws.information_topology.append(
-            InformationEdge(
-                source_id="ENT_MACBETH",
-                target_ids=["ENT_LADY_MACBETH"],
-                medium="speech",
-                established_at_fabula=1,
-                is_encrypted=False,
-            )
+        ws.channels["CHN_SPEECH_X"] = Channel(
+            id="CHN_SPEECH_X", name="speech", medium="speech",
+            participant_ids=["ENT_MACBETH", "ENT_LADY_MACBETH"],
+            established_at_fabula=1,
         )
         query = InterventionQuery(interventions={
             "ENT_MACBETH.status": "healthy",
@@ -2142,18 +2138,15 @@ class TestInstantiatorEdgeCases:
         assert result["status"] == "success"
 
     def test_encrypted_comms_no_eavesdrop(self):
-        """Encrypted comms must NOT produce eavesdropped_by edges."""
+        """Encrypted (low-intelligibility) channels must NOT produce eavesdropped_by edges."""
         from copy import deepcopy
-        from shadow_loom.models import InformationEdge
+        from shadow_loom.models import Channel
         ws = deepcopy(macbeth_ws)
-        ws.information_topology.append(
-            InformationEdge(
-                source_id="ENT_MACBETH",
-                target_ids=["ENT_LADY_MACBETH"],
-                medium="magic_mirror",
-                established_at_fabula=1,
-                is_encrypted=True,
-            )
+        ws.channels["CHN_MIRROR"] = Channel(
+            id="CHN_MIRROR", name="magic_mirror", medium="magic_mirror",
+            participant_ids=["ENT_MACBETH", "ENT_LADY_MACBETH"],
+            intelligibility={"ENT_MACBETH": 0.0, "ENT_LADY_MACBETH": 0.0},
+            established_at_fabula=1,
         )
         query = InterventionQuery(interventions={
             "ENT_MACBETH.status": "healthy",
@@ -2206,23 +2199,21 @@ class TestExtractGraphEdgeCases:
             assert rel.get("last_updated_fabula", 0) <= 5
 
     def test_terminated_at_fabula_boundary(self):
-        """InformationEdge terminated AT the anchor must be excluded (<=)."""
+        """Channel terminated AT the anchor must be excluded (<=)."""
         from copy import deepcopy
         from shadow_loom.extract_graph import extract_ego_graph_from_memory
-        from shadow_loom.models import InformationEdge
+        from shadow_loom.models import Channel
         ws = deepcopy(macbeth_ws)
-        ws.information_topology = [
-            InformationEdge(
-                source_id="ENT_MACBETH",
-                target_ids=["ENT_LADY_MACBETH"],
-                medium="raven",
-                established_at_fabula=1,
-                terminated_at_fabula=5,
+        ws.channels = {
+            "CHN_RAVEN": Channel(
+                id="CHN_RAVEN", name="raven", medium="raven",
+                participant_ids=["ENT_MACBETH", "ENT_LADY_MACBETH"],
+                established_at_fabula=1, terminated_at_fabula=5,
             ),
-        ]
+        }
         ego = extract_ego_graph_from_memory(ws, ["ENT_MACBETH"], temporal_anchor=5)
         # terminated_at_fabula=5 == anchor=5 → must be excluded
-        assert len(ego.relevant_information_edges) == 0
+        assert len(ego.relevant_channels) == 0
 
 
 

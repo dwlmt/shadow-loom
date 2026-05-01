@@ -52,6 +52,8 @@ from shadow_loom.db import (
     init_db,
     list_projects as db_list_projects,
     list_versions,
+    list_branches as db_list_branches,
+    promote_branch as db_promote_branch,
     ProjectDeleteError,
     reparent_version as db_reparent_version,
     save_version,
@@ -220,7 +222,8 @@ def open_project(
             "causal_edges": len(ws.causal_topology),
             "spatial_edges": len(ws.spatial_topology),
             "social_edges": len(ws.social_topology),
-            "information_edges": len(ws.information_topology),
+            "channels": len(ws.channels),
+            "utterance_events": sum(1 for e in ws.events if e.event_type == "utterance"),
         },
     }
 
@@ -686,6 +689,112 @@ def get_history(
 
 
 # =====================================================================
+# AMWN BRANCHES — list / promote shadow forks (Story-integration plan, Step 6)
+# =====================================================================
+
+
+@mcp.tool()
+@_safe_tool
+def list_branches(
+    ctx: Context,
+    project_id: Optional[int] = None,
+    project_name: Optional[str] = None,
+) -> dict:
+    """List all AMWN branches in the project's version DAG.
+
+    Each branch entry includes ``world_id`` ('factual' or 'shadow'),
+    ``branch_label``, the root version (and its fork point ancestor),
+    the head version, and total version count on the branch.
+
+    Use this before navigating shadow forks so the client knows which
+    branch a version belongs to without walking the DAG itself.
+    """
+    err = require_scope(ctx, "read")
+    if err:
+        return {"error": err}
+    pid, err = resolve_project(project_id, project_name, ctx)
+    if err:
+        return {"error": err}
+    branches = db_list_branches(pid)
+    return {"project_id": pid, "branches": branches}
+
+
+@mcp.tool()
+@_safe_tool
+def promote_branch(
+    ctx: Context,
+    version_row_id: int,
+    project_id: Optional[int] = None,
+    project_name: Optional[str] = None,
+    description: Optional[str] = None,
+) -> dict:
+    """Promote a shadow-branch version onto the factual mainline.
+
+    Creates a new factual VersionRow whose world_state and prose are
+    copied from the shadow source, with ``ancestor_id`` pointing at the
+    current factual head. The shadow source remains untouched so the
+    fork stays browsable.
+
+    Returns the new factual version's row id and version number, plus
+    its branch envelope.
+    """
+    err = require_scope(ctx, "write")
+    if err:
+        return {"error": err}
+    pid, err = resolve_project(project_id, project_name, ctx)
+    if err:
+        return {"error": err}
+    user_row_id = get_user_id(ctx)
+    try:
+        promoted = db_promote_branch(
+            version_row_id, user_id=user_row_id, description=description,
+        )
+    except VersionMutationError as e:
+        return {"error": str(e)}
+    return {
+        "project_id": pid,
+        "version_row_id": promoted.id,
+        "version": promoted.version,
+        "ancestor_id": promoted.ancestor_id,
+        "branch": {
+            "world_id": promoted.world_id,
+            "branch_label": promoted.branch_label,
+            "ancestor_id": promoted.ancestor_id,
+        },
+    }
+
+
+@mcp.tool()
+@_safe_tool
+def export_prose(
+    ctx: Context,
+    project_id: Optional[int] = None,
+    project_name: Optional[str] = None,
+    branch_path: Optional[List[int]] = None,
+) -> dict:
+    """Return all prose for a project as an ordered list of versions.
+
+    Without ``branch_path`` the result is the implicit linear history
+    ordered by ``version`` — convenient for a quick read-through but
+    mixes branches together.
+
+    With ``branch_path`` (a list of ``version_row_id`` values) only
+    those versions are returned, in the supplied order. This lets a
+    client walk a specific lineage through the AMWN DAG — e.g. the
+    factual prefix concatenated with a shadow fork's prose — to render
+    one branch's narrative cleanly (Story-integration plan, Step 6).
+    """
+    err = require_scope(ctx, "read")
+    if err:
+        return {"error": err}
+    pid, err = resolve_project(project_id, project_name, ctx)
+    if err:
+        return {"error": err}
+    entries = get_all_prose(pid, branch_path=branch_path)
+    return {"project_id": pid, "entries": entries}
+
+
+# =====================================================================
 # GROUP 3: REASON — "Why did X happen? What tensions exist?"
 # =====================================================================
 
@@ -1122,10 +1231,20 @@ def diff_versions(
     diff["spatial_edges_added"] = len(spatial_b - spatial_a)
     diff["spatial_edges_removed"] = len(spatial_a - spatial_b)
 
-    info_a = {f"{e.source_id}->{','.join(sorted(e.target_ids))}" for e in ws_a.information_topology}
-    info_b = {f"{e.source_id}->{','.join(sorted(e.target_ids))}" for e in ws_b.information_topology}
-    diff["information_edges_added"] = len(info_b - info_a)
-    diff["information_edges_removed"] = len(info_a - info_b)
+    channels_a = {
+        f"{c.medium}|{','.join(sorted(c.participant_ids))}|{c.established_at_fabula}"
+        for c in ws_a.channels.values()
+    }
+    channels_b = {
+        f"{c.medium}|{','.join(sorted(c.participant_ids))}|{c.established_at_fabula}"
+        for c in ws_b.channels.values()
+    }
+    diff["channels_added"] = len(channels_b - channels_a)
+    diff["channels_removed"] = len(channels_a - channels_b)
+    utt_a = {e.id for e in ws_a.events if e.event_type == "utterance"}
+    utt_b = {e.id for e in ws_b.events if e.event_type == "utterance"}
+    diff["utterance_events_added"] = len(utt_b - utt_a)
+    diff["utterance_events_removed"] = len(utt_a - utt_b)
 
     return diff
 
@@ -1418,7 +1537,8 @@ async def ingest(
         "causal_edges": len(ws.causal_topology),
         "spatial_edges": len(ws.spatial_topology),
         "social_edges": len(ws.social_topology),
-        "information_edges": len(ws.information_topology),
+        "channels": len(ws.channels),
+        "utterance_events": sum(1 for e in ws.events if e.event_type == "utterance"),
         "validation": {
             "is_valid": report.is_valid,
             "issue_count": len(report.issues),

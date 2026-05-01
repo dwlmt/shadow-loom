@@ -328,7 +328,7 @@ _STRUCTURAL_KINDS = [
     ("causal_topology", "Causal Edges", "list", None),
     ("social_topology", "Relationship Edges", "list", None),
     ("spatial_topology", "Spatial Edges", "list", None),
-    ("information_topology", "Information Edges", "list", None),
+    ("channels", "Channels", "dict", "CHN_"),
 ]
 
 
@@ -430,9 +430,9 @@ def _list_item_id(key: str, item: Any, idx: int) -> str:
         )
     if key == "spatial_topology":
         return f"{item.get('source_id', '?')} → {item.get('target_id', '?')}"
-    if key == "information_topology":
-        targets = item.get("target_ids") or []
-        return f"{item.get('source_id', '?')} → {', '.join(targets) or '?'}"
+    if key == "channels":
+        pids = item.get("participant_ids") or []
+        return f"{item.get('medium', '?')} — {', '.join(pids) or '?'}"
     return f"#{idx}"
 
 
@@ -475,9 +475,10 @@ def _list_item_summary(key: str, item: Any) -> str:
             f"locked={item.get('is_locked', False)} "
             f"established={item.get('established_at_fabula', 0)}"
         )
-    if key == "information_topology":
+    if key == "channels":
         return (
             f"medium={item.get('medium', '?')} "
+            f"directionality={item.get('directionality', 'duplex')} "
             f"established={item.get('established_at_fabula', '?')}"
         )
     return ""
@@ -839,38 +840,47 @@ def _add_spatial_edge(data: dict, commit: Callable, prefix: Optional[str]) -> No
     )
 
 
-def _add_information_edge(
+def _add_channel(
     data: dict, commit: Callable, prefix: Optional[str],
 ) -> None:
-    _add_dialog_list(
-        title="Add Information Edge",
-        inputs=[
-            ("source_id (ENT_/OBJ_)", "source_id", "text", ""),
-            ("target_ids (comma-separated)", "target_ids", "text", ""),
-            ("medium", "medium", "text", "speech"),
-            ("established_at_fabula", "established_at_fabula", "int", 0),
+    _add_dialog_dict(
+        title="Add Channel",
+        prefix=prefix or "CHN_",
+        extra_inputs=[
+            ("name", "name", ""),
+            ("medium", "medium", "speech"),
+            ("participant_ids (comma-separated)", "participant_ids", ""),
+            ("directionality (broadcast|duplex|simplex)", "directionality", "duplex"),
+            ("established_at_fabula", "established_at_fabula", "0"),
         ],
-        build_skeleton=_build_info_skeleton,
-        data=data, collection_key="information_topology", commit=commit,
+        build_skeleton=_build_channel_skeleton,
+        data=data, collection_key="channels", commit=commit,
     )
 
 
-def _build_info_skeleton(v: dict) -> dict:
-    if not v.get("source_id"):
-        raise ValueError("source_id required")
-    raw_targets = v.get("target_ids") or ""
-    targets = [t.strip() for t in raw_targets.split(",") if t.strip()]
-    if not targets:
-        raise ValueError("at least one target_id required")
+def _build_channel_skeleton(new_id: str, v: dict) -> dict:
+    raw_pids = v.get("participant_ids") or ""
+    pids = [p.strip() for p in raw_pids.split(",") if p.strip()]
+    if len(pids) < 2:
+        raise ValueError("at least two participant_ids required")
+    direction = v.get("directionality") or "duplex"
+    if direction not in ("broadcast", "duplex", "simplex"):
+        raise ValueError("directionality must be broadcast | duplex | simplex")
+    try:
+        established = int(v.get("established_at_fabula") or 0)
+    except (TypeError, ValueError):
+        established = 0
     return {
+        "id": new_id,
         "world_id": "factual",
-        "source_id": v["source_id"],
-        "target_ids": targets,
+        "name": v.get("name") or new_id,
         "medium": v.get("medium") or "speech",
-        "is_encrypted": False,
-        "established_at_fabula": v["established_at_fabula"],
+        "participant_ids": pids,
+        "directionality": direction,
+        "intelligibility": {},
+        "established_at_fabula": established,
         "terminated_at_fabula": None,
-        "discovered_at_syuzhet": 0,
+        "evidence_strength": "moderate",
     }
 
 
@@ -890,7 +900,8 @@ _ADD_BUILDERS: dict[str, Callable] = {
     "causal_topology": _add_causal_edge,
     "social_topology": _add_social_edge,
     "spatial_topology": _add_spatial_edge,
-    "information_topology": _add_information_edge,
+    "information_topology": _add_channel,  # legacy key alias
+    "channels": _add_channel,
 }
 
 

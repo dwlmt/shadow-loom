@@ -859,6 +859,8 @@ def structured_response_data(
         "evidence": [],
         "confidence": 0.0,
         "caveats": [],
+        "rule2_redundant_evidence": [],
+        "rule3_pruned_interventions": [],
         "raw": physics_result or {},
     }
     if not physics_result:
@@ -935,6 +937,28 @@ def structured_response_data(
         out["caveats"].append(
             f"{len(physics_result['blocked'])} propagation(s) were blocked by inertia or affordance gates."
         )
+
+    # Rule-2 (redundant evidence) and Rule-3 (pruned interventions) —
+    # surfaced on the chat card so the user understands why some
+    # nodes/paths were dropped before audit (Story-integration plan
+    # Step 7).
+    for nid in (physics_result.get("rule2_redundant_evidence") or [])[:10]:
+        out["rule2_redundant_evidence"].append({
+            "node_id": nid, "label": label(nid),
+        })
+    for path in (physics_result.get("rule3_pruned_interventions") or [])[:10]:
+        if isinstance(path, dict):
+            out["rule3_pruned_interventions"].append({
+                "label": path.get("label")
+                or path.get("description")
+                or " \u2192 ".join(label(n) for n in path.get("nodes", [])[:4])
+                or "(pruned path)",
+                "reason": path.get("reason") or "",
+            })
+        elif isinstance(path, str):
+            out["rule3_pruned_interventions"].append({
+                "label": label(path), "reason": "",
+            })
 
     return out
 

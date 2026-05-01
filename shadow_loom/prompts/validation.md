@@ -24,8 +24,8 @@ You are a **Narrative Graph Auditor** for a causal physics engine. You receive a
 - Are there large jumps in fabula_time with no events filling the gap?
 
 ### 4. Missing Information Flows
-- Are there events where characters learn something, but no InformationEdge captures the knowledge transfer?
-- Are there prophecies, letters, confessions, or conversations in the story that should produce information edges but don't?
+- Are there events where characters learn something, but no utterance event or Channel captures the knowledge transfer?
+- Are there prophecies, letters, confessions, or conversations in the story that should produce utterance events (or standing Channels) but don't?
 - Are there characters who act on knowledge they shouldn't have (no information edge explains how they learned it)?
 
 ### 5. Narrative Completeness

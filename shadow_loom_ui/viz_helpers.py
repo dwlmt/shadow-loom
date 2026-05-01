@@ -444,10 +444,22 @@ def ws_to_graph_data(
         _link(rel.source_entity_id, rel.target_entity_id, "relationship",
               width=max(1, magnitude * 3))
 
-    # Information topology
-    for ie in ws.information_topology:
-        for tid in ie.target_ids:
-            _link(ie.source_id, tid, "communicating_with", dash="dashed")
+    # Channels (standing comms capabilities) — link every participant pair.
+    for ch in ws.channels.values():
+        for src in ch.participant_ids:
+            for tgt in ch.participant_ids:
+                if src == tgt:
+                    continue
+                _link(src, tgt, "communicating_with", dash="dashed")
+    # Discrete utterance events: actor (or speaker) → each addressee.
+    for evt in ws.events:
+        if evt.event_type != "utterance":
+            continue
+        sender = evt.speaker_id or (evt.actor_ids[0] if evt.actor_ids else None)
+        if not sender:
+            continue
+        for aid in evt.addressee_ids:
+            _link(sender, aid, "utters_to")
 
     # ── Event participation edges ──
     # These were missing from the overview, so events appeared
@@ -528,10 +540,21 @@ def ws_to_ego_graph_data(
     for rel in ws.social_topology:
         adj.setdefault(rel.source_entity_id, set()).add(rel.target_entity_id)
         adj.setdefault(rel.target_entity_id, set()).add(rel.source_entity_id)
-    for ie in ws.information_topology:
-        for tid in ie.target_ids:
-            adj.setdefault(ie.source_id, set()).add(tid)
-            adj.setdefault(tid, set()).add(ie.source_id)
+    for ch in ws.channels.values():
+        pids = list(ch.participant_ids)
+        for i, src in enumerate(pids):
+            for tgt in pids[i + 1:]:
+                adj.setdefault(src, set()).add(tgt)
+                adj.setdefault(tgt, set()).add(src)
+    for evt in ws.events:
+        if evt.event_type != "utterance":
+            continue
+        sender = evt.speaker_id or (evt.actor_ids[0] if evt.actor_ids else None)
+        if not sender:
+            continue
+        for aid in evt.addressee_ids:
+            adj.setdefault(sender, set()).add(aid)
+            adj.setdefault(aid, set()).add(sender)
 
     # BFS
     visited: set[str] = set()
@@ -699,16 +722,33 @@ def ws_to_sankey_data(
 def ws_to_information_sankey_data(
     ws: WorldStateV1,
 ) -> tuple[list[dict], list[dict]]:
-    """Sankey of communication: source → each target per InformationEdge."""
+    """Sankey of communication: speaker → each addressee per utterance event,
+    plus standing channel links between every participant pair."""
     def _iter():
-        for ie in ws.information_topology:
+        for evt in ws.events:
+            if evt.event_type != "utterance":
+                continue
+            ch = ws.channels.get(evt.via_channel_id) if evt.via_channel_id else None
             tip = (
-                f"medium: {ie.medium}<br/>"
-                f"encrypted: {ie.is_encrypted}<br/>"
-                f"established t={ie.established_at_fabula}"
+                f"medium: {ch.medium if ch else 'unmediated'}<br/>"
+                f"truth: {evt.truth_value or 'unspecified'}<br/>"
+                f"syuzhet={evt.syuzhet_index} fabula={evt.fabula_time}"
             )
-            for tgt in ie.target_ids:
-                yield (ie.source_id, tgt, 1.0, tip)
+            sender = evt.speaker_id or (evt.actor_ids[0] if evt.actor_ids else None)
+            if not sender:
+                continue
+            for aid in evt.addressee_ids:
+                yield (sender, aid, 1.0, tip)
+        for ch in ws.channels.values():
+            tip = (
+                f"medium: {ch.medium}<br/>"
+                f"directionality: {ch.directionality}<br/>"
+                f"established t={ch.established_at_fabula}"
+            )
+            pids = list(ch.participant_ids)
+            for i, src in enumerate(pids):
+                for tgt in pids[i + 1:]:
+                    yield (src, tgt, 0.5, tip)
     return _build_sankey(ws, _iter())
 
 
@@ -925,7 +965,8 @@ def ws_stats(ws: WorldStateV1) -> dict[str, int]:
         "causal_edges": len(ws.causal_topology),
         "spatial_edges": len(ws.spatial_topology),
         "social_edges": len(ws.social_topology),
-        "info_edges": len(ws.information_topology),
+        "channels": len(ws.channels),
+        "utterance_events": sum(1 for e in ws.events if e.event_type == "utterance"),
     }
 
 
@@ -1103,17 +1144,34 @@ def version_tree_to_echart_data(
     for v in tree_data:
         vid = v["id"]
         is_current = vid == current_version_id
+        is_shadow = (v.get("world_id") or "factual") == "shadow"
+        # Factual mainline = green, current selection = gold; shadow
+        # forks render in violet so the AMWN branch is visually
+        # distinguishable from the canonical timeline at a glance
+        # (Story-integration plan, Step 3).
+        if is_current:
+            base_color = "#FFD700"
+        elif is_shadow:
+            base_color = "#8B5CF6"
+        else:
+            base_color = "#4CAF50"
+        label_suffix = ""
+        if is_shadow and v.get("branch_label"):
+            label_suffix = f" \u2014 {v['branch_label']}"
         by_id[vid] = {
-            "name": f"v{v['version']}",
+            "name": f"v{v['version']}{label_suffix}",
             "value": v.get("source", ""),
             "children": [],
             "itemStyle": {
-                "color": "#FFD700" if is_current else "#4CAF50",
-                "borderWidth": 3 if is_current else 1,
+                "color": base_color,
+                "borderColor": "#7C3AED" if is_shadow else None,
+                "borderWidth": 3 if is_current else (2 if is_shadow else 1),
             },
             "label": {"fontWeight": "bold" if is_current else "normal"},
             "_vid": vid,
             "_version": v["version"],
+            "_world_id": v.get("world_id", "factual"),
+            "_branch_label": v.get("branch_label"),
         }
 
     # Wire parent→child
@@ -1270,16 +1328,38 @@ def ws_to_social_rows(ws: WorldStateV1) -> list[dict]:
 
 
 def ws_to_info_rows(ws: WorldStateV1) -> list[dict]:
-    """Information topology as table rows."""
-    return [
-        {
-            "source": ie.source_id,
-            "targets": ", ".join(ie.target_ids),
-            "medium": ie.medium,
-            "encrypted": ie.is_encrypted,
-        }
-        for ie in ws.information_topology
-    ]
+    """Communication signals as table rows: standing channels and utterance events."""
+    rows: list[dict] = []
+    for ch in ws.channels.values():
+        rows.append({
+            "kind": "channel",
+            "id": ch.id,
+            "participants": ", ".join(ch.participant_ids),
+            "medium": ch.medium,
+            "directionality": ch.directionality,
+            "min_intelligibility": (
+                round(min(ch.intelligibility.values()), 2)
+                if ch.intelligibility else 1.0
+            ),
+        })
+    for evt in ws.events:
+        if evt.event_type != "utterance":
+            continue
+        rows.append({
+            "kind": "utterance",
+            "id": evt.id,
+            "participants": (
+                f"{evt.speaker_id or ''} → " + ", ".join(evt.addressee_ids)
+            ),
+            "medium": (
+                ws.channels[evt.via_channel_id].medium
+                if evt.via_channel_id and evt.via_channel_id in ws.channels
+                else "unmediated"
+            ),
+            "directionality": evt.truth_value or "",
+            "min_intelligibility": 1.0,
+        })
+    return rows
 
 
 # ── ThemeRiver (multi-entity trait evolution over time) ───────────
@@ -2083,7 +2163,7 @@ def snapshot_world_at(ws: WorldStateV1, t: int) -> WorldStateV1:
         are dropped, matching the ego-graph extractor)
       * ``spatial_topology``: established by ``t`` and not yet
         destroyed at ``t``
-      * ``information_topology``: established by ``t`` and not yet
+      * ``channels``: established by ``t`` and not yet
         terminated at ``t``
 
     ``NarrativeObject`` instances are left untouched: the model has no
@@ -2176,11 +2256,11 @@ def snapshot_world_at(ws: WorldStateV1, t: int) -> WorldStateV1:
         if se.established_at_fabula <= t
         and (se.destroyed_at_fabula is None or se.destroyed_at_fabula > t)
     ]
-    new.information_topology = [
-        ie for ie in new.information_topology
-        if ie.established_at_fabula <= t
-        and (ie.terminated_at_fabula is None or ie.terminated_at_fabula > t)
-    ]
+    new.channels = {
+        cid: ch for cid, ch in new.channels.items()
+        if ch.established_at_fabula <= t
+        and (ch.terminated_at_fabula is None or ch.terminated_at_fabula > t)
+    }
 
     _snapshot_cache_put(ws, t, new)
     return new
@@ -2299,9 +2379,10 @@ def _compute_affective_scores_uncached(
     when the caller doesn't track a separate reader cursor.
 
     Definitions:
-      * **mystery** — (heuristic) fraction of information edges whose
-        ``discovered_at_syuzhet >= 1``. Replaced with the engine's
-        ratio of hidden causal ancestors when entity_ids are given.
+      * **mystery** — (heuristic) fraction of utterance events whose
+        ``syuzhet_index >= 1`` (i.e. revealed mid-narrative rather
+        than at the very start). Replaced with the engine's ratio of
+        hidden causal ancestors when entity_ids are given.
       * **dramatic_irony** — (engine, requires entity_ids) information
         asymmetry where the reader knows more than the character.
       * **suspense** — (engine, requires entity_ids) probabilistic
@@ -2320,13 +2401,14 @@ def _compute_affective_scores_uncached(
     if not ws.events:
         return scores
 
-    if ws.information_topology:
+    utterances = [e for e in ws.events if e.event_type == "utterance"]
+    if utterances:
         late = sum(
-            1 for ie in ws.information_topology
-            if ie.discovered_at_syuzhet and ie.discovered_at_syuzhet >= 1
+            1 for e in utterances
+            if e.syuzhet_index and e.syuzhet_index >= 1
         )
         scores["mystery"] = min(
-            1.0, late / max(1, len(ws.information_topology))
+            1.0, late / max(1, len(utterances))
         )
 
     rels = ws.social_topology
@@ -3460,7 +3542,9 @@ def _physics_metrics_from_payload(payload: dict) -> dict[str, float]:
         rels = payload.get("relevant_relationships", []) or []
         present = payload.get("present_entities", []) or []
         causal = payload.get("relevant_causal_edges", []) or []
-        info = payload.get("relevant_information_edges", []) or []
+        info = payload.get("relevant_channels", []) or []
+        info_extra = payload.get("relevant_utterance_events", []) or []
+        info = list(info) + list(info_extra)
         spatial = payload.get("relevant_spatial_edges", []) or []
     else:
         rels = list((payload.get("social_topology") or []))
@@ -3468,7 +3552,15 @@ def _physics_metrics_from_payload(payload: dict) -> dict[str, float]:
             if isinstance(payload.get("entities"), dict) \
             else list(payload.get("entities") or [])
         causal = payload.get("causal_topology", []) or []
-        info = payload.get("information_topology", []) or []
+        channels_dump = payload.get("channels") or {}
+        if isinstance(channels_dump, dict):
+            info = list(channels_dump.values())
+        else:
+            info = list(channels_dump)
+        info += [
+            e for e in (payload.get("events") or [])
+            if isinstance(e, dict) and e.get("event_type") == "utterance"
+        ]
         spatial = payload.get("spatial_topology", []) or []
 
     affinities: list[float] = []
