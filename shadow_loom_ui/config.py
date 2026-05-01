@@ -36,7 +36,10 @@ OAUTH_PROVIDERS: list[dict] = _settings.oauth.oauth_providers
 # sketches \u2014 not full novels or shooting scripts. Long inputs make
 # the per-chunk LLM passes prohibitively slow and produce graphs that
 # are too dense for interactive counterfactual exploration.
-MAX_INGEST_WORDS: int = 10_000
+#
+# Sourced from ``shadow_loom.settings.PhysicsSettings.max_ingest_words``
+# so the MCP tools enforce the same cap.
+MAX_INGEST_WORDS: int = _settings.physics.max_ingest_words
 
 
 def count_words(text: str) -> int:

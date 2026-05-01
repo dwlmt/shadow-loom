@@ -195,6 +195,29 @@ VIOLATION_DIRECTIVE_TEMPLATES: Dict[str, Tuple[str, str]] = {
         "either revise the abducted hidden_deltas or weaken the claim.",
         "counterfactual",
     ),
+    "utterance_truth_contradiction": (
+        "Rewrite the flagged utterance so the prose treatment matches its "
+        "declared truth_value: foreground the lie / mark the line as "
+        "performative / acknowledge the speaker's uncertainty.",
+        "directive",
+    ),
+    "channel_intelligibility_violation": (
+        "Lower the listener's confidence in the resulting belief, or stage "
+        "the partial decoding in the prose so the channel's intelligibility "
+        "is honoured.",
+        "directive",
+    ),
+    "withheld_utterance_leak": (
+        "Defer or rephrase the leaked content so its on-page disclosure no "
+        "longer precedes the source utterance's syuzhet_index.",
+        "directive",
+    ),
+    "belief_provenance_contradiction": (
+        "Reconcile the prose with the belief's recorded provenance: either "
+        "name the same source event/channel, or add the missing acquisition "
+        "step before the character acts on the knowledge.",
+        "directive",
+    ),
 }
 
 
@@ -251,6 +274,10 @@ def extract_reasoning_trace(
         "rule3_pruned_interventions": [],
         "rule2_redundant_evidence": [],
         "cyclic_propagation_clusters": [],
+        # Channels & beliefs subsystem — counterfactual epistemic fallout
+        "pruned_beliefs_count": 0,
+        "pruned_utterance_event_ids": [],
+        "disabled_channel_ids": [],
     }
     if not physics_result:
         return out
@@ -383,6 +410,29 @@ def extract_reasoning_trace(
                 "trait": b.get("trait", ""),
             })
 
+    # ── Channels & beliefs counterfactual side-effects ───────────
+    # When a counterfactual surgery removes utterance events or
+    # disables channels, every belief whose ``acquired_via_*`` provenance
+    # pointed at those IDs is no longer justifiable. The engine reports
+    # the resulting prune so the UI can show the epistemic fallout next
+    # to the structural cascade.
+    try:
+        out["pruned_beliefs_count"] = int(
+            physics_result.get("pruned_beliefs_count", 0) or 0
+        )
+    except (TypeError, ValueError):
+        out["pruned_beliefs_count"] = 0
+    for eid in physics_result.get("pruned_utterance_event_ids") or []:
+        out["pruned_utterance_event_ids"].append({
+            "node_id": str(eid),
+            "label": label(str(eid)),
+        })
+    for cid in physics_result.get("disabled_channel_ids") or []:
+        out["disabled_channel_ids"].append({
+            "node_id": str(cid),
+            "label": label(str(cid)),
+        })
+
     return out
 
 
@@ -407,6 +457,12 @@ def reasoning_trace_summary(trace: Dict[str, Any]) -> str:
         parts.append(f"{len(trace['rule2_redundant_evidence'])} rule2-redundant")
     if trace.get("cyclic_propagation_clusters"):
         parts.append(f"{len(trace['cyclic_propagation_clusters'])} cycle-blocked")
+    if trace.get("pruned_beliefs_count"):
+        parts.append(f"{trace['pruned_beliefs_count']} beliefs pruned")
+    if trace.get("pruned_utterance_event_ids"):
+        parts.append(f"{len(trace['pruned_utterance_event_ids'])} utterances neutralised")
+    if trace.get("disabled_channel_ids"):
+        parts.append(f"{len(trace['disabled_channel_ids'])} channels severed")
     return " · ".join(parts) if parts else "no reasoning trace"
 
 
@@ -473,6 +529,14 @@ def belief_provenance_data(
                 "inertia": float(b.inertia),
                 "trigger_id": trig_id,
                 "trigger_label": trig_label,
+                "acquired_via_event_id": b.acquired_via_event_id or "",
+                "acquired_via_event_label": (
+                    label(b.acquired_via_event_id) if b.acquired_via_event_id else ""
+                ),
+                "acquired_via_channel_id": b.acquired_via_channel_id or "",
+                "acquired_via_channel_label": (
+                    label(b.acquired_via_channel_id) if b.acquired_via_channel_id else ""
+                ),
             })
         for tid in snap.beliefs_invalidated:
             rows.append({
@@ -485,6 +549,10 @@ def belief_provenance_data(
                 "inertia": 0.0,
                 "trigger_id": trig_id,
                 "trigger_label": trig_label,
+                "acquired_via_event_id": "",
+                "acquired_via_event_label": "",
+                "acquired_via_channel_id": "",
+                "acquired_via_channel_label": "",
             })
 
     rows.sort(key=lambda r: (r["fabula_time"], 0 if r["kind"] == "initial" else 1))
@@ -771,8 +839,16 @@ def world_diff_data(
         return {k: float(v.value) for k, v in ent.traits.items()}
 
     diff: Dict[str, Any] = {
-        "added": {"entities": [], "events": [], "objects": [], "world_traits": [], "causal_edges": []},
-        "removed": {"entities": [], "events": [], "objects": [], "world_traits": [], "causal_edges": []},
+        "added": {
+            "entities": [], "events": [], "objects": [],
+            "world_traits": [], "causal_edges": [],
+            "channels": [], "utterance_events": [],
+        },
+        "removed": {
+            "entities": [], "events": [], "objects": [],
+            "world_traits": [], "causal_edges": [],
+            "channels": [], "utterance_events": [],
+        },
         "changed": {"entities": [], "objects": [], "world_traits": []},
     }
 
@@ -847,12 +923,90 @@ def world_diff_data(
         f"{s} → {t} ({k})" for (s, t, k) in (a_edges - b_edges)
     )
 
+    # Channels & beliefs subsystem — surface presence-level deltas so
+    # the diff overlay matches the MCP ``diff_versions`` counters.
+    a_chans = set(ws_a.channels)
+    b_chans = set(ws_b.channels)
+    diff["added"]["channels"] = sorted(b_chans - a_chans)
+    diff["removed"]["channels"] = sorted(a_chans - b_chans)
+    a_utts = {e.id for e in ws_a.events if e.event_type == "utterance"}
+    b_utts = {e.id for e in ws_b.events if e.event_type == "utterance"}
+    diff["added"]["utterance_events"] = sorted(b_utts - a_utts)
+    diff["removed"]["utterance_events"] = sorted(a_utts - b_utts)
+
     diff["totals"] = {
         "added": sum(len(v) for v in diff["added"].values()),
         "removed": sum(len(v) for v in diff["removed"].values()),
         "changed": sum(len(v) for v in diff["changed"].values()),
     }
     return diff
+
+
+# =====================================================================
+# Hidden channels — channels/utterances not yet on-page for the reader,
+# plus per-recipient intelligibility asymmetries
+# =====================================================================
+
+
+def hidden_channel_rows(
+    ws: WorldStateV1,
+    *,
+    syuzhet_anchor: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """Project ``DirectiveAssembler.compute_hidden_channels`` into UI rows.
+
+    One row per HiddenChannel. Includes ``unintelligible_for`` so the
+    UI can surface recipient-specific intelligibility asymmetry, which
+    was previously only visible to MCP ``compute_tension`` callers.
+    """
+    try:
+        from shadow_loom.directive_assembly import DirectiveAssembler
+        from shadow_loom.extract_graph import extract_ego_graph_from_memory
+        from shadow_loom.instantiator import AMWNInstantiator
+    except Exception:  # pragma: no cover — import-time breakage only
+        logger.exception("Could not import DirectiveAssembler")
+        return []
+
+    entity_ids = list(ws.entities.keys())[:6]
+    if not entity_ids:
+        return []
+    try:
+        ego = extract_ego_graph_from_memory(ws, entity_ids)
+        ego_dict = ego.model_dump()
+        sandbox = AMWNInstantiator.create_sandbox(ego_dict, "interrogate")
+        assembler = DirectiveAssembler(sandbox, ego_dict, ws)
+        anchor = syuzhet_anchor
+        if anchor is None:
+            anchor = max(
+                (e.syuzhet_index for e in ws.events), default=0
+            )
+        hcs = assembler.compute_hidden_channels(anchor)
+    except Exception:
+        logger.exception("hidden_channel_rows: tension computation failed")
+        return []
+
+    label = _label_fn_for(ws)
+    rows: List[Dict[str, Any]] = []
+    for hc in hcs:
+        rows.append({
+            "kind": hc.kind,
+            "channel_id": hc.channel_id or "",
+            "utterance_event_id": hc.utterance_event_id or "",
+            "medium": hc.medium,
+            "participants": [
+                {"id": p, "label": label(p)} for p in hc.participant_ids
+            ],
+            "addressees": [
+                {"id": p, "label": label(p)} for p in hc.addressee_ids
+            ],
+            "speaker_id": hc.speaker_id or "",
+            "speaker_label": label(hc.speaker_id) if hc.speaker_id else "",
+            "discovered_at_syuzhet": hc.discovered_at_syuzhet,
+            "unintelligible_for": [
+                {"id": p, "label": label(p)} for p in hc.unintelligible_for
+            ],
+        })
+    return rows
 
 
 # =====================================================================

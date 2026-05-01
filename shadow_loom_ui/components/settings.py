@@ -207,6 +207,48 @@ def build_settings(state: AppState) -> None:
                 "Coming soon: default model, theme, pipeline configuration."
             ).classes("text-sm text-slate-500")
 
+        # ---- Pipeline configuration (read-only view of resolved settings) ----
+        with ui.card().classes("w-full " + CARD_CLS):
+            ui.label("Pipeline configuration").classes(SECTION_TITLE_CLS)
+            ui.label(
+                "Resolved values from environment / config.env. Edit your "
+                "config.env or the matching env vars and restart to change."
+            ).classes("text-xs text-slate-500 mb-2")
+            from shadow_loom.settings import get_settings as _get_settings
+            _s = _get_settings()
+            rows = [
+                {
+                    "name": "physics.intelligibility_threshold",
+                    "value": f"{_s.physics.intelligibility_threshold:.2f}",
+                    "help": (
+                        "Per-recipient channel intelligibility below which "
+                        "a belief acquired through that channel is considered "
+                        "epistemically invalid."
+                    ),
+                },
+                {
+                    "name": "physics.max_ingest_words",
+                    "value": f"{_s.physics.max_ingest_words:,}",
+                    "help": (
+                        "Maximum whitespace-tokenised words accepted by any "
+                        "ingestion entry point (UI, sample loader, MCP)."
+                    ),
+                },
+                {
+                    "name": "core.default_model",
+                    "value": _s.core.default_model,
+                    "help": "Fallback PydanticAI model string.",
+                },
+            ]
+            ui.table(
+                columns=[
+                    {"name": "name", "label": "Setting", "field": "name", "align": "left"},
+                    {"name": "value", "label": "Value", "field": "value", "align": "left"},
+                    {"name": "help", "label": "Description", "field": "help", "align": "left"},
+                ],
+                rows=rows,
+            ).props("dense flat bordered").classes("w-full")
+
 
 def _show_new_key_dialog(raw_key: str) -> None:
     """Show a dialog with the newly created API key (shown only once)."""

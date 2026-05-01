@@ -144,7 +144,14 @@ def run_and_save(
         "query_type": query.query_type,
     }
 
-    if not short_circuited:
+    # Match the UI's persistence policy: do not write a new version row
+    # when the engine produced prose against an unchanged world graph
+    # because re-extraction raised. Otherwise the new row would store
+    # divergent prose/world state under one version, and chained MCP
+    # tools would build on a graph that never really advanced.
+    skip_for_reextraction = bool(result.reextraction_failed)
+
+    if not short_circuited and not skip_for_reextraction:
         changeset_json = None
         branch_world_id = "factual"
         branch_label = None
@@ -195,6 +202,12 @@ def run_and_save(
                 logger.exception("Failed to update active-version pointer")
         if world_model_unchanged and result.prose:
             response["world_model_unchanged"] = True
+    elif skip_for_reextraction:
+        # Surface that no version was created — the prose is still
+        # returned to the caller below via ``result.reextraction_failed``
+        # / ``result.prose`` so they can decide whether to retry.
+        response["version_skipped"] = True
+        response["version_skipped_reason"] = "reextraction_failed"
     else:
         # Surface that no version was created.
         response["version_skipped"] = True

@@ -32,6 +32,7 @@ from shadow_loom_ui.components.event_navigator import build_event_navigator
 from shadow_loom_ui.components.reasoning_trace import render_reasoning_trace
 from shadow_loom_ui.reasoning_helpers import (
     foreshadowing_arcs_data,
+    hidden_channel_rows,
 )
 from shadow_loom_ui.reasoning_viz import (
     render_attribution_graph,
@@ -59,6 +60,7 @@ def build_reasoning_tab(state: AppState) -> None:
             ui.tab("events", label="Events", icon="auto_stories")
             ui.tab("trace", label="Trace", icon="psychology")
             ui.tab("belief", label="Belief lens", icon="visibility")
+            ui.tab("channels", label="Hidden channels", icon="hearing_disabled")
             ui.tab("attribution", label="Why this?", icon="device_hub")
             ui.tab("foreshadow", label="Foreshadowing", icon="auto_fix_high")
             ui.tab("convergence", label="Convergence", icon="show_chart")
@@ -72,6 +74,8 @@ def build_reasoning_tab(state: AppState) -> None:
                 _build_trace_panel(state)
             with ui.tab_panel("belief").classes("p-4"):
                 _build_belief_panel(state)
+            with ui.tab_panel("channels").classes("p-4"):
+                _build_channels_panel(state)
             with ui.tab_panel("attribution").classes("p-4"):
                 _build_attribution_panel(state)
             with ui.tab_panel("foreshadow").classes("p-4"):
@@ -154,7 +158,92 @@ def _build_belief_panel(state: AppState) -> None:
 
 
 # =====================================================================
-# 3. Attribution — "Why did event X happen?"
+# 3. Hidden channels — channels/utterances not yet revealed to the
+#    reader, plus per-recipient intelligibility asymmetry
+# =====================================================================
+
+def _build_channels_panel(state: AppState) -> None:
+    """Surface ``HiddenChannel`` rows so the UI matches MCP ``compute_tension``.
+
+    Two views in one panel:
+    * Standing channels whose first on-page utterance is still ahead of
+      the reader (or whose participants cannot all decode them).
+    * Utterance events with ``syuzhet_index`` > anchor — the reader has
+      not yet been told about them.
+    """
+    body = ui.column().classes("w-full gap-3")
+
+    def _refresh(**_: Any) -> None:
+        body.clear()
+        ws = state.world_state
+        if ws is None:
+            with body:
+                ui.label("No world model loaded.").classes(
+                    "text-sm text-slate-400 italic"
+                )
+            return
+        rows = hidden_channel_rows(ws)
+        with body:
+            with ui.card().classes(
+                "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-4"
+            ):
+                ui.label(
+                    "Information signals not yet on-page for the reader, "
+                    "or whose participants cannot all decode them. The "
+                    "auditor uses these to flag dramatic-irony leverage "
+                    "and withheld-utterance leaks."
+                ).classes("text-xs text-slate-500")
+                if not rows:
+                    ui.label(
+                        "All channels are fully revealed and intelligible."
+                    ).classes("text-sm text-slate-400 italic q-mt-sm")
+                    return
+
+                table_rows = [
+                    {
+                        "kind": r["kind"],
+                        "id": r["channel_id"] or r["utterance_event_id"],
+                        "medium": r["medium"],
+                        "participants": ", ".join(
+                            p["label"] for p in r["participants"]
+                        ),
+                        "addressees": ", ".join(
+                            p["label"] for p in r["addressees"]
+                        ) or "—",
+                        "speaker": r["speaker_label"] or "—",
+                        "discovered_at": (
+                            r["discovered_at_syuzhet"]
+                            if r["discovered_at_syuzhet"] is not None
+                            else "—"
+                        ),
+                        "unintelligible_for": ", ".join(
+                            p["label"] for p in r["unintelligible_for"]
+                        ) or "—",
+                    }
+                    for r in rows
+                ]
+                ui.table(
+                    columns=[
+                        {"name": "kind", "label": "Kind", "field": "kind", "align": "left"},
+                        {"name": "id", "label": "ID", "field": "id", "align": "left"},
+                        {"name": "medium", "label": "Medium", "field": "medium", "align": "left"},
+                        {"name": "participants", "label": "Participants", "field": "participants", "align": "left"},
+                        {"name": "addressees", "label": "Addressees", "field": "addressees", "align": "left"},
+                        {"name": "speaker", "label": "Speaker", "field": "speaker", "align": "left"},
+                        {"name": "discovered_at", "label": "Discovered @ syuzhet", "field": "discovered_at", "align": "right"},
+                        {"name": "unintelligible_for", "label": "Unintelligible for", "field": "unintelligible_for", "align": "left"},
+                    ],
+                    rows=table_rows,
+                    pagination={"rowsPerPage": 12},
+                ).props("dense flat bordered").classes("w-full q-mt-sm")
+
+    _refresh()
+    state.on(StateEvent.WORLD_STATE_CHANGED, _refresh)
+    state.on(StateEvent.PROJECT_LOADED, _refresh)
+
+
+# =====================================================================
+# 4. Attribution — "Why did event X happen?"
 # =====================================================================
 
 def _build_attribution_panel(state: AppState) -> None:

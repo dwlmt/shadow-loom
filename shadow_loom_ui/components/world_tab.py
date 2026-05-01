@@ -648,10 +648,17 @@ def _build_data_tables(state: AppState) -> None:
         with ui.tab_panel("info"):
             info_table = ui.table(
                 columns=[
-                    {"name": "source", "label": "Source", "field": "source", "sortable": True},
-                    {"name": "targets", "label": "Targets", "field": "targets"},
+                    {"name": "kind", "label": "Kind", "field": "kind", "sortable": True},
+                    {"name": "id", "label": "ID", "field": "id", "sortable": True},
+                    {"name": "participants", "label": "Participants", "field": "participants"},
                     {"name": "medium", "label": "Medium", "field": "medium", "sortable": True},
-                    {"name": "encrypted", "label": "Encrypted", "field": "encrypted", "sortable": True},
+                    {"name": "directionality", "label": "Directionality", "field": "directionality", "sortable": True},
+                    {
+                        "name": "min_intelligibility",
+                        "label": "Min intel.",
+                        "field": "min_intelligibility",
+                        "sortable": True,
+                    },
                 ],
                 rows=[],
                 pagination={"rowsPerPage": 10},

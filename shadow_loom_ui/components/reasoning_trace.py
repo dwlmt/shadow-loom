@@ -69,7 +69,9 @@ def render_reasoning_trace(
             "rule3_pruned_interventions",
             "rule2_redundant_evidence",
             "cyclic_propagation_clusters",
-        )):
+            "pruned_utterance_event_ids",
+            "disabled_channel_ids",
+        )) and not trace.get("pruned_beliefs_count"):
             ui.label(
                 "No causal-physics trace available. "
                 "Run an Intervene or What-If query to populate this panel."
@@ -218,6 +220,53 @@ def render_reasoning_trace(
                         if item.get("trait"):
                             ui.label(f".{item['trait']}").classes(
                                 "text-xs text-slate-700"
+                            )
+
+        # 8. Counterfactual epistemic side-effects (channels & beliefs)
+        epistemic_total = (
+            int(trace.get("pruned_beliefs_count") or 0)
+            + len(trace.get("pruned_utterance_event_ids") or [])
+            + len(trace.get("disabled_channel_ids") or [])
+        )
+        if epistemic_total:
+            with ui.expansion(
+                f"Epistemic fallout — {epistemic_total}",
+                icon="hub",
+                value=expanded,
+            ).props("dense").classes("w-full bg-sky-50 rounded-lg"):
+                ui.label(
+                    "Counterfactual surgery on utterances or channels "
+                    "invalidated the beliefs whose provenance pointed at "
+                    "those nodes. Downstream reasoning runs on a graph "
+                    "with the listed beliefs removed."
+                ).classes("text-xs text-slate-600")
+                if trace.get("pruned_beliefs_count"):
+                    ui.label(
+                        f"Beliefs pruned: {trace['pruned_beliefs_count']}"
+                    ).classes("text-sm text-slate-700")
+                if trace.get("pruned_utterance_event_ids"):
+                    ui.label("Utterances neutralised").classes(
+                        "text-xs font-semibold text-slate-700 mt-1"
+                    )
+                    for item in trace["pruned_utterance_event_ids"]:
+                        with ui.row().classes("items-baseline gap-2"):
+                            ui.badge(item["label"] or item["node_id"]).props(
+                                "dense color=blue"
+                            )
+                            ui.label(item["node_id"]).classes(
+                                "text-[10px] text-slate-500 font-mono"
+                            )
+                if trace.get("disabled_channel_ids"):
+                    ui.label("Channels severed").classes(
+                        "text-xs font-semibold text-slate-700 mt-1"
+                    )
+                    for item in trace["disabled_channel_ids"]:
+                        with ui.row().classes("items-baseline gap-2"):
+                            ui.badge(item["label"] or item["node_id"]).props(
+                                "dense color=blue"
+                            )
+                            ui.label(item["node_id"]).classes(
+                                "text-[10px] text-slate-500 font-mono"
                             )
 
     return container

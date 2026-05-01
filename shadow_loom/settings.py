@@ -389,6 +389,20 @@ class CausalPhysicsSettings(BaseSettings):
         ),
     )
 
+    max_ingest_words: int = Field(
+        default=10_000,
+        description=(
+            "Maximum number of whitespace-separated tokens accepted by any "
+            "ingestion entry point (UI textarea, sample loader, MCP "
+            "``ingest`` / ``write`` tools, chat input). Shadow-Loom is "
+            "designed for short summaries, synopses, and scenario sketches; "
+            "long inputs make the per-chunk LLM passes prohibitively slow "
+            "and produce graphs too dense for interactive counterfactual "
+            "exploration. Enforced uniformly so the UI and MCP tools "
+            "cannot disagree on what counts as oversized."
+        ),
+    )
+
     @property
     def strength_multiplier(self) -> dict[str, float]:
         return {

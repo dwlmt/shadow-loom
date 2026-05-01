@@ -71,6 +71,11 @@ from shadow_loom.models import (
 )
 from shadow_loom.narrative_physics import calculate_narrative_physics
 from shadow_loom.pipeline import PipelineConfig, PipelineResult, run_pipeline
+from shadow_loom.projections import (
+    project_channel,
+    project_event,
+    trace_information_flow,
+)
 from shadow_loom.query_models import (
     CounterfactualQuery,
     DirectiveQuery,
@@ -98,6 +103,31 @@ logger = logging.getLogger(__name__)
 # ── Settings ──────────────────────────────────────────────────────
 
 _settings = _get_settings()
+
+
+def _enforce_word_cap(text: str | None, *, field: str) -> dict | None:
+    """Reject text inputs that exceed ``physics.max_ingest_words``.
+
+    Mirrors the UI's ingestion gate so the same workload is not
+    accepted via API and rejected in the browser. Returns an error
+    dict on overflow or ``None`` when the input is acceptable.
+    """
+    if not text:
+        return None
+    cap = int(_settings.physics.max_ingest_words)
+    n = len(text.split())
+    if n > cap:
+        return {
+            "error": (
+                f"{field} has {n:,} words, exceeding the {cap:,}-word "
+                f"ingest limit. Trim the text or split into smaller "
+                f"calls."
+            ),
+            "field": field,
+            "word_count": n,
+            "limit": cap,
+        }
+    return None
 
 # ── DB init ───────────────────────────────────────────────────────
 
@@ -275,10 +305,12 @@ def inspect(
         return _inspect_event(ws, node_id)
     elif node_id.startswith("OBJ_"):
         return _inspect_object(ws, node_id)
+    elif node_id.startswith("CHN_"):
+        return _inspect_channel(ws, node_id)
     elif node_id.startswith("WORLD_"):
         return _inspect_world_trait(ws, node_id, at_time)
     else:
-        return {"error": f"Unknown node ID prefix: {node_id}. Expected ENT_, LOC_, EVT_, OBJ_, or WORLD_."}
+        return {"error": f"Unknown node ID prefix: {node_id}. Expected ENT_, LOC_, EVT_, OBJ_, CHN_, or WORLD_."}
 
 
 def _inspect_entity(ws: WorldStateV1, eid: str, at_time: int | None) -> dict:
@@ -350,28 +382,14 @@ def _inspect_event(ws: WorldStateV1, evt_id: str) -> dict:
     evt = next((e for e in ws.events if e.id == evt_id), None)
     if evt is None:
         return {"error": f"Event '{evt_id}' not found."}
+    return project_event(ws, evt)
 
-    def _resolve_names(ids):
-        return [{"id": i, "name": ws.entities[i].name if i in ws.entities else i} for i in ids]
 
-    causes = [{"source": ce.source_id, "mechanism": ce.mechanism,
-               "force": ce.causal_force, "type": ce.causality_type}
-              for ce in ws.causal_topology if ce.target_id == evt_id]
-    effects = [{"target": ce.target_id, "mechanism": ce.mechanism,
-                "force": ce.causal_force, "type": ce.causality_type}
-               for ce in ws.causal_topology if ce.source_id == evt_id]
-
-    return {
-        "id": evt.id, "type": "EventNode",
-        "event_type": evt.event_type,
-        "fabula_time": evt.fabula_time,
-        "syuzhet_index": evt.syuzhet_index,
-        "description": evt.description,
-        "actors": _resolve_names(evt.actor_ids),
-        "targets": _resolve_names(evt.target_ids),
-        "caused_by": causes,
-        "causes": effects,
-    }
+def _inspect_channel(ws: WorldStateV1, cid: str) -> dict:
+    ch = ws.channels.get(cid)
+    if ch is None:
+        return {"error": f"Channel '{cid}' not found."}
+    return project_channel(ws, ch)
 
 
 def _inspect_object(ws: WorldStateV1, oid: str) -> dict:
@@ -570,6 +588,7 @@ def trace_causality(
     version: Optional[int] = None,
     direction: str = "both",
     depth: int = 3,
+    include_information_flow: bool = True,
 ) -> dict:
     """Trace causal chains upstream and/or downstream from a node.
 
@@ -577,8 +596,14 @@ def trace_causality(
         node_id: The event or entity ID to trace from.
         direction: 'upstream' (causes), 'downstream' (effects), or 'both'.
         depth: Maximum traversal depth (default 3).
+        include_information_flow: When True (default) also walks the
+            epistemic provenance graph — utterance events and channels
+            — in addition to ``ws.causal_topology``. Disable to recover
+            the legacy causal-only behaviour.
 
-    Returns a subgraph of causal edges with mechanism and force details.
+    Returns a subgraph of causal edges with mechanism and force details,
+    plus (when ``include_information_flow``) an ``information_flow``
+    block listing utterance / channel edges traversed.
     """
     err = require_scope(ctx, "read")
     if err:
@@ -631,13 +656,18 @@ def trace_causality(
         _walk_downstream(node_id, depth)
 
     all_nodes = visited_up | visited | {node_id}
-    return {
+    response: dict = {
         "root": node_id,
         "direction": direction,
         "depth": depth,
         "nodes": sorted(all_nodes),
         "edges": edges_out,
     }
+    if include_information_flow:
+        response["information_flow"] = trace_information_flow(
+            ws, node_id, direction=direction, depth=depth,
+        )
+    return response
 
 
 @mcp.tool()
@@ -1445,6 +1475,10 @@ def write(
     if err:
         return {"error": err}
 
+    over = _enforce_word_cap(prose, field="prose")
+    if over:
+        return over
+
     pid, err = resolve_project(project_id, project_name, ctx)
     if err:
         return {"error": err}
@@ -1492,6 +1526,10 @@ async def ingest(
     err = require_scope(ctx, "write")
     if err:
         return {"error": err}
+
+    over = _enforce_word_cap(text, field="text")
+    if over:
+        return over
 
     user_row_id = get_user_id(ctx)
 

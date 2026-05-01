@@ -99,9 +99,11 @@ def _render_explorer(state: AppState, container) -> None:
     with container:
         ui.label(
             f"{stats.get('entities', 0)} entities · "
-            f"{stats.get('events', 0)} events · "
+            f"{stats.get('events', 0)} events "
+            f"({stats.get('utterance_events', 0)} utterances) · "
             f"{stats.get('locations', 0)} locations · "
             f"{stats.get('objects', 0)} objects · "
+            f"{stats.get('channels', 0)} channels · "
             f"{stats.get('world_traits', 0)} traits"
         ).classes("text-xs text-slate-500 mb-1 px-1")
 
@@ -216,6 +218,29 @@ def _render_explorer(state: AppState, container) -> None:
                                 "flat dense no-caps align=left"
                             ).classes("w-full text-left")
 
+                # Channels (post-refactor first-class nodes)
+                filtered_chs = [
+                    (cid, ch) for cid, ch in ws.channels.items()
+                    if not ft
+                    or ft in ch.name.lower()
+                    or ft in ch.medium.lower()
+                    or ft in cid.lower()
+                ]
+                if filtered_chs:
+                    with ui.expansion(
+                        f"Channels ({len(filtered_chs)})",
+                        icon="forum",
+                    ).classes("w-full").props("dense"):
+                        for cid, ch in filtered_chs:
+                            ui.button(
+                                f"{ch.name} ({ch.medium})",
+                                on_click=lambda c_id=cid: state.select_node(
+                                    c_id, "Channel"
+                                ),
+                            ).props(
+                                "flat dense no-caps align=left"
+                            ).classes("w-full text-left")
+
         _build_items()
         search.on(
             "update:model-value",
@@ -260,6 +285,11 @@ def _render_inspector(
         elif node_type == "WorldTrait" and node_id in ws.world_traits:
             _inspect_world_trait(ws, node_id)
             _inspector_suggestions(state, node_id, node_type, ws.world_traits[node_id].name)
+        elif node_type == "Channel" and node_id in ws.channels:
+            _inspect_channel(ws, node_id)
+            _inspector_suggestions(
+                state, node_id, node_type, ws.channels[node_id].name,
+            )
         else:
             ui.label(f"Unknown: {node_id}").classes(
                 "text-sm text-slate-500"
@@ -389,6 +419,57 @@ def _inspect_event(ws: "WorldStateV1", evt) -> None:
             "text-sm text-slate-600"
         )
 
+    # Utterance / revelation payload — surfaced when the refactor
+    # populated ``content`` / channel / speaker / addressees / truth.
+    has_utterance = (
+        evt.event_type == "utterance"
+        or evt.content is not None
+        or evt.via_channel_id is not None
+        or evt.speaker_id is not None
+        or bool(evt.addressee_ids)
+        or evt.truth_value is not None
+    )
+    if has_utterance:
+        ui.label("Utterance").classes(
+            "text-sm font-semibold text-slate-700 mt-2"
+        )
+        if evt.content:
+            ui.label(f"“{evt.content}”").classes(
+                "text-sm italic text-slate-700 px-2"
+            )
+        if evt.speaker_id:
+            sp = (
+                ws.entities[evt.speaker_id].name
+                if evt.speaker_id in ws.entities else evt.speaker_id
+            )
+            ui.label(f"Speaker: {sp}").classes(
+                "text-sm text-slate-600 px-2"
+            )
+        if evt.addressee_ids:
+            names = [
+                ws.entities[a].name if a in ws.entities else a
+                for a in evt.addressee_ids
+            ]
+            ui.label(f"Addressees: {', '.join(names)}").classes(
+                "text-sm text-slate-600 px-2"
+            )
+        if evt.via_channel_id:
+            medium = (
+                ws.channels[evt.via_channel_id].medium
+                if evt.via_channel_id in ws.channels else "unknown"
+            )
+            ui.label(
+                f"Channel: {evt.via_channel_id} ({medium})"
+            ).classes("text-sm text-slate-600 px-2")
+        if evt.truth_value:
+            colour = {
+                "true": "positive", "false": "negative",
+                "unknown": "warning", "performative": "secondary",
+            }.get(evt.truth_value, "secondary")
+            with ui.row().classes("items-center gap-2 px-2"):
+                ui.label("Truth value:").classes("text-sm text-slate-600")
+                ui.badge(evt.truth_value, color=colour).props("dense")
+
     causes = [ce for ce in ws.causal_topology if ce.target_id == evt.id]
     effects = [ce for ce in ws.causal_topology if ce.source_id == evt.id]
     if causes:
@@ -462,6 +543,50 @@ def _inspect_world_trait(ws: "WorldStateV1", wid: str) -> None:
             ui.label(" | ".join(parts)).classes(
                 "text-xs text-slate-600 px-2"
             )
+
+
+def _inspect_channel(ws: "WorldStateV1", cid: str) -> None:
+    ch = ws.channels[cid]
+    ui.label(ch.name).classes("text-lg font-semibold text-slate-800")
+    with ui.row().classes("gap-1"):
+        ui.badge(ch.medium, color="primary").props("dense")
+        ui.badge(ch.directionality, color="secondary").props("dense")
+        ui.label(f"established t={ch.established_at_fabula}").classes(
+            "text-xs text-slate-500"
+        )
+        if ch.terminated_at_fabula is not None:
+            ui.label(
+                f"terminated t={ch.terminated_at_fabula}"
+            ).classes("text-xs text-rose-500")
+
+    ui.label("Participants").classes(
+        "text-sm font-semibold text-slate-700 mt-2"
+    )
+    for pid in ch.participant_ids:
+        intel = float(ch.intelligibility.get(pid, 1.0))
+        name = ws.entities[pid].name if pid in ws.entities else pid
+        with ui.row().classes("items-baseline gap-2 px-2"):
+            ui.label(f"\u2022 {name}").classes("text-sm text-slate-600")
+            colour = (
+                "negative" if intel < 0.3
+                else "warning" if intel < 0.7
+                else "positive"
+            )
+            ui.badge(f"intel {intel:.2f}", color=colour).props("dense")
+
+    utterances = [
+        e for e in ws.events
+        if e.event_type == "utterance" and e.via_channel_id == cid
+    ]
+    if utterances:
+        ui.label(f"Utterances on this channel ({len(utterances)})").classes(
+            "text-sm font-semibold text-slate-700 mt-2"
+        )
+        for evt in sorted(utterances, key=lambda e: e.fabula_time)[:8]:
+            preview = (evt.content or evt.description or "")[:70]
+            ui.label(
+                f"t{evt.fabula_time}: \u201c{preview}\u201d"
+            ).classes("text-xs text-slate-600 px-2")
 
 
 def _inspector_suggestions(

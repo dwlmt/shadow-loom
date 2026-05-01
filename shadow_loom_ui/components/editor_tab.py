@@ -724,9 +724,25 @@ def _add_event(data: dict, commit: Callable, prefix: Optional[str]) -> None:
         inputs=[
             ("ID (EVT_…)", "id", "text", ""),
             ("Description", "description", "text", ""),
-            ("event_type (choice/outcome/revelation)", "event_type", "text", "outcome"),
+            (
+                "event_type (choice/outcome/revelation/utterance)",
+                "event_type", "text", "outcome",
+            ),
             ("fabula_time (auto)", "fabula_time", "int", _next_fabula_time(data)),
             ("syuzhet_index (auto)", "syuzhet_index", "int", _next_syuzhet_index(data)),
+            # Utterance-only fields. Ignored for non-utterance events;
+            # required when event_type == "utterance".
+            ("utterance: content", "content", "text", ""),
+            ("utterance: speaker_id (ENT_…)", "speaker_id", "text", ""),
+            (
+                "utterance: addressee_ids (comma-separated ENT_…)",
+                "addressee_ids", "text", "",
+            ),
+            ("utterance: via_channel_id (CHN_…, optional)", "via_channel_id", "text", ""),
+            (
+                "utterance: truth_value (true/false/unknown/performative)",
+                "truth_value", "text", "true",
+            ),
         ],
         build_skeleton=lambda v: _build_event_skeleton(v, prefix),
         data=data, collection_key="events", commit=commit,
@@ -738,9 +754,11 @@ def _build_event_skeleton(v: dict, prefix: Optional[str]) -> dict:
     if not eid:
         raise ValueError("Event ID required")
     et = (v.get("event_type") or "outcome").strip()
-    if et not in ("choice", "outcome", "revelation"):
-        raise ValueError("event_type must be choice/outcome/revelation")
-    return {
+    if et not in ("choice", "outcome", "revelation", "utterance"):
+        raise ValueError(
+            "event_type must be choice/outcome/revelation/utterance"
+        )
+    skel = {
         "world_id": "factual",
         "id": eid,
         "fabula_time": v["fabula_time"],
@@ -750,6 +768,34 @@ def _build_event_skeleton(v: dict, prefix: Optional[str]) -> dict:
         "target_ids": [],
         "description": v.get("description", ""),
     }
+    if et == "utterance":
+        speaker = (v.get("speaker_id") or "").strip()
+        if not speaker:
+            raise ValueError("utterance events require speaker_id")
+        addressees = [
+            a.strip() for a in (v.get("addressee_ids") or "").split(",")
+            if a.strip()
+        ]
+        if not addressees:
+            raise ValueError(
+                "utterance events require at least one addressee_id"
+            )
+        truth = (v.get("truth_value") or "true").strip()
+        if truth not in ("true", "false", "unknown", "performative"):
+            raise ValueError(
+                "truth_value must be true/false/unknown/performative"
+            )
+        channel = (v.get("via_channel_id") or "").strip() or None
+        skel["content"] = v.get("content") or ""
+        skel["speaker_id"] = speaker
+        skel["addressee_ids"] = addressees
+        skel["via_channel_id"] = channel
+        skel["truth_value"] = truth
+        # Mirror the speaker into actor_ids so causal traversal still
+        # finds them; the speaker is by definition acting.
+        skel["actor_ids"] = [speaker]
+        skel["target_ids"] = list(addressees)
+    return skel
 
 
 def _add_causal_edge(data: dict, commit: Callable, prefix: Optional[str]) -> None:
@@ -763,7 +809,7 @@ def _add_causal_edge(data: dict, commit: Callable, prefix: Optional[str]) -> Non
                 "affordance_gate/ambient_propagation)",
                 "causality_type", "text", "chain_reaction",
             ),
-            ("mechanism", "mechanism", "text", "physical_force"),
+            ("mechanism", "mechanism", "text", "physical"),
             ("fabula_time", "fabula_time", "int", _next_fabula_time(data) - 100 or 0),
         ],
         build_skeleton=_build_causal_skeleton,
@@ -787,7 +833,7 @@ def _build_causal_skeleton(v: dict) -> dict:
         "target_id": v["target_id"],
         "causality_type": ct,
         "causal_force": 5.0,
-        "mechanism": v.get("mechanism") or "physical_force",
+        "mechanism": v.get("mechanism") or "physical",
         "evidence_strength": "moderate",
         "propagation_delay": 0,
         "fabula_time": v["fabula_time"],
@@ -852,6 +898,10 @@ def _add_channel(
             ("participant_ids (comma-separated)", "participant_ids", ""),
             ("directionality (broadcast|duplex|simplex)", "directionality", "duplex"),
             ("established_at_fabula", "established_at_fabula", "0"),
+            (
+                "intelligibility (JSON, e.g. {\"ENT_X\": 0.4})",
+                "intelligibility", "{}",
+            ),
         ],
         build_skeleton=_build_channel_skeleton,
         data=data, collection_key="channels", commit=commit,
@@ -870,6 +920,26 @@ def _build_channel_skeleton(new_id: str, v: dict) -> dict:
         established = int(v.get("established_at_fabula") or 0)
     except (TypeError, ValueError):
         established = 0
+    raw_intel = v.get("intelligibility") or "{}"
+    try:
+        intel = json.loads(raw_intel) if isinstance(raw_intel, str) else dict(raw_intel)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"intelligibility must be JSON: {exc}") from exc
+    if not isinstance(intel, dict):
+        raise ValueError("intelligibility must be a JSON object")
+    norm_intel: dict[str, float] = {}
+    for k, val in intel.items():
+        try:
+            f = float(val)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"intelligibility[{k}] must be numeric, got {val!r}"
+            ) from exc
+        if not 0.0 <= f <= 1.0:
+            raise ValueError(
+                f"intelligibility[{k}]={f} out of range [0.0, 1.0]"
+            )
+        norm_intel[str(k)] = f
     return {
         "id": new_id,
         "world_id": "factual",
@@ -877,7 +947,7 @@ def _build_channel_skeleton(new_id: str, v: dict) -> dict:
         "medium": v.get("medium") or "speech",
         "participant_ids": pids,
         "directionality": direction,
-        "intelligibility": {},
+        "intelligibility": norm_intel,
         "established_at_fabula": established,
         "terminated_at_fabula": None,
         "evidence_strength": "moderate",
@@ -900,7 +970,6 @@ _ADD_BUILDERS: dict[str, Callable] = {
     "causal_topology": _add_causal_edge,
     "social_topology": _add_social_edge,
     "spatial_topology": _add_spatial_edge,
-    "information_topology": _add_channel,  # legacy key alias
     "channels": _add_channel,
 }
 
