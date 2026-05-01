@@ -24,6 +24,7 @@ file is the canonical entry point.
 |---|---|
 | [architecture.md](architecture.md) | Deep technical walkthrough of the 12-step pipeline, data model, modules, and runtime flow. |
 | [pipeline-walkthrough.md](pipeline-walkthrough.md) | End-to-end code-level tour of one pipeline run — ingestion, physics, generation, audit, re-extraction, merge. |
+| [pipeline-by-example.md](pipeline-by-example.md) | Data-anchored walkthrough — every stage of the pipeline (world model, AMWN, Pearl rungs 1–3, propagation, suspense / surprise / mystery / dramatic-irony / emotion scoring, directive assembly, generation, audit, merge) illustrated with verbatim values from the bundled fixtures. |
 | [model-examples.md](model-examples.md) | Worked examples on real bundled plots (Macbeth, Death on the Nile, Reservoir Dogs, …) showing each pipeline stage and feature in action. |
 | [query-and-cycles.md](query-and-cycles.md) | The eight query types, how natural language is parsed into them, and how each is realised in a pipeline cycle. |
 | [mcp-guide.md](mcp-guide.md) | The `shadow_loom_mcp` server — 31 tools, 5 resources, auth, scopes, versioning contract, agent workflow. |
