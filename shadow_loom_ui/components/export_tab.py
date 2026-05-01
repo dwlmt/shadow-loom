@@ -60,6 +60,96 @@ def build_export_tab(state: AppState) -> None:
                 "unelevated no-caps color=primary"
             ).classes("rounded-lg shadow-sm")
 
+        # ---- Export Current Version (Prose + World Model) ----
+        with ui.card().classes(
+            "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-6"
+        ):
+            with ui.row().classes("items-center gap-2"):
+                ui.icon("inventory_2", size="md", color="primary")
+                ui.label("Export Current Version (JSON)").classes(
+                    "text-lg font-semibold text-slate-800"
+                )
+
+            ui.label(
+                "Download the currently loaded world model version with both "
+                "its prose and world model JSON in a single file."
+            ).classes("text-sm text-slate-500")
+
+            def _build_version_payload() -> dict | None:
+                if state.world_state is None:
+                    ui.notify("No world model loaded", type="warning")
+                    return None
+                row = None
+                if state.current_version_row_id is not None:
+                    row = db.get_version_by_id(state.current_version_row_id)
+                elif state.project_id is not None:
+                    row = db.get_latest_version(state.project_id)
+                payload: dict = {
+                    "project_id": state.project_id,
+                    "project_name": state.project_name,
+                    "world_model": state.world_state.model_dump(mode="json"),
+                }
+                if row is not None:
+                    payload["version"] = {
+                        "version_row_id": row.id,
+                        "version": row.version,
+                        "ancestor_id": row.ancestor_id,
+                        "source": row.source,
+                        "description": row.description,
+                        "label": row.label,
+                        "is_bookmarked": row.is_bookmarked,
+                        "world_id": row.world_id,
+                        "branch_label": row.branch_label,
+                        "raw_query": row.raw_query,
+                        "created_at": str(row.created_at),
+                    }
+                    payload["prose"] = row.prose
+                else:
+                    payload["version"] = None
+                    payload["prose"] = None
+                return payload
+
+            def _export_version_json():
+                payload = _build_version_payload()
+                if payload is None:
+                    return
+                data = json.dumps(payload, indent=2, default=str)
+                version_label = ""
+                if payload.get("version"):
+                    version_label = f"_v{payload['version']['version']}"
+                ui.download(
+                    data.encode("utf-8"),
+                    filename=(
+                        f"{state.project_name.replace(' ', '_')}"
+                        f"{version_label}_version.json"
+                    ),
+                )
+                ui.notify("Version exported!", type="positive")
+
+            def _copy_version_json():
+                payload = _build_version_payload()
+                if payload is None:
+                    return
+                data = json.dumps(payload, indent=2, default=str)
+                ui.run_javascript(
+                    f"navigator.clipboard.writeText({json.dumps(data)})"
+                )
+                ui.notify("Copied to clipboard!", type="positive")
+
+            with ui.row().classes("gap-2"):
+                ui.button(
+                    "Download Version (JSON)",
+                    icon="download",
+                    on_click=_export_version_json,
+                ).props("unelevated no-caps color=primary").classes(
+                    "rounded-lg shadow-sm"
+                )
+                ui.button(
+                    "Copy to Clipboard",
+                    icon="content_copy",
+                    on_click=_copy_version_json,
+                ).props("no-caps outline color=secondary").classes("rounded-lg")
+
         # ---- Export World State ----
         with ui.card().classes(
             "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-6"
