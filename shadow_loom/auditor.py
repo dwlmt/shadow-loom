@@ -132,6 +132,20 @@ class CausalPhysicsFeedback(BaseModel):
             "physics that is unfixable at the prose layer."
         ),
     )
+    noisy_or_absorbed_propagations: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Trait propagations refused by the noisy-OR probabilistic gate "
+            "because the aggregate per-edge probability fell below the "
+            "configured firing threshold. These are *expected* probabilistic "
+            "dampening of weak impulses (impact ≪ inertia), not narrative "
+            "miracles, and are reported separately so the rewrite loop "
+            "doesn't try to 'fix' the engine's correctly-absorbed weak "
+            "nudges with prose-level changes. Inspect this field only "
+            "when tuning ``settings.noisy_or_threshold`` or diagnosing "
+            "why a deliberately-weak causal chain failed to mutate a trait."
+        ),
+    )
     rule3_pruned_interventions: List[str] = Field(
         default_factory=list,
         description=(
@@ -490,6 +504,7 @@ def compute_causal_feedback(
     """
     miracle_steps: List[str] = []
     cyclic_clusters: List[str] = []
+    noisy_or_absorbed: List[str] = []
     rule3_pruned: List[str] = []
     rule2_redundant: List[str] = []
     foreshadowing_score = 1.0
@@ -501,6 +516,16 @@ def compute_causal_feedback(
     # causal subgraph contains an SCC), not narrative miracles, so they
     # are split out into ``cyclic_propagation_clusters`` and excluded
     # from miracle-step accounting.
+    #
+    # Noisy-OR absorptions are *expected* probabilistic dampening of
+    # weak impulses by the configured per-edge gate — not narrative
+    # miracles — and are routed into ``noisy_or_absorbed_propagations``
+    # so the rewrite loop does not waste cycles trying to fix the
+    # engine's correctly-absorbed sub-threshold nudges with prose
+    # changes. Conflating them with inertia/spatial blocks was producing
+    # spurious "miracle step" warnings on every plot run under the
+    # default noisy-OR propagation mode (impact=0.04 < inertia=0.55,
+    # etc. — the gate firing as designed, not a story problem).
     if physics_result is not None:
         for b in physics_result.blocked:
             entry = (
@@ -509,6 +534,8 @@ def compute_causal_feedback(
             )
             if b.reason == "cycle":
                 cyclic_clusters.append(entry)
+            elif b.reason == "noisy_or_absorbed":
+                noisy_or_absorbed.append(entry)
             else:
                 miracle_steps.append(entry)
         rule3_pruned = list(physics_result.rule3_pruned_interventions)
@@ -570,6 +597,7 @@ def compute_causal_feedback(
         cognitive_plausibility_score=cog_plausibility_score,
         cognitive_plausibility_details=cog_details,
         cyclic_propagation_clusters=cyclic_clusters,
+        noisy_or_absorbed_propagations=noisy_or_absorbed,
         rule3_pruned_interventions=rule3_pruned,
         rule2_redundant_evidence=rule2_redundant,
     )
@@ -1009,6 +1037,7 @@ def assemble_audit_prompt(
     if causal_feedback is not None and (
         causal_feedback.miracle_steps_detected
         or causal_feedback.cyclic_propagation_clusters
+        or causal_feedback.noisy_or_absorbed_propagations
         or causal_feedback.rule3_pruned_interventions
         or causal_feedback.rule2_redundant_evidence
     ):
@@ -1029,6 +1058,16 @@ def assemble_audit_prompt(
             )
             for cc in causal_feedback.cyclic_propagation_clusters:
                 sections.append(f"    - {cc}")
+        if causal_feedback.noisy_or_absorbed_propagations:
+            sections.append(
+                f"  Noisy-OR absorbed propagations "
+                f"({len(causal_feedback.noisy_or_absorbed_propagations)}) "
+                f"— probabilistic gate dampened weak impulses (impact ≪ "
+                f"inertia), NOT miracle steps. Do not flag these as prose "
+                f"problems:"
+            )
+            for na in causal_feedback.noisy_or_absorbed_propagations:
+                sections.append(f"    - {na}")
         if causal_feedback.rule3_pruned_interventions:
             sections.append(
                 f"  Rule-3 pruned interventions "
@@ -1368,6 +1407,15 @@ def assemble_evaluation_prompt(
             )
             for cc in causal_feedback.cyclic_propagation_clusters:
                 sections.append(f"    - {cc}")
+        if causal_feedback.noisy_or_absorbed_propagations:
+            sections.append(
+                f"  Noisy-OR absorbed propagations: "
+                f"{len(causal_feedback.noisy_or_absorbed_propagations)} "
+                f"(probabilistic gate dampened weak impulses, NOT miracle "
+                f"steps — do not rewrite)"
+            )
+            for na in causal_feedback.noisy_or_absorbed_propagations:
+                sections.append(f"    - {na}")
         if causal_feedback.rule3_pruned_interventions:
             sections.append(
                 f"  Rule-3 pruned interventions: "
