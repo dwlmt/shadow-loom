@@ -44,7 +44,7 @@ _ACCENT = "#8a6d3b"
 _ACCENT_BG = "#fdf8ef"
 _ACCENT_BORDER = "#e8d9b3"
 
-_RESEARCH_TIMEOUT_S = 30.0
+_RESEARCH_TIMEOUT_S = 120.0
 
 
 def build_research_tab(state: AppState) -> None:

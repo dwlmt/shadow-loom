@@ -2627,6 +2627,373 @@ def get_active_version(ctx: Context, project_id: int) -> dict:
 
 
 # =====================================================================
+# CONSOLIDATED DISPATCHERS — coarse-grained tools for callers
+# =====================================================================
+# These wrap the granular tools above behind action-discriminated
+# entry points. Behavior is identical — they delegate to the existing
+# functions. The granular tools remain registered for backward
+# compatibility but are marked DEPRECATED in their docstrings; prefer
+# the dispatchers below for new integrations.
+
+
+@mcp.tool()
+@_safe_tool
+def discover(
+    ctx: Context,
+    scope: str,
+    project_id: Optional[int] = None,
+    project_name: Optional[str] = None,
+    payload: Optional[dict] = None,
+) -> dict:
+    """Coarse-grained discovery — "what can I work with?".
+
+    Args:
+        scope: One of:
+            - ``"projects"`` — list every project the caller can read.
+            - ``"branches"`` — list AMWN branches in the project.
+            - ``"channels"`` — list standing channels in the project.
+            - ``"world_facts"`` — list segregated background facts.
+        project_id / project_name: Required for every scope except
+            ``"projects"``.
+        payload: Reserved for scope-specific filters. Currently unused.
+
+    Returns the same envelope as the underlying granular tool.
+    """
+    payload = payload or {}
+    if scope == "projects":
+        return list_projects(ctx)
+    if scope == "branches":
+        return list_branches(ctx, project_id=project_id, project_name=project_name)
+    if scope == "channels":
+        return list_channels(
+            ctx,
+            project_id=project_id,
+            project_name=project_name,
+            version=payload.get("version"),
+        )
+    if scope == "world_facts":
+        return list_world_facts(
+            ctx, project_id=project_id, project_name=project_name,
+        )
+    return {"error": (
+        f"Unknown discover scope {scope!r}. Expected one of: "
+        "projects, branches, channels, world_facts."
+    )}
+
+
+@mcp.tool()
+@_safe_tool
+def trace(
+    ctx: Context,
+    kind: str,
+    project_id: Optional[int] = None,
+    project_name: Optional[str] = None,
+    payload: Optional[dict] = None,
+) -> dict:
+    """Follow a chain through the project — causal, history, or channel.
+
+    Args:
+        kind: One of:
+            - ``"causal"`` — wraps :func:`trace_causality`. Payload keys:
+              ``node_id`` (required), ``version``, ``direction``
+              (``upstream``/``downstream``/``both``), ``depth``,
+              ``include_information_flow``.
+            - ``"history"`` — wraps :func:`get_history`. Payload keys:
+              ``version`` (omit for the full version tree).
+            - ``"channel"`` — wraps :func:`get_channel_history`. Payload
+              keys: ``channel_id`` (required), ``version``.
+        payload: kind-specific arguments (see above).
+    """
+    payload = payload or {}
+    if kind == "causal":
+        node_id = payload.get("node_id")
+        if not node_id:
+            return {"error": "trace(kind='causal') requires payload.node_id"}
+        try:
+            depth = int(payload.get("depth", 3))
+        except (TypeError, ValueError):
+            return {"error": (
+                f"trace(kind='causal') payload.depth must be an integer "
+                f"(got {payload.get('depth')!r})."
+            )}
+        return trace_causality(
+            ctx,
+            node_id=node_id,
+            project_id=project_id,
+            project_name=project_name,
+            version=payload.get("version"),
+            direction=payload.get("direction", "both"),
+            depth=depth,
+            include_information_flow=bool(payload.get("include_information_flow", True)),
+        )
+    if kind == "history":
+        return get_history(
+            ctx,
+            project_id=project_id,
+            project_name=project_name,
+            version=payload.get("version"),
+        )
+    if kind == "channel":
+        channel_id = payload.get("channel_id")
+        if not channel_id:
+            return {"error": "trace(kind='channel') requires payload.channel_id"}
+        return get_channel_history(
+            ctx,
+            channel_id=channel_id,
+            project_id=project_id,
+            project_name=project_name,
+            version=payload.get("version"),
+        )
+    return {"error": (
+        f"Unknown trace kind {kind!r}. Expected one of: causal, history, channel."
+    )}
+
+
+@mcp.tool()
+@_safe_tool
+async def author(
+    ctx: Context,
+    action: str,
+    project_id: Optional[int] = None,
+    project_name: Optional[str] = None,
+    payload: Optional[dict] = None,
+) -> dict:
+    """Mutate world data — ingest text, edit prose, research, or forget.
+
+    Args:
+        action: One of:
+            - ``"ingest"`` — wraps :func:`ingest`. Payload: ``text``
+              (required), ``label``. ``project_name`` becomes the new
+              project's name (default ``"MCP Project"``). Async — emits
+              progress notifications.
+            - ``"edit"`` — wraps :func:`write`. Payload: ``prose``
+              (required), ``description``, ``version``.
+            - ``"research"`` — wraps :func:`research_topic`. Payload:
+              ``topic`` (required), ``provider``, ``max_results``.
+            - ``"forget_fact"`` — wraps :func:`delete_world_fact`.
+              Payload: ``fact_id`` (required).
+    """
+    payload = payload or {}
+    if action == "ingest":
+        text = payload.get("text")
+        if not text:
+            return {"error": "author(action='ingest') requires payload.text"}
+        return await ingest(
+            ctx,
+            text=text,
+            project_name=project_name or "MCP Project",
+            label=payload.get("label"),
+        )
+    if action == "edit":
+        prose = payload.get("prose")
+        if not prose:
+            return {"error": "author(action='edit') requires payload.prose"}
+        return write(
+            ctx,
+            prose=prose,
+            project_id=project_id,
+            project_name=project_name,
+            description=payload.get("description", ""),
+            version=payload.get("version"),
+        )
+    if action == "research":
+        topic = payload.get("topic")
+        if not topic:
+            return {"error": "author(action='research') requires payload.topic"}
+        return research_topic(
+            ctx,
+            topic=topic,
+            project_id=project_id,
+            project_name=project_name,
+            provider=payload.get("provider"),
+            max_results=payload.get("max_results"),
+        )
+    if action == "forget_fact":
+        fact_id = payload.get("fact_id")
+        if not fact_id:
+            return {"error": "author(action='forget_fact') requires payload.fact_id"}
+        return delete_world_fact(
+            ctx,
+            fact_id=fact_id,
+            project_id=project_id,
+            project_name=project_name,
+        )
+    return {"error": (
+        f"Unknown author action {action!r}. Expected one of: "
+        "ingest, edit, research, forget_fact."
+    )}
+
+
+@mcp.tool()
+@_safe_tool
+def manage(
+    ctx: Context,
+    action: str,
+    project_id: Optional[int] = None,
+    project_name: Optional[str] = None,
+    payload: Optional[dict] = None,
+) -> dict:
+    """Project / version administration — branch, fork, share, configure.
+
+    Args:
+        action: One of:
+            - ``"branch"`` — :func:`branch`. Payload: ``from_version``.
+            - ``"fork"`` — :func:`fork`. Payload: ``new_name``.
+            - ``"share"`` — :func:`share`. Payload: ``username``,
+              ``role`` (``viewer``/``editor``/``admin``).
+            - ``"promote_branch"`` — :func:`promote_branch`. Payload:
+              ``version_row_id``, ``description``.
+            - ``"update_project"`` — :func:`update_project_tool`.
+              Payload: any of ``name``, ``description``, ``is_public``.
+            - ``"delete_project"`` — :func:`delete_project`.
+            - ``"delete_version"`` — :func:`delete_version`. Payload:
+              ``version_row_id``, ``cascade``.
+            - ``"reparent_version"`` — :func:`reparent_version`. Payload:
+              ``version_row_id``, ``new_ancestor_id``.
+            - ``"set_active_version"`` — :func:`set_active_version`.
+              Payload: ``version_row_id`` *or* ``version`` (sequential
+              project-scoped number). Pass neither to clear the pointer.
+            - ``"get_active_version"`` — :func:`get_active_version`.
+            - ``"get_settings"`` — :func:`get_project_settings`.
+            - ``"set_settings"`` — :func:`set_project_settings`. Payload:
+              ``research_topics``.
+            - ``"research_status"`` — :func:`get_research_status` (no
+              project required).
+            - ``"export_prose"`` — :func:`export_prose`. Payload:
+              ``branch_path``.
+    """
+    payload = payload or {}
+    p = lambda k, default=None: payload.get(k, default)  # noqa: E731
+
+    def _coerce_int(value, *, field: str) -> tuple[Optional[int], Optional[dict]]:
+        """Return (int, None) or (None, error_dict) for a payload value."""
+        if value is None:
+            return None, None
+        try:
+            return int(value), None
+        except (TypeError, ValueError):
+            return None, {"error": (
+                f"manage(action={action!r}) payload.{field} must be an integer "
+                f"(got {value!r})."
+            )}
+
+    # Actions with no project resolution required.
+    if action == "research_status":
+        return get_research_status(ctx)
+
+    if action == "branch":
+        from_v, err = _coerce_int(p("from_version"), field="from_version")
+        if err:
+            return err
+        if from_v is None or project_id is None:
+            return {"error": "manage(action='branch') requires project_id and payload.from_version"}
+        return branch(ctx, project_id=project_id, from_version=from_v)
+    if action == "fork":
+        new_name = p("new_name")
+        if not new_name or project_id is None:
+            return {"error": "manage(action='fork') requires project_id and payload.new_name"}
+        return fork(ctx, project_id=project_id, new_name=new_name)
+    if action == "share":
+        if project_id is None:
+            return {"error": "manage(action='share') requires project_id"}
+        username = p("username")
+        if not username:
+            return {"error": "manage(action='share') requires payload.username"}
+        return share(
+            ctx=ctx,
+            project_id=project_id,
+            username=username,
+            role=p("role", "viewer"),
+        )
+    if action == "promote_branch":
+        vrid, err = _coerce_int(p("version_row_id"), field="version_row_id")
+        if err:
+            return err
+        return promote_branch(
+            ctx=ctx,
+            version_row_id=vrid,
+            project_id=project_id,
+            project_name=project_name,
+            description=p("description", ""),
+        )
+    if action == "update_project":
+        if project_id is None:
+            return {"error": "manage(action='update_project') requires project_id"}
+        return update_project_tool(
+            ctx=ctx,
+            project_id=project_id,
+            name=p("name"),
+            description=p("description"),
+            is_public=p("is_public"),
+        )
+    if action == "delete_project":
+        if project_id is None:
+            return {"error": "manage(action='delete_project') requires project_id"}
+        return delete_project(ctx, project_id=project_id)
+    if action == "delete_version":
+        vrid, err = _coerce_int(p("version_row_id"), field="version_row_id")
+        if err:
+            return err
+        return delete_version(
+            ctx=ctx,
+            version_row_id=vrid,
+            cascade=bool(p("cascade", False)),
+        )
+    if action == "reparent_version":
+        vrid, err = _coerce_int(p("version_row_id"), field="version_row_id")
+        if err:
+            return err
+        return reparent_version(
+            ctx=ctx,
+            version_row_id=vrid,
+            new_ancestor_id=p("new_ancestor_id"),
+        )
+    if action == "set_active_version":
+        if project_id is None:
+            return {"error": "manage(action='set_active_version') requires project_id"}
+        vrid, err = _coerce_int(p("version_row_id"), field="version_row_id")
+        if err:
+            return err
+        version_num, err = _coerce_int(p("version"), field="version")
+        if err:
+            return err
+        return set_active_version(
+            ctx,
+            project_id=project_id,
+            version=version_num,
+            version_row_id=vrid,
+        )
+    if action == "get_active_version":
+        if project_id is None:
+            return {"error": "manage(action='get_active_version') requires project_id"}
+        return get_active_version(ctx, project_id=project_id)
+    if action == "get_settings":
+        return get_project_settings(
+            ctx, project_id=project_id, project_name=project_name,
+        )
+    if action == "set_settings":
+        topics = p("research_topics")
+        if topics is None:
+            return {"error": "manage(action='set_settings') requires payload.research_topics"}
+        return set_project_settings(
+            ctx,
+            research_topics=list(topics),
+            project_id=project_id,
+            project_name=project_name,
+        )
+    if action == "export_prose":
+        return export_prose(
+            ctx,
+            project_id=project_id,
+            project_name=project_name,
+            branch_path=p("branch_path"),
+        )
+    return {"error": (
+        f"Unknown manage action {action!r}. See docstring for the action enum."
+    )}
+
+
+# =====================================================================
 # RESOURCES (unauthenticated — only expose public data)
 # =====================================================================
 

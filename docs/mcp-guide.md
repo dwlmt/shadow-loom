@@ -2,7 +2,7 @@
 
 Shadow-Loom ships a [Model Context Protocol](https://modelcontextprotocol.io)
 server that exposes the entire causal narrative engine — ingestion, simulation,
-generation, audit, version management — as **37 tools and 5 resources** that any
+generation, audit, version management — as **41 tools and 5 resources** that any
 MCP-aware agent (Claude Desktop, Cursor, Continue, custom clients) can drive
 directly.
 
@@ -74,9 +74,107 @@ rather than executing if the bearer token is unknown or under-scoped.
 
 ---
 
-## 3. The 37 tools, by cognitive task
+## 3. The 41 tools, by cognitive task
+
+### Coarse-grained dispatchers — prefer these for new integrations
+
+Four action-discriminated tools wrap the granular surface so callers
+can reach most functionality through one well-known entry point. The
+underlying granular tools (listed in the sections below) remain
+registered for backward compatibility but are slated for removal once
+clients have migrated.
+
+**Why coarse-grained?** Each dispatcher takes a small set of
+discriminator + `payload` arguments instead of forcing the caller to
+remember 13 separately-named admin tools. LLM clients pick an action
+from a short enum and drop kind-specific arguments into `payload`.
+
+| Tool | Replaces | Discriminator |
+|---|---|---|
+| `discover(scope, project_id?, payload?)` | `list_projects`, `list_branches`, `list_channels`, `list_world_facts` | `scope ∈ {projects, branches, channels, world_facts}` |
+| `trace(kind, project_id?, payload)` | `trace_causality`, `get_history`, `get_channel_history` | `kind ∈ {causal, history, channel}` |
+| `author(action, project_id?, payload)` *(async)* | `ingest`, `write`, `research_topic`, `delete_world_fact` | `action ∈ {ingest, edit, research, forget_fact}` |
+| `manage(action, project_id?, payload)` | `branch`, `fork`, `share`, `promote_branch`, `update_project_tool`, `delete_project`, `delete_version`, `reparent_version`, `set_active_version`, `get_active_version`, `set_project_settings`, `get_project_settings`, `get_research_status`, `export_prose` | 14 actions — see below |
+
+#### `discover(scope, project_id?, payload?)` — what's available
+
+| `scope` | `project_id` | `payload` keys | Returns |
+|---|---|---|---|
+| `"projects"` | — | — | `{projects: [...]}` |
+| `"branches"` | required | — | `{branches: [...]}` |
+| `"channels"` | required | `version` (optional) | `{channels: [...]}` |
+| `"world_facts"` | required | — | `{project_id, facts: [...], count}` |
+
+```jsonc
+discover(scope="projects")
+discover(scope="channels", project_id=42, payload={"version": 3})
+discover(scope="world_facts", project_id=42)
+```
+
+#### `trace(kind, ...)` — follow a chain
+
+| `kind` | `payload` keys | Returns |
+|---|---|---|
+| `"causal"` | `node_id` *(req)*, `version`, `direction ∈ {upstream, downstream, both}`, `depth` (default 3), `include_information_flow` (default `true`) | `{root, direction, depth, nodes, edges, information_flow?}` |
+| `"history"` | `version` (omit for full tree) | full tree → `{project_id, versions}`; single → `{version, source, prose, changeset, …}` |
+| `"channel"` | `channel_id` *(req)*, `version` | `{channel, utterances: [...]}` |
+
+```jsonc
+trace(kind="causal", project_id=42, payload={"node_id": "EVT_DUNCAN_DEATH", "depth": 4})
+trace(kind="history", project_id=42)
+trace(kind="channel", project_id=42, payload={"channel_id": "CHN_LETTERS"})
+```
+
+#### `author(action, ...)` *(async)* — mutate world data
+
+| `action` | `payload` keys | Notes |
+|---|---|---|
+| `"ingest"` | `text` *(req)*, `label` | Project name comes from `project_name`. Emits progress notifications. |
+| `"edit"` | `prose` *(req)*, `description`, `version` | Manual edit — re-extracts topology, creates a new version, skips audit. |
+| `"research"` | `topic` *(req)*, `provider`, `max_results` | Provider call + agent distil + persist a `WorldFact`. |
+| `"forget_fact"` | `fact_id` *(req)* | Delete a `WorldFact` by id. |
+
+```jsonc
+author(action="ingest",        project_name="Macbeth", payload={"text": "..."})
+author(action="edit",          project_id=42, payload={"prose": "...", "description": "Act II revision"})
+author(action="research",      project_id=42, payload={"topic": "Roaring Twenties speakeasies"})
+author(action="forget_fact",   project_id=42, payload={"fact_id": "FACT_003"})
+```
+
+#### `manage(action, ...)` — admin / config
+
+| `action` | Scope | `payload` keys |
+|---|---|---|
+| `"branch"` | write | `from_version` *(req)* |
+| `"fork"` | write | `new_name` *(req)* |
+| `"share"` | admin | `username` *(req)*, `role ∈ {viewer, editor, admin}` |
+| `"promote_branch"` | write | `version_row_id` *(req)*, `description` |
+| `"update_project"` | admin | any of `name`, `description`, `is_public` |
+| `"delete_project"` | write | — |
+| `"delete_version"` | write | `version_row_id` *(req)*, `cascade` |
+| `"reparent_version"` | write | `version_row_id` *(req)*, `new_ancestor_id` |
+| `"set_active_version"` | read | `version_row_id` *or* `version` (sequential, project-scoped). Omit both to clear the pointer. |
+| `"get_active_version"` | read | — |
+| `"get_settings"` | read | — |
+| `"set_settings"` | write | `research_topics: list[str]` *(req)* |
+| `"research_status"` | read | — *(no `project_id` required)* |
+| `"export_prose"` | read | `branch_path` (optional list of `version_row_id`s) |
+
+```jsonc
+manage(action="branch",          project_id=42, payload={"from_version": 7})
+manage(action="share",           project_id=42, payload={"username": "alice", "role": "editor"})
+manage(action="set_settings",    project_id=42, payload={"research_topics": ["Edinburgh 1606"]})
+manage(action="research_status")  // no project_id — process-wide status
+```
+
+All dispatchers return `{"error": "..."}` for missing or unknown
+discriminators / payload fields. Successful responses are passed
+through verbatim from the underlying granular tool, so existing
+integrations can migrate one call at a time.
 
 ### ORIENT — "What stories exist? What's in this one?"
+
+> **Note:** `list_projects` is wrapped by [`discover(scope="projects")`](#discoverscope-project_id-payload--whats-available). New integrations should use the dispatcher.
 
 | Tool | Scope | Purpose |
 |---|---|---|
@@ -84,6 +182,8 @@ rather than executing if the bearer token is unknown or under-scoped.
 | `open_project` | read | Returns a full **manifest**: entity/location/object/event/world-trait IDs with names, topology counts (including `channels` and `utterance_events`), `current_version` (the version actually loaded — honours the active-version pointer or an explicit `version=`) and `latest_version` (the project tip). **Always call this first.** |
 
 ### EXPLORE — "Tell me about this character / event / place / channel."
+
+> **Note:** `list_channels`, `get_channel_history`, `trace_causality`, `get_history`, `list_branches`, `export_prose` are all wrapped by `discover` / `trace` / `manage`. The granular tools below remain for backward compatibility.
 
 | Tool | Scope | Purpose |
 |---|---|---|
@@ -108,6 +208,8 @@ rather than executing if the bearer token is unknown or under-scoped.
 
 ### CREATE — "Advance the story."
 
+> **Note:** `write` and `ingest` are wrapped by `author(action="edit")` / `author(action="ingest")`. `narrate` and `direct` remain top-level tools — they map directly to a single caller intent and need no consolidation.
+
 | Tool | Scope | Notes |
 |---|---|---|
 | `narrate(instruction, mode=None, skip_audit, force_implausible, speaker_id=None, addressee_ids=None, via_channel_id=None)` | write | The main creation entry point. NL → `parse_query` → `run_pipeline` → version write → active pointer advance. `mode` can pin the query type to `observe` / `intervene` / `counterfactual`. The `speaker_id` / `addressee_ids` / `via_channel_id` hints constrain the parser to emit a properly-typed `utterance` event with channel provenance. The parser also extracts optional **story-point anchors** (`temporal_anchor` / `syuzhet_anchor` / `anchor_after_event_id`) from the user's NL request so phrases like "after EVT_BANQUO_DEATH" or "in act 3" pin the query to the right slice without the caller looking the time up. |
@@ -123,7 +225,9 @@ MCP client can show a progress bar.
 | Tool | Scope | Purpose |
 |---|---|---|
 | `evaluate(focus_entity_ids=…)` | read | Runs the full `EvaluationQuery` — collects all prose across versions, recomputes engine metrics, returns the `NarrativeOrderObject` scorecard. |
-| `audit_log(version=None)` | read | Returns the auditor's structured loss for a given version. |
+| `audit_log(version=None)` | read | Returns the auditor's structured
+
+> **Note:** `research_topic`, `list_world_facts`, `delete_world_fact` are wrapped by `author(action="research")` / `discover(scope="world_facts")` / `author(action="forget_fact")`. `get_research_status` and `get_project_settings` / `set_project_settings` are wrapped by `manage(action="research_status" | "get_settings" | "set_settings")`. loss for a given version. |
 
 ### RESEARCH — "Look up real-world background on a topic." (optional)
 
@@ -146,6 +250,8 @@ so one user's lookups are never reused for another.
 See [docs/research-extraction-plan.md](research-extraction-plan.md) for
 the segregation contract and [CONTENT-POLICY.md §6.4a](../CONTENT-POLICY.md)
 for the user-facing guarantees.
+
+> **Note:** Every tool in this section is wrapped by `manage(action=...)`. New integrations should use the dispatcher; the granular tools remain for backward compatibility.
 
 ### MANAGE — "Edit the metadata, branch, fork, share, delete."
 
