@@ -65,6 +65,35 @@ def capture_logs_to_task(
                 pass
 
 
+def _safe_notify(*args, **kwargs) -> None:
+    """``ui.notify`` that swallows dead-client / dead-slot RuntimeErrors.
+
+    Background tasks routinely outlive the page they were launched
+    from. When the user navigates away mid-task, NiceGUI raises
+    ``RuntimeError("The parent element this slot belongs to has been
+    deleted.")`` from anywhere inside ``ui.notify``'s slot lookup
+    — the notification has nowhere to render. Swallowing the error
+    keeps the task from being marked failed for a purely cosmetic
+    reason (the user already left the page; there is nothing to
+    notify on).
+    """
+    try:
+        ui.notify(*args, **kwargs)
+    except RuntimeError as exc:
+        logging.getLogger(__name__).debug(
+            "ui.notify suppressed (dead client/slot): %s", exc,
+        )
+    except Exception:
+        # Older NiceGUI/Quasar versions reject some kwargs (e.g.
+        # ``actions``); drop them and try a plain notify.
+        try:
+            ui.notify(args[0] if args else "", type=kwargs.get("type", "info"))
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "ui.notify fallback also failed", exc_info=True,
+            )
+
+
 def notify_task_complete(
     task: BackgroundTask,
     *,
@@ -79,15 +108,12 @@ def notify_task_complete(
         actions = []
         if on_open is not None:
             actions.append({"label": open_label, "color": "white", "handler": on_open})
-        try:
-            ui.notify(msg, type="positive", timeout=8000, actions=actions or None)
-        except Exception:
-            ui.notify(msg, type="positive", timeout=8000)
+        _safe_notify(msg, type="positive", timeout=8000, actions=actions or None)
     else:
         msg = f"✗ {task.label} failed"
         if task.error:
             msg += f" — {task.error}"
-        ui.notify(msg, type="negative", timeout=0, close_button="Dismiss")
+        _safe_notify(msg, type="negative", timeout=0, close_button="Dismiss")
 
 
 # ── Unified async query runner ───────────────────────────────────
@@ -142,21 +168,13 @@ async def run_query_as_task(
     state.emit(StateEvent.QUERY_STARTED)
 
     if start_toast:
-        try:
-            ui.notify(
-                f"Started: {label}",
-                type="ongoing",
-                timeout=2500,
-                position="top-right",
-                spinner=True,
-            )
-        except Exception:
-            # NiceGUI/Quasar may reject some notification kwargs in older
-            # versions — fall back to a plain info toast.
-            try:
-                ui.notify(f"Started: {label}", type="info", timeout=2500)
-            except Exception:
-                pass
+        _safe_notify(
+            f"Started: {label}",
+            type="ongoing",
+            timeout=2500,
+            position="top-right",
+            spinner=True,
+        )
 
     try:
         with capture_logs_to_task(state, task):

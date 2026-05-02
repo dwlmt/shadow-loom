@@ -306,8 +306,42 @@ class AppState:
         Use this in place of :func:`asyncio.create_task` for any work
         whose lifetime is tied to the UI session, so the task survives
         garbage collection and can be cancelled on session shutdown.
+
+        The coroutine is wrapped so that any ``RuntimeError`` raised by
+        a NiceGUI dead-slot / dead-client mutation (the user navigated
+        away mid-task and the task tried to update an element on the
+        original page) is logged at debug rather than propagating as
+        an unhandled task exception. Any other exception is logged at
+        error level so genuine bugs still surface in the console.
         """
-        task = asyncio.create_task(coro, name=name)
+        async def _guarded():
+            try:
+                return await coro
+            except asyncio.CancelledError:
+                raise
+            except RuntimeError as exc:
+                msg = str(exc)
+                if (
+                    "has been deleted" in msg
+                    or "client has been deleted" in msg
+                    or "no current slot" in msg.lower()
+                ):
+                    logger.debug(
+                        "[AppState] background task %s touched dead "
+                        "slot/client after page nav: %s", name, exc,
+                    )
+                    return None
+                logger.exception(
+                    "[AppState] background task %s raised RuntimeError", name,
+                )
+                return None
+            except Exception:
+                logger.exception(
+                    "[AppState] background task %s raised", name,
+                )
+                return None
+
+        task = asyncio.create_task(_guarded(), name=name)
         self._async_tasks.add(task)
         task.add_done_callback(self._async_tasks.discard)
         return task
