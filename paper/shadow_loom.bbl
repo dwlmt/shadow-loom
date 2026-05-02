@@ -1,0 +1,512 @@
+\begin{thebibliography}{99}
+\providecommand{\natexlab}[1]{#1}
+
+\bibitem[{Akoury et~al.(2020)Akoury, Wang, Whiting, Hood, Peng, and Iyyer}]{akoury2020storium}
+Nader Akoury, Shufan Wang, Josh Whiting, Stephen Hood, Nanyun Peng, and Mohit Iyyer. 2020.
+\newblock {STORIUM}: A dataset and evaluation platform for machine-in-the-loop story generation.
+\newblock In \emph{Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing (EMNLP)}.
+
+\bibitem[{Alchourr{\'o}n et~al.(1985)Alchourr{\'o}n, G{\"a}rdenfors, and Makinson}]{alchourron1985agm}
+Carlos~E. Alchourr{\'o}n, Peter G{\"a}rdenfors, and David Makinson. 1985.
+\newblock On the logic of theory change: Partial meet contraction and revision functions.
+\newblock \emph{Journal of Symbolic Logic}, 50(2):510--530.
+
+\bibitem[{Bae and Young(2008)}]{baeyoung2008surprise}
+Byung-Chull Bae and R.~Michael Young. 2008.
+\newblock A use of flashback and foreshadowing for surprise arousal in narrative using a plan-based approach.
+\newblock In \emph{Proceedings of the 1st International Conference on Interactive Digital Storytelling (ICIDS)}, volume 5334 of \emph{LNCS}, pages 156--167.
+
+\bibitem[{Bai et~al.(2022)Bai, Kadavath, Kundu, Askell, Kernion, Jones, Chen, Goldie, Mirhoseini, McKinnon et~al.}]{bai2022constitutional}
+Yuntao Bai, Saurav Kadavath, Sandipan Kundu, Amanda Askell, Jackson Kernion, Andy Jones, Anna Chen, Anna Goldie, Azalia Mirhoseini, Cameron McKinnon, and 1 others. 2022.
+\newblock Constitutional {AI}: Harmlessness from {AI} feedback.
+\newblock ArXiv:2212.08073.
+
+\bibitem[{Baker et~al.(2009)Baker, Saxe, and Tenenbaum}]{baker2009inverseplanning}
+Chris~L. Baker, Rebecca Saxe, and Joshua~B. Tenenbaum. 2009.
+\newblock \href {https://doi.org/10.1016/j.cognition.2009.07.005} {Action understanding as inverse planning}.
+\newblock \emph{Cognition}, 113(3):329--349.
+
+\bibitem[{Bal(2009)}]{bal2009narratology}
+Mieke Bal. 2009.
+\newblock \emph{Narratology: Introduction to the Theory of Narrative}, 3rd edition.
+\newblock University of Toronto Press.
+
+\bibitem[{Balke and Pearl(1994)}]{balke1994counterfactual}
+Alexander Balke and Judea Pearl. 1994.
+\newblock Counterfactual probabilities: Computational methods, bounds and applications.
+\newblock In \emph{Proceedings of the 10th Conference on Uncertainty in Artificial Intelligence (UAI)}, pages 46--54.
+
+\bibitem[{Bareinboim et~al.(2022)Bareinboim, Correa, Ibeling, and Icard}]{bareinboim2022pearl}
+Elias Bareinboim, Juan~D. Correa, Duligur Ibeling, and Thomas Icard. 2022.
+\newblock \href {https://doi.org/10.1145/3501714.3501743} {On {Pearl's} hierarchy and the foundations of causal inference}.
+\newblock In \emph{Probabilistic and Causal Inference: The Works of {Judea Pearl}}, pages 507--556. ACM Books.
+
+\bibitem[{Baron-Cohen et~al.(1985)Baron-Cohen, Leslie, and Frith}]{baroncohen1985autism}
+Simon Baron-Cohen, Alan~M. Leslie, and Uta Frith. 1985.
+\newblock Does the autistic child have a 'theory of mind'?
+\newblock \emph{Cognition}, 21(1):37--46.
+
+\bibitem[{Booth(1974)}]{booth1974irony}
+Wayne~C. Booth. 1974.
+\newblock \emph{A Rhetoric of Irony}.
+\newblock University of Chicago Press.
+
+\bibitem[{Bordwell(1985)}]{bordwell1985narration}
+David Bordwell. 1985.
+\newblock \emph{Narration in the Fiction Film}.
+\newblock University of Wisconsin Press.
+
+\bibitem[{Bremond(1973)}]{bremond1973logique}
+Claude Bremond. 1973.
+\newblock \emph{Logique du r{\'e}cit}.
+\newblock Seuil.
+
+\bibitem[{Brewer and Lichtenstein(1982)}]{brewer1982stories}
+William~F. Brewer and Edward~H. Lichtenstein. 1982.
+\newblock Stories are to entertain: A structural-affect theory of stories.
+\newblock \emph{Journal of Pragmatics}, 6(5--6):473--486.
+
+\bibitem[{Bringsjord and Ferrucci(2000)}]{bringsjord2000brutus}
+Selmer Bringsjord and David Ferrucci. 2000.
+\newblock \emph{Artificial Intelligence and Literary Creativity: Inside the Mind of {BRUTUS}, a Storytelling Machine}.
+\newblock Lawrence Erlbaum.
+
+\bibitem[{Chambers and Jurafsky(2008)}]{chambers2008narrative}
+Nathanael Chambers and Dan Jurafsky. 2008.
+\newblock Unsupervised learning of narrative event chains.
+\newblock In \emph{Proceedings of the 46th Annual Meeting of the Association for Computational Linguistics (ACL)}.
+
+\bibitem[{Cheong and Young(2015)}]{cheong2015suspenser}
+Yun-Gyung Cheong and R.~Michael Young. 2015.
+\newblock {Suspenser}: A story generation system for suspense.
+\newblock \emph{IEEE Transactions on Computational Intelligence and AI in Games}, 7(1):39--52.
+
+\bibitem[{Correa and Bareinboim(2025)}]{correa2025amwn}
+Juan~D. Correa and Elias Bareinboim. 2025.
+\newblock \href {https://openreview.net/forum?id=Z1qZoHa6ql} {Counterfactual graphical models: Constraints and inference}.
+\newblock In \emph{Proceedings of the 42nd International Conference on Machine Learning (ICML)}.
+\newblock Spotlight. OpenReview ID: Z1qZoHa6ql.
+
+\bibitem[{Correa et~al.(2021)Correa, Lee, and Bareinboim}]{correa2021nested}
+Juan~D. Correa, Sanghack Lee, and Elias Bareinboim. 2021.
+\newblock Nested counterfactual identification from arbitrary surrogate experiments.
+\newblock In \emph{Advances in Neural Information Processing Systems (NeurIPS)}.
+\newblock ArXiv:2107.03190.
+
+\bibitem[{Cross et~al.(2024)Cross, Xiang, Bhatia, Yamins, and Haber}]{cross2024hyp}
+Logan Cross, Violet Xiang, Agam Bhatia, Daniel L.~K. Yamins, and Nick Haber. 2024.
+\newblock Hypothetical minds: Scaffolding theory of mind for multi-agent tasks with large language models.
+\newblock ArXiv:2407.07086.
+
+\bibitem[{Dole{\v{z}}el(1998)}]{dolezel1998heterocosmica}
+Lubom{\'i}r Dole{\v{z}}el. 1998.
+\newblock \emph{Heterocosmica: Fiction and Possible Worlds}.
+\newblock Johns Hopkins University Press.
+
+\bibitem[{Elson(2012)}]{elson2012sig}
+David~K. Elson. 2012.
+\newblock \emph{Modeling Narrative Discourse}.
+\newblock Ph.D. thesis, Columbia University.
+
+\bibitem[{Fagin et~al.(1995)Fagin, Halpern, Moses, and Vardi}]{fagin1995reasoning}
+Ronald Fagin, Joseph~Y. Halpern, Yoram Moses, and Moshe~Y. Vardi. 1995.
+\newblock \emph{Reasoning About Knowledge}.
+\newblock MIT Press.
+
+\bibitem[{Fan et~al.(2018)Fan, Lewis, and Dauphin}]{fan2018writingprompts}
+Angela Fan, Mike Lewis, and Yann Dauphin. 2018.
+\newblock Hierarchical neural story generation.
+\newblock In \emph{Proceedings of the 56th Annual Meeting of the Association for Computational Linguistics (ACL)}.
+
+\bibitem[{Fludernik(1996)}]{fludernik1996natural}
+Monika Fludernik. 1996.
+\newblock \emph{Towards a 'Natural' Narratology}.
+\newblock Routledge.
+
+\bibitem[{Genette(1980)}]{genette1980narrative}
+G{\'e}rard Genette. 1980.
+\newblock \emph{Narrative Discourse: An Essay in Method}.
+\newblock Cornell University Press.
+
+\bibitem[{Gerrig(1993)}]{gerrig1993narrative}
+Richard~J. Gerrig. 1993.
+\newblock \emph{Experiencing Narrative Worlds: On the Psychological Activities of Reading}.
+\newblock Yale University Press.
+
+\bibitem[{Goldfarb-Tarrant et~al.(2020)Goldfarb-Tarrant, Chakrabarty, Weischedel, and Peng}]{goldfarbtarrant2020aristotelian}
+Seraphina Goldfarb-Tarrant, Tuhin Chakrabarty, Ralph Weischedel, and Nanyun Peng. 2020.
+\newblock Content planning for neural story generation with {Aristotelian} rescoring.
+\newblock In \emph{Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing (EMNLP)}, pages 4319--4338.
+
+\bibitem[{Graesser et~al.(1994)Graesser, Singer, and Trabasso}]{graesser1994constructing}
+Arthur~C. Graesser, Murray Singer, and Tom Trabasso. 1994.
+\newblock Constructing inferences during narrative text comprehension.
+\newblock \emph{Psychological Review}, 101(3):371--395.
+
+\bibitem[{Greimas(1983)}]{greimas1983structural}
+Algirdas~Julien Greimas. 1983.
+\newblock \emph{Structural Semantics: An Attempt at a Method}.
+\newblock University of Nebraska Press.
+\newblock Original work {\itshape S\'emantique structurale} published 1966.
+
+\bibitem[{Gu et~al.(2024)Gu, Jiang, Shi, Tan, Zhai, Xu, Li, Shen, Ma, Liu, Wang, Zhang, Wang, Gao, Ni, and Guo}]{gu2024judge}
+Jiawei Gu, Xuhui Jiang, Zhichao Shi, Hexiang Tan, Xuehao Zhai, Chengjin Xu, Wei Li, Yinghan Shen, Shengjie Ma, Honghao Liu, Saizhuo Wang, Kun Zhang, Yuanzhuo Wang, Wen Gao, Lionel Ni, and Jian Guo. 2024.
+\newblock A survey on {LLM}-as-a-judge.
+\newblock ArXiv:2411.15594.
+
+\bibitem[{Gu et~al.(2026)Gu, Tafjord, Kim, Moore, Bras, Clark, and Choi}]{gu2026simpletom}
+Yuling Gu, Oyvind Tafjord, Hyunwoo Kim, Jared Moore, Ronan~Le Bras, Peter Clark, and Yejin Choi. 2026.
+\newblock {SimpleToM}: Exposing the gap between explicit tom inference and implicit tom application in {LLMs}.
+\newblock In \emph{Proceedings of the International Conference on Learning Representations (ICLR)}.
+\newblock ArXiv:2410.13648; ICLR 2026.
+
+\bibitem[{Ha and Schmidhuber(2018)}]{ha2018world}
+David Ha and J\"urgen Schmidhuber. 2018.
+\newblock Recurrent world models facilitate policy evolution.
+\newblock In \emph{Advances in Neural Information Processing Systems 31 (NeurIPS)}.
+
+\bibitem[{Halpern(2016)}]{halpern2016actual}
+Joseph~Y. Halpern. 2016.
+\newblock \emph{Actual Causality}.
+\newblock MIT Press.
+
+\bibitem[{Halpern and Pearl(2005)}]{halpern2005causes}
+Joseph~Y. Halpern and Judea Pearl. 2005.
+\newblock \href {https://doi.org/10.1093/bjps/axi147} {Causes and explanations: A structural-model approach. {Part I}: Causes}.
+\newblock \emph{British Journal for the Philosophy of Science}, 56(4):843--887.
+
+\bibitem[{Hao et~al.(2023)Hao, Gu, Ma, Hong, Wang, Wang, and Hu}]{hao2023rap}
+Shibo Hao, Yi~Gu, Haodi Ma, Joshua~Jiahua Hong, Zhen Wang, Daisy~Zhe Wang, and Zhiting Hu. 2023.
+\newblock Reasoning with language model is planning with world model.
+\newblock In \emph{Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing (EMNLP)}.
+
+\bibitem[{Herman(2002)}]{herman2002story}
+David Herman. 2002.
+\newblock \emph{Story Logic: Problems and Possibilities of Narrative}.
+\newblock University of Nebraska Press.
+
+\bibitem[{Hogan(2003)}]{hogan2003mind}
+Patrick~Colm Hogan. 2003.
+\newblock \emph{The Mind and Its Stories: Narrative Universals and Human Emotion}.
+\newblock Cambridge University Press.
+
+\bibitem[{Itti and Baldi(2009)}]{ittibaldi2009surprise}
+Laurent Itti and Pierre Baldi. 2009.
+\newblock \href {https://doi.org/10.1016/j.visres.2008.09.007} {{Bayesian} surprise attracts human attention}.
+\newblock \emph{Vision Research}, 49(10):1295--1306.
+
+\bibitem[{Jhala and Young(2010)}]{jhalayoung2010cinematic}
+Arnav Jhala and R.~Michael Young. 2010.
+\newblock Cinematic visual discourse: Representation, generation, and evaluation.
+\newblock \emph{IEEE Transactions on Computational Intelligence and AI in Games}, 2(2):69--81.
+
+\bibitem[{K{\i}c{\i}man et~al.(2024)K{\i}c{\i}man, Ness, Sharma, and Tan}]{kiciman2024causal}
+Emre K{\i}c{\i}man, Robert Ness, Amit Sharma, and Chenhao Tan. 2024.
+\newblock Causal reasoning and large language models: Opening a new frontier for causality.
+\newblock \emph{Transactions on Machine Learning Research}.
+\newblock ArXiv:2305.00050.
+
+\bibitem[{Kim et~al.(2023)Kim, Sclar, Zhou, Bras, Kim, Choi, and Sap}]{kim2023fantom}
+Hyunwoo Kim, Melanie Sclar, Xuhui Zhou, Ronan~Le Bras, Gunhee Kim, Yejin Choi, and Maarten Sap. 2023.
+\newblock {FANToM}: A benchmark for stress-testing machine theory of mind in interactions.
+\newblock In \emph{Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing (EMNLP)}. Association for Computational Linguistics.
+\newblock ArXiv:2310.15421.
+
+\bibitem[{Kintsch and van Dijk(1978)}]{kintsch1978macro}
+Walter Kintsch and Teun~A. van Dijk. 1978.
+\newblock Toward a model of text comprehension and production.
+\newblock \emph{Psychological Review}, 85(5):363--394.
+
+\bibitem[{Kreminski et~al.(2020)Kreminski, Dickinson, Mateas, and Wardrip-Fruin}]{kreminski2020wereyaknow}
+Max Kreminski, Melanie Dickinson, Michael Mateas, and Noah Wardrip-Fruin. 2020.
+\newblock \href {https://doi.org/10.1145/3402942.3402953} {Why are we like this?: The ai architecture of a co-creative storytelling game}.
+\newblock In \emph{Proceedings of the 15th International Conference on the Foundations of Digital Games (FDG)}.
+
+\bibitem[{Lazer et~al.(2009)Lazer, Pentland, Adamic, Aral, Barab\'asi, Brewer, Christakis, Contractor, Fowler, Gutmann, Jebara, King, Macy, Roy, and Alstyne}]{lazer2009css}
+David Lazer, Alex Pentland, Lada Adamic, Sinan Aral, Albert-L\'aszl\'o Barab\'asi, Devon Brewer, Nicholas Christakis, Noshir Contractor, James Fowler, Myron Gutmann, Tony Jebara, Gary King, Michael Macy, Deb Roy, and Marshall~Van Alstyne. 2009.
+\newblock \href {https://doi.org/10.1126/science.1167742} {Computational social science}.
+\newblock \emph{Science}, 323(5915):721--723.
+
+\bibitem[{LeCun(2022)}]{lecun2022jepa}
+Yann LeCun. 2022.
+\newblock A path towards autonomous machine intelligence.
+\newblock Open Review preprint.
+\newblock Version 0.9.2.
+
+\bibitem[{Lehnert(1981)}]{lehnert1981plotunits}
+Wendy~G. Lehnert. 1981.
+\newblock Plot units and narrative summarization.
+\newblock \emph{Cognitive Science}, 5(4):293--331.
+
+\bibitem[{Lewis(1973)}]{lewis1973causation}
+David Lewis. 1973.
+\newblock \href {https://doi.org/10.2307/2025310} {Causation}.
+\newblock \emph{Journal of Philosophy}, 70(17):556--567.
+
+\bibitem[{Madaan et~al.(2023)Madaan, Tandon, Gupta, Hallinan, Gao, Wiegreffe, Alon, Dziri, Prabhumoye, Yang, Gupta, Majumder, Hermann, Welleck, Yazdanbakhsh, and Clark}]{madaan2023selfrefine}
+Aman Madaan, Niket Tandon, Prakhar Gupta, Skyler Hallinan, Luyu Gao, Sarah Wiegreffe, Uri Alon, Nouha Dziri, Shrimai Prabhumoye, Yiming Yang, Shashank Gupta, Bodhisattwa~Prasad Majumder, Katherine Hermann, Sean Welleck, Amir Yazdanbakhsh, and Peter Clark. 2023.
+\newblock Self-refine: Iterative refinement with self-feedback.
+\newblock In \emph{Advances in Neural Information Processing Systems (NeurIPS)}.
+
+\bibitem[{Mandler and Johnson(1977)}]{mandlerjohnson1977}
+Jean~M. Mandler and Nancy~S. Johnson. 1977.
+\newblock Remembrance of things parsed: Story structure and recall.
+\newblock \emph{Cognitive Psychology}, 9(1):111--151.
+
+\bibitem[{Mani(2012)}]{mani2012computational}
+Inderjeet Mani. 2012.
+\newblock \emph{Computational Modeling of Narrative}.
+\newblock Morgan and Claypool.
+
+\bibitem[{Mar and Oatley(2008)}]{maroatley2008fiction}
+Raymond~A. Mar and Keith Oatley. 2008.
+\newblock The function of fiction is the abstraction and simulation of social experience.
+\newblock \emph{Perspectives on Psychological Science}, 3(3):173--192.
+
+\bibitem[{Martin et~al.(2018)Martin, Ammanabrolu, Wang, Hancock, Singh, Harrison, and Riedl}]{martin2018event}
+Lara~J. Martin, Prithviraj Ammanabrolu, Xinyu Wang, William Hancock, Shruti Singh, Brent Harrison, and Mark~O. Riedl. 2018.
+\newblock Event representations for automated story generation with deep neural nets.
+\newblock In \emph{Proceedings of the 32nd AAAI Conference on Artificial Intelligence}.
+
+\bibitem[{Mateas and Stern(2003)}]{mateas2003facade}
+Michael Mateas and Andrew Stern. 2003.
+\newblock Fa\c{c}ade: An experiment in building a fully-realized interactive drama.
+\newblock In \emph{Game Developers Conference, Game Design Track}, San Jose, CA, USA.
+
+\bibitem[{Meehan(1977)}]{meehan1977talespin}
+James~R. Meehan. 1977.
+\newblock {TALE-SPIN}, an interactive program that writes stories.
+\newblock In \emph{Proceedings of the 5th International Joint Conference on Artificial Intelligence (IJCAI)}.
+
+\bibitem[{Mostafazadeh et~al.(2016)Mostafazadeh, Chambers, He, Parikh, Batra, Vanderwende, Kohli, and Allen}]{mostafazadeh2016cloze}
+Nasrin Mostafazadeh, Nathanael Chambers, Xiaodong He, Devi Parikh, Dhruv Batra, Lucy Vanderwende, Pushmeet Kohli, and James Allen. 2016.
+\newblock A corpus and cloze evaluation for deeper understanding of commonsense stories.
+\newblock In \emph{Proceedings of the 2016 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies (NAACL-HLT)}.
+
+\bibitem[{Oatley(1995)}]{oatley1995taxonomy}
+Keith Oatley. 1995.
+\newblock A taxonomy of the emotions of literary response and a theory of identification in fictional narrative.
+\newblock \emph{Poetics}, 23:53--74.
+
+\bibitem[{Oatley(2016)}]{oatley2016fiction}
+Keith Oatley. 2016.
+\newblock Fiction: Simulation of social worlds.
+\newblock \emph{Trends in Cognitive Sciences}, 20(8):618--628.
+
+\bibitem[{Park et~al.(2023)Park, O'Brien, Cai, Morris, Liang, and Bernstein}]{park2023generative}
+Joon~Sung Park, Joseph~C. O'Brien, Carrie~J. Cai, Meredith~Ringel Morris, Percy Liang, and Michael~S. Bernstein. 2023.
+\newblock \href {https://doi.org/10.1145/3586183.3606763} {Generative agents: Interactive simulacra of human behavior}.
+\newblock In \emph{Proceedings of the 36th Annual ACM Symposium on User Interface Software and Technology (UIST)}.
+
+\bibitem[{Pavel(1986)}]{pavel1986fictional}
+Thomas Pavel. 1986.
+\newblock \emph{Fictional Worlds}.
+\newblock Harvard University Press.
+
+\bibitem[{Pearl(1995)}]{pearl1995causal}
+Judea Pearl. 1995.
+\newblock \href {https://doi.org/10.1093/biomet/82.4.669} {Causal diagrams for empirical research}.
+\newblock \emph{Biometrika}, 82(4):669--688.
+
+\bibitem[{Pearl(2009)}]{pearl2009causality}
+Judea Pearl. 2009.
+\newblock \href {https://doi.org/10.1017/CBO9780511803161} {\emph{Causality: Models, Reasoning, and Inference}}, 2nd edition.
+\newblock Cambridge University Press.
+
+\bibitem[{Pearl and Mackenzie(2018)}]{pearl2018book}
+Judea Pearl and Dana Mackenzie. 2018.
+\newblock \emph{The Book of Why: The New Science of Cause and Effect}.
+\newblock Basic Books.
+
+\bibitem[{Premack and Woodruff(1978)}]{premack1978tom}
+David Premack and Guy Woodruff. 1978.
+\newblock \href {https://doi.org/10.1017/S0140525X00076512} {Does the chimpanzee have a theory of mind?}
+\newblock \emph{Behavioral and Brain Sciences}, 1(4):515--526.
+
+\bibitem[{Propp(1968)}]{propp1968morphology}
+Vladimir Propp. 1968.
+\newblock \emph{Morphology of the Folktale}, 2nd english edition.
+\newblock University of Texas Press.
+
+\bibitem[{Rashkin et~al.(2020)Rashkin, Celikyilmaz, Choi, and Gao}]{rashkin2020plotmachines}
+Hannah Rashkin, Asli Celikyilmaz, Yejin Choi, and Jianfeng Gao. 2020.
+\newblock {PlotMachines}: Outline-conditioned generation with dynamic plot state tracking.
+\newblock In \emph{Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing (EMNLP)}.
+
+\bibitem[{Reagan et~al.(2016)Reagan, Mitchell, Kiley, Danforth, and Dodds}]{reagan2016arcs}
+Andrew~J. Reagan, Lewis Mitchell, Dilan Kiley, Christopher~M. Danforth, and Peter~Sheridan Dodds. 2016.
+\newblock \href {https://doi.org/10.1140/epjds/s13688-016-0093-1} {The emotional arcs of stories are dominated by six basic shapes}.
+\newblock \emph{EPJ Data Science}, 5:Article 31.
+
+\bibitem[{Riedl and Bulitko(2013)}]{riedl2013interactive}
+Mark~O. Riedl and Vadim Bulitko. 2013.
+\newblock \href {https://doi.org/10.1609/aimag.v34i1.2449} {Interactive narrative: An intelligent systems approach}.
+\newblock \emph{AI Magazine}, 34(1):67--77.
+
+\bibitem[{Riedl and Young(2010)}]{riedlyoung2010narrative}
+Mark~O. Riedl and R.~Michael Young. 2010.
+\newblock Narrative planning: Balancing plot and character.
+\newblock \emph{Journal of Artificial Intelligence Research}, 39:217--268.
+
+\bibitem[{Rumelhart(1975)}]{rumelhart1975schema}
+David~E. Rumelhart. 1975.
+\newblock Notes on a schema for stories.
+\newblock In Daniel~G. Bobrow and Allan~M. Collins, editors, \emph{Representation and Understanding: Studies in Cognitive Science}, pages 211--236. Academic Press.
+
+\bibitem[{Ryan(1991)}]{ryan1991possible}
+Marie-Laure Ryan. 1991.
+\newblock \emph{Possible Worlds, Artificial Intelligence, and Narrative Theory}.
+\newblock Indiana University Press.
+
+\bibitem[{Ryan(2001)}]{ryan2001virtual}
+Marie-Laure Ryan. 2001.
+\newblock \emph{Narrative as Virtual Reality: Immersion and Interactivity in Literature and Electronic Media}.
+\newblock Johns Hopkins University Press.
+
+\bibitem[{Schank and Abelson(1977)}]{schank1977scripts}
+Roger~C. Schank and Robert~P. Abelson. 1977.
+\newblock \emph{Scripts, Plans, Goals and Understanding: An Inquiry into Human Knowledge Structures}.
+\newblock Lawrence Erlbaum.
+
+\bibitem[{Shannon(1948)}]{shannon1948mathematical}
+Claude~E. Shannon. 1948.
+\newblock A mathematical theory of communication.
+\newblock \emph{Bell System Technical Journal}, 27:379--423, 623--656.
+
+\bibitem[{Shklovsky(1965)}]{shklovsky1965art}
+Viktor Shklovsky. 1965.
+\newblock Art as technique.
+\newblock In Lee~T. Lemon and Marion~J. Reis, editors, \emph{Russian Formalist Criticism: Four Essays}, pages 3--24. University of Nebraska Press, Lincoln, NE.
+\newblock Original work published 1917.
+
+\bibitem[{Shpitser and Pearl(2008)}]{shpitser2008complete}
+Ilya Shpitser and Judea Pearl. 2008.
+\newblock Complete identification methods for the causal hierarchy.
+\newblock \emph{Journal of Machine Learning Research}, 9(64):1941--1979.
+
+\bibitem[{Smelik et~al.(2014)Smelik, Tutenel, Bidarra, and Benes}]{smelik2014procedural}
+Ruben~M. Smelik, Tim Tutenel, Rafael Bidarra, and Bedrich Benes. 2014.
+\newblock \href {https://doi.org/10.1111/cgf.12276} {A survey on procedural modelling for virtual worlds}.
+\newblock \emph{Computer Graphics Forum}, 33(6):31--50.
+
+\bibitem[{Spirtes et~al.(2000)Spirtes, Glymour, and Scheines}]{spirtes2000causation}
+Peter Spirtes, Clark Glymour, and Richard Scheines. 2000.
+\newblock \emph{Causation, Prediction, and Search}, 2nd edition.
+\newblock MIT Press.
+
+\bibitem[{Sternberg(1978)}]{sternberg1978expositional}
+Meir Sternberg. 1978.
+\newblock \emph{Expositional Modes and Temporal Ordering in Fiction}.
+\newblock Johns Hopkins University Press.
+
+\bibitem[{Sternberg(1992)}]{sternberg1992telling}
+Meir Sternberg. 1992.
+\newblock Telling in time ({II}): Chronology, teleology, narrativity.
+\newblock \emph{Poetics Today}, 13(3):463--541.
+
+\bibitem[{Summerville et~al.(2018)Summerville, Snodgrass, Guzdial, Holmg{\aa}rd, Hoover, Isaksen, Nealen, and Togelius}]{summerville2018pcgml}
+Adam Summerville, Sam Snodgrass, Matthew Guzdial, Christoffer Holmg{\aa}rd, Amy~K. Hoover, Aaron Isaksen, Andy Nealen, and Julian Togelius. 2018.
+\newblock \href {https://doi.org/10.1109/TG.2018.2846639} {Procedural content generation via machine learning ({PCGML})}.
+\newblock \emph{IEEE Transactions on Games}, 10(3):257--270.
+
+\bibitem[{Tian et~al.(2024)Tian, Huang, Liu, Jiang, Spangher, Chen, May, and Peng}]{tian2024human}
+Yufei Tian, Tenghao Huang, Miri Liu, Derek Jiang, Alexander Spangher, Muhao Chen, Jonathan May, and Nanyun Peng. 2024.
+\newblock \href {https://doi.org/10.18653/v1/2024.emnlp-main.978} {Are large language models capable of generating human-level narratives?}
+\newblock In \emph{Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing (EMNLP)}, pages 17659--17681. Association for Computational Linguistics.
+\newblock Outstanding Paper Award.
+
+\bibitem[{Tomashevsky(1965)}]{tomashevsky1965thematics}
+Boris Tomashevsky. 1965.
+\newblock Thematics.
+\newblock In Lee~T. Lemon and Marion~J. Reis, editors, \emph{Russian Formalist Criticism: Four Essays}, pages 61--95. University of Nebraska Press.
+
+\bibitem[{Trabasso and van~den Broek(1985)}]{trabasso1985causal}
+Tom Trabasso and Paul van~den Broek. 1985.
+\newblock Causal thinking and the representation of narrative events.
+\newblock \emph{Journal of Memory and Language}, 24(5):612--630.
+
+\bibitem[{Verma and Pearl(1988)}]{vermapearl1988dsep}
+Thomas Verma and Judea Pearl. 1988.
+\newblock Causal networks: Semantics and expressiveness.
+\newblock In \emph{Proceedings of the 4th Workshop on Uncertainty in Artificial Intelligence (UAI)}, pages 69--78.
+
+\bibitem[{Wang et~al.(2024)Wang, Xie, Jiang, Mandlekar, Xiao, Zhu, Fan, and Anandkumar}]{wang2023voyager}
+Guanzhi Wang, Yuqi Xie, Yunfan Jiang, Ajay Mandlekar, Chaowei Xiao, Yuke Zhu, Linxi Fan, and Anima Anandkumar. 2024.
+\newblock Voyager: An open-ended embodied agent with large language models.
+\newblock In \emph{Transactions on Machine Learning Research}.
+\newblock ArXiv:2305.16291.
+
+\bibitem[{Ware and Young(2014)}]{ware2014glaive}
+Stephen~G. Ware and R.~Michael Young. 2014.
+\newblock \href {https://doi.org/10.1609/aiide.v10i1.12712} {Glaive: A state-space narrative planner supporting intentionality and conflict}.
+\newblock In \emph{Proceedings of the Tenth AAAI Conference on Artificial Intelligence and Interactive Digital Entertainment (AIIDE)}, pages 80--86.
+
+\bibitem[{Wilmot(2022)}]{wilmot2022phd}
+David Wilmot. 2022.
+\newblock \emph{{Great Expectations}: Unsupervised Inference of Suspense, Surprise and Salience in Storytelling}.
+\newblock Ph.D. thesis, University of Edinburgh.
+\newblock ArXiv:2206.09708.
+
+\bibitem[{Wilmot and Keller(2020)}]{wilmot2020suspense}
+David Wilmot and Frank Keller. 2020.
+\newblock \href {https://doi.org/10.18653/v1/2020.acl-main.161} {Modelling suspense in short stories as uncertainty reduction over neural representation}.
+\newblock In \emph{Proceedings of the 58th Annual Meeting of the Association for Computational Linguistics (ACL)}, pages 1763--1788. Association for Computational Linguistics.
+
+\bibitem[{Wilmot and Keller(2021)}]{wilmot2021emnlp}
+David Wilmot and Frank Keller. 2021.
+\newblock Memory and knowledge augmented language models for inferring salience in long-form stories.
+\newblock In \emph{Proceedings of the 2021 Conference on Empirical Methods in Natural Language Processing (EMNLP)}, pages 851--865.
+
+\bibitem[{Wimmer and Perner(1983)}]{wimmer1983false}
+Heinz Wimmer and Josef Perner. 1983.
+\newblock Beliefs about beliefs: Representation and constraining function of wrong beliefs in young children's understanding of deception.
+\newblock \emph{Cognition}, 13(1):103--128.
+
+\bibitem[{Woodward(2003)}]{woodward2003making}
+James Woodward. 2003.
+\newblock \emph{Making Things Happen: A Theory of Causal Explanation}.
+\newblock Oxford University Press.
+
+\bibitem[{Xu et~al.(2025)Xu, Jojic, Rao, Brockett, and Dolan}]{xu2025echoes}
+Weijia Xu, Nebojsa Jojic, Sudha Rao, Chris Brockett, and Bill Dolan. 2025.
+\newblock \href {https://doi.org/10.1073/pnas.2504966122} {Echoes in {AI}: Quantifying lack of plot diversity in {LLM} outputs}.
+\newblock \emph{Proceedings of the National Academy of Sciences}, 122(35):e2504966122.
+\newblock ArXiv:2501.00273.
+
+\bibitem[{y~P{\'e}rez and Sharples(2001)}]{perez2001mexica}
+Rafael~P{\'e}rez y~P{\'e}rez and Mike Sharples. 2001.
+\newblock {MEXICA}: A computer model of a cognitive account of creative writing.
+\newblock \emph{Journal of Experimental \& Theoretical Artificial Intelligence}, 13(2):119--139.
+
+\bibitem[{Yang et~al.(2023)Yang, Klein, Peng, and Tian}]{yang2023doc}
+Kevin Yang, Dan Klein, Nanyun Peng, and Yuandong Tian. 2023.
+\newblock {DOC}: Improving long story coherence with detailed outline control.
+\newblock In \emph{Proceedings of the 61st Annual Meeting of the Association for Computational Linguistics (ACL)}.
+\newblock ArXiv:2212.10077.
+
+\bibitem[{Yang et~al.(2022)Yang, Tian, Peng, and Klein}]{yang2022re3}
+Kevin Yang, Yuandong Tian, Nanyun Peng, and Dan Klein. 2022.
+\newblock {Re3}: Generating longer stories with recursive reprompting and revision.
+\newblock In \emph{Proceedings of the 2022 Conference on Empirical Methods in Natural Language Processing (EMNLP)}.
+
+\bibitem[{Yao et~al.(2019)Yao, Peng, Weischedel, Knight, Zhao, and Yan}]{yao2019planwrite}
+Lili Yao, Nanyun Peng, Ralph Weischedel, Kevin Knight, Dongyan Zhao, and Rui Yan. 2019.
+\newblock Plan-and-write: Towards better automatic storytelling.
+\newblock In \emph{Proceedings of the 33rd AAAI Conference on Artificial Intelligence}.
+
+\bibitem[{Zheng et~al.(2023)Zheng, Chiang, Sheng, Zhuang, Wu, Zhuang, Lin, Li, Li, Xing, Zhang, Gonzalez, and Stoica}]{zheng2023judge}
+Lianmin Zheng, Wei-Lin Chiang, Ying Sheng, Siyuan Zhuang, Zhanghao Wu, Yonghao Zhuang, Zi~Lin, Zhuohan Li, Dacheng Li, Eric~P. Xing, Hao Zhang, Joseph~E. Gonzalez, and Ion Stoica. 2023.
+\newblock Judging {LLM}-as-a-judge with {MT-Bench} and {Chatbot Arena}.
+\newblock In \emph{Advances in Neural Information Processing Systems (NeurIPS), Datasets and Benchmarks Track}.
+
+\bibitem[{Zunshine(2006)}]{zunshine2006theory}
+Lisa Zunshine. 2006.
+\newblock \emph{Why We Read Fiction: Theory of Mind and the Novel}.
+\newblock Ohio State University Press.
+
+\bibitem[{Zwaan and Radvansky(1998)}]{zwaan1998situation}
+Rolf~A. Zwaan and Gabriel~A. Radvansky. 1998.
+\newblock \href {https://doi.org/10.1037/0033-2909.123.2.162} {Situation models in language comprehension and memory}.
+\newblock \emph{Psychological Bulletin}, 123(2):162--185.
+
+\end{thebibliography}
