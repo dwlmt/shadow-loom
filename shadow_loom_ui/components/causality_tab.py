@@ -1460,10 +1460,32 @@ def _build_affective_dashboard(state: AppState) -> None:
         # and re-creating the DOM (which is what froze the UI under
         # rapid scrubbing).
         from shadow_loom_ui.viz import update_chart_options
+
+        # Latest timeseries options snapshot — read by the
+        # expand-to-dialog render_fn so the popout chart mirrors
+        # whatever the inline chart currently shows.
+        _ts_snapshot: dict = {"opts": None, "title": ""}
+
+        def _render_ts_expanded(height: str) -> None:
+            opts = _ts_snapshot["opts"]
+            if opts is None:
+                ui.label("No affective signal yet.").classes(
+                    "text-sm text-slate-400 italic"
+                )
+                return
+            ui.echart(opts).classes("w-full").style(f"height: {height};")
+
         with timeline_container:
-            timeseries_label = ui.label("").classes(
-                "text-lg font-semibold text-slate-800 mb-2"
-            )
+            with ui.row().classes("w-full items-center justify-between"):
+                timeseries_label = ui.label("").classes(
+                    "text-lg font-semibold text-slate-800 mb-2"
+                )
+                ui.button(
+                    icon="open_in_full",
+                    on_click=lambda: _open_ts_dialog(),
+                ).props("flat dense round size=sm color=grey-7").tooltip(
+                    "Expand to full screen"
+                )
             timeseries_chart = ui.echart({}).classes("w-full").style(
                 "height: 280px;"
             )
@@ -1482,6 +1504,13 @@ def _build_affective_dashboard(state: AppState) -> None:
                 "text-sm text-slate-400 italic"
             )
             event_timeline_empty.set_visibility(False)
+
+        def _open_ts_dialog() -> None:
+            from shadow_loom_ui.viz import _open_expand_dialog
+            _open_expand_dialog(
+                _render_ts_expanded,
+                _ts_snapshot["title"] or "Affective Metrics",
+            )
 
         # ── Data tables (events + affect only) ─────────────────────
         from shadow_loom_ui.viz_helpers import ws_to_event_rows
@@ -1668,6 +1697,10 @@ def _build_affective_dashboard(state: AppState) -> None:
                 timeseries_label.text = (
                     f"Affective Metrics over {axis_label}"
                 )
+                _ts_snapshot["title"] = (
+                    f"Affective Metrics over {axis_label}"
+                )
+                _ts_snapshot["opts"] = ts_opts
                 if ts_opts is None:
                     timeseries_chart.set_visibility(False)
                     timeseries_empty.set_visibility(True)

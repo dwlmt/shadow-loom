@@ -235,15 +235,22 @@ local subgraph rather than the full causal diagram.
 `DirectiveAssembler.compute_suspense_score()` is directly inspired by
 Wilmot & Keller's framing of suspense as a *forward-looking* uncertainty
 measure rather than a *backward-looking* surprise measure. Our
-implementation is:
+implementation aggregates the unrevealed forward causal momentum on
+each side of the entity's outcome ledger:
 
-$$\text{suspense}(t) = P(\text{threat}) - P(\text{hope})$$
+$$\text{suspense}(t) = \max\!\left(0,\ \frac{w_\text{threat} - w_\text{hope}}{w_\text{threat} + w_\text{hope}}\right)$$
 
-where threat / hope are derived from unrevealed forward causal paths whose
-target / source is the focal entity, and `evidence_strength` is the
-probability proxy. We return 0 when hope is extinguished — the
-**suspense → despair** boundary that Wilmot's neural model also exhibits in
-its annotated short-story corpus.
+where $w_\text{threat}$ sums the `evidence_strength`-derived
+probabilities of unrevealed events in which the focal entity is a
+non-acting target, and $w_\text{hope}$ sums the same probabilities for
+unrevealed events the entity itself authors. This is the expected-count
+analogue of $P(\text{threat}) - P(\text{hope})$ — it keeps the same
+"more threat than hope ⇒ more suspense" semantics but does not
+saturate to zero on real plots, where many small unrevealed events on
+both sides drive a strict noisy-OR difference toward 0. We return 0
+when hope is extinguished — the **suspense → despair** boundary that
+Wilmot's neural model also exhibits in its annotated short-story
+corpus.
 
 * **Wilmot, D. & Keller, F. (2020).** "Modelling Suspense in Short Stories as Uncertainty Reduction over Neural Representation". *Proc. ACL 2020*, pp. 1763–1788. [aclanthology.org/2020.acl-main.161](https://aclanthology.org/2020.acl-main.161/) — the central reference.
 * Wilmot, D. & Keller, F. (2021a). "A Temporal Variational Model for Story Generation". arXiv:2109.06807 (preprint only).
@@ -265,9 +272,36 @@ surprise* triad with dramatic irony as a fourth axis.
 ### 3.3 Surprise as KL divergence
 
 `compute_surprise_score()` uses per-trait binary KL divergence
-$D_\text{KL}(p \| q) = p\log\frac{p}{q} + (1-p)\log\frac{1-p}{1-q}$ with a
-maximum-entropy prior $q = 0.5$ updated toward truth by revealed causal
-edges.
+$D_\text{KL}(p \| q) = p\log\frac{p}{q} + (1-p)\log\frac{1-p}{1-q}$.
+The prior $q$ starts at the per-trait corpus marginal (the mean value
+of that trait across all entities in the world), falling back to the
+maximum-entropy default $q = 0.5$ when fewer than two entities carry
+the trait. For each revealed causal edge whose target is the focal
+entity we then apply a geometric pull toward the truth,
+$q \mathrel{+}= w \cdot (\text{actual} - q)$, weighted by
+`evidence_strength`. The geometric form keeps the prior monotonically
+converging on the truth as evidence accumulates rather than overshooting
+(an additive update of the form $q \mathrel{+}= w \cdot (\text{actual}
+- q_0)$ summed past the actual value once $\sum w > 1$, producing a
+non-monotonic surprise curve that contradicted the "more revealed →
+less surprise" semantics).
+
+The surprise score is sampled along two independent time axes by the
+UI's affective time-series builders. **Along the syuzhet axis** (the
+reader's progress through the *told* order) the actual trait values
+are held fixed at the world's final state, so the geometric prior
+update can only ever pull $q$ toward $p$ — surprise is therefore
+monotonically non-increasing on that axis, matching the "more
+revealed → less surprise" intuition. **Along the fabula axis** (the
+*story* order, sampled via per-time `snapshot_world_at(t)`) the
+posterior $p$ itself evolves with the snapshot, so surprise can
+spike: a character whose trait flips dramatically (Macbeth's
+ambition after the prophecy, Jacqueline's cruelty after the
+murder) gives a posterior that suddenly diverges from the prior.
+That is the intended behaviour — the fabula curve answers *which
+moments in the story are intrinsically surprising*, while the
+syuzhet curve answers *how much catching-up the reader still has
+to do*.
 
 * Itti, L. & Baldi, P. (2009). "Bayesian surprise attracts human attention". *Vision Research* 49(10): 1295–1306. DOI 10.1016/j.visres.2008.09.007. — the formal basis: surprise = KL between prior and posterior beliefs.
 * Schmidhuber, J. (2010). "Formal theory of creativity, fun, and intrinsic motivation (1990–2010)". *IEEE Trans. Autonomous Mental Development* 2(3): 230–247. DOI 10.1109/TAMD.2010.2056368. — surprise as compression progress.

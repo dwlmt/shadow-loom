@@ -218,8 +218,8 @@ Four structural-effect scorers operate purely on the graph geometry:
 |---|---|
 | **Mystery** | $\dfrac{\#\text{hidden ancestors}}{\#\text{total ancestors}}$ for each known effect; walks back through `causal_topology` and filters by ancestor events with `syuzhet_index > syuzhet_anchor`. |
 | **Dramatic Irony** | $\dfrac{\#\text{irony gaps}}{\#\text{total connections}}$; an irony gap is a revealed causal edge where the source event is not in the focal entity's belief set at `temporal_anchor`. |
-| **Suspense** | $P(\text{threat}) - P(\text{hope})$; threat = unrevealed events targeting the entity, hope = unrevealed events authored by the entity. `evidence_strength` is the probability proxy. Returns 0 when hope is extinguished (despair, not suspense). Inspired directly by Wilmot & Keller (2020); see [academic-foundations.md §3.1](academic-foundations.md#31-suspense-as-uncertainty-reduction--wilmot--keller-acl-2020). |
-| **Surprise** | Per-trait binary KL divergence $D_\text{KL}(p \| q) = p\log\tfrac{p}{q} + (1-p)\log\tfrac{1-p}{1-q}$. Prior $q$ starts at maximum entropy 0.5 and is updated toward truth for each revealed causal edge; posterior $p$ is the actual trait. See [academic-foundations.md §3.3](academic-foundations.md#33-surprise-as-kl-divergence). |
+| **Suspense** | $\dfrac{w_\text{threat} - w_\text{hope}}{w_\text{threat} + w_\text{hope}}$ clamped to $[0, 1]$; for each focal entity, every unrevealed event in which the entity is a non-acting target contributes its `evidence_strength`-derived probability $p$ to $w_\text{threat}$, and every unrevealed event in which the entity is an actor contributes $p$ to $w_\text{hope}$. The probability proxy is the strongest incoming causal-edge weight on the event (outgoing as fallback, 0.5 default). Returns 0 when hope is entirely extinguished (despair, not suspense). The aggregation is an expected-count imbalance — equivalent in spirit to $P(\text{threat}) - P(\text{hope})$ but stable in the high-event regime where the noisy-OR form would saturate both sides to 1. Inspired directly by Wilmot & Keller (2020); see [academic-foundations.md §3.1](academic-foundations.md#31-suspense-as-uncertainty-reduction--wilmot--keller-acl-2020). |
+| **Surprise** | Per-trait binary KL divergence $D_\text{KL}(p \| q) = p\log\tfrac{p}{q} + (1-p)\log\tfrac{1-p}{1-q}$. Prior $q$ starts at the per-trait corpus marginal (mean across all entities, falling back to 0.5 when fewer than two entities carry the trait), and is then pulled toward the actual value by a geometric update $q \mathrel{+}= w \cdot (\text{actual} - q)$ for each revealed causal edge whose target is the entity. The geometric form keeps the prior monotonically converging on the truth as evidence accumulates rather than overshooting. Posterior $p$ is the actual trait value (sandbox-preferred, world-state fallback). The result is the average per-trait KL across the focal entities, normalised by $\log(1/\varepsilon)$ to land in $[0, 1]$. See [academic-foundations.md §3.3](academic-foundations.md#33-surprise-as-kl-divergence). |
 
 Six emotional effects (`grief`, `rage`, `joy`, `regret`, `love`, `fear`) use
 trait-trajectory headroom analysis: each effect declares which traits should
@@ -228,6 +228,53 @@ inertia evidence.
 
 `compute_affective_score()` returns the weighted combination requested by the
 `DirectiveQuery`.
+
+#### What the four structural effects *mean*
+
+The formulas above operationalise four narrative information-states. Each
+asks a different question about the gap between what the reader knows,
+what the character knows, and what is true:
+
+* **Mystery — *the reader knows the effect but not the cause.*** Visible
+  consequences whose causal ancestors are still off-page. High when the
+  reader is staring at a corpse with no known killer; falls to zero once
+  every cause behind every visible effect has also been revealed.
+* **Dramatic irony — *the reader knows something the character does
+  not.*** A sideways knowledge asymmetry. Counted when a causal source
+  the reader has already seen is *not* in the focal entity's belief set
+  at their `temporal_anchor`. Oedipus's audience knows the prophecy he
+  doesn't.
+* **Suspense — *the reader fears for someone whose outcome is still
+  uncertain.*** Forward-looking. Threats are unrevealed events that
+  *happen to* the entity; hopes are unrevealed events the entity itself
+  *authors*. When hope collapses to zero the score becomes 0 — the
+  Wilmot & Keller **suspense → despair** boundary: without uncertainty
+  there is only inevitability, not dread.
+* **Surprise — *the truth is not what the reader expected.*** Backward-
+  looking prediction error. KL divergence between a prior built from
+  the corpus marginal + revealed causes and the posterior given by the
+  actual trait state.
+
+#### Monotonicity along the two time axes
+
+The four scorers are sampled along two independent axes by
+[`viz_helpers.py`](../shadow_loom_ui/viz_helpers.py):
+
+* **Syuzhet axis** — the reader's progress through the *told* order.
+  Advancing the syuzhet anchor only ever reveals more events, so the
+  prior in `surprise` can only move *toward* the truth (never past it,
+  thanks to the geometric pull). Surprise is therefore monotonically
+  non-increasing on this axis. Mystery and dramatic irony likewise
+  fall as more sources come into view; suspense falls as unrevealed
+  threats / hopes are consumed.
+* **Fabula axis** — the *story* order, sampled via
+  `snapshot_world_at(t)`. Here the posterior trait values themselves
+  change with the snapshot, so surprise *can* spike — that is the
+  intended behaviour. The fabula curve answers *which moments in the
+  story are intrinsically surprising* (Macbeth's ambition flipping
+  after the prophecy, Jacqueline's cruelty post-murder), whereas the
+  syuzhet curve answers *how much catching-up the reader still has to
+  do*.
 
 ---
 

@@ -922,8 +922,9 @@ class DirectiveAssembler:
         probability proxy — incoming causal edge weights when available,
         outgoing edge weights as fallback.
 
-        Returns ``P(threat) - P(hope)`` clamped to [0, 1].
-        Returns 0 when hope is entirely extinguished (despair, not suspense).
+        Returns the normalised threat/hope imbalance ``(threat - hope) /
+        (threat + hope)`` clamped to ``[0, 1]``. Returns 0 when hope is
+        entirely extinguished (despair, not suspense).
         """
         causal_g = self._build_causal_digraph()
         revealed = self._revealed_event_ids(syuzhet_anchor)
@@ -931,21 +932,29 @@ class DirectiveAssembler:
         unrevealed = all_evt_ids - revealed
         eid_set = set(entity_ids)
 
-        # Noisy-OR aggregation: each unrevealed threat/hope event
-        # contributes an independent failure probability ``1 - p_i``;
-        # the combined probability is ``1 - ∏(1 - p_i)``. This means
-        # multiple concurrent dangers compound rather than collapsing
-        # to the single strongest one.
-        threat_complement = 1.0
-        hope_complement = 1.0
+        # Aggregate as expected counts of threats / hopes weighted by
+        # their per-event probability proxy. The previous noisy-OR
+        # aggregation saturated to 1.0 on both sides as soon as a
+        # handful of unrevealed events landed in either bucket — which
+        # is the normal regime for a real plot — and so collapsed
+        # suspense to zero everywhere. Working in expected-count space
+        # preserves the *imbalance* between the two sides regardless
+        # of how many events feed into each.
+        threat_weight = 0.0
+        hope_weight = 0.0
+
+        # Index events by id once — the per-event linear scan that used
+        # to live inside this loop made suspense O(events²) and meant
+        # the engine quietly burned seconds on large worlds.
+        events_by_id = {e.id: e for e in self.world_state.events}
 
         for evt_id in unrevealed:
-            evt = next(
-                (e for e in self.world_state.events if e.id == evt_id), None
-            )
+            evt = events_by_id.get(evt_id)
             if not evt:
                 continue
-            if not (set(evt.actor_ids) & eid_set) and not (set(evt.target_ids) & eid_set):
+            actor_set = set(evt.actor_ids)
+            target_set = set(evt.target_ids)
+            if not (actor_set & eid_set) and not (target_set & eid_set):
                 continue
 
             # Probability proxy: prefer incoming edge weight, fall back to
@@ -962,25 +971,41 @@ class DirectiveAssembler:
 
             prob = max(0.0, min(1.0, prob))
 
-            # Classify: entity acted upon → threat; entity acting → hope
-            if (set(evt.target_ids) & eid_set) and not (set(evt.actor_ids) & eid_set):
-                threat_complement *= (1.0 - prob)
-            elif set(evt.actor_ids) & eid_set:
-                hope_complement *= (1.0 - prob)
+            # Classify per-entity rather than per-event. The previous
+            # per-event check ("if any focused entity is an actor →
+            # hope; else if any is a target → threat") collapsed every
+            # internal-conflict event to "hope" whenever the focus set
+            # contained both attacker and victim — the common case for
+            # the UI's top-N-by-event-degree heuristic, which pulled
+            # protagonist *and* antagonist into the focus set and so
+            # left suspense pinned at zero on every existing plot.
+            #
+            # The fix: for each focused entity in this event, count it
+            # as a *threat* contribution if it is acted upon without
+            # itself acting, and as a *hope* contribution if it is an
+            # actor. A single event between two focused entities now
+            # legitimately raises both sides of the ledger.
+            for eid in eid_set:
+                is_actor = eid in actor_set
+                is_target = eid in target_set
+                if is_target and not is_actor:
+                    threat_weight += prob
+                elif is_actor:
+                    hope_weight += prob
 
-        threat_prob = 1.0 - threat_complement
-        hope_prob = 1.0 - hope_complement
-
-        if hope_prob <= 0.0:
+        if hope_weight <= 0.0:
             logger.debug(
                 "[DirectiveAssembly·Suspense] No hope outcome — suspense=0 (despair)",
             )
             return 0.0
 
-        score = max(0.0, threat_prob - hope_prob)
+        total = threat_weight + hope_weight
+        if total <= 0.0:
+            return 0.0
+        score = max(0.0, (threat_weight - hope_weight) / total)
         logger.debug(
-            "[DirectiveAssembly·Suspense] P(threat)=%.3f P(hope)=%.3f suspense=%.3f",
-            threat_prob, hope_prob, score,
+            "[DirectiveAssembly·Suspense] threat_w=%.3f hope_w=%.3f suspense=%.3f",
+            threat_weight, hope_weight, score,
         )
         return round(score, 4)
 
@@ -1070,10 +1095,18 @@ class DirectiveAssembler:
                 actual_val = actual_data["value"]
 
                 # Prior: start from the corpus marginal for this trait,
-                # then accumulate additive Bayesian-style evidence from
-                # revealed causal edges. ``prior = base + Σ w_i · (actual - base)``
-                # is monotone in the number/strength of revealed edges
-                # and clips cleanly into ``[ε, 1-ε]`` for the KL.
+                # then pull toward the actual value once for each
+                # revealed causal edge. Each edge applies a geometric
+                # update ``prior += w · (actual - prior)`` so the prior
+                # asymptotes toward the truth as evidence accumulates
+                # but cannot overshoot. The previous additive form
+                # ``prior += w · (actual - base)`` summed past the
+                # actual value once total evidence weight exceeded 1,
+                # producing non-monotonic surprise (KL would dip and
+                # then *grow* again as more revealing edges came into
+                # view) — visible on every example world as a noisy
+                # mid-narrative spike that clearly contradicted the
+                # "reader knows more → less surprise" semantics.
                 base_prior = _trait_marginal(trait_name)
                 prior_val = base_prior
                 for ce in self.world_state.causal_topology:
@@ -1082,7 +1115,7 @@ class DirectiveAssembler:
                     if ce.source_id not in revealed:
                         continue
                     w = _STRENGTH_W.get(ce.evidence_strength, 0.5)
-                    prior_val += w * (actual_val - base_prior)
+                    prior_val += w * (actual_val - prior_val)
                 # Explicit clipping so cumulative updates can't push the
                 # prior outside the open unit interval used by the KL.
                 prior_val = max(EPS, min(1 - EPS, prior_val))
