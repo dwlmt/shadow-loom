@@ -358,6 +358,61 @@ Quick guide — **not legal advice**. The authoritative texts are
 - [ ] ✗ Re-license it under a more permissive licence, or ship it
       inside closed-source software, without a commercial licence.
 
+**For creators — what you can do with content:**
+
+The full text is in [CONTENT-POLICY.md](CONTENT-POLICY.md). Quick guide
+— **not legal advice**.
+
+- [x] **Own everything you create** with Shadow Loom — your inputs,
+      world models, `CreativeBrief`s, rendered scenes, audit reports,
+      exports. The maintainer asserts no copyright over your output.
+- [x] **Publish and sell** your output commercially. No royalty, no
+      attribution to Shadow Loom required.
+- [x] **Write the full range of adult fiction** — graphic violence,
+      sexuality between fictional adults, crime, war, drug use, dark
+      and morally complex themes, horror, real public figures in
+      clearly fictional / satirical / historical contexts. The auditor
+      checks consistency, not taste.
+- [ ] ⚠ **You must be 13 or over** to use the hosted service
+      (under-18s require parent / guardian permission). This matches
+      the floor set by the upstream LLM provider; individual model
+      providers may be stricter. You are responsible for everything
+      you ingest, generate, and publish.
+- [x] **Your account is isolated.** Every project, world model,
+      version, ingested prose, generated scene, and audit report is
+      scoped to your account. There is no shared library, no public
+      feed, and no cross-account access. You can only see content you
+      (or an MCP agent acting under your account) have ingested or
+      generated yourself.
+- [ ] ⚠ **You are responsible for the rights to anything you ingest.**
+      If you feed in someone else's prose, the hosted service does not
+      screen it and accepts **no liability** for any copyright,
+      trademark, defamation, privacy, or publicity claim arising from
+      your inputs or your published outputs.
+- [ ] ⚠ **Disclose AI assistance** when your publication venue requires
+      it — Amazon KDP, many literary magazines, SFWA guidance, and the
+      EU AI Act Art. 50 (applicable from August 2026). Disclosure is
+      your call and your jurisdiction's call.
+- [ ] ⚠ **Review every output before publication.** Generated text may
+      be inaccurate, contradictory, derivative, or unfit for purpose.
+      The auditor's "passes" verdict is a narrative-consistency check,
+      not a legal, factual, or copyright clearance.
+- [ ] ✗ **No sexual content involving minors**, in any framing.
+- [ ] ✗ **No working CBRN / explosive synthesis instructions, or
+      functional malware**, dressed as fiction or otherwise. Depicting
+      that such things exist in your story is fine; providing a working
+      recipe is not.
+- [ ] ✗ **No non-consensual sexual content, deepfakes, doxxing, or
+      fabricated criminal accusations** targeting a real, identifiable
+      living person.
+- [ ] ✗ **No direct, credible incitement to violence** against a real,
+      identifiable person or group.
+
+**Hosted service:** the maintainer does not train models on your
+content. Prompts are routed to a third-party LLM provider and are
+subject to that provider's retention policy. See
+[CONTENT-POLICY.md § 6](CONTENT-POLICY.md#6-hosted-service-operated-by-the-copyright-holder).
+
 **Contributing:**
 
 - [x] Open issues and pull requests on GitHub.

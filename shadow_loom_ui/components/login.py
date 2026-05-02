@@ -73,3 +73,14 @@ def build_login_page() -> None:
                 ui.label(
                     "Contact your administrator if you need access."
                 ).classes("text-xs text-slate-400 text-center")
+
+        # Repository / documentation link — by signing in you accept
+        # the terms and content policy documented in the repo.
+        ui.label(
+            "By signing in you accept the licence and content policy."
+        ).classes("text-xs text-slate-500 text-center mt-2")
+        ui.link(
+            "github.com/dwlmt/shadow-loom",
+            "https://github.com/dwlmt/shadow-loom",
+            new_tab=True,
+        ).classes("text-xs text-primary underline text-center")

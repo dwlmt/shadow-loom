@@ -242,6 +242,7 @@ def _build_licence_guide_dialog(source_url: str):
     licence_url = f"{base}/blob/main/LICENSE"
     commercial_url = f"{base}/blob/main/COMMERCIAL-LICENSE.md"
     contributing_url = f"{base}/blob/main/CONTRIBUTING.md"
+    content_policy_url = f"{base}/blob/main/CONTENT-POLICY.md"
 
     # ✓ allowed under AGPLv3, ✗ requires commercial licence / forbidden,
     # ⚠ allowed but with obligations.
@@ -274,6 +275,84 @@ def _build_licence_guide_dialog(source_url: str):
             "negative",
             "Re-license it under a more permissive licence, or ship it "
             "inside closed-source software, without a commercial licence.",
+        ),
+    ]
+
+    creator_items = [
+        (
+            "check_circle",
+            "positive",
+            "Own everything you create — your inputs, world models, "
+            "creative briefs, rendered scenes, audit reports, and exports. "
+            "The maintainer asserts no copyright over your output.",
+        ),
+        (
+            "check_circle",
+            "positive",
+            "Publish and sell your output commercially. No royalty, no "
+            "attribution to Shadow Loom required.",
+        ),
+        (
+            "check_circle",
+            "positive",
+            "Write the full range of adult fiction — graphic violence, "
+            "sexuality between fictional adults, crime, war, drug use, "
+            "dark and morally complex themes, real public figures in "
+            "fictional / satirical / historical contexts. The auditor "
+            "checks consistency, not taste.",
+        ),
+        (
+            "warning",
+            "warning",
+            "You must be 18 or over to use the hosted service.",
+        ),
+        (
+            "warning",
+            "warning",
+            "You are responsible for the rights to anything you ingest. "
+            "The hosted service does not screen inputs and accepts no "
+            "liability for any copyright, defamation, privacy, or "
+            "publicity claim arising from your inputs or outputs.",
+        ),
+        (
+            "warning",
+            "warning",
+            "Disclose AI assistance when your publication venue requires "
+            "it — KDP, many literary magazines, SFWA guidance, EU AI Act "
+            "Art. 50 from August 2026. Disclosure is your call.",
+        ),
+        (
+            "warning",
+            "warning",
+            "Review every output before publication. Generated text may "
+            "be inaccurate, contradictory, or derivative. The auditor's "
+            "\"passes\" verdict is a narrative-consistency check, not a "
+            "legal or copyright clearance.",
+        ),
+        (
+            "cancel",
+            "negative",
+            "No sexual content involving minors, in any framing.",
+        ),
+        (
+            "cancel",
+            "negative",
+            "No working CBRN / explosive synthesis instructions or "
+            "functional malware dressed as fiction. Depicting such things "
+            "exist in your story is fine; providing a working recipe is not.",
+        ),
+        (
+            "cancel",
+            "negative",
+            "No non-consensual sexual content, deepfakes, doxxing, or "
+            "fabricated criminal accusations targeting a real, identifiable "
+            "living person.",
+        ),
+        (
+            "cancel",
+            "negative",
+            "No direct, credible incitement to violence against a real, "
+            "identifiable person or group.",
         ),
     ]
 
@@ -324,6 +403,22 @@ def _build_licence_guide_dialog(source_url: str):
 
         ui.separator().classes("mt-2")
 
+        ui.label("For creators — your content").classes(
+            "text-sm font-semibold text-slate-700 mt-2"
+        )
+        with ui.column().classes("gap-1 w-full"):
+            for icon_name, color, text in creator_items:
+                with ui.row().classes("items-start gap-2 w-full no-wrap"):
+                    ui.icon(icon_name, color=color).classes("mt-0.5")
+                    ui.label(text).classes("text-sm text-slate-700 flex-1")
+        ui.label(
+            "The hosted service does not train models on your content. "
+            "Prompts are routed to a third-party LLM provider and are "
+            "subject to that provider's retention policy."
+        ).classes("text-xs text-slate-500 mt-1")
+
+        ui.separator().classes("mt-2")
+
         ui.label("Contributing").classes(
             "text-sm font-semibold text-slate-700 mt-2"
         )
@@ -345,6 +440,11 @@ def _build_licence_guide_dialog(source_url: str):
             ui.link(
                 "Commercial licence",
                 commercial_url,
+                new_tab=True,
+            ).classes("text-sm text-primary underline")
+            ui.link(
+                "Content policy",
+                content_policy_url,
                 new_tab=True,
             ).classes("text-sm text-primary underline")
             ui.link(

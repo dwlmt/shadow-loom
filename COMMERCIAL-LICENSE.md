@@ -273,3 +273,32 @@ of Shadow Loom is governed solely by the AGPLv3 in [`LICENSE`](LICENSE).
 
 Nothing in this document is legal advice; if in doubt, consult your
 own counsel.
+
+---
+
+## 10. Governing law and jurisdiction
+
+This document, the commercial-licence offering it describes, and any
+dispute, claim or matter (whether contractual or non-contractual)
+arising out of or in connection with it — including pre-contractual
+negotiations, the interpretation of § 7 (project boundary), and any
+claim relating to trademark use under § 8 — are **governed by the
+laws of England and Wales**, without regard to conflict-of-laws
+principles.
+
+The **courts of England and Wales have exclusive jurisdiction** to
+settle any such dispute, claim or matter. By approaching the
+copyright holder for a commercial licence, by signing an executed
+commercial agreement, or by relying on the interpretive guidance in
+§ 7 of this document, you submit to the personal jurisdiction of
+those courts.
+
+An executed commercial agreement may restate, narrow, or supplement
+this clause; where the executed agreement and this section conflict,
+the executed agreement prevails as between its signatories.
+
+This matches the forum for the Contributor License Agreement
+([`CLA.md` § 8](CLA.md#8-governing-law)) and the Content Policy
+([`CONTENT-POLICY.md` § 10](CONTENT-POLICY.md#10-governing-law-and-jurisdiction)),
+so every Shadow Loom legal text the maintainer controls is enforced
+in a single forum.
