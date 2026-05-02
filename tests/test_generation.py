@@ -160,6 +160,46 @@ class TestResolveModel:
         with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
             _resolve_model("openrouter:google/gemini-2.0-flash")
 
+    @pytest.mark.parametrize("prefix", [
+        "fireworks", "featherless", "together", "deepinfra",
+        "groq", "anyscale", "perplexity",
+    ])
+    def test_builtin_openai_compat_prefix_requires_key(self, prefix, monkeypatch):
+        """Each registered OpenAI-compat provider raises a clear error without its key."""
+        monkeypatch.delenv(f"{prefix.upper()}_API_KEY", raising=False)
+        with pytest.raises(ValueError, match=f"{prefix.upper()}_API_KEY"):
+            _resolve_model(f"{prefix}:some-model")
+
+    def test_fireworks_with_key_returns_model(self, monkeypatch):
+        """With an API key set, a Fireworks model string resolves to an instance."""
+        monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+        model = _resolve_model("fireworks:accounts/fireworks/models/llama-v3p1-8b-instruct")
+        assert model is not None
+        assert not isinstance(model, str)
+
+    def test_custom_provider_via_env(self, monkeypatch):
+        """SHADOW_LOOM_PROVIDERS can register an arbitrary OpenAI-compat endpoint."""
+        monkeypatch.setenv("SHADOW_LOOM_PROVIDERS", "mistral=https://api.mistral.ai/v1")
+        monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
+        model = _resolve_model("mistral:mistral-large-latest")
+        assert model is not None
+        assert not isinstance(model, str)
+
+    def test_custom_provider_missing_key(self, monkeypatch):
+        """Custom-registered provider still requires its API key."""
+        monkeypatch.setenv("SHADOW_LOOM_PROVIDERS", "xai=https://api.x.ai/v1")
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
+        with pytest.raises(ValueError, match="XAI_API_KEY"):
+            _resolve_model("xai:grok-2")
+
+    def test_base_url_override(self, monkeypatch):
+        """``<PREFIX>_BASE_URL`` overrides the registered default."""
+        monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+        monkeypatch.setenv("FIREWORKS_BASE_URL", "https://proxy.example.com/v1")
+        model = _resolve_model("fireworks:any-model")
+        assert model is not None
+        assert not isinstance(model, str)
+
 
 # =====================================================================
 # Brief Builders

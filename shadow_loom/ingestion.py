@@ -662,7 +662,8 @@ def _resolve_object_owner_ids(
     return resolved
 
 
-def extract_ontology(text: str, config: ExtractionConfig | None = None) -> GlobalRegister:
+def extract_ontology(text: str, config: ExtractionConfig | None = None, 
+                    user_context: Optional[Dict[str, Optional[int]]] = None) -> GlobalRegister:
     """
     Step 1: Extract the global ontology (locations, objects, entities)
     from the full manuscript text via three separate passes.
@@ -675,16 +676,17 @@ def extract_ontology(text: str, config: ExtractionConfig | None = None) -> Globa
     The three passes are then merged into a single GlobalRegister.
     """
     config = config or ExtractionConfig()
+    user_context = user_context or {}
 
     # --- Step 1a: Locations ---
     location_agent = _build_location_agent(config)
     logger.info("[Step 1a] Extracting locations with %s …", config.model)
     try:
-        loc_result = location_agent.run_sync(text)
+        loc_result = location_agent.run_sync(text, **user_context)
         loc_register = loc_result.output
     except Exception:
         logger.exception("[Step 1a] Location extraction failed — retrying once …")
-        loc_result = location_agent.run_sync(text)
+        loc_result = location_agent.run_sync(text, **user_context)
         loc_register = loc_result.output
     log_agent_output(logger, "LocationOntology", loc_register)
     logger.info("[Step 1a] Extracted %d locations.", len(loc_register.locations))
@@ -694,11 +696,11 @@ def extract_ontology(text: str, config: ExtractionConfig | None = None) -> Globa
     obj_deps = _ObjectDeps(location_register=loc_register)
     logger.info("[Step 1b] Extracting objects with %s …", config.model)
     try:
-        obj_result = object_agent.run_sync(text, deps=obj_deps)
+        obj_result = object_agent.run_sync(text, deps=obj_deps, **user_context)
         obj_register = obj_result.output
     except Exception:
         logger.exception("[Step 1b] Object extraction failed — retrying once …")
-        obj_result = object_agent.run_sync(text, deps=obj_deps)
+        obj_result = object_agent.run_sync(text, deps=obj_deps, **user_context)
         obj_register = obj_result.output
     log_agent_output(logger, "ObjectOntology", obj_register)
     logger.info("[Step 1b] Extracted %d objects.", len(obj_register.objects))
@@ -708,11 +710,11 @@ def extract_ontology(text: str, config: ExtractionConfig | None = None) -> Globa
     ent_deps = _EntityDeps(location_register=loc_register, object_register=obj_register)
     logger.info("[Step 1c] Extracting entities with %s …", config.model)
     try:
-        ent_result = entity_agent.run_sync(text, deps=ent_deps)
+        ent_result = entity_agent.run_sync(text, deps=ent_deps, **user_context)
         ent_register = ent_result.output
     except Exception:
         logger.exception("[Step 1c] Entity extraction failed — retrying once …")
-        ent_result = entity_agent.run_sync(text, deps=ent_deps)
+        ent_result = entity_agent.run_sync(text, deps=ent_deps, **user_context)
         ent_register = ent_result.output
     log_agent_output(logger, "EntityOntology", ent_register)
     logger.info("[Step 1c] Extracted %d entities.", len(ent_register.entities))
@@ -721,11 +723,11 @@ def extract_ontology(text: str, config: ExtractionConfig | None = None) -> Globa
     world_traits_agent = _build_world_traits_agent(config)
     logger.info("[Step 1d] Extracting world traits with %s …", config.model)
     try:
-        wt_result = world_traits_agent.run_sync(text)
+        wt_result = world_traits_agent.run_sync(text, **user_context)
         wt_register = wt_result.output
     except Exception:
         logger.exception("[Step 1d] World traits extraction failed — retrying once …")
-        wt_result = world_traits_agent.run_sync(text)
+        wt_result = world_traits_agent.run_sync(text, **user_context)
         wt_register = wt_result.output
     log_agent_output(logger, "WorldTraitsOntology", wt_register)
     logger.info("[Step 1d] Extracted %d world traits.", len(wt_register.world_traits))
@@ -755,6 +757,7 @@ def extract_ontology(text: str, config: ExtractionConfig | None = None) -> Globa
 async def extract_ontology_async(
     text: str,
     config: ExtractionConfig | None = None,
+    user_context: Optional[Dict[str, Optional[int]]] = None,
 ) -> GlobalRegister:
     """Async variant of :func:`extract_ontology`.
 
@@ -766,16 +769,17 @@ async def extract_ontology_async(
     is called after both complete.
     """
     config = config or ExtractionConfig()
+    user_context = user_context or {}
 
     # --- Step 1a: Locations (must complete first — both 1b and 1c need it) ---
     location_agent = _build_location_agent(config)
     logger.info("[Step 1a] Extracting locations with %s …", config.model)
     try:
-        loc_result = await location_agent.run(text)
+        loc_result = await location_agent.run(text, **user_context)
         loc_register = loc_result.output
     except Exception:
         logger.exception("[Step 1a] Location extraction failed — retrying once …")
-        loc_result = await location_agent.run(text)
+        loc_result = await location_agent.run(text, **user_context)
         loc_register = loc_result.output
     logger.info("[Step 1a] Extracted %d locations.", len(loc_register.locations))
 
@@ -785,11 +789,11 @@ async def extract_ontology_async(
         obj_deps = _ObjectDeps(location_register=loc_register)
         logger.info("[Step 1b] Extracting objects with %s …", config.model)
         try:
-            obj_result = await object_agent.run(text, deps=obj_deps)
+            obj_result = await object_agent.run(text, deps=obj_deps, **user_context)
             return obj_result.output
         except Exception:
             logger.exception("[Step 1b] Object extraction failed — retrying once …")
-            obj_result = await object_agent.run(text, deps=obj_deps)
+            obj_result = await object_agent.run(text, deps=obj_deps, **user_context)
             return obj_result.output
 
     async def _extract_entities() -> EntityRegister:
@@ -802,22 +806,22 @@ async def extract_ontology_async(
         )
         logger.info("[Step 1c] Extracting entities with %s …", config.model)
         try:
-            ent_result = await entity_agent.run(text, deps=ent_deps)
+            ent_result = await entity_agent.run(text, deps=ent_deps, **user_context)
             return ent_result.output
         except Exception:
             logger.exception("[Step 1c] Entity extraction failed — retrying once …")
-            ent_result = await entity_agent.run(text, deps=ent_deps)
+            ent_result = await entity_agent.run(text, deps=ent_deps, **user_context)
             return ent_result.output
 
     async def _extract_world_traits() -> WorldTraitsRegister:
         world_traits_agent = _build_world_traits_agent(config)
         logger.info("[Step 1d] Extracting world traits with %s …", config.model)
         try:
-            wt_result = await world_traits_agent.run(text)
+            wt_result = await world_traits_agent.run(text, **user_context)
             return wt_result.output
         except Exception:
             logger.exception("[Step 1d] World traits extraction failed — retrying once …")
-            wt_result = await world_traits_agent.run(text)
+            wt_result = await world_traits_agent.run(text, **user_context)
             return wt_result.output
 
     obj_register, ent_register, wt_register = await asyncio.gather(
@@ -4680,6 +4684,10 @@ def validate_world_state(
 def run_extraction(
     text: str,
     config: ExtractionConfig | None = None,
+    *,
+    user_id: Optional[int] = None,
+    project_id: Optional[int] = None,
+    version_id: Optional[int] = None,
 ) -> Tuple[WorldStateV1, ValidationReport]:
     """
     Run the full 3-step extraction pipeline.
@@ -4690,6 +4698,12 @@ def run_extraction(
         Full narrative prose text.
     config : ExtractionConfig or None
         Pipeline configuration. Uses defaults if None.
+    user_id : int, optional
+        User ID for cost tracking and audit logging.
+    project_id : int, optional
+        Project ID for cost tracking context.
+    version_id : int, optional 
+        Version ID for cost tracking context.
 
     Returns
     -------
@@ -4698,9 +4712,17 @@ def run_extraction(
     """
     config = config or ExtractionConfig()
     logger.info("[Pipeline] Starting extraction with model=%s, strategy=%s", config.model, config.chunk_strategy)
+    
+    # Prepare user context for cost tracking
+    user_context = {
+        'user_id': user_id,
+        'project_id': project_id,
+        'version_id': version_id
+    }
 
     # Step 1: Global Ontology
-    register = extract_ontology(text, config)
+    # Step 1: Extract ontology
+    register = extract_ontology(text, config, user_context)
 
     # Step 2: Chunk Topology
     chunks = chunk_text(text, strategy=config.chunk_strategy, min_chunk_chars=config.min_chunk_chars)
@@ -4783,19 +4805,38 @@ def run_extraction(
 async def run_extraction_async(
     text: str,
     config: ExtractionConfig | None = None,
+    *,
+    user_id: Optional[int] = None,
+    project_id: Optional[int] = None,
+    version_id: Optional[int] = None,
 ) -> Tuple[WorldStateV1, ValidationReport]:
     """Async variant of :func:`run_extraction`.
-
-    Uses :func:`extract_ontology_async` (parallel 1b/1c) and
-    :func:`extract_topology_async` (parallel chunk dispatch) for
-    higher throughput.  Validation and correction remain synchronous
-    (they are fast compared to extraction).
+    
+    Parameters
+    ----------
+    text : str
+        Full narrative prose text.
+    config : ExtractionConfig or None
+        Pipeline configuration. Uses defaults if None.
+    user_id : int, optional
+        User ID for cost tracking and audit logging.
+    project_id : int, optional
+        Project ID for cost tracking context.
+    version_id : int, optional
+        Version ID for cost tracking context.
+        
+    Returns
+    -------
+    (WorldStateV1, ValidationReport)
+        The assembled world state and its validation report.
     """
+
     config = config or ExtractionConfig()
     logger.info("[Pipeline·Async] Starting extraction with model=%s, strategy=%s", config.model, config.chunk_strategy)
 
     # Step 1: Global Ontology (parallel 1b + 1c)
-    register = await extract_ontology_async(text, config)
+    # Step 1: Extract ontology
+    register = await extract_ontology_async(text, config, user_context)
 
     # Step 2: Chunk Topology (parallel chunks)
     chunks = chunk_text(text, strategy=config.chunk_strategy, min_chunk_chars=config.min_chunk_chars)

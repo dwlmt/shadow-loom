@@ -55,6 +55,11 @@ def build_dashboard(state: AppState) -> None:
         projects_container = ui.row().classes("w-full gap-4 flex-wrap")
         _render_project_cards(state, projects_container)
 
+        # ---- Usage Dashboard ----  
+        if state.user_id:
+            from shadow_loom_ui.components.usage_dashboard import render_usage_dashboard
+            render_usage_dashboard(state)
+
         # ---- Starred Projects ----
         if state.user_id:
             starred = db.list_starred_projects(state.user_id)

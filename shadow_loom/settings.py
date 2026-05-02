@@ -19,6 +19,7 @@ already build their own Config objects are unaffected.
 
 from __future__ import annotations
 
+import os
 import secrets
 from functools import lru_cache
 from pathlib import Path
@@ -26,6 +27,61 @@ from typing import Literal, Optional
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+# =====================================================================
+# OpenAI-compatible provider registry
+# =====================================================================
+#
+# Any provider that exposes an OpenAI-compatible Chat Completions endpoint
+# can be plugged in via this registry. For each entry, the resolver reads:
+#
+#   * ``<PREFIX>_API_KEY``    — credential (required, except for unauthenticated
+#                               local servers like Ollama)
+#   * ``<PREFIX>_BASE_URL``   — overrides the default base URL below
+#
+# Users can register additional providers without code changes via the
+# ``SHADOW_LOOM_PROVIDERS`` env var, e.g.::
+#
+#     SHADOW_LOOM_PROVIDERS=mistral=https://api.mistral.ai/v1,xai=https://api.x.ai/v1
+#
+# Then use ``mistral:mistral-large-latest`` as a model string and set
+# ``MISTRAL_API_KEY``.
+#
+_BUILTIN_OPENAI_COMPAT_PROVIDERS: dict[str, str] = {
+    "openrouter":    "https://openrouter.ai/api/v1",
+    "openai":        "https://api.openai.com/v1",
+    "fireworks":     "https://api.fireworks.ai/inference/v1",
+    "featherless":   "https://api.featherless.ai/v1",
+    "together":      "https://api.together.xyz/v1",
+    "deepinfra":     "https://api.deepinfra.com/v1/openai",
+    "groq":          "https://api.groq.com/openai/v1",
+    "anyscale":      "https://api.endpoints.anyscale.com/v1",
+    "perplexity":    "https://api.perplexity.ai",
+    "huggingface":   "https://api-inference.huggingface.co/v1",
+}
+
+
+def _parse_custom_providers(spec: str) -> dict[str, str]:
+    """Parse ``name=url,name2=url2`` into a dict. Silently skips bad entries."""
+    out: dict[str, str] = {}
+    for chunk in (spec or "").split(","):
+        chunk = chunk.strip()
+        if not chunk or "=" not in chunk:
+            continue
+        name, url = chunk.split("=", 1)
+        name = name.strip().lower()
+        url = url.strip()
+        if name and url:
+            out[name] = url
+    return out
+
+
+def get_openai_compat_providers() -> dict[str, str]:
+    """Return the merged provider registry (built-ins + ``SHADOW_LOOM_PROVIDERS``)."""
+    merged = dict(_BUILTIN_OPENAI_COMPAT_PROVIDERS)
+    merged.update(_parse_custom_providers(os.environ.get("SHADOW_LOOM_PROVIDERS", "")))
+    return merged
 
 # ── Discover config.env next to this file's package root ──────────
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -57,18 +113,6 @@ class CoreSettings(BaseSettings):
         default="http://localhost:11434/v1/",
         description="Base URL for the local Ollama API (OpenAI-compat).",
     )
-    openrouter_base_url: str = Field(
-        default="https://openrouter.ai/api/v1",
-        description="Base URL for the OpenRouter API.",
-    )
-    openrouter_api_key: str = Field(
-        default="",
-        description="API key for OpenRouter. Required when using 'openrouter:' model prefix.",
-    )
-    openai_api_key: str = Field(
-        default="",
-        description="API key for OpenAI. Required when using 'openai:' model prefix.",
-    )
     tavily_api_key: str = Field(
         default="",
         description=(
@@ -93,8 +137,12 @@ class CoreSettings(BaseSettings):
         default="ollama:qwen3.6:27b",
         description=(
             "Fallback PydanticAI model string when a stage-specific model "
-            "is not set. Prefix determines provider: 'ollama:', 'openrouter:', "
-            "'openai:', or any PydanticAI model string."
+            "is not set. Format is ``<provider>:<model>``. Built-in providers: "
+            "ollama, openrouter, openai, fireworks, featherless, together, "
+            "deepinfra, groq, anyscale, perplexity, huggingface. Add custom OpenAI-compat "
+            "providers via the SHADOW_LOOM_PROVIDERS env var. Strings without "
+            "a recognised prefix are passed through to PydanticAI for native "
+            "resolution."
         ),
     )
 
@@ -690,13 +738,22 @@ class Settings:
 # =====================================================================
 
 def resolve_model(model_str: str):
-    """Resolve a model string to a PydanticAI model instance.
+    """Resolve a ``<provider>:<model>`` string to a PydanticAI model instance.
 
-    Prefixes:
-      ``ollama:<name>``      → OllamaModel with configured base URL
-      ``openrouter:<name>``  → OpenAIChatModel via OpenRouter (OpenAI-compat)
-      ``openai:<name>``      → OpenAIChatModel via OpenAI directly
-      anything else          → returned as-is for PydanticAI native resolution
+    Special-cased prefixes:
+      ``ollama:<name>``      → :class:`OllamaModel` against the configured
+                                local Ollama base URL (no API key required).
+
+    OpenAI-compatible prefixes (any entry in
+    :func:`get_openai_compat_providers`):
+      ``<prefix>:<name>``    → :class:`OpenAIChatModel` via
+                                :class:`OpenAIProvider`. The API key is read
+                                from the ``<PREFIX>_API_KEY`` env var and the
+                                base URL from ``<PREFIX>_BASE_URL`` (falling
+                                back to the registered default).
+
+    Anything else is returned as-is for PydanticAI's native resolver
+    (e.g. ``anthropic:claude-3-sonnet``, ``google-gla:gemini-1.5-pro``).
     """
     core = get_settings().core
 
@@ -706,36 +763,28 @@ def resolve_model(model_str: str):
         from pydantic_ai.providers.ollama import OllamaProvider
         return OllamaModel(model_name, provider=OllamaProvider(base_url=core.ollama_base_url))
 
-    if model_str.startswith("openrouter:"):
-        if not core.openrouter_api_key:
-            raise ValueError(
-                "OPENROUTER_API_KEY must be set to use 'openrouter:' models. "
-                "Set it in config.env, .env, or as an environment variable."
+    providers = get_openai_compat_providers()
+    if ":" in model_str:
+        prefix, model_name = model_str.split(":", 1)
+        prefix_lc = prefix.lower()
+        if prefix_lc in providers:
+            env_prefix = prefix_lc.upper()
+            api_key = os.environ.get(f"{env_prefix}_API_KEY", "").strip()
+            if not api_key:
+                raise ValueError(
+                    f"{env_prefix}_API_KEY must be set to use '{prefix_lc}:' "
+                    f"models. Set it in config.env, .env, or as an environment "
+                    f"variable."
+                )
+            base_url = os.environ.get(
+                f"{env_prefix}_BASE_URL", providers[prefix_lc]
+            ).strip() or providers[prefix_lc]
+            from pydantic_ai.models.openai import OpenAIChatModel
+            from pydantic_ai.providers.openai import OpenAIProvider
+            return OpenAIChatModel(
+                model_name,
+                provider=OpenAIProvider(base_url=base_url, api_key=api_key),
             )
-        model_name = model_str.split(":", 1)[1]
-        from pydantic_ai.models.openai import OpenAIChatModel
-        from pydantic_ai.providers.openai import OpenAIProvider
-        return OpenAIChatModel(
-            model_name,
-            provider=OpenAIProvider(
-                base_url=core.openrouter_base_url,
-                api_key=core.openrouter_api_key,
-            ),
-        )
 
-    if model_str.startswith("openai:"):
-        if not core.openai_api_key:
-            raise ValueError(
-                "OPENAI_API_KEY must be set to use 'openai:' models. "
-                "Set it in config.env, .env, or as an environment variable."
-            )
-        model_name = model_str.split(":", 1)[1]
-        from pydantic_ai.models.openai import OpenAIChatModel
-        from pydantic_ai.providers.openai import OpenAIProvider
-        return OpenAIChatModel(
-            model_name,
-            provider=OpenAIProvider(api_key=core.openai_api_key),
-        )
-
-    # Fallback: pass through for PydanticAI native model resolution
+    # Fallback: pass through for PydanticAI native model resolution.
     return model_str

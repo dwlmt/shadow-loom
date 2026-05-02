@@ -24,7 +24,9 @@ from __future__ import annotations
 import inspect
 import json
 import logging
-from typing import Any
+import time
+from contextlib import contextmanager
+from typing import Any, Dict, Optional
 
 from pydantic_ai import Agent
 from pydantic import BaseModel
@@ -36,6 +38,23 @@ _LANGFUSE_LOGGER = logging.getLogger(__name__)
 _LANGFUSE_CLIENT: Any | None = None
 _LANGFUSE_DISABLED = False
 _INSTRUMENTED = False
+
+# Database logging (imported lazily to avoid circular imports)
+_DB_LOGGING_AVAILABLE = True
+
+
+def _get_db_models():
+    """Lazy import of database models to avoid circular imports."""
+    global _DB_LOGGING_AVAILABLE
+    if not _DB_LOGGING_AVAILABLE:
+        return None, None, None
+        
+    try:
+        from shadow_loom.db import get_session, AgentCallLogRow, ApiCallLogRow
+        return get_session, AgentCallLogRow, ApiCallLogRow
+    except ImportError:
+        _DB_LOGGING_AVAILABLE = False
+        return None, None, None
 
 
 def _serialise(output: Any) -> str:
@@ -144,8 +163,226 @@ def _agent_name(agent: Any) -> str:
     return agent.__class__.__name__
 
 
+def _get_agent_type(agent_name: str) -> str:
+    """Map agent names to standardized types for cost tracking."""
+    agent_name_lower = agent_name.lower()
+    
+    if "physics" in agent_name_lower:
+        return "Physics"
+    elif "social" in agent_name_lower:
+        return "Social" 
+    elif "audit" in agent_name_lower:
+        return "Auditor"
+    elif "evaluation" in agent_name_lower or "quality" in agent_name_lower:
+        return "Evaluation"
+    elif "generation" in agent_name_lower:
+        return "Generation"
+    elif "query" in agent_name_lower or "parsing" in agent_name_lower:
+        return "QueryParsing"
+    elif "research" in agent_name_lower:
+        return "Research"
+    else:
+        return "Other"
+
+
+def _extract_context_from_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Optional[int]]:
+    """Extract user_id, project_id, version_id from agent kwargs/dependencies."""
+    context = {
+        'user_id': None,
+        'project_id': None, 
+        'version_id': None
+    }
+    
+    # Try to extract from dependencies object if present
+    deps = kwargs.get('deps') or kwargs.get('dependencies')
+    if deps:
+        context['user_id'] = getattr(deps, 'user_id', None)
+        context['project_id'] = getattr(deps, 'project_id', None)
+        context['version_id'] = getattr(deps, 'version_id', None)
+    
+    # Also check direct kwargs
+    context['user_id'] = context['user_id'] or kwargs.get('user_id')
+    context['project_id'] = context['project_id'] or kwargs.get('project_id')
+    context['version_id'] = context['version_id'] or kwargs.get('version_id')
+    
+    return context
+
+
+def _extract_model_info(agent: Agent) -> tuple[Optional[str], Optional[str]]:
+    """Extract model provider and name from agent configuration."""
+    try:
+        model = getattr(agent, 'model', None)
+        if model:
+            # Try to get provider from model name (e.g., "openai:gpt-4o")
+            if hasattr(model, 'name'):
+                model_name = model.name
+                if ':' in model_name:
+                    provider, name = model_name.split(':', 1)
+                    return provider, name
+                else:
+                    return "unknown", model_name
+            elif hasattr(model, 'model_name'):
+                return "unknown", model.model_name
+    except Exception:
+        pass
+    return None, None
+
+
+def _extract_token_usage(result: Any) -> Optional[Dict[str, int]]:
+    """Extract token usage information from agent result."""
+    try:
+        # Check if result has usage information
+        if hasattr(result, 'usage'):
+            usage = result.usage
+            return {
+                'prompt_tokens': getattr(usage, 'prompt_tokens', None),
+                'completion_tokens': getattr(usage, 'completion_tokens', None),
+                'total_tokens': getattr(usage, 'total_tokens', None)
+            }
+        elif hasattr(result, 'cost'):
+            # Alternative location for usage stats
+            cost = result.cost
+            return {
+                'prompt_tokens': getattr(cost, 'input_tokens', None),
+                'completion_tokens': getattr(cost, 'output_tokens', None), 
+                'total_tokens': getattr(cost, 'total_tokens', None)
+            }
+    except Exception:
+        pass
+    return None
+
+
+@contextmanager
+def track_agent_call(
+    user_id: Optional[int],
+    agent_type: str, 
+    agent_name: str,
+    project_id: Optional[int] = None,
+    version_id: Optional[int] = None,
+    model_provider: Optional[str] = None,
+    model_name: Optional[str] = None,
+):
+    """Context manager to track agent execution with automatic database logging.
+    
+    Parameters
+    ---------- 
+    user_id:
+        ID of the user executing the agent
+    agent_type:
+        Standardized agent type (Physics, Auditor, etc.)
+    agent_name:
+        Full agent name/class name
+    project_id:
+        Optional project context
+    version_id:
+        Optional version context
+    model_provider:
+        LLM provider name (openai, anthropic, etc.)
+    model_name:
+        Specific model name (gpt-4o, claude-3, etc.)
+    """
+    get_session, AgentCallLogRow, _ = _get_db_models()
+    
+    # Skip database logging if not available or no user context
+    if not get_session or not user_id:
+        yield None
+        return
+        
+    start_time = time.time()
+    log_entry = AgentCallLogRow(
+        user_id=user_id,
+        project_id=project_id,
+        version_id=version_id,
+        agent_type=agent_type,
+        agent_name=agent_name,
+        model_provider=model_provider,
+        model_name=model_name,
+        status="running"
+    )
+    
+    session = get_session()
+    try:
+        session.add(log_entry)
+        session.commit()
+        session.refresh(log_entry)
+        
+        yield log_entry
+        
+        # Success - update metrics
+        execution_time = int((time.time() - start_time) * 1000)
+        log_entry.execution_time_ms = execution_time
+        log_entry.status = "success"
+        session.commit()
+        
+    except Exception as e:
+        # Error - log failure
+        execution_time = int((time.time() - start_time) * 1000)
+        log_entry.execution_time_ms = execution_time
+        log_entry.status = "error" 
+        log_entry.error_message = str(e)[:512]
+        try:
+            session.commit()
+        except Exception:
+            session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def log_api_call(
+    user_id: Optional[int],
+    provider: str,
+    service_type: str,
+    request_size: Optional[int] = None,
+    response_size: Optional[int] = None,
+    response_time_ms: int = 0,
+    status_code: Optional[int] = None,
+    project_id: Optional[int] = None,
+    version_id: Optional[int] = None,
+    agent_call_log_id: Optional[int] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Optional[Any]:
+    """Log an external API call for cost tracking.
+    
+    Returns the created ApiCallLogRow or None if logging is unavailable.
+    """
+    get_session, _, ApiCallLogRow = _get_db_models()
+    
+    # Skip if database logging not available or no user context
+    if not get_session or not user_id:
+        return None
+        
+    log_entry = ApiCallLogRow(
+        user_id=user_id,
+        project_id=project_id,
+        version_id=version_id,
+        agent_call_log_id=agent_call_log_id,
+        provider=provider,
+        service_type=service_type,
+        request_size=request_size,
+        response_size=response_size,
+        response_time_ms=response_time_ms,
+        status_code=status_code,
+        status="success" if not status_code or 200 <= status_code < 300 else "error",
+        metadata_json=json.dumps(metadata) if metadata else None,
+    )
+    
+    session = get_session()
+    try:
+        session.add(log_entry)
+        session.commit()
+        session.refresh(log_entry)
+        return log_entry
+    except Exception as e:
+        session.rollback()
+        _LANGFUSE_LOGGER.warning(f"Failed to log API call: {e}")
+        return None
+    finally:
+        session.close()
+
+
 def configure_agent_instrumentation() -> None:
-    """Patch PydanticAI Agent methods once to emit Langfuse traces."""
+    """Patch PydanticAI Agent methods once to emit Langfuse traces and cost tracking."""
     global _INSTRUMENTED
     if _INSTRUMENTED:
         return
@@ -156,44 +393,134 @@ def configure_agent_instrumentation() -> None:
     def instrumented_run_sync(self: Agent, *args: Any, **kwargs: Any):
         agent_name = _agent_name(self)
         prompt = args[0] if args else kwargs.get("user_prompt")
-        try:
-            result = original_run_sync(self, *args, **kwargs)
-            _log_to_langfuse(
-                agent_name,
-                prompt=prompt,
-                output=getattr(result, "output", None),
-                metadata={"call": "run_sync"},
-            )
-            return result
-        except Exception as exc:
-            _log_to_langfuse(
-                agent_name,
-                prompt=prompt,
-                error=exc,
-                metadata={"call": "run_sync"},
-            )
-            raise
+        
+        # Extract context for database logging
+        context = _extract_context_from_kwargs(kwargs)
+        model_provider, model_name = _extract_model_info(self)
+        agent_type = _get_agent_type(agent_name)
+        
+        with track_agent_call(
+            user_id=context['user_id'],
+            agent_type=agent_type,
+            agent_name=agent_name,
+            project_id=context['project_id'],
+            version_id=context['version_id'],
+            model_provider=model_provider,
+            model_name=model_name
+        ) as log_entry:
+            try:
+                result = original_run_sync(self, *args, **kwargs)
+                
+                # Extract token usage from result if available
+                usage = _extract_token_usage(result)
+                if usage and log_entry:
+                    # Update the log entry with token usage
+                    get_session, _, _ = _get_db_models()
+                    if get_session:
+                        session = get_session()
+                        try:
+                            log_entry.prompt_tokens = usage.get('prompt_tokens')
+                            log_entry.completion_tokens = usage.get('completion_tokens') 
+                            log_entry.total_tokens = usage.get('total_tokens')
+                            session.commit()
+                            
+                            # Trigger immediate cost calculation for this entry
+                            try:
+                                from shadow_loom.cost_calculation import CostCalculator
+                                calculator = CostCalculator(session)
+                                log_entry.estimated_cost_usd = calculator.calculate_agent_call_cost(log_entry)
+                                session.commit()
+                            except Exception as cost_err:
+                                # Don't fail the agent call if cost calculation fails
+                                _LANGFUSE_LOGGER.warning(f"Cost calculation failed: {cost_err}")
+                        except Exception:
+                            session.rollback()
+                        finally:
+                            session.close()
+                
+                # Continue with existing Langfuse logging
+                _log_to_langfuse(
+                    agent_name,
+                    prompt=prompt,
+                    output=getattr(result, "output", None),
+                    metadata={"call": "run_sync", "log_id": log_entry.id if log_entry else None},
+                )
+                return result
+                
+            except Exception as exc:
+                _log_to_langfuse(
+                    agent_name,
+                    prompt=prompt,
+                    error=exc,
+                    metadata={"call": "run_sync", "log_id": log_entry.id if log_entry else None},
+                )
+                raise
 
     async def instrumented_run(self: Agent, *args: Any, **kwargs: Any):
         agent_name = _agent_name(self)
         prompt = args[0] if args else kwargs.get("user_prompt")
-        try:
-            result = await original_run(self, *args, **kwargs)
-            _log_to_langfuse(
-                agent_name,
-                prompt=prompt,
-                output=getattr(result, "output", None),
-                metadata={"call": "run"},
-            )
-            return result
-        except Exception as exc:
-            _log_to_langfuse(
-                agent_name,
-                prompt=prompt,
-                error=exc,
-                metadata={"call": "run"},
-            )
-            raise
+        
+        # Extract context for database logging
+        context = _extract_context_from_kwargs(kwargs)
+        model_provider, model_name = _extract_model_info(self)
+        agent_type = _get_agent_type(agent_name)
+        
+        with track_agent_call(
+            user_id=context['user_id'],
+            agent_type=agent_type,
+            agent_name=agent_name,
+            project_id=context['project_id'],
+            version_id=context['version_id'],
+            model_provider=model_provider,
+            model_name=model_name
+        ) as log_entry:
+            try:
+                result = await original_run(self, *args, **kwargs)
+                
+                # Extract token usage from result if available
+                usage = _extract_token_usage(result)
+                if usage and log_entry:
+                    # Update the log entry with token usage
+                    get_session, _, _ = _get_db_models()
+                    if get_session:
+                        session = get_session()
+                        try:
+                            log_entry.prompt_tokens = usage.get('prompt_tokens')
+                            log_entry.completion_tokens = usage.get('completion_tokens') 
+                            log_entry.total_tokens = usage.get('total_tokens')
+                            session.commit()
+                            
+                            # Trigger immediate cost calculation for this entry
+                            try:
+                                from shadow_loom.cost_calculation import CostCalculator
+                                calculator = CostCalculator(session)
+                                log_entry.estimated_cost_usd = calculator.calculate_agent_call_cost(log_entry)
+                                session.commit()
+                            except Exception as cost_err:
+                                # Don't fail the agent call if cost calculation fails
+                                _LANGFUSE_LOGGER.warning(f"Cost calculation failed: {cost_err}")
+                        except Exception:
+                            session.rollback()
+                        finally:
+                            session.close()
+                
+                # Continue with existing Langfuse logging
+                _log_to_langfuse(
+                    agent_name,
+                    prompt=prompt,
+                    output=getattr(result, "output", None),
+                    metadata={"call": "run", "log_id": log_entry.id if log_entry else None},
+                )
+                return result
+                
+            except Exception as exc:
+                _log_to_langfuse(
+                    agent_name,
+                    prompt=prompt,
+                    error=exc,
+                    metadata={"call": "run", "log_id": log_entry.id if log_entry else None},
+                )
+                raise
 
     if inspect.iscoroutinefunction(original_run):
         Agent.run = instrumented_run  # type: ignore[method-assign]

@@ -171,6 +171,12 @@ end-to-end orchestrator is
   * **OpenRouter** — set `OPENROUTER_API_KEY` and a `*_MODEL` value
     starting with `openrouter:` in `.env`.
   * **OpenAI** — set `OPENAI_API_KEY` and use `openai:gpt-…` model strings.
+  * **Other OpenAI-compatible clouds** — Fireworks, Featherless, Together,
+    DeepInfra, Groq, Anyscale, and Perplexity are pre-registered. Set the
+    matching `<PROVIDER>_API_KEY` and use a `<provider>:<model>` string
+    (e.g. `fireworks:accounts/fireworks/models/llama-v3p1-70b-instruct`).
+    Any other OpenAI-compatible endpoint can be plugged in via
+    `SHADOW_LOOM_PROVIDERS=name=https://host/v1,...`.
 * **Optional:** Docker / Docker Compose for the containerised stack;
   Postgres if you don't want SQLite.
 

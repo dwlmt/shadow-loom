@@ -348,6 +348,206 @@ class ProjectSettingsRow(SQLModel, table=True):
     )
 
 
+class AgentCallLogRow(SQLModel, table=True):
+    """Log every agent execution with performance and cost tracking."""
+    __tablename__ = "agent_call_logs"
+    
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="users.id")
+    project_id: Optional[int] = Field(default=None, foreign_key="projects.id") 
+    version_id: Optional[int] = Field(default=None, foreign_key="versions.id")
+    
+    # Agent identification
+    agent_type: str = Field(max_length=64)  # "Physics", "Auditor", "Generation", etc.
+    agent_name: str = Field(max_length=128)  # Full agent name/class
+    
+    # Execution details  
+    prompt_tokens: Optional[int] = Field(default=None)
+    completion_tokens: Optional[int] = Field(default=None)
+    total_tokens: Optional[int] = Field(default=None)
+    
+    # Performance metrics
+    execution_time_ms: int = Field(default=0)
+    model_provider: Optional[str] = Field(default=None, max_length=32)
+    model_name: Optional[str] = Field(default=None, max_length=64)
+    
+    # Status tracking
+    status: str = Field(default="success", max_length=16)  # success, error, timeout
+    error_message: Optional[str] = Field(default=None, max_length=512)
+    
+    # Cost calculation (populated by background job)
+    estimated_cost_usd: Optional[float] = Field(default=None)
+    
+    # Metadata & provenance
+    langfuse_trace_id: Optional[str] = Field(default=None, max_length=128)
+    metadata_json: Optional[str] = Field(default=None, sa_column=Column(Text))
+    
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime, default=lambda: datetime.now(timezone.utc)),
+    )
+    
+    # Relationships
+    user: UserRow = Relationship()
+    project: Optional[ProjectRow] = Relationship()
+    version: Optional[VersionRow] = Relationship()
+
+
+class ApiCallLogRow(SQLModel, table=True):
+    """Track external API calls (Tavily, etc.) for cost analysis."""
+    __tablename__ = "api_call_logs"
+    
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="users.id") 
+    project_id: Optional[int] = Field(default=None, foreign_key="projects.id")
+    version_id: Optional[int] = Field(default=None, foreign_key="versions.id")
+    
+    # API identification
+    provider: str = Field(max_length=32)  # "tavily", "openai", "anthropic"
+    service_type: str = Field(max_length=32)  # "search", "llm_chat", "embeddings"
+    endpoint: Optional[str] = Field(default=None, max_length=256)
+    
+    # Request details
+    request_size: Optional[int] = Field(default=None)  # tokens, queries, etc.
+    response_size: Optional[int] = Field(default=None)
+    
+    # Provider-specific metrics
+    search_depth: Optional[str] = Field(default=None, max_length=16)  # For Tavily
+    results_count: Optional[int] = Field(default=None)  # For search APIs
+    
+    # Performance & status
+    response_time_ms: int = Field(default=0)
+    status_code: Optional[int] = Field(default=None)
+    status: str = Field(default="success", max_length=16)
+    error_message: Optional[str] = Field(default=None, max_length=512)
+    
+    # Cost calculation
+    estimated_cost_usd: Optional[float] = Field(default=None)
+    
+    # Context & metadata
+    agent_call_log_id: Optional[int] = Field(default=None, foreign_key="agent_call_logs.id") 
+    metadata_json: Optional[str] = Field(default=None, sa_column=Column(Text))
+    
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime, default=lambda: datetime.now(timezone.utc)),
+    )
+    
+    # Relationships  
+    user: UserRow = Relationship()
+    project: Optional[ProjectRow] = Relationship() 
+    version: Optional[VersionRow] = Relationship()
+    agent_call: Optional[AgentCallLogRow] = Relationship()
+
+
+class CostRuleRow(SQLModel, table=True):
+    """Define pricing rules for different services and models."""
+    __tablename__ = "cost_rules"
+    
+    id: Optional[int] = Field(default=None, primary_key=True)
+    
+    # Service identification  
+    provider: str = Field(max_length=32)  # "openai", "tavily", "anthropic"
+    service_type: str = Field(max_length=32)  # "llm_chat", "search", "embeddings"
+    model_name: Optional[str] = Field(default=None, max_length=64)  # "gpt-4o", "claude-3"
+    
+    # Pricing structure
+    unit_type: str = Field(max_length=16)  # "tokens", "requests", "results"
+    cost_per_unit_usd: float = Field(default=0.0)
+    
+    # Input/output pricing (for LLMs)  
+    input_cost_per_unit_usd: Optional[float] = Field(default=None)
+    output_cost_per_unit_usd: Optional[float] = Field(default=None)
+    
+    # Tier-based pricing  
+    tier_threshold: Optional[int] = Field(default=None)
+    tier_cost_per_unit_usd: Optional[float] = Field(default=None)
+    
+    # Rule metadata
+    description: Optional[str] = Field(default=None, max_length=256)
+    effective_from: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime, default=lambda: datetime.now(timezone.utc)),
+    )
+    effective_to: Optional[datetime] = Field(default=None, sa_column=Column(DateTime))
+    
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime, default=lambda: datetime.now(timezone.utc)),
+    )
+
+
+class UserUsageSummaryRow(SQLModel, table=True):
+    """Rollup usage statistics per user for dashboard/billing."""
+    __tablename__ = "user_usage_summaries"
+    __table_args__ = (
+        UniqueConstraint("user_id", "period_start", name="uq_user_period"),
+    )
+    
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="users.id")
+    
+    # Time period (daily/monthly rollups)
+    period_type: str = Field(max_length=16)  # "daily", "monthly", "lifetime"
+    period_start: Optional[datetime] = Field(default=None, sa_column=Column(DateTime))
+    period_end: Optional[datetime] = Field(default=None, sa_column=Column(DateTime))
+    
+    # Agent usage rollups
+    total_agent_calls: int = Field(default=0)
+    total_agent_tokens: int = Field(default=0) 
+    total_agent_cost_usd: float = Field(default=0.0)
+    
+    # API usage rollups
+    total_api_calls: int = Field(default=0)
+    total_api_cost_usd: float = Field(default=0.0)
+    
+    # Top agent types (JSON)
+    agent_type_breakdown_json: Optional[str] = Field(default=None, sa_column=Column(Text))
+    
+    # Top providers (JSON) 
+    provider_breakdown_json: Optional[str] = Field(default=None, sa_column=Column(Text))
+    
+    updated_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime, default=lambda: datetime.now(timezone.utc)),
+    )
+    
+    user: UserRow = Relationship()
+
+
+class ProjectUsageSummaryRow(SQLModel, table=True):
+    """Rollup usage statistics per project for analysis."""
+    __tablename__ = "project_usage_summaries" 
+    __table_args__ = (
+        UniqueConstraint("project_id", "period_start", name="uq_project_period"),
+    )
+    
+    id: Optional[int] = Field(default=None, primary_key=True)
+    project_id: int = Field(foreign_key="projects.id")
+    
+    # Time period
+    period_type: str = Field(max_length=16)  # "daily", "monthly", "lifetime"
+    period_start: Optional[datetime] = Field(default=None, sa_column=Column(DateTime))
+    period_end: Optional[datetime] = Field(default=None, sa_column=Column(DateTime))
+    
+    # Usage metrics
+    total_agent_calls: int = Field(default=0)
+    total_agent_tokens: int = Field(default=0)
+    total_agent_cost_usd: float = Field(default=0.0)
+    total_api_calls: int = Field(default=0)
+    total_api_cost_usd: float = Field(default=0.0)
+    
+    # Version count for context
+    versions_created: int = Field(default=0)
+    
+    updated_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime, default=lambda: datetime.now(timezone.utc)),
+    )
+    
+    project: ProjectRow = Relationship()
+
+
 # =====================================================================
 # Engine / Session factory
 # =====================================================================
@@ -1579,6 +1779,237 @@ def promote_branch(
         world_id="factual",
         branch_label=None,
     )
+
+
+# =====================================================================
+# Usage and Cost Dashboard Queries
+# =====================================================================
+
+
+def get_user_usage_summary(
+    user_id: int, 
+    period_type: str = "monthly",
+    limit: int = 12
+) -> list[dict]:
+    """Get usage summaries for a user across time periods.
+    
+    Returns recent usage data for dashboard charts and metrics.
+    """
+    with get_session() as s:
+        rows = s.exec(
+            select(UserUsageSummaryRow)
+            .where(
+                UserUsageSummaryRow.user_id == user_id,
+                UserUsageSummaryRow.period_type == period_type
+            )
+            .order_by(UserUsageSummaryRow.period_start.desc())
+            .limit(limit)
+        ).all()
+        
+        result = []
+        for r in rows:
+            agent_breakdown = {}
+            provider_breakdown = {}
+            
+            if r.agent_type_breakdown_json:
+                try:
+                    agent_breakdown = json.loads(r.agent_type_breakdown_json)
+                except json.JSONDecodeError:
+                    pass
+                    
+            if r.provider_breakdown_json:
+                try:
+                    provider_breakdown = json.loads(r.provider_breakdown_json)
+                except json.JSONDecodeError:
+                    pass
+            
+            result.append({
+                "period_start": r.period_start.strftime("%Y-%m-%d") if r.period_start else None,
+                "period_end": r.period_end.strftime("%Y-%m-%d") if r.period_end else None,
+                "period_type": r.period_type,
+                "total_agent_calls": r.total_agent_calls,
+                "total_agent_tokens": r.total_agent_tokens,
+                "total_agent_cost_usd": r.total_agent_cost_usd,
+                "total_api_calls": r.total_api_calls, 
+                "total_api_cost_usd": r.total_api_cost_usd,
+                "total_cost_usd": r.total_agent_cost_usd + r.total_api_cost_usd,
+                "agent_breakdown": agent_breakdown,
+                "provider_breakdown": provider_breakdown,
+                "updated_at": r.updated_at.strftime("%Y-%m-%d %H:%M") if r.updated_at else None,
+            })
+        
+        return result
+
+
+def get_user_lifetime_usage(user_id: int) -> Optional[dict]:
+    """Get lifetime totals for a user."""
+    with get_session() as s:
+        # Get the most recent lifetime summary or aggregate from current data
+        lifetime = s.exec(
+            select(UserUsageSummaryRow)
+            .where(
+                UserUsageSummaryRow.user_id == user_id,
+                UserUsageSummaryRow.period_type == "lifetime"
+            )
+            .order_by(UserUsageSummaryRow.updated_at.desc())
+        ).first()
+        
+        if lifetime:
+            return {
+                "total_agent_calls": lifetime.total_agent_calls,
+                "total_agent_tokens": lifetime.total_agent_tokens,
+                "total_agent_cost_usd": lifetime.total_agent_cost_usd,
+                "total_api_calls": lifetime.total_api_calls,
+                "total_api_cost_usd": lifetime.total_api_cost_usd,
+                "total_cost_usd": lifetime.total_agent_cost_usd + lifetime.total_api_cost_usd,
+            }
+        
+        # Fallback: aggregate from raw log tables
+        from sqlmodel import func
+        agent_stats = s.exec(
+            select(
+                func.count(AgentCallLogRow.id),
+                func.sum(AgentCallLogRow.total_tokens),
+                func.sum(AgentCallLogRow.estimated_cost_usd)
+            )
+            .where(AgentCallLogRow.user_id == user_id)
+        ).first()
+        
+        api_stats = s.exec(
+            select(
+                func.count(ApiCallLogRow.id),
+                func.sum(ApiCallLogRow.estimated_cost_usd)
+            )
+            .where(ApiCallLogRow.user_id == user_id)
+        ).first()
+        
+        agent_calls = agent_stats[0] if agent_stats else 0
+        agent_tokens = agent_stats[1] if agent_stats else 0
+        agent_cost = agent_stats[2] if agent_stats else 0.0
+        api_calls = api_stats[0] if api_stats else 0
+        api_cost = api_stats[1] if api_stats else 0.0
+        
+        return {
+            "total_agent_calls": agent_calls or 0,
+            "total_agent_tokens": agent_tokens or 0, 
+            "total_agent_cost_usd": agent_cost or 0.0,
+            "total_api_calls": api_calls or 0,
+            "total_api_cost_usd": api_cost or 0.0,
+            "total_cost_usd": (agent_cost or 0.0) + (api_cost or 0.0),
+        }
+
+
+def get_project_usage_summaries(
+    user_id: int,
+    period_type: str = "monthly",
+    limit: int = 10
+) -> list[dict]:
+    """Get usage summaries for projects owned by or shared with a user."""
+    with get_session() as s:
+        # Get user's project IDs (owned + shared)
+        owned_projects = s.exec(
+            select(ProjectRow.id, ProjectRow.name)
+            .where(ProjectRow.owner_id == user_id)
+        ).all()
+        
+        shared_projects = s.exec(
+            select(ProjectRow.id, ProjectRow.name)
+            .join(ProjectMemberRow, ProjectRow.id == ProjectMemberRow.project_id)
+            .where(ProjectMemberRow.user_id == user_id)
+        ).all()
+        
+        all_projects = {p.id: p.name for p in owned_projects + shared_projects}
+        
+        if not all_projects:
+            return []
+        
+        # Get recent usage for these projects
+        rows = s.exec(
+            select(ProjectUsageSummaryRow)
+            .join(ProjectRow, ProjectUsageSummaryRow.project_id == ProjectRow.id)
+            .where(
+                ProjectUsageSummaryRow.project_id.in_(list(all_projects.keys())),
+                ProjectUsageSummaryRow.period_type == period_type
+            )
+            .order_by(
+                ProjectUsageSummaryRow.period_start.desc(),
+                ProjectUsageSummaryRow.total_agent_cost_usd.desc()
+            )
+            .limit(limit)
+        ).all()
+        
+        result = []
+        for r in rows:
+            project_name = all_projects.get(r.project_id, "Unknown")
+            result.append({
+                "project_id": r.project_id,
+                "project_name": project_name,
+                "period_start": r.period_start.strftime("%Y-%m-%d") if r.period_start else None,
+                "period_end": r.period_end.strftime("%Y-%m-%d") if r.period_end else None,
+                "period_type": r.period_type,
+                "total_agent_calls": r.total_agent_calls,
+                "total_agent_tokens": r.total_agent_tokens,
+                "total_agent_cost_usd": r.total_agent_cost_usd,
+                "total_api_calls": r.total_api_calls,
+                "total_api_cost_usd": r.total_api_cost_usd,
+                "total_cost_usd": r.total_agent_cost_usd + r.total_api_cost_usd,
+                "versions_created": r.versions_created,
+                "updated_at": r.updated_at.strftime("%Y-%m-%d %H:%M") if r.updated_at else None,
+            })
+        
+        return result
+
+
+def get_recent_agent_activity(
+    user_id: int,
+    project_id: Optional[int] = None, 
+    limit: int = 20
+) -> list[dict]:
+    """Get recent agent execution logs for activity feed."""
+    with get_session() as s:
+        query = select(
+            AgentCallLogRow.id,
+            AgentCallLogRow.agent_type,
+            AgentCallLogRow.agent_name,
+            AgentCallLogRow.execution_time_ms,
+            AgentCallLogRow.total_tokens,
+            AgentCallLogRow.estimated_cost_usd,
+            AgentCallLogRow.status,
+            AgentCallLogRow.created_at,
+            AgentCallLogRow.project_id,
+            ProjectRow.name.label("project_name")
+        ).select_from(
+            AgentCallLogRow.__table__.outerjoin(
+                ProjectRow.__table__, 
+                AgentCallLogRow.project_id == ProjectRow.id
+            )
+        ).where(
+            AgentCallLogRow.user_id == user_id
+        )
+        
+        if project_id:
+            query = query.where(AgentCallLogRow.project_id == project_id)
+        
+        rows = s.exec(
+            query.order_by(AgentCallLogRow.created_at.desc()).limit(limit)
+        ).all()
+        
+        result = []
+        for r in rows:
+            result.append({
+                "id": r.id,
+                "agent_type": r.agent_type,
+                "agent_name": r.agent_name,
+                "execution_time_ms": r.execution_time_ms,
+                "total_tokens": r.total_tokens,
+                "estimated_cost_usd": r.estimated_cost_usd or 0.0,
+                "status": r.status,
+                "project_id": r.project_id,
+                "project_name": r.project_name or "Unknown",
+                "created_at": r.created_at.strftime("%Y-%m-%d %H:%M:%S") if r.created_at else None,
+            })
+        
+        return result
 
 
 # =====================================================================

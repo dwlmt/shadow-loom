@@ -538,6 +538,9 @@ def run_pipeline(
     versioned_model: VersionedWorldModel | None = None,
     raw_text: str | None = None,
     config: PipelineConfig | None = None,
+    user_id: Optional[int] = None,
+    project_id: Optional[int] = None,
+    version_id: Optional[int] = None,
 ) -> PipelineResult:
     """Run the full Shadow-Loom pipeline end-to-end.
 
@@ -589,7 +592,13 @@ def run_pipeline(
         # --- Step 1: Ingestion ---
         logger.info("[Pipeline] Step 1: Ingesting raw text (%d chars).", len(raw_text))
         ing_cfg = cfg.ingestion_config or ExtractionConfig()
-        ws, validation_report = run_extraction(raw_text, config=ing_cfg)
+        ws, validation_report = run_extraction(
+            raw_text, 
+            config=ing_cfg, 
+            user_id=user_id, 
+            project_id=project_id, 
+            version_id=version_id
+        )
         vwm = VersionedWorldModel.from_world_state(ws, max_snapshots=cfg.max_snapshots)
         history.record("ingestion", IngestionStepRecord(
             is_valid=validation_report.is_valid,
@@ -908,6 +917,9 @@ async def run_pipeline_async(
     versioned_model: VersionedWorldModel | None = None,
     raw_text: str | None = None,
     config: PipelineConfig | None = None,
+    user_id: Optional[int] = None,
+    project_id: Optional[int] = None,
+    version_id: Optional[int] = None,
 ) -> PipelineResult:
     """Async variant of :func:`run_pipeline`.
 
@@ -931,7 +943,13 @@ async def run_pipeline_async(
     if raw_text is not None:
         logger.info("[Pipeline·Async] Step 1: Ingesting raw text (%d chars).", len(raw_text))
         ing_cfg = cfg.ingestion_config or ExtractionConfig()
-        ws, validation_report = await run_extraction_async(raw_text, config=ing_cfg)
+        ws, validation_report = await run_extraction_async(
+            raw_text, 
+            config=ing_cfg,
+            user_id=user_id,
+            project_id=project_id, 
+            version_id=version_id
+        )
         vwm = VersionedWorldModel.from_world_state(ws, max_snapshots=cfg.max_snapshots)
         history.record("ingestion", IngestionStepRecord(
             is_valid=validation_report.is_valid,

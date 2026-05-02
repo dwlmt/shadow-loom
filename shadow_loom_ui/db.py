@@ -69,6 +69,11 @@ from shadow_loom.db import (  # noqa: F401 — re-exports
     clear_active_version,
     get_all_prose,
     search_users,
+    # Usage and cost dashboard functions
+    get_user_usage_summary,
+    get_user_lifetime_usage,
+    get_project_usage_summaries,
+    get_recent_agent_activity,
     # Backward-compatible aliases
     save_snapshot,
     load_latest_snapshot,

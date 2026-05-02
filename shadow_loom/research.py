@@ -139,7 +139,8 @@ class ResearchProvider(Protocol):
 
     name: str
 
-    def search(self, query: str, max_results: int = 5) -> List[ResearchSnippet]:
+    def search(self, query: str, max_results: int = 5, user_id: Optional[int] = None, 
+               project_id: Optional[int] = None, agent_call_log_id: Optional[int] = None) -> List[ResearchSnippet]:
         ...
 
 
@@ -152,7 +153,8 @@ class NullProvider:
 
     name = "none"
 
-    def search(self, query: str, max_results: int = 5) -> List[ResearchSnippet]:
+    def search(self, query: str, max_results: int = 5, user_id: Optional[int] = None, 
+               project_id: Optional[int] = None, agent_call_log_id: Optional[int] = None) -> List[ResearchSnippet]:
         raise RuntimeError(
             "Research is disabled. Set extraction.enable_research_agent=True "
             "and a non-'none' research provider before calling search()."
@@ -200,7 +202,26 @@ class TavilyProvider:
             self._client = TavilyClient(api_key=self.api_key)
         return self._client
 
-    def search(self, query: str, max_results: int = 5) -> List[ResearchSnippet]:
+    def search(self, query: str, max_results: int = 5, user_id: Optional[int] = None, 
+               project_id: Optional[int] = None, agent_call_log_id: Optional[int] = None) -> List[ResearchSnippet]:
+        """Execute a search query via Tavily API with cost tracking.
+        
+        Parameters
+        ----------
+        query : str
+            The search query
+        max_results : int
+            Maximum number of results to return
+        user_id : int, optional
+            User ID for cost tracking
+        project_id : int, optional  
+            Project ID for cost tracking
+        agent_call_log_id : int, optional
+            Associated agent call ID for cost tracking
+        """
+        import time
+        start_time = time.time()
+        
         client = self._get_client()
         kwargs: dict = {
             "query": query,
@@ -214,7 +235,59 @@ class TavilyProvider:
 
         try:
             raw = client.search(**kwargs)
-        except Exception:
+            response_time_ms = int((time.time() - start_time) * 1000)
+            
+            # Log API call for cost tracking
+            if user_id:
+                try:
+                    from shadow_loom._agent_logging import log_api_call
+                    results_count = len(raw.get("results", [])) if isinstance(raw, dict) else 0
+                    request_size = len(query.encode('utf-8'))  # Query size in bytes
+                    
+                    log_api_call(
+                        user_id=user_id,
+                        provider="tavily",
+                        service_type="web_search", 
+                        request_size=request_size,
+                        response_time_ms=response_time_ms,
+                        status_code=200,  # Assume success if no exception
+                        project_id=project_id,
+                        agent_call_log_id=agent_call_log_id,
+                        metadata={
+                            "query": query,
+                            "max_results": max_results, 
+                            "search_depth": self.search_depth,
+                            "results_count": results_count
+                        }
+                    )
+                except Exception as log_err:
+                    logger.warning(f"Failed to log Tavily API call: {log_err}")
+                    
+        except Exception as e:
+            response_time_ms = int((time.time() - start_time) * 1000)
+            
+            # Log failed API call
+            if user_id:
+                try:
+                    from shadow_loom._agent_logging import log_api_call
+                    log_api_call(
+                        user_id=user_id,
+                        provider="tavily",
+                        service_type="web_search",
+                        request_size=len(query.encode('utf-8')),
+                        response_time_ms=response_time_ms,
+                        status_code=500,  # Error status
+                        project_id=project_id,
+                        agent_call_log_id=agent_call_log_id,
+                        metadata={
+                            "query": query,
+                            "error": str(e),
+                            "search_depth": self.search_depth
+                        }
+                    )
+                except Exception as log_err:
+                    logger.warning(f"Failed to log failed Tavily API call: {log_err}")
+                    
             logger.exception("[TavilyProvider] search FAILED for query=%r", query)
             raise
 
@@ -261,7 +334,7 @@ def cache_key(provider: str, provider_model: str, query: str) -> str:
 # 5. PROVIDER FACTORY
 # =====================================================================
 
-def build_provider(name: str, *, api_key: str = "", **kwargs) -> ResearchProvider:
+def build_provider(name: str, *, api_key: str = "", search_depth: str = "basic", **kwargs) -> ResearchProvider:
     """Construct a provider by name. Used by ingestion + MCP."""
     name = (name or "none").lower()
     if name in {"none", "null", ""}:
@@ -269,6 +342,7 @@ def build_provider(name: str, *, api_key: str = "", **kwargs) -> ResearchProvide
     if name == "tavily":
         return TavilyProvider(
             api_key=api_key or os.environ.get("TAVILY_API_KEY", ""),
+            search_depth=search_depth,  # type: ignore
             **kwargs,
         )
     raise ValueError(f"Unknown research provider: {name!r}")
@@ -340,10 +414,11 @@ def lookup_and_persist_topic(
         try:
             prov = build_provider(
                 config.research_provider,
-                provider_model=config.research_provider_model or None,
-                max_results=config.research_max_results_per_query,
+                api_key=settings.core.tavily_api_key,
+                search_depth=config.research_provider_model or "basic",
             )
-            snippets = list(prov.search(topic))
+            snippets = list(prov.search(topic, max_results=config.research_max_results_per_query,
+                                      user_id=user_id, project_id=project_id))
         except Exception as e:
             return {"error": f"Provider call failed: {e!r}"}
         try:
@@ -373,7 +448,7 @@ def lookup_and_persist_topic(
 
     try:
         agent = _build_research_agent(config)
-        result = agent.run_sync(user_msg)
+        result = agent.run_sync(user_msg, user_id=user_id, project_id=project_id)
         fact = result.output
     except Exception as e:
         return {"error": f"Research agent failed: {e!r}"}
