@@ -2,7 +2,7 @@
 
 Shadow-Loom ships a [Model Context Protocol](https://modelcontextprotocol.io)
 server that exposes the entire causal narrative engine — ingestion, simulation,
-generation, audit, version management — as **31 tools and 5 resources** that any
+generation, audit, version management — as **37 tools and 5 resources** that any
 MCP-aware agent (Claude Desktop, Cursor, Continue, custom clients) can drive
 directly.
 
@@ -74,7 +74,7 @@ rather than executing if the bearer token is unknown or under-scoped.
 
 ---
 
-## 3. The 34 tools, by cognitive task
+## 3. The 37 tools, by cognitive task
 
 ### ORIENT — "What stories exist? What's in this one?"
 
@@ -139,6 +139,9 @@ so one user's lookups are never reused for another.
 | `research_topic(topic, provider=None, max_results=None)` | write | Calls the configured provider (default Tavily) for `topic`, distils the snippets through the `research_extraction` agent and persists a `WorldFact` against the project. Returns `{fact_id, summary, confidence, source_url_primary, related_node_ids, snippet_count, cached}`. |
 | `list_world_facts()` | read | Enumerate every `WorldFact` attached to the project. |
 | `delete_world_fact(fact_id)` | write | Remove a fact. The next version saved will exclude it from `WorldStateV1.world_facts`. |
+| `get_research_status()` | read | Process-wide status: provider, enabled flag, API-key presence (boolean — never the key), default topics. Used by the UI Research tab to gate the run-now buttons. |
+| `get_project_settings()` | read | Per-project settings — currently `research_topics: list[str]`. Settings live outside `WorldStateV1` so they never fork with shadow branches and never bloat version snapshots. |
+| `set_project_settings(research_topics)` | write | Replace the project's `research_topics` list. Topics are stripped + de-duplicated. Pass `[]` to clear. Editing settings does not mutate any version. |
 
 See [docs/research-extraction-plan.md](research-extraction-plan.md) for
 the segregation contract and [CONTENT-POLICY.md §6.4a](../CONTENT-POLICY.md)
