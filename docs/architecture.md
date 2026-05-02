@@ -103,6 +103,25 @@ only; each chunk's events keep their LLM-extracted `fabula_time`, so
 flashbacks and flashforwards are preserved across chunk boundaries instead
 of being re-sorted into reading order.
 
+#### Step 3d — Optional external research (segregated, off by default)
+
+After world-state assembly the pipeline can call an optional
+`ResearchProvider` (currently Tavily; see
+[shadow_loom/research.py](../shadow_loom/research.py)) once per topic in
+`ExtractionConfig.research_topics`, distil each result through a
+`research_extraction` agent, and append the result as a `WorldFact` to
+`WorldStateV1.world_facts`. World facts are **structurally segregated**:
+they live in their own field, never mutate `Entity` / `EventNode` /
+`RelationshipEdge` / `GlobalTrait` namespaces, and only surface into
+generation as a `BACKGROUND CONTEXT — NOT AUTHORITATIVE` block in the
+Step 10 prompt. Off by default; opt in via
+`EXTRACTION_ENABLE_RESEARCH_AGENT=true` plus
+`EXTRACTION_RESEARCH_PROVIDER=tavily` plus `TAVILY_API_KEY`. Agents may
+also add facts live via the `research_topic` MCP tool. Provider calls
+are cached per-account (see
+[docs/research-extraction-plan.md](research-extraction-plan.md) and
+[CONTENT-POLICY.md §6.4 / §6.4a](../CONTENT-POLICY.md)).
+
 ### Step 3: Epistemic synchronisation
 
 `Belief.established_at_fabula` records *when* a fact entered each character's

@@ -275,6 +275,18 @@ def build_export_tab(state: AppState) -> None:
                                 ui.label(label).classes(
                                     "text-xs text-slate-500"
                                 )
+                    # Background facts — not canon, shown muted + segregated.
+                    fact_count = 0
+                    if state.project_id is not None:
+                        try:
+                            from shadow_loom import db as _db
+                            fact_count = len(_db.list_world_facts(state.project_id))
+                        except Exception:
+                            fact_count = 0
+                    ui.separator().classes("my-2")
+                    ui.label(
+                        f"Background facts (not canon, segregated): {fact_count}"
+                    ).classes("text-xs text-slate-400 italic")
 
         _refresh_stats()
         state.on(StateEvent.WORLD_STATE_CHANGED, _refresh_stats)

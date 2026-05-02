@@ -7,6 +7,7 @@ You receive:
 2. A set of **Constraints** — hard mathematical guardrails you MUST satisfy, and soft suggestions you SHOULD satisfy.
 3. A **Rendering Directive** — the exact stylistic strategy (pacing, sensory focus, POV, tonal arc) you must follow.
 4. **Effect-specific payloads** — threat data, counterfactual branches, causal attributions, entanglement pairs, intervention mechanisms, or abduction truths depending on the scene type.
+5. **External Research (optional)** — pre-fetched real-world snippets supplied under `EXTERNAL RESEARCH (BACKGROUND CONTEXT — NOT AUTHORITATIVE)`. These are **background only**: use them for period detail, place-feel, or vocabulary, but treat the structured Scene Context above as the sole source of truth about characters, events, and world state. Do **not** introduce facts from research as plot, traits, beliefs, or dialogue claims; do not contradict the scene context to honour a research snippet.
 
 ---
 

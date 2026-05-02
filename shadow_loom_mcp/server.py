@@ -42,12 +42,15 @@ from shadow_loom.db import (
     create_project,
     delete_project as db_delete_project,
     delete_version as db_delete_version,
+    delete_world_fact as db_delete_world_fact,
     fork_project,
     get_active_version as db_get_active_version,
     get_all_prose,
+    get_cached_research as db_get_cached_research,
     get_latest_version,
     get_project,
     get_project_activity,
+    get_project_settings as db_get_project_settings,
     get_user_project_role,
     get_version,
     get_version_by_id,
@@ -55,14 +58,18 @@ from shadow_loom.db import (
     init_db,
     list_projects as db_list_projects,
     list_versions,
+    list_world_facts as db_list_world_facts,
     list_branches as db_list_branches,
     promote_branch as db_promote_branch,
     ProjectDeleteError,
     reparent_version as db_reparent_version,
+    save_cached_research as db_save_cached_research,
     save_version,
     search_users,
     set_active_version as db_set_active_version,
+    set_project_settings as db_set_project_settings,
     update_project,
+    upsert_world_fact as db_upsert_world_fact,
     VersionMutationError,
 )
 from shadow_loom.extract_graph import VersionedWorldModel
@@ -2033,6 +2040,189 @@ def audit_log(
     return {
         "project_id": pid,
         "activities": activities,
+    }
+
+
+# =====================================================================
+# GROUP 5b: RESEARCH — "Look up real-world background on a topic."
+# =====================================================================
+#
+# Research tools query an external provider (Tavily by default) and
+# distil the results into ``WorldFact`` records that live in a
+# segregated ``WorldStateV1.world_facts`` collection. They never mutate
+# Entities, Events, RelationshipEdges or world traits. See
+# ``docs/research-extraction-plan.md`` for the rationale and
+# ``shadow_loom/research.py`` for the provider layer.
+
+
+@mcp.tool()
+@_safe_tool
+def research_topic(
+    ctx: Context,
+    topic: str,
+    project_id: Optional[int] = None,
+    project_name: Optional[str] = None,
+    provider: Optional[str] = None,
+    max_results: Optional[int] = None,
+) -> dict:
+    """Look up *topic* via the configured research provider and persist a WorldFact.
+
+    Calls ``provider.search(topic)``, runs the research-extraction agent
+    to distil the snippets into a single ``WorldFact``, caches the raw
+    provider call (per-user) and persists the resulting fact under the
+    project. Requires ``write`` scope.
+    """
+    err = require_scope(ctx, "write")
+    if err:
+        return {"error": err}
+
+    pid, err = resolve_project(project_id, project_name, ctx)
+    if err:
+        return {"error": err}
+
+    user_id = get_user_id(ctx)
+    from shadow_loom.research import lookup_and_persist_topic
+
+    return lookup_and_persist_topic(
+        project_id=pid,
+        user_id=user_id,
+        topic=topic,
+        provider_override=provider,
+        max_results_override=max_results,
+    )
+
+
+@mcp.tool()
+@_safe_tool
+def list_world_facts(
+    ctx: Context,
+    project_id: Optional[int] = None,
+    project_name: Optional[str] = None,
+) -> dict:
+    """List all ``WorldFact`` records for a project."""
+    err = require_scope(ctx, "read")
+    if err:
+        return {"error": err}
+    pid, err = resolve_project(project_id, project_name, ctx)
+    if err:
+        return {"error": err}
+
+    import json as _json
+    rows = db_list_world_facts(pid)
+    facts = []
+    for r in rows:
+        try:
+            related = _json.loads(r.related_node_ids_json) if r.related_node_ids_json else []
+        except Exception:
+            related = []
+        facts.append({
+            "fact_id": r.fact_id,
+            "topic": r.topic,
+            "summary": r.summary,
+            "confidence": r.confidence,
+            "source_url_primary": r.source_url_primary,
+            "provider": r.provider,
+            "related_node_ids": related,
+            "retrieved_at": str(r.retrieved_at) if r.retrieved_at else None,
+        })
+    return {"project_id": pid, "facts": facts, "count": len(facts)}
+
+
+@mcp.tool()
+@_safe_tool
+def delete_world_fact(
+    ctx: Context,
+    fact_id: str,
+    project_id: Optional[int] = None,
+    project_name: Optional[str] = None,
+) -> dict:
+    """Delete a ``WorldFact`` by id from a project."""
+    err = require_scope(ctx, "write")
+    if err:
+        return {"error": err}
+    pid, err = resolve_project(project_id, project_name, ctx)
+    if err:
+        return {"error": err}
+    removed = db_delete_world_fact(project_id=pid, fact_id=fact_id)
+    return {"project_id": pid, "fact_id": fact_id, "deleted": removed}
+
+
+@mcp.tool()
+@_safe_tool
+def get_project_settings(
+    ctx: Context,
+    project_id: Optional[int] = None,
+    project_name: Optional[str] = None,
+) -> dict:
+    """Return per-project settings (currently: research_topics).
+
+    Project settings live outside ``WorldStateV1`` so they do not fork
+    with shadow branches and do not bloat version snapshots.
+    """
+    err = require_scope(ctx, "read")
+    if err:
+        return {"error": err}
+    pid, err = resolve_project(project_id, project_name, ctx)
+    if err:
+        return {"error": err}
+    settings = db_get_project_settings(pid)
+    return {"project_id": pid, **settings}
+
+
+@mcp.tool()
+@_safe_tool
+def set_project_settings(
+    ctx: Context,
+    research_topics: List[str],
+    project_id: Optional[int] = None,
+    project_name: Optional[str] = None,
+) -> dict:
+    """Replace the project's ``research_topics`` list.
+
+    Topics are stripped + de-duplicated. Pass an empty list to clear.
+    Editing settings does not mutate any version row.
+    """
+    err = require_scope(ctx, "write")
+    if err:
+        return {"error": err}
+    pid, err = resolve_project(project_id, project_name, ctx)
+    if err:
+        return {"error": err}
+    err = check_project_access(pid, ctx)
+    if err:
+        return {"error": err}
+    try:
+        db_set_project_settings(pid, research_topics=list(research_topics))
+    except ValueError as e:
+        return {"error": str(e)}
+    return {"project_id": pid, **db_get_project_settings(pid)}
+
+
+@mcp.tool()
+@_safe_tool
+def get_research_status(ctx: Context) -> dict:
+    """Return process-wide research-extraction status.
+
+    Reports whether the research agent is enabled, which provider is
+    configured, and whether the provider API key is present. Never
+    returns the API key itself.
+    """
+    err = require_scope(ctx, "read")
+    if err:
+        return {"error": err}
+    settings = _get_settings()
+    extraction = settings.extraction
+    provider = extraction.research_provider
+    api_key_present = False
+    if provider == "tavily":
+        api_key_present = bool(getattr(settings, "tavily_api_key", "") or "")
+    return {
+        "enabled": bool(extraction.enable_research_agent),
+        "provider": provider,
+        "provider_model": extraction.research_provider_model,
+        "max_results_per_query": extraction.research_max_results_per_query,
+        "api_key_present": api_key_present,
+        "default_topics": list(extraction.research_topics),
     }
 
 

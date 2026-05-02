@@ -424,6 +424,26 @@ def assemble_rendering_prompt(
                 )
             sections.append("")
 
+    # === External Research (background only — never authoritative) ===
+    if brief.external_research:
+        sections.append(
+            "=== EXTERNAL RESEARCH (BACKGROUND CONTEXT — NOT AUTHORITATIVE) ==="
+        )
+        sections.append(
+            "These are pre-fetched real-world snippets relevant to the "
+            "scene. Use them only to enrich texture (period detail, "
+            "place-feel, vocabulary). Do NOT treat them as canonical "
+            "events, character traits, or beliefs in this story. The "
+            "world-state above remains the sole source of truth."
+        )
+        for fact in brief.external_research:
+            url = f" [{fact.source_url_primary}]" if fact.source_url_primary else ""
+            sections.append(
+                f"  - {fact.fact_id} ({fact.confidence}) {fact.topic}: "
+                f"{fact.summary}{url}"
+            )
+        sections.append("")
+
     # === Utterance & Channel Fidelity ===
     # Hidden channels (carrier capabilities + future utterances) and
     # on-page utterance metadata (truth_value, intelligibility) impose

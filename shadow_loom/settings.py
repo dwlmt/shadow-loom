@@ -69,6 +69,14 @@ class CoreSettings(BaseSettings):
         default="",
         description="API key for OpenAI. Required when using 'openai:' model prefix.",
     )
+    tavily_api_key: str = Field(
+        default="",
+        description=(
+            "API key for the Tavily web-research provider. Required only "
+            "when ``ExtractionConfig.enable_research_agent=True`` and "
+            "``research_provider='tavily'``. Off by default."
+        ),
+    )
     langfuse_secret_key: str = Field(
         default="",
         description="Secret key for Langfuse tracing.",
@@ -176,6 +184,48 @@ class ExtractionSettings(BaseSettings):
     max_concurrent_chunks: int = Field(default=8)
     estimated_events_per_chunk: int = Field(default=10)
     enable_consequences_agent: bool = Field(default=True)
+
+    # ------------------------------------------------------------------
+    # Optional research extraction (off by default)
+    # ------------------------------------------------------------------
+    enable_research_agent: bool = Field(
+        default=False,
+        description=(
+            "If True, ``run_extraction`` will call the configured "
+            "``research_provider`` once per topic in ``research_topics`` "
+            "and append distilled ``WorldFact`` records to "
+            "``WorldStateV1.world_facts``. Off by default — research is an "
+            "opt-in, segregated layer that never mutates Entities/Events/Edges."
+        ),
+    )
+    research_provider: Literal["none", "tavily"] = Field(
+        default="none",
+        description=(
+            "Which ``ResearchProvider`` to use. 'none' selects the "
+            "``NullProvider`` (returns []); 'tavily' requires "
+            "``CoreSettings.tavily_api_key`` and the optional "
+            "``tavily-python`` dependency."
+        ),
+    )
+    research_provider_model: str = Field(
+        default="",
+        description=(
+            "Optional provider-specific model / search-depth identifier "
+            "(e.g. Tavily 'basic' vs 'advanced'). Empty selects provider "
+            "default. Hashed into the cache key."
+        ),
+    )
+    research_max_results_per_query: int = Field(
+        default=5,
+        description="Cap on snippets returned per provider call.",
+    )
+    research_topics: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Pre-configured topics to look up at extraction time. Topics "
+            "may also be added live via the ``research_topic`` MCP tool."
+        ),
+    )
 
 
 # =====================================================================
@@ -618,6 +668,11 @@ class Settings:
             "max_concurrent_chunks": self.extraction.max_concurrent_chunks,
             "estimated_events_per_chunk": self.extraction.estimated_events_per_chunk,
             "enable_consequences_agent": self.extraction.enable_consequences_agent,
+            "enable_research_agent": self.extraction.enable_research_agent,
+            "research_provider": self.extraction.research_provider,
+            "research_provider_model": self.extraction.research_provider_model,
+            "research_max_results_per_query": self.extraction.research_max_results_per_query,
+            "research_topics": list(self.extraction.research_topics),
         }
 
     def pipeline_config_kwargs(self) -> dict:

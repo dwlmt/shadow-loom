@@ -120,6 +120,49 @@ UI_RELOAD=false
 
 `MCP_ALLOW_OPEN_MODE=true` is **only** for local development.
 
+### Optional: external research provider (off by default)
+
+The pipeline can call an external web-research provider (currently
+Tavily) and distil results into a segregated `WorldStateV1.world_facts`
+collection that the renderer treats as background-only context. The
+feature is **off by default** and requires three things:
+
+1. **Re-build the image with the `[research]` extra.** Add a
+   `INSTALL_EXTRAS` build arg in your Railway service settings under
+   *Build → Build Command* (or set it via `railway.toml`):
+
+   ```
+   --build-arg INSTALL_EXTRAS=research
+   ```
+
+   The bundled [Dockerfile](../Dockerfile) reads this arg and runs
+   `pip install ".[research]"` instead of plain `pip install .`.
+
+2. **Add the API key + toggles in the Variables tab**:
+
+   ```
+   TAVILY_API_KEY=tvly-...
+   EXTRACTION_ENABLE_RESEARCH_AGENT=true
+   EXTRACTION_RESEARCH_PROVIDER=tavily
+   EXTRACTION_RESEARCH_PROVIDER_MODEL=basic   # or "advanced"
+   EXTRACTION_RESEARCH_MAX_RESULTS_PER_QUERY=5
+   EXTRACTION_RESEARCH_TOPICS=[]              # JSON array; empty = lookup live via MCP only
+   ```
+
+3. **Drive lookups from your client.** With the toggles on, agents can
+   call the `research_topic` MCP tool (write scope) to add a
+   `WorldFact` to the active project; `list_world_facts` and
+   `delete_world_fact` round out the management surface. See
+   [mcp-guide.md §3 RESEARCH](mcp-guide.md#research--look-up-real-world-background-on-a-topic-optional)
+   and [research-extraction-plan.md](research-extraction-plan.md) for the
+   per-account isolation contract.
+
+Provider calls are cached per-account and never reused across users
+(see [CONTENT-POLICY.md §6.4 / §6.4a](../CONTENT-POLICY.md)). Leaving
+`EXTRACTION_ENABLE_RESEARCH_AGENT=false` (the default) is enough to
+guarantee no provider call is ever made — the `TAVILY_API_KEY`
+variable can stay blank.
+
 ---
 
 ## 3. Deploy

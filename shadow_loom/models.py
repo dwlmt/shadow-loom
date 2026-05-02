@@ -969,6 +969,19 @@ class WorldStateV1(BaseModel):
         ),
     )
     social_topology: List[RelationshipEdge] = Field(default_factory=list)
+    world_facts: List["WorldFact"] = Field(
+        default_factory=list,
+        description=(
+            "Optional external research grounding (off by default). "
+            "Populated only when ``ExtractionConfig.enable_research_agent`` "
+            "is true. Each ``WorldFact`` carries its own ``source_url`` "
+            "provenance and is intentionally segregated from entity "
+            "traits, beliefs, events and global traits — the auditor "
+            "never promotes a fact into those namespaces. See "
+            "``shadow_loom.research`` for the provider layer and "
+            "``docs/research-extraction-plan.md`` for the rationale."
+        ),
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -992,3 +1005,15 @@ class WorldStateV1(BaseModel):
                 "shadow_loom/models.py::Channel for the new schema."
             )
         return data
+
+
+# ---------------------------------------------------------------------
+# Forward-reference resolution
+# ---------------------------------------------------------------------
+# ``WorldFact`` lives in ``shadow_loom.research`` (a pure-pydantic /
+# stdlib module that does not import from shadow_loom.models) so we can
+# safely resolve the forward reference on ``WorldStateV1.world_facts``
+# at import time without creating a cycle.
+from shadow_loom.research import WorldFact  # noqa: E402
+
+WorldStateV1.model_rebuild()

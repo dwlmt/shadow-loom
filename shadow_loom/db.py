@@ -253,6 +253,101 @@ class ActiveVersionRow(SQLModel, table=True):
     )
 
 
+class ResearchCacheRow(SQLModel, table=True):
+    """Cached output of a ``ResearchProvider.search`` call.
+
+    Keyed by ``key = sha256(provider | provider_model | query)`` so
+    identical re-runs are deterministic and free. Snippets are stored
+    as a JSON-serialised list of ``shadow_loom.research.ResearchSnippet``
+    payloads in a Text column (matching the project's existing
+    ``changeset_json`` / ``world_state_json`` convention).
+
+    Per-account isolation: ``user_id`` is part of the uniqueness key so
+    one user's cached lookups are never served to another. Set
+    ``user_id`` to ``None`` only for shared, system-level fixtures
+    (which the production code paths never do).
+    """
+
+    __tablename__ = "research_cache"
+    __table_args__ = (
+        UniqueConstraint("user_id", "key", name="uq_research_cache_user_key"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: Optional[int] = Field(default=None, foreign_key="users.id")
+    key: str = Field(max_length=64, index=True)
+    provider: str = Field(max_length=32)
+    provider_model: str = Field(default="", max_length=64)
+    query: str = Field(sa_column=Column(Text, nullable=False))
+    snippets_json: str = Field(sa_column=Column(Text, nullable=False))
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime, default=lambda: datetime.now(timezone.utc)),
+    )
+
+
+class WorldFactRow(SQLModel, table=True):
+    """Persistent per-project ``WorldFact`` record.
+
+    Mirrors ``shadow_loom.research.WorldFact``. Stored separately from
+    ``VersionRow.world_state_json`` so facts persist across versions
+    without bloating every snapshot, and so the UI can list / edit /
+    delete them independently of the version tree. Each version's
+    serialised ``WorldStateV1.world_facts`` is rebuilt from this table
+    on save (Phase 2 wiring).
+    """
+
+    __tablename__ = "world_facts"
+    __table_args__ = (
+        UniqueConstraint("project_id", "fact_id", name="uq_world_fact_project_id"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    project_id: int = Field(foreign_key="projects.id", index=True)
+    fact_id: str = Field(max_length=128)  # the FACT_ id
+    topic: str = Field(sa_column=Column(Text, nullable=False))
+    summary: str = Field(sa_column=Column(Text, nullable=False))
+    confidence: str = Field(default="moderate", max_length=16)
+    source_url_primary: Optional[str] = Field(default=None, sa_column=Column(Text))
+    provider: str = Field(default="", max_length=32)
+    related_node_ids_json: Optional[str] = Field(default=None, sa_column=Column(Text))
+    raw_snippets_json: Optional[str] = Field(default=None, sa_column=Column(Text))
+    retrieved_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime, default=lambda: datetime.now(timezone.utc)),
+    )
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime, default=lambda: datetime.now(timezone.utc)),
+    )
+
+
+class ProjectSettingsRow(SQLModel, table=True):
+    """Per-project settings that live outside ``WorldStateV1``.
+
+    Currently holds the project-scoped ``research_topics`` list used by
+    the research-extraction pipeline (Step 3d). Kept off the world model
+    deliberately: research config is not narrative state, must not fork
+    with shadow branches, and must not bloat every version snapshot.
+    """
+
+    __tablename__ = "project_settings"
+
+    project_id: int = Field(
+        primary_key=True,
+        foreign_key="projects.id",
+    )
+    research_topics_json: str = Field(default="[]", sa_column=Column(Text))
+    updated_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(
+            DateTime,
+            default=lambda: datetime.now(timezone.utc),
+            onupdate=lambda: datetime.now(timezone.utc),
+        ),
+    )
+
+
 # =====================================================================
 # Engine / Session factory
 # =====================================================================
@@ -1945,3 +2040,206 @@ def load_latest_snapshot(project_id: int) -> Optional[VersionRow]:
 def load_snapshot(project_id: int, version: int) -> Optional[VersionRow]:
     """Backward-compatible alias for ``get_version``."""
     return get_version(project_id, version)
+
+
+# =====================================================================
+# Research cache helpers
+# =====================================================================
+
+def get_cached_research(
+    *, user_id: Optional[int], key: str,
+) -> Optional["ResearchCacheRow"]:
+    """Look up a cached research-provider call for *user_id* + *key*."""
+    with get_session() as s:
+        q = select(ResearchCacheRow).where(ResearchCacheRow.key == key)
+        if user_id is None:
+            q = q.where(ResearchCacheRow.user_id.is_(None))
+        else:
+            q = q.where(ResearchCacheRow.user_id == user_id)
+        return s.exec(q).first()
+
+
+def save_cached_research(
+    *,
+    user_id: Optional[int],
+    key: str,
+    provider: str,
+    provider_model: str,
+    query: str,
+    snippets_json: str,
+) -> None:
+    """Insert (or no-op on conflict) a research cache row."""
+    with get_session() as s:
+        existing = s.exec(
+            select(ResearchCacheRow).where(
+                ResearchCacheRow.key == key,
+                (ResearchCacheRow.user_id == user_id)
+                if user_id is not None
+                else ResearchCacheRow.user_id.is_(None),
+            )
+        ).first()
+        if existing is not None:
+            return  # cache rows are immutable
+        s.add(ResearchCacheRow(
+            user_id=user_id,
+            key=key,
+            provider=provider,
+            provider_model=provider_model,
+            query=query,
+            snippets_json=snippets_json,
+        ))
+        try:
+            s.commit()
+        except IntegrityError:
+            # Concurrent insert from another worker — fine, theirs wins.
+            s.rollback()
+
+
+# =====================================================================
+# WorldFact persistence helpers
+# =====================================================================
+
+def list_world_facts(project_id: int) -> list["WorldFactRow"]:
+    """Return all ``WorldFactRow`` records for *project_id*."""
+    with get_session() as s:
+        return list(
+            s.exec(
+                select(WorldFactRow).where(WorldFactRow.project_id == project_id)
+            ).all()
+        )
+
+
+def upsert_world_fact(
+    *,
+    project_id: int,
+    fact_id: str,
+    topic: str,
+    summary: str,
+    confidence: str,
+    source_url_primary: str,
+    provider: str,
+    related_node_ids_json: str,
+    raw_snippets_json: str,
+    retrieved_at: Optional[datetime] = None,
+) -> "WorldFactRow":
+    """Insert or update a ``WorldFactRow`` for *(project_id, fact_id)*."""
+    with get_session() as s:
+        row = s.exec(
+            select(WorldFactRow).where(
+                WorldFactRow.project_id == project_id,
+                WorldFactRow.fact_id == fact_id,
+            )
+        ).first()
+        now = datetime.now(timezone.utc)
+        if row is None:
+            row = WorldFactRow(
+                project_id=project_id,
+                fact_id=fact_id,
+                topic=topic,
+                summary=summary,
+                confidence=confidence,
+                source_url_primary=source_url_primary or None,
+                provider=provider,
+                related_node_ids_json=related_node_ids_json,
+                raw_snippets_json=raw_snippets_json,
+                retrieved_at=retrieved_at or now,
+            )
+            s.add(row)
+        else:
+            row.topic = topic
+            row.summary = summary
+            row.confidence = confidence
+            row.source_url_primary = source_url_primary or None
+            row.provider = provider
+            row.related_node_ids_json = related_node_ids_json
+            row.raw_snippets_json = raw_snippets_json
+            if retrieved_at is not None:
+                row.retrieved_at = retrieved_at
+        s.commit()
+        s.refresh(row)
+        return row
+
+
+def delete_world_fact(*, project_id: int, fact_id: str) -> bool:
+    """Delete a ``WorldFactRow``. Returns True iff a row was removed."""
+    with get_session() as s:
+        row = s.exec(
+            select(WorldFactRow).where(
+                WorldFactRow.project_id == project_id,
+                WorldFactRow.fact_id == fact_id,
+            )
+        ).first()
+        if row is None:
+            return False
+        s.delete(row)
+        s.commit()
+        return True
+
+
+# =====================================================================
+# ProjectSettings persistence helpers
+# =====================================================================
+
+def get_project_settings(project_id: int) -> dict:
+    """Return the project's settings as a plain dict.
+
+    Always returns a dict — for projects that have never had settings
+    written, returns ``{"research_topics": []}``. Read-only: the row is
+    not auto-created here, only by :func:`set_project_settings`.
+    """
+    import json as _json
+
+    with get_session() as s:
+        row = s.get(ProjectSettingsRow, project_id)
+        if row is None:
+            return {"research_topics": []}
+        try:
+            topics = _json.loads(row.research_topics_json or "[]")
+        except (ValueError, TypeError):
+            topics = []
+        if not isinstance(topics, list):
+            topics = []
+        return {"research_topics": [str(t) for t in topics]}
+
+
+def set_project_settings(
+    project_id: int,
+    *,
+    research_topics: list[str],
+) -> "ProjectSettingsRow":
+    """Upsert per-project settings. Returns the persisted row.
+
+    Validates that *research_topics* is a list of strings; raises
+    ``ValueError`` otherwise. Topics are stripped + de-duplicated
+    (order preserved).
+    """
+    import json as _json
+
+    if not isinstance(research_topics, list):
+        raise ValueError("research_topics must be a list of strings")
+    seen: set[str] = set()
+    cleaned: list[str] = []
+    for t in research_topics:
+        if not isinstance(t, str):
+            raise ValueError("research_topics must contain only strings")
+        s_t = t.strip()
+        if not s_t or s_t in seen:
+            continue
+        seen.add(s_t)
+        cleaned.append(s_t)
+
+    with get_session() as s:
+        row = s.get(ProjectSettingsRow, project_id)
+        if row is None:
+            row = ProjectSettingsRow(
+                project_id=project_id,
+                research_topics_json=_json.dumps(cleaned),
+            )
+            s.add(row)
+        else:
+            row.research_topics_json = _json.dumps(cleaned)
+            row.updated_at = datetime.now(timezone.utc)
+        s.commit()
+        s.refresh(row)
+        return row
+

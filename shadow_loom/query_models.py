@@ -19,6 +19,44 @@ class _QueryBase(BaseModel):
             "the version row so the UI can show what the user asked for."
         ),
     )
+    # ---------------------------------------------------------------
+    # Story-point anchors. Per-query overrides for the pipeline-level
+    # ``PipelineConfig.temporal_anchor`` / ``syuzhet_anchor``. When set,
+    # the pipeline reconstructs the world / reader state at this point
+    # in the story before executing the query, so directives, physics
+    # and ego-graph extraction operate on the slice the user asked for
+    # rather than the latest state.
+    # ---------------------------------------------------------------
+    temporal_anchor: Optional[int] = Field(
+        default=None,
+        description=(
+            "Optional fabula-time horizon. Overrides "
+            "``PipelineConfig.temporal_anchor`` for this query. The world "
+            "state is reconstructed as of this fabula_time before the "
+            "query runs (entities, beliefs, relationships, events, "
+            "channels are all time-sliced)."
+        ),
+    )
+    syuzhet_anchor: Optional[int] = Field(
+        default=None,
+        description=(
+            "Optional syuzhet-index horizon for reader-effect calculus "
+            "(suspense / surprise / mystery / dramatic-irony). Overrides "
+            "``PipelineConfig.syuzhet_anchor`` for this query."
+        ),
+    )
+    anchor_after_event_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional event ID (``EVT_*``) to anchor the query *immediately "
+            "after*. The pipeline resolves this to the event's "
+            "``fabula_time`` (and ``syuzhet_index`` if neither anchor is "
+            "explicitly set) before execution. Convenient for 'apply this "
+            "directive after EVT_BANQUO_DEATH' style requests without the "
+            "caller looking the time up first. Explicit ``temporal_anchor`` "
+            "/ ``syuzhet_anchor`` values take precedence over this."
+        ),
+    )
 
 
 # ==========================================

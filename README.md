@@ -221,6 +221,13 @@ real environment variables (production). Defaults are baked into
 already works for local Ollama. The full reference is in
 [docs/settings.md](docs/settings.md).
 
+### Optional extras
+
+| Extra | Install | Adds |
+|---|---|---|
+| `research` | `pip install -e ".[research]"` | Tavily web-research provider for the optional **Step 3d** external-research layer (off by default; opt in via `EXTRACTION_ENABLE_RESEARCH_AGENT=true` plus `TAVILY_API_KEY`). Results land in a segregated `WorldStateV1.world_facts` collection and never mutate entities/events/edges — see [docs/research-extraction-plan.md](docs/research-extraction-plan.md). |
+| `dev` | `pip install -e ".[dev]"` | pytest, ruff, mypy. |
+
 See [docs/ui-guide.md](docs/ui-guide.md) for the workspace tour,
 [docs/mcp-guide.md](docs/mcp-guide.md) for the MCP tool catalogue and the
 Claude Desktop / Cursor configuration snippet, and

@@ -288,6 +288,15 @@ class AbductionTruth(BaseModel):
     )
 
 
+class ResearchHighlight(BaseModel):
+    """One ``WorldFact`` rendered as background context for a brief."""
+    fact_id: str
+    topic: str
+    summary: str
+    confidence: str = Field(default="moderate")
+    source_url_primary: Optional[str] = None
+
+
 class CreativeBrief(BaseModel):
     """Structured output ready for a downstream drafting LLM.
 
@@ -314,6 +323,17 @@ class CreativeBrief(BaseModel):
     relationship_tensions: List[RelationshipTension] = Field(default_factory=list)
     physics_override: Optional[str] = None
     scene_context: Dict[str, Any] = Field(default_factory=dict)
+
+    # --- External research (segregated; off unless populated) ---
+    external_research: List["ResearchHighlight"] = Field(
+        default_factory=list,
+        description=(
+            "Optional ``WorldFact`` snippets selected by the assembler "
+            "for the current scene focus. Carried as plain background "
+            "context the renderer may consult; never authoritative for "
+            "character traits, beliefs, events or world traits."
+        ),
+    )
 
     # --- Rendering directives (Step 10 control layer) ---
     rendering: Optional[RenderingDirective] = None
@@ -2117,6 +2137,7 @@ class DirectiveAssembler:
             threat_proximity=threat_proximity,
             causal_attribution=causal_attribution,
             entanglement_pairs=entanglement_pairs,
+            external_research=self._select_external_research(entity_ids),
         )
         _log_creative_brief(brief)
         return brief
@@ -2124,6 +2145,38 @@ class DirectiveAssembler:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+    def _select_external_research(
+        self, focus_entity_ids: List[str],
+    ) -> List["ResearchHighlight"]:
+        """Pick world facts whose ``related_node_ids`` intersect the scene focus.
+
+        Facts with an empty ``related_node_ids`` are treated as
+        project-wide and always included (they were attached to the
+        project but not to any specific node).
+        """
+        facts = list(getattr(self.world_state, "world_facts", []) or [])
+        if not facts:
+            return []
+        focus = set(focus_entity_ids or [])
+        # Also include any locations / objects that are in scope via ego.
+        for k in ("focus_locations", "focus_objects"):
+            for item in self.ego.get(k, []) or []:
+                if isinstance(item, dict) and "id" in item:
+                    focus.add(item["id"])
+        out: List[ResearchHighlight] = []
+        for f in facts:
+            related = list(getattr(f, "related_node_ids", []) or [])
+            if related and focus and not (set(related) & focus):
+                continue
+            out.append(ResearchHighlight(
+                fact_id=getattr(f, "id", ""),
+                topic=getattr(f, "topic", ""),
+                summary=getattr(f, "summary", ""),
+                confidence=getattr(f, "confidence", "moderate"),
+                source_url_primary=getattr(f, "source_url_primary", None),
+            ))
+        return out
+
     def _find_entity(self, entity_id: str) -> Optional[Dict[str, Any]]:
         """Look up an entity in the ego payload (focus or present)."""
         for ent in self.ego.get("focus_entities", []):

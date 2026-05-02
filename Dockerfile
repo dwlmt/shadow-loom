@@ -37,8 +37,16 @@ COPY example_worlds/      example_worlds/
 COPY sample_plots/        sample_plots/
 
 # ── Install ──────────────────────────────────────────────────────
+# Set INSTALL_EXTRAS at build time to add optional dependency groups,
+# e.g.:  docker build --build-arg INSTALL_EXTRAS=research -t shadow-loom .
+# Available extras: research (Tavily provider). See pyproject.toml.
+ARG INSTALL_EXTRAS=""
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir .
+    if [ -n "$INSTALL_EXTRAS" ]; then \
+        pip install --no-cache-dir ".[$INSTALL_EXTRAS]"; \
+    else \
+        pip install --no-cache-dir .; \
+    fi
 
 # ── Runtime ──────────────────────────────────────────────────────
 USER app

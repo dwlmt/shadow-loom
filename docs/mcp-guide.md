@@ -74,7 +74,7 @@ rather than executing if the bearer token is unknown or under-scoped.
 
 ---
 
-## 3. The 31 tools, by cognitive task
+## 3. The 34 tools, by cognitive task
 
 ### ORIENT — "What stories exist? What's in this one?"
 
@@ -110,8 +110,8 @@ rather than executing if the bearer token is unknown or under-scoped.
 
 | Tool | Scope | Notes |
 |---|---|---|
-| `narrate(instruction, mode=None, skip_audit, force_implausible, speaker_id=None, addressee_ids=None, via_channel_id=None)` | write | The main creation entry point. NL → `parse_query` → `run_pipeline` → version write → active pointer advance. `mode` can pin the query type to `observe` / `intervene` / `counterfactual`. The `speaker_id` / `addressee_ids` / `via_channel_id` hints constrain the parser to emit a properly-typed `utterance` event with channel provenance. |
-| `direct(target_effect, entity_ids=…, intensity=0.8, …)` | write | Builds a `DirectiveQuery` directly (no NL parse) and runs the affective optimisation pipeline. |
+| `narrate(instruction, mode=None, skip_audit, force_implausible, speaker_id=None, addressee_ids=None, via_channel_id=None)` | write | The main creation entry point. NL → `parse_query` → `run_pipeline` → version write → active pointer advance. `mode` can pin the query type to `observe` / `intervene` / `counterfactual`. The `speaker_id` / `addressee_ids` / `via_channel_id` hints constrain the parser to emit a properly-typed `utterance` event with channel provenance. The parser also extracts optional **story-point anchors** (`temporal_anchor` / `syuzhet_anchor` / `anchor_after_event_id`) from the user's NL request so phrases like "after EVT_BANQUO_DEATH" or "in act 3" pin the query to the right slice without the caller looking the time up. |
+| `direct(target_effect, entity_ids=…, intensity=0.8, temporal_anchor=None, syuzhet_anchor=None, anchor_after_event_id=None, …)` | write | Builds a `DirectiveQuery` directly (no NL parse) and runs the affective optimisation pipeline. The optional anchor arguments override `PipelineConfig.temporal_anchor` / `syuzhet_anchor` for a single call. |
 | `write(prose, description="")` | write | Manual edit — supplies user prose, runs prose → topology re-extraction, merges into a new version (skips physics + LLM rendering). |
 | `ingest(text, project_name, label=None)` | write | Creates a brand new project and runs the 5-step ingestion to produce v0. |
 
@@ -124,6 +124,25 @@ MCP client can show a progress bar.
 |---|---|---|
 | `evaluate(focus_entity_ids=…)` | read | Runs the full `EvaluationQuery` — collects all prose across versions, recomputes engine metrics, returns the `NarrativeOrderObject` scorecard. |
 | `audit_log(version=None)` | read | Returns the auditor's structured loss for a given version. |
+
+### RESEARCH — "Look up real-world background on a topic." (optional)
+
+These tools are no-ops unless the operator has installed the optional
+`[research]` extra (`pip install -e ".[research]"`) and configured a
+provider. They never mutate `Entity` / `EventNode` / `RelationshipEdge`
+/ `GlobalTrait` namespaces — results land only in
+`WorldStateV1.world_facts`. Provider calls are cached **per-account**
+so one user's lookups are never reused for another.
+
+| Tool | Scope | Purpose |
+|---|---|---|
+| `research_topic(topic, provider=None, max_results=None)` | write | Calls the configured provider (default Tavily) for `topic`, distils the snippets through the `research_extraction` agent and persists a `WorldFact` against the project. Returns `{fact_id, summary, confidence, source_url_primary, related_node_ids, snippet_count, cached}`. |
+| `list_world_facts()` | read | Enumerate every `WorldFact` attached to the project. |
+| `delete_world_fact(fact_id)` | write | Remove a fact. The next version saved will exclude it from `WorldStateV1.world_facts`. |
+
+See [docs/research-extraction-plan.md](research-extraction-plan.md) for
+the segregation contract and [CONTENT-POLICY.md §6.4a](../CONTENT-POLICY.md)
+for the user-facing guarantees.
 
 ### MANAGE — "Edit the metadata, branch, fork, share, delete."
 

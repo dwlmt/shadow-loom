@@ -131,3 +131,21 @@ services:
         sync: false
       - key: LANGFUSE_BASE_URL
         value: https://cloud.langfuse.com
+
+      # ─ Optional: External Research Provider (off by default) ────
+      # The pipeline never calls a provider unless
+      # EXTRACTION_ENABLE_RESEARCH_AGENT is also flipped on. To use:
+      #   1. Re-build the image with the [research] extra:
+      #        docker build --build-arg INSTALL_EXTRAS=research -t shadow-loom .
+      #      (or add `tavily-python` to your custom requirements layer).
+      #   2. Set TAVILY_API_KEY in the Render dashboard.
+      #   3. Set EXTRACTION_ENABLE_RESEARCH_AGENT=true and
+      #      EXTRACTION_RESEARCH_PROVIDER=tavily.
+      # See docs/research-extraction-plan.md for the rationale and the
+      # per-account isolation contract.
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: EXTRACTION_ENABLE_RESEARCH_AGENT
+        value: "false"
+      - key: EXTRACTION_RESEARCH_PROVIDER
+        value: "none"

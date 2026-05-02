@@ -59,6 +59,54 @@ logger = logging.getLogger(__name__)
 
 
 # =====================================================================
+# Anchor resolution helper
+# =====================================================================
+
+def _resolve_query_anchors(
+    query: UserRequest,
+    cfg_temporal: Optional[int],
+    cfg_syuzhet: Optional[int],
+    world_state: WorldStateV1,
+) -> tuple[Optional[int], Optional[int]]:
+    """Resolve effective ``(temporal_anchor, syuzhet_anchor)`` for *query*.
+
+    Precedence (highest first):
+      1. Explicit ``query.temporal_anchor`` / ``query.syuzhet_anchor``.
+      2. ``query.anchor_after_event_id`` resolved against
+         ``world_state.events`` — fills whichever anchor wasn't set
+         explicitly with the matching event's ``fabula_time`` /
+         ``syuzhet_index``.
+      3. The pipeline-level ``cfg_temporal`` / ``cfg_syuzhet`` defaults.
+
+    A non-existent ``anchor_after_event_id`` is logged as a warning and
+    treated as if it were absent (the query still runs against the
+    config defaults rather than failing outright).
+    """
+    temporal = query.temporal_anchor if query.temporal_anchor is not None else None
+    syuzhet = query.syuzhet_anchor if query.syuzhet_anchor is not None else None
+
+    after_id = query.anchor_after_event_id
+    if after_id and (temporal is None or syuzhet is None):
+        evt = next((e for e in world_state.events if e.id == after_id), None)
+        if evt is None:
+            logger.warning(
+                "[Pipeline] anchor_after_event_id=%r not found in world "
+                "state; falling back to PipelineConfig anchors.", after_id,
+            )
+        else:
+            if temporal is None:
+                temporal = evt.fabula_time
+            if syuzhet is None:
+                syuzhet = getattr(evt, "syuzhet_index", None)
+
+    if temporal is None:
+        temporal = cfg_temporal
+    if syuzhet is None:
+        syuzhet = cfg_syuzhet
+    return temporal, syuzhet
+
+
+# =====================================================================
 # Configuration
 # =====================================================================
 
@@ -575,11 +623,14 @@ def run_pipeline(
         "[Pipeline] Step 2: Narrative physics — query_type=%s, causal_engine=%s.",
         query.query_type, cfg.use_causal_engine,
     )
+    eff_temporal, eff_syuzhet = _resolve_query_anchors(
+        query, cfg.temporal_anchor, cfg.syuzhet_anchor, ws,
+    )
     physics_result = calculate_narrative_physics(
         request=query,
         global_world_state=ws,
-        temporal_anchor=cfg.temporal_anchor,
-        syuzhet_anchor=cfg.syuzhet_anchor,
+        temporal_anchor=eff_temporal,
+        syuzhet_anchor=eff_syuzhet,
         use_causal_engine=cfg.use_causal_engine,
     )
     result.physics_result = physics_result
@@ -907,11 +958,14 @@ async def run_pipeline_async(
         "[Pipeline·Async] Step 2: Narrative physics — query_type=%s, causal_engine=%s.",
         query.query_type, cfg.use_causal_engine,
     )
+    eff_temporal, eff_syuzhet = _resolve_query_anchors(
+        query, cfg.temporal_anchor, cfg.syuzhet_anchor, ws,
+    )
     physics_result = calculate_narrative_physics(
         request=query,
         global_world_state=ws,
-        temporal_anchor=cfg.temporal_anchor,
-        syuzhet_anchor=cfg.syuzhet_anchor,
+        temporal_anchor=eff_temporal,
+        syuzhet_anchor=eff_syuzhet,
         use_causal_engine=cfg.use_causal_engine,
     )
     result.physics_result = physics_result

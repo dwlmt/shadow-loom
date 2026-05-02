@@ -187,6 +187,32 @@ class ParsedQuery(BaseModel):
         description="All entity/event/object/location IDs resolved from natural language.",
     )
 
+    # --- Story-point anchors (any query type) ---
+    temporal_anchor: Optional[int] = Field(
+        default=None,
+        description=(
+            "Optional fabula_time horizon. Set when the user asks for the "
+            "query to apply at a specific point in story time."
+        ),
+    )
+    syuzhet_anchor: Optional[int] = Field(
+        default=None,
+        description=(
+            "Optional syuzhet_index horizon — reader-perspective "
+            "counterpart of ``temporal_anchor`` for suspense / surprise / "
+            "mystery / dramatic-irony directives."
+        ),
+    )
+    anchor_after_event_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional EVT_ id. The pipeline resolves this to the event's "
+            "fabula_time / syuzhet_index so 'apply directive after "
+            "EVT_BANQUO_DEATH' style requests work without the caller "
+            "looking the time up first."
+        ),
+    )
+
 
 # =====================================================================
 # Validation result
@@ -664,6 +690,7 @@ def _build_directive_dynamic_model(world_state: WorldStateV1):
     ``target_vector_subpath`` field)."""
     typed = _collect_typed_ids(world_state)
     ent_lit = _make_id_literal(typed["entity_ids"])
+    evt_lit_optional = _make_id_literal(typed["event_ids"])
     all_ids = (
         typed["entity_ids"] + typed["object_ids"] + typed["location_ids"]
         + typed["event_ids"] + typed["world_trait_ids"]
@@ -713,6 +740,42 @@ def _build_directive_dynamic_model(world_state: WorldStateV1):
         intensity=(
             Optional[float],
             Field(default=1.0, ge=0.0, le=1.0, description="0.0–1.0 multiplier."),
+        ),
+        temporal_anchor=(
+            Optional[int],
+            Field(
+                default=None,
+                description=(
+                    "Optional fabula_time at which to apply the directive. "
+                    "Use when the user names a specific story-time "
+                    "(\"after the murder\", \"in act 3\"). Leave null if "
+                    "unspecified — latest state will be used."
+                ),
+            ),
+        ),
+        syuzhet_anchor=(
+            Optional[int],
+            Field(
+                default=None,
+                description=(
+                    "Optional syuzhet_index for reader-effect directives "
+                    "(suspense / surprise / mystery / dramatic_irony). "
+                    "Set this when the user describes what the *reader* "
+                    "has been told, not what has happened in fabula time."
+                ),
+            ),
+        ),
+        anchor_after_event_id=(
+            Optional[evt_lit_optional],
+            Field(
+                default=None,
+                description=(
+                    "Optional EVT_ id to anchor immediately after. "
+                    "Convenient when the user phrases the request as "
+                    "\"after EVT_X\" / \"following the banquet\"; the "
+                    "pipeline resolves it to the event's fabula_time."
+                ),
+            ),
         ),
         resolved_ids=(
             List[ResolvedID],
@@ -816,6 +879,9 @@ def _normalise_dynamic_to_parsed(dynamic_output: Any, query_type: str) -> Parsed
             target_effect=data.get("target_effect"),
             target_vector_id=target_vector_id,
             intensity=data.get("intensity"),
+            temporal_anchor=data.get("temporal_anchor"),
+            syuzhet_anchor=data.get("syuzhet_anchor"),
+            anchor_after_event_id=data.get("anchor_after_event_id"),
         )
 
     if query_type == "interrogate":
@@ -976,6 +1042,16 @@ The user wants to control the FEELING or EFFECT of the next scene.
 - `target_effect`: Required — one of: suspense, surprise, mystery, dramatic_irony, grief, rage, joy, regret, love, fear.
 - `target_vector_id`: Optional — the specific trait/edge/event to target.
 - `intensity`: Optional — 0.0 to 1.0 multiplier (default 1.0).
+- `temporal_anchor`: Optional fabula_time integer. Set when the user names
+  a specific point in story time ("after the murder", "in act 3",
+  "once Banquo is dead").
+- `syuzhet_anchor`: Optional syuzhet_index integer. Use for *reader*-perspective
+  directives (suspense / surprise / mystery / dramatic_irony) when the
+  user describes what the reader has been told rather than what has
+  happened in fabula time.
+- `anchor_after_event_id`: Optional EVT_ id. Use when the user phrases the
+  story point as "after EVT_X" / "following the banquet"; the pipeline
+  resolves it to the event's fabula_time.
 """,
     "interrogate": """\
 ## INTERROGATION QUERY
@@ -1804,11 +1880,22 @@ def _build_query(
     qt = parsed.query_type
     nl = natural_language
 
+    # Story-point anchors from ``_QueryBase`` flow through every type
+    # so the pipeline can apply the query at a specific point in the
+    # story regardless of whether the user phrased it as a directive,
+    # observation, intervention, etc.
+    anchor_kwargs: Dict[str, Any] = {
+        "temporal_anchor": parsed.temporal_anchor,
+        "syuzhet_anchor": parsed.syuzhet_anchor,
+        "anchor_after_event_id": parsed.anchor_after_event_id,
+    }
+
     if qt == "observation":
         return ObservationQuery(
             observations=parsed.observations or {},
             focus_entity_ids=parsed.focus_entity_ids or [],
             original_query=nl,
+            **anchor_kwargs,
         )
 
     if qt == "intervention":
@@ -1818,6 +1905,7 @@ def _build_query(
             ),
             target_node_ids=parsed.target_node_ids or [],
             original_query=nl,
+            **anchor_kwargs,
         )
 
     if qt == "counterfactual":
@@ -1829,6 +1917,7 @@ def _build_query(
             evidence_node_ids=parsed.evidence_node_ids or [],
             target_node_ids=parsed.target_node_ids or [],
             original_query=nl,
+            **anchor_kwargs,
         )
 
     if qt == "directive":
@@ -1838,6 +1927,7 @@ def _build_query(
             target_vector_id=parsed.target_vector_id,
             intensity=parsed.intensity if parsed.intensity is not None else 1.0,
             original_query=nl,
+            **anchor_kwargs,
         )
 
     if qt == "interrogate":
@@ -1845,6 +1935,7 @@ def _build_query(
             question=parsed.question or nl or "",
             require_proof=parsed.require_proof if parsed.require_proof is not None else True,
             original_query=nl,
+            **anchor_kwargs,
         )
 
     if qt == "manual_edit":
@@ -1853,12 +1944,14 @@ def _build_query(
             description=parsed.edit_description or "",
             focus_entity_ids=parsed.focus_entity_ids or [],
             original_query=nl,
+            **anchor_kwargs,
         )
 
     if qt == "evaluate":
         return EvaluationQuery(
             focus_entity_ids=parsed.focus_entity_ids or [],
             original_query=nl,
+            **anchor_kwargs,
         )
 
     # general
@@ -1866,6 +1959,7 @@ def _build_query(
         question=parsed.question or nl or "",
         include_topology=parsed.include_topology if parsed.include_topology is not None else True,
         original_query=nl,
+        **anchor_kwargs,
     )
 
 

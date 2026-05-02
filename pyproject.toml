@@ -36,6 +36,13 @@ dev = [
     "mypy>=1.13",
 ]
 
+# Optional external research provider — install with: pip install -e ".[research]"
+# Off by default; required only when ExtractionConfig.enable_research_agent
+# is set and research_provider="tavily". See docs/research-extraction-plan.md.
+research = [
+    "tavily-python>=0.5",
+]
+
 # ─────────────────────────────────────────────────────────────────
 # Build configuration
 # ─────────────────────────────────────────────────────────────────

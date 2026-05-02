@@ -55,6 +55,11 @@ services:
       DEFAULT_MODEL: ${DEFAULT_MODEL:-ollama:qwen3.6:27b}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      # Optional research provider (off unless explicitly enabled).
+      # Forward TAVILY_API_KEY from the host if set; safe to leave blank.
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      EXTRACTION_ENABLE_RESEARCH_AGENT: ${EXTRACTION_ENABLE_RESEARCH_AGENT:-false}
+      EXTRACTION_RESEARCH_PROVIDER: ${EXTRACTION_RESEARCH_PROVIDER:-none}
     extra_hosts:
       # Linux Docker Engine doesn't auto-create host.docker.internal.
       - "host.docker.internal:host-gateway"

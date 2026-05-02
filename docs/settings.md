@@ -132,6 +132,12 @@ The thresholds map directly onto the auditor categories described in
 | `EXTRACTION_MAX_CORRECTION_RETRIES` | `5` | Max validation-feedback repair passes (after the initial extract). |
 | `EXTRACTION_MAX_CONCURRENT_CHUNKS` | `8` | Parallel async LLM extraction concurrency. Tune to your model's throughput. |
 | `EXTRACTION_ESTIMATED_EVENTS_PER_CHUNK` | `10` | Pre-allocates syuzhet/fabula-time ranges for parallel extraction. |
+| `EXTRACTION_ENABLE_RESEARCH_AGENT` | `false` | Opt-in: run Step 3d external research after world-state assembly. Off by default. |
+| `EXTRACTION_RESEARCH_PROVIDER` | `none` | `none` (no-op) or `tavily` (requires `TAVILY_API_KEY` and `pip install -e ".[research]"`). |
+| `EXTRACTION_RESEARCH_PROVIDER_MODEL` | *(empty)* | Provider-specific search depth (e.g. Tavily `basic` vs `advanced`). Hashed into the per-user cache key. |
+| `EXTRACTION_RESEARCH_MAX_RESULTS_PER_QUERY` | `5` | Cap on snippets returned per provider call. |
+| `EXTRACTION_RESEARCH_TOPICS` | *(empty)* | Pre-configured topics looked up at extraction time. Topics may also be added live via the `research_topic` MCP tool. |
+| `TAVILY_API_KEY` | *(empty)* | Required only when `EXTRACTION_RESEARCH_PROVIDER=tavily`. See [research-extraction-plan.md](research-extraction-plan.md). |
 
 The Socratic-scaffold extraction protocol is described in
 [pipeline-walkthrough.md §Steps 1–2](pipeline-walkthrough.md), with the

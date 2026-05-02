@@ -369,6 +369,38 @@ class ExtractionConfig(BaseModel):
         "Disable to fall back to the legacy two-agent (Physics + Social) split.",
     )
 
+    # ------------------------------------------------------------------
+    # Step 3d — optional external research (off by default)
+    # ------------------------------------------------------------------
+    enable_research_agent: bool = Field(
+        default=False,
+        description=(
+            "If true, after world-state assembly the pipeline calls the "
+            "configured ``research_provider`` once per topic in "
+            "``research_topics`` and a research-extraction agent distils "
+            "each result into a ``WorldFact``. Facts are appended to "
+            "``WorldStateV1.world_facts`` only — the agent is forbidden "
+            "from mutating Entities, Events, RelationshipEdges or world "
+            "traits. Off by default."
+        ),
+    )
+    research_provider: Literal["none", "tavily"] = Field(
+        default="none",
+        description="Which ResearchProvider to use. 'none' = NullProvider (no-op).",
+    )
+    research_provider_model: str = Field(
+        default="",
+        description="Provider-specific search depth/model identifier (hashed into cache key).",
+    )
+    research_max_results_per_query: int = Field(
+        default=5,
+        description="Cap on snippets returned per provider call.",
+    )
+    research_topics: List[str] = Field(
+        default_factory=list,
+        description="Topics to look up at extraction time. May be empty.",
+    )
+
     @model_validator(mode="before")
     @classmethod
     def _fill_from_settings(cls, data: Any) -> Any:
@@ -2895,6 +2927,196 @@ async def extract_topology_async(
 
 
 # =====================================================================
+# Step 3d — Optional Research Extraction (segregated)
+# =====================================================================
+
+def _build_research_agent(
+    config: ExtractionConfig,
+) -> Agent[None, "WorldFact"]:
+    """Construct the Step 3d Research-Extraction Agent.
+
+    The agent's output is a single ``WorldFact``. It is forbidden from
+    emitting Entities, Events, or any topology — Pydantic's NativeOutput
+    on ``WorldFact`` enforces that structurally; the prompt reinforces it.
+    """
+    from shadow_loom.research import WorldFact  # local to avoid top-level cycle risk
+
+    agent: Agent[None, WorldFact] = Agent(
+        _resolve_model(config.model),
+        output_type=NativeOutput(WorldFact),
+        system_prompt=_load_prompt("research_extraction.md"),
+        retries=config.output_retries,
+    )
+    return agent
+
+
+def _run_research_step(
+    world_state: WorldStateV1,
+    config: ExtractionConfig,
+) -> WorldStateV1:
+    """Step 3d (sync): for each configured topic, query provider + distil to WorldFact.
+
+    Pure additive: only ``world_state.world_facts`` is mutated; entities,
+    events and edges are untouched. Failures (provider error, agent
+    refusal, empty results) are logged and skipped — research is best-
+    effort and never fails extraction.
+    """
+    if not config.enable_research_agent:
+        return world_state
+    if not config.research_topics:
+        logger.info("[Pipeline·Research] enabled but research_topics is empty — skipping.")
+        return world_state
+
+    from shadow_loom.research import (
+        ResearchSnippet,
+        WorldFact,
+        build_provider,
+        cache_key,
+    )
+
+    try:
+        provider = build_provider(
+            config.research_provider,
+            provider_model=config.research_provider_model or None,
+            max_results=config.research_max_results_per_query,
+        )
+    except Exception:
+        logger.exception("[Pipeline·Research] failed to build provider — skipping.")
+        return world_state
+
+    agent = _build_research_agent(config)
+    next_idx = len(world_state.world_facts) + 1
+
+    for topic in config.research_topics:
+        try:
+            snippets: List[ResearchSnippet] = list(provider.search(topic))
+        except Exception:
+            logger.exception("[Pipeline·Research] provider.search failed for topic=%r", topic)
+            continue
+
+        if not snippets:
+            logger.info("[Pipeline·Research] no snippets for topic=%r — skipping.", topic)
+            continue
+
+        # Build the user message — minimal, structured.
+        snippet_block = "\n\n".join(
+            f"[{i+1}] {s.title}\nURL: {s.url}\n{s.snippet}"
+            for i, s in enumerate(snippets)
+        )
+        user_msg = (
+            f"Topic: {topic}\n\n"
+            f"Snippets ({len(snippets)}):\n\n{snippet_block}\n\n"
+            "Distil the above into a single WorldFact per the system prompt."
+        )
+
+        try:
+            result = agent.run_sync(user_msg)
+            fact: WorldFact = result.output
+        except Exception:
+            logger.exception("[Pipeline·Research] agent failed for topic=%r — skipping.", topic)
+            continue
+
+        # Stamp pipeline-controlled fields the agent doesn't get to choose.
+        fact_id = f"FACT_{next_idx:03d}"
+        next_idx += 1
+        stamped = fact.model_copy(update={
+            "id": fact_id,
+            "topic": topic,
+            "provider": config.research_provider,
+            "raw_snippets": snippets,
+        })
+        world_state.world_facts.append(stamped)
+        logger.info(
+            "[Pipeline·Research] +WorldFact %s topic=%r confidence=%s",
+            fact_id, topic, stamped.confidence,
+        )
+
+    return world_state
+
+
+async def _run_research_step_async(
+    world_state: WorldStateV1,
+    config: ExtractionConfig,
+) -> WorldStateV1:
+    """Async variant of ``_run_research_step``.
+
+    Topics are processed sequentially (research is naturally low-volume
+    and provider rate limits are typically the bottleneck, not local
+    concurrency).
+    """
+    if not config.enable_research_agent:
+        return world_state
+    if not config.research_topics:
+        logger.info("[Pipeline·Research·Async] enabled but no topics — skipping.")
+        return world_state
+
+    from shadow_loom.research import (
+        ResearchSnippet,
+        WorldFact,
+        build_provider,
+    )
+
+    try:
+        provider = build_provider(
+            config.research_provider,
+            provider_model=config.research_provider_model or None,
+            max_results=config.research_max_results_per_query,
+        )
+    except Exception:
+        logger.exception("[Pipeline·Research·Async] failed to build provider — skipping.")
+        return world_state
+
+    agent = _build_research_agent(config)
+    next_idx = len(world_state.world_facts) + 1
+
+    for topic in config.research_topics:
+        try:
+            # Provider.search is sync (Tavily client is sync); run in thread.
+            snippets: List[ResearchSnippet] = list(
+                await asyncio.to_thread(provider.search, topic)
+            )
+        except Exception:
+            logger.exception("[Pipeline·Research·Async] provider.search failed for topic=%r", topic)
+            continue
+
+        if not snippets:
+            continue
+
+        snippet_block = "\n\n".join(
+            f"[{i+1}] {s.title}\nURL: {s.url}\n{s.snippet}"
+            for i, s in enumerate(snippets)
+        )
+        user_msg = (
+            f"Topic: {topic}\n\n"
+            f"Snippets ({len(snippets)}):\n\n{snippet_block}\n\n"
+            "Distil the above into a single WorldFact per the system prompt."
+        )
+
+        try:
+            result = await agent.run(user_msg)
+            fact: WorldFact = result.output
+        except Exception:
+            logger.exception("[Pipeline·Research·Async] agent failed for topic=%r — skipping.", topic)
+            continue
+
+        fact_id = f"FACT_{next_idx:03d}"
+        next_idx += 1
+        stamped = fact.model_copy(update={
+            "id": fact_id,
+            "topic": topic,
+            "provider": config.research_provider,
+            "raw_snippets": snippets,
+        })
+        world_state.world_facts.append(stamped)
+        logger.info(
+            "[Pipeline·Research·Async] +WorldFact %s topic=%r confidence=%s",
+            fact_id, topic, stamped.confidence,
+        )
+
+    return world_state
+
+
+# =====================================================================
 # Fabula-Time Normalization
 # =====================================================================
 
@@ -4548,8 +4770,15 @@ def run_extraction(
             )
             break
 
-    return world_state, report
+    # ------------------------------------------------------------------
+    # Step 3d — optional, segregated external research (post-assembly)
+    # ------------------------------------------------------------------
+    try:
+        world_state = _run_research_step(world_state, config)
+    except Exception:
+        logger.exception("[Pipeline·Research] unexpected failure — continuing without research.")
 
+    return world_state, report
 
 async def run_extraction_async(
     text: str,
@@ -4629,5 +4858,13 @@ async def run_extraction_async(
                 retry_num + 1,
             )
             break
+
+    # ------------------------------------------------------------------
+    # Step 3d — optional, segregated external research (post-assembly)
+    # ------------------------------------------------------------------
+    try:
+        world_state = await _run_research_step_async(world_state, config)
+    except Exception:
+        logger.exception("[Pipeline·Research·Async] unexpected failure — continuing without research.")
 
     return world_state, report

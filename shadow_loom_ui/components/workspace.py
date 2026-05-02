@@ -43,6 +43,7 @@ _TABS = [
     ("causality", "account_tree", "Causality"),
     ("reasoning", "psychology", "Reasoning"),
     ("audit", "fact_check", "Audit"),
+    ("research", "menu_book", "Research"),
     ("editor", "edit_note", "Edit"),
     ("export", "ios_share", "Export"),
 ]
@@ -78,6 +79,11 @@ _TAB_HELP: dict[str, str] = {
         "Audit \u2014 the activity log for this project: every ingestion, "
         "query, manual edit, and version save with diffs and the LLM "
         "auditor's verdict."
+    ),
+    "research": (
+        "Research \u2014 manage per-project research topics and review the "
+        "background facts looked up from external providers. Facts are "
+        "segregated reference material, never written into canon."
     ),
     "editor": (
         "Edit \u2014 manually add, remove, or modify any node or edge in the "
@@ -316,6 +322,12 @@ def build_workspace(state: AppState, project_id: int) -> None:
                     with ui.tab_panel("audit").classes("q-pa-none h-full"):
                         from shadow_loom_ui.components.audit_tab import build_audit_tab
                         build_audit_tab(state)
+
+                    with ui.tab_panel("research").classes("q-pa-none h-full"):
+                        from shadow_loom_ui.components.research_tab import (
+                            build_research_tab,
+                        )
+                        build_research_tab(state)
 
                     with ui.tab_panel("editor").classes("q-pa-none h-full"):
                         from shadow_loom_ui.components.editor_tab import (

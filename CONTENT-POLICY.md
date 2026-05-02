@@ -189,17 +189,44 @@ window stated in the Hosted Service Terms.
 ### 6.4 Per-account isolation
 The Hosted Service is **single-tenant per account**. Every project,
 world model, version, ingested prose, generated scene, audit report,
-and graph edit is scoped to the account that created it. There is no
-shared library, no public feed, no cross-account discovery, and no
-user-to-user content exposure inside the product. You can only
-access content that you (or an agent acting on your behalf via the
-MCP server, see §6.7) have ingested or generated under your own
-account. The bundled example worlds shipped with the open-source
-distribution are the only content visible by default and contain no
-material restricted under §4. Operator staff may access account data
-only as strictly necessary for support, security, abuse
-investigation, or to comply with legal process — see the Privacy
-Notice for details.
+graph edit, and **external research lookup** is scoped to the account
+that created it. There is no shared library, no public feed, no
+cross-account discovery, and no user-to-user content exposure inside
+the product. You can only access content that you (or an agent acting
+on your behalf via the MCP server, see §6.7) have ingested or
+generated under your own account. Cached results from the optional
+research provider (see §6.9) are likewise keyed to your account and
+never reused for another user. The bundled example worlds shipped
+with the open-source distribution are the only content visible by
+default and contain no material restricted under §4. Operator staff
+may access account data only as strictly necessary for support,
+security, abuse investigation, or to comply with legal process — see
+the Privacy Notice for details.
+
+### 6.4a Optional external research provider
+Some Service operators may enable an optional **research provider**
+(e.g. Tavily) that performs web searches when you explicitly request
+one (via the `research_topic` MCP tool, or by running extraction with
+`EXTRACTION_ENABLE_RESEARCH_AGENT=true`). When this feature is active:
+
+- Provider calls are made **only on your explicit instruction**, never
+  silently or as part of normal extraction.
+- Snippets returned by the provider are **segregated background
+  context only**. They populate `WorldStateV1.world_facts`, which is a
+  separate field from entities, events, beliefs, and world traits.
+  The pipeline is structurally prohibited from promoting a research
+  snippet into the canonical world model.
+- Generation may consult these snippets for *texture* (period detail,
+  vocabulary) but the structured world state remains the sole source
+  of truth about characters, plot, and world rules.
+- Research results are cached per-account (§6.4) and may be
+  inspected, edited, or deleted by you at any time via the
+  `list_world_facts` / `delete_world_fact` MCP tools.
+- You are responsible for the queries you send to the provider and
+  for verifying any factual claim before relying on it. The provider
+  is a third-party service operating under its own terms; the
+  operator passes your query through and is not the source of the
+  results.
 
 ### 6.5 No responsibility for your inputs or outputs
 The operator of the Hosted Service:
