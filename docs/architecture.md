@@ -218,8 +218,8 @@ Four structural-effect scorers operate purely on the graph geometry:
 |---|---|
 | **Mystery** | $\dfrac{\#\text{hidden ancestors}}{\#\text{total ancestors}}$ for each known effect; walks back through `causal_topology` and filters by ancestor events with `syuzhet_index > syuzhet_anchor`. |
 | **Dramatic Irony** | $\dfrac{\#\text{irony gaps}}{\#\text{total connections}}$; an irony gap is a revealed causal edge where the source event is not in the focal entity's belief set at `temporal_anchor`. |
-| **Suspense** | $\dfrac{w_\text{threat} - w_\text{hope}}{w_\text{threat} + w_\text{hope}}$ clamped to $[0, 1]$; for each focal entity, every unrevealed event in which the entity is a non-acting target contributes its `evidence_strength`-derived probability $p$ to $w_\text{threat}$, and every unrevealed event in which the entity is an actor contributes $p$ to $w_\text{hope}$. The probability proxy is the strongest incoming causal-edge weight on the event (outgoing as fallback, 0.5 default). Returns 0 when hope is entirely extinguished (despair, not suspense). The aggregation is an expected-count imbalance — equivalent in spirit to $P(\text{threat}) - P(\text{hope})$ but stable in the high-event regime where the noisy-OR form would saturate both sides to 1. Inspired directly by Wilmot & Keller (2020); see [academic-foundations.md §3.1](academic-foundations.md#31-suspense-as-uncertainty-reduction--wilmot--keller-acl-2020). |
-| **Surprise** | Per-trait binary KL divergence $D_\text{KL}(p \| q) = p\log\tfrac{p}{q} + (1-p)\log\tfrac{1-p}{1-q}$. Prior $q$ starts at the per-trait corpus marginal (mean across all entities, falling back to 0.5 when fewer than two entities carry the trait), and is then pulled toward the actual value by a geometric update $q \mathrel{+}= w \cdot (\text{actual} - q)$ for each revealed causal edge whose target is the entity. The geometric form keeps the prior monotonically converging on the truth as evidence accumulates rather than overshooting. Posterior $p$ is the actual trait value (sandbox-preferred, world-state fallback). The result is the average per-trait KL across the focal entities, normalised by $\log(1/\varepsilon)$ to land in $[0, 1]$. See [academic-foundations.md §3.3](academic-foundations.md#33-surprise-as-kl-divergence). |
+| **Suspense** | $\text{balance} \times \text{stakes}$ clamped to $[0, 1]$, where $\text{balance} = 1 - \dfrac{|w_\text{threat} - w_\text{hope}|}{w_\text{threat} + w_\text{hope}}$ peaks at genuine outcome uncertainty and decays under one-sided dominance, and $\text{stakes} = \dfrac{w_\text{threat} + w_\text{hope}}{w_\text{threat} + w_\text{hope} + K}$ saturates so balanced fragments don't pin the gauge ($K = 2$ by default). For each focal entity, every unrevealed event in which the entity is a non-acting target contributes its `evidence_strength`-derived probability $p$ to $w_\text{threat}$, and every unrevealed event in which the entity is an actor contributes $p$ to $w_\text{hope}$. The probability proxy is the strongest incoming causal-edge weight on the event (outgoing as fallback, 0.5 default). Returns 0 at the **despair** boundary ($w_\text{hope} = 0$) and the **safety** boundary ($w_\text{threat} = 0$). The earlier asymmetric $\max(0, (w_\text{threat} - w_\text{hope})/(w_\text{threat}+w_\text{hope}))$ form collapsed to 0 on every fixture in which the protagonist authors most of their own forward events; balance × stakes follows Brewer & Lichtenstein's structural-affect framing of suspense as a response to outcome ambiguity. Inspired by Wilmot & Keller (2020); see [academic-foundations.md §3.1](academic-foundations.md#31-suspense-as-uncertainty-reduction--wilmot--keller-acl-2020). |
+| **Surprise** | Per-trait binary KL divergence $D_\text{KL}(p \| q) = p\log\tfrac{p}{q} + (1-p)\log\tfrac{1-p}{1-q}$. Posterior $p$ is the entity's *final-state* trait value resolved via `reconstruct_entity_at(ent, t_max)` so authored `state_timeline` arcs are honoured (sandbox-preferred when running counterfactuals). Prior $q$ starts at the **leave-one-out** per-trait corpus marginal (mean across every *other* entity, falling back to 0.5 when fewer than two other entities carry the trait) — leave-one-out prevents the focal entity from biasing its own prior, which would otherwise collapse KL on the small casts typical of the example fixtures. The prior is then pulled toward the actual value by a geometric update $q \mathrel{+}= w \cdot (\text{actual} - q)$ for each revealed causal edge whose target is the entity, monotonically converging on the truth as evidence accumulates rather than overshooting. The result is the average per-trait KL across the focal entities, normalised by $\log(1/\varepsilon)$ to land in $[0, 1]$. See [academic-foundations.md §3.3](academic-foundations.md#33-surprise-as-kl-divergence). |
 
 Six emotional effects (`grief`, `rage`, `joy`, `regret`, `love`, `fear`) use
 trait-trajectory headroom analysis: each effect declares which traits should
@@ -247,13 +247,16 @@ what the character knows, and what is true:
 * **Suspense — *the reader fears for someone whose outcome is still
   uncertain.*** Forward-looking. Threats are unrevealed events that
   *happen to* the entity; hopes are unrevealed events the entity itself
-  *authors*. When hope collapses to zero the score becomes 0 — the
-  Wilmot & Keller **suspense → despair** boundary: without uncertainty
-  there is only inevitability, not dread.
+  *authors*. The score is **balance × stakes**: balance peaks under
+  genuine outcome uncertainty (threat ≈ hope) and collapses under
+  one-sided dominance, while stakes saturates so a tiny balanced
+  fragment doesn't pin the gauge. The score is 0 at both the
+  **despair** boundary (hope = 0, only inevitability remains) and
+  the **safety** boundary (threat = 0, nothing left to fear).
 * **Surprise — *the truth is not what the reader expected.*** Backward-
   looking prediction error. KL divergence between a prior built from
-  the corpus marginal + revealed causes and the posterior given by the
-  actual trait state.
+  the leave-one-out corpus marginal + revealed causes and the posterior
+  given by the entity's reconstructed final-state trait values.
 
 #### Monotonicity along the two time axes
 

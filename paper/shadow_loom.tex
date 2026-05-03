@@ -192,10 +192,13 @@ pipeline:
 \item A \textbf{narrative physics layer} --- a graphical world
       model of reader affect over the same graph --- that scores it
       against closed-form information-state functionals for mystery,
-      dramatic irony, suspense, and surprise. Suspense follows the
-      hope/threat formulation of \citet{wilmot2020suspense};
-      surprise is binary KL divergence between a corpus-marginal
-      prior and an evidence-updated posterior.
+      dramatic irony, suspense, and surprise. Suspense extends the
+      hope/threat formulation of \citet{wilmot2020suspense} as a
+      \emph{balance$\,\times\,$stakes} product over the unrevealed
+      ledger; surprise is binary KL divergence between a
+      leave-one-out corpus-marginal prior, evidence-updated by
+      revealed causal edges, and the entity's reconstructed final
+      state.
 \item A \textbf{constrained-LLM renderer + recursive auditor} loop
       \citep{gu2024judge} that converts the simulation result into
       a typed creative brief, generates prose under that brief, and
@@ -385,10 +388,13 @@ brewer1982stories} and its computational realisations
 wilmot2021emnlp,wilmot2022phd}.} The four structural scorers
 (\textsc{Mys}, \textsc{Iro}, \textsc{Susp}, \textsc{Sur}) extend the
 triad with dramatic irony \citep{booth1974irony,gerrig1993narrative}.
-Suspense follows the hope/threat formulation of
-\citet{wilmot2020suspense}; surprise follows
-\citet{ittibaldi2009surprise} with a geometric prior update; emotional
-arc analytics owe to \citet{reagan2016arcs}.
+Suspense uses the hope/threat ledger of
+\citet{wilmot2020suspense} but combines the two sides as a
+\emph{balance$\,\times\,$stakes} product, peaking under genuine
+outcome uncertainty rather than under one-sided dominance; surprise
+follows \citet{ittibaldi2009surprise} with a geometric prior update
+over a leave-one-out corpus marginal; emotional arc analytics owe
+to \citet{reagan2016arcs}.
 
 \paragraph{Information-theoretic and epistemic substrate
 \citep{shannon1948mathematical,fagin1995reasoning,
@@ -812,36 +818,74 @@ gap''; the score is the fraction of revealed causal connections
 that are gaps.
 
 \paragraph{Suspense \citep{wilmot2020suspense}.} For each
-unrevealed event $e$ with strongest incoming causal weight $p_e$:
+unrevealed event $e$ with strongest incoming causal weight
+$p_e \in (0, 1]$, classify focal entities per-event: an entity
+acted upon without itself acting contributes to threat, an
+entity acting contributes to hope. Aggregating these per-entity
+contributions:
 \begin{equation}
-w_{\mathrm{threat}} = \!\!\sum_{e:\, F \subseteq \mathrm{target}(e)} \!\!p_e,
+w_{\mathrm{threat}} \!=\!\!\!\sum_{\substack{e \notin \mathrm{rev} \\ x \in F \cap \mathrm{target}(e) \setminus \mathrm{actor}(e)}}\!\!\! p_e,
 \quad
-w_{\mathrm{hope}} = \!\!\sum_{e:\, F \cap \mathrm{actor}(e) \neq \emptyset} \!\!p_e,
+w_{\mathrm{hope}} \!=\!\!\!\sum_{\substack{e \notin \mathrm{rev} \\ x \in F \cap \mathrm{actor}(e)}}\!\!\! p_e.
 \end{equation}
+Let $T = w_{\mathrm{threat}} + w_{\mathrm{hope}}$. Define
 \begin{equation}
-\mathrm{Susp} = \mathrm{clip}_{[0,1]}\!\left(
-\frac{w_{\mathrm{threat}} - w_{\mathrm{hope}}}
-     {w_{\mathrm{threat}} + w_{\mathrm{hope}}}
-\right),
+\mathrm{balance} = 1 - \frac{|w_{\mathrm{threat}} - w_{\mathrm{hope}}|}{T},
+\quad
+\mathrm{stakes} = \frac{T}{T + K},
+\end{equation}
+so $\mathrm{balance} \in [0,1]$ peaks at genuine outcome uncertainty
+($w_{\mathrm{threat}} = w_{\mathrm{hope}}$) and decays to $0$ under
+one-sided dominance, while $\mathrm{stakes} \in [0,1)$ saturates so
+balanced fragments do not pin the gauge. Then
+\begin{equation}
+\mathrm{Susp} = \mathrm{clip}_{[0,1]}\!\big(\mathrm{balance} \cdot \mathrm{stakes}\big),
 \end{equation}
 returning $0$ when $w_{\mathrm{hope}} = 0$ (the
-suspense--despair boundary).
+suspense--despair boundary) or when $w_{\mathrm{threat}} = 0$
+(safety). The default $K = 2$ is calibrated so two strong
+unrevealed events on each side already register as fully
+high-stakes; this replaces an earlier asymmetric
+$\max(0, (w_{\mathrm{threat}} - w_{\mathrm{hope}})/T)$ form that
+collapsed to $0$ on every fixture in which the protagonist
+authors most of their own forward events.
 
-\paragraph{Surprise.} Per trait $T$, the prior $q$ starts at the
-corpus marginal across entities (defaulting to $0.5$), then for
-each revealed cause $(a \to e)$ with weight $w$ it is updated by
+\paragraph{Surprise.} Let $\mathrm{actual}_T(x)$ denote entity
+$x$'s trait $T$ value at the world's terminal fabula time,
+resolved via $\textsc{Reconstruct}(x, t_{\max})$ so authored
+\texttt{state\_timeline} arcs (e.g.\ Macbeth's ambition rising
+$0.7 \to 0.85$) are honoured rather than read off the baseline.
+For each focal entity $x \in F$, the prior $q$ starts at the
+\emph{leave-one-out} corpus marginal
+\begin{equation}
+\label{eq:loo-marginal}
+q_0(T, x) = \frac{1}{|\mathcal{N}_{\mathrm{ENT}} \setminus \{x\}|}
+\!\!\sum_{y \in \mathcal{N}_{\mathrm{ENT}} \setminus \{x\}}\!\! \mathrm{actual}_T(y),
+\end{equation}
+defaulting to $0.5$ when fewer than two other entities carry $T$.
+Leave-one-out prevents the focal entity from biasing its own
+prior --- with the small casts typical of the example fixtures the
+inclusive marginal would otherwise pull $q$ toward $p$ and
+systematically depress KL.
+
+For each revealed cause $(a \to x)$ with weight $w$ the prior is
+updated by
 \begin{equation}
 \label{eq:surprise}
-q \mathrel{+}= w\,(\mathrm{actual}_T - q),
+q \mathrel{+}= w\,(\mathrm{actual}_T(x) - q),
 \end{equation}
-a geometric pull that monotonically converges on the truth.
-Letting $p$ be the actual trait value,
+a geometric pull that monotonically converges on the truth
+(an additive $w(p - q_0)$ form would summit past $p$ once
+$\sum w > 1$, producing non-monotonic surprise). Letting
+$p = \mathrm{actual}_T(x)$,
 \begin{equation}
 D_{\mathrm{KL}}(p \,\|\, q) =
 p \log \tfrac{p}{q} + (1-p)\log \tfrac{1-p}{1-q},
 \end{equation}
 and the entity-level surprise is the mean over traits, normalised
-by $\log(1/\varepsilon)$ to $[0,1]$ for a small $\varepsilon$.
+by $\log(1/\varepsilon)$ to $[0,1]$ for a small $\varepsilon$
+(default $\varepsilon = 0.01$). With no syuzhet anchor the reader
+is assumed omniscient and $\mathrm{Sur} = 0$.
 
 \paragraph{Six emotion scorers} (\texttt{grief, rage, joy, regret,
 love, fear}) declare which traits should move in which direction

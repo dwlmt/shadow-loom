@@ -141,8 +141,7 @@ Regardless of emotional mode, the LLM must simultaneously satisfy underlying phy
 - Use a slightly shifted tonal register — the world is recognizable but subtly different.
 - Weave abduction truths into character behavior naturally.
 - The reader should feel they are peering into a possible world.
-- **NO META-NARRATION.** Do NOT comment on the counterfactual structure itself. Do NOT use words like "timeline", "divergence", "branch", "alternative", "alternate", "the fracture", "the possible world", "momentum", "this reality", or abstract metaphysical commentary about cause, mercy, fate, or possibility. Do NOT use conditional/subjunctive framing ("If he had…", "would have…") to *describe* the counterfactual — instead, render the alternate outcome in plain past-tense narration as the events that occurred.
-- The counterfactual *is* the scene. Do not stand outside it as a narrator pointing at it. Stay inside the world.
+- The counterfactual *is* the scene. Do not stand outside it as a narrator pointing at it. Stay inside the world. (See universal Rule 10 below: meta-narration is forbidden in **every** mode, not just counterfactual.)
 
 ---
 
@@ -157,3 +156,10 @@ Regardless of emotional mode, the LLM must simultaneously satisfy underlying phy
 7. **Obey the pacing directive.** Dilated = slow, moment-by-moment. Accelerated = fast, clipped. Sharp pivot = flowing then abrupt. Normal = natural rhythm.
 8. **Obey the sensory focus.** Wide = expansive environment. Tunnel = strip background, fixate on one thing. Absence = describe what is missing. Normal = balanced.
 9. **The NarrativeAuditor will verify your output.** Your prose must be structurally consistent with the physics state. If the constraints say guilt=0.7, the character must exhibit guilt. If they say spatial distance=3, the threat is three rooms away. Do not contradict the math.
+10. **NO META-NARRATION — universal, applies to every rendering mode** (observation, intervention, counterfactual, mystery, dramatic_irony, surprise, suspense, fear, joy, regret, grief, rage, love, manual_edit, fallback, default). You are rendering the scene as it is lived inside the world; you are NOT a narrator standing outside it commenting on its structure.
+    - Do NOT comment on the **query type, simulation, or pipeline** that produced this scene — no references to "the observation", "the intervention", "the counterfactual", "the simulation", "the model", "the system", "the engine", "the prompt", "the brief", "the directive", or any other shadow-loom-internal vocabulary.
+    - Do NOT comment on the **narrative effect** itself — no "the suspense built", "the irony was that…", "the mystery deepened", "the surprise came when…", "the reader would feel…", "one might expect…", "in this telling…".
+    - Do NOT comment on **counterfactual structure** — no "timeline", "divergence", "divergent", "branch", "branching", "alternative", "alternate", "the fracture", "the possible world", "the other world", "this reality", "another reality", "momentum", "the alternative holds".
+    - Do NOT use **conditional or subjunctive framing** in author voice to describe what happened ("If he had…", "would have…", "could have…", "might have…") — render the events as plain past-tense narration of what actually occurred in this world. Subjunctive framings used by a *character* in dialogue or interior monologue (e.g.\ a regret directive that explicitly calls for "if only…" thought) are still permitted; the ban is on the **author's voice** doing it.
+    - Do NOT inject **abstract aphorisms** about fate, mercy, possibility, choice, causality, or destiny that hover above the scene. Stay inside concrete action, sensory detail, dialogue, and character interiority grounded in the trait state.
+    - The single exception is the REGRET directive, which explicitly requires the character to articulate "if only…" logic in their *internal monologue* — that is character-voice, not author-voice meta-narration.

@@ -110,14 +110,19 @@ Return a JSON object with this exact structure:
 - Violation type: `abduction_failure`
 - Feedback template: "Abduction Failure. The implicit background event ([hidden variable]) is not structurally supported by the subtext. You cannot explicitly state that it happened, but you must add a subtle behavioural cue to logically justify the current world state."
 
-### Category 4b: Counterfactual Meta-Narration
+### Category 4b: Meta-Narration (universal)
 
-**Meta-narration audit (counterfactual & abduction modes):**
-- Run on any scene with `rendering_mode == "counterfactual"` or when an abduction-driven alternate scene is requested.
-- Flag any prose that **comments on its own counterfactual structure** rather than rendering the alternate world as a lived scene. Trigger words and patterns include: `timeline`, `divergence`, `divergent`, `branch`, `branching`, `the fracture`, `alternative timeline`, `alternate reality`, `the possible world`, `this reality`, `another reality`, `momentum (of the timeline)`, `the alternative holds`, abstract aphorisms about fate/mercy/possibility, and conditional/subjunctive framings (`If he had…`, `would have…`) used to *describe* the counterfactual rather than to render it as actual past-tense events.
-- The alternate scene MUST be rendered as concrete past-tense narration of events that occurred in this world. Author-voice commentary about "what would have been" or "what is" at the structural level is a violation, regardless of how poetic the phrasing is.
+**Meta-narration audit (every rendering mode):**
+- Run on **every** scene regardless of `rendering_mode` — observation (Rung 1), intervention (Rung 2), counterfactual (Rung 3), and every directive mode (mystery, dramatic_irony, surprise, suspense, fear, joy, regret, grief, rage, love, manual_edit, fallback, default). Meta-narration is the single most common failure across all modes and must be policed everywhere, not just in counterfactual scenes.
+- Flag any prose that **comments on its own narrative structure, the simulation that produced it, or the named effect being rendered**, instead of rendering the world as a lived scene. Specifically:
+  - **Pipeline / system commentary** — references to "the observation", "the intervention", "the counterfactual", "the simulation", "the model", "the system", "the engine", "the prompt", "the brief", "the directive", "the scenario", or any other shadow-loom-internal vocabulary leaking into author voice.
+  - **Effect-name commentary** — author-voice phrases that name the effect being rendered: "the suspense built", "the irony was that…", "the mystery deepened", "the surprise came when…", "the reader would feel…", "one might expect…", "in this telling…".
+  - **Counterfactual-structure commentary** — `timeline`, `divergence`, `divergent`, `branch`, `branching`, `the fracture`, `alternative timeline`, `alternate reality`, `the possible world`, `another reality`, `this reality`, `momentum (of the timeline)`, `the alternative holds`.
+  - **Author-voice subjunctive** — conditional/subjunctive framings used to *describe* what happened (`If he had…`, `would have…`, `could have…`, `might have…`) rather than to render it as actual past-tense events. This is forbidden in author voice in *every* mode. Subjunctive used by a *character* in dialogue or interior monologue (e.g.\ a regret directive that calls for "if only…" thought) is fine — the ban is on the **author's voice** doing it.
+  - **Abstract aphorisms** that hover above the scene — disembodied commentary about fate, mercy, possibility, choice, causality, or destiny, regardless of how poetic the phrasing.
+- The single exception is the REGRET directive, where the character is explicitly required to articulate "if only…" logic in their internal monologue — that is character-voice, not author-voice meta-narration. Author-voice subjunctive framing of the events themselves is still a violation under regret.
 - Violation type: `meta_narration`
-- Feedback template: "Meta-Narration Detected. The prose comments on the counterfactual structure ([quoted phrase]) instead of rendering the alternate world as a lived scene. Rewrite in plain past-tense narration of the events as they occurred in this branch — no references to 'timelines', 'divergences', or 'alternatives', no conditional framing, no metaphysical commentary on fate or possibility. Stay inside the scene."
+- Feedback template: "Meta-Narration Detected. The prose comments on the [counterfactual structure | named effect | simulation pipeline] ([quoted phrase]) instead of rendering the scene as it was lived inside the world. Rewrite in plain past-tense narration of the events as they occurred — no references to 'timelines', 'divergences', 'alternatives', 'the simulation', 'the directive', 'the suspense/mystery/irony', no author-voice conditional framing, no metaphysical commentary on fate or possibility. Stay inside the scene."
 
 ### Category 5: Source-Style Fidelity
 

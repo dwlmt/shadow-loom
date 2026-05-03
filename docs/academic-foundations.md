@@ -236,21 +236,41 @@ local subgraph rather than the full causal diagram.
 Wilmot & Keller's framing of suspense as a *forward-looking* uncertainty
 measure rather than a *backward-looking* surprise measure. Our
 implementation aggregates the unrevealed forward causal momentum on
-each side of the entity's outcome ledger:
+each side of the entity's outcome ledger and combines the two sides
+as a **balance × stakes** product:
 
-$$\text{suspense}(t) = \max\!\left(0,\ \frac{w_\text{threat} - w_\text{hope}}{w_\text{threat} + w_\text{hope}}\right)$$
+$$\text{balance} = 1 - \frac{|w_\text{threat} - w_\text{hope}|}{w_\text{threat} + w_\text{hope}},
+\quad
+\text{stakes} = \frac{w_\text{threat} + w_\text{hope}}{w_\text{threat} + w_\text{hope} + K},$$
+
+$$\text{suspense}(t) = \text{clip}_{[0,1]}\!\big(\text{balance} \cdot \text{stakes}\big)$$
 
 where $w_\text{threat}$ sums the `evidence_strength`-derived
 probabilities of unrevealed events in which the focal entity is a
-non-acting target, and $w_\text{hope}$ sums the same probabilities for
-unrevealed events the entity itself authors. This is the expected-count
-analogue of $P(\text{threat}) - P(\text{hope})$ — it keeps the same
-"more threat than hope ⇒ more suspense" semantics but does not
-saturate to zero on real plots, where many small unrevealed events on
-both sides drive a strict noisy-OR difference toward 0. We return 0
-when hope is extinguished — the **suspense → despair** boundary that
-Wilmot's neural model also exhibits in its annotated short-story
-corpus.
+non-acting target, $w_\text{hope}$ sums the same probabilities for
+unrevealed events the entity itself authors, and $K$ (default $2$)
+calibrates how quickly stakes saturate — "two strong unrevealed
+events on each side" already counts as fully high-stakes. The
+balance term peaks under genuine outcome uncertainty
+($w_\text{threat} = w_\text{hope}$) and decays to zero under
+one-sided dominance, matching the intuition that *fully expected*
+outcomes (whether triumph or doom) carry no suspense; the stakes
+term prevents balanced-but-trivial fragments from pinning the
+gauge at $1.0$. Returns $0$ at the **suspense → despair** boundary
+($w_\text{hope} = 0$) and at the symmetric **safety** boundary
+($w_\text{threat} = 0$) — both degenerate to non-suspense.
+
+*Implementation note.* An earlier asymmetric form
+$\max(0, (w_\text{threat} - w_\text{hope})/(w_\text{threat} + w_\text{hope}))$
+collapsed to zero on every fixture in `example_worlds/` because the
+protagonist is the actor of most of their own forward events
+(Macbeth kills Duncan / Banquo / Macduff's family, all bumping
+$w_\text{hope}$ over $w_\text{threat}$), pinning suspense at $0$
+across the entire syuzhet axis even for canonical thrillers and
+tragedies. The current balance × stakes product follows the
+Brewer & Lichtenstein structural-affect framing of suspense as a
+response to genuine outcome ambiguity rather than to one-sided
+causal dominance.
 
 * **Wilmot, D. & Keller, F. (2020).** "Modelling Suspense in Short Stories as Uncertainty Reduction over Neural Representation". *Proc. ACL 2020*, pp. 1763–1788. [aclanthology.org/2020.acl-main.161](https://aclanthology.org/2020.acl-main.161/) — the central reference.
 * Wilmot, D. & Keller, F. (2021a). "A Temporal Variational Model for Story Generation". arXiv:2109.06807 (preprint only).
@@ -273,18 +293,33 @@ surprise* triad with dramatic irony as a fourth axis.
 
 `compute_surprise_score()` uses per-trait binary KL divergence
 $D_\text{KL}(p \| q) = p\log\frac{p}{q} + (1-p)\log\frac{1-p}{1-q}$.
-The prior $q$ starts at the per-trait corpus marginal (the mean value
-of that trait across all entities in the world), falling back to the
-maximum-entropy default $q = 0.5$ when fewer than two entities carry
-the trait. For each revealed causal edge whose target is the focal
-entity we then apply a geometric pull toward the truth,
+
+**Posterior $p$** is the focal entity's *final-state* trait value,
+resolved via `reconstruct_entity_at(ent, t_max)` so authored
+`state_timeline` arcs (Macbeth's ambition $0.7 \to 0.85$, Lady
+Macbeth's guilt $0.0 \to 0.9$, etc.) are honoured rather than read
+from the baseline `Entity.traits` field — reading the baseline was
+a silent bug that compared every protagonist against itself and
+collapsed surprise to zero before the prior update even ran.
+
+**Prior $q$** starts at the **leave-one-out** per-trait corpus
+marginal — the mean value of that trait across every *other*
+entity in the world. With small casts (the example fixtures
+average 6–10 entities) the focal entity carries 10–17% of the
+inclusive marginal, systematically pulling $q$ toward $p$ and
+squashing surprise; the leave-one-out form removes that bias. We
+fall back to the maximum-entropy default $q = 0.5$ when fewer than
+two *other* entities carry the trait. For each revealed causal
+edge whose target is the focal entity we then apply a geometric
+pull toward the truth,
 $q \mathrel{+}= w \cdot (\text{actual} - q)$, weighted by
-`evidence_strength`. The geometric form keeps the prior monotonically
-converging on the truth as evidence accumulates rather than overshooting
-(an additive update of the form $q \mathrel{+}= w \cdot (\text{actual}
-- q_0)$ summed past the actual value once $\sum w > 1$, producing a
-non-monotonic surprise curve that contradicted the "more revealed →
-less surprise" semantics).
+`evidence_strength`. The geometric form keeps the prior
+monotonically converging on the truth as evidence accumulates
+rather than overshooting (an additive update of the form
+$q \mathrel{+}= w \cdot (\text{actual} - q_0)$ summed past the
+actual value once $\sum w > 1$, producing a non-monotonic surprise
+curve that contradicted the "more revealed → less surprise"
+semantics).
 
 The surprise score is sampled along two independent time axes by the
 UI's affective time-series builders. **Along the syuzhet axis** (the

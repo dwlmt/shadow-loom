@@ -643,7 +643,7 @@ Friar's-letter-intercepted candidate (see §5) to push above 0.85.
 ### 4.4 Surprise — Reservoir Dogs reveal
 
 `compute_surprise_score` models each trait as a Bernoulli variable and
-computes binary KL divergence against a corpus-marginal prior updated by
+computes binary KL divergence against a leave-one-out corpus-marginal prior updated by
 revealed causal evidence:
 
 $$D_\text{KL}(p \| q) = p\log\frac{p}{q} + (1-p)\log\frac{1-p}{1-q}$$

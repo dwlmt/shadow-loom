@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional, Literal, Tuple
 import networkx as nx
 from pydantic import BaseModel, Field
 
-from shadow_loom.models import WorldStateV1, NarrativeStyle
+from shadow_loom.models import WorldStateV1, NarrativeStyle, reconstruct_entity_at
 from shadow_loom.query_models import DirectiveQuery
 from shadow_loom.settings import get_settings as _get_settings
 
@@ -936,6 +936,14 @@ class DirectiveAssembler:
     # ------------------------------------------------------------------
     # Suspense  (Probabilistic Valence — threat vs hope)
     # ------------------------------------------------------------------
+    # Suspense saturates as the *combined* unrevealed weight on either
+    # side passes ~K. K=2 means "two strong unrevealed events on each
+    # side" already counts as fully high-stakes; smaller K makes the
+    # gauge twitchier. Tuned against the example_worlds corpus so a
+    # mid-anchor on Macbeth / Gone Girl / Reservoir Dogs reads in the
+    # 0.3–0.7 band rather than the previous flat-zero output.
+    _SUSPENSE_STAKES_K: float = 2.0
+
     def compute_suspense_score(
         self,
         entity_ids: List[str],
@@ -949,9 +957,28 @@ class DirectiveAssembler:
         probability proxy — incoming causal edge weights when available,
         outgoing edge weights as fallback.
 
-        Returns the normalised threat/hope imbalance ``(threat - hope) /
-        (threat + hope)`` clamped to ``[0, 1]``. Returns 0 when hope is
-        entirely extinguished (despair, not suspense).
+        Returns ``balance × stakes`` clamped to ``[0, 1]``:
+
+        * ``balance = 1 - |threat - hope| / (threat + hope)`` peaks at
+          1.0 when the two sides are equally weighted (genuine
+          uncertainty about the outcome) and decays to 0 when one side
+          dominates the other.
+        * ``stakes = total / (total + K)`` with ``K`` =
+          :attr:`_SUSPENSE_STAKES_K`. Saturates so small unrevealed
+          fragments don't pin the gauge at 1.0 just because they
+          happen to be balanced.
+
+        The previous ``max(0, (threat - hope) / total)`` form
+        collapsed to zero on every real plot in ``example_worlds/``
+        because the protagonist is the actor of most of their own
+        forward events (Macbeth kills Duncan / Banquo / Macduff's
+        family, all bumping ``hope_w`` over ``threat_w``) — leaving
+        suspense pinned at 0.0 across the entire syuzhet axis even
+        for canonical thrillers and tragedies.
+
+        Returns 0 when hope is entirely extinguished (despair) or when
+        no threat is present (safety) — both still degenerate to
+        non-suspense as required by the test contract.
         """
         causal_g = self._build_causal_digraph()
         revealed = self._revealed_event_ids(syuzhet_anchor)
@@ -959,20 +986,9 @@ class DirectiveAssembler:
         unrevealed = all_evt_ids - revealed
         eid_set = set(entity_ids)
 
-        # Aggregate as expected counts of threats / hopes weighted by
-        # their per-event probability proxy. The previous noisy-OR
-        # aggregation saturated to 1.0 on both sides as soon as a
-        # handful of unrevealed events landed in either bucket — which
-        # is the normal regime for a real plot — and so collapsed
-        # suspense to zero everywhere. Working in expected-count space
-        # preserves the *imbalance* between the two sides regardless
-        # of how many events feed into each.
         threat_weight = 0.0
         hope_weight = 0.0
 
-        # Index events by id once — the per-event linear scan that used
-        # to live inside this loop made suspense O(events²) and meant
-        # the engine quietly burned seconds on large worlds.
         events_by_id = {e.id: e for e in self.world_state.events}
 
         for evt_id in unrevealed:
@@ -998,20 +1014,10 @@ class DirectiveAssembler:
 
             prob = max(0.0, min(1.0, prob))
 
-            # Classify per-entity rather than per-event. The previous
-            # per-event check ("if any focused entity is an actor →
-            # hope; else if any is a target → threat") collapsed every
-            # internal-conflict event to "hope" whenever the focus set
-            # contained both attacker and victim — the common case for
-            # the UI's top-N-by-event-degree heuristic, which pulled
-            # protagonist *and* antagonist into the focus set and so
-            # left suspense pinned at zero on every existing plot.
-            #
-            # The fix: for each focused entity in this event, count it
-            # as a *threat* contribution if it is acted upon without
-            # itself acting, and as a *hope* contribution if it is an
-            # actor. A single event between two focused entities now
-            # legitimately raises both sides of the ledger.
+            # Per-entity classification: an entity acted upon (without
+            # itself acting) contributes to threat; an entity acting
+            # contributes to hope. A single event between two focused
+            # entities legitimately raises both sides of the ledger.
             for eid in eid_set:
                 is_actor = eid in actor_set
                 is_target = eid in target_set
@@ -1025,14 +1031,20 @@ class DirectiveAssembler:
                 "[DirectiveAssembly·Suspense] No hope outcome — suspense=0 (despair)",
             )
             return 0.0
+        if threat_weight <= 0.0:
+            logger.debug(
+                "[DirectiveAssembly·Suspense] No threat outcome — suspense=0 (safety)",
+            )
+            return 0.0
 
         total = threat_weight + hope_weight
-        if total <= 0.0:
-            return 0.0
-        score = max(0.0, (threat_weight - hope_weight) / total)
+        balance = 1.0 - abs(threat_weight - hope_weight) / total
+        stakes = total / (total + self._SUSPENSE_STAKES_K)
+        score = max(0.0, min(1.0, balance * stakes))
         logger.debug(
-            "[DirectiveAssembly·Suspense] threat_w=%.3f hope_w=%.3f suspense=%.3f",
-            threat_weight, hope_weight, score,
+            "[DirectiveAssembly·Suspense] threat_w=%.3f hope_w=%.3f "
+            "balance=%.3f stakes=%.3f suspense=%.3f",
+            threat_weight, hope_weight, balance, stakes, score,
         )
         return round(score, 4)
 
@@ -1073,38 +1085,75 @@ class DirectiveAssembler:
         _STRENGTH_W = {"weak": 0.25, "moderate": 0.5, "strong": 0.75}
         revealed = self._revealed_event_ids(syuzhet_anchor)
 
-        # Pre-compute per-trait corpus marginals (average value of each
-        # trait across every entity in the world state). This is the
-        # "no causal evidence" baseline — what an uninformed reader
-        # would guess given only knowledge of the world's overall trait
-        # distribution.
+        # Determine the final fabula_time so we can resolve every
+        # entity's *final* trait values (the syuzhet-axis posterior).
+        # Reading raw ``Entity.traits`` was a silent bug: those are the
+        # *baseline* (pre-story) values, so a character whose arc was
+        # written entirely in ``state_timeline`` snapshots — which is
+        # exactly how every example_world fixture encodes its
+        # protagonist arcs (Macbeth's ambition 0.7→0.85, Lady
+        # Macbeth's guilt 0.0→0.9, etc.) — would be compared against
+        # itself, collapsing surprise to zero before the prior update
+        # even ran.
+        if self.world_state.events:
+            t_max = max(e.fabula_time for e in self.world_state.events)
+        else:
+            t_max = 0
+
+        def _final_traits(ent) -> Dict[str, float]:
+            try:
+                snap = reconstruct_entity_at(ent, t_max)
+                return {
+                    k: float(v["value"])
+                    for k, v in snap.get("traits", {}).items()
+                }
+            except Exception:
+                return {k: float(v.value) for k, v in ent.traits.items()}
+
+        # Pre-compute per-trait corpus marginals using each entity's
+        # *final* trait value (matches the posterior we'll be
+        # comparing against). The marginal is computed leave-one-out
+        # for every focal entity later, so we keep the per-entity
+        # contributions rather than collapsing them up front.
+        per_entity_finals: Dict[str, Dict[str, float]] = {}
+        for ent_id, ent in self.world_state.entities.items():
+            per_entity_finals[ent_id] = _final_traits(ent)
+
         marginal_sum: Dict[str, float] = {}
         marginal_count: Dict[str, int] = {}
-        for ent in self.world_state.entities.values():
-            for tname, tdata in ent.traits.items():
-                v = getattr(tdata, "value", None)
-                if v is None:
-                    continue
-                marginal_sum[tname] = marginal_sum.get(tname, 0.0) + float(v)
+        for ent_id, traits in per_entity_finals.items():
+            for tname, tval in traits.items():
+                marginal_sum[tname] = marginal_sum.get(tname, 0.0) + tval
                 marginal_count[tname] = marginal_count.get(tname, 0) + 1
 
-        def _trait_marginal(name: str) -> float:
-            # Need at least 2 entities for a marginal to be meaningful as a
-            # "what an uninformed reader would guess" baseline — with one
-            # entity the marginal is identically the entity's own value,
-            # collapsing the prior onto the posterior and zeroing KL even
-            # when the cause is genuinely hidden. Fall back to maximum
-            # entropy (0.5) so single-entity scenarios still register
-            # surprise from extreme trait values.
-            if marginal_count.get(name, 0) < 2:
+        def _trait_marginal(name: str, exclude_eid: str) -> float:
+            # Leave-one-out: remove the focal entity's contribution so
+            # the prior we're computing KL against isn't biased by the
+            # very value we're trying to predict. With small casts
+            # (every example_world averages 6–10 entities) the focal
+            # entity carries 10–17% weight in the corpus marginal, so
+            # the inclusive form was systematically pulling the prior
+            # toward the posterior and squashing surprise toward 0.
+            total = marginal_sum.get(name, 0.0)
+            count = marginal_count.get(name, 0)
+            excl = per_entity_finals.get(exclude_eid, {}).get(name)
+            if excl is not None:
+                total -= excl
+                count -= 1
+            # Need at least 2 *remaining* entities for the leave-one-out
+            # marginal to be meaningful — with one or zero we fall back
+            # to maximum entropy (0.5) so single-entity scenarios still
+            # register surprise from extreme trait values.
+            if count < 2:
                 return 0.5
-            return marginal_sum[name] / marginal_count[name]
+            return total / count
 
         total_kl = 0.0
         trait_count = 0
 
         for eid in entity_ids:
-            # Posterior: prefer sandbox, fall back to world_state
+            # Posterior: prefer sandbox, fall back to the final-state
+            # reconstruction computed above.
             if self.sandbox is not None and self.sandbox.has_node(eid):
                 actual_traits = self.sandbox.nodes[eid].get("traits", {})
             else:
@@ -1112,7 +1161,8 @@ class DirectiveAssembler:
                 if not actual_ent:
                     continue
                 actual_traits = {
-                    k: {"value": v.value} for k, v in actual_ent.traits.items()
+                    k: {"value": v}
+                    for k, v in per_entity_finals.get(eid, {}).items()
                 }
 
             for trait_name, actual_data in actual_traits.items():
@@ -1121,20 +1171,13 @@ class DirectiveAssembler:
 
                 actual_val = actual_data["value"]
 
-                # Prior: start from the corpus marginal for this trait,
-                # then pull toward the actual value once for each
-                # revealed causal edge. Each edge applies a geometric
-                # update ``prior += w · (actual - prior)`` so the prior
-                # asymptotes toward the truth as evidence accumulates
-                # but cannot overshoot. The previous additive form
-                # ``prior += w · (actual - base)`` summed past the
-                # actual value once total evidence weight exceeded 1,
-                # producing non-monotonic surprise (KL would dip and
-                # then *grow* again as more revealing edges came into
-                # view) — visible on every example world as a noisy
-                # mid-narrative spike that clearly contradicted the
-                # "reader knows more → less surprise" semantics.
-                base_prior = _trait_marginal(trait_name)
+                # Prior: start from the leave-one-out corpus marginal
+                # for this trait, then pull toward the actual value
+                # once for each revealed causal edge. Each edge applies
+                # a geometric update ``prior += w · (actual - prior)``
+                # so the prior asymptotes toward the truth as evidence
+                # accumulates but cannot overshoot.
+                base_prior = _trait_marginal(trait_name, eid)
                 prior_val = base_prior
                 for ce in self.world_state.causal_topology:
                     if ce.target_id != eid:

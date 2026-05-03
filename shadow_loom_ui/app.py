@@ -143,13 +143,10 @@ def _build_app_header(state: AppState, *, show_back: bool = False):
                 "click", lambda: ui.navigate.to("/")
             ):
                 feather("book-open", size="sm", color=_brand_copper())
-                ui.label("Shadow Loom").classes(
-                    "text-base font-bold tracking-tight text-slate-800 leading-none"
-                )
 
             if state.project_name:
-                ui.label(f"— {state.project_name}").classes(
-                    "text-xs font-medium text-slate-500 leading-none"
+                ui.label(state.project_name).classes(
+                    "text-sm font-medium text-slate-700 leading-none"
                 )
 
         with ui.row().classes("items-center gap-1"):
