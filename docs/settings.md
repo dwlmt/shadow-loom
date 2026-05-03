@@ -176,7 +176,7 @@ refactor; defaults preserve previous behaviour for everything except
 | `PHYSICS_CAUSAL_FORCE_SIGMA_WEAK` | `0.30` | Std-dev (fraction of nominal force) for `evidence_strength="weak"` edges in Monte-Carlo CTF. |
 | `PHYSICS_CAUSAL_FORCE_SIGMA_MODERATE` | `0.15` | Same for `evidence_strength="moderate"`. |
 | `PHYSICS_CAUSAL_FORCE_SIGMA_STRONG` | `0.05` | Same for `evidence_strength="strong"`. |
-| `PHYSICS_MONTE_CARLO_SAMPLES` | `0` | If > 0, `CausalPhysicsEngine.execute_distribution` returns a distribution over post-propagation trait values (mean / p5 / p50 / p95) instead of a point estimate. |
+| `PHYSICS_MONTE_CARLO_SAMPLES` | `128` | When > 0, the plain `CausalPhysicsEngine.execute()` auto-routes through `execute_distribution`, which returns a per-trait distribution (mean / p5 / p50 / p95) instead of a point estimate. Default of 128 gives a posterior-mean Monte-Carlo standard error of `sigma/sqrt(N) <= 0.044` for [0,1] traits while keeping per-call cost bounded; raise to 500–1000 for tight tail estimation, set to `0` to disable Monte-Carlo entirely. Cost scales linearly: every `execute()` call runs N propagations (affects `directive_assembly.evaluate_candidate_events` and `narrative_physics`). |
 | `PHYSICS_MONTE_CARLO_SEED` | unset | Optional RNG seed for reproducible Monte-Carlo runs. |
 | `PHYSICS_ABDUCTION_BLEND_MODE` | `bayesian` | `legacy`: `blended = old + delta * (1 - inertia)`. `bayesian`: `posterior = (inertia*old + ev_precision*evidence) / (inertia + ev_precision)`. |
 | `PHYSICS_ABDUCTION_EVIDENCE_PRECISION` | `1.0` | Precision (1/variance) of present-day evidence in the Bayesian abduction blend. |

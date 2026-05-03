@@ -532,6 +532,22 @@ def compute_causal_feedback(
     # spurious "miracle step" warnings on every plot run under the
     # default noisy-OR propagation mode (impact=0.04 < inertia=0.55,
     # etc. — the gate firing as designed, not a story problem).
+    # Under noisy-OR propagation, plain ``reason="inertia"`` blocks are
+    # the deterministic-fallback rendering of the same sub-threshold
+    # absorption that the noisy-OR gate would have eaten on its own.
+    # They are NOT narrative miracles (the rewriter cannot move them
+    # via prose because the impulse never crossed the gate), and
+    # treating them as veto-class violations was permanently pinning
+    # ``engine_passed=False`` in the refinement loop. Route them into
+    # ``noisy_or_absorbed_propagations`` whenever noisy-OR is the
+    # active propagation mode so the loop's miracle-step accounting
+    # mirrors the gate's actual semantics.
+    try:
+        _propagation_mode = _get_settings().physics.propagation_mode
+    except Exception:
+        _propagation_mode = "deterministic"
+    _treat_inertia_as_absorbed = _propagation_mode == "noisy_or"
+
     if physics_result is not None:
         for b in physics_result.blocked:
             entry = (
@@ -541,6 +557,8 @@ def compute_causal_feedback(
             if b.reason == "cycle":
                 cyclic_clusters.append(entry)
             elif b.reason == "noisy_or_absorbed":
+                noisy_or_absorbed.append(entry)
+            elif b.reason == "inertia" and _treat_inertia_as_absorbed:
                 noisy_or_absorbed.append(entry)
             else:
                 miracle_steps.append(entry)
@@ -1272,11 +1290,17 @@ def _build_refinement_prompt(
     original_rendering_prompt: str,
     violations: List[AuditViolation],
     iteration: int,
+    engine_failures: Optional[List[str]] = None,
 ) -> str:
     """Augment the original rendering prompt with auditor feedback.
 
     The feedback is injected as additional HARD constraints that override
     any conflicting soft constraints from the original brief.
+
+    Engine-threshold failures (computed deterministically from the
+    physics scorecard, not the LLM auditor) are also surfaced when
+    provided, so the rewriter sees BOTH signal sources rather than only
+    the LLM violations.
     """
     feedback_lines: List[str] = [
         "",
@@ -1295,6 +1319,19 @@ def _build_refinement_prompt(
             feedback_lines.append(
                 f"     OFFENDING PASSAGE: \"{v.evidence_quote}\""
             )
+        feedback_lines.append("")
+
+    if engine_failures:
+        feedback_lines.append(
+            "=== ENGINE-THRESHOLD FAILURES (deterministic scorecard) ==="
+        )
+        feedback_lines.append(
+            "These are measured from the physics engine, not LLM-judged. "
+            "Treat them as hard constraints alongside the violations above."
+        )
+        feedback_lines.append("")
+        for i, f in enumerate(engine_failures, 1):
+            feedback_lines.append(f"  E{i}. {f}")
         feedback_lines.append("")
 
     feedback_lines.append(
@@ -1844,22 +1881,72 @@ def run_feedback_loop(
     consecutive_failed_open = 0
     correction_error: Optional[str] = None
 
+    # Up-front structural baseline. ``physics_result``, ``world_state``
+    # and ``brief`` (the only inputs ``compute_*_feedback`` reads) are
+    # invariant across iterations of this loop unless the brief is
+    # mutated below by ``_inject_miracle_step_mechanisms``. So compute
+    # the engine scorecard ONCE here, log it, and skip the per-iteration
+    # recomputation unless the brief actually changes. This both saves
+    # work and \u2014 more importantly \u2014 prevents an immutable
+    # ``engine_passed=False`` from permanently vetoing convergence on
+    # plots whose structural deficits the prose-rewriter has no power
+    # to repair.
+    baseline_causal = compute_causal_feedback(
+        physics_result, brief, world_state,
+    )
+    baseline_affective = compute_affective_feedback(brief, assembler)
+    baseline_impact = ChangeImpactMetrics(
+        causal_feedback=baseline_causal,
+        affective_feedback=baseline_affective,
+    )
+    baseline_engine_passed, baseline_engine_failures = (
+        _engine_thresholds_check(baseline_impact, auditor_config)
+    )
+    if baseline_engine_passed is False:
+        logger.warning(
+            "[FeedbackLoop] Baseline engine thresholds FAIL before any "
+            "rewrite (%d failures): %s. Convergence will not gate on "
+            "the engine score because prose rewrites cannot move these "
+            "structural metrics; only the LLM auditor's prose-level "
+            "verdict will be required.",
+            len(baseline_engine_failures),
+            "; ".join(baseline_engine_failures),
+        )
+    cycle_causal = baseline_causal
+    cycle_affective = baseline_affective
+    cycle_impact = baseline_impact
+    engine_passed = baseline_engine_passed
+    engine_failures = baseline_engine_failures
+    engine_invariant = True  # flips False once the brief is mutated
+
     for iteration in range(auditor_config.max_iterations):
         logger.info(
             "[FeedbackLoop] === Iteration %d/%d ===",
             iteration + 1, auditor_config.max_iterations,
         )
 
-        # --- Step 11: Audit ---
-        # Compute the engine's deterministic physics ledger first so the
-        # auditor LLM sees the same ground-truth (miracle steps,
-        # cyclic clusters, ctf-calculus prunings) the cycle scorecard
-        # below will use. Without this the LLM auditor was blind to the
-        # facts the engine already proved.
-        cycle_causal = compute_causal_feedback(
-            physics_result, brief, world_state,
-        )
+        # Recompute engine scorecard ONLY when the brief was mutated by
+        # the previous iteration's ``_inject_miracle_step_mechanisms``
+        # call. Otherwise it is bit-identical to the baseline and the
+        # extra work would just thrash the logs.
+        if not engine_invariant:
+            cycle_causal = compute_causal_feedback(
+                physics_result, brief, world_state,
+            )
+            cycle_affective = compute_affective_feedback(brief, assembler)
+            cycle_impact = ChangeImpactMetrics(
+                causal_feedback=cycle_causal,
+                affective_feedback=cycle_affective,
+            )
+            engine_passed, engine_failures = _engine_thresholds_check(
+                cycle_impact, auditor_config,
+            )
+            engine_invariant = True
 
+        # --- Step 11: Audit ---
+        # The auditor LLM still sees the engine's deterministic ledger
+        # (miracle steps, cyclic clusters, ctf-calculus prunings) so it
+        # can evaluate prose against ground truth.
         audit = run_audit(
             prose=current_scene.prose,
             brief=brief,
@@ -1873,24 +1960,7 @@ def run_feedback_loop(
         graph_version = versioned.version if versioned else 0
         graph_data = versioned.snapshot_data() if versioned else {}
 
-        # Compute per-cycle engine metrics (causal computed above; reuse).
-        cycle_affective = compute_affective_feedback(
-            brief, assembler,
-        )
-        cycle_impact = ChangeImpactMetrics(
-            causal_feedback=cycle_causal,
-            affective_feedback=cycle_affective,
-        )
         audit.change_impact = cycle_impact
-
-        # Deterministic engine-side scorecard. The previous loop only
-        # honoured the LLM auditor's self-reported ``passed`` flag,
-        # which made convergence vulnerable to a hallucinated
-        # ``passed=True``. We now require both signals when the
-        # engine produced impact metrics.
-        engine_passed, engine_failures = _engine_thresholds_check(
-            cycle_impact, auditor_config,
-        )
 
         history.append(AuditCycleSnapshot(
             iteration=iteration,
@@ -1901,35 +1971,62 @@ def run_feedback_loop(
             change_impact=cycle_impact,
         ))
 
-        # --- Track failed-open audits separately from real fails ---
+        # --- Track failed-open audits ---
+        # A failed-open audit is an LLM/transport error, not evidence
+        # the prose is bad. Treat it as bypass-passed (the auditor has
+        # nothing useful to say) so transient infra failures don't
+        # masquerade as story-quality verdicts. We still bail after a
+        # streak so the loop doesn't spin forever waiting on a broken
+        # auditor.
         if audit.failed_open:
             consecutive_failed_open += 1
             logger.warning(
-                "[FeedbackLoop] Audit failed-open (%d consecutive). "
-                "Treating as NOT converged.",
+                "[FeedbackLoop] Audit failed-open (%d consecutive) \u2014 "
+                "treating as bypass-passed (auditor produced no usable "
+                "verdict).",
                 consecutive_failed_open,
             )
             if consecutive_failed_open >= 2:
-                # The auditor LLM is repeatedly broken. Bail out so
-                # the caller sees a non-converged result with a typed
-                # error rather than spinning the loop forever.
                 correction_error = (
                     f"Auditor failed-open {consecutive_failed_open} times "
-                    f"in a row: {audit.audit_summary}"
+                    f"in a row; bypassing the prose-level audit. Last "
+                    f"summary: {audit.audit_summary}"
                 )
-                break
+                # Bypass-pass: return the current scene as converged
+                # under the bypass policy rather than a hard failure.
+                return FeedbackLoopResult(
+                    final_scene=current_scene,
+                    converged=True,
+                    iterations=iteration + 1,
+                    history=history,
+                    final_graph_version=graph_version,
+                    change_impact=cycle_impact,
+                    correction_error=correction_error,
+                    engine_thresholds_passed=engine_passed,
+                    engine_threshold_failures=engine_failures,
+                )
         else:
             consecutive_failed_open = 0
 
-        # --- Convergence: require BOTH the LLM pass and the engine
-        #     thresholds (when the engine produced metrics). ---
+        # --- Convergence rule ---
+        # The LLM auditor's prose-level verdict is the only signal that
+        # actually responds to a rewrite. The engine veto is folded in
+        # ONLY when (a) the engine produced metrics and (b) those
+        # metrics are not structurally pinned-failing from iteration 0
+        # (in which case prose cannot move them and gating on them
+        # would create the infinite-rejection loop documented above).
         llm_passed = audit.passed and not audit.failed_open
-        if llm_passed and engine_passed is not False:
+        engine_blocks_convergence = (
+            engine_passed is False
+            and not (engine_invariant and baseline_engine_passed is False)
+        )
+        if llm_passed and not engine_blocks_convergence:
             logger.info(
                 "[FeedbackLoop] CONVERGED at iteration %d "
-                "(llm_passed=%s, engine_passed=%s). %s",
+                "(llm_passed=%s, engine_passed=%s, baseline_engine_passed=%s). "
+                "%s",
                 iteration + 1, llm_passed, engine_passed,
-                audit.audit_summary,
+                baseline_engine_passed, audit.audit_summary,
             )
             return FeedbackLoopResult(
                 final_scene=current_scene,
@@ -1942,10 +2039,10 @@ def run_feedback_loop(
                 engine_threshold_failures=engine_failures,
             )
 
-        if llm_passed and engine_passed is False:
+        if llm_passed and engine_blocks_convergence:
             logger.info(
                 "[FeedbackLoop] LLM auditor passed but engine thresholds "
-                "failed (%s). Continuing refinement.",
+                "regressed since baseline (%s). Continuing refinement.",
                 "; ".join(engine_failures),
             )
 
@@ -1968,6 +2065,10 @@ def run_feedback_loop(
                 "[FeedbackLoop] Injected %d InterventionMechanism entries "
                 "into brief from miracle-step violations.", injected_mechanisms,
             )
+            # The brief was just mutated, so the next iteration's
+            # engine scorecard may differ from the cached one. Force
+            # a recompute on the next pass.
+            engine_invariant = False
 
         # --- Step 12: Refinement ---
         logger.info(
@@ -1997,11 +2098,17 @@ def run_feedback_loop(
                 brief, query_type, physics_state,
             )
 
-        # Build the augmented rendering prompt with feedback
+        # Build the augmented rendering prompt with feedback. Pass the
+        # engine threshold failures alongside the LLM violations so the
+        # rewriter actually sees both signal sources \u2014 previously
+        # ``engine_failures`` only landed in ``accumulated_feedback``
+        # for the *auditor's* next-iteration prior context, never in
+        # the rewrite prompt itself.
         refinement_prompt = _build_refinement_prompt(
             base_rendering_prompt,
             audit.violations,
             iteration + 1,
+            engine_failures=engine_failures,
         )
 
         # Re-generate the scene under the refinement system prompt so

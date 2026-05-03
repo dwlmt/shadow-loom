@@ -924,23 +924,36 @@ class TestComputeCausalFeedback:
         assert fb.foreshadowing_payoff_score == 1.0  # no tensions = perfect
 
     def test_blocked_propagations_become_miracle_steps(self):
-        physics = CausalPhysicsResult(
-            sandbox_data={},
-            blocked=[
-                BlockedPropagation(
-                    node_id="ENT_MACBETH", trait="guilt",
-                    impact=0.3, inertia=0.5, reason="inertia",
-                ),
-                BlockedPropagation(
-                    node_id="ENT_MACBETH", trait="ambition",
-                    impact=0.2, inertia=0.8, reason="spatial_affordance",
-                ),
-            ],
-        )
-        brief = _make_brief()
-        fb = compute_causal_feedback(physics, brief)
-        assert len(fb.miracle_steps_detected) == 2
-        assert "ENT_MACBETH.guilt" in fb.miracle_steps_detected[0]
+        # Force deterministic propagation mode: under the default
+        # ``noisy_or`` mode, ``reason="inertia"`` blocks are routed
+        # into ``noisy_or_absorbed_propagations`` (they are the
+        # deterministic-fallback rendering of the same sub-threshold
+        # absorption the noisy-OR gate would have eaten on its own).
+        # This test pins the *deterministic-mode* semantics.
+        from shadow_loom.settings import get_settings
+        physics_settings = get_settings().physics
+        saved_mode = physics_settings.propagation_mode
+        physics_settings.propagation_mode = "deterministic"
+        try:
+            physics = CausalPhysicsResult(
+                sandbox_data={},
+                blocked=[
+                    BlockedPropagation(
+                        node_id="ENT_MACBETH", trait="guilt",
+                        impact=0.3, inertia=0.5, reason="inertia",
+                    ),
+                    BlockedPropagation(
+                        node_id="ENT_MACBETH", trait="ambition",
+                        impact=0.2, inertia=0.8, reason="spatial_affordance",
+                    ),
+                ],
+            )
+            brief = _make_brief()
+            fb = compute_causal_feedback(physics, brief)
+            assert len(fb.miracle_steps_detected) == 2
+            assert "ENT_MACBETH.guilt" in fb.miracle_steps_detected[0]
+        finally:
+            physics_settings.propagation_mode = saved_mode
 
     def test_epistemic_gaps_affect_cognitive_plausibility(self):
         brief = _make_brief(

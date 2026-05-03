@@ -356,15 +356,31 @@ class CausalPhysicsSettings(BaseSettings):
     # Monte-Carlo distributional CTF
     # ------------------------------------------------------------------
     monte_carlo_samples: int = Field(
-        default=0,
+        default=128,
         description=(
             "If >0, ``CausalPhysicsEngine.execute_distribution`` will draw "
             "this many samples by perturbing causal_force ~ Normal(force, "
             "sigma(evidence_strength)) and trait values ~ Beta(alpha, beta) "
             "with concentration kappa = 1/(1 - inertia + eps). The aggregate "
             "result is a distribution over post-propagation trait values "
-            "(mean / p5 / p50 / p95) instead of a single point. ``execute()`` "
-            "is unaffected; this is a separate orchestration entry point."
+            "(mean / p5 / p50 / p95) instead of a single point. With "
+            "``monte_carlo_samples > 0`` the plain ``execute()`` entry "
+            "point auto-routes through ``execute_distribution`` so every "
+            "downstream caller (narrative_physics, directive_assembly, "
+            "MCP server) inherits the Bayesian Monte-Carlo treatment "
+            "without code changes. "
+            "Sample-size rationale (default=128): trait values live in "
+            "[0,1] so the worst-case standard deviation is sigma <= 0.5; "
+            "the Monte-Carlo standard error of the posterior mean is "
+            "SE = sigma / sqrt(N), giving SE <= 0.044 at N=128. The 5th "
+            "and 95th empirical percentiles have asymptotic SE "
+            "~ sqrt(p(1-p) / N) / f(x_p) ~ 0.02 / f(x_p) for p=0.05, "
+            "which is informative for narrative-level uncertainty without "
+            "the 500-2000-sample budget needed for tight tail estimation. "
+            "Set to 0 to disable Monte-Carlo entirely (deterministic "
+            "point-estimate execute()); raise to 500-1000 for "
+            "publication-quality posterior summaries (cost scales "
+            "linearly: every execute() call runs N full propagations)."
         ),
     )
     monte_carlo_seed: Optional[int] = Field(
