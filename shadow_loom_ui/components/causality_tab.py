@@ -1465,6 +1465,9 @@ def _build_affective_dashboard(state: AppState) -> None:
         # expand-to-dialog render_fn so the popout chart mirrors
         # whatever the inline chart currently shows.
         _ts_snapshot: dict = {"opts": None, "title": ""}
+        # Same idea for the event-timeline scatter so its expand
+        # button mirrors the live cursor + scatter data.
+        _et_snapshot: dict = {"opts": None, "title": "Event Timeline"}
 
         def _render_ts_expanded(height: str) -> None:
             opts = _ts_snapshot["opts"]
@@ -1475,17 +1478,35 @@ def _build_affective_dashboard(state: AppState) -> None:
                 return
             ui.echart(opts).classes("w-full").style(f"height: {height};")
 
+        def _render_et_expanded(height: str) -> None:
+            opts = _et_snapshot["opts"]
+            if opts is None:
+                ui.label("No events.").classes(
+                    "text-sm text-slate-400 italic"
+                )
+                return
+            ui.echart(opts).classes("w-full").style(f"height: {height};")
+
         with timeline_container:
             with ui.row().classes("w-full items-center justify-between"):
                 timeseries_label = ui.label("").classes(
                     "text-lg font-semibold text-slate-800 mb-2"
                 )
-                ui.button(
-                    icon="open_in_full",
-                    on_click=lambda: _open_ts_dialog(),
-                ).props("flat dense round size=sm color=grey-7").tooltip(
-                    "Expand to full screen"
-                )
+                with ui.row().classes("items-center gap-2"):
+                    normalize_toggle = ui.switch(
+                        "Normalize", value=False,
+                        on_change=lambda _: _refresh(),
+                    ).props("dense").tooltip(
+                        "Min-max scale each metric to [0,1] so trajectory "
+                        "shapes are comparable across metrics with very "
+                        "different magnitudes."
+                    )
+                    ui.button(
+                        icon="open_in_full",
+                        on_click=lambda: _open_ts_dialog(),
+                    ).props("flat dense round size=sm color=grey-7").tooltip(
+                        "Expand to full screen"
+                    )
             timeseries_chart = ui.echart({}).classes("w-full").style(
                 "height: 280px;"
             )
@@ -1494,9 +1515,16 @@ def _build_affective_dashboard(state: AppState) -> None:
             )
             timeseries_empty.set_visibility(False)
 
-            event_timeline_label = ui.label("Event Timeline").classes(
-                "text-sm font-semibold text-slate-700 mt-4 mb-1"
-            )
+            with ui.row().classes("w-full items-center justify-between mt-4"):
+                event_timeline_label = ui.label("Event Timeline").classes(
+                    "text-sm font-semibold text-slate-700 mb-1"
+                )
+                ui.button(
+                    icon="open_in_full",
+                    on_click=lambda: _open_et_dialog(),
+                ).props("flat dense round size=sm color=grey-7").tooltip(
+                    "Expand to full screen"
+                )
             event_timeline_chart = ui.echart({}).classes("w-full").style(
                 "height: 260px;"
             )
@@ -1510,6 +1538,13 @@ def _build_affective_dashboard(state: AppState) -> None:
             _open_expand_dialog(
                 _render_ts_expanded,
                 _ts_snapshot["title"] or "Affective Metrics",
+            )
+
+        def _open_et_dialog() -> None:
+            from shadow_loom_ui.viz import _open_expand_dialog
+            _open_expand_dialog(
+                _render_et_expanded,
+                _et_snapshot["title"] or "Event Timeline",
             )
 
         # ── Data tables (events + affect only) ─────────────────────
@@ -1693,6 +1728,7 @@ def _build_affective_dashboard(state: AppState) -> None:
                     syuzhet_cursor=sc_for_chart,
                     axis=axis,
                     entity_ids=eids,
+                    normalize=bool(normalize_toggle.value),
                 )
                 timeseries_label.text = (
                     f"Affective Metrics over {axis_label}"
@@ -1713,6 +1749,8 @@ def _build_affective_dashboard(state: AppState) -> None:
                 et_opts = event_timeline_options(
                     ws, fabula_cursor=fc, syuzhet_cursor=sc,
                 )
+                _et_snapshot["opts"] = et_opts
+                _et_snapshot["title"] = f"Event Timeline ({axis_label})"
                 if et_opts is None:
                     event_timeline_chart.set_visibility(False)
                     event_timeline_empty.set_visibility(True)

@@ -905,6 +905,7 @@ def render_affective_timeseries(
     syuzhet_cursor: int | None = None,
     entity_ids: list[str] | None = None,
     axis: str = "fabula",
+    normalize: bool = False,
 ) -> ui.echart:
     """Multi-line chart of affective scores over fabula or syuzhet time.
 
@@ -923,6 +924,7 @@ def render_affective_timeseries(
         syuzhet_cursor=syuzhet_cursor,
         entity_ids=entity_ids,
         axis=axis,
+        normalize=normalize,
     )
     if opts is None:
         return ui.label("No affective signal yet.").classes(
@@ -939,6 +941,7 @@ def affective_timeseries_options(
     syuzhet_cursor: int | None = None,
     entity_ids: list[str] | None = None,
     axis: str = "fabula",
+    normalize: bool = False,
 ) -> dict | None:
     """Pure options builder for :func:`render_affective_timeseries`.
 
@@ -946,6 +949,11 @@ def affective_timeseries_options(
     options dict from the ECharts element creation lets callers reuse
     a stable :class:`ui.echart` and patch ``chart.options`` in place
     instead of tearing down the DOM on every cursor scrub.
+
+    With ``normalize=True`` each series is independently min-max
+    scaled to ``[0, 1]`` so trajectory shapes can be compared even
+    when raw magnitudes differ by an order of magnitude (a flat
+    metric stays at 0.5). The tooltip continues to show raw values.
     """
     from shadow_loom_ui.viz_helpers import (
         affective_timeseries,
@@ -976,6 +984,20 @@ def affective_timeseries_options(
 
     plot_series = []
     for name, values in series.items():
+        if normalize and values:
+            lo = min(values)
+            hi = max(values)
+            span = hi - lo
+            if span > 1e-9:
+                norm_values = [(v - lo) / span for v in values]
+            else:
+                norm_values = [0.5 for _ in values]
+            data = [
+                [t, round(nv, 4), round(rv, 4)]
+                for t, nv, rv in zip(times, norm_values, values)
+            ]
+        else:
+            data = [[t, round(v, 4), round(v, 4)] for t, v in zip(times, values)]
         plot_series.append({
             "name": name.replace("_", " "),
             "type": "line",
@@ -985,7 +1007,8 @@ def affective_timeseries_options(
             "areaStyle": {"opacity": 0.10},
             "color": _AFFECT_COLORS.get(name, "#3A7BD5"),
             "itemStyle": {"color": _AFFECT_COLORS.get(name, "#3A7BD5")},
-            "data": [[t, v] for t, v in zip(times, values)],
+            "encode": {"x": 0, "y": 1, "tooltip": [0, 1, 2]},
+            "data": data,
         })
 
     mark_lines = []
@@ -1010,6 +1033,31 @@ def affective_timeseries_options(
             **_CHART_TOOLTIP,
             "trigger": "axis",
             "axisPointer": {"type": "cross"},
+            ":formatter": (
+                "function (params) {"
+                "  if (!params || !params.length) return '';"
+                "  var x = params[0].axisValueLabel || params[0].axisValue;"
+                "  var rows = ['<b>' + x + '</b>'];"
+                "  params.forEach(function(p) {"
+                "    if (!p.value) return;"
+                "    var marker = p.marker || '';"
+                "    var name = p.seriesName;"
+                "    var v = p.value;"
+                "    if (Array.isArray(v) && v.length >= 3) {"
+                "      var raw = (typeof v[2] === 'number') ? v[2].toFixed(3) : v[2];"
+                "      var disp = (typeof v[1] === 'number') ? v[1].toFixed(3) : v[1];"
+                "      if (v[1] === v[2]) {"
+                "        rows.push(marker + name + ': ' + raw);"
+                "      } else {"
+                "        rows.push(marker + name + ': ' + disp + '  <span style=\"color:#94a3b8\">(raw ' + raw + ')</span>');"
+                "      }"
+                "    } else {"
+                "      rows.push(marker + name + ': ' + (Array.isArray(v) ? v[1] : v));"
+                "    }"
+                "  });"
+                "  return rows.join('<br/>');"
+                "}"
+            ),
         },
         "legend": {
             "data": [s["name"] for s in plot_series],
@@ -1030,7 +1078,7 @@ def affective_timeseries_options(
             "type": "value",
             "min": 0,
             "max": 1,
-            "name": "score",
+            "name": "score (normalized)" if normalize else "score",
             "nameTextStyle": {"color": _CHART_TEXT},
             "axisLabel": {"color": _CHART_TEXT},
             "splitLine": {"lineStyle": {"color": "#e2e8f0"}},
