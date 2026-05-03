@@ -288,6 +288,8 @@ class AuditViolation(BaseModel):
         "channel_intelligibility_violation",
         "withheld_utterance_leak",
         "belief_provenance_contradiction",
+        # Source-style fidelity (NarrativeStyle profile from ingestion).
+        "style_mismatch",
     ]
     severity: Literal["critical", "major", "minor"]
     description: str = Field(
@@ -874,6 +876,23 @@ def assemble_audit_prompt(
         sections.append(
             "Flag the prose if it fails to address this request, even "
             "when no other constraint is violated."
+        )
+        sections.append("")
+
+    # Source-style fidelity contract: the prose MUST match the form of
+    # the source text (plot-summary length stays summary-length, etc.).
+    # Mismatches are a `style_mismatch` violation.
+    if brief.narrative_style is not None:
+        from shadow_loom.narrative_style import format_narrative_style_block
+        sections.append(format_narrative_style_block(
+            brief.narrative_style,
+            header="STYLE FIDELITY (HARD \u2014 mismatches are `style_mismatch` violations)",
+        ))
+        sections.append(
+            "  Word-count gate: count the words in the prose above. "
+            "If it falls outside the target range by >25%, raise a "
+            "`style_mismatch` violation with severity 'major' and "
+            "feedback that names the actual word count and the target."
         )
         sections.append("")
 

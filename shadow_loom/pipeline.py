@@ -1320,6 +1320,7 @@ def _build_brief_for_query(
                 original_query=nl,
                 constraints=_user_intent_constraints(nl),
                 scene_context=physics_state,
+                narrative_style=getattr(world_state, "narrative_style", None),
             )
     else:
         # Fallback minimal brief
@@ -1331,6 +1332,7 @@ def _build_brief_for_query(
             original_query=nl,
             constraints=_user_intent_constraints(nl),
             scene_context=physics_state,
+            narrative_style=getattr(world_state, "narrative_style", None),
         )
 
 

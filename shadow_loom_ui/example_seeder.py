@@ -26,6 +26,7 @@ from pathlib import Path
 
 from shadow_loom import db
 from shadow_loom.models import WorldStateV1
+from shadow_loom.narrative_style import infer_narrative_style
 
 logger = logging.getLogger(__name__)
 
@@ -238,13 +239,25 @@ def seed_examples() -> int:
         ws = _load_world_state(slug)
         if ws is None:
             continue
+        # Backfill narrative_style from the matching sample plot so the
+        # renderer/auditor have a style profile even though the .py
+        # fixtures themselves don't set one. Skip if the fixture
+        # already provided its own profile.
+        plot_text = _load_sample_plot(slug)
+        if ws.narrative_style is None and plot_text:
+            try:
+                ws.narrative_style = infer_narrative_style(plot_text)
+            except Exception:  # noqa: BLE001 — never break seeding on style
+                logger.exception(
+                    "[examples] narrative_style inference failed for %s", slug,
+                )
         try:
             proj = db.create_project(
                 name=name,
                 owner_id=example_user.id,
                 description=f"Example world model: {name}",
                 is_public=False,
-                raw_text=_load_sample_plot(slug),
+                raw_text=plot_text,
             )
             db.save_version(
                 project_id=proj.id,

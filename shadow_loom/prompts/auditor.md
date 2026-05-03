@@ -18,7 +18,7 @@ Return a JSON object with this exact structure:
   "passed": true/false,
   "violations": [
     {
-      "violation_type": "epistemic_leakage | knowledge_contamination | low_kl_divergence | suspense_threshold | tonal_mismatch | magnitude_too_low | reasoning_failure | affective_failure | attribution_failure | empathy_weight | miracle_step | abduction_failure",
+      "violation_type": "epistemic_leakage | knowledge_contamination | low_kl_divergence | suspense_threshold | tonal_mismatch | magnitude_too_low | reasoning_failure | affective_failure | attribution_failure | empathy_weight | miracle_step | abduction_failure | style_mismatch",
       "severity": "critical | major | minor",
       "description": "What went wrong — specific, actionable.",
       "evidence_quote": "The exact passage from the prose that demonstrates the violation.",
@@ -109,6 +109,26 @@ Return a JSON object with this exact structure:
 - The text must NOT explicitly state the hidden event, but must include subtle behavioural cues that logically justify the current world state.
 - Violation type: `abduction_failure`
 - Feedback template: "Abduction Failure. The implicit background event ([hidden variable]) is not structurally supported by the subtext. You cannot explicitly state that it happened, but you must add a subtle behavioural cue to logically justify the current world state."
+
+### Category 5: Source-Style Fidelity
+
+**Style audit (form & length match):**
+- Run only when a `STYLE FIDELITY (HARD)` block is present in the prompt.
+- Count the words in the prose. Compare against the target word range. If the actual count is outside the range by more than ±25%, raise a violation.
+- Compare prose density against the declared `prose_density`:
+  - `sparse` → flag as violation if the prose contains extended sensory passages, inner monologue, or multi-sentence beats where one summary sentence would suffice.
+  - `moderate` → flag either extreme (telegraphic summary OR maximalist novelistic interiority).
+  - `rich` → flag if the prose reads as a beat sheet or summary instead of fully drawn scene work.
+- Compare voice/POV/tense against the declared `register`. Flag mismatches (e.g., source is third-person past plot summary but the prose is first-person present interior monologue).
+- **Form-class mismatch.** Flag a violation if the prose adopts the wrong *kind* of writing for the declared format:
+  - `news_article` → flag if the prose dramatises events as a short story instead of reporting them in inverted-pyramid journalistic register with attributed sources.
+  - `historical_account` → flag if the prose stages scene-by-scene fiction instead of historiographic narration with dated events and named actors.
+  - `thought_experiment` → flag if the prose tells a fictional story instead of framing the scenario discursively ("Suppose…", "Consider…") with analytical commentary.
+  - `essay` → flag if there is no explicit thesis or signposted argument structure.
+  - `case_study` → flag if the prose lacks the background → findings → recommendations spine.
+  - `transcript` → flag if the prose is continuous narration rather than alternating speaker-tagged turns.
+- Violation type: `style_mismatch`
+- Feedback template: "Style Mismatch. The source register is [format] with a target of [N–M] words at [density] density, but the prose is [actual word count] words and reads as [actual form]. Rewrite at [density] density and within the [N–M] word budget, mirroring the cadence of the supplied style exemplar."
 
 ---
 

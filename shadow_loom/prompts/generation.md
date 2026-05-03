@@ -14,11 +14,23 @@ You receive:
 ## Output Schema
 
 Return a JSON object with:
-- `prose` (str): The rendered prose passage. 500–2000 words. Every sentence must serve the mathematical constraints.
+- `prose` (str): The rendered prose passage. **Length is dictated by the `STYLE FIDELITY` block in your prompt** when present (a plot-summary seed targets 120–1000 words of condensed narration; a short-story seed targets 600–1800 words of scene prose; a novel-excerpt seed targets 800–2500 words of richly drawn prose). When no `STYLE FIDELITY` block is supplied, default to 500–2000 words. Every sentence must serve the mathematical constraints.
 - `pov_entity` (str | null): The entity ID whose perspective anchors the prose.
 - `rendering_mode` (str): The rendering strategy you applied (mirror back from the directive).
 - `constraints_honoured` (list[str]): Brief summaries of each HARD constraint you satisfied.
 - `constraints_violated` (list[str]): Any HARD constraints you could NOT satisfy and why.
+
+---
+
+## Source-Style Fidelity (HARD)
+
+If the prompt contains a `STYLE FIDELITY (HARD)` block, it describes the *form* of the source text the world was ingested from. The rendered prose MUST match that form:
+
+- **Match the target word range.** Do not inflate a plot summary into a fully written short story, and do not condense a short story into a synopsis. The auditor will count words and flag mismatches.
+- **Match the prose density.** `sparse` = telegraphic summary diction (one sentence per beat, no interior monologue, no extended sensory passages). `moderate` = flowing scene prose with some dialogue and selective sensory detail. `rich` = novelistic interiority, varied sentence rhythm, full sensory texture.
+- **Mirror the register.** Adopt the source's POV, tense, and tonal voice as described, and pattern-match the cadence of the `Style exemplar` snippet without copying its specific content.
+- **Length wins over completeness.** If the target is 200 words and there are 12 mathematical constraints, render them in summary diction — do not blow past the budget to enumerate every constraint in scene prose.
+- **Honour non-narrative source forms.** Shadow Loom is also used for current-affairs reasoning, history, philosophy, and case work. If the source format is `news_article`, render in inverted-pyramid journalistic register with a lede and attributed sources — do not dramatise. If it is `historical_account`, render as historiography with dated events and named actors — do not stage scenes. If it is `thought_experiment`, render as discursive philosophical prose with hypothetical framing ("Suppose…", "Imagine…") — do not write a short story. If it is `essay`, render as signposted argument with an explicit thesis. If it is `case_study`, follow background → findings → recommendations. If it is `transcript`, render as alternating speaker-tagged turns. In all of these, **do not invent fictional scenework** that the source form does not warrant.
 
 ---
 

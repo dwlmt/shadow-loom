@@ -50,6 +50,7 @@ from shadow_loom.models import (
     WorldTraitSnapshot,
 )
 from shadow_loom._agent_logging import log_agent_output
+from shadow_loom.narrative_style import infer_narrative_style
 
 logger = logging.getLogger(__name__)
 
@@ -4800,6 +4801,21 @@ def run_extraction(
     except Exception:
         logger.exception("[Pipeline·Research] unexpected failure — continuing without research.")
 
+    # ------------------------------------------------------------------
+    # Step 3e — capture source narrative style for downstream fidelity
+    # ------------------------------------------------------------------
+    try:
+        world_state.narrative_style = infer_narrative_style(text)
+        logger.info(
+            "[Pipeline] Narrative style inferred: format=%s, target=%d–%d words, density=%s.",
+            world_state.narrative_style.format,
+            world_state.narrative_style.target_word_min,
+            world_state.narrative_style.target_word_max,
+            world_state.narrative_style.prose_density,
+        )
+    except Exception:
+        logger.exception("[Pipeline] Narrative-style inference failed — continuing without it.")
+
     return world_state, report
 
 async def run_extraction_async(
@@ -4907,5 +4923,17 @@ async def run_extraction_async(
         world_state = await _run_research_step_async(world_state, config)
     except Exception:
         logger.exception("[Pipeline·Research·Async] unexpected failure — continuing without research.")
+
+    try:
+        world_state.narrative_style = infer_narrative_style(text)
+        logger.info(
+            "[Pipeline·Async] Narrative style inferred: format=%s, target=%d–%d words, density=%s.",
+            world_state.narrative_style.format,
+            world_state.narrative_style.target_word_min,
+            world_state.narrative_style.target_word_max,
+            world_state.narrative_style.prose_density,
+        )
+    except Exception:
+        logger.exception("[Pipeline·Async] Narrative-style inference failed — continuing without it.")
 
     return world_state, report

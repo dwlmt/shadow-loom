@@ -948,6 +948,89 @@ def reconstruct_world_trait_at(trait: "GlobalTrait", fabula_time: int) -> dict:
 
 
 # --- 5. THE MASTER STATE (The Database Payload for Narrative structure) ---
+class NarrativeStyle(BaseModel):
+    """Captured profile of the source text's narrative *register*.
+
+    The generation, refinement, and audit stages consult this so the
+    rendered prose matches the *form* of the source — a plot-summary
+    seed should produce summary-length condensed output, not a 2,000-
+    word short story; a novel-excerpt seed should produce richly drawn
+    prose, not a four-sentence beat sheet.
+
+    Populated by ``shadow_loom.narrative_style.infer_narrative_style``
+    during ingestion. Every field is optional so world-states loaded
+    without a raw source still validate; downstream prompts fall back
+    to their previous defaults when absent.
+    """
+    format: Literal[
+        # Narrative fiction forms.
+        "plot_summary", "synopsis", "outline", "scene",
+        "short_story", "novel_excerpt", "screenplay", "verse",
+        # Non-narrative / discursive forms — Shadow Loom is also used
+        # for current-affairs reasoning, history, philosophy, etc.
+        "news_article", "historical_account", "thought_experiment",
+        "essay", "case_study", "transcript",
+        "unknown",
+    ] = Field(
+        default="unknown",
+        description=(
+            "High-level form of the source text. Covers narrative "
+            "fiction (plot_summary, scene, short_story, novel_excerpt, "
+            "screenplay, verse) and non-narrative / discursive content "
+            "(news_article, historical_account, thought_experiment, "
+            "essay, case_study, transcript). Drives the target render "
+            "length and prose density."
+        ),
+    )
+    target_word_min: int = Field(
+        default=500,
+        ge=20,
+        description="Lower bound (inclusive) of the per-render word budget.",
+    )
+    target_word_max: int = Field(
+        default=2000,
+        ge=20,
+        description="Upper bound (inclusive) of the per-render word budget.",
+    )
+    prose_density: Literal["sparse", "moderate", "rich"] = Field(
+        default="moderate",
+        description=(
+            "How much sensory / interior detail to render per beat. "
+            "'sparse' = telegraphic summary diction (one sentence per "
+            "story beat); 'moderate' = flowing scene prose; 'rich' = "
+            "novelistic interiority and sensory texture."
+        ),
+    )
+    voice: str = Field(
+        default="",
+        description=(
+            "Free-form description of the narrative voice (POV, tense, "
+            "tonal register, diction). Used by the renderer to mirror "
+            "the source's voice."
+        ),
+    )
+    style_exemplar: Optional[str] = Field(
+        default=None,
+        description=(
+            "Up to ~600 characters lifted verbatim from the source so "
+            "the renderer and auditor can pattern-match cadence and "
+            "diction. May be None when no source text was supplied."
+        ),
+    )
+    source_word_count: Optional[int] = Field(
+        default=None,
+        description="Total word count of the source text, when known.",
+    )
+
+    @model_validator(mode="after")
+    def _check_word_range(self) -> "NarrativeStyle":
+        if self.target_word_max < self.target_word_min:
+            raise ValueError(
+                "NarrativeStyle.target_word_max must be >= target_word_min"
+            )
+        return self
+
+
 class WorldStateV1(BaseModel):
     locations: Dict[str, Location]
     objects: Dict[str, NarrativeObject]
@@ -956,6 +1039,16 @@ class WorldStateV1(BaseModel):
     world_traits: Dict[str, "GlobalTrait"] = Field(
         default_factory=dict,
         description="World-level facts, laws, and conditions. Keyed by WORLD_ ID.",
+    )
+    narrative_style: Optional[NarrativeStyle] = Field(
+        default=None,
+        description=(
+            "Profile of the source text's narrative register (format, "
+            "target length, density, voice). Populated by ingestion "
+            "when a raw source text is supplied; consulted by the "
+            "directive assembler, renderer, and auditor so the "
+            "generated prose preserves the source's form."
+        ),
     )
     causal_topology: List[CausalEdge]
     spatial_topology: List[SpatialEdge] = Field(default_factory=list)

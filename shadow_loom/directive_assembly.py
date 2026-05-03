@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional, Literal, Tuple
 import networkx as nx
 from pydantic import BaseModel, Field
 
-from shadow_loom.models import WorldStateV1
+from shadow_loom.models import WorldStateV1, NarrativeStyle
 from shadow_loom.query_models import DirectiveQuery
 from shadow_loom.settings import get_settings as _get_settings
 
@@ -373,6 +373,15 @@ class CreativeBrief(BaseModel):
             "``branch_world_id == 'shadow'``. Used by the generator "
             "to keep the shadow branch in productive contrast with "
             "canon rather than re-narrating identical events."
+        ),
+    )
+    narrative_style: Optional[NarrativeStyle] = Field(
+        default=None,
+        description=(
+            "Source-text style profile carried from ingestion. The "
+            "renderer and auditor use this to keep the generated prose "
+            "in the same form as the source (plot summary stays "
+            "summary-length; short story stays scene-length; etc.)."
         ),
     )
 
@@ -2171,6 +2180,7 @@ class DirectiveAssembler:
             causal_attribution=causal_attribution,
             entanglement_pairs=entanglement_pairs,
             external_research=self._select_external_research(entity_ids),
+            narrative_style=getattr(self.world_state, "narrative_style", None),
         )
         _log_creative_brief(brief)
         return brief

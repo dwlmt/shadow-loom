@@ -337,6 +337,14 @@ def assemble_rendering_prompt(
         )
         sections.append("")
 
+    # === Source Style Fidelity ===
+    # Match the source text's *form* — a plot-summary seed renders a
+    # summary-length passage, a short-story seed renders a scene, etc.
+    if brief.narrative_style is not None:
+        from shadow_loom.narrative_style import format_narrative_style_block
+        sections.append(format_narrative_style_block(brief.narrative_style))
+        sections.append("")
+
     # === Header ===
     sections.append(f"=== GENERATION TASK: {brief.target_effect.upper()} ===")
     sections.append(f"Target entities: {', '.join(brief.target_entities)}")
@@ -534,6 +542,7 @@ def build_observation_brief(
         target_entities=query.focus_entity_ids,
         original_query=query.original_query,
         constraints=constraints,
+        narrative_style=getattr(world_state, "narrative_style", None),
         rendering=RenderingDirective(
             rendering_mode="observation",
             pov_lock=pov,
@@ -718,6 +727,7 @@ def build_intervention_brief(
         }),
         original_query=query.original_query,
         constraints=constraints,
+        narrative_style=getattr(world_state, "narrative_style", None),
         rendering=RenderingDirective(
             rendering_mode="intervention",
             pacing="normal",
@@ -859,6 +869,7 @@ def build_counterfactual_brief(
         }),
         original_query=query.original_query,
         constraints=constraints,
+        narrative_style=getattr(world_state, "narrative_style", None),
         rendering=RenderingDirective(
             rendering_mode="counterfactual",
             pacing="normal",
@@ -1063,6 +1074,7 @@ def render_from_query(
                 target_effect=physics_result.get("target_effect", "observation"),
                 target_entities=getattr(request, "target_entity_ids", []),
                 scene_context=physics_state,
+                narrative_style=getattr(world_state, "narrative_style", None),
             )
         return render_scene(brief, config, "directive", physics_state)
 
