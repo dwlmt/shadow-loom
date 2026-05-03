@@ -193,7 +193,7 @@ refactor; defaults preserve previous behaviour for everything except
 
 | Variable | Default | Notes |
 |---|---|---|
-| `PHYSICS_MAX_INGEST_WORDS` | `10000` | Maximum whitespace tokens accepted by any user-facing ingest (NiceGUI Story tab, chat box, MCP `ingest` / `narrate` / `write`). Enforced uniformly so a payload that's too large fails fast at the boundary instead of mid-pipeline. |
+| `PHYSICS_MAX_INGEST_WORDS` | `10000` | Maximum whitespace tokens accepted by ingested narrative text (NiceGUI Story tab ingest dialog, MCP `ingest` / `narrate` / `write`). Enforced at the ingestion boundary so an oversized payload fails fast instead of mid-pipeline. The chat / channel input is not capped by this setting. |
 
 These constants are the dial-board of the
 [`CausalPhysicsEngine`](../shadow_loom/causal_physics.py). Their motivation
