@@ -130,26 +130,26 @@ def _get_session_state() -> AppState:
 def _build_app_header(state: AppState, *, show_back: bool = False):
     """Render the shared top navigation bar."""
     with ui.header().classes(
-        "bg-white border-b border-slate-200 px-6 py-3 "
+        "bg-white border-b border-slate-200 px-4 py-1 min-h-0 "
         "flex items-center justify-between text-slate-800"
     ).props("elevated=false flat"):
-        with ui.row().classes("items-center gap-3"):
+        with ui.row().classes("items-center gap-2"):
             if show_back:
                 with ui.button(on_click=lambda: ui.navigate.to("/")).props(
-                    "flat dense round color=secondary"
+                    "flat dense round color=secondary size=sm"
                 ):
                     feather("arrow-left")
             with ui.row().classes("items-center gap-2 cursor-pointer").on(
                 "click", lambda: ui.navigate.to("/")
             ):
-                feather("book-open", size="lg", color=_brand_copper())
+                feather("book-open", size="sm", color=_brand_copper())
                 ui.label("Shadow Loom").classes(
-                    "text-xl font-bold tracking-tight text-slate-800"
+                    "text-base font-bold tracking-tight text-slate-800 leading-none"
                 )
 
             if state.project_name:
                 ui.label(f"— {state.project_name}").classes(
-                    "text-sm font-medium text-slate-500"
+                    "text-xs font-medium text-slate-500 leading-none"
                 )
 
         with ui.row().classes("items-center gap-1"):
@@ -168,20 +168,20 @@ def _build_app_header(state: AppState, *, show_back: bool = False):
                     else (state.display_name or state.username or "Local User")
                 )
                 if avatar:
-                    ui.avatar().props(f'src="{avatar}"').classes(
+                    ui.avatar(size="sm").props(f'src="{avatar}"').classes(
                         "cursor-pointer"
                     ).on("click", lambda: ui.navigate.to("/settings"))
                 ui.label(name).classes(
-                    "text-sm font-medium text-slate-700 cursor-pointer hidden sm:block"
+                    "text-xs font-medium text-slate-700 cursor-pointer hidden sm:block leading-none"
                 ).on("click", lambda: ui.navigate.to("/settings"))
                 with ui.button(on_click=lambda: ui.navigate.to("/settings")).props(
-                    "flat dense round color=secondary"
+                    "flat dense round color=secondary size=sm"
                 ):
                     feather("settings")
                 if authed:
                     with ui.button(
                         on_click=lambda: ui.navigate.to("/auth/logout")
-                    ).props("flat dense round color=secondary"):
+                    ).props("flat dense round color=secondary size=sm"):
                         feather("log-out")
             elif config.AUTH_ENABLED:
                 with ui.button(on_click=lambda: ui.navigate.to("/login")).props(

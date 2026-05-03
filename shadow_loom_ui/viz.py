@@ -685,7 +685,7 @@ def _build_gauge_series(name: str, val: float, *, graded: bool) -> dict:
         "title": {
             "color": _CHART_TEXT,
             "fontSize": 11,
-            "offsetCenter": [0, "92%"],
+            "offsetCenter": [0, "88%"],
         },
     }
     if graded:
@@ -719,7 +719,8 @@ def _build_gauge_series(name: str, val: float, *, graded: bool) -> dict:
             "valueAnimation": True,
             "color": _CHART_TEXT,
             "fontSize": 13,
-            "offsetCenter": [0, "62%"],
+            "lineHeight": 14,
+            "offsetCenter": [0, "30%"],
             ":formatter": (
                 "function (v) {"
                 "  var label;"
@@ -753,7 +754,7 @@ def _build_gauge_series(name: str, val: float, *, graded: bool) -> dict:
             "formatter": "{value}",
             "color": _CHART_TEXT,
             "fontSize": 14,
-            "offsetCenter": [0, "62%"],
+            "offsetCenter": [0, "35%"],
         }
     return common
 
@@ -830,6 +831,69 @@ _AFFECT_COLORS = {
     "surprise": "#FFB300",
     "dramatic_irony": "#00838F",
 }
+
+
+def _event_overlay_series(
+    ws: WorldStateV1,
+    *,
+    axis: str = "fabula",
+    y_value: float = 0.0,
+) -> dict | None:
+    """Build a hover-only scatter series of every event keyed to an x-axis.
+
+    Used to overlay event markers on timeline charts that otherwise
+    only plot scalar curves. Each marker shows the event's
+    description on hover so the reader can locate where in the
+    narrative a given peak/trough falls.
+
+    ``axis="fabula"`` keys markers to ``EventNode.fabula_time``;
+    ``axis="syuzhet"`` keys to ``EventNode.syuzhet_index``.
+    ``y_value`` is the y-coordinate at which markers sit (use the
+    chart's y-axis floor — e.g. ``0`` for 0–1 affect plots).
+    """
+    if not ws.events:
+        return None
+    type_color = {
+        "choice": "#3A7BD5",
+        "outcome": "#6FBF3A",
+        "revelation": "#F5B43C",
+        "utterance": "#8E44AD",
+    }
+    data: list[dict] = []
+    for evt in sorted(ws.events, key=lambda e: e.fabula_time):
+        x = evt.fabula_time if axis == "fabula" else evt.syuzhet_index
+        if x is None:
+            continue
+        data.append({
+            "name": evt.id,
+            "value": [x, y_value, evt.description[:140] or evt.id, evt.event_type],
+            "itemStyle": {
+                "color": type_color.get(evt.event_type, "#607D8B"),
+                "opacity": 0.55,
+                "borderColor": "#ffffff",
+                "borderWidth": 1,
+            },
+        })
+    if not data:
+        return None
+    return {
+        "name": "events",
+        "type": "scatter",
+        "data": data,
+        "symbol": "diamond",
+        "symbolSize": 9,
+        "z": 5,
+        "tooltip": {
+            "trigger": "item",
+            ":formatter": (
+                "function (p) {"
+                "  var v = p.value;"
+                "  return '<b>' + p.name + '</b> (' + v[3] + ')<br/>'"
+                "       + 'x=' + v[0] + '<br/>' + v[2];"
+                "}"
+            ),
+        },
+    }
 
 
 def render_affective_timeseries(
@@ -933,6 +997,12 @@ def affective_timeseries_options(
         })
     if mark_lines:
         plot_series[0]["markLine"] = {"symbol": "none", "data": mark_lines}
+
+    # Event-locator overlay: hover any marker to see which event
+    # falls at that x. Anchored to y=0 (charts are 0-1 bounded).
+    overlay = _event_overlay_series(ws, axis=axis, y_value=0.0)
+    if overlay is not None:
+        plot_series.append(overlay)
 
     return {
         "backgroundColor": _CHART_BG,
@@ -1040,6 +1110,17 @@ def render_physics_trajectory(
         })
     if mark_lines:
         plot_series[0]["markLine"] = {"symbol": "none", "data": mark_lines}
+
+    # Event-locator overlay anchored to the lowest plotted value so
+    # readers can hover any beat to see which event coincides with
+    # the trajectory inflection.
+    floor = min(
+        (v for s in plot_series for v in (p[1] for p in s["data"]) if v is not None),
+        default=0.0,
+    )
+    overlay = _event_overlay_series(ws, axis="fabula", y_value=floor)
+    if overlay is not None:
+        plot_series.append(overlay)
 
     return ui.echart({
         "backgroundColor": _CHART_BG,

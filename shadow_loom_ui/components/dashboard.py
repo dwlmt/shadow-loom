@@ -40,7 +40,11 @@ def build_dashboard(state: AppState) -> None:
     with ui.column().classes("w-full max-w-6xl mx-auto p-6 md:p-8 gap-6"):
         # ---- Quick actions ----
         with ui.row().classes("w-full items-center justify-between mb-2"):
-            ui.label("Dashboard").classes(PAGE_TITLE_CLS)
+            with ui.column().classes("gap-0"):
+                ui.label("Dashboard").classes(PAGE_TITLE_CLS)
+                ui.label(
+                    "Neuro-symbolic reasoning for ancestral and parallel worlds."
+                ).classes("text-sm text-slate-500 italic -mt-1")
             with ui.row().classes("gap-2"):
                 ingest_dlg = _build_ingest_dialog(state)
                 with ui.button(on_click=ingest_dlg.open).props(
