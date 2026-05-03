@@ -43,13 +43,17 @@ next words, but because they have causes, secrets, and
 consequences. \textbf{Shadow-Loom} is an experimental open-source
 framework that takes a narrative and turns it into a typed,
 versioned \emph{graphical world model}. Two engines act on that
-model, in the spirit of a game engine that pairs a physics
-simulator with a higher-level director. The first engine is a
-\emph{causal physics} grounded in Pearl's ladder of causation
+model --- both are themselves \emph{graphical world models} in
+their own right, since each defines a typed dynamics over the
+shared graph --- in the spirit of a game engine that pairs a
+physics simulator with a higher-level director. The first engine
+is a \emph{causal physics} (a Pearl-style graphical world model of
+cause and effect) grounded in Pearl's ladder of causation
 \citep{pearl2009causality,pearl2018book,bareinboim2022pearl} and
 the recently proposed counterfactual calculus over Ancestral
 Multi-World Networks \citep{correa2025amwn}. The second is a
-\emph{narrative physics} that scores the same graph against four
+\emph{narrative physics} (a graphical world model of reader
+affect) that scores the same graph against four
 structural reader-states --- mystery, dramatic irony, suspense
 \citep{wilmot2020suspense}, and surprise \citep{ittibaldi2009surprise}
 --- in the tradition of Sternberg's curiosity / suspense /
@@ -174,12 +178,14 @@ pipeline:
       tagged with both a chronological \emph{fabula} time and a
       narrative \emph{syuzhet} index \citep{shklovsky1965art,
       genette1980narrative}.
-\item A \textbf{causal physics engine} that implements Pearl's three
+\item A \textbf{causal physics engine} --- a graphical world model
+      of cause and effect --- that implements Pearl's three
       rungs --- observation, do-intervention, and abductive
       counterfactual --- with a propagation rule gated by an
       explicit ``Impact $>$ Inertia'' threshold and spatial
       affordance checks.
-\item A \textbf{narrative physics layer} that scores the same graph
+\item A \textbf{narrative physics layer} --- a graphical world
+      model of reader affect over the same graph --- that scores it
       against closed-form information-state functionals for mystery,
       dramatic irony, suspense, and surprise. Suspense follows the
       hope/threat formulation of \citet{wilmot2020suspense};
@@ -392,7 +398,10 @@ AGM-style \texttt{beliefs\_added / beliefs\_invalidated} delta.
 \citep{pearl1995causal,pearl2009causality,pearl2018book,
 spirtes2000causation,bareinboim2022pearl} and actual causality
 \citep{halpern2005causes,halpern2016actual,woodward2003making}.}
-Pearl's three rungs map directly to the query taxonomy used here
+Pearl's three rungs --- \textbf{rung~1 Correlation} (observation),
+\textbf{rung~2 Interventions} ($\mathrm{do}(\cdot)$), and
+\textbf{rung~3 Counterfactuals} (abduction~+~do) --- map directly
+to the query taxonomy used here
 (\texttt{ObservationQuery}, \texttt{InterventionQuery},
 \texttt{CounterfactualQuery}); \texttt{mechanism} and
 \texttt{causal\_force} on edges are motivated by Halpern's
@@ -725,14 +734,32 @@ construction \citep{correa2025amwn}, with edge types
 \subsection{Causal physics}
 \label{app:causal}
 
+The causal physics is a \emph{graphical world model of cause and
+effect}: a typed dynamics over the shared world graph that
+implements all three rungs of Pearl's causal hierarchy
+\citep{pearl2009causality,bareinboim2022pearl}:
+\textbf{rung~1 is Correlation} (observation: $P(Y \mid X)$ read off
+the ego-graph without intervention), \textbf{rung~2 is
+Interventions} ($\mathrm{do}(X = x)$, severing incoming edges into
+$X$), and \textbf{rung~3 is Counterfactuals} (abduction over
+latent exogenous values, then a do-operation on the abducted
+world). Each rung corresponds to one query type in
+Section~\ref{sec:queries}: \texttt{ObservationQuery},
+\texttt{InterventionQuery}, and \texttt{CounterfactualQuery}
+respectively.
+
 Given a sandbox $\mathcal{G}$ and an intervention specification:
-\paragraph{Action (rung 2):} $\mathrm{do}(X = x)$ severs every
-incoming causal edge into $X$ and writes $V_X \leftarrow x$.
-\paragraph{Abduction (rung 3):} for evidence $E$, each entity
-trait blends 50\% toward its observed factual value, weighted by
-edge $\sigma_{\mathrm{evidence}}$ and gated by a typed
-\texttt{MECHANISM\_TRAIT\_MAP} that says which mechanisms can
-touch which trait families.
+\paragraph{Observation (rung~1 --- Correlation):} read
+$P(Y \mid X = x)$ directly off the ego-graph; no edge surgery.
+\paragraph{Action (rung~2 --- Interventions):} $\mathrm{do}(X = x)$
+severs every incoming causal edge into $X$ and writes
+$V_X \leftarrow x$.
+\paragraph{Abduction (rung~3 --- Counterfactuals):} for evidence
+$E$, each entity trait blends 50\% toward its observed factual
+value, weighted by edge $\sigma_{\mathrm{evidence}}$ and gated by
+a typed \texttt{MECHANISM\_TRAIT\_MAP} that says which mechanisms
+can touch which trait families. The do-operation of rung~2 is
+then re-applied on the abducted world.
 \paragraph{Propagation:} a topological sort over the causal
 sub-graph applies, for each downstream node $u$ with parent $p$
 and edge weight $w$:
@@ -754,6 +781,12 @@ intervened\_nodes\}}.
 
 \subsection{Narrative physics (affective calculus)}
 \label{app:narrative}
+
+The narrative physics is a \emph{graphical world model of reader
+affect}: it operates on the same typed graph as the causal
+physics, but its dynamics scores reader-state functionals
+(mystery, dramatic irony, suspense, surprise) rather than
+propagating causal force.
 
 Let $A$ be the anchor pair $(t_f, t_s)$ for fabula and syuzhet
 cursors, $F$ the focal entities, and write \emph{revealed} for any
