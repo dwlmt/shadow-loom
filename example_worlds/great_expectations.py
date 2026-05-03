@@ -15,9 +15,19 @@ from shadow_loom.models import (
     WorldStateV1, Location, Entity, EventNode, NarrativeObject,
     CausalEdge, SpatialEdge, RelationshipEdge, RelationshipMetric, TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
     GlobalTrait, WorldTraitSnapshot,
+    NarrativeStyle,
 )
 
 world_state = WorldStateV1(
+    narrative_style=NarrativeStyle(
+        format='synopsis',
+        target_word_min=479,
+        target_word_max=600,
+        prose_density='sparse',
+        voice='synoptic narration; no dialogue; condensed scene description; third-person POV; past tense',
+        style_exemplar='The book includes three "stages" of Pip\'s expectations.\n\nFirst stage\nPhilip "Pip" Pirrip is a seven-year-old orphan who lives with his hot-tempered older sister and her kindly blacksmith husband Joe Gargery on the coastal marshes of Kent. On Christmas Eve 1812,[14] Pip visits the graves of his parents and siblings. There, he unexpectedly encounters an escaped convict who threatens to kill him if he does not bring back food and tools. Pip steals a file from among Joe\'s tools and a pie and brandy meant for Christmas dinner, which he delivers to the convict.',
+        source_word_count=1439,
+    ),
     # ── LOCATIONS ──────────────────────────────────────────────────────
     locations={
         "LOC_KENT_MARSHES": Location(

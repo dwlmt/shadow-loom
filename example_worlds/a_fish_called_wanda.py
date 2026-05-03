@@ -19,9 +19,19 @@ from shadow_loom.models import (
     WorldStateV1, Location, Entity, EventNode, NarrativeObject,
     CausalEdge, SpatialEdge, RelationshipEdge, RelationshipMetric, TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
     GlobalTrait, WorldTraitSnapshot,
+    NarrativeStyle,
 )
 
 world_state = WorldStateV1(
+    narrative_style=NarrativeStyle(
+        format='synopsis',
+        target_word_min=176,
+        target_word_max=528,
+        prose_density='sparse',
+        voice='synoptic narration; no dialogue; condensed scene description; third-person POV; past tense',
+        style_exemplar='London gangster George Thomason and his right-hand man, Ken Pile, an animal lover with a stutter, plan a jewel heist. They bring in two Americans: con artist Wanda Gershwitz and weapons expert Otto West, a mean-spirited Anglophobe. Wanda and Otto are lovers, but they hide this from George and Ken, pretending to be siblings, so Wanda can work her charms on them.\n\nThe heist is successful, and the gang escapes with a large sum in diamonds that they hide in a safe in an old workshop. Soon after, Wanda and Otto betray George to the police, and he is arrested.',
+        source_word_count=528,
+    ),
     locations={
         "LOC_HEATHROW": Location(name="Heathrow Safe-Deposit", description="Where the stolen diamonds are initially stored.",
             ambient_state={

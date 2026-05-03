@@ -15,9 +15,19 @@ from shadow_loom.models import (
     WorldStateV1, Location, Entity, EventNode, NarrativeObject,
     CausalEdge, SpatialEdge, RelationshipEdge, RelationshipMetric, TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
     GlobalTrait, WorldTraitSnapshot,
+    NarrativeStyle,
 )
 
 world_state = WorldStateV1(
+    narrative_style=NarrativeStyle(
+        format='synopsis',
+        target_word_min=271,
+        target_word_max=600,
+        prose_density='sparse',
+        voice='synoptic narration; no dialogue; condensed scene description; third-person POV; past tense',
+        style_exemplar='Opening\n\nIn 1801, Mr Lockwood, the new tenant at Thrushcross Grange in Yorkshire, visits his landlord, Heathcliff, at his remote moorland farmhouse, Wuthering Heights. There he meets a reserved young woman (later identified as Cathy Linton), Joseph, an ill-tempered servant, and Hareton, an uneducated young man who speaks like a servant. Everyone is sullen and inhospitable. Snowed in for the night, Lockwood reads diary entries of the former inhabitant of his room, Catherine Earnshaw, and has a nightmare in which a ghostly Catherine begs to enter through the window.',
+        source_word_count=814,
+    ),
     # ── LOCATIONS ──────────────────────────────────────────────────────
     locations={
         "LOC_WUTHERING_HEIGHTS": Location(

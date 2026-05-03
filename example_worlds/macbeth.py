@@ -28,9 +28,19 @@ from shadow_loom.models import (
     WorldStateV1, Location, Entity, EventNode, NarrativeObject,
     CausalEdge, SpatialEdge, RelationshipEdge, RelationshipMetric, TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
     GlobalTrait, WorldTraitSnapshot,
+    NarrativeStyle,
 )
 
 world_state = WorldStateV1(
+    narrative_style=NarrativeStyle(
+        format='synopsis',
+        target_word_min=466,
+        target_word_max=600,
+        prose_density='sparse',
+        voice='synoptic narration; no dialogue; condensed scene description; third-person POV; past tense',
+        style_exemplar='Act I\n\nMacbeth and Banquo encounter the witches for the first time.\nAmid thunder and lightning, three witches decide that their next meeting will be with Macbeth, the Thane (Lord) of Glamis. In the following scene, soldiers report to King Duncan of Scotland that his generals Banquo and Macbeth have just defeated a rebellion led by the traitorous Thane of Cawdor, allied with forces from Norway and Ireland. Duncan praises his kinsmen for their bravery and fighting prowess, announcing that the title of Thane of Cawdor shall be transferred to Macbeth.',
+        source_word_count=1400,
+    ),
     # ── LOCATIONS ──────────────────────────────────────────────────────
     locations={
         "LOC_BATTLEFIELD": Location(
