@@ -970,7 +970,7 @@ syuzhet point as having mistaken despair for tension.
 ### The `regret` emotion target
 
 After the train scene the directive cycle's natural target is
-`target_effect="regret"` (per the `_EFFECT_TRAIT_MAP` in
+`target_effect="regret"` (per the shared ``_EFFECT_TRAITS`` table in
 [directive_assembly.py:1095+](../shadow_loom/directive_assembly.py)
 that maps regret onto `{guilt, remorse, despair}`). Brief Encounter's
 strength is that the trait values are *already* close to their

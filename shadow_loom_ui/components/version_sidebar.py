@@ -80,6 +80,23 @@ def _render_versions(state: AppState, container) -> None:
 
     def _on_version_click(e):
         data = e.args if isinstance(e.args, dict) else {}
+        # Prefer the ``_vid`` payload baked into every node by
+        # ``version_tree_to_echart_data`` — robust against label
+        # decoration. The previous string-match against
+        # ``f"v{version}"`` silently failed on shadow rows because
+        # ``version_tree_to_echart_data`` appends an em-dash + branch
+        # label suffix (``"v3 — What if Duncan lived"``), so clicking
+        # a shadow branch did nothing at all. ``_vid`` is the row id
+        # the click handler can index ``tree_data`` by directly.
+        vid = data.get("_vid")
+        if vid is not None:
+            for v in tree_data:
+                if v["id"] == vid:
+                    _load_version(state, v)
+                    return
+        # Fallback: legacy label match (kept so the handler still
+        # behaves on synthetic roots / older payloads that don't carry
+        # ``_vid``).
         name = data.get("name", "")
         for v in tree_data:
             if f"v{v['version']}" == name:

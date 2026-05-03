@@ -592,20 +592,39 @@ intends.
 
 ### 4.2 Dramatic irony — Death on the Nile
 
-`compute_dramatic_irony_score` counts revealed causal edges into the
-target entity whose **source is unknown to that character**. Anchored at
-`syuzhet_index=N` (just after `EVT_LINNET_SHOT`) for
-`entity_ids=["ENT_PENNINGTON", "ENT_VAN_SCHUYLER", "ENT_ALLERTON"]`:
+`compute_dramatic_irony_score` measures, per focal character, the
+*intensity-weighted mass of revealed events the character does not
+yet know about*, normalised by the total event mass plus a saturation
+constant ``K`` (= 1):
 
-```text
-total_connections = 8       (revealed causal edges into the cast)
-irony_gaps        = 6       (events the reader has seen via Poirot's
-                             POV but the suspect-pool has not)
-score             = 6 / 8 = 0.75
-```
+$$\text{irony} = \frac{1}{|F|} \sum_{c \in F} \frac{\sum_{e \in \text{revealed}, e \notin K_c} w_e}{\sum_{e \in \text{events}} w_e + K}$$
 
-That `0.75` is what a directive of "raise dramatic_irony to 0.85 in
-Act III without revealing the killer" is optimising against — see §5.
+A character is treated as knowing event ``e`` when (a) they
+participate in it as actor or target and ``e``'s ``fabula_time``
+falls at or before the syuzhet anchor's fabula frontier, (b) a
+revealed utterance addressed to (or spoken by) them references it,
+or (c) they hold a ``Belief`` whose ``target_id`` matches ``e.id``.
+
+Anchored at `syuzhet_index=N` (just after `EVT_LINNET_SHOT`) for
+`entity_ids=["ENT_PENNINGTON", "ENT_VAN_SCHUYLER", "ENT_ALLERTON"]`
+the per-character gap masses average to ``≈ 0.45`` of the gauge — and
+rise smoothly to ``≈ 0.64`` by the denouement as Poirot's reveals
+accumulate without reaching the suspect pool.
+
+Why the formula looks like *that*. The earlier *cumulative ratio over
+revealed-only edges* form (``#gaps / #revealed_connections``) had
+numerator and denominator growing together and so plateaued at a
+story-specific asymptote by the third reveal — Reservoir Dogs even
+*decayed* from 0.25 to 0.06 because the protagonist became actor-of-
+record on more revealed edges as the syuzhet advanced. Normalising
+by the **full event mass** (a fixed denominator) lets the gap mass
+climb monotonically with reveals and *fall* when characters acquire
+knowledge later in the story — the dramatic-irony arc the gauge is
+supposed to depict.
+
+That ``≈ 0.45`` is what a directive of "raise dramatic_irony to 0.85
+in Act III without revealing the killer" is optimising against —
+see §5.
 
 ### 4.3 Suspense — Romeo & Juliet's tomb
 
@@ -653,17 +672,25 @@ Anchored at `syuzhet_index` *just before* the
 `entity_ids=["ENT_ORANGE"]`:
 
 ```text
-trait              actual   base_prior   posterior_prior  KL_contribution
-loyalty            0.95     0.55         0.62 (+ revealed   0.18
+trait              actual   base_prior   posterior_prior  KL    1-exp(-KL)
+loyalty            0.95     0.55         0.62 (+ revealed  0.18  0.165
                                               betrayal hint)
-duplicity          0.90     0.30         0.34              0.36
-courage            0.70     0.65         0.65              0.00
-allegiance_police  0.95     0.05         0.10              1.21
-                                                          ----
-                                                     avg ≈ 0.44
-max_kl = log(1 / 0.01) ≈ 4.605
-surprise = min(0.44 / 4.605, 1.0) ≈ 0.10
+duplicity          0.90     0.30         0.34              0.36  0.302
+courage            0.70     0.65         0.65              0.00  0.000
+allegiance_police  0.95     0.05         0.10              1.21  0.702
+                                                              ----
+                                                surprise = avg ≈ 0.29
 ```
+
+The per-trait KLs are run through a soft saturation ``1 - exp(-KL)``
+so each contribution lands in ``[0, 1]`` and the per-trait mean is
+the gauge value directly. The earlier ``avg(KL) / log(1/ε)`` form
+divided by the *theoretical* binary-KL maximum (``≈ 4.605`` at
+``ε = 0.01``) — squashing the entire perceptual signal into the
+bottom 4% of the gauge. Every ``example_world`` plot read as flat
+``≤ 0.10`` even when canonical surprise traits (Macbeth's despair,
+Macduff's grief, Lady Macbeth's guilt) carried per-trait KLs of
+``0.27–0.50``.
 
 …then the reveal lands. The previously-hidden
 `EVT_ORANGE_RECRUITED → ENT_ORANGE.allegiance_police` mutation enters
@@ -679,44 +706,69 @@ locked behind high syuzhet — surprise is not a trick of the LLM.
 
 For the six emotion targets (`grief, rage, joy, fear, love, regret`),
 `compute_affective_score` uses *closeness to per-effect trait targets*
-(see [directive_assembly.py:1095+](../shadow_loom/directive_assembly.py)):
+via a single shared ``_EFFECT_TRAITS`` table (see
+[directive_assembly.py](../shadow_loom/directive_assembly.py)) that
+maps each effect to ``(positive_indicators, inverse_indicators)``:
 
 ```python
-_EFFECT_TRAIT_MAP = {
-    "grief":  ["despair", "love", "hope"],
-    "rage":   ["anger", "rebelliousness", "resentment"],
-    ...
-}
-_EFFECT_DECREASE = {
-    "grief":  {"hope", "happiness", "contentment"},
+_EFFECT_TRAITS = {
+    "rage":  (["rage", "anger", "aggression", "vengefulness",
+               "cruelty", "vindictiveness", "resentment",
+               "rebelliousness", "volatility", "ruthlessness"],
+              ["calm", "patience", "composure", "compassion",
+               "warmth", "kindness", "tenderness", "restraint"]),
+    "love":  (["love", "affection", "passion", "tenderness",
+               "devotion", "warmth", "longing", "obsession",
+               "constancy", "sensuality", "compassion", "kindness"],
+              ["coldness", "cruelty", "anger", "resentment",
+               "vindictiveness", "rage"]),
     ...
 }
 ```
+
+Positive traits contribute their current value, inverse traits
+contribute one minus their current value; the score is the per-trait
+mean. Both lists drive scoring symmetrically — the previous form's
+``relevant`` filter only included the increase list, leaving the
+decrease set as dead code (a brave character routed through ``fear``
+got no fear-reducing credit because ``courage`` never entered the
+average).
+
+The vocabulary is calibrated against the actual trait names used in
+``example_worlds/``. The earlier narrow synonym lists
+(``["love", "affection", "sensuality"]`` for love;
+``["happiness", "hope", "contentment"]`` for joy) matched almost no
+real-world fixture: the corpus carries ``passion``, ``tenderness``,
+``devotion``, ``warmth``, ``longing``, ``vengefulness``, ``cruelty``,
+``vindictiveness`` — none of which appeared in the original maps.
+Result: 50 of 96 (cast × emotion) combinations across the 16
+fixtures collapsed silently to the worst-case ``+1.0`` fallback.
+With the calibrated vocabulary that drops to 19/96, all of which are
+genuinely traitless casts (``messianic_self_image``, ``moral_collapse``,
+``class_anxiety``, ``pomposity`` …) where the worst-case fallback is
+now the correct signal.
 
 For Nick at the syuzhet point of Amy's televised "rescue" return,
 `target_effect="rage"`, `entity_ids=["ENT_NICK"]`:
 
 ```text
-trajectory     trait                current_value    in decrease set?
-               anger                0.85             no   → 0.85
-               resentment           0.80             no   → 0.80
-               rebelliousness       0.20             no   → 0.20
-avg_match = (0.85 + 0.80 + 0.20) / 3 ≈ 0.617
-score = -0.617    (negative = strong match)
+trait              positive/inverse    current_value   contribution
+resentment         positive            0.80            0.80
+(no calm/patience/composure on Nick)
+avg_match = 0.80    →    score = -0.80
 ```
 
 Compare with `target_effect="grief"`:
 
 ```text
-trait    current_value     decrease?    contribution
-despair  0.55              no            0.55
-love     0.10              no            0.10
-hope     0.20              YES           1 - 0.20 = 0.80
-avg_match = 0.483    →    score = -0.483
+trait              positive/inverse    current_value   contribution
+(no despair/shame/longing/grief positive matches on Nick)
+(no hope/happiness/contentment inverse matches on Nick)
+→ no contributions, score = +1.0  (worst-case fallback)
 ```
 
-Rage scores better than grief at this anchor — and that match is what
-selects between candidate continuations in the directive cycle.
+Rage scores far better than grief at this anchor — and that match is
+what selects between candidate continuations in the directive cycle.
 
 ---
 

@@ -42,23 +42,23 @@ These modes control the gap between physical reality (fabula) and the reader's k
 
 **MYSTERY:**
 - Focus heavily on **sensory details** and the **aftermath** of events.
-- Portray the characters' confusion and their initial attempts to process the scene.
+- Render the focal character's confusion and their initial attempts to process the scene.
 - **Suppress all omniscient narration.** You MUST NOT hint at hidden causal ancestors.
 - Lock the prose strictly to the focal character's limited perspective.
-- The reader must feel the weight of the unknown — describe effects without causes.
+- Render effects without naming their causes; let absence carry the weight.
 
 **DRAMATIC IRONY:**
-- **Juxtapose** the character's naive internal monologue against the looming threat.
-- Generate prose where the character feels a **false sense of security** — making plans, relaxing, feeling confident.
-- The reader knows the truth; the character does not. Maximise this emotional friction.
-- NEVER let the character learn the secret during this scene.
+- **Render** the focal character's naive interior monologue against the on-page facts they have not connected.
+- Render the focal character with a **false sense of security** — making plans, relaxing, feeling confident.
+- Render the gap as the focal character's behaviour and dialogue, never as commentary or as references to what "the reader" or "the audience" knows.
+- NEVER let the focal character learn the secret during this scene.
 
 **SURPRISE (Prediction Error):**
 - Use **pacing** to execute the KL divergence (prediction error).
-- Write flowing, comfortable prose that **lulls** the reader into the expected outcome.
+- Open with flowing, comfortable prose consistent with the prior expected outcome.
 - Telegraph the prior expectation through character thoughts and environmental cues.
-- Then execute a **sharp, abrupt syntactical pivot** — often a short, blunt sentence — to reveal the hidden truth.
-- Force an immediate update to the reader's mental model.
+- Then execute a **sharp, abrupt syntactical pivot** — often a short, blunt sentence — that renders the hidden truth as it lands.
+- After the pivot, render the focal character's reorientation through behaviour, not through references to "the reader's mental model" or "prediction error".
 
 ### Category 2: Probabilistic Queries (Forward-Looking States)
 
@@ -68,7 +68,7 @@ These modes are driven by causal momentum and spatial distance between nodes.
 - **Dilate time.** Slow the pacing obsessively.
 - Focus on the **mechanical, step-by-step progression** of the threat (footsteps getting closer, a timer counting down, a blade being drawn).
 - Simultaneously keep the "hopeful" escape route **visible but just out of reach**.
-- Force the reader to agonize over the closing window of opportunity.
+- Render the closing window of opportunity through concrete on-page detail — not through commentary on what the reader feels.
 - Do NOT resolve the tension.
 
 **FEAR:**
@@ -162,4 +162,6 @@ Regardless of emotional mode, the LLM must simultaneously satisfy underlying phy
     - Do NOT comment on **counterfactual structure** — no "timeline", "divergence", "divergent", "branch", "branching", "alternative", "alternate", "the fracture", "the possible world", "the other world", "this reality", "another reality", "momentum", "the alternative holds".
     - Do NOT use **conditional or subjunctive framing** in author voice to describe what happened ("If he had…", "would have…", "could have…", "might have…") — render the events as plain past-tense narration of what actually occurred in this world. Subjunctive framings used by a *character* in dialogue or interior monologue (e.g.\ a regret directive that explicitly calls for "if only…" thought) are still permitted; the ban is on the **author's voice** doing it.
     - Do NOT inject **abstract aphorisms** about fate, mercy, possibility, choice, causality, or destiny that hover above the scene. Stay inside concrete action, sensory detail, dialogue, and character interiority grounded in the trait state.
-    - The single exception is the REGRET directive, which explicitly requires the character to articulate "if only…" logic in their *internal monologue* — that is character-voice, not author-voice meta-narration.
+    - Do NOT echo **brief vocabulary** verbatim. The Constraints, Rendering Directive, and effect-specific payloads are private notes addressed to YOU — the prose must never quote or paraphrase them. Specifically forbidden in `prose`: `"the reader"`, `"the audience"`, `"the focal character"`, `"the focal POV"`, `"the focal entity"`, `"on-page"`, `"off-page"`, `"alternate timeline"`, `"alternate path"`, `"the unchosen path"` (the *concept* must be rendered inside the character's interior monologue, not named in author voice), `"ego-graph"`, `"trait vectors"`, `"trait values"`, `"damage_potential"`, `"structural entanglement"`, `"structural pillar"`, `"central node"`, `"causal chain"`, `"causal edge"`, `"epistemic gap"`, `"belief set"`, `"KL divergence"`, `"prediction error"`, `"syuzhet"`, `"fabula"`, `"intensity="`, `"magnitude="`, `"score="`, `"_id"`-suffixed entity / event / location identifiers (refer to characters by their narrative names instead). When a constraint says "render the gap", render concrete behaviour and dialogue — do not write the word "gap".
+    - The single exception is the REGRET directive, which explicitly requires the character to articulate "if only…" logic in their *internal monologue* — that is character-voice, not author-voice meta-narration. Even there, the character's interior thought refers to the unchosen choice in concrete terms (the specific thing they did or did not do), never to "the alternate timeline" or "the counterfactual".
+    - **Pre-output scan.** Before returning the JSON, search your draft `prose` for every banned token listed above. If any appears, rewrite the offending sentence in scene-internal language and scan again. Returning prose that contains any banned token is a hard failure and will be rejected by the auditor.

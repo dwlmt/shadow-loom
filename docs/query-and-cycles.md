@@ -383,10 +383,14 @@ Step 2:
           run physics; prune affordance/inertia/propagation violators
         – rank survivors with the affective scorer:
             mystery        = hidden_ancestors / total_ancestors
-            dramatic_irony = irony_gaps / total_connections
-            suspense       = P(threat) − P(hope)         (Wilmot & Keller 2020)
-            surprise       = per-trait binary KL divergence
-            emotions       = trait-trajectory headroom × inertia evidence
+            dramatic_irony = mean over focal entities of
+                                 (revealed-but-unknown event mass)
+                                 / (total event mass + K)
+            suspense       = balance × stakes        (Wilmot & Keller 2020)
+            surprise       = mean per-trait (1 - exp(-KL(p || q)))
+            emotions       = mean closeness to per-effect trait targets
+                             (positive + inverse indicators, shared
+                              `_EFFECT_TRAITS` table)
         – wrap winner in CreativeBrief with typed ConstraintBlocks
             (do-not-reveal lines, MUST-NOT-learn guards, withheld-event lists,
              per-trait shift constraints, headroom evidence)

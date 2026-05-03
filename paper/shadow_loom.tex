@@ -29,7 +29,7 @@
        Graphical Causal Reasoning with a Game-Engine-Style
        Graphical World Model of Narrative}
 
-\author{David R.\ Wilmot \\
+\author{David Wilmot \\
         david.wilmot@gmail.com \\
         \texttt{\href{https://github.com/dwlmt/shadow-loom}{github.com/davidrwilmot/shadow-loom}} \\
         Released under AGPL-3.0-or-later + Non-Commercial Clause}
@@ -812,10 +812,32 @@ of belief sets of $F$ reconstructed at $t_f$.
 \end{equation}
 the fraction of $e$'s causes still hidden from the reader.
 
-\paragraph{Dramatic irony.} For each revealed causal edge
-$(a \to e)$ in which $a$ is not in $B(F, t_f)$, count one ``irony
-gap''; the score is the fraction of revealed causal connections
-that are gaps.
+\paragraph{Dramatic irony.} For each focal entity $c \in F$
+let $K_c$ be the set of events $c$ knows at the anchor: events
+$c$ participates in (as actor or target) whose fabula time falls
+at or before the syuzhet anchor's fabula frontier, plus events
+referenced in revealed utterances spoken by or addressed to $c$,
+plus events $c$ holds a \texttt{Belief} about. Writing
+$w_e$ for event $e$'s narrative intensity (default $1$), the
+irony score is the per-character mean intensity-weighted mass of
+revealed events the character does not know about, normalised by
+the total event mass plus a saturation constant $K$:
+\begin{equation}
+\label{eq:irony}
+\mathrm{Iro} = \frac{1}{|F|}
+\sum_{c \in F}
+\frac{\sum_{e \in \mathrm{rev}, e \notin K_c} w_e}{\sum_{e} w_e + K},
+\quad K = 1.
+\end{equation}
+The earlier ratio $\#\mathrm{gaps} / \#\mathrm{revealed{-}edges}$
+grew its numerator and denominator together and so plateaued at
+a story-specific asymptote by the third reveal --- on Reservoir
+Dogs it even \emph{decayed} from $0.25$ to $0.06$ as the
+protagonist became actor-of-record on more revealed edges.
+Normalising by the full event mass (a fixed denominator) lets the
+gap mass climb monotonically with reveals and \emph{fall} when
+characters acquire knowledge later in the story --- the
+dramatic-irony arc the formal definition is supposed to track.
 
 \paragraph{Suspense \citep{wilmot2020suspense}.} For each
 unrevealed event $e$ with strongest incoming causal weight
@@ -882,17 +904,49 @@ $p = \mathrm{actual}_T(x)$,
 D_{\mathrm{KL}}(p \,\|\, q) =
 p \log \tfrac{p}{q} + (1-p)\log \tfrac{1-p}{1-q},
 \end{equation}
-and the entity-level surprise is the mean over traits, normalised
-by $\log(1/\varepsilon)$ to $[0,1]$ for a small $\varepsilon$
-(default $\varepsilon = 0.01$). With no syuzhet anchor the reader
-is assumed omniscient and $\mathrm{Sur} = 0$.
+and the entity-level surprise is the mean over traits of the
+soft-saturated per-trait KL,
+\begin{equation}
+\label{eq:surprise-saturation}
+\mathrm{Sur} = \frac{1}{|\mathcal{T}|} \sum_{T \in \mathcal{T}}
+\big(1 - e^{-D_{\mathrm{KL}}(p \,\|\, q)}\big),
+\end{equation}
+which maps perceptually meaningful KLs in the $0.2$--$1.5$ band
+to the $0.18$--$0.78$ region of the gauge. The earlier
+$\overline{\mathrm{KL}}/\log(1/\varepsilon)$ form divided by the
+\emph{theoretical} binary-KL maximum ($\log(1/\varepsilon) \approx
+4.6$ at $\varepsilon = 0.01$), squashing the entire perceptual
+signal into the bottom $4\%$ of the gauge --- every example-world
+plot read as flat $\le 0.10$ even when canonical surprise traits
+(Macbeth's despair, Macduff's grief, Lady Macbeth's guilt)
+carried per-trait KLs of $0.27$--$0.50$. With no syuzhet anchor
+the reader is assumed omniscient and $\mathrm{Sur} = 0$.
 
 \paragraph{Six emotion scorers} (\texttt{grief, rage, joy, regret,
-love, fear}) declare which traits should move in which direction
-and score the headroom available, weighted by inertia evidence.
-The combined affective score requested by a
-\texttt{DirectiveQuery} is a weighted sum over the active
-functionals.
+love, fear}) score \emph{closeness} to a per-effect trait target.
+A shared \texttt{\_EFFECT\_TRAITS} table maps each effect to a
+pair $(P_e, I_e)$ of \emph{positive} and \emph{inverse} trait
+indicators, calibrated against the actual trait vocabulary of the
+example-world corpus. Letting $v(x, T)$ denote the current value
+of trait $T$ on entity $x$ (resolved via $\textsc{Reconstruct}$),
+the per-entity score is
+\begin{equation}
+\label{eq:emotion}
+\mathrm{Emo}_e(x) =
+\frac{\sum_{T \in P_e \cap \tau(x)} v(x, T) +
+      \sum_{T \in I_e \cap \tau(x)} \bigl(1 - v(x, T)\bigr)}
+     {|(P_e \cup I_e) \cap \tau(x)|},
+\end{equation}
+where $\tau(x)$ are the trait names $x$ carries. Both lists drive
+scoring symmetrically: an earlier filter applied $P_e$ only,
+leaving $I_e$ as dead code (a brave character routed through
+\texttt{fear} got no fear-reducing credit because
+\texttt{courage} never entered the average). When the
+intersection is empty --- a deliberately traitless cast for that
+effect --- the score falls back to the worst-case $+1$ rather
+than silently scoring at the midpoint. The combined affective
+score requested by a \texttt{DirectiveQuery} is a weighted sum
+over the active functionals.
 
 \paragraph{Two-axis sampling.} The same scorers are evaluated
 along the syuzhet axis (advancing $t_s$ only reveals more, so
@@ -1022,11 +1076,15 @@ provenance.
 
 \paragraph{Dramatic irony (Death on the Nile).} The reader knows
 Jacqueline and Simon are conspirators (\texttt{EVT\_PLAN\_HATCHED}
-revealed at low syuzhet); Poirot does not. For each later event
-$(a \to e)$ where $a$ is the conspiracy and $a \notin
-B(\text{ENT\_POIROT}, t_f)$, an irony gap is counted. The score
-sits high through the cruise scenes and only collapses at the
-denouement.
+revealed at low syuzhet); Poirot and the suspect pool do not.
+With $F = \{\text{ENT\_PENNINGTON}, \text{ENT\_VAN\_SCHUYLER},
+\text{ENT\_ALLERTON}\}$, the conspiracy and its downstream
+revealed effects sit in the
+$\sum_{e \in \mathrm{rev}, e \notin K_c} w_e$ numerator of
+Eq.~\ref{eq:irony} for every $c \in F$. The gauge climbs through
+the cruise scenes as Poirot's reveals accumulate without reaching
+the suspect pool, and falls only at the denouement when Poirot
+briefs the cast and the events enter every $K_c$.
 
 \paragraph{Suspense (Romeo and Juliet, tomb scene).} At the tomb
 $F=\{\text{ENT\_ROMEO}\}$, unrevealed events with Romeo as
@@ -1049,17 +1107,21 @@ present at low fabula time, only locked behind syuzhet, so
 re-extraction will not flag a miracle step.
 
 \paragraph{Emotion targets (Gone Girl, Brief Encounter).} The six
-trait-trajectory scorers (\texttt{grief, rage, joy, regret, love,
-fear}) declare which traits should move in which direction.
-On Gone Girl, the directive ``maximise grief in Nick'' resolves to
-required downshifts on \texttt{trust} and \texttt{hope} on
-\texttt{ENT\_NICK}, weighted by inertia evidence; the available
-headroom score determines whether the directive is even feasible
-at the chosen anchor. On Brief Encounter the same machinery
-realises \texttt{regret} as Laura's
-$\Delta(\texttt{self\_actualisation})$ headroom under a
-constant-supervision channel that never permits the choice to be
-made.
+emotion scorers (\texttt{grief, rage, joy, regret, love, fear})
+resolve their effect through the shared
+\texttt{\_EFFECT\_TRAITS} table
+(Eq.~\ref{eq:emotion}). On Gone Girl, the directive ``maximise
+grief in Nick'' is scored against grief's positive indicators
+(\texttt{despair, shame, longing, grief, anguish, mourning})
+and inverse indicators (\texttt{hope, joy, contentment,
+satisfaction}) intersected with Nick's actual trait set, with
+the available headroom against those targets determining whether
+the directive is even feasible at the chosen anchor. On Brief
+Encounter the same machinery realises \texttt{regret} as the gap
+between Laura's current $\texttt{self\_actualisation}$ and the
+regret-positive trait values \texttt{guilt, remorse, despair}
+under a constant-supervision channel that never permits the
+choice to be made.
 
 \subsection{Directive assembly --- Romeo and Juliet}
 \label{app:ex-directive}

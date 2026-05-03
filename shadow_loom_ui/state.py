@@ -818,10 +818,19 @@ class AppState:
         * snapshot/physics caches are flushed via the existing
           ``WORLD_STATE_CHANGED`` invalidation hook.
         """
+        # Set the version pointer BEFORE swapping world state so that
+        # any subscriber handling ``WORLD_STATE_CHANGED`` sees a
+        # consistent (new world_state, new version_row_id) pair. The
+        # previous order (load_world_state → set id) emitted
+        # WORLD_STATE_CHANGED while ``current_version_row_id`` still
+        # held the *previous* version's row id — silently violating
+        # the lockstep invariant the docstring promises and giving
+        # any panel that keys on (world_state, version_row_id) a
+        # one-frame view of stale lineage.
         self.fabula_cursor = None
         self.syuzhet_cursor = None
-        self.load_world_state(ws)
         self.current_version_row_id = version_row_id
+        self.load_world_state(ws)
         self.emit(StateEvent.FABULA_CURSOR_CHANGED, cursor=None)
         self.emit(StateEvent.SYUZHET_CURSOR_CHANGED, cursor=None)
         if version_number is not None:

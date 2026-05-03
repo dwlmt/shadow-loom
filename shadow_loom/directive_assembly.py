@@ -405,6 +405,65 @@ class CreativeBrief(BaseModel):
 
 
 # =====================================================================
+# Emotion → trait vocabulary
+# =====================================================================
+# Each effect maps to ``(positive_indicators, inverse_indicators)``:
+#   * positive — traits whose *high* value indicates the emotion
+#   * inverse  — traits whose *low* value indicates the emotion
+#
+# Vocabulary is calibrated against the actual trait names used across
+# the ``example_worlds/`` corpus (passion, tenderness, devotion, warmth,
+# longing, obsession, vengefulness, cruelty, vindictiveness, …) — the
+# previous narrow synonym lists (``["love", "affection", "sensuality"]``
+# for love; ``["happiness", "hope", "contentment"]`` for joy) matched
+# almost no real-world fixture, collapsing 50+ of the 96 emotion scores
+# into the worst-case ``+1.0`` "no relevant traits" fallback. Treats
+# ``positive`` and ``inverse`` symmetrically so the decrease arm is no
+# longer dead code (previously decrease-set traits not duplicated in
+# the increase list never entered the average).
+_EFFECT_TRAITS: Dict[str, Tuple[List[str], List[str]]] = {
+    "grief": (
+        ["grief", "despair", "shame", "sadness", "longing",
+         "vulnerability", "guilt"],
+        ["hope", "happiness", "contentment", "joy", "warmth",
+         "vitality", "resolve"],
+    ),
+    "rage": (
+        ["rage", "anger", "aggression", "vengefulness", "cruelty",
+         "vindictiveness", "resentment", "rebelliousness", "volatility",
+         "ruthlessness"],
+        ["calm", "patience", "composure", "compassion", "warmth",
+         "kindness", "tenderness", "restraint"],
+    ),
+    "joy": (
+        ["happiness", "hope", "contentment", "warmth", "joy",
+         "vitality", "tenderness", "wit"],
+        ["despair", "fear", "anxiety", "sadness", "grief", "shame",
+         "paranoia", "guilt"],
+    ),
+    "fear": (
+        ["fear", "paranoia", "anxiety", "vulnerability", "frailty",
+         "desperation"],
+        ["courage", "hope", "calm", "composure", "resolve", "bravado",
+         "endurance", "resilience"],
+    ),
+    "love": (
+        ["love", "affection", "passion", "tenderness", "devotion",
+         "warmth", "longing", "obsession", "constancy", "sensuality",
+         "compassion", "kindness"],
+        ["coldness", "cruelty", "anger", "resentment", "vindictiveness",
+         "rage"],
+    ),
+    "regret": (
+        ["guilt", "remorse", "shame", "regret", "despair", "longing",
+         "grief"],
+        ["happiness", "contentment", "hope", "resolve", "vitality",
+         "composure"],
+    ),
+}
+
+
+# =====================================================================
 # Engine
 # =====================================================================
 
@@ -836,6 +895,14 @@ class DirectiveAssembler:
     # ------------------------------------------------------------------
     # Dramatic Irony  (Epistemic Asymmetry — reader > character)
     # ------------------------------------------------------------------
+    # Same saturation idea as suspense: a small surface (one or two
+    # irony edges) shouldn't pin the gauge at 1.0 just because every
+    # revealed cause happens to be hidden from the focal cast. Tuned
+    # against ``example_worlds`` so canonical irony stories (Death on
+    # the Nile, Gone Girl, Reservoir Dogs) sit in the 0.3–0.8 band at
+    # their reveal-points rather than instantly saturating.
+    _IRONY_SURFACE_K: float = 1.0
+
     def compute_dramatic_irony_score(
         self,
         entity_ids: List[str],
@@ -843,34 +910,103 @@ class DirectiveAssembler:
     ) -> float:
         """Dramatic Irony: information asymmetry where reader knows more.
 
-        For each target entity, finds revealed causal edges (source event
-        is in the reader's syuzhet graph) that point **to** the entity.
-        If the source event is NOT in the character's belief targets, the
-        reader sees a threat/secret the character cannot — dramatic irony.
-        Returns a ratio in [0, 1].
+        For each focal entity, counts *intensity-weighted* revealed
+        events the focal entity does NOT know about, divided by the
+        **total** event mass plus a saturation constant ``K``:
+
+        .. math::
+
+           \\text{irony} =
+              \\frac{1}{|F|} \\sum_{c \\in F}
+              \\frac{\\sum_{e \\in \\text{revealed}, e \\notin K_c} w_e}
+                   {\\sum_{e \\in \\text{events}} w_e + K}
+
+        where :math:`F` is the focal cast, :math:`K_c` is what
+        character :math:`c` knows, and :math:`w_e` is event ``e``'s
+        intensity (defaults to ``1.0``).
+
+        Why this shape rather than the previous "cumulative
+        revealed-only ratio":
+
+        * The previous form normalised by the revealed-edge count, so
+          numerator and denominator grew together and the score
+          asymptoted to a story-specific plateau by anchor ~3 (e.g.
+          Macbeth held 0.55–0.67 from anchor 3 onward; Reservoir
+          Dogs *decayed* from 0.25 to 0.06 because the protagonist
+          became actor-of-record on more revealed edges over time).
+          Normalising by the **full event mass** (a fixed denominator)
+          lets the curve rise smoothly with reveals and fall when
+          characters acquire knowledge later, producing the
+          dramatic-irony arc the gauge is supposed to depict.
+        * The previous form scoped irony to causal edges whose target
+          was the focal entity. On every example_world that is
+          structurally degenerate: the focal cast (top-N by event
+          degree) is precisely the cast that participates as actor or
+          target in nearly every cause→focal edge, so the "character
+          doesn't know the cause" condition rarely fires (Death on
+          the Nile collapsed to flat-zero under that scoping). Real
+          irony isn't about the focal entity's own incoming causal
+          arrows — it's about *what the reader has been shown that
+          the focal character has not seen*, regardless of whether
+          that information happens to causally target them.
+        * Character knowledge is bounded by the syuzhet anchor's
+          fabula frontier, so a character isn't credited with
+          knowing their own future arc from anchor 0. This is what
+          allows late catch-ups (Macduff learning about his family,
+          Poirot's denouement) to actually pull the curve down.
+
+        The legacy "addressee-exclusion auto-counts as irony" branch
+        is dropped: it added ``1/1`` per excluded utterance regardless
+        of whether the excluded character had an epistemic gap,
+        biasing the score upward by a fixed amount that never decayed.
         """
         if syuzhet_anchor is None:
             return 0.0
 
         revealed = self._revealed_event_ids(syuzhet_anchor)
+        if not revealed:
+            return 0.0
 
-        irony_gaps = 0
-        total_connections = 0
+        # Fabula frontier: a character can plausibly know an event by
+        # direct participation only once that event has happened in
+        # narrative time. Use the latest fabula_time among revealed
+        # events — for plots told in chronological order this matches
+        # the syuzhet anchor exactly; for non-linear plots
+        # (Reservoir Dogs flashbacks, Gone Girl diary entries) it
+        # correctly admits earlier-fabula events the reader has just
+        # been shown.
+        events_by_id = {e.id: e for e in self.world_state.events}
+        fabula_frontier = max(
+            events_by_id[eid].fabula_time for eid in revealed
+        )
+
+        def _evt_w(evt) -> float:
+            return float(getattr(evt, "intensity", None) or 1.0)
+
+        total_mass = sum(_evt_w(e) for e in self.world_state.events)
+        if total_mass <= 0.0:
+            return 0.0
+
+        revealed_mass = sum(
+            _evt_w(events_by_id[eid]) for eid in revealed
+        )
+
+        per_character_gaps: list[float] = []
 
         for eid in entity_ids:
             ent = self.world_state.entities.get(eid)
             if not ent:
                 continue
 
-            # An entity is *aware* of an event when (a) they participate in
-            # it (actor or target — direct experience), (b) a revealed
-            # utterance addressed to them refers to the event (either as a
-            # target of the utterance or via a Belief acquired through the
-            # utterance), or (c) they hold a Belief whose target_id matches
-            # the event id.
-            events_known_by_character: set[str] = {
+            # An entity is *aware* of an event when (a) they participate
+            # in it (actor or target) AND it has happened by the fabula
+            # frontier, (b) a revealed utterance addressed to them (or
+            # spoken by them) refers to it, or (c) they hold a Belief
+            # whose target_id matches the event id.
+            known: set[str] = {
                 evt.id for evt in self.world_state.events
-                if eid in evt.actor_ids or eid in evt.target_ids
+                if (eid in evt.actor_ids or eid in evt.target_ids)
+                and evt.fabula_time <= fabula_frontier
             }
             for utt in self.world_state.events:
                 if utt.event_type != "utterance":
@@ -879,57 +1015,36 @@ class DirectiveAssembler:
                     continue
                 if eid not in utt.addressee_ids and eid != utt.speaker_id:
                     continue
-                # Treat any EVT_ id mentioned in the utterance's targets as
-                # something the addressee learns about.
                 for tid in utt.target_ids:
                     if tid.startswith("EVT_"):
-                        events_known_by_character.add(tid)
-            events_known_by_character |= {
+                        known.add(tid)
+            known |= {
                 b.target_id for b in ent.beliefs
                 if b.target_id.startswith("EVT_")
             }
 
-            # Revealed causal edges whose *cause* is an event targeting
-            # this entity. If the character has no awareness of that
-            # event, the reader sees a threat/secret the character cannot.
-            for ce in self.world_state.causal_topology:
-                if ce.target_id != eid:
-                    continue
-                if not ce.source_id.startswith("EVT_"):
-                    continue
-                if ce.source_id not in revealed:
-                    continue  # Reader doesn't know this either
-                total_connections += 1
-                if ce.source_id not in events_known_by_character:
-                    irony_gaps += 1
+            # Intensity-weighted mass of revealed events this character
+            # does NOT know — the per-character irony surface.
+            gap_mass = sum(
+                _evt_w(events_by_id[reid])
+                for reid in revealed
+                if reid not in known
+            )
+            per_character_gaps.append(
+                gap_mass / (total_mass + self._IRONY_SURFACE_K)
+            )
 
-            # Revealed utterance events whose addressees do NOT include
-            # this character. A revealed message that excludes the
-            # character but references events the reader has seen counts
-            # as dramatic irony.
-            for utt in self.world_state.events:
-                if utt.event_type != "utterance":
-                    continue
-                if utt.syuzhet_index > syuzhet_anchor:
-                    continue
-                if eid in utt.addressee_ids or eid == utt.speaker_id:
-                    continue
-                referenced_revealed = [
-                    tid for tid in utt.target_ids
-                    if tid.startswith("EVT_") and tid in revealed
-                ]
-                if not referenced_revealed:
-                    continue
-                total_connections += 1
-                irony_gaps += 1
-
-        if total_connections == 0:
+        if not per_character_gaps:
             return 0.0
 
-        score = min(irony_gaps / total_connections, 1.0)
+        score = min(
+            sum(per_character_gaps) / len(per_character_gaps), 1.0
+        )
         logger.debug(
-            "[DirectiveAssembly·DramaticIrony] gaps=%d / connections=%d = %.3f",
-            irony_gaps, total_connections, score,
+            "[DirectiveAssembly·DramaticIrony] revealed_mass=%.3f / "
+            "(total_mass=%.3f + K=%.2f), per-char gaps=%s, score=%.3f",
+            revealed_mass, total_mass, self._IRONY_SURFACE_K,
+            [round(g, 3) for g in per_character_gaps], score,
         )
         return round(score, 4)
 
@@ -1198,20 +1313,35 @@ class DirectiveAssembler:
                     p * math.log(p / q)
                     + (1 - p) * math.log((1 - p) / (1 - q))
                 )
-                total_kl += max(0.0, kl)
+                kl = max(0.0, kl)
+                # Per-trait soft saturation. The previous form averaged
+                # raw KL and divided by ``log(1/EPS) ≈ 4.6`` — the
+                # *theoretical* maximum when one side sits at EPS and
+                # the other at 1-EPS. In practice perceptually
+                # meaningful binary KLs sit in the 0.2–1.5 band
+                # (Macbeth's guilt 0.85 vs uninformed prior 0.5 yields
+                # KL=0.27; despair 0.95 vs 0.5 yields 0.49) so dividing
+                # by 4.6 compressed the entire signal into a 4% slice
+                # of the gauge — flat-looking even on canonical
+                # surprise plots like Death on the Nile and Gone Girl.
+                #
+                # ``1 - exp(-kl)`` keeps each per-trait contribution in
+                # [0, 1] and maps perceptual KLs to perceptual gauge
+                # positions: KL=0.27→0.24, KL=0.5→0.39, KL=1.0→0.63,
+                # KL=2.0→0.86. Saturates smoothly so extreme reveals
+                # still asymptote toward 1.0 without throwing away
+                # information at the high end.
+                total_kl += 1.0 - math.exp(-kl)
                 trait_count += 1
 
         if trait_count == 0:
             return 0.0
 
-        max_kl = math.log(1 / EPS)
-        avg_kl = total_kl / trait_count
-        score = min(avg_kl / max_kl, 1.0)
+        score = min(total_kl / trait_count, 1.0)
 
         logger.debug(
-            "[DirectiveAssembly·Surprise] avg_kl=%.4f max_kl=%.4f normalised=%.3f "
-            "over %d traits",
-            avg_kl, max_kl, score, trait_count,
+            "[DirectiveAssembly·Surprise] mean(1-exp(-kl))=%.4f over %d traits",
+            score, trait_count,
         )
         return round(score, 4)
 
@@ -1257,47 +1387,38 @@ class DirectiveAssembler:
         # distance from the trait to its target (1.0). Subtracting that
         # from the score made an entity at value=0.0 score "best" for
         # grief/rage/etc., the exact opposite of what the affective
-        # loss should reward. We now compute *closeness to target*:
-        #   • increase set: target = 1.0, closeness = current_value
-        #   • decrease set: target = 0.0, closeness = 1 - current_value
+        # loss should reward. We compute *closeness to target*:
+        #   • positive trait: target = 1.0, closeness = current_value
+        #   • inverse trait:  target = 0.0, closeness = 1 - current_value
         # so an entity already saturated in the right direction yields
         # ``score ≈ -1`` (strong match) and an entity stuck on the wrong
-        # side yields ``score ≈ 0`` (no match).
+        # side yields ``score ≈ 0`` (no match). Both positive and
+        # inverse traits enter the average — the previous form's
+        # ``relevant`` filter only included the increase list, leaving
+        # the decrease set as dead code (e.g. a brave character got no
+        # fear-reducing credit because ``courage`` never entered the
+        # average).
         else:
-            _EFFECT_TRAIT_MAP: Dict[str, List[str]] = {
-                "grief": ["despair", "love", "hope"],
-                "rage": ["anger", "rebelliousness", "resentment"],
-                "joy": ["happiness", "hope", "contentment"],
-                "fear": ["fear", "paranoia", "anxiety"],
-                "love": ["love", "affection", "sensuality"],
-                "regret": ["guilt", "remorse", "despair"],
-            }
-            _EFFECT_DECREASE: Dict[str, set] = {
-                "grief": {"hope", "happiness", "contentment"},
-                "rage": {"patience", "calm"},
-                "joy": {"despair", "fear", "anxiety", "sadness"},
-                "fear": {"courage", "hope", "calm"},
-                "love": {"anger", "resentment"},
-                "regret": {"happiness", "contentment", "hope"},
-            }
+            positive, inverse = _EFFECT_TRAITS.get(target_effect, ([], []))
+            positive_set = set(positive)
+            inverse_set = set(inverse)
 
             trajectories = self.compute_trait_trajectories(entity_ids)
-            target_traits = _EFFECT_TRAIT_MAP.get(target_effect, [])
-            decrease_set = _EFFECT_DECREASE.get(target_effect, set())
-            relevant = [
-                traj for traj in trajectories
-                if traj.trait_name in target_traits
-            ]
-            if relevant:
-                # Closeness of each trait to its per-effect target.
-                avg_match = sum(
-                    (1.0 - traj.current_value) if traj.trait_name in decrease_set
-                    else traj.current_value
-                    for traj in relevant
-                ) / len(relevant)
+            contributions: List[float] = []
+            for traj in trajectories:
+                if traj.trait_name in positive_set:
+                    contributions.append(traj.current_value)
+                elif traj.trait_name in inverse_set:
+                    contributions.append(1.0 - traj.current_value)
+
+            if contributions:
+                avg_match = sum(contributions) / len(contributions)
                 score -= avg_match
-                logger.debug("[DirectiveAssembly·AffectiveScore] effect=%s avg_match=%.3f score=%.4f",
-                             target_effect, avg_match, score)
+                logger.debug(
+                    "[DirectiveAssembly·AffectiveScore] effect=%s "
+                    "contribs=%d avg_match=%.3f score=%.4f",
+                    target_effect, len(contributions), avg_match, score,
+                )
             else:
                 # No traits in the entity match the per-effect target
                 # set — we have nothing to score against. Treat this as
@@ -1306,10 +1427,10 @@ class DirectiveAssembler:
                 # as the success path: structural effects subtract a
                 # value in ``[0, 1]`` and emotion successes subtract
                 # a closeness in ``[0, 1]``, giving a best-case score
-                # of ``-1.0``. The fallback is the symmetric worst-case
-                # of ``+1.0`` rather than a half-step that silently
-                # ranked an unmeasurable trait set above genuinely
-                # bad matches.
+                # of ``-1.0``. With the calibrated vocabulary above
+                # this branch should now fire only for entities with
+                # genuinely no emotional traits at all (e.g. inanimate
+                # objects routed in by mistake).
                 score += 1.0
 
         return round(score, 4)
@@ -1536,9 +1657,11 @@ class DirectiveAssembler:
                         f"[MYSTERY CONSTRAINT]: The event '{most_mysterious_evt.id}' "
                         f"({most_mysterious_evt.description}) has "
                         f"{len(most_hidden)} hidden causal predecessor(s) that "
-                        f"the reader has NOT yet seen. You MUST NOT reveal or "
-                        f"hint at these causes. The reader should feel the weight "
-                        f"of the unknown (mystery_score={mystery_score:.2f})."
+                        f"have NOT been revealed on-page. You MUST NOT reveal or "
+                        f"hint at these causes. Render the effect through aftermath "
+                        f"and unanswered detail; do not name or hint at the missing "
+                        f"causes on-page "
+                        f"(mystery_score={mystery_score:.2f})."
                     ),
                     evidence={
                         "effect_event_id": most_mysterious_evt.id,
@@ -1690,13 +1813,14 @@ class DirectiveAssembler:
                     constraint_type="epistemic",
                     priority="hard",
                     instruction=(
-                        f"[DRAMATIC IRONY]: The reader knows about "
-                        f"'{src_evt.id}' ({src_evt.description}) which "
-                        f"causally affects {eid}, but {eid} is UNAWARE "
-                        f"of this connection. Write the scene so the "
-                        f"reader feels this information asymmetry. Show "
-                        f"{eid} acting in ignorance while the reader "
-                        f"knows the truth. The character MUST NOT learn "
+                        f"[DRAMATIC IRONY]: The event "
+                        f"'{src_evt.id}' ({src_evt.description}) has been "
+                        f"revealed on-page and causally affects {eid}, but "
+                        f"{eid} is UNAWARE of this connection. Render the "
+                        f"information asymmetry through {eid}'s on-page "
+                        f"behaviour and dialogue \u2014 their actions and "
+                        f"choices must show the gap, never narrate it. Show "
+                        f"{eid} acting in ignorance. {eid} MUST NOT learn "
                         f"about this connection during this scene "
                         f"(irony_score={irony_score:.2f})."
                     ),
@@ -1731,8 +1855,9 @@ class DirectiveAssembler:
                         f"[EPISTEMIC CONSTRAINT]: {widest.entity_id} believes "
                         f"'{widest.believed_state}' about "
                         f"{widest.belief_target_id}, but the truth is "
-                        f"'{widest.actual_state}'. The audience MUST see "
-                        f"through this character's ignorance. "
+                        f"'{widest.actual_state}'. The prose MUST keep "
+                        f"{widest.entity_id} ignorant on-page; render their "
+                        f"misplaced confidence through behaviour and dialogue. "
                         f"You MUST NOT allow {widest.entity_id} to learn "
                         f"the truth "
                         f"(magnitude={widest.gap_magnitude:.2f})."
@@ -1781,8 +1906,9 @@ class DirectiveAssembler:
                         f"'{widest.believed_state}' about "
                         f"{widest.belief_target_id}, but the truth is "
                         f"'{widest.actual_state}'. You MUST NOT reveal "
-                        f"the truth to this character. Write the scene so "
-                        f"the reader feels the gap "
+                        f"the truth to this character. Render the gap as "
+                        f"{widest.entity_id}'s on-page actions and "
+                        f"misplaced confidence "
                         f"(magnitude={widest.gap_magnitude:.2f})."
                     ),
                     evidence={
@@ -1820,14 +1946,12 @@ class DirectiveAssembler:
                         f"[NARRATIVE STRUCTURE]: The event "
                         f"'{most_displaced.event_id}' "
                         f"(fabula_time={most_displaced.fabula_time}) "
-                        f"happened chronologically but is withheld from "
-                        f"the reader until syuzhet_index="
-                        f"{most_displaced.syuzhet_index} "
+                        f"happened chronologically but is withheld until "
+                        f"syuzhet_index={most_displaced.syuzhet_index} "
                         f"(displacement="
                         f"{most_displaced.displacement:+.2f}). "
-                        f"You MUST NOT reference or spoil this event. "
-                        f"The reader must not learn "
-                        f"'{most_displaced.description}' yet."
+                        f"You MUST NOT reference, spoil, or hint at this event. "
+                        f"Do not state '{most_displaced.description}' on-page yet."
                     ),
                     evidence={
                         "event_id": most_displaced.event_id,
@@ -1902,11 +2026,12 @@ class DirectiveAssembler:
                     priority="hard",
                     instruction=(
                         f"[SURPRISE CONSTRAINT]: The prediction error "
-                        f"between the reader's expectations and the "
+                        f"between the prior expected outcome and the "
                         f"actual revelation is {surprise_score:.2f} "
-                        f"(normalised KL divergence). The reader's "
-                        f"mental model must be forcefully updated. "
-                        f"Maximise the shock of this moment."
+                        f"(normalised KL divergence). Render the moment "
+                        f"of the pivot through a sharp syntactical break "
+                        f"and a short, blunt sentence on-page \u2014 do not "
+                        f"name 'the surprise', 'the shock', or 'the reader'."
                     ),
                     evidence={"surprise_kl_score": surprise_score},
                 ))
@@ -1959,26 +2084,15 @@ class DirectiveAssembler:
         # EMOTION effects (trait-shift)
         # =============================================================
         elif effect in ("grief", "rage", "joy", "fear", "love", "regret"):
-            # Map effects to likely trait targets
-            _effect_trait_map: Dict[str, List[str]] = {
-                "grief": ["despair", "love", "hope"],
-                "rage": ["anger", "rebelliousness", "resentment"],
-                "joy": ["happiness", "hope", "contentment"],
-                "fear": ["fear", "paranoia", "anxiety"],
-                "love": ["love", "affection", "sensuality"],
-                "regret": ["guilt", "remorse", "despair"],
-            }
-            # Traits that should DECREASE for each effect
-            _effect_decrease: Dict[str, set] = {
-                "grief": {"hope", "happiness", "contentment"},
-                "rage": {"patience", "calm"},
-                "joy": {"despair", "fear", "anxiety", "sadness"},
-                "fear": {"courage", "hope", "calm"},
-                "love": {"anger", "resentment"},
-                "regret": {"happiness", "contentment", "hope"},
-            }
-            target_traits = _effect_trait_map.get(effect, [])
-            decrease_set = _effect_decrease.get(effect, set())
+            # Use the shared module-level vocabulary (calibrated against
+            # the example_worlds corpus). Both the increase
+            # (``positive``) and decrease (``inverse``) lists drive
+            # constraint generation so e.g. a brave character routed
+            # through ``fear`` correctly produces a "courage must drop"
+            # constraint, not silently nothing.
+            positive, inverse = _EFFECT_TRAITS.get(effect, ([], []))
+            target_traits = set(positive) | set(inverse)
+            decrease_set = set(inverse)
 
             for traj in trajectories:
                 if traj.trait_name in target_traits or not target_traits:
@@ -2063,10 +2177,10 @@ class DirectiveAssembler:
                 sensory_focus="wide",
                 stylistic_instructions=[
                     "Focus heavily on sensory details and the aftermath of events.",
-                    "Portray the characters' confusion and initial processing of the scene.",
-                    "Suppress any omniscient narration that might hint at hidden causal ancestors.",
+                    "Render the focal character's confusion and initial processing of the scene.",
+                    "Suppress all omniscient narration; do not hint at hidden causes.",
                     "Lock the prose strictly to the focal character's limited perspective.",
-                    "Describe effects without causes — the reader must feel the weight of the unknown.",
+                    "Render effects without naming their causes; let absence carry the weight.",
                 ],
             )
 
@@ -2077,11 +2191,11 @@ class DirectiveAssembler:
                 pacing="normal",
                 sensory_focus="normal",
                 stylistic_instructions=[
-                    "Juxtapose the character's naive internal monologue against the looming threat the reader knows about.",
-                    "Generate prose where the character feels a false sense of security.",
-                    "Show the character making plans based on incomplete information.",
-                    "Maximise the emotional friction between the reader's knowledge and the character's ignorance.",
-                    "The character MUST NOT learn the truth during this scene.",
+                    "Render the focal character's naive interior monologue against the on-page facts the character has not yet connected.",
+                    "Show the focal character acting on a false sense of security — making plans, relaxing, feeling confident.",
+                    "Show the focal character making decisions on incomplete information.",
+                    "Render the gap as behaviour and dialogue, never as commentary.",
+                    "The focal character MUST NOT learn the withheld truth during this scene.",
                 ],
             )
 
@@ -2093,11 +2207,11 @@ class DirectiveAssembler:
                 sensory_focus="normal",
                 tone_arc="comfortable_flow → abrupt_shock",
                 stylistic_instructions=[
-                    "Begin with flowing, comfortable prose that lulls the reader into the expected outcome.",
-                    "Telegraph the reader's prior expectation through character thoughts and environmental cues.",
+                    "Open with flowing, comfortable prose consistent with the prior expected outcome.",
+                    "Telegraph the prior expectation through character thoughts and environmental cues.",
                     "At the moment of revelation, execute a sharp syntactical pivot.",
-                    "Use a short, blunt sentence to reveal the hidden truth.",
-                    "Force an immediate update to the reader's mental model — maximise prediction error.",
+                    "Use a short, blunt sentence to render the hidden truth as it lands.",
+                    "After the pivot, render the focal character's reorientation through behaviour, not commentary.",
                 ],
             )
 
@@ -2114,8 +2228,8 @@ class DirectiveAssembler:
                 stylistic_instructions=[
                     "Dilate time — slow the pacing obsessively.",
                     "Focus on the mechanical, step-by-step progression of the threat (footsteps, ticking clocks, closing distance).",
-                    "Keep the 'hopeful' escape route visible in the prose but physically just out of reach.",
-                    "Force the reader to agonize over the closing window of opportunity.",
+                    "Keep the hopeful escape route visible in the prose but physically just out of reach.",
+                    "Render the closing window of opportunity through concrete on-page detail, not commentary.",
                     "Do NOT resolve the tension in this scene — maintain both doom and hope.",
                 ],
             )
@@ -2164,11 +2278,11 @@ class DirectiveAssembler:
                 sensory_focus="normal",
                 tone_arc="harsh_reality ↔ agonizing_visualization",
                 stylistic_instructions=[
-                    "Weave the counterfactual graph directly into the character's internal monologue.",
-                    "The prose MUST explicitly articulate 'if only...' logic.",
-                    "Contrast the harsh sensory reality of the present with the character's visualization of the alternate timeline.",
-                    "Do NOT simply state the character is sad — render the specific alternate path they failed to choose.",
-                    "Alternate between the bleak present and the imagined better world, each making the other more painful.",
+                    "Render the counterfactual content INSIDE the focal character's interior monologue as their own 'if only…' thought; never in author voice and never as a named structural object.",
+                    "The focal character's interior monologue MUST articulate concrete 'if only…' logic about the specific choice they did not take.",
+                    "Contrast the harsh sensory reality of the present moment with the focal character's interior visualisation of the path they did not choose.",
+                    "Do NOT simply state the focal character is sad — render the specific choice they failed to make through their interior thought.",
+                    "Alternate inside the focal character's POV between the bleak present and the imagined unchosen path; never step outside as a narrator pointing at the contrast.",
                 ],
             )
 
@@ -2179,10 +2293,10 @@ class DirectiveAssembler:
                 pacing="dilated",
                 sensory_focus="absence",
                 stylistic_instructions=[
-                    "Focus on ABSENCE — describe the physical space left behind by the lost entity.",
-                    "Use fragmented or numb prose reflecting the system's loss of a structural pillar.",
+                    "Focus on ABSENCE — render the physical space left behind by the lost figure.",
+                    "Use fragmented or numb prose that mirrors the focal character's disrupted interiority.",
                     "Render the silence where a voice used to be, the empty chair, the cold side of the bed.",
-                    "The character's ego-graph has lost a central node — reflect this structural collapse in the prose's coherence.",
+                    "Render the focal character's disorientation through concrete sensory absences and broken routine, not through structural commentary.",
                     "Short sentences. Disconnected observations. The world feels wrong.",
                 ],
             )
@@ -2200,9 +2314,9 @@ class DirectiveAssembler:
                 stylistic_instructions=[
                     "Execute a tonal shift from passive sorrow to active, targeted hostility.",
                     "The prose accelerates as focus narrows obsessively onto the perpetrator.",
-                    "Reflect the character marshaling their damage_potential trait vectors.",
-                    "Show the character preparing to initiate a retaliatory causal chain.",
-                    "The grief doesn't disappear — it transmutes into directed kinetic energy.",
+                    "Render the focal character's body marshalling the capacity to do harm — clenched hands, quickened pulse, hardened gaze — not abstract trait language.",
+                    "Show the focal character preparing to act on the perpetrator (a step toward, a weapon picked up, a plan crystallising in dialogue or thought).",
+                    "The grief does not disappear — render it transmuting into directed motion.",
                 ],
             )
 
@@ -2215,11 +2329,11 @@ class DirectiveAssembler:
                 pacing="normal",
                 sensory_focus="normal",
                 stylistic_instructions=[
-                    "Demonstrate structural entanglement through mirrored reactions.",
-                    "If Entity A takes a hit, Entity B reacts instantly — prioritizing A's safety over their own.",
-                    "Highlight shared physical and emotional proximity.",
-                    "Show harm-to-A equaling harm-to-B through the coupled entity's involuntary response.",
-                    "Render the entanglement through action, not declaration — show, never tell.",
+                    "Render the bond through mirrored on-page reactions between the paired characters.",
+                    "If one of the pair takes a hit, the other reacts instantly — prioritising the partner's safety over their own.",
+                    "Render shared physical and emotional proximity through concrete blocking, gaze, touch.",
+                    "Show harm-to-one as harm-to-the-other through the partner's involuntary response — never name it as 'entanglement' or 'coupling'.",
+                    "Render the bond through action, never through declaration; show, never tell.",
                 ],
             )
 
