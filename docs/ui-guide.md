@@ -252,3 +252,5 @@ hang fixes".
 * [query-and-cycles.md](query-and-cycles.md) — the eight query types that the chat box and the **Reasoning** tab build.
 * [mcp-guide.md](mcp-guide.md) — the agent-facing equivalent of the workspace; the active version pointer is shared so the UI and an MCP client always see the same tip.
 * [use-cases.md](use-cases.md) §5 — the **Editor** tab and the manual-editing workflow.
+* [paper/shadow_loom.pdf](../paper/shadow_loom.pdf) **Appendix D** (`app:ui`) — the same eight tabs described tab-by-tab with example sessions on bundled fixtures (Macbeth, Death on the Nile, Reservoir Dogs, Romeo and Juliet, Gone Girl).
+* [paper/shadow_loom.pdf](../paper/shadow_loom.pdf) **Appendix B** (`app:walkthrough`) — an end-to-end narrative walkthrough of the pipeline that the UI exposes, using the *Macbeth* fixture from Step 0 (the user typing a query) through Step 8 (audit, re-extraction, and merge).

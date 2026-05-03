@@ -1234,3 +1234,4 @@ the fixture name and then any of the query tools (`intervene`,
 * [academic-foundations.md](academic-foundations.md) — Pearl, Genette, Greimas, Sternberg, Halpern, Wilmot — the literature behind every named concept here.
 * [use-cases.md](use-cases.md) — *what the system is for*, in audience-first terms.
 * [ui-guide.md](ui-guide.md) — how to drive these queries from the NiceGUI workspace.
+* [paper/shadow_loom.pdf](../paper/shadow_loom.pdf) **Appendix C** (`app:examples`) — the same per-stage worked examples (Macbeth schema, AMWN sandbox, propagation under "Impact > Inertia", mystery / dramatic irony / suspense / surprise on Macbeth, Death on the Nile, Romeo and Juliet, Reservoir Dogs, directive assembly on Romeo and Juliet, audit on Gone Girl) presented in concise paper form with formal equation references.

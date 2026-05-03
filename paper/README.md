@@ -38,7 +38,27 @@ Per the brief, the paper:
   than as a benchmarked NLP system.
 - Argues relevance to future NLP / reasoning work and to
   computational social science.
-- Keeps the main body to 4 pages.
+- Keeps the main body short (around 5 pages).
 - Defers all definitions and equations (schema, ingestion, AMWN
   sandbox, causal physics, narrative physics, generation, audit) to
-  the appendix.
+  Appendix A.
+- Provides an extended end-to-end narrative walkthrough of the whole
+  pipeline on the *Macbeth* fixture in Appendix B
+  (`app:walkthrough`), every intermediate object shown.
+- Provides per-stage worked examples drawn from the bundled plot
+  fixtures in Appendix C (`app:examples`).
+- Provides a dedicated appendix on the authoring user interface ---
+  every tab, the version sidebar, the cross-tab event bus, and
+  example sessions on real fixtures --- in Appendix D (`app:ui`).
+
+## Cross-references to the Markdown docs
+
+The paper appendices are intentionally aligned with the Markdown
+documentation in `../docs/`:
+
+| Paper appendix | Companion markdown doc |
+|---|---|
+| App. A (`app:defs`) | [`docs/architecture.md`](../docs/architecture.md), [`docs/academic-foundations.md`](../docs/academic-foundations.md) |
+| App. B (`app:walkthrough`) | [`docs/pipeline-walkthrough.md`](../docs/pipeline-walkthrough.md), [`docs/pipeline-by-example.md`](../docs/pipeline-by-example.md) |
+| App. C (`app:examples`) | [`docs/model-examples.md`](../docs/model-examples.md), [`docs/use-cases.md`](../docs/use-cases.md) |
+| App. D (`app:ui`) | [`docs/ui-guide.md`](../docs/ui-guide.md) |

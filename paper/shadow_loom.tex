@@ -119,7 +119,13 @@ reasoning over it symbolically
 \citep{pearl2009causality,halpern2016actual,correa2025amwn},
 using the LLM only as a constrained renderer
 \citep{riedlyoung2010narrative,yao2019planwrite,
-goldfarbtarrant2020aristotelian,yang2023doc}.
+goldfarbtarrant2020aristotelian,yang2023doc}. Concretely, a
+query like ``what if Macbeth refuses to murder Duncan?''\ becomes
+a rung-2 do-operation on a typed event graph extracted from the
+play (App.~\ref{app:ex-amwn}) rather than a free-form prompt to
+a language model; ``does Poirot know the conspirators are still
+lovers?''\ becomes a finite belief-set membership test
+(App.~\ref{app:ex-narrative}) rather than a single forward pass.
 
 \paragraph{Motivation 1: counterfactuals are exactly where LLMs
 struggle.} Pearl's hierarchy is provably non-collapsible. Rung-3
@@ -195,7 +201,31 @@ is borrowed; Section~\ref{sec:rationale} gives the design
 rationale; Section~\ref{sec:relevance} discusses relevance to NLP,
 reasoning, and social science; Section~\ref{sec:limits} states the
 limitations honestly. Equations and per-stage definitions are in
-the appendix.
+App.~\ref{app:defs}; an extended narrative walkthrough of the
+whole loop on a single fixture is in App.~\ref{app:walkthrough};
+worked examples drawn from the sixteen bundled plot fixtures
+follow in App.~\ref{app:examples}; and a separate appendix on the
+authoring user interface, with screenshots and step-by-step
+example sessions, is in App.~\ref{app:ui}.
+
+\paragraph{How to read this paper.} The main text is intentionally
+short. It states the design, situates it in the literature, and
+records what is novel as a combination. Readers who want to
+understand the symbolic machinery in detail --- the schema, the
+ego-graph extraction, the do-operator, the abductive
+counterfactual, the four affective scorers, the brief-and-audit
+loop --- should treat App.~\ref{app:defs} as the authoritative
+specification. App.~\ref{app:walkthrough} is a long-form
+description of the same pipeline expressed as a story:
+\emph{Macbeth} is fed in as raw prose and followed step-by-step
+through ingestion, intervention, propagation, scoring, rendering,
+and audit, with every intermediate object shown. The eight
+example sub-appendices in App.~\ref{app:examples} then show how
+each individual stage manifests on a different bundled fixture.
+App.~\ref{app:ui} is for readers who want to understand or use the
+authoring workspace; it cross-links every UI surface to the
+pipeline stage it exposes and includes example sessions on real
+fixtures.
 
 
 \section{Pipeline overview}
@@ -253,6 +283,12 @@ detects ``miracle steps'' (state changes with no licensing edge in
 the brief), and either accepts the version or re-runs generation
 with the auditor's feedback appended, up to a configurable retry
 budget.
+
+The entire loop is exposed both through a NiceGUI authoring
+workspace (eight cross-linked tabs over a versioned project DAG;
+App.~\ref{app:ui}) and through a Model-Context-Protocol server
+with roughly forty tools, so a downstream agent can drive
+shadow-branch creation, scoring, and promotion programmatically.
 
 
 \section{Theoretical lineage and computational counterparts}
@@ -538,7 +574,8 @@ contribution is the substrate, not its calibration.
 \paragraph{Author tooling.} The same machinery surfaces in a
 NiceGUI workspace and a Model-Context-Protocol server with around
 forty tools, exposing the graph, the affective scorers, and the
-version DAG to either human authors or LLM agents.
+version DAG to either human authors or LLM agents. The workspace
+is described component-by-component in App.~\ref{app:ui}.
 
 \paragraph{An invitation to other research communities.}
 The substrate is deliberately domain-agnostic at the graph level:
@@ -1004,5 +1041,574 @@ re-runs generation with the audit feedback appended, up to
 re-extracted into a new \texttt{VersionRow}; counterfactual
 branches land on \texttt{world\_id="shadow"} and only become canon
 via explicit \texttt{promote\_branch} \citep{correa2025amwn}.
+
+\section{End-to-end walkthrough on \emph{Macbeth}}
+\label{app:walkthrough}
+
+This appendix describes a single complete pass of the pipeline in
+plain prose. The goal is to make every intermediate object
+inspectable to a reader who has read the main text but has not
+read the source. The fixture used throughout is
+\texttt{example\_worlds/macbeth.py}, paired with the synopsis in
+\texttt{sample\_plots/macbeth.txt}; the query is the canonical
+counterfactual ``what if Macbeth refuses to murder Duncan?''.
+The same loop runs identically on the other fifteen bundled
+fixtures.
+
+\subsection{Step 0: the source text and the user's query}
+\label{app:wk-source}
+
+The user opens the workspace, drops the synopsis into the
+\textsc{Story} tab, and clicks \emph{Save \& Re-ingest}. The
+synopsis is a five-act prose summary in the public-domain
+register: the witches on the heath, Duncan's offer of the
+Cawdor title, Lady Macbeth's persuasion, the murder in
+Inverness, the banquet, the apparitions, the slaughter at
+Macduff's castle, the sleepwalking scene, Birnam Wood, and the
+final duel. After ingestion the user types a query into the
+\textsc{Reasoning} tab: \emph{``Counterfactual: Macbeth refuses
+to murder Duncan at Inverness. Show what changes for Macduff,
+Banquo, Malcolm, and the witches, and re-render the banquet
+scene.''} The query is parsed by
+\texttt{query\_parsing.parse\_query} into a typed
+\texttt{CounterfactualQuery} with focal entities
+$F = \{\text{ENT\_MACBETH}\}$, target
+$X = \text{EVT\_DUNCAN\_MURDER}$, intervention value
+$x = \oslash$ (do-not-occur), and a re-render directive scoped
+to the banquet's syuzhet window.
+
+\subsection{Step 1: ingestion in detail}
+\label{app:wk-ingest}
+
+Ingestion is the only stage where the LLM is allowed to author
+graph structure rather than prose. It is a fan-out / fan-in
+pattern over the chunked source.
+
+\paragraph{Ontology pre-pass.} Five extraction agents run over the
+full text in parallel: \texttt{ontology\_locations} produces
+\texttt{LOC\_HEATH}, \texttt{LOC\_INVERNESS\_CASTLE},
+\texttt{LOC\_FORRES\_COURT}, and so on, each with an initial
+\texttt{ambient\_state} dictionary; \texttt{ontology\_objects}
+extracts \texttt{OBJ\_BLOODY\_DAGGERS},
+\texttt{OBJ\_LETTER}, and \texttt{OBJ\_CROWN} with explicit
+\texttt{Affordance} lists; \texttt{ontology\_entities} produces
+\texttt{ENT\_MACBETH}, \texttt{ENT\_LADY\_MACBETH},
+\texttt{ENT\_DUNCAN}, and the rest, each as an \texttt{Entity}
+with a sparse initial \texttt{TraitVector} bundle, beliefs, and a
+first-appearance \texttt{location\_id};
+\texttt{ontology\_world\_traits} introduces the world-level
+named latents (\texttt{WORLD\_AMBITION},
+\texttt{WORLD\_FATE}, \texttt{WORLD\_GUILT}) that act as common
+causes; and \texttt{ontology\_aliases} builds a fuzzy alias table
+(``Lord of Glamis'' $\mapsto$ \texttt{ENT\_MACBETH}). The result
+is a populated \texttt{GlobalRegister}.
+
+\paragraph{Per-chunk specialist fan-out.} The text is chunked into
+$\sim 800$-token windows aligned on paragraph boundaries. Each
+chunk dispatches three concurrent specialist agents that share the
+\texttt{GlobalRegister} as system context: \texttt{physics\_extraction}
+produces \texttt{EventNode}s with \texttt{event\_type} drawn from
+\{\texttt{choice, outcome, revelation, utterance}\},
+\texttt{causal} edges with \texttt{causality\_type}, and
+\texttt{spatial} edges (e.g.\ a \texttt{connected\_to} edge from
+\texttt{LOC\_INVERNESS\_CASTLE} to \texttt{LOC\_FORRES\_COURT});
+\texttt{social\_extraction} produces \texttt{RelationshipEdge}s
+with per-axis \texttt{RelationshipMetric}s for affinity, fear, and
+power dynamic, and the \texttt{Channel}s (the witches' prophecy
+channel, the dinner-table channel at the banquet, the diary-style
+private channel of Lady Macbeth's letter); and
+\texttt{consequences\_extraction} writes the authoritative
+\texttt{state\_timeline} entries on each entity, including the
+inertia bumps that record how shocking events make traits
+\emph{harder} to dislodge afterwards (Macbeth's \texttt{guilt}
+inertia rises from $0.25$ to $0.4$ after the murder).
+
+\paragraph{Validation and auto-repair.} The merged graph passes
+through \texttt{\_programmatic\_validation}, which checks ID
+closure (every \texttt{source\_id} resolves), type constraints
+(every \texttt{causality\_type} is one of the five enums), basic
+acyclicity within causal edges of the same fabula slice, and
+``alive-actor'' constraints (no event sourced from a dead
+character). Failures are passed back to a small repair LLM with
+the offending field and a structured error; the repair loop runs
+up to three iterations before raising. Fabula times are then
+remapped to a uniform $\Delta t = 100$ spacing so that downstream
+windows are stable across re-ingestion. The output is a single
+\texttt{WorldStateV1}, persisted as the root
+\texttt{VersionRow}.
+
+\subsection{Step 2: query routing and ego-graph slicing}
+\label{app:wk-route}
+
+The \texttt{CounterfactualQuery} is dispatched to the rung-3
+handler. The handler first consults the \texttt{NarrativePhysics}
+router, which selects an \emph{ego-graph} around the focal
+entities at the query's fabula anchor: Macbeth's $k$-hop
+neighbourhood at $t \approx 6000$ (the Inverness night). The
+slice contains \texttt{ENT\_MACBETH}, \texttt{ENT\_LADY\_MACBETH},
+\texttt{ENT\_DUNCAN}, the chamber attendants,
+\texttt{OBJ\_BLOODY\_DAGGERS}, \texttt{LOC\_INVERNESS\_CASTLE},
+the relevant beliefs, and the immediate causal context
+(\texttt{EVT\_LADY\_PERSUADES}, the prophecy events, the
+upcoming \texttt{EVT\_DUNCAN\_MURDER}). Trait values are
+reconstructed at $t$ by replaying \texttt{state\_timeline}
+deltas, which prevents post-murder trait shocks from leaking
+into the counterfactual past.
+
+\subsection{Step 3: AMWN sandbox and the do-operator}
+\label{app:wk-amwn}
+
+\texttt{AMWNInstantiator.create\_sandbox(F=\{ENT\_MACBETH\}, t)}
+mirrors the ego-graph as a NetworkX \texttt{MultiDiGraph}, in
+the spirit of the Ancestral Multi-World Network construction of
+\citet{correa2025amwn}. A sibling \texttt{VersionRow} with
+\texttt{world\_id="shadow"} is opened to hold the fork. The
+do-operator \texttt{apply\_do\_operator(\{EVT\_DUNCAN\_MURDER:
+$\oslash$\})} severs the murder's incoming causal edges
+(specifically the \texttt{chain\_reaction} edge from
+\texttt{EVT\_LADY\_PERSUADES}, the \texttt{affordance\_gate} edge
+from \texttt{OBJ\_BLOODY\_DAGGERS}, and the
+\texttt{ambient\_propagation} edge from
+\texttt{LOC\_INVERNESS\_CASTLE.tension}) and overrides its
+realisation to ``not-occurred''. Crucially the factual mainline
+is untouched. A user looking at the version sidebar sees a green
+\texttt{factual} row with a violet \texttt{shadow} child, both
+browsable.
+
+\subsection{Step 4: causal physics propagation}
+\label{app:wk-prop}
+
+The propagator topologically sorts the causal sub-graph from the
+intervened node downward and applies Eq.~\ref{eq:impact} at every
+edge. Concretely:
+
+\begin{itemize}
+\item \texttt{EVT\_DUNCAN\_MURDER $\to$ EVT\_MALCOLM\_FLEES}
+      (\texttt{chain\_reaction}, $w=0.85$): the source's outcome
+      is ``$\oslash$'', so the impact is zero, and
+      \texttt{EVT\_MALCOLM\_FLEES} is marked
+      \texttt{blocked\_by\_intervention}.
+\item \texttt{EVT\_DUNCAN\_MURDER $\to$ ENT\_MACBETH.guilt}
+      (\texttt{mutation}, $w=0.7$): blocked. The downstream
+      \texttt{state\_timeline} delta that would have raised guilt
+      from $0.1$ to $0.7$ is suppressed; the entity's reconstructed
+      trait at the banquet remains close to its battlefield baseline.
+\item \texttt{EVT\_DUNCAN\_MURDER $\to$ EVT\_BANQUO\_SUSPECTS}
+      (\texttt{chain\_reaction\_via\_belief}, $w=0.6$):
+      blocked. \texttt{ENT\_BANQUO}'s suspicion belief never fires;
+      the \texttt{Belief(target=ENT\_MACBETH, perceived\_state=
+      "Macbeth might be the king's killer")} is absent from his
+      reconstructed belief set in the shadow branch.
+\item \texttt{EVT\_LADY\_PERSUADES $\to$ ENT\_LADY\_MACBETH.dominance}
+      (\texttt{mutation\_social}, $w=0.5$): \emph{not} blocked,
+      because the persuasion event itself is upstream of the
+      intervention. Lady Macbeth's dominance still spikes; her
+      subsequent collapse arc is then re-evaluated against the
+      now-absent causal trigger of guilt.
+\item Spatial affordance check at every step: a putative shock
+      from \texttt{LOC\_DUNSINANE\_CASTLE} to \texttt{ENT\_MACDUFF}
+      requires a connected spatial path; if Macduff is in
+      \texttt{LOC\_ENGLAND} with no open channel, the shock is
+      blocked.
+\end{itemize}
+
+The result is a structured
+\texttt{CausalPhysicsResult\{mutations: [...],
+blocked: [...], hidden\_deltas: [...], intervened\_nodes:
+[EVT\_DUNCAN\_MURDER]\}}. The \texttt{blocked} list is what
+makes the engine inspectable: every causal edge that \emph{would
+have} fired in the factual mainline is recorded with the reason it
+did not.
+
+\subsection{Step 5: narrative-physics scoring}
+\label{app:wk-narrative}
+
+The four structural scorers and the six emotion scorers are now
+re-evaluated on the shadow branch. The user's directive (``show
+what changes for Macduff, Banquo, Malcolm, and the witches'')
+biases the dramatic-irony scorer toward those four entities. The
+counterfactual collapses several gaps that defined the factual
+mainline: the audience no longer sees Banquo's suspicion gap, no
+longer sees Macduff's grief-driven vengeance, and the apparition
+scene is now etiologically dangling (the witches still prophesy,
+but Macbeth has no kingship to defend). The mystery score on
+\texttt{EVT\_DUNCAN\_FOUND\_DEAD} drops to zero because the event
+no longer fires; the suspense at the banquet resets, since
+Banquo's ghost depended on the murder. The directive assembler
+records this delta as a \texttt{CandidateScoreReport} per
+candidate continuation it considers for the banquet rewrite.
+
+\subsection{Step 6: directive assembly and the brief}
+\label{app:wk-brief}
+
+\texttt{DirectiveAssembler.evaluate\_candidate\_events()} now has
+to choose what to put in the banquet scene of the shadow branch.
+Candidate events are enumerated by walking unblocked affordances
+reachable from the shadow-branch state: \emph{Macbeth confesses
+the prophecy to Banquo}, \emph{Lady Macbeth persists and stages
+the murder herself}, \emph{Duncan publicly names Macbeth as the
+new Prince of Cumberland}, \emph{Macbeth retreats to Glamis to
+think}. Each is forked into its own micro-sandbox and propagated.
+Plausibility gates drop \emph{Lady Macbeth stages the murder
+herself} because the daggers' \texttt{Affordance(action="kill")}
+is gated on a wielder with sufficient \texttt{ruthlessness} and
+the trait-evidence support is low for Lady Macbeth in isolation.
+The remaining survivors are scored against the directive. The
+winner is wrapped as a \texttt{CreativeBrief}: a list of
+\texttt{must\_events}, a list of \texttt{must\_not\_events}
+(``Macbeth kills Duncan'', ``Banquo dies''), per-trait envelopes
+(Macbeth's \texttt{guilt} envelope is now $[0.1, 0.3]$ rather than
+$[0.6, 0.8]$), and a syuzhet window. The brief is the only object
+handed to the renderer.
+
+\subsection{Step 7: constrained rendering}
+\label{app:wk-render}
+
+The renderer LLM is invoked with the brief as system prompt plus
+a small style context (the synopsis's voice settings:
+synoptic-narration, third-person past tense, sparse density). It
+writes the banquet as a tense scene of overheard whispers, of
+Banquo unsuspecting and gracious, of Macbeth conspicuously
+unable to enjoy his elevation; the daggers stay sheathed; no
+ghost appears, because Banquo is alive. The renderer is free to
+choose dialogue, description, and pacing, but cannot invent a
+causal edge, shift a trait outside its envelope, or open a
+channel that does not exist. The output is a prose passage, not
+a graph.
+
+\subsection{Step 8: audit, re-extraction, and merge}
+\label{app:wk-audit}
+
+The auditor runs three passes in parallel. The \emph{causal audit}
+reverse-engineers the prose into $(\text{source}, \text{target},
+\text{modality})$ triples and matches each against the brief; an
+LLM-emitted ``Banquo's ghost rises behind Macbeth'' would be
+flagged as a \emph{miracle step} (no licensing edge), but in this
+run nothing of the kind appears. The \emph{abduction audit} runs
+counterfactual probes against the prose --- ``if Banquo had
+suspected the prophecy, would the prose still hold?'' --- and
+checks the answers against the brief's belief envelope. The
+\emph{affective audit} re-runs the four scorers on the prose and
+compares them to the brief's targets. If any pass fails the
+\texttt{engine\_thresholds} gate or the \texttt{llm\_pass} gate,
+the renderer is re-invoked with the structured feedback appended,
+up to \texttt{max\_correction\_retries} (default 3). On
+convergence, \texttt{ingestion} is run again on the prose alone,
+and the resulting graph is diffed against the brief; the diff
+becomes a new \texttt{VersionRow} with \texttt{world\_id="shadow"}
+and \texttt{ancestor\_id} pointing at the original counterfactual
+root. The user sees the new version appear in the sidebar in
+violet, can diff it against the factual mainline, and can
+\texttt{promote\_branch} it to canon if desired.
+
+\subsection{What this walkthrough demonstrates}
+\label{app:wk-summary}
+
+Three properties matter. \textbf{Inspectability:} every
+intermediate object --- the ego-graph, the
+\texttt{CausalPhysicsResult}, the \texttt{CreativeBrief}, the
+\texttt{AuditReport} --- is a typed Pydantic value, persisted and
+visible in the UI. \textbf{Locality of LLM authority:} the LLM
+authors the initial ontology (Step~1), the candidate prose (Step~7),
+and the audit critique (Step~8); everything else is symbolic
+computation over typed code. \textbf{Branch safety:} the
+counterfactual is a sibling row, not a mutation; canon is
+preserved, the shadow is diffable and promotable, and the version
+DAG records the lineage.
+
+
+\section{The authoring user interface}
+\label{app:ui}
+
+The authoring workspace is a NiceGUI single-page application
+(\texttt{shadow\_loom\_ui/app.py}) reachable on
+\texttt{http://localhost:7860}. It is organised as a left-hand
+\emph{version sidebar} and eight cross-linked tabs that share a
+central \texttt{AppState} pub/sub event bus
+(\texttt{shadow\_loom\_ui/state.py}). The same active-version
+pointer is mirrored to the database so an MCP client and the UI
+always see the same tip. This appendix walks through every
+surface in turn, with a concrete example session drawn from the
+bundled plot fixtures.
+
+\subsection{Version sidebar}
+\label{app:ui-sidebar}
+
+The sidebar
+(\texttt{shadow\_loom\_ui/components/version\_sidebar.py})
+renders the project's full \texttt{VersionRow} DAG as a tree
+rooted at the original ingestion. Factual rows are green, shadow
+rows (counterfactual forks under \texttt{branch\_policy=auto})
+are violet. Toolbar actions: \emph{Delete} re-parents children
+through \texttt{db.delete\_version}; \emph{Reparent} changes a
+row's \texttt{ancestor\_id} (rejected if it would multi-root the
+tree); \emph{Promote to canon} (shadow rows only) calls
+\texttt{db.promote\_branch} to copy a shadow onto a fresh factual
+row; \emph{Diff against factual} (shadow rows only) opens a
+structured diff against the current factual head. Clicking any
+row swaps the active version and resets every tab.
+
+\paragraph{Example.} After running the
+\emph{Macbeth refuses the murder} counterfactual of
+App.~\ref{app:walkthrough}, the sidebar shows a green chain
+\texttt{ingestion $\to$ manual\_edit $\to$ pipeline\_run} for the
+factual mainline, with a single violet child branching off the
+\texttt{pipeline\_run} row. Right-clicking the violet row offers
+\emph{Diff against factual} (showing the absent
+\texttt{EVT\_DUNCAN\_MURDER} and the suppressed downstream
+deltas) and \emph{Promote to canon} (which would replace the
+mainline).
+
+\subsection{Story tab}
+\label{app:ui-story}
+
+The \textsc{Story} tab
+(\texttt{components/story\_tab.py}) is the entry point: a
+plain-prose textarea plus a \emph{Save \& Re-ingest} button.
+Saving runs the full \texttt{pipeline.run\_pipeline} and persists
+the result as a new version with \texttt{source="ingestion"}. This
+tab is intentionally not autosaved: the textarea is prose, not
+graph, and clicking re-ingest is a deliberate action.
+
+\paragraph{Example.} Pasting the public-domain
+\texttt{sample\_plots/death\_on\_the\_nile.txt} synopsis and
+clicking \emph{Save \& Re-ingest} produces, after the ingestion
+fan-out described in App.~\ref{app:wk-ingest}, a
+\texttt{WorldStateV1} containing
+\texttt{ENT\_POIROT}, \texttt{ENT\_LINNET},
+\texttt{ENT\_JACQUELINE}, \texttt{ENT\_SIMON}, the
+\texttt{LOC\_KARNAK} steamer, and the conspiracy event
+\texttt{EVT\_PLAN\_HATCHED} with \texttt{syuzhet\_index} placed
+late but \texttt{fabula\_time} placed early --- the very gap that
+the dramatic-irony scorer reads off in
+App.~\ref{app:ex-narrative}.
+
+\subsection{Explorer tab}
+\label{app:ui-explorer}
+
+The \textsc{Explorer} tab
+(\texttt{components/explorer\_tab.py}) is a read-only tree view
+of every node in the active world model, grouped by category, with
+an inspector panel for the selected node. It is the canonical way
+to confirm that ingestion has produced the right schema before
+running queries.
+
+\paragraph{Example.} Loading the Macbeth fixture and clicking
+\texttt{ENT\_MACBETH} opens an inspector showing each
+\texttt{TraitVector} (\texttt{ambition: 0.7, inertia 0.55,
+evidence strong}; \texttt{guilt: 0.1, inertia 0.25, evidence
+weak}), each \texttt{Belief} with provenance, the
+\texttt{state\_timeline} entries (one per major shock event),
+and the entity's outgoing causal and relationship edges. The
+inspector is the principal debugging tool when an extraction
+agent has produced an unexpected trait or belief.
+
+\subsection{World tab}
+\label{app:ui-world}
+
+The \textsc{World} tab
+(\texttt{components/world\_tab.py}) is a Cytoscape graph
+visualisation of entities, locations, objects, and edges, with a
+fabula-time slider beneath. Sliding the cursor through fabula
+time updates node colours and sizes via
+\texttt{state.set\_fabula\_cursor} (debounced 120 ms) so that the
+viewer can watch the social topology evolve.
+
+\paragraph{Example.} On Reservoir Dogs, scrubbing the slider from
+fabula~$t = 0$ (the diner conversation) through to $t \approx
+8000$ (the warehouse stand-off) animates the
+\texttt{ENT\_ORANGE} node turning from neutral grey to red as
+the wound state advances; the spatial graph contracts as
+characters converge on the warehouse; and the
+\texttt{trust} edges from \texttt{ENT\_WHITE} to
+\texttt{ENT\_ORANGE} thicken. The same scrub on Romeo and Juliet
+shows Romeo's \texttt{despair} edge widening sharply over the
+final scene.
+
+\subsection{Causality tab}
+\label{app:ui-causality}
+
+The \textsc{Causality} tab
+(\texttt{components/causality\_tab.py}) has three sub-tabs.
+\emph{Topology} renders a Sankey diagram of causal flow up to the
+fabula cursor: thicker ribbons for higher-weight edges, colour
+banded by \texttt{causality\_type}. \emph{Evolution} plots
+trait trajectories per entity over fabula time, with a vertical
+needle synced to the cursor. \emph{Affective Dashboard} shows
+gauges and time series for the four structural scorers and the
+six emotion scorers, computed by
+\texttt{viz\_helpers.compute\_affective\_scores} (which routes
+through \texttt{DirectiveAssembler.compute\_*\_score}). The top
+twenty entities by event degree are shown by default to keep the
+plots readable.
+
+\paragraph{Example: Macbeth Evolution sub-tab.} Selecting
+\texttt{ENT\_MACBETH}, \texttt{ENT\_LADY\_MACBETH}, and
+\texttt{ENT\_MACDUFF} and scrubbing through fabula time shows
+Macbeth's \texttt{guilt} curve climbing in two steps (after
+\texttt{EVT\_DUNCAN\_MURDER} and again after
+\texttt{EVT\_BANQUO\_GHOST}); Lady Macbeth's
+\texttt{ruthlessness} curve peaks early and then collapses into
+the sleepwalking scene; and Macduff's \texttt{grief} curve has a
+single step at the slaughter event. Switching to the
+\emph{Affective Dashboard}, the suspense gauge sits high through
+Acts II--IV and zeroes out cleanly when the duel begins
+(\citealp{wilmot2020suspense}'s suspense--despair boundary).
+
+\paragraph{Example: Death on the Nile Affective Dashboard.}
+The dramatic-irony gauge sits at $\sim 0.7$ from the moment the
+conspiracy is revealed to the audience and drops to zero only
+when Poirot delivers the denouement; the mystery gauge follows
+the inverse trajectory, peaking on the morning of the murder.
+
+\subsection{Reasoning tab}
+\label{app:ui-reasoning}
+
+The \textsc{Reasoning} tab
+(\texttt{components/reasoning\_tab.py}) is where queries are
+typed and where intervention / counterfactual traces are
+inspected. The chat box accepts natural-language queries that are
+parsed into one of the eight typed query objects
+(\texttt{ObservationQuery}, \texttt{InterventionQuery},
+\texttt{CounterfactualQuery}, \texttt{DirectiveQuery},
+\texttt{InterrogateQuery}, \texttt{GeneralQuery},
+\texttt{ManualEditQuery}, \texttt{EvaluateQuery}). The result
+panel uses \texttt{reasoning\_helpers.py} to format the
+\texttt{CausalPhysicsResult}: each mutation is shown with its
+$(I, \iota, \Delta)$ triple, each blocked propagation with the
+reason (inertia, affordance, spatial), each abduction back-fill
+with the evidence weight, and any hidden deltas with the
+syuzhet window in which they will be revealed.
+
+\paragraph{Example.} On Macbeth, typing \emph{``If Macbeth had
+told Banquo about the prophecy on the heath, would Banquo have
+trusted him at the banquet?''} parses to a
+\texttt{CounterfactualQuery} with focal entities
+$\{\text{ENT\_MACBETH}, \text{ENT\_BANQUO}\}$. The trace panel
+shows the abduction step (Banquo's \texttt{trust} prior is
+inferred from the battlefield events), the do-step (a new
+\texttt{utterance} event is inserted on the heath channel), and
+the propagation step (Banquo's \texttt{suspicion} trait is
+suppressed at the banquet, but his \texttt{prudence} trait
+\emph{raises} a new caution gate, which the engine reports as a
+non-trivial counterfactual outcome --- not all secrets shared are
+secrets defused).
+
+\subsection{Audit tab}
+\label{app:ui-audit}
+
+The \textsc{Audit} tab
+(\texttt{components/audit\_tab.py}) displays the structured
+\texttt{AuditReport} for the most recently rendered scene. The
+three sections (causal, abductive, affective) each show their
+loss values and any offending prose spans, highlighted inline. A
+green badge indicates a passed pass; an amber badge indicates a
+warning (the prose is acceptable but drifted); a red badge
+indicates a hard failure that triggered a re-render.
+
+\paragraph{Example.} On Gone Girl, after generating a continuation
+of Amy's diary entry, the causal audit flags a hallucinated
+``Nick suddenly suspects Amy is alive'' span with no licensing
+causal edge in the brief. The auditor's structured feedback is
+displayed alongside the offending span, and the user can either
+accept the auto-rerun or open the brief in the
+\textsc{Reasoning} tab to widen the envelope.
+
+\subsection{Editor tab}
+\label{app:ui-editor}
+
+The \textsc{Editor} tab
+(\texttt{components/editor\_tab.py}) is the manual world-model
+editor. It has three integrated surfaces backed by a single JSON
+textarea (the source of truth): a \emph{Validate} button that
+runs the same \texttt{\_programmatic\_validation} as ingestion;
+a \emph{Structural editor} with one collapsible panel per
+collection (locations, entities, objects, events, world traits,
+causal edges, relationship edges, spatial edges, channels); and
+the raw JSON textarea itself for fields the structural editor
+does not expose (sparse trait values, beliefs, ambient state,
+evidence strengths). The save flow runs Pydantic validation, then
+\texttt{\_programmatic\_validation}; errors block the save with a
+dialog listing every issue, warnings present a \emph{Save Anyway}
+confirmation, and on confirm the world is persisted as a new
+\texttt{VersionRow} with \texttt{source="manual\_edit"} parented
+to the current row.
+
+\paragraph{Example.} Authoring the
+\texttt{example\_worlds/macbeth.py} fixture from scratch, the
+user adds \texttt{LOC\_HEATH} via the structural editor (typing
+\emph{``the heath''} into the ID field auto-prefixes to
+\texttt{LOC\_THE\_HEATH}, edited to \texttt{LOC\_HEATH}), then
+\texttt{ENT\_MACBETH}, then the witches as a single multi-actor
+entity, then the prophecy event with \texttt{event\_type=
+revelation} and \texttt{via\_channel\_id} pointing at a freshly
+added \texttt{Channel(participants=[ENT\_MACBETH, ENT\_BANQUO,
+ENT\_WITCHES], medium="speech", intelligibility=\{...: 1.0\})}.
+After each addition the validator panel updates: the green panel
+shows the running counts, an amber panel warns about the missing
+mutation coverage on \texttt{ENT\_MACBETH.ambition} (no
+\texttt{state\_timeline} yet), and a red panel reports the
+broken \texttt{addressee\_ids} reference until the witches entity
+is added.
+
+\subsection{Export tab}
+\label{app:ui-export}
+
+The \textsc{Export} tab
+(\texttt{components/export\_tab.py}) is the egress surface:
+download the active world as a single \texttt{world\_state.json},
+download the version tree as a structured JSONL file, or copy the
+active version row ID for use with the MCP server or scripts.
+
+\paragraph{Example.} A researcher running cross-fixture
+comparisons exports each of the sixteen bundled fixtures'
+\texttt{world\_state.json} files, computes the entity-degree
+distribution and the per-fixture suspense time-series in a
+notebook, and persists the results without ever loading the UI's
+visualisation code.
+
+\subsection{Performance discipline}
+\label{app:ui-perf}
+
+Three small disciplines keep the workspace responsive during
+long scrubs and rapid edits. (i) Cursor writes are debounced
+through \texttt{state.set\_fabula\_cursor}, which schedules an
+emit on a $120$ ms tail. (ii) Heavy panels are gated by
+\texttt{is\_path\_visible(path)} so that off-tab rebuilds are
+skipped. (iii) \texttt{state.spawn\_panel\_task(panel\_id, coro)}
+cancels any prior task with the same \texttt{panel\_id},
+collapsing rapid scrubs to the most recent render; ECharts panels
+build the chart once and patch options in place.
+
+\subsection{Cross-tab event bus}
+\label{app:ui-events}
+
+Six events flow through \texttt{AppState}: \texttt{PROJECT\_LOADED}
+(emitted by the project picker and the MCP \texttt{open\_project}
+tool, listened to by every tab); \texttt{WORLD\_STATE\_CHANGED}
+(emitted by \texttt{load\_db\_version}, manual save, and pipeline
+runs, triggering cache invalidation in \texttt{viz\_helpers});
+\texttt{VERSION\_CHANGED} (sidebar highlight + raw-text reload);
+\texttt{FABULA\_CURSOR\_CHANGED} and
+\texttt{SYUZHET\_CURSOR\_CHANGED} (cursor sliders); and
+\texttt{ACTIVE\_PATH\_CHANGED} (top tab change, gating heavy
+panels). Adding a new tab is therefore a matter of subscribing to
+the relevant subset of these events and rendering against the
+current \texttt{AppState}.
+
+\subsection{Why a UI matters for a research artefact}
+\label{app:ui-why}
+
+The UI is not an optional consumer surface; it is the principal
+debugging tool for the symbolic layers. The version sidebar
+makes branch lineage visible; the Causality tab makes the
+affective scorers' trajectories visible; the Reasoning tab makes
+the causal-physics trace visible; and the Audit tab makes the
+brief-vs-prose mismatch visible. A reviewer or collaborator can
+load any of the sixteen bundled fixtures, run the
+counterfactuals discussed in App.~\ref{app:examples}, and
+inspect every intermediate object without writing a line of code.
+That inspectability is what the typed-substrate design was meant
+to buy; the UI is where it is cashed in.
 
 \end{document}
