@@ -2575,12 +2575,19 @@ def _compute_affective_scores_uncached(
     # optimiser actually targets.
     if entity_ids:
         if syuzhet_anchor is None:
-            # Default: reader has seen everything in this snapshot
-            # so suspense/surprise still reflect the full unrevealed
-            # tail rather than collapsing to zero.
-            syuzhet_anchor = max(
+            # Default: anchor *before* the first reveal so the entire
+            # event list counts as the unrevealed tail. Anchoring at
+            # ``max(syuzhet_index)`` (a previous version of this branch)
+            # marked every event as already-revealed, which collapsed
+            # suspense's ``unrevealed = all - revealed`` set to ∅ and
+            # pulled surprise's prior all the way onto the posterior —
+            # zeroing both scores on every unanchored snapshot. Using
+            # ``min - 1`` keeps the reader at the narrative threshold
+            # so the structural affects retain their full contrast.
+            min_s = min(
                 (e.syuzhet_index for e in ws.events), default=None
             )
+            syuzhet_anchor = (min_s - 1) if min_s is not None else None
         engine = _engine_structural_scores(ws, entity_ids, syuzhet_anchor)
         scores.update(engine)
     return scores
