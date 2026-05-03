@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025-2026 David Rae Wilmot
+# SPDX-FileCopyrightText: 2026 David Rae Wilmot
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 """Dashboard page — project gallery, examples, activity feed, and quick actions."""

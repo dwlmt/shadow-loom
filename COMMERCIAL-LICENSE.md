@@ -1,6 +1,6 @@
 # Shadow Loom — Commercial License (AGPLv3 Exception)
 
-**Copyright © 2025–2026 David Rae Wilmot. All rights reserved.**
+**Copyright © 2026 David Rae Wilmot. All rights reserved.**
 
 Shadow Loom is dual-licensed:
 
