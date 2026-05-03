@@ -325,6 +325,18 @@ def _do_delete_version(
                 logger.exception(
                     "Failed to load fallback world state after delete"
                 )
+                # Fallback row exists in the DB but we couldn't
+                # deserialise it. Drop the world payload entirely so
+                # downstream panels don't keep rendering against the
+                # just-deleted version's content.
+                state.world_state = None
+                state.fabula_cursor = None
+                state.syuzhet_cursor = None
+                state.query_history.clear()
+                state.last_result = None
+                state.last_parse = None
+                state.selected_node_id = None
+                state.selected_node_type = None
                 state.current_version_row_id = None
                 if state.user_id is not None and state.project_id is not None:
                     try:
@@ -333,8 +345,22 @@ def _do_delete_version(
                         logger.exception(
                             "Failed to clear active-version pointer"
                         )
+                state.emit(StateEvent.WORLD_STATE_CHANGED)
                 state.emit(StateEvent.VERSION_CHANGED, version=None)
         else:
+            # No fallback ancestor or latest available (root would have
+            # been the only option and it's protected from deletion, so
+            # this branch is essentially defensive). Same teardown as
+            # the load-failure path above — never leave panels reading
+            # the deleted version's world state.
+            state.world_state = None
+            state.fabula_cursor = None
+            state.syuzhet_cursor = None
+            state.query_history.clear()
+            state.last_result = None
+            state.last_parse = None
+            state.selected_node_id = None
+            state.selected_node_type = None
             state.current_version_row_id = None
             if state.user_id is not None and state.project_id is not None:
                 try:
@@ -343,6 +369,7 @@ def _do_delete_version(
                     logger.exception(
                         "Failed to clear active-version pointer"
                     )
+            state.emit(StateEvent.WORLD_STATE_CHANGED)
             state.emit(StateEvent.VERSION_CHANGED, version=None)
     else:
         state.emit(StateEvent.VERSION_CHANGED, version=None)

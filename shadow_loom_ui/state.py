@@ -789,12 +789,21 @@ class AppState:
         # A version swap repositions the world; previously-active
         # cursors point into a different timeline and would render
         # garbage on the new one. Reset both so every time-aware panel
-        # snaps back to "live" until the user scrubs again.
+        # snaps back to "live" until the user scrubs again. Per-branch
+        # derived state (query history, last result/parse, selected
+        # node) is also dropped for the same reason as in
+        # ``load_db_version``.
         self.fabula_cursor = None
         self.syuzhet_cursor = None
+        self.query_history.clear()
+        self.last_result = None
+        self.last_parse = None
+        self.selected_node_id = None
+        self.selected_node_type = None
         self.emit(StateEvent.WORLD_STATE_CHANGED)
         self.emit(StateEvent.FABULA_CURSOR_CHANGED, cursor=None)
         self.emit(StateEvent.SYUZHET_CURSOR_CHANGED, cursor=None)
+        self.emit(StateEvent.NODE_SELECTED, node_id=None, node_type=None)
         self.emit(StateEvent.VERSION_CHANGED, version=version)
 
     def load_db_version(
@@ -808,10 +817,15 @@ class AppState:
         Use this from version-load UI paths (sidebar, dialogs, story
         re-ingest) instead of writing ``world_state``/
         ``current_version_row_id`` directly. Centralising the swap
-        keeps three invariants intact:
+        keeps four invariants intact:
 
         * cursors are reset so we don't render the new world through
           the previous version's timeline;
+        * per-branch derived state — query history, last pipeline
+          result, last parse, selected node — is dropped, since those
+          all reference entity/event ids and fabula times from the
+          previous branch and would leak into panels that read
+          ``state`` fields directly;
         * ``WORLD_STATE_CHANGED`` and ``VERSION_CHANGED`` fire in
           lockstep so subscribers (Story / Audit / Sidebar) update
           atomically;
@@ -827,12 +841,26 @@ class AppState:
         # the lockstep invariant the docstring promises and giving
         # any panel that keys on (world_state, version_row_id) a
         # one-frame view of stale lineage.
+        #
+        # Also drop per-branch derived state. Query history, the last
+        # pipeline result, the last parse, and the selected-node
+        # cursor are all keyed against the *previous* branch's
+        # entity/event ids and fabula times; leaving them in place
+        # makes panels that read them directly (audit_tab,
+        # story_tab, reasoning_tab, reasoning_trace) display content
+        # from the prior branch after the swap.
         self.fabula_cursor = None
         self.syuzhet_cursor = None
+        self.query_history.clear()
+        self.last_result = None
+        self.last_parse = None
+        self.selected_node_id = None
+        self.selected_node_type = None
         self.current_version_row_id = version_row_id
         self.load_world_state(ws)
         self.emit(StateEvent.FABULA_CURSOR_CHANGED, cursor=None)
         self.emit(StateEvent.SYUZHET_CURSOR_CHANGED, cursor=None)
+        self.emit(StateEvent.NODE_SELECTED, node_id=None, node_type=None)
         if version_number is not None:
             self.emit(StateEvent.VERSION_CHANGED, version=version_number)
 
