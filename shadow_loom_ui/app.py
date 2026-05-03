@@ -208,7 +208,7 @@ def _build_app_footer() -> None:
         "flex items-center justify-between text-xs text-slate-500"
     ).props("elevated=false flat"):
         ui.label(
-            "Shadow Loom — AGPL-3.0-or-later. "
+            "Shadow Loom — AGPL-3.0-or-later plus Non-Commercial Clause. "
             "This is free software with NO WARRANTY."
         )
         with ui.row().classes("items-center gap-3"):
