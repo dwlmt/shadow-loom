@@ -185,8 +185,7 @@ accessors expose `.affinity` / `.fear` / `.power_dynamic` / `.inertia`
 consumer (UI viz readers, MCP `get_relationships`, generation /
 directive prompts, query parsing). A `to_legacy_dict()` flattens the
 edge for the NetworkX sandbox so `causal_physics.propagate_social`
-keeps reading flat dict keys. The 16 `example_worlds/*.py` fixtures
-were not touched. Only setter sites
+keeps reading flat dict keys. Setter sites
 (`shadow_loom_ui/viz_helpers.py` time-slicing reconstructor, two
 narrative-physics test mutators) had to be rewritten to mutate
 `rel.metrics[axis].value` in place.
@@ -195,6 +194,74 @@ narrative-physics test mutators) had to be rewritten to mutate
 the LLM extractor must now reason about per-axis evidence asymmetry.
 That ergonomic cost is small relative to the variance signal recovered
 downstream.
+
+---
+
+## D5d. Per-axis `mutation_social` coverage across all 16 fixtures (May 2026 rebuild)
+
+**Decision.** Every observed `RelationshipMetric` axis (`affinity`,
+`fear`, `power_dynamic`) on every relationship in the bundled
+`example_worlds/*.py` corpus must be touched by at least one
+`mutation_social` `CausalEdge` whose `trait_target` matches that axis.
+A relationship that is purely inferential (no on-page event involves
+both parties) is encoded with `observed=False, value=0.0` rather than a
+static non-zero metric.
+
+**Why.** The D5c migration left fixtures unchanged. Many edges
+therefore carried *static* per-axis values --- a baseline `affinity` or
+`power_dynamic` floated in from hand-authoring with no causal event
+behind it. The
+`shadow_loom_ui/viz_helpers.py` aggregator, which folds metrics over
+`observed=True` axes only, then produced **flat** danger/conflict/power
+gauges on roughly two-thirds of the corpus: the values were non-zero
+but never moved, so the curve had nothing to plot. The regression test
+`tests/test_affective_curve_evolution.py` was extended to enforce the
+invariant axis-by-axis (previously fear-only, with twelve fixtures
+grandfathered as `xfail`).
+
+**What changed.**
+
+- The three extraction prompts
+  (`shadow_loom/prompts/{physics_extraction, social_extraction,
+  validation}.md`) gained a *symmetric per-axis coverage rule*: when
+  the social extractor emits a `RelationshipMetric` on any of the
+  three axes, the physics extractor must emit at least one
+  `mutation_social` edge with the matching `trait_target`. The
+  validation prompt enforces the parity.
+- An audit script
+  ([`scripts/audit_static_axes.py`](../scripts/audit_static_axes.py))
+  enumerates per-fixture *static dyads* (observed axes with no matching
+  mutation) and lists candidate events involving both parties.
+- A patch applier
+  ([`scripts/apply_axis_patches.py`](../scripts/apply_axis_patches.py))
+  performs idempotent text-surgery on a fixture `.py` to insert
+  per-axis `CausalEdge` lines before the `causal_topology` block close
+  (anchored on a sentinel comment) and to flip purely-inferential
+  metrics to `observed=False`.
+- All 16 fixtures were rebuilt: 120+ `mutation_social` edges added
+  across the corpus, 14 inferential metrics flipped to unobserved.
+  `KNOWN_FLAT_FEAR_FIXTURES` in the regression test is now empty;
+  60/60 affective-curve tests pass with no `xfail`.
+
+**Before/after qualitative example (Frankenstein).** Pre-rebuild, the
+Creator-Creature dyad's `affinity = -0.8` and `power_dynamic = 0.3`
+sat as static non-zero values: the UI showed a flat horizontal line
+across the entire syuzhet timeline because no causal event ever wrote
+to those axes. Post-rebuild, `EVT_CREATION` mutates the bidirectional
+`power_dynamic` (Victor +0.40 / Creature -0.40) at fabula 3000;
+`EVT_WILLIAM_MURDERED` collapses the Creature → William affinity to
+-0.60 at fabula 4000; `EVT_CREATURE_REJECTED` writes the Felix →
+Creature affinity (-0.90) and fear (+0.90) at fabula 8000. The conflict
+gauge now traces the canonical hinge from rural pastoral through the
+post-creation rupture to the Arctic chase, instead of showing a single
+flat band.
+
+**Trade-off.** Per-fixture surgery is artisanal --- the audit lists
+candidate events but cannot decide on its own whether to write a
+mutation or flip the dyad to unobserved. The applier amortises the
+mechanical work; semantic placement was driven by per-fixture
+re-reading of the `sample_plots/*.txt` source against existing
+`EVT_*` ids.
 
 ---
 

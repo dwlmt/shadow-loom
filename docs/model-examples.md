@@ -510,6 +510,31 @@ correctly produces *unilateral pursuit* rather than mutual hatred.
 This asymmetry is what generates the novel's tragic structure, and
 it falls out of the data model without any special-case code.
 
+### Per-axis mutation coverage (May 2026 rebuild)
+
+The fixture used to carry several *static* relationship axes — values
+that never moved because no `mutation_social` `CausalEdge` ever wrote
+to them. The Creator → Creature `power_dynamic` was a flat `+0.3`
+horizontal line in the conflict gauge; the Frankenstein-family
+affinities (Victor ↔ Elizabeth, Victor ↔ Clerval, Victor ↔ Alphonse)
+were authored as warm baselines with no causal anchor. Post-rebuild,
+twenty `mutation_social` edges per fixture pin every observed axis to
+a real event:
+
+- `EVT_CAROLINE_DIES` writes the family-of-origin affinities and
+  Alphonse's parental authority shift in a single grief-cluster at
+  fabula 100.
+- `EVT_CREATION` mutates the bidirectional Victor ↔ Creature
+  `power_dynamic` (+0.40 / -0.40) at fabula 3000 — the gauge now
+  shows the rupture as a step, not a horizontal.
+- `EVT_CREATURE_REJECTED` writes Felix → Creature affinity (-0.90)
+  and fear (+0.90) at fabula 8000 — the De Lacey scene is the largest
+  single-event delta on the curve.
+
+The same discipline is now enforced across all sixteen bundled
+fixtures; see [design-decisions.md §D5d](design-decisions.md#d5d-per-axis-mutation_social-coverage-across-all-16-fixtures-may-2026-rebuild)
+for the audit/applier tooling.
+
 ### Generation prompt fragment
 
 The brief for a Creature-narrated scene includes:

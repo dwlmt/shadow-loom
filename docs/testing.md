@@ -57,6 +57,7 @@ Counts below are the number of `test_*` functions in each file.
 | [test_auditor.py](../tests/test_auditor.py) | 79 | Audit prompt assembly; graph versioning via deep-copy isolation; `AuditResult` / `AuditViolation` construction; mocked feedback-loop orchestration; effect → audit-category mapping. | [`auditor.py`](../shadow_loom/auditor.py) |
 | [test_global_traits.py](../tests/test_global_traits.py) | 50 | World-level traits: `GlobalTrait` / `WorldTraitSnapshot` models, `reconstruct_world_trait_at()`, `WORLD_` prefix validation, sandbox `WORLD_` node creation, ambient-edge propagation, abduction skipping `WORLD_` nodes. | [`models.py`](../shadow_loom/models.py), [`instantiator.py`](../shadow_loom/instantiator.py) |
 | [test_version_mutations.py](../tests/test_version_mutations.py) | 18 | `delete_version` and `reparent_version` DB functions; in-memory SQLite. | [`db.py`](../shadow_loom/db.py) |
+| [test_affective_curve_evolution.py](../tests/test_affective_curve_evolution.py) | 60 | Per-axis `mutation_social` coverage invariant: every observed `affinity` / `fear` / `power_dynamic` axis on every relationship in every bundled fixture must be touched by at least one matching `mutation_social` `CausalEdge`. Prevents flat danger / conflict / power gauges. See [design-decisions.md §D5d](design-decisions.md#d5d-per-axis-mutation_social-coverage-across-all-16-fixtures-may-2026-rebuild). | cross-cutting |
 
 ### Pipeline — integration tests
 

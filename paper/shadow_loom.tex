@@ -1277,6 +1277,17 @@ private channel of Lady Macbeth's letter); and
 inertia bumps that record how shocking events make traits
 \emph{harder} to dislodge afterwards (Macbeth's \texttt{guilt}
 inertia rises from $0.25$ to $0.4$ after the murder).
+The three prompts share a \emph{symmetric per-axis coverage rule}:
+whenever \texttt{social\_extraction} emits a \texttt{Relationship%
+Metric} on any of the three axes, \texttt{physics\_extraction}
+must emit at least one \texttt{mutation\_social} edge with the
+matching \texttt{trait\_target}; the validation pass enforces the
+parity. The rule prevents \emph{static dyads} --- relationships
+whose value is non-zero but never causally moved --- from
+producing flat horizontals on the downstream conflict, danger,
+and power gauges. The bundled corpus
+(\S\ref{app:examples}) honours this invariant on every observed
+axis on every dyad.
 
 \paragraph{Validation and auto-repair.} The merged graph passes
 through \texttt{\_programmatic\_validation}, which checks ID
