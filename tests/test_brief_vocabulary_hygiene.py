@@ -173,3 +173,76 @@ def test_banned_lists_are_mutually_exclusive_and_lowercase():
         assert tok == tok.lower(), f"banned token {tok!r} must be lowercase"
         assert tok not in seen, f"duplicate banned token {tok!r}"
         seen.add(tok)
+
+
+# ---------------------------------------------------------------------
+# Counterfactual-brief hygiene — `build_counterfactual_brief` lives in
+# the generation layer (not the directive assembler) and was a known
+# leak point: its constraints, stylistic instructions, and
+# `CounterfactualBranch.{actual,simulated}_outcome` strings used to
+# carry "alternate timeline / divergence / branch / what-if /
+# conditional or subjunctive mood" — every one of which is banned by
+# generation Rule 10 / Category-4b meta-narration audit. Lock that
+# down here so the renderer never sees forbidden vocabulary in a
+# Rung-3 brief.
+# ---------------------------------------------------------------------
+@pytest.mark.parametrize("ws,pov", WORLD_POV)
+def test_counterfactual_brief_has_no_meta_or_pipeline_vocabulary(ws, pov):
+    from shadow_loom.generation import build_counterfactual_brief
+    from shadow_loom.query_models import CounterfactualQuery
+
+    # Pick any event id from the world so the intervention resolves to
+    # at least one entity (otherwise target_entities is empty and the
+    # rendering directive section short-circuits).
+    if not ws.events:
+        pytest.skip("fixture has no events to intervene on")
+    evt_id = ws.events[0].id
+
+    query = CounterfactualQuery(
+        original_query=f"What if {evt_id} had not happened?",
+        historical_interventions={f"{evt_id}.outcome": "did_not_occur"},
+        evidence_node_ids=[],
+        target_node_ids=[],
+    )
+
+    brief = build_counterfactual_brief(
+        query=query,
+        physics_state={},
+        world_state=ws,
+        hidden_deltas={pov: {"guilt": 0.3}},
+        rule3_pruned_interventions=[f"{evt_id}.outcome"],
+        rule2_redundant_evidence=[],
+        rule3_pruning_mode="advisory",
+    )
+
+    offences: list[tuple[str, str, list[str]]] = []
+    for c in brief.constraints:
+        hits = _scan(c.instruction)
+        if hits:
+            offences.append(("ConstraintBlock", c.instruction, hits))
+    if brief.rendering is not None:
+        for si in brief.rendering.stylistic_instructions:
+            hits = _scan(si)
+            if hits:
+                offences.append(("stylistic_instruction", si, hits))
+    if brief.counterfactual_branch is not None:
+        cf = brief.counterfactual_branch
+        for label, text in (
+            ("cf_branch.actual_outcome", cf.actual_outcome),
+            ("cf_branch.simulated_outcome", cf.simulated_outcome),
+        ):
+            hits = _scan(text)
+            if hits:
+                offences.append((label, text, hits))
+
+    if offences:
+        report = "\n".join(
+            f"  [{kind}] tokens={hits}\n    text={text!r}"
+            for kind, text, hits in offences
+        )
+        pytest.fail(
+            f"Counterfactual brief for world POV={pov!r} contains banned "
+            f"brief-vocabulary that the renderer LLM will mirror into "
+            f"prose and the auditor will flag as meta_narration:\n"
+            f"{report}"
+        )

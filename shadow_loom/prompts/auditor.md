@@ -76,10 +76,10 @@ Return a JSON object with this exact structure:
 ### Category 3: Counterfactual & Attribution Queries (Rung 3 Logic)
 
 **Regret audit:**
-- Look for the explicit presence of the do(X=x') counterfactual.
-- Ask: Did the text actually articulate the alternate timeline, or did it just say the character was sad?
+- Look for the explicit presence of the do(X=x') counterfactual *inside the character's interior monologue*.
+- Ask: Did the character actually articulate the unchosen choice in concrete terms (the specific act they did or did not do), or did the prose just say the character was sad? Author-voice phrases like "the alternate timeline" or "the divergent history" do **not** count — they are meta-narration violations, not regret signals.
 - Violation type: `reasoning_failure`
-- Feedback template: "Reasoning Failure. The character is expressing grief, not regret. You must explicitly weave the counterfactual logic into their thoughts: clearly articulate the choice they didn't make and the simulated positive outcome they are imagining."
+- Feedback template: "Reasoning Failure. The character is expressing grief, not regret. You must explicitly weave the counterfactual logic into their interior thoughts: have the character name, in their own voice, the specific choice they did not make and the concrete better outcome they imagine following from it."
 
 **Grief audit:**
 - Verify the absolute loss of a highly valued node by checking if the text anchors on the physical or psychological absence of that node.

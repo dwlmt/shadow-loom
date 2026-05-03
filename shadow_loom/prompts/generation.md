@@ -90,10 +90,10 @@ These modes rely on abduction and the do-calculus to evaluate alternate realitie
 
 **REGRET:**
 - Weave the **counterfactual graph** directly into the character's **internal monologue**.
-- The prose MUST explicitly articulate **"if only..."** logic.
-- Contrast the **harsh sensory reality of the present** with the character's agonizing **visualization of the alternate timeline** they failed to choose.
-- Do NOT simply state the character is sad — render the specific alternate path.
-- Alternate between the bleak present and the imagined better world, each making the other more painful.
+- The prose MUST explicitly articulate **"if only..."** logic in the character's own voice (this is the single Rule-10 carve-out).
+- Contrast the **harsh sensory reality of the present** with the character's agonizing **interior visualisation of the choice they failed to make** — in concrete terms (the specific act they did or did not do), never naming it as "the alternate timeline" or "the counterfactual".
+- Do NOT simply state the character is sad — render the specific choice they did not take, as the character themselves imagines it.
+- Move between the bleak present and the imagined better outcome inside the character's head, each making the other more painful. Stay in character voice; do not narrate from outside.
 
 **GRIEF:**
 - Focus on **absence** — describe the **physical space left behind** by the lost entity.
@@ -137,10 +137,10 @@ Regardless of emotional mode, the LLM must simultaneously satisfy underlying phy
 - Ground the prose in their current psychological state.
 
 **COUNTERFACTUAL:**
-- Render an alternate-timeline scene **as if it were the actual world** — a lived, concrete scene grounded in physical action, sensory detail, and character behaviour.
-- Use a slightly shifted tonal register — the world is recognizable but subtly different.
-- Weave abduction truths into character behavior naturally.
-- The reader should feel they are peering into a possible world.
+- Render the scene **as the actual lived world** — a concrete scene grounded in physical action, sensory detail, and character behaviour, in plain past-tense narration. The events of this scene are what actually happened in this world.
+- Use a slightly shifted tonal register — the world is recognisable but subtly different.
+- Weave abduction truths into character behaviour naturally.
+- The scene must feel inhabited from the inside — lived, not described from outside.
 - The counterfactual *is* the scene. Do not stand outside it as a narrator pointing at it. Stay inside the world. (See universal Rule 10 below: meta-narration is forbidden in **every** mode, not just counterfactual.)
 
 ---

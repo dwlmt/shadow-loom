@@ -824,13 +824,19 @@ def build_counterfactual_brief(
                     ),
                 ))
 
-    # Build a counterfactual branch from the intervention keys
+    # Build a counterfactual branch from the intervention keys.
+    # Phrasing is scene-internal: the renderer must treat the simulated
+    # state as the *actual world* of the scene (Rule 10 / generation
+    # Category 3 COUNTERFACTUAL). No "alternate timeline / divergence /
+    # branch / what-if" vocabulary leaks into the brief — the renderer
+    # echoes brief vocabulary verbatim and the meta-narration auditor
+    # then rejects it.
     hist_keys = list(query.historical_interventions.keys())
     cf_branch = CounterfactualBranch(
-        actual_outcome="The factual timeline as it occurred.",
+        actual_outcome="Events as they occurred in the established record.",
         simulated_outcome=(
-            f"The alternate timeline where {', '.join(hist_keys)} "
-            f"were changed to: {query.historical_interventions}"
+            f"Events as they unfold under the changed conditions: "
+            f"{query.historical_interventions}"
         ),
         divergence_event_id=hist_keys[0].split(".")[0] if hist_keys else None,
     )
@@ -841,10 +847,12 @@ def build_counterfactual_brief(
             constraint_type="narrative",
             priority="hard",
             instruction=(
-                "This is a COUNTERFACTUAL scene — an alternate reality. "
-                "The prose must feel like a 'what-if' branch, subtly different "
-                "from the factual timeline. Use conditional/subjunctive mood "
-                "where appropriate."
+                "Render this scene as the actual lived world — concrete "
+                "physical action, sensory detail, and character behaviour, "
+                "in plain past-tense narration. Do NOT use author-voice "
+                "conditional or subjunctive framing (\"if he had…\", "
+                "\"would have…\"). The events of this scene are what "
+                "actually happened in this world."
             ),
             evidence={},
         ),
@@ -874,9 +882,9 @@ def build_counterfactual_brief(
                     "VACUOUS HISTORICAL INTERVENTIONS (Rule-3 pruned): "
                     f"{', '.join(rule3_pruned_interventions)}. These do-surgeries "
                     "have no directed path to the present-day evidence on the "
-                    "AMWN. The counterfactual at the intervened node holds "
-                    "locally, but the rest of the timeline is unchanged — do "
-                    "NOT spin out alternate consequences for the broader story."
+                    "AMWN. The change at the intervened node holds locally, "
+                    "but the rest of the world is unchanged — do NOT extend "
+                    "new downstream consequences to the broader story."
                 ),
                 evidence={"rule3_pruned": list(rule3_pruned_interventions)},
             ))
@@ -890,9 +898,9 @@ def build_counterfactual_brief(
                     f"{', '.join(rule3_pruned_interventions)} to present-"
                     "day evidence. The do-surgery WAS still applied "
                     "(advisory mode); the extracted topology may be "
-                    "missing latent confounders. Render alternate-timeline "
-                    "consequences cautiously — favour atmospheric "
-                    "divergence over explicit causal chains."
+                    "missing latent confounders. Render downstream "
+                    "consequences cautiously — favour atmospheric shifts "
+                    "over explicit causal chains."
                 ),
                 evidence={"rule3_advisory": list(rule3_pruned_interventions)},
             ))
@@ -921,11 +929,11 @@ def build_counterfactual_brief(
             priority="hard",
             instruction=(
                 "PRESENT-DAY EVIDENCE (abduction was conditioned on these "
-                f"node states): {', '.join(evidence_ids)}. The alternate "
-                "timeline must remain consistent with these observed facts "
-                "where they are not directly contradicted by the historical "
-                "intervention — they are the anchor that justified the "
-                "inferred hidden-variable shifts."
+                f"node states): {', '.join(evidence_ids)}. The scene must "
+                "remain consistent with these observed facts where they are "
+                "not directly contradicted by the historical intervention "
+                "— they are the anchor that justified the inferred "
+                "hidden-variable shifts."
             ),
             evidence={"evidence_node_ids": evidence_ids},
         ))
@@ -955,13 +963,20 @@ def build_counterfactual_brief(
             pacing="normal",
             sensory_focus="normal",
             stylistic_instructions=[
-                "This is an alternate timeline. Ground the prose in physical "
-                "reality but mark the divergence subtly.",
-                "If the counterfactual is better than reality, let the prose "
-                "feel cautiously hopeful — but fragile.",
-                "If the counterfactual is worse, let the prose feel eerily wrong.",
-                "Weave abduction background truths into character behavior naturally.",
-                "The reader should feel they are peering into a possible world.",
+                "Ground the prose in concrete physical reality — what the "
+                "POV character sees, hears, touches, and does, moment by "
+                "moment.",
+                "If the changed conditions yield a better outcome than the "
+                "established record, let the prose feel cautiously hopeful "
+                "— but fragile.",
+                "If the changed conditions yield a worse outcome, let the "
+                "prose feel eerily wrong.",
+                "Weave abduction background truths into character behaviour "
+                "naturally — body language, micro-reactions, environmental "
+                "detail — never as exposition.",
+                "Render the scene as the lived present of this world. Do "
+                "not stand outside it as a narrator commenting on its "
+                "structure.",
             ],
         ),
         counterfactual_branch=cf_branch,
