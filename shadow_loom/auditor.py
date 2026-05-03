@@ -290,6 +290,10 @@ class AuditViolation(BaseModel):
         "belief_provenance_contradiction",
         # Source-style fidelity (NarrativeStyle profile from ingestion).
         "style_mismatch",
+        # Meta-narration: prose comments on its own structure (timelines,
+        # divergences, counterfactual machinery) instead of rendering the
+        # world as a lived scene.
+        "meta_narration",
     ]
     severity: Literal["critical", "major", "minor"]
     description: str = Field(

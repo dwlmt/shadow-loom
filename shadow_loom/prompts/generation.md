@@ -137,10 +137,12 @@ Regardless of emotional mode, the LLM must simultaneously satisfy underlying phy
 - Ground the prose in their current psychological state.
 
 **COUNTERFACTUAL:**
-- Render an alternate-timeline scene.
+- Render an alternate-timeline scene **as if it were the actual world** — a lived, concrete scene grounded in physical action, sensory detail, and character behaviour.
 - Use a slightly shifted tonal register — the world is recognizable but subtly different.
 - Weave abduction truths into character behavior naturally.
 - The reader should feel they are peering into a possible world.
+- **NO META-NARRATION.** Do NOT comment on the counterfactual structure itself. Do NOT use words like "timeline", "divergence", "branch", "alternative", "alternate", "the fracture", "the possible world", "momentum", "this reality", or abstract metaphysical commentary about cause, mercy, fate, or possibility. Do NOT use conditional/subjunctive framing ("If he had…", "would have…") to *describe* the counterfactual — instead, render the alternate outcome in plain past-tense narration as the events that occurred.
+- The counterfactual *is* the scene. Do not stand outside it as a narrator pointing at it. Stay inside the world.
 
 ---
 

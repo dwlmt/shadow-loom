@@ -18,7 +18,7 @@ Return a JSON object with this exact structure:
   "passed": true/false,
   "violations": [
     {
-      "violation_type": "epistemic_leakage | knowledge_contamination | low_kl_divergence | suspense_threshold | tonal_mismatch | magnitude_too_low | reasoning_failure | affective_failure | attribution_failure | empathy_weight | miracle_step | abduction_failure | style_mismatch",
+      "violation_type": "epistemic_leakage | knowledge_contamination | low_kl_divergence | suspense_threshold | tonal_mismatch | magnitude_too_low | reasoning_failure | affective_failure | attribution_failure | empathy_weight | miracle_step | abduction_failure | style_mismatch | meta_narration",
       "severity": "critical | major | minor",
       "description": "What went wrong — specific, actionable.",
       "evidence_quote": "The exact passage from the prose that demonstrates the violation.",
@@ -109,6 +109,15 @@ Return a JSON object with this exact structure:
 - The text must NOT explicitly state the hidden event, but must include subtle behavioural cues that logically justify the current world state.
 - Violation type: `abduction_failure`
 - Feedback template: "Abduction Failure. The implicit background event ([hidden variable]) is not structurally supported by the subtext. You cannot explicitly state that it happened, but you must add a subtle behavioural cue to logically justify the current world state."
+
+### Category 4b: Counterfactual Meta-Narration
+
+**Meta-narration audit (counterfactual & abduction modes):**
+- Run on any scene with `rendering_mode == "counterfactual"` or when an abduction-driven alternate scene is requested.
+- Flag any prose that **comments on its own counterfactual structure** rather than rendering the alternate world as a lived scene. Trigger words and patterns include: `timeline`, `divergence`, `divergent`, `branch`, `branching`, `the fracture`, `alternative timeline`, `alternate reality`, `the possible world`, `this reality`, `another reality`, `momentum (of the timeline)`, `the alternative holds`, abstract aphorisms about fate/mercy/possibility, and conditional/subjunctive framings (`If he had…`, `would have…`) used to *describe* the counterfactual rather than to render it as actual past-tense events.
+- The alternate scene MUST be rendered as concrete past-tense narration of events that occurred in this world. Author-voice commentary about "what would have been" or "what is" at the structural level is a violation, regardless of how poetic the phrasing is.
+- Violation type: `meta_narration`
+- Feedback template: "Meta-Narration Detected. The prose comments on the counterfactual structure ([quoted phrase]) instead of rendering the alternate world as a lived scene. Rewrite in plain past-tense narration of the events as they occurred in this branch — no references to 'timelines', 'divergences', or 'alternatives', no conditional framing, no metaphysical commentary on fate or possibility. Stay inside the scene."
 
 ### Category 5: Source-Style Fidelity
 
