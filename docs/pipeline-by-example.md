@@ -276,6 +276,27 @@ and `propagate_social()` walks the channel graph weighting
 participant whose `intelligibility >= settings.physics.intelligibility_threshold`
 is eligible for the same belief update.
 
+The rebuilt fixture corpus exercises the full intelligibility spectrum:
+
+| Channel | Distinctive intelligibility | What it buys the engine |
+|---|---|---|
+| `CHN_HIDDEN_TELESCREEN_SURVEILLANCE` (1984) | Winston / Julia = 0.0 | Pure dramatic irony — the audience and the Party hear, the protagonists do not. |
+| `CHN_RHYS_FEYRE_BOND` (ACOTAR) | Feyre = 0.4 | Partial telepathic bleed; beliefs form with reduced confidence. |
+| `CHN_PIP_BENEFACTOR_PIPELINE` (Great Expectations) | Pip = 0.1 | The information exists in the graph; Pip's beliefs about its source are systematically wrong. |
+| `CHN_WILLIAM_FLATTERING_DISCOURSE` (Persuasion) | Anne = 0.2 | Sustained low-intelligibility flattery — Anne hears the words, doesn't decode the manipulation. |
+| `CHN_LAURA_INTERIOR_CONFESSION` (Brief Encounter) | Fred = 0.0 | Internal-monologue channel; Laura's husband is structurally cut out. |
+
+Utterance `truth_value` cuts across this. `EVT_UTT_HATE_WEEK_ENEMY_SWITCH`
+(`truth_value="false"`, via `CHN_TELESCREEN_BROADCAST`) and
+`EVT_UTT_LINTON_COERCED_LETTERS_TO_CATHY` (`truth_value="false"`, via
+`CHN_LINTON_CATHY_COERCED_LETTERS`) both fire belief updates over high-
+intelligibility channels, but the truth-value guard blocks the *factual*
+reinforcement step in [`causal_physics.py`](../shadow_loom/causal_physics.py)
+— recipients update their belief about *what was said*, not about what is
+so. Performative utterances such as `EVT_UTT_AMARANTHA_RIDDLE` (ACOTAR)
+or `EVT_UTT_DONT_TELL_HIM_PIKE` (Dad's Army) likewise propagate social
+consequences without contributing factual evidence to abduction.
+
 ### 1.7 Global / WORLD_ traits
 
 `GlobalTrait` (`WORLD_*`) nodes are the *common-cause parents*:

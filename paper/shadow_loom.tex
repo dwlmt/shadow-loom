@@ -1024,7 +1024,16 @@ follows the staged scene. The fixture exercises all five
 \texttt{affordance\_gate}, \texttt{ambient\_propagation}); the
 \texttt{ambient\_propagation} edge is what lets
 \texttt{LOC\_HEATH.supernatural=0.9} bias Macbeth's uptake of the
-prophecy belief.
+prophecy belief. Beyond Macbeth, the same schema captures wildly
+different epistemic regimes: \texttt{CHN\_HIDDEN\_TELESCREEN\_SURVEILLANCE}
+in \emph{Nineteen Eighty-Four} carries \texttt{intelligibility\{ENT\_WINSTON:
+0.0, ENT\_JULIA: 0.0\}} so every utterance riding it is invisible to
+the protagonists; \texttt{CHN\_PIP\_BENEFACTOR\_PIPELINE} in \emph{Great
+Expectations} sets \texttt{intelligibility\{ENT\_PIP: 0.1\}} to encode
+the whole misattribution arc; \texttt{CHN\_RHYS\_FEYRE\_BOND} in
+\emph{ACOTAR} uses $0.4$ for partial telepathic bleed. None of these
+required a schema extension --- they are just different fillings of
+the same \texttt{Channel.intelligibility} map.
 
 \subsection{AMWN sandbox --- Macbeth ``what if Macbeth refuses?''}
 \label{app:ex-amwn}
@@ -1059,6 +1068,18 @@ $\Delta_\text{src}=0.4$ gives $I=0.20<0.7$ and is \emph{blocked} ---
 exactly the play's psychology, in which his nerve outlasts his
 conscience. Spatial affordance gating additionally blocks
 cross-location shocks unless a \texttt{connected\_to} path exists.
+The truth-value guard generalises the same gate to utterance evidence:
+\texttt{EVT\_UTT\_NOELLE\_PREGNANCY\_CLAIM} (Gone Girl,
+\texttt{truth\_value="false"}) and
+\texttt{EVT\_UTT\_BALTHASAR\_REPORTS\_JULIETS\_DEATH} (Romeo and
+Juliet, \texttt{truth\_value="false"}) both fire
+\texttt{mutation\_social} edges, so the addressees update their
+beliefs about \emph{what was said} and the social aftermath plays
+out, but the abduction step refuses to use the falsehoods as
+factual support; downstream beliefs whose
+\texttt{acquired\_via\_event\_id} cites those utterances therefore
+carry the deception in their provenance and are pruned automatically
+if the originating utterance is severed by a counterfactual.
 
 \subsection{Narrative physics --- Death on the Nile, Reservoir
 Dogs, Romeo and Juliet, Macbeth}

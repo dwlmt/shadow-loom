@@ -68,6 +68,20 @@ Pearl rung-3 counterfactuals in a literary setting:
 * *"What if Macbeth had refused to kill Duncan?"* — `do(EVT_DUNCAN_MURDER =
   ⊘)` and replay forward physics. The system reports which downstream events
   collapse, which character traits diverge, and which beliefs never form.
+* *"What if Friar John had reached Romeo with the letter?"* —
+  `do(EVT_UTT_BALTHASAR_REPORTS_JULIETS_DEATH = ⊘)` plus a positive spawn
+  of the friar's plan utterance. The belief-provenance pruner drops
+  Romeo's `acquired_via_event_id=EVT_UTT_BALTHASAR_…` belief that Juliet
+  is dead, and the suicide chain never fires.
+* *"What if Amy's diary were truthful?"* — flip
+  `EVT_UTT_AMY_KIDNAP_STATEMENT.truth_value` from `false` to `true`; the
+  causal physics engine now permits the false utterance to reinforce the
+  reader's and the detectives' beliefs, and the abduction step over
+  `CHN_DETECTIVE_PARTNERSHIP` lands on Nick as guilty.
+* *"What if Winston could see the hidden telescreen?"* — set
+  `CHN_HIDDEN_TELESCREEN_SURVEILLANCE.intelligibility[ENT_WINSTON] = 1.0`;
+  every utterance riding that channel is suddenly part of his belief set,
+  collapsing the dramatic-irony gauge and re-routing the third act.
 * The AMWN sandbox tags everything `world_id="shadow"` so the canonical
   graph is never polluted. Under `PipelineConfig.branch_policy="auto"`
   these shadow runs are **persisted** as their own branch in the version

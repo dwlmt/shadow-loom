@@ -238,7 +238,7 @@ grandfathered as `xfail`).
   per-axis `CausalEdge` lines before the `causal_topology` block close
   (anchored on a sentinel comment) and to flip purely-inferential
   metrics to `observed=False`.
-- All 16 fixtures were rebuilt: 120+ `mutation_social` edges added
+- All 18 fixtures were rebuilt: 120+ `mutation_social` edges added
   across the corpus, 14 inferential metrics flipped to unobserved.
   `KNOWN_FLAT_FEAR_FIXTURES` in the regression test is now empty;
   60/60 affective-curve tests pass with no `xfail`.
@@ -465,15 +465,23 @@ easy CI fixtures, no separate service.
 ## D15. Test fixtures are real classic plots
 
 **Decision.** [`example_worlds/`](../example_worlds/) hosts hand-crafted
-`WorldStateV1` fixtures for 16 well-known stories (Macbeth, Romeo & Juliet,
-1984, Apocalypse Now, Gone Girl, …) — each with corresponding raw text in
-[`sample_plots/`](../sample_plots/).
+`WorldStateV1` fixtures for 18 well-known stories (Macbeth, Romeo & Juliet,
+1984, Apocalypse Now, Gone Girl, Tinker Tailor Soldier Spy, The Lion the
+Witch and the Wardrobe, …) — each with corresponding raw text in
+[`sample_plots/`](../sample_plots/). Every fixture now ships standing
+`Channel` objects (e.g. `CHN_TELESCREEN_BROADCAST`, `CHN_RHYS_FEYRE_BOND`,
+`CHN_PIP_BENEFACTOR_PIPELINE`) plus first-class utterance `EventNode`s
+with `content` / `target_ids` / `truth_value` / `via_channel_id` and
+`Belief.acquired_via_event_id` / `acquired_via_channel_id` provenance,
+so the regression suite covers deception, low-intelligibility leakage,
+and performative speech-acts as well as plain causal physics.
 
 **Why?** Validation feedback is meaningful when run against real narrative
-shapes (mystery, betrayal, dual-timeline, ensemble, romance). Synthetic
-fixtures hide the asymmetries the system is designed to handle.
+shapes (mystery, betrayal, dual-timeline, ensemble, romance, conspiracy,
+portal-fantasy). Synthetic fixtures hide the asymmetries the system is
+designed to handle.
 
-**Invariant.** All 16 fixtures pass `_programmatic_validation` with zero
+**Invariant.** All 18 fixtures pass `_programmatic_validation` with zero
 errors and zero warnings — they are the regression baseline for any change
 to the validator.
 

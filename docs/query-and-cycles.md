@@ -74,6 +74,21 @@ the witches’ broadcast altogether — with belief-provenance pruning in the
 causal physics engine cleaning up any beliefs whose
 `acquired_via_channel_id` referenced the severed channel.
 
+Worked examples from the bundled fixtures:
+
+* `{"CHN_HIDDEN_TELESCREEN_SURVEILLANCE.intelligibility":
+  {"ENT_WINSTON": 1.0, "ENT_JULIA": 1.0}}` — promotes both protagonists
+  to full decoding of the surveillance channel; the dramatic-irony score
+  collapses and the third-act betrayal loses its surprise envelope.
+* `{"EVT_UTT_AMY_KIDNAP_STATEMENT.truth_value": "true"}` — flips the
+  diary fabrication from `false` to `true`; abduction over
+  `CHN_DETECTIVE_PARTNERSHIP` is now allowed to reinforce the kidnap
+  hypothesis, and the trial-by-media branch realises canonically.
+* `{"CHN_PIP_BENEFACTOR_PIPELINE.intelligibility": {"ENT_PIP": 1.0}}`
+  — lets Pip read the channel his great expectations ride on; every
+  belief whose `acquired_via_channel_id` cites this pipeline is
+  re-derived with the correct provenance.
+
 ### 3. `CounterfactualQuery` — Rung 3, "abduction + intervention"
 
 ```python
@@ -95,7 +110,19 @@ govern when (or whether) the shadow becomes mainline. Historical targets
 can name channel and utterance ids the same way as intervention keys, so
 “what if Macbeth never told Lady Macbeth about the prophecy” resolves to a
 historical removal of the relevant `EVT_*` (or `CHN_*`) without needing to
-fabricate an entity-level surrogate.
+fabricate an entity-level surrogate. Two more from the bundled corpus:
+
+* *“What if Friar John reached Romeo with the letter?”* —
+  `historical_interventions = {"EVT_UTT_BALTHASAR_REPORTS_JULIETS_DEATH":
+  ⊘, "EVT_UTT_FRIAR_PLAN_LETTER.delivered": true}`. Belief-provenance
+  pruning drops Romeo's `Belief(target=ENT_JULIET, perceived_state="dead",
+  acquired_via_event_id="EVT_UTT_BALTHASAR_…")` and the suicide chain
+  short-circuits.
+* *“What if the great expectations were Magwitch's all along, and Pip
+  knew it?”* — sever `CHN_PIP_BENEFACTOR_PIPELINE` before Jaggers'
+  announcement event by listing the pipeline channel id in
+  `historical_interventions`; Pip's snobbery arc never accumulates and
+  the gentleman-trait timeline flattens.
 
 ### 4. `DirectiveQuery` — affective optimisation
 
