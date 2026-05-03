@@ -966,6 +966,11 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_HEATHCLIFF_RETURNS", target_id="ENT_NELLY", rel_counterpart_id="ENT_HEATHCLIFF", causality_type="mutation_social", trait_target="fear", trait_delta=0.35, mechanism="psychological", evidence_strength="moderate", causal_force=5.0, fabula_time=9700, propagation_delay=0),
         CausalEdge(source_id="EVT_UTT_ISABELLA_LETTER_TO_NELLY", target_id="ENT_NELLY", rel_counterpart_id="ENT_HEATHCLIFF", causality_type="mutation_social", trait_target="fear", trait_delta=0.1, mechanism="informational", evidence_strength="moderate", causal_force=4.0, fabula_time=11500, propagation_delay=0),
         CausalEdge(source_id="EVT_HEATHCLIFF_TAKES_HEIGHTS_MORTGAGE", target_id="ENT_HEATHCLIFF", rel_counterpart_id="ENT_HINDLEY", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.7, mechanism="social", evidence_strength="strong", causal_force=8.0, fabula_time=9900, propagation_delay=0),
+        # ─── placeholder remediation: Heathcliff ↔ Hareton guardianship dyad ───
+        CausalEdge(source_id="EVT_HINDLEY_DIES", target_id="ENT_HEATHCLIFF", rel_counterpart_id="ENT_HARETON", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.35, mechanism="emotional", evidence_strength="strong", causal_force=8.0, fabula_time=12000, propagation_delay=0),
+        CausalEdge(source_id="EVT_HINDLEY_DIES", target_id="ENT_HEATHCLIFF", rel_counterpart_id="ENT_HARETON", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.9, mechanism="social", evidence_strength="strong", causal_force=9.0, fabula_time=12000, propagation_delay=0),
+        CausalEdge(source_id="EVT_HINDLEY_DIES", target_id="ENT_HARETON", rel_counterpart_id="ENT_HEATHCLIFF", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.9, mechanism="social", evidence_strength="strong", causal_force=9.0, fabula_time=12000, propagation_delay=0),
+        CausalEdge(source_id="EVT_HEATHCLIFF_DIES", target_id="ENT_HARETON", rel_counterpart_id="ENT_HEATHCLIFF", causality_type="mutation_social", trait_target="affinity", trait_delta=0.65, mechanism="emotional", evidence_strength="strong", causal_force=7.0, fabula_time=19500, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -1161,15 +1166,15 @@ world_state = WorldStateV1(
         RelationshipEdge(
             source_entity_id="ENT_HEATHCLIFF", target_entity_id="ENT_HARETON",
             metrics={
-                "affinity": RelationshipMetric(value=0.0, inertia=0.5, evidence_strength="moderate", last_updated_fabula=12000, observed=False),
-                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.75, evidence_strength="strong", last_updated_fabula=12000, observed=False),
+                "affinity": RelationshipMetric(value=-0.35, inertia=0.5, evidence_strength="strong", last_updated_fabula=12000),
+                "power_dynamic": RelationshipMetric(value=0.9, inertia=0.75, evidence_strength="strong", last_updated_fabula=12000),
             },
         ),
         RelationshipEdge(
             source_entity_id="ENT_HARETON", target_entity_id="ENT_HEATHCLIFF",
             metrics={
-                "affinity": RelationshipMetric(value=0.0, inertia=0.5, evidence_strength="strong", last_updated_fabula=19000, observed=False),
-                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.7, evidence_strength="strong", last_updated_fabula=12000, observed=False),
+                "affinity": RelationshipMetric(value=0.65, inertia=0.5, evidence_strength="strong", last_updated_fabula=19500),
+                "power_dynamic": RelationshipMetric(value=-0.9, inertia=0.7, evidence_strength="strong", last_updated_fabula=12000),
             },
         ),
         # Heathcliff ↔ Linton — owned son.

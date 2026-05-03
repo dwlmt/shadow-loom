@@ -1005,6 +1005,74 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_HAVISHAM_REPENTS", target_id="ENT_ESTELLA", rel_counterpart_id="ENT_HAVISHAM", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.2, mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=15200, propagation_delay=0),
         CausalEdge(source_id="EVT_MAGWITCH_REVEALS_HIMSELF", target_id="ENT_HAVISHAM", rel_counterpart_id="ENT_PIP", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.4, mechanism="epistemic", evidence_strength="strong", causal_force=7.0, fabula_time=13000, propagation_delay=0),
         CausalEdge(source_id="EVT_HAVISHAM_REPENTS", target_id="ENT_HAVISHAM", rel_counterpart_id="ENT_PIP", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.35, mechanism="emotional", evidence_strength="strong", causal_force=6.0, fabula_time=15200, propagation_delay=0),
+
+        # ─── per-axis coverage for newly-observed antagonism / bond axes ───
+        # Joe → Pip affinity — Joe's love for Pip is constitutive; the nursing scene is its on-page renewal.
+        CausalEdge(source_id="EVT_JOE_NURSES_PIP", target_id="ENT_JOE", rel_counterpart_id="ENT_PIP",
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.05,
+                   mechanism="emotional", evidence_strength="strong", causal_force=6.0,
+                   fabula_time=18000, propagation_delay=0),
+        # Orlick → Pip affinity — Havisham's premium for the favoured boy crystallises Orlick's hatred.
+        CausalEdge(source_id="EVT_HAVISHAM_PAYS_PREMIUM", target_id="ENT_ORLICK", rel_counterpart_id="ENT_PIP",
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.6,
+                   mechanism="psychological", evidence_strength="strong", causal_force=7.0,
+                   fabula_time=4800, propagation_delay=0),
+        CausalEdge(source_id="EVT_ORLICK_LURES_PIP", target_id="ENT_ORLICK", rel_counterpart_id="ENT_PIP",
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.2,
+                   mechanism="psychological", evidence_strength="strong", causal_force=7.0,
+                   fabula_time=16000, propagation_delay=0),
+        # Magwitch ↔ Compeyson — the mutual hatred is on-page from the marshes recapture onward.
+        CausalEdge(source_id="EVT_CONVICTS_RECAPTURED", target_id="ENT_MAGWITCH", rel_counterpart_id="ENT_COMPEYSON",
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.4,
+                   mechanism="betrayal", evidence_strength="strong", causal_force=8.0,
+                   fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_CONVICTS_RECAPTURED", target_id="ENT_MAGWITCH", rel_counterpart_id="ENT_COMPEYSON",
+                   causality_type="mutation_social", trait_target="fear", trait_delta=0.15,
+                   mechanism="psychological", evidence_strength="moderate", causal_force=5.0,
+                   fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_MAGWITCH_CAPTURED", target_id="ENT_MAGWITCH", rel_counterpart_id="ENT_COMPEYSON",
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.2,
+                   mechanism="physical", evidence_strength="strong", causal_force=7.0,
+                   fabula_time=16500, propagation_delay=0),
+        CausalEdge(source_id="EVT_CONVICTS_RECAPTURED", target_id="ENT_COMPEYSON", rel_counterpart_id="ENT_MAGWITCH",
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.4,
+                   mechanism="betrayal", evidence_strength="strong", causal_force=8.0,
+                   fabula_time=2000, propagation_delay=0),
+        # Estella ↔ Drummle — the marriage produces the entrapment; his death dissolves the dyad.
+        CausalEdge(source_id="EVT_ESTELLA_MARRIES_DRUMMLE", target_id="ENT_ESTELLA", rel_counterpart_id="ENT_DRUMMLE",
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.5,
+                   mechanism="social", evidence_strength="strong", causal_force=7.0,
+                   fabula_time=15000, propagation_delay=0),
+        CausalEdge(source_id="EVT_ESTELLA_MARRIES_DRUMMLE", target_id="ENT_ESTELLA", rel_counterpart_id="ENT_DRUMMLE",
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.6,
+                   mechanism="social", evidence_strength="strong", causal_force=7.0,
+                   fabula_time=15000, propagation_delay=0),
+        CausalEdge(source_id="EVT_DRUMMLE_DIES", target_id="ENT_ESTELLA", rel_counterpart_id="ENT_DRUMMLE",
+                   causality_type="mutation_social", trait_target="fear", trait_delta=-0.5,
+                   mechanism="emotional", evidence_strength="strong", causal_force=7.0,
+                   fabula_time=20500, propagation_delay=0),
+        CausalEdge(source_id="EVT_ESTELLA_MARRIES_DRUMMLE", target_id="ENT_DRUMMLE", rel_counterpart_id="ENT_ESTELLA",
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.3,
+                   mechanism="social", evidence_strength="strong", causal_force=6.0,
+                   fabula_time=15000, propagation_delay=0),
+        CausalEdge(source_id="EVT_ESTELLA_MARRIES_DRUMMLE", target_id="ENT_DRUMMLE", rel_counterpart_id="ENT_ESTELLA",
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.6,
+                   mechanism="social", evidence_strength="strong", causal_force=6.0,
+                   fabula_time=15000, propagation_delay=0),
+        # Joe ↔ Biddy — the late marriage is the on-page event for the affinity reading on both sides.
+        CausalEdge(source_id="EVT_JOE_MARRIES_BIDDY", target_id="ENT_JOE", rel_counterpart_id="ENT_BIDDY",
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.7,
+                   mechanism="social", evidence_strength="strong", causal_force=6.0,
+                   fabula_time=18500, propagation_delay=0),
+        CausalEdge(source_id="EVT_JOE_MARRIES_BIDDY", target_id="ENT_BIDDY", rel_counterpart_id="ENT_JOE",
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.7,
+                   mechanism="social", evidence_strength="strong", causal_force=6.0,
+                   fabula_time=18500, propagation_delay=0),
+        # Jaggers → Pip power_dynamic — declared at the moment Jaggers becomes Pip's guardian.
+        CausalEdge(source_id="EVT_JAGGERS_REVEALS_FORTUNE", target_id="ENT_JAGGERS", rel_counterpart_id="ENT_PIP",
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.8,
+                   mechanism="social", evidence_strength="strong", causal_force=7.0,
+                   fabula_time=7000, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -1095,7 +1163,7 @@ world_state = WorldStateV1(
         RelationshipEdge(
             source_entity_id="ENT_JOE", target_entity_id="ENT_PIP",
             metrics={
-                "affinity": RelationshipMetric(value=0.0, inertia=0.65, evidence_strength="strong", last_updated_fabula=18000, observed=False),
+                "affinity": RelationshipMetric(value=1.0, inertia=0.7, evidence_strength="strong", last_updated_fabula=18000),
                 "power_dynamic": RelationshipMetric(value=0.3, inertia=0.6, evidence_strength="strong", last_updated_fabula=1000),
             },
         ),
@@ -1168,8 +1236,7 @@ world_state = WorldStateV1(
         RelationshipEdge(
             source_entity_id="ENT_ORLICK", target_entity_id="ENT_PIP",
             metrics={
-                "affinity": RelationshipMetric(value=0.0, inertia=0.55, evidence_strength="strong", last_updated_fabula=16000, observed=False),
-                "fear":     RelationshipMetric(value=0.0, inertia=0.15, evidence_strength="weak", observed=False),
+                "affinity": RelationshipMetric(value=-0.95, inertia=0.7, evidence_strength="strong", last_updated_fabula=16000),
             },
         ),
         RelationshipEdge(
@@ -1183,36 +1250,50 @@ world_state = WorldStateV1(
         RelationshipEdge(
             source_entity_id="ENT_MAGWITCH", target_entity_id="ENT_COMPEYSON",
             metrics={
-                "affinity": RelationshipMetric(value=0.0, inertia=0.7, evidence_strength="strong", last_updated_fabula=2000, observed=False),
+                "affinity": RelationshipMetric(value=-1.0, inertia=0.85, evidence_strength="strong", last_updated_fabula=2000),
+                "fear":     RelationshipMetric(value=0.4, inertia=0.5, evidence_strength="moderate", last_updated_fabula=2000),
+            },
+        ),
+        RelationshipEdge(
+            source_entity_id="ENT_COMPEYSON", target_entity_id="ENT_MAGWITCH",
+            metrics={
+                "affinity": RelationshipMetric(value=-0.95, inertia=0.8, evidence_strength="strong", last_updated_fabula=2000),
             },
         ),
         # Jaggers → Pip — paid intermediary.
         RelationshipEdge(
             source_entity_id="ENT_JAGGERS", target_entity_id="ENT_PIP",
             metrics={
-                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.75, evidence_strength="strong", last_updated_fabula=7000, observed=False),
+                "power_dynamic": RelationshipMetric(value=0.8, inertia=0.75, evidence_strength="strong", last_updated_fabula=7000),
             },
         ),
         # Estella ↔ Drummle — entrapment.
         RelationshipEdge(
             source_entity_id="ENT_ESTELLA", target_entity_id="ENT_DRUMMLE",
             metrics={
-                "affinity": RelationshipMetric(value=0.0, inertia=0.5, evidence_strength="strong", last_updated_fabula=15000, observed=False),
-                "fear": RelationshipMetric(value=0.0, inertia=0.25, evidence_strength="strong", last_updated_fabula=20500, observed=False),
-                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.7, evidence_strength="strong", last_updated_fabula=15000, observed=False),
+                "affinity":      RelationshipMetric(value=-0.7, inertia=0.5, evidence_strength="strong", last_updated_fabula=20500),
+                "fear":          RelationshipMetric(value=0.7, inertia=0.35, evidence_strength="strong", last_updated_fabula=20500),
+                "power_dynamic": RelationshipMetric(value=-0.7, inertia=0.7, evidence_strength="strong", last_updated_fabula=15000),
+            },
+        ),
+        RelationshipEdge(
+            source_entity_id="ENT_DRUMMLE", target_entity_id="ENT_ESTELLA",
+            metrics={
+                "affinity":      RelationshipMetric(value=-0.4, inertia=0.5, evidence_strength="strong", last_updated_fabula=20500),
+                "power_dynamic": RelationshipMetric(value=0.7, inertia=0.7, evidence_strength="strong", last_updated_fabula=15000),
             },
         ),
         # Joe ↔ Biddy — late marriage.
         RelationshipEdge(
             source_entity_id="ENT_JOE", target_entity_id="ENT_BIDDY",
             metrics={
-                "affinity": RelationshipMetric(value=0.0, inertia=0.6, evidence_strength="strong", last_updated_fabula=18500, observed=False),
+                "affinity": RelationshipMetric(value=0.85, inertia=0.7, evidence_strength="strong", last_updated_fabula=18500),
             },
         ),
         RelationshipEdge(
             source_entity_id="ENT_BIDDY", target_entity_id="ENT_JOE",
             metrics={
-                "affinity": RelationshipMetric(value=0.0, inertia=0.6, evidence_strength="strong", last_updated_fabula=18500, observed=False),
+                "affinity": RelationshipMetric(value=0.85, inertia=0.7, evidence_strength="strong", last_updated_fabula=18500),
             },
         ),
     ],

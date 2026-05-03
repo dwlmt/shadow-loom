@@ -893,6 +893,13 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_ARCHIE_TAUNTS_OTTO_VIETNAM", target_id="ENT_ARCHIE", rel_counterpart_id="ENT_OTTO", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.3, mechanism="psychological", evidence_strength="moderate", causal_force=6.0, fabula_time=24000, propagation_delay=0),
         CausalEdge(source_id="EVT_WENDY_DECIDES_DIVORCE", target_id="ENT_WENDY", rel_counterpart_id="ENT_ARCHIE", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.5, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=17000, propagation_delay=0),
         CausalEdge(source_id="EVT_WENDY_DECIDES_DIVORCE", target_id="ENT_ARCHIE", rel_counterpart_id="ENT_WENDY", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.4, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=17000, propagation_delay=0),
+        # ─── placeholder remediation: Ken/Otto/George dyad command-hierarchy & betrayal axes ───
+        CausalEdge(source_id="EVT_UTT_GEORGE_ORDERS_KEN_KILL_COADY", target_id="ENT_KEN", rel_counterpart_id="ENT_GEORGE", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.6, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=12500, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_GEORGE_ORDERS_KEN_KILL_COADY", target_id="ENT_GEORGE", rel_counterpart_id="ENT_KEN", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.6, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=12500, propagation_delay=0),
+        CausalEdge(source_id="EVT_OTTO_INTERROGATES_KEN", target_id="ENT_OTTO", rel_counterpart_id="ENT_KEN", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.85, mechanism="emotional", evidence_strength="strong", causal_force=8.0, fabula_time=19000, propagation_delay=0),
+        CausalEdge(source_id="EVT_GEORGE_INFORMS_ARCHIE_ABOUT_KEN", target_id="ENT_GEORGE", rel_counterpart_id="ENT_KEN", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.4, mechanism="betrayal", evidence_strength="strong", causal_force=7.0, fabula_time=20000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WANDA_BETRAYS_GEORGE", target_id="ENT_GEORGE", rel_counterpart_id="ENT_WANDA", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.7, mechanism="betrayal", evidence_strength="strong", causal_force=8.0, fabula_time=3000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WANDA_BETRAYS_GEORGE", target_id="ENT_GEORGE", rel_counterpart_id="ENT_OTTO", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.7, mechanism="betrayal", evidence_strength="strong", causal_force=8.0, fabula_time=3000, propagation_delay=0),
     ],
     spatial_topology=[
         SpatialEdge(source_id="LOC_HEATHROW", target_id="LOC_GEORGE_FLAT"),
@@ -1056,7 +1063,7 @@ world_state = WorldStateV1(
             metrics={
                     "affinity":      RelationshipMetric(value=0.7, inertia=0.46, evidence_strength='moderate'),
                     "fear":          RelationshipMetric(value=0.0, inertia=0.17, evidence_strength='weak', observed=False),
-                    "power_dynamic": RelationshipMetric(value=0.0, inertia=0.57, evidence_strength='weak', observed=False),
+                    "power_dynamic": RelationshipMetric(value=-0.6, inertia=0.57, evidence_strength='strong', last_updated_fabula=12500),
                 },
         ),
         RelationshipEdge(
@@ -1070,7 +1077,7 @@ world_state = WorldStateV1(
         RelationshipEdge(
             source_entity_id='ENT_OTTO', target_entity_id='ENT_KEN',
             metrics={
-                    "affinity": RelationshipMetric(value=0.0, inertia=0.37, evidence_strength='weak', observed=False),
+                    "affinity": RelationshipMetric(value=-0.85, inertia=0.37, evidence_strength='strong', last_updated_fabula=19000),
                     "fear":          RelationshipMetric(value=0.0, inertia=0.17, evidence_strength='weak', observed=False),
                     "power_dynamic": RelationshipMetric(value=0.5, inertia=0.59, evidence_strength='weak'),
                 },
@@ -1100,9 +1107,9 @@ world_state = WorldStateV1(
         RelationshipEdge(
             source_entity_id='ENT_GEORGE', target_entity_id='ENT_KEN',
             metrics={
-                    "affinity": RelationshipMetric(value=0.0, inertia=0.39, evidence_strength='weak', observed=False),
+                    "affinity": RelationshipMetric(value=-0.4, inertia=0.39, evidence_strength='strong', last_updated_fabula=20000),
                     "fear":          RelationshipMetric(value=0.0, inertia=0.17, evidence_strength='weak', observed=False),
-                    "power_dynamic": RelationshipMetric(value=0.0, inertia=0.57, evidence_strength='weak', observed=False),
+                    "power_dynamic": RelationshipMetric(value=0.6, inertia=0.57, evidence_strength='strong', last_updated_fabula=12500),
                 },
         ),
         RelationshipEdge(
@@ -1139,7 +1146,13 @@ world_state = WorldStateV1(
             metrics={
                     "affinity":      RelationshipMetric(value=-0.6, inertia=0.4, evidence_strength='weak'),
                     "fear":          RelationshipMetric(value=0.0, inertia=0.17, evidence_strength='weak', observed=False),
-                    "power_dynamic": RelationshipMetric(value=0.0, inertia=0.57, evidence_strength='weak', observed=False),
+                    "power_dynamic": RelationshipMetric(value=-0.7, inertia=0.57, evidence_strength='strong', last_updated_fabula=3000),
+                },
+        ),
+        RelationshipEdge(
+            source_entity_id='ENT_WANDA', target_entity_id='ENT_GEORGE',
+            metrics={
+                    "power_dynamic": RelationshipMetric(value=0.7, inertia=0.57, evidence_strength='strong', last_updated_fabula=3000),
                 },
         ),
         RelationshipEdge(
@@ -1151,7 +1164,13 @@ world_state = WorldStateV1(
                     # fear of Otto. Mark unobserved so the danger gauge
                     # isn't pinned by a static baseline.
                     "fear":          RelationshipMetric(value=0.0, inertia=0.18, evidence_strength='weak', observed=False),
-                    "power_dynamic": RelationshipMetric(value=0.0, inertia=0.57, evidence_strength='weak', observed=False),
+                    "power_dynamic": RelationshipMetric(value=-0.7, inertia=0.57, evidence_strength='strong', last_updated_fabula=3000),
+                },
+        ),
+        RelationshipEdge(
+            source_entity_id='ENT_OTTO', target_entity_id='ENT_GEORGE',
+            metrics={
+                    "power_dynamic": RelationshipMetric(value=0.7, inertia=0.57, evidence_strength='strong', last_updated_fabula=3000),
                 },
         ),
     ],

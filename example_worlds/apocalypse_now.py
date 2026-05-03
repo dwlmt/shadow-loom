@@ -828,6 +828,10 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_JOIN_KILGORE", target_id="ENT_KILGORE", rel_counterpart_id="ENT_WILLARD", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.65, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=1500, propagation_delay=0),
         CausalEdge(source_id="EVT_ARRIVE_COMPOUND", target_id="ENT_LANCE", rel_counterpart_id="ENT_KURTZ", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.65, mechanism="social", evidence_strength="strong", causal_force=8.0, fabula_time=6000, propagation_delay=0),
         CausalEdge(source_id="EVT_ARRIVE_COMPOUND", target_id="ENT_PHOTOJOURNALIST", rel_counterpart_id="ENT_KURTZ", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.65, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=6000, propagation_delay=0),
+
+        # ─── per-axis coverage for newly-observed antagonism / bond axes ───
+        CausalEdge(source_id="EVT_DO_LUNG_BRIDGE", target_id="ENT_COLBY", rel_counterpart_id="ENT_KURTZ", causality_type="mutation_social", trait_target="affinity", trait_delta=0.8, mechanism="epistemic", evidence_strength="strong", causal_force=6.0, fabula_time=4500, propagation_delay=0),
+        CausalEdge(source_id="EVT_DO_LUNG_BRIDGE", target_id="ENT_COLBY", rel_counterpart_id="ENT_KURTZ", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.8, mechanism="epistemic", evidence_strength="strong", causal_force=6.0, fabula_time=4500, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ───────────────────────────────────────────────
@@ -1035,8 +1039,15 @@ world_state = WorldStateV1(
         RelationshipEdge(
             source_entity_id="ENT_COLBY", target_entity_id="ENT_KURTZ",
             metrics={
-                "affinity": RelationshipMetric(value=0.0, inertia=0.95, evidence_strength="strong", last_updated_fabula=4500, observed=False),
-                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.95, evidence_strength="strong", last_updated_fabula=4500, observed=False),
+                "affinity": RelationshipMetric(value=0.8, inertia=0.95, evidence_strength="strong", last_updated_fabula=4500),
+                "power_dynamic": RelationshipMetric(value=-0.8, inertia=0.95, evidence_strength="strong", last_updated_fabula=4500),
+            },
+        ),
+        # Kurtz → Colby — reverse dominance after Colby's defection.
+        RelationshipEdge(
+            source_entity_id="ENT_KURTZ", target_entity_id="ENT_COLBY",
+            metrics={
+                "power_dynamic": RelationshipMetric(value=0.8, inertia=0.95, evidence_strength="strong", last_updated_fabula=4500),
             },
         ),
         # Willard ↔ Lance — the surviving pair.

@@ -870,6 +870,14 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_TAMLIN_CAPTURED", target_id="ENT_LUCIEN", rel_counterpart_id="ENT_TAMLIN", causality_type="mutation_social", trait_target="affinity", trait_delta=0.5, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=10000, propagation_delay=0),
         CausalEdge(source_id="EVT_FEYRE_TAKEN", target_id="ENT_FEYRE", rel_counterpart_id="ENT_TAMLIN", causality_type="mutation_social", trait_target="fear", trait_delta=0.3, mechanism="psychological", evidence_strength="moderate", causal_force=6.0, fabula_time=2000, propagation_delay=0),
         CausalEdge(source_id="EVT_FEYRE_FALLS_FOR_TAMLIN", target_id="ENT_FEYRE", rel_counterpart_id="ENT_TAMLIN", causality_type="mutation_social", trait_target="fear", trait_delta=-0.2, mechanism="emotional", evidence_strength="strong", causal_force=5.0, fabula_time=5000, propagation_delay=0),
+        # ─── placeholder remediation: family bonds + Tamlin↔Andras hierarchy ───
+        CausalEdge(source_id="EVT_FEYRE_SENT_HOME", target_id="ENT_FEYRE", rel_counterpart_id="ENT_FATHER_ARCHERON", causality_type="mutation_social", trait_target="affinity", trait_delta=0.6, mechanism="emotional", evidence_strength="strong", causal_force=7.0, fabula_time=8000, propagation_delay=0),
+        CausalEdge(source_id="EVT_FEYRE_SENT_HOME", target_id="ENT_FATHER_ARCHERON", rel_counterpart_id="ENT_FEYRE", causality_type="mutation_social", trait_target="affinity", trait_delta=0.85, mechanism="emotional", evidence_strength="strong", causal_force=7.0, fabula_time=8000, propagation_delay=0),
+        CausalEdge(source_id="EVT_FEYRE_SENT_HOME", target_id="ENT_FEYRE", rel_counterpart_id="ENT_ELAIN", causality_type="mutation_social", trait_target="affinity", trait_delta=0.7, mechanism="emotional", evidence_strength="strong", causal_force=7.0, fabula_time=8000, propagation_delay=0),
+        CausalEdge(source_id="EVT_FEYRE_SENT_HOME", target_id="ENT_ELAIN", rel_counterpart_id="ENT_FEYRE", causality_type="mutation_social", trait_target="affinity", trait_delta=0.8, mechanism="emotional", evidence_strength="strong", causal_force=6.0, fabula_time=8000, propagation_delay=0),
+        CausalEdge(source_id="EVT_FEYRE_TAKEN", target_id="ENT_TAMLIN", rel_counterpart_id="ENT_ANDRAS", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.6, mechanism="social", evidence_strength="strong", causal_force=6.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WOLF_KILLED", target_id="ENT_ANDRAS", rel_counterpart_id="ENT_TAMLIN", causality_type="mutation_social", trait_target="affinity", trait_delta=0.9, mechanism="emotional", evidence_strength="strong", causal_force=7.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WOLF_KILLED", target_id="ENT_ANDRAS", rel_counterpart_id="ENT_TAMLIN", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.6, mechanism="social", evidence_strength="strong", causal_force=6.0, fabula_time=1000, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -1233,8 +1241,8 @@ world_state = WorldStateV1(
         RelationshipEdge(
             source_entity_id="ENT_FEYRE", target_entity_id="ENT_FATHER_ARCHERON",
             metrics={
-                "affinity": RelationshipMetric(value=0.0,  inertia=0.45, evidence_strength="moderate",
-                                                    last_updated_fabula=0, observed=False),
+                "affinity": RelationshipMetric(value=0.6,  inertia=0.45, evidence_strength="strong",
+                                                    last_updated_fabula=8000),
                 "fear":          RelationshipMetric(value=0.0,  inertia=0.18, evidence_strength="weak",
                                                     observed=False),
                 "power_dynamic": RelationshipMetric(value=0.5,  inertia=0.6, evidence_strength="moderate",
@@ -1244,8 +1252,8 @@ world_state = WorldStateV1(
         RelationshipEdge(
             source_entity_id="ENT_FATHER_ARCHERON", target_entity_id="ENT_FEYRE",
             metrics={
-                "affinity": RelationshipMetric(value=0.0,  inertia=0.45, evidence_strength="moderate",
-                                                    last_updated_fabula=0, observed=False),
+                "affinity": RelationshipMetric(value=0.85,  inertia=0.45, evidence_strength="strong",
+                                                    last_updated_fabula=8000),
                 "fear":          RelationshipMetric(value=0.0,  inertia=0.18, evidence_strength="weak",
                                                     observed=False),
                 "power_dynamic": RelationshipMetric(value=-0.5, inertia=0.6, evidence_strength="moderate",
@@ -1255,8 +1263,8 @@ world_state = WorldStateV1(
         RelationshipEdge(
             source_entity_id="ENT_FEYRE", target_entity_id="ENT_ELAIN",
             metrics={
-                "affinity": RelationshipMetric(value=0.0,  inertia=0.5, evidence_strength="moderate",
-                                                    last_updated_fabula=0, observed=False),
+                "affinity": RelationshipMetric(value=0.7,  inertia=0.5, evidence_strength="strong",
+                                                    last_updated_fabula=8000),
                 "fear":          RelationshipMetric(value=0.0,  inertia=0.18, evidence_strength="weak",
                                                     observed=False),
                 "power_dynamic": RelationshipMetric(value=0.2,  inertia=0.6, evidence_strength="weak",
@@ -1266,8 +1274,8 @@ world_state = WorldStateV1(
         RelationshipEdge(
             source_entity_id="ENT_ELAIN", target_entity_id="ENT_FEYRE",
             metrics={
-                "affinity": RelationshipMetric(value=0.0,  inertia=0.5, evidence_strength="moderate",
-                                                    last_updated_fabula=0, observed=False),
+                "affinity": RelationshipMetric(value=0.8,  inertia=0.5, evidence_strength="strong",
+                                                    last_updated_fabula=8000),
                 "fear":          RelationshipMetric(value=0.0,  inertia=0.18, evidence_strength="weak",
                                                     observed=False),
                 "power_dynamic": RelationshipMetric(value=-0.2, inertia=0.6, evidence_strength="weak",
@@ -1292,19 +1300,19 @@ world_state = WorldStateV1(
                                                     last_updated_fabula=0, observed=False),
                 "fear":          RelationshipMetric(value=0.0,  inertia=0.18, evidence_strength="weak",
                                                     observed=False),
-                "power_dynamic": RelationshipMetric(value=0.0,  inertia=0.65, evidence_strength="moderate",
-                                                    last_updated_fabula=0, observed=False),
+                "power_dynamic": RelationshipMetric(value=0.6,  inertia=0.65, evidence_strength="strong",
+                                                    last_updated_fabula=2000),
             },
         ),
         RelationshipEdge(
             source_entity_id="ENT_ANDRAS", target_entity_id="ENT_TAMLIN",
             metrics={
-                "affinity": RelationshipMetric(value=0.0, inertia=0.5, evidence_strength="strong",
-                                                    last_updated_fabula=0, observed=False),
+                "affinity": RelationshipMetric(value=0.9, inertia=0.5, evidence_strength="strong",
+                                                    last_updated_fabula=1000),
                 "fear":          RelationshipMetric(value=0.0,  inertia=0.18, evidence_strength="weak",
                                                     observed=False),
-                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.65, evidence_strength="moderate",
-                                                    last_updated_fabula=0, observed=False),
+                "power_dynamic": RelationshipMetric(value=-0.6, inertia=0.65, evidence_strength="strong",
+                                                    last_updated_fabula=1000),
             },
         ),
     ],

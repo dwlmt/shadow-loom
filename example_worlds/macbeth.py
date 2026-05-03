@@ -892,6 +892,9 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_MALCOLM_MACDUFF_ALLIANCE", target_id="ENT_MACDUFF", rel_counterpart_id="ENT_MALCOLM", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.3, mechanism="social", evidence_strength="moderate", causal_force=6.0, fabula_time=15000, propagation_delay=0),
         CausalEdge(source_id="EVT_MALCOLM_MACDUFF_ALLIANCE", target_id="ENT_MALCOLM", rel_counterpart_id="ENT_MACDUFF", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.3, mechanism="social", evidence_strength="moderate", causal_force=6.0, fabula_time=15000, propagation_delay=0),
         CausalEdge(source_id="EVT_WITCHES_PROPHECY_1", target_id="ENT_MACBETH", rel_counterpart_id="ENT_WITCHES", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.6, mechanism="epistemic", evidence_strength="strong", causal_force=7.0, fabula_time=2000, propagation_delay=0),
+        # ─── placeholder remediation: Lady Macbeth → Duncan covert hostility ───
+        CausalEdge(source_id="EVT_LADY_MACBETH_PERSUADES", target_id="ENT_LADY_MACBETH", rel_counterpart_id="ENT_DUNCAN", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.9, mechanism="emotional", evidence_strength="strong", causal_force=8.0, fabula_time=5000, propagation_delay=0),
+        CausalEdge(source_id="EVT_LADY_MACBETH_PERSUADES", target_id="ENT_LADY_MACBETH", rel_counterpart_id="ENT_DUNCAN", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.6, mechanism="social", evidence_strength="moderate", causal_force=5.0, fabula_time=5000, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -1073,8 +1076,8 @@ world_state = WorldStateV1(
         RelationshipEdge(
             source_entity_id="ENT_LADY_MACBETH", target_entity_id="ENT_DUNCAN",
             metrics={
-                "affinity": RelationshipMetric(value=0.0, inertia=0.4, evidence_strength="strong", last_updated_fabula=5000, observed=False),
-                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.7, evidence_strength="moderate", last_updated_fabula=5000, observed=False),
+                "affinity": RelationshipMetric(value=-0.9, inertia=0.4, evidence_strength="strong", last_updated_fabula=5000),
+                "power_dynamic": RelationshipMetric(value=-0.6, inertia=0.7, evidence_strength="moderate", last_updated_fabula=5000),
             },
         ),
         # Macbeth → Witches: drawn to them with mingled fear and need.

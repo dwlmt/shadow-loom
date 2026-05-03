@@ -868,6 +868,9 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_OTTERBOURNE_KILLED", target_id="ENT_JACQUELINE", rel_counterpart_id="ENT_SIMON", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.0, mechanism="psychological", evidence_strength="strong", causal_force=9.0, fabula_time=10000, propagation_delay=0),
         CausalEdge(source_id="EVT_BOULDER", target_id="ENT_PENNINGTON", rel_counterpart_id="ENT_LINNET", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.3, mechanism="psychological", evidence_strength="moderate", causal_force=6.0, fabula_time=6000, propagation_delay=0),
         CausalEdge(source_id="EVT_UTT_BOWERS_RETURNS_PEARLS", target_id="ENT_VAN_SCHUYLER", rel_counterpart_id="ENT_BOWERS", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.0, mechanism="social", evidence_strength="strong", causal_force=6.0, fabula_time=9700, propagation_delay=0),
+        # ─── placeholder remediation: Louise ↔ Linnet maid hierarchy ───
+        CausalEdge(source_id="EVT_BOARD_KARNAK", target_id="ENT_LOUISE", rel_counterpart_id="ENT_LINNET", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.8, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=4000, propagation_delay=0),
+        CausalEdge(source_id="EVT_BOARD_KARNAK", target_id="ENT_LINNET", rel_counterpart_id="ENT_LOUISE", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.8, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=4000, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -1002,7 +1005,14 @@ world_state = WorldStateV1(
             source_entity_id="ENT_LOUISE", target_entity_id="ENT_LINNET",
             metrics={
                 "affinity": RelationshipMetric(value=0.0, inertia=0.55, evidence_strength="moderate", last_updated_fabula=4000, observed=False),
-                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.7, evidence_strength="strong", last_updated_fabula=4000, observed=False),
+                "power_dynamic": RelationshipMetric(value=-0.8, inertia=0.7, evidence_strength="strong", last_updated_fabula=4000),
+            },
+        ),
+        # Linnet → Louise — reverse: explicit employer-over-maid hierarchy.
+        RelationshipEdge(
+            source_entity_id="ENT_LINNET", target_entity_id="ENT_LOUISE",
+            metrics={
+                "power_dynamic": RelationshipMetric(value=0.8, inertia=0.7, evidence_strength="strong", last_updated_fabula=4000),
             },
         ),
         # Louise → Simon — blackmail target.

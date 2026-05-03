@@ -781,6 +781,9 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_WILSON_OUTRANKS_REVELATION", target_id="ENT_WILSON", rel_counterpart_id="ENT_MAINWARING", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.1, mechanism="social", evidence_strength="strong", causal_force=5.0, fabula_time=7000, propagation_delay=0),
         CausalEdge(source_id="EVT_PLATOON_FORMED", target_id="ENT_MAINWARING", rel_counterpart_id="ENT_JONES", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.55, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=1000, propagation_delay=0),
         CausalEdge(source_id="EVT_PLATOON_FORMED", target_id="ENT_JONES", rel_counterpart_id="ENT_MAINWARING", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.55, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=1000, propagation_delay=0),
+        # ─── placeholder remediation: Walker ↔ Mainwaring command hierarchy ───
+        CausalEdge(source_id="EVT_PLATOON_FORMED", target_id="ENT_WALKER", rel_counterpart_id="ENT_MAINWARING", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.55, mechanism="social", evidence_strength="strong", causal_force=6.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PLATOON_FORMED", target_id="ENT_MAINWARING", rel_counterpart_id="ENT_WALKER", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.55, mechanism="social", evidence_strength="strong", causal_force=6.0, fabula_time=1000, propagation_delay=0),
         CausalEdge(source_id="EVT_HODGES_CONFRONTATION", target_id="ENT_MAINWARING", rel_counterpart_id="ENT_HODGES", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.05, mechanism="social", evidence_strength="moderate", causal_force=3.0, fabula_time=5000, propagation_delay=0),
         CausalEdge(source_id="EVT_HODGES_GRUDGING_RESPECT", target_id="ENT_MAINWARING", rel_counterpart_id="ENT_HODGES", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.15, mechanism="social", evidence_strength="moderate", causal_force=5.0, fabula_time=14000, propagation_delay=0),
         CausalEdge(source_id="EVT_HODGES_CONFRONTATION", target_id="ENT_HODGES", rel_counterpart_id="ENT_MAINWARING", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.05, mechanism="social", evidence_strength="moderate", causal_force=3.0, fabula_time=5000, propagation_delay=0),
@@ -979,7 +982,7 @@ world_state = WorldStateV1(
             metrics={
                 "affinity": RelationshipMetric(value=0.0, inertia=0.45, evidence_strength="moderate", last_updated_fabula=1000, observed=False),
                 "fear": RelationshipMetric(value=0.0, inertia=0.2, evidence_strength="weak", last_updated_fabula=1000, observed=False),
-                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.6, evidence_strength="moderate", last_updated_fabula=1000, observed=False),
+                "power_dynamic": RelationshipMetric(value=-0.55, inertia=0.6, evidence_strength="strong", last_updated_fabula=1000),
             },
         ),
         RelationshipEdge(
@@ -987,7 +990,7 @@ world_state = WorldStateV1(
             metrics={
                 "affinity": RelationshipMetric(value=0.0, inertia=0.45, evidence_strength="moderate", last_updated_fabula=1000, observed=False),
                 "fear": RelationshipMetric(value=0.0, inertia=0.2, evidence_strength="weak", last_updated_fabula=1000, observed=False),
-                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.6, evidence_strength="moderate", last_updated_fabula=1000, observed=False),
+                "power_dynamic": RelationshipMetric(value=0.55, inertia=0.6, evidence_strength="strong", last_updated_fabula=1000),
             },
         ),
         # Mainwaring ↔ Fullard — the regular-Army humiliation axis.
