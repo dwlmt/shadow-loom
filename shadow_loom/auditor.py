@@ -394,11 +394,11 @@ def _aud_defaults() -> dict:
 class AuditorConfig(BaseModel):
     """Runtime configuration for the audit/refinement loop."""
     auditor_model: str = Field(
-        default="ollama:qwen3.6:27b",
+        default="ollama:qwen3.6:35b",
         description="PydanticAI model string for the auditor LLM.",
     )
     generation_model: str = Field(
-        default="ollama:qwen3.6:27b",
+        default="ollama:qwen3.6:35b",
         description="PydanticAI model string for the generation LLM (re-renders).",
     )
     max_iterations: int = Field(

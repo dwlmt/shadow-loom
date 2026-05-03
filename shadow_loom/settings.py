@@ -134,7 +134,7 @@ class CoreSettings(BaseSettings):
         description="Base URL for Langfuse API. Example: https://cloud.langfuse.com",
     )
     default_model: str = Field(
-        default="ollama:qwen3.6:27b",
+        default="ollama:qwen3.6:35b",
         description=(
             "Fallback PydanticAI model string when a stage-specific model "
             "is not set. Format is ``<provider>:<model>``. Built-in providers: "
@@ -159,7 +159,7 @@ class GenerationSettings(BaseSettings):
         extra="ignore",
     )
 
-    model: str = Field(default="ollama:qwen3.6:27b")
+    model: str = Field(default="ollama:qwen3.6:35b")
     max_tokens: int = Field(default=64000)
     temperature: float = Field(default=0.7)
     output_retries: int = Field(default=5)
@@ -177,7 +177,7 @@ class QueryParsingSettings(BaseSettings):
         extra="ignore",
     )
 
-    model: str = Field(default="ollama:qwen3.6:27b")
+    model: str = Field(default="ollama:qwen3.6:35b")
     max_tokens: int = Field(default=64000)
     temperature: float = Field(default=0.1)
     output_retries: int = Field(default=5)
@@ -195,8 +195,8 @@ class AuditorSettings(BaseSettings):
         extra="ignore",
     )
 
-    model: str = Field(default="ollama:qwen3.6:27b", alias="AUDITOR_MODEL")
-    generation_model: str = Field(default="ollama:qwen3.6:27b")
+    model: str = Field(default="ollama:qwen3.6:35b", alias="AUDITOR_MODEL")
+    generation_model: str = Field(default="ollama:qwen3.6:35b")
     max_iterations: int = Field(default=3)
     output_retries: int = Field(default=5)
     temperature: float = Field(default=0.2)
@@ -222,7 +222,7 @@ class ExtractionSettings(BaseSettings):
         extra="ignore",
     )
 
-    model: str = Field(default="ollama:qwen3.6:27b")
+    model: str = Field(default="ollama:qwen3.6:35b")
     chunk_strategy: Literal["act_headings", "paragraph"] = Field(default="act_headings")
     output_retries: int = Field(default=5)
     fabula_time_spacing: int = Field(default=1000)

@@ -54,7 +54,7 @@ def _qp_defaults() -> dict:
 class QueryParsingConfig(BaseModel):
     """Runtime configuration for the query parsing agent."""
     model: str = Field(
-        default="ollama:qwen3.6:27b",
+        default="ollama:qwen3.6:35b",
         description="PydanticAI model string.",
     )
     output_retries: int = Field(

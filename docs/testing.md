@@ -24,7 +24,7 @@ python -m pytest tests/test_narrative_physics.py::test_intervention_query_macbet
 # With coverage
 python -m pytest tests/ --ignore=tests/test_live_e2e.py --cov=shadow_loom --cov=shadow_loom_mcp --cov=shadow_loom_ui
 
-# The live tier (requires Ollama at localhost:11434 with qwen3.6:27b pulled).
+# The live tier (requires Ollama at localhost:11434 with qwen3.6:35b pulled).
 # scripts/run_live_e2e.sh is a convenience wrapper that spawns it detached and
 # logs to logs/live_e2e_<ts>.log so the suite can run in the background.
 python -m pytest tests/test_live_e2e.py -v
@@ -65,7 +65,7 @@ Counts below are the number of `test_*` functions in each file.
 | [test_pipeline.py](../tests/test_pipeline.py) | 38 | The orchestrator (`shadow_loom.pipeline`) with mocked LLM. All computational code (physics engines, affective calculus, graph versioning, merge) runs un-mocked. |
 | [test_pipeline_integration.py](../tests/test_pipeline_integration.py) | 34 | Full Steps 5–8: causal physics + affective calculus + directive assembly working as a coherent system; epistemic / fabula / syuzhet tracking; affective scoring of target emotions. |
 | [test_end_to_end.py](../tests/test_end_to_end.py) | 52 | Plot models → graph extraction → physics/affective engines → generation → audit loop → prose re-extraction → merge. LLM mocked; everything else real. |
-| [test_live_e2e.py](../tests/test_live_e2e.py) | 29 | **Optional live tier.** Real Ollama calls (`qwen3.6:27b`) against `example_worlds` fixtures, exercising every query type through the complete pipeline. Skipped automatically when Ollama is unreachable. |
+| [test_live_e2e.py](../tests/test_live_e2e.py) | 29 | **Optional live tier.** Real Ollama calls (`qwen3.6:35b`) against `example_worlds` fixtures, exercising every query type through the complete pipeline. Skipped automatically when Ollama is unreachable. |
 
 ### Surface tests — MCP & UI
 

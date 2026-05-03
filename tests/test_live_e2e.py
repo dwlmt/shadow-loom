@@ -11,7 +11,7 @@ re-extraction → versioned merge.
 
 **Requirements:**
   - A running Ollama instance at ``localhost:11434``
-  - The ``qwen3.6:27b`` model pulled
+  - The ``qwen3.6:35b`` model pulled
 
 Skipped automatically when Ollama is unreachable.
 """
@@ -124,7 +124,7 @@ requires_ollama = pytest.mark.skipif(
 # Shared config — keep max_iterations low for test speed
 # =========================================================================
 
-_MODEL = "ollama:qwen3.6:27b"
+_MODEL = "ollama:qwen3.6:35b"
 
 
 def _test_pipeline_config(*, skip_audit: bool = False, skip_reextraction: bool = False) -> PipelineConfig:

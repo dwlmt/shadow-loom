@@ -10,7 +10,7 @@ PYTHON  ?= python
 PIP     ?= $(PYTHON) -m pip
 VENV    ?= .venv
 ACTIVATE = . $(VENV)/bin/activate
-OLLAMA_MODEL ?= qwen3.6:27b
+OLLAMA_MODEL ?= qwen3.6:35b
 
 .DEFAULT_GOAL := help
 

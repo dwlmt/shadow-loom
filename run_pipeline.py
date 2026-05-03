@@ -27,7 +27,7 @@ def run_on_file(plot_path: str, output_dir: str = "pipeline_output"):
     out.mkdir(exist_ok=True)
 
     config = ExtractionConfig(
-        model="ollama:qwen3.6:27b",
+        model="ollama:qwen3.6:35b",
         chunk_strategy="act_headings",
         fabula_time_spacing=100,  # match gold-standard fixtures
         output_retries=5,

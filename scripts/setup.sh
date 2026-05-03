@@ -18,7 +18,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3.6:27b}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3.6:35b}"
 PYTHON_BIN="${PYTHON:-python3}"
 VENV_DIR="${VENV:-.venv}"
 

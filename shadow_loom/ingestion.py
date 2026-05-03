@@ -319,8 +319,8 @@ def _ext_defaults() -> dict:
 class ExtractionConfig(BaseModel):
     """Runtime configuration for the extraction pipeline."""
     model: str = Field(
-        default="ollama:qwen3.6:27b",
-        description="PydanticAI model string (e.g. 'ollama:qwen3.6:27b', 'openai:gpt-4o').",
+        default="ollama:qwen3.6:35b",
+        description="PydanticAI model string (e.g. 'ollama:qwen3.6:35b', 'openai:gpt-4o').",
     )
     chunk_strategy: Literal["act_headings", "paragraph"] = Field(
         default="act_headings",

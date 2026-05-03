@@ -69,7 +69,7 @@ def _gen_defaults() -> dict:
 class GenerationConfig(BaseModel):
     """Runtime configuration for the generation step."""
     model: str = Field(
-        default="ollama:qwen3.6:27b",
+        default="ollama:qwen3.6:35b",
         description="PydanticAI model string.",
     )
     output_retries: int = Field(

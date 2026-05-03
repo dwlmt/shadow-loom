@@ -166,7 +166,7 @@ end-to-end orchestrator is
 * **Python 3.13+** (3.14 recommended; see [.python-version](.python-version)).
 * **An LLM backend.** One of:
   * **[Ollama](https://ollama.com/download)** for local inference (default).
-    After install: `ollama serve` then `ollama pull qwen3.6:27b`.
+    After install: `ollama serve` then `ollama pull qwen3.6:35b`.
     Smaller models work too — set `DEFAULT_MODEL` in `.env`.
   * **OpenRouter** — set `OPENROUTER_API_KEY` and a `*_MODEL` value
     starting with `openrouter:` in `.env`.
@@ -200,7 +200,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e .
 cp .env.example .env                # then edit if needed
 
-ollama pull qwen3.6:27b              # if using Ollama (default)
+ollama pull qwen3.6:35b              # if using Ollama (default)
 
 python -m shadow_loom_ui              # NiceGUI workspace → http://localhost:7860
 python -m shadow_loom_mcp             # MCP server (stdio)

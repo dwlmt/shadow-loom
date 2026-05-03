@@ -60,7 +60,7 @@ services:
       ANYSCALE_API_KEY: ${ANYSCALE_API_KEY:-}
       PERPLEXITY_API_KEY: ${PERPLEXITY_API_KEY:-}
       SHADOW_LOOM_PROVIDERS: ${SHADOW_LOOM_PROVIDERS:-}
-      DEFAULT_MODEL: ${DEFAULT_MODEL:-ollama:qwen3.6:27b}
+      DEFAULT_MODEL: ${DEFAULT_MODEL:-ollama:qwen3.6:35b}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
       # Optional research provider (off unless explicitly enabled).

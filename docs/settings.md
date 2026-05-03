@@ -55,7 +55,7 @@ defaults as the settings module — keep them in sync if you change one.
 | `OPENROUTER_API_KEY` | *(empty)* | Required when any `*_MODEL` uses the `openrouter:` prefix. |
 | `OPENAI_API_KEY` | *(empty)* | Required when any `*_MODEL` uses the `openai:` prefix. |
 | `LANGFUSE_*` | *(public demo keys)* | Optional tracing — replace with your own project keys or blank to disable. |
-| `DEFAULT_MODEL` | `ollama:qwen3.6:27b` | Fallback model string used when a sub-section's `*_MODEL` is unset. |
+| `DEFAULT_MODEL` | `ollama:qwen3.6:35b` | Fallback model string used when a sub-section's `*_MODEL` is unset. |
 
 Model strings are parsed by PydanticAI: the prefix selects the provider
 (`ollama:`, `openrouter:`, `openai:`) and the suffix is the model id.
@@ -66,8 +66,8 @@ Model strings are parsed by PydanticAI: the prefix selects the provider
 
 | Variable | Default | Notes |
 |---|---|---|
-| `GENERATION_MODEL` | `ollama:qwen3.6:27b` | The "creative" model. Larger models pay off here. |
-| `GENERATION_MAX_TOKENS` | `64000` | Tuned for the 256K-context qwen3.6:27b. Lower for smaller-context models. |
+| `GENERATION_MODEL` | `ollama:qwen3.6:35b` | The "creative" model. Larger models pay off here. |
+| `GENERATION_MAX_TOKENS` | `64000` | Tuned for the 256K-context qwen3.6:35b. Lower for smaller-context models. |
 | `GENERATION_TEMPERATURE` | `0.7` | Creative temperature for prose. |
 | `GENERATION_OUTPUT_RETRIES` | `5` | PydanticAI structured-output validation retries per call. |
 
@@ -81,7 +81,7 @@ for the brief-as-constraint pattern.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `QUERY_PARSING_MODEL` | `ollama:qwen3.6:27b` | Classification model — needs to be reliable on structured output, not creative. |
+| `QUERY_PARSING_MODEL` | `ollama:qwen3.6:35b` | Classification model — needs to be reliable on structured output, not creative. |
 | `QUERY_PARSING_MAX_TOKENS` | `64000` | Generous to allow long chain-of-thought. |
 | `QUERY_PARSING_TEMPERATURE` | `0.1` | Near-deterministic classification. |
 | `QUERY_PARSING_OUTPUT_RETRIES` | `5` | Retries if the parser returns invalid JSON. |
@@ -95,8 +95,8 @@ this stage discriminates between.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `AUDITOR_MODEL` | `ollama:qwen3.6:27b` | The judging model. |
-| `AUDITOR_GENERATION_MODEL` | `ollama:qwen3.6:27b` | The model used for re-renders inside the loop. |
+| `AUDITOR_MODEL` | `ollama:qwen3.6:35b` | The judging model. |
+| `AUDITOR_GENERATION_MODEL` | `ollama:qwen3.6:35b` | The model used for re-renders inside the loop. |
 | `AUDITOR_MAX_ITERATIONS` | `3` | Hard cap on audit → rewrite cycles. Each iteration costs two LLM calls. |
 | `AUDITOR_OUTPUT_RETRIES` | `5` | Structured-output retries per call. |
 | `AUDITOR_TEMPERATURE` | `0.2` | Low temperature for deterministic auditing. |
@@ -123,7 +123,7 @@ The thresholds map directly onto the auditor categories described in
 
 | Variable | Default | Notes |
 |---|---|---|
-| `EXTRACTION_MODEL` | `ollama:qwen3.6:27b` | Topology extractor. |
+| `EXTRACTION_MODEL` | `ollama:qwen3.6:35b` | Topology extractor. |
 | `EXTRACTION_CHUNK_STRATEGY` | `act_headings` | `act_headings` splits on `Act N` / `Chapter N` markers, `paragraph` packs by size. |
 | `EXTRACTION_OUTPUT_RETRIES` | `5` | First-pass structured-output retries. |
 | `EXTRACTION_FABULA_TIME_SPACING` | `1000` | Initial gap between fabula-time stamps; leaves room for flashbacks/inserts. |
