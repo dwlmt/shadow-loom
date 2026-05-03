@@ -839,6 +839,35 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_UTT_SIMON_CONFESSES", target_id="EVT_ARRESTS",
                    causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
                    causal_force=8.0, fabula_time=13200, propagation_delay=600),
+
+        # ─── auto-patched mutation_social edges (per-axis coverage) ───
+        CausalEdge(source_id="EVT_LINNET_STEALS_SIMON", target_id="ENT_SIMON", rel_counterpart_id="ENT_LINNET", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.85, mechanism="betrayal", evidence_strength="strong", causal_force=9.0, fabula_time=500, propagation_delay=0),
+        CausalEdge(source_id="EVT_HONEYMOON_STALKING", target_id="ENT_SIMON", rel_counterpart_id="ENT_LINNET", causality_type="mutation_social", trait_target="affinity", trait_delta=0.0, mechanism="psychological", evidence_strength="strong", causal_force=5.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_BOARD_KARNAK", target_id="ENT_SIMON", rel_counterpart_id="ENT_LINNET", causality_type="mutation_social", trait_target="affinity", trait_delta=0.0, mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=4000, propagation_delay=0),
+        CausalEdge(source_id="EVT_LINNET_KILLED", target_id="ENT_SIMON", rel_counterpart_id="ENT_LINNET", causality_type="mutation_social", trait_target="affinity", trait_delta=0.0, mechanism="betrayal", evidence_strength="strong", causal_force=10.0, fabula_time=9000, propagation_delay=0),
+        CausalEdge(source_id="EVT_LINNET_STEALS_SIMON", target_id="ENT_LINNET", rel_counterpart_id="ENT_SIMON", causality_type="mutation_social", trait_target="affinity", trait_delta=0.85, mechanism="emotional", evidence_strength="strong", causal_force=8.0, fabula_time=500, propagation_delay=0),
+        CausalEdge(source_id="EVT_HONEYMOON_STALKING", target_id="ENT_LINNET", rel_counterpart_id="ENT_SIMON", causality_type="mutation_social", trait_target="affinity", trait_delta=0.0, mechanism="emotional", evidence_strength="strong", causal_force=6.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_BOARD_KARNAK", target_id="ENT_LINNET", rel_counterpart_id="ENT_SIMON", causality_type="mutation_social", trait_target="affinity", trait_delta=0.0, mechanism="emotional", evidence_strength="strong", causal_force=5.0, fabula_time=4000, propagation_delay=0),
+        CausalEdge(source_id="EVT_LINNET_STEALS_SIMON", target_id="ENT_LINNET", rel_counterpart_id="ENT_JACQUELINE", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.7, mechanism="betrayal", evidence_strength="strong", causal_force=7.0, fabula_time=500, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_LINNET_HIRES_POIROT", target_id="ENT_LINNET", rel_counterpart_id="ENT_JACQUELINE", causality_type="mutation_social", trait_target="affinity", trait_delta=0.0, mechanism="psychological", evidence_strength="strong", causal_force=6.0, fabula_time=1500, propagation_delay=0),
+        CausalEdge(source_id="EVT_BOULDER", target_id="ENT_PENNINGTON", rel_counterpart_id="ENT_LINNET", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.4, mechanism="betrayal", evidence_strength="moderate", causal_force=7.0, fabula_time=6000, propagation_delay=0),
+        CausalEdge(source_id="EVT_LOUISE_BLACKMAILS", target_id="ENT_LOUISE", rel_counterpart_id="ENT_SIMON", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.5, mechanism="betrayal", evidence_strength="strong", causal_force=8.0, fabula_time=9400, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_LOUISE_HINTS_BLACKMAIL", target_id="ENT_LOUISE", rel_counterpart_id="ENT_SIMON", causality_type="mutation_social", trait_target="affinity", trait_delta=0.0, mechanism="informational", evidence_strength="strong", causal_force=7.0, fabula_time=9400, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_RACE_BRIEFS_POIROT_AGITATOR", target_id="ENT_POIROT", rel_counterpart_id="ENT_RACE", causality_type="mutation_social", trait_target="affinity", trait_delta=0.0, mechanism="social", evidence_strength="strong", causal_force=6.0, fabula_time=7000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_POIROT_REVEALS_SOLUTION", target_id="ENT_POIROT", rel_counterpart_id="ENT_RACE", causality_type="mutation_social", trait_target="affinity", trait_delta=0.0, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=13000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_RACE_BRIEFS_POIROT_AGITATOR", target_id="ENT_RACE", rel_counterpart_id="ENT_POIROT", causality_type="mutation_social", trait_target="affinity", trait_delta=0.0, mechanism="social", evidence_strength="strong", causal_force=6.0, fabula_time=7000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_POIROT_REVEALS_SOLUTION", target_id="ENT_RACE", rel_counterpart_id="ENT_POIROT", causality_type="mutation_social", trait_target="affinity", trait_delta=0.0, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=13000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_POIROT_WARNS_JACQUELINE", target_id="ENT_POIROT", rel_counterpart_id="ENT_JACQUELINE", causality_type="mutation_social", trait_target="affinity", trait_delta=0.4, mechanism="emotional", evidence_strength="strong", causal_force=6.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_POIROT_SOLVES", target_id="ENT_POIROT", rel_counterpart_id="ENT_JACQUELINE", causality_type="mutation_social", trait_target="affinity", trait_delta=0.0, mechanism="epistemic", evidence_strength="strong", causal_force=5.0, fabula_time=13000, propagation_delay=0),
+        CausalEdge(source_id="EVT_JACQUELINE_SUICIDE_PACT", target_id="ENT_POIROT", rel_counterpart_id="ENT_JACQUELINE", causality_type="mutation_social", trait_target="affinity", trait_delta=0.0, mechanism="emotional", evidence_strength="strong", causal_force=8.0, fabula_time=14000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_BOWERS_RETURNS_PEARLS", target_id="ENT_VAN_SCHUYLER", rel_counterpart_id="ENT_BOWERS", causality_type="mutation_social", trait_target="affinity", trait_delta=0.0, mechanism="social", evidence_strength="moderate", causal_force=5.0, fabula_time=9700, propagation_delay=0),
+        CausalEdge(source_id="EVT_LINNET_STEALS_SIMON", target_id="ENT_JACQUELINE", rel_counterpart_id="ENT_SIMON", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.6, mechanism="psychological", evidence_strength="strong", causal_force=8.0, fabula_time=500, propagation_delay=0),
+        CausalEdge(source_id="EVT_HONEYMOON_STALKING", target_id="ENT_JACQUELINE", rel_counterpart_id="ENT_SIMON", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.0, mechanism="psychological", evidence_strength="strong", causal_force=6.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_LOUNGE_SHOOTING", target_id="ENT_JACQUELINE", rel_counterpart_id="ENT_SIMON", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.0, mechanism="psychological", evidence_strength="strong", causal_force=7.0, fabula_time=8000, propagation_delay=0),
+        CausalEdge(source_id="EVT_LOUISE_KILLED", target_id="ENT_JACQUELINE", rel_counterpart_id="ENT_SIMON", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.0, mechanism="psychological", evidence_strength="strong", causal_force=8.0, fabula_time=9500, propagation_delay=0),
+        CausalEdge(source_id="EVT_OTTERBOURNE_KILLED", target_id="ENT_JACQUELINE", rel_counterpart_id="ENT_SIMON", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.0, mechanism="psychological", evidence_strength="strong", causal_force=9.0, fabula_time=10000, propagation_delay=0),
+        CausalEdge(source_id="EVT_BOULDER", target_id="ENT_PENNINGTON", rel_counterpart_id="ENT_LINNET", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.3, mechanism="psychological", evidence_strength="moderate", causal_force=6.0, fabula_time=6000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_BOWERS_RETURNS_PEARLS", target_id="ENT_VAN_SCHUYLER", rel_counterpart_id="ENT_BOWERS", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.0, mechanism="social", evidence_strength="strong", causal_force=6.0, fabula_time=9700, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -972,8 +1001,8 @@ world_state = WorldStateV1(
         RelationshipEdge(
             source_entity_id="ENT_LOUISE", target_entity_id="ENT_LINNET",
             metrics={
-                "affinity": RelationshipMetric(value=-0.4, inertia=0.55, evidence_strength="moderate", last_updated_fabula=4000),
-                "power_dynamic": RelationshipMetric(value=-0.7, inertia=0.7, evidence_strength="strong", last_updated_fabula=4000),
+                "affinity": RelationshipMetric(value=0.0, inertia=0.55, evidence_strength="moderate", last_updated_fabula=4000, observed=False),
+                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.7, evidence_strength="strong", last_updated_fabula=4000, observed=False),
             },
         ),
         # Louise → Simon — blackmail target.
@@ -1014,8 +1043,8 @@ world_state = WorldStateV1(
         RelationshipEdge(
             source_entity_id="ENT_VAN_SCHUYLER", target_entity_id="ENT_CORNELIA",
             metrics={
-                "power_dynamic": RelationshipMetric(value=0.85, inertia=0.75, evidence_strength="strong", last_updated_fabula=4000),
-                "affinity":      RelationshipMetric(value=-0.2, inertia=0.55, evidence_strength="moderate", last_updated_fabula=4000),
+                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.75, evidence_strength="strong", last_updated_fabula=4000, observed=False),
+                "affinity": RelationshipMetric(value=0.0, inertia=0.55, evidence_strength="moderate", last_updated_fabula=4000, observed=False),
             },
         ),
     ],

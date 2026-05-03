@@ -929,6 +929,27 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_UTT_WENTWORTHS_LETTER", target_id="EVT_RECONCILIATION",
                    causality_type="chain_reaction", mechanism="emotional", evidence_strength="strong",
                    causal_force=10.0, fabula_time=11900, propagation_delay=100),
+
+        # ─── auto-patched mutation_social edges (per-axis coverage) ───
+        CausalEdge(source_id="EVT_BROKEN_ENGAGEMENT", target_id="ENT_ANNE", rel_counterpart_id="ENT_LADY_RUSSELL", causality_type="mutation_social", trait_target="affinity", trait_delta=0.75, mechanism="psychological", evidence_strength="strong", causal_force=7.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_BROKEN_ENGAGEMENT", target_id="ENT_LADY_RUSSELL", rel_counterpart_id="ENT_ANNE", causality_type="mutation_social", trait_target="affinity", trait_delta=0.85, mechanism="emotional", evidence_strength="strong", causal_force=8.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_KELLYNCH_LET", target_id="ENT_SIR_WALTER", rel_counterpart_id="ENT_ANNE", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.1, mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=3000, propagation_delay=0),
+        CausalEdge(source_id="EVT_KELLYNCH_LET", target_id="ENT_ANNE", rel_counterpart_id="ENT_SIR_WALTER", causality_type="mutation_social", trait_target="affinity", trait_delta=0.15, mechanism="psychological", evidence_strength="moderate", causal_force=3.0, fabula_time=3000, propagation_delay=0),
+        CausalEdge(source_id="EVT_ANNE_VISITS_UPPERCROSS", target_id="ENT_MARY", rel_counterpart_id="ENT_ANNE", causality_type="mutation_social", trait_target="affinity", trait_delta=0.55, mechanism="emotional", evidence_strength="moderate", causal_force=5.0, fabula_time=4000, propagation_delay=0),
+        CausalEdge(source_id="EVT_HAYTER_WITHDRAWS", target_id="ENT_HENRIETTA", rel_counterpart_id="ENT_CHARLES_HAYTER", causality_type="mutation_social", trait_target="affinity", trait_delta=0.85, mechanism="emotional", evidence_strength="strong", causal_force=7.0, fabula_time=5000, propagation_delay=0),
+        CausalEdge(source_id="EVT_HAYTER_WITHDRAWS", target_id="ENT_CHARLES_HAYTER", rel_counterpart_id="ENT_HENRIETTA", causality_type="mutation_social", trait_target="affinity", trait_delta=0.85, mechanism="emotional", evidence_strength="strong", causal_force=7.0, fabula_time=5000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WENTWORTH_RETURNS", target_id="ENT_LOUISA", rel_counterpart_id="ENT_WENTWORTH", causality_type="mutation_social", trait_target="affinity", trait_delta=0.7, mechanism="emotional", evidence_strength="strong", causal_force=8.0, fabula_time=4200, propagation_delay=0),
+        CausalEdge(source_id="EVT_WENTWORTH_RETURNS", target_id="ENT_WENTWORTH", rel_counterpart_id="ENT_LOUISA", causality_type="mutation_social", trait_target="affinity", trait_delta=0.45, mechanism="social", evidence_strength="moderate", causal_force=5.0, fabula_time=4200, propagation_delay=0),
+        CausalEdge(source_id="EVT_WILLIAM_ADMIRES_ANNE_AT_LYME", target_id="ENT_WILLIAM_ELLIOT", rel_counterpart_id="ENT_ANNE", causality_type="mutation_social", trait_target="affinity", trait_delta=0.5, mechanism="social", evidence_strength="moderate", causal_force=6.0, fabula_time=6500, propagation_delay=0),
+        CausalEdge(source_id="EVT_KELLYNCH_LET", target_id="ENT_MRS_CLAY", rel_counterpart_id="ENT_SIR_WALTER", causality_type="mutation_social", trait_target="affinity", trait_delta=0.7, mechanism="social", evidence_strength="moderate", causal_force=7.0, fabula_time=3000, propagation_delay=0),
+        CausalEdge(source_id="EVT_ANNE_VISITS_MRS_SMITH", target_id="ENT_ANNE", rel_counterpart_id="ENT_MRS_SMITH", causality_type="mutation_social", trait_target="affinity", trait_delta=0.85, mechanism="emotional", evidence_strength="strong", causal_force=8.0, fabula_time=10000, propagation_delay=0),
+        CausalEdge(source_id="EVT_ANNE_VISITS_MRS_SMITH", target_id="ENT_MRS_SMITH", rel_counterpart_id="ENT_ANNE", causality_type="mutation_social", trait_target="affinity", trait_delta=0.9, mechanism="emotional", evidence_strength="strong", causal_force=8.0, fabula_time=10000, propagation_delay=0),
+        CausalEdge(source_id="EVT_KELLYNCH_LET", target_id="ENT_ADMIRAL_CROFT", rel_counterpart_id="ENT_WENTWORTH", causality_type="mutation_social", trait_target="affinity", trait_delta=0.85, mechanism="social", evidence_strength="moderate", causal_force=6.0, fabula_time=3000, propagation_delay=0),
+        CausalEdge(source_id="EVT_KELLYNCH_LET", target_id="ENT_SOPHIA_CROFT", rel_counterpart_id="ENT_WENTWORTH", causality_type="mutation_social", trait_target="affinity", trait_delta=0.95, mechanism="emotional", evidence_strength="strong", causal_force=7.0, fabula_time=3000, propagation_delay=0),
+        CausalEdge(source_id="EVT_BROKEN_ENGAGEMENT", target_id="ENT_LADY_RUSSELL", rel_counterpart_id="ENT_ANNE", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.6, mechanism="psychological", evidence_strength="strong", causal_force=9.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_ANNE_VISITS_MRS_SMITH", target_id="ENT_SIR_WALTER", rel_counterpart_id="ENT_ANNE", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.55, mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=10000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WILLIAM_RETURNS_TO_FAMILY", target_id="ENT_WILLIAM_ELLIOT", rel_counterpart_id="ENT_ANNE", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.6, mechanism="social", evidence_strength="moderate", causal_force=7.0, fabula_time=8500, propagation_delay=0),
+        CausalEdge(source_id="EVT_KELLYNCH_LET", target_id="ENT_MRS_CLAY", rel_counterpart_id="ENT_SIR_WALTER", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.5, mechanism="social", evidence_strength="moderate", causal_force=5.0, fabula_time=3000, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -1054,7 +1075,7 @@ world_state = WorldStateV1(
         RelationshipEdge(
             source_entity_id="ENT_ELIZABETH", target_entity_id="ENT_ANNE",
             metrics={
-                "affinity": RelationshipMetric(value=-0.3, inertia=0.65, evidence_strength="strong", last_updated_fabula=4000),
+                "affinity": RelationshipMetric(value=0.0, inertia=0.65, evidence_strength="strong", last_updated_fabula=4000, observed=False),
             },
         ),
         # Mary → Anne — clinging.

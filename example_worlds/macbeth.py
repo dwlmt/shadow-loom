@@ -865,6 +865,33 @@ world_state = WorldStateV1(
         CausalEdge(source_id="OBJ_CAULDRON", target_id="EVT_WITCHES_PROPHECY_2",
                    causality_type="affordance_gate", mechanism="psychological", evidence_strength="moderate",
                    causal_force=5.0, fabula_time=13000),
+
+
+        # ─── auto-patched mutation_social edges (per-axis coverage) ───
+        CausalEdge(source_id="EVT_LETTER_SENT", target_id="ENT_MACBETH", rel_counterpart_id="ENT_LADY_MACBETH", causality_type="mutation_social", trait_target="affinity", trait_delta=0.5, mechanism="emotional", evidence_strength="strong", causal_force=6.0, fabula_time=4000, propagation_delay=0),
+        CausalEdge(source_id="EVT_LETTER_SENT", target_id="ENT_LADY_MACBETH", rel_counterpart_id="ENT_MACBETH", causality_type="mutation_social", trait_target="affinity", trait_delta=0.6, mechanism="emotional", evidence_strength="strong", causal_force=6.0, fabula_time=4000, propagation_delay=0),
+        CausalEdge(source_id="EVT_CAWDOR_TITLE", target_id="ENT_MACBETH", rel_counterpart_id="ENT_DUNCAN", causality_type="mutation_social", trait_target="affinity", trait_delta=0.45, mechanism="social", evidence_strength="strong", causal_force=5.0, fabula_time=3000, propagation_delay=0),
+        CausalEdge(source_id="EVT_DUNCAN_MURDER", target_id="ENT_MACBETH", rel_counterpart_id="ENT_DUNCAN", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.5, mechanism="betrayal", evidence_strength="strong", causal_force=9.0, fabula_time=6000, propagation_delay=0),
+        CausalEdge(source_id="EVT_REBELLION_DEFEATED", target_id="ENT_MACBETH", rel_counterpart_id="ENT_BANQUO", causality_type="mutation_social", trait_target="affinity", trait_delta=0.5, mechanism="social", evidence_strength="strong", causal_force=5.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_REBELLION_DEFEATED", target_id="ENT_BANQUO", rel_counterpart_id="ENT_MACBETH", causality_type="mutation_social", trait_target="affinity", trait_delta=0.4, mechanism="social", evidence_strength="strong", causal_force=5.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_MACBETH_CROWNED", target_id="ENT_BANQUO", rel_counterpart_id="ENT_MACBETH", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.4, mechanism="epistemic", evidence_strength="strong", causal_force=6.0, fabula_time=10000, propagation_delay=500),
+        CausalEdge(source_id="EVT_DUNCAN_MURDER", target_id="ENT_MACBETH", rel_counterpart_id="ENT_MACDUFF", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.3, mechanism="social", evidence_strength="moderate", causal_force=6.0, fabula_time=6000, propagation_delay=0),
+        CausalEdge(source_id="EVT_MACDUFF_FAMILY_SLAUGHTERED", target_id="ENT_MACBETH", rel_counterpart_id="ENT_MACDUFF", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.5, mechanism="physical", evidence_strength="strong", causal_force=9.0, fabula_time=14000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WITCHES_PROPHECY_1", target_id="ENT_MACBETH", rel_counterpart_id="ENT_WITCHES", causality_type="mutation_social", trait_target="affinity", trait_delta=0.2, mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_MALCOLM_MACDUFF_ALLIANCE", target_id="ENT_MALCOLM", rel_counterpart_id="ENT_MACDUFF", causality_type="mutation_social", trait_target="affinity", trait_delta=0.6, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=15000, propagation_delay=0),
+        CausalEdge(source_id="EVT_MACBETH_CROWNED", target_id="ENT_BANQUO", rel_counterpart_id="ENT_MACBETH", causality_type="mutation_social", trait_target="fear", trait_delta=0.4, mechanism="epistemic", evidence_strength="strong", causal_force=6.0, fabula_time=10000, propagation_delay=500),
+        CausalEdge(source_id="EVT_WITCHES_PROPHECY_2", target_id="ENT_MACBETH", rel_counterpart_id="ENT_MACDUFF", causality_type="mutation_social", trait_target="fear", trait_delta=0.6, mechanism="epistemic", evidence_strength="strong", causal_force=7.0, fabula_time=13000, propagation_delay=0),
+        CausalEdge(source_id="EVT_MACDUFF_LEARNS_OF_MASSACRE", target_id="ENT_MACDUFF", rel_counterpart_id="ENT_MACBETH", causality_type="mutation_social", trait_target="fear", trait_delta=0.2, mechanism="emotional", evidence_strength="weak", causal_force=4.0, fabula_time=14500, propagation_delay=0),
+        CausalEdge(source_id="EVT_SONS_FLEE", target_id="ENT_MALCOLM", rel_counterpart_id="ENT_MACBETH", causality_type="mutation_social", trait_target="fear", trait_delta=0.6, mechanism="psychological", evidence_strength="strong", causal_force=7.0, fabula_time=9000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WITCHES_PROPHECY_1", target_id="ENT_MACBETH", rel_counterpart_id="ENT_WITCHES", causality_type="mutation_social", trait_target="fear", trait_delta=0.5, mechanism="psychological", evidence_strength="strong", causal_force=6.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_BANQUO_MURDERED", target_id="ENT_MACBETH", rel_counterpart_id="ENT_FLEANCE", causality_type="mutation_social", trait_target="fear", trait_delta=0.65, mechanism="psychological", evidence_strength="strong", causal_force=7.0, fabula_time=11000, propagation_delay=0),
+        CausalEdge(source_id="EVT_LADY_MACBETH_PERSUADES", target_id="ENT_LADY_MACBETH", rel_counterpart_id="ENT_MACBETH", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.4, mechanism="psychological", evidence_strength="strong", causal_force=7.0, fabula_time=5000, propagation_delay=0),
+        CausalEdge(source_id="EVT_CAWDOR_TITLE", target_id="ENT_MACBETH", rel_counterpart_id="ENT_DUNCAN", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.4, mechanism="social", evidence_strength="strong", causal_force=5.0, fabula_time=3000, propagation_delay=0),
+        CausalEdge(source_id="EVT_DUNCAN_MURDER", target_id="ENT_MACBETH", rel_counterpart_id="ENT_DUNCAN", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.4, mechanism="physical", evidence_strength="strong", causal_force=9.0, fabula_time=6000, propagation_delay=0),
+        CausalEdge(source_id="EVT_MACBETH_KILLED", target_id="ENT_MACDUFF", rel_counterpart_id="ENT_MACBETH", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.4, mechanism="physical", evidence_strength="strong", causal_force=10.0, fabula_time=19000, propagation_delay=0),
+        CausalEdge(source_id="EVT_MALCOLM_MACDUFF_ALLIANCE", target_id="ENT_MACDUFF", rel_counterpart_id="ENT_MALCOLM", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.3, mechanism="social", evidence_strength="moderate", causal_force=6.0, fabula_time=15000, propagation_delay=0),
+        CausalEdge(source_id="EVT_MALCOLM_MACDUFF_ALLIANCE", target_id="ENT_MALCOLM", rel_counterpart_id="ENT_MACDUFF", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.3, mechanism="social", evidence_strength="moderate", causal_force=6.0, fabula_time=15000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WITCHES_PROPHECY_1", target_id="ENT_MACBETH", rel_counterpart_id="ENT_WITCHES", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.6, mechanism="epistemic", evidence_strength="strong", causal_force=7.0, fabula_time=2000, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -1046,8 +1073,8 @@ world_state = WorldStateV1(
         RelationshipEdge(
             source_entity_id="ENT_LADY_MACBETH", target_entity_id="ENT_DUNCAN",
             metrics={
-                "affinity":      RelationshipMetric(value=-0.6, inertia=0.4, evidence_strength="strong", last_updated_fabula=5000),
-                "power_dynamic": RelationshipMetric(value=-0.5, inertia=0.7, evidence_strength="moderate", last_updated_fabula=5000),
+                "affinity": RelationshipMetric(value=0.0, inertia=0.4, evidence_strength="strong", last_updated_fabula=5000, observed=False),
+                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.7, evidence_strength="moderate", last_updated_fabula=5000, observed=False),
             },
         ),
         # Macbeth → Witches: drawn to them with mingled fear and need.

@@ -766,6 +766,42 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_UTT_AMY_STAGED_HOMECOMING", target_id="EVT_UTT_AMY_KIDNAP_STATEMENT",
                    causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
                    causal_force=5.0, fabula_time=14000, propagation_delay=100),
+
+        # ─── auto-patched mutation_social edges (per-axis coverage) ───
+        CausalEdge(source_id="EVT_MARRIAGE_CRUMBLES", target_id="ENT_NICK", rel_counterpart_id="ENT_AMY", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.2, mechanism="psychological", evidence_strength="strong", causal_force=6.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_AMY_DISAPPEARS", target_id="ENT_NICK", rel_counterpart_id="ENT_AMY", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.15, mechanism="betrayal", evidence_strength="moderate", causal_force=5.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_AMY_RETURNS", target_id="ENT_NICK", rel_counterpart_id="ENT_AMY", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.05, mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=14000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_NICK_CONFESS_AFFAIR_TO_MARGO", target_id="ENT_NICK", rel_counterpart_id="ENT_MARGO", causality_type="mutation_social", trait_target="affinity", trait_delta=0.3, mechanism="emotional", evidence_strength="strong", causal_force=5.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_NICK_TV_APOLOGY", target_id="ENT_NICK", rel_counterpart_id="ENT_MARGO", causality_type="mutation_social", trait_target="affinity", trait_delta=0.15, mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=9000, propagation_delay=0),
+        CausalEdge(source_id="EVT_DIARY_FOUND", target_id="ENT_BONEY", rel_counterpart_id="ENT_NICK", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.3, mechanism="epistemic", evidence_strength="strong", causal_force=6.0, fabula_time=3000, propagation_delay=0),
+        CausalEdge(source_id="EVT_AMY_RETURNS", target_id="ENT_BONEY", rel_counterpart_id="ENT_NICK", causality_type="mutation_social", trait_target="affinity", trait_delta=0.1, mechanism="epistemic", evidence_strength="moderate", causal_force=4.0, fabula_time=14000, propagation_delay=0),
+        CausalEdge(source_id="EVT_NICK_AFFAIR_REVEALED", target_id="ENT_NICK", rel_counterpart_id="ENT_ANDIE", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.2, mechanism="emotional", evidence_strength="moderate", causal_force=5.0, fabula_time=6000, propagation_delay=0),
+        CausalEdge(source_id="EVT_NICK_AFFAIR_REVEALED", target_id="ENT_ANDIE", rel_counterpart_id="ENT_NICK", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.6, mechanism="betrayal", evidence_strength="strong", causal_force=7.0, fabula_time=6000, propagation_delay=0),
+        CausalEdge(source_id="EVT_NICK_HIRES_TANNER", target_id="ENT_NICK", rel_counterpart_id="ENT_TANNER", causality_type="mutation_social", trait_target="affinity", trait_delta=0.2, mechanism="social", evidence_strength="moderate", causal_force=5.0, fabula_time=8000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_NICK_TV_APOLOGY", target_id="ENT_NICK", rel_counterpart_id="ENT_TANNER", causality_type="mutation_social", trait_target="affinity", trait_delta=0.2, mechanism="social", evidence_strength="moderate", causal_force=5.0, fabula_time=9000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_NOELLE_VIGIL_DENUNCIATION", target_id="ENT_NOELLE", rel_counterpart_id="ENT_NICK", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.75, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=6000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_MARYBETH_TV_APPEAL", target_id="ENT_MARYBETH", rel_counterpart_id="ENT_NICK", causality_type="mutation_social", trait_target="affinity", trait_delta=0.2, mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=5000, propagation_delay=0),
+        CausalEdge(source_id="EVT_MARRIAGE_CRUMBLES", target_id="ENT_AMY", rel_counterpart_id="ENT_NICK", causality_type="mutation_social", trait_target="fear", trait_delta=0.05, mechanism="psychological", evidence_strength="weak", causal_force=3.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_NICK_FIGURES_OUT", target_id="ENT_AMY", rel_counterpart_id="ENT_NICK", causality_type="mutation_social", trait_target="fear", trait_delta=0.1, mechanism="epistemic", evidence_strength="moderate", causal_force=5.0, fabula_time=12000, propagation_delay=0),
+        CausalEdge(source_id="EVT_AMY_GOES_TO_DESI", target_id="ENT_AMY", rel_counterpart_id="ENT_DESI", causality_type="mutation_social", trait_target="fear", trait_delta=0.1, mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=11000, propagation_delay=0),
+        CausalEdge(source_id="EVT_AMY_KILLS_DESI", target_id="ENT_AMY", rel_counterpart_id="ENT_DESI", causality_type="mutation_social", trait_target="fear", trait_delta=0.1, mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=13000, propagation_delay=0),
+        CausalEdge(source_id="EVT_NICK_AFFAIR_REVEALED", target_id="ENT_NICK", rel_counterpart_id="ENT_ANDIE", causality_type="mutation_social", trait_target="fear", trait_delta=0.2, mechanism="social", evidence_strength="moderate", causal_force=5.0, fabula_time=6000, propagation_delay=0),
+        CausalEdge(source_id="EVT_NICK_AFFAIR_REVEALED", target_id="ENT_ANDIE", rel_counterpart_id="ENT_NICK", causality_type="mutation_social", trait_target="fear", trait_delta=0.15, mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=6000, propagation_delay=0),
+        CausalEdge(source_id="EVT_MARRIAGE_CRUMBLES", target_id="ENT_AMY", rel_counterpart_id="ENT_NICK", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.15, mechanism="psychological", evidence_strength="moderate", causal_force=5.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_AMY_DISAPPEARS", target_id="ENT_AMY", rel_counterpart_id="ENT_NICK", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.2, mechanism="psychological", evidence_strength="strong", causal_force=7.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_AMY_RETURNS", target_id="ENT_AMY", rel_counterpart_id="ENT_NICK", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.2, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=14000, propagation_delay=0),
+        CausalEdge(source_id="EVT_NICK_STAYS", target_id="ENT_AMY", rel_counterpart_id="ENT_NICK", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.2, mechanism="psychological", evidence_strength="strong", causal_force=8.0, fabula_time=16000, propagation_delay=0),
+        CausalEdge(source_id="EVT_AMY_GOES_TO_DESI", target_id="ENT_AMY", rel_counterpart_id="ENT_DESI", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.1, mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=11000, propagation_delay=0),
+        CausalEdge(source_id="EVT_AMY_KILLS_DESI", target_id="ENT_AMY", rel_counterpart_id="ENT_DESI", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.7, mechanism="physical", evidence_strength="strong", causal_force=9.0, fabula_time=13000, propagation_delay=0),
+        CausalEdge(source_id="EVT_AMY_GOES_TO_DESI", target_id="ENT_DESI", rel_counterpart_id="ENT_AMY", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.3, mechanism="psychological", evidence_strength="moderate", causal_force=6.0, fabula_time=11000, propagation_delay=0),
+        CausalEdge(source_id="EVT_AMY_KILLS_DESI", target_id="ENT_DESI", rel_counterpart_id="ENT_AMY", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.7, mechanism="physical", evidence_strength="strong", causal_force=9.0, fabula_time=13000, propagation_delay=0),
+        CausalEdge(source_id="EVT_DIARY_FOUND", target_id="ENT_BONEY", rel_counterpart_id="ENT_NICK", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.3, mechanism="epistemic", evidence_strength="strong", causal_force=6.0, fabula_time=3000, propagation_delay=0),
+        CausalEdge(source_id="EVT_INTERROGATION", target_id="ENT_BONEY", rel_counterpart_id="ENT_NICK", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.25, mechanism="social", evidence_strength="strong", causal_force=6.0, fabula_time=4000, propagation_delay=0),
+        CausalEdge(source_id="EVT_NICK_AFFAIR_REVEALED", target_id="ENT_NICK", rel_counterpart_id="ENT_ANDIE", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.55, mechanism="social", evidence_strength="strong", causal_force=6.0, fabula_time=6000, propagation_delay=0),
+        CausalEdge(source_id="EVT_NICK_AFFAIR_REVEALED", target_id="ENT_ANDIE", rel_counterpart_id="ENT_NICK", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.55, mechanism="social", evidence_strength="strong", causal_force=6.0, fabula_time=6000, propagation_delay=0),
+        CausalEdge(source_id="EVT_NICK_HIRES_TANNER", target_id="ENT_NICK", rel_counterpart_id="ENT_TANNER", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.15, mechanism="social", evidence_strength="moderate", causal_force=5.0, fabula_time=8000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_NICK_TV_APOLOGY", target_id="ENT_NICK", rel_counterpart_id="ENT_TANNER", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.15, mechanism="social", evidence_strength="moderate", causal_force=5.0, fabula_time=9000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_MARYBETH_TV_APPEAL", target_id="ENT_MARYBETH", rel_counterpart_id="ENT_NICK", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.3, mechanism="social", evidence_strength="moderate", causal_force=5.0, fabula_time=5000, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -959,40 +995,40 @@ world_state = WorldStateV1(
         RelationshipEdge(
             source_entity_id="ENT_MARGO", target_entity_id="ENT_AMY",
             metrics={
-                "affinity":      RelationshipMetric(value=-0.7, inertia=0.5, evidence_strength="strong", last_updated_fabula=14000),
-                "fear":          RelationshipMetric(value=0.2, inertia=0.2, evidence_strength="moderate", last_updated_fabula=14000),
-                "power_dynamic": RelationshipMetric(value=-0.4, inertia=0.65, evidence_strength="strong", last_updated_fabula=14000),
+                "affinity": RelationshipMetric(value=0.0, inertia=0.5, evidence_strength="strong", last_updated_fabula=14000, observed=False),
+                "fear": RelationshipMetric(value=0.0, inertia=0.2, evidence_strength="moderate", last_updated_fabula=14000, observed=False),
+                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.65, evidence_strength="strong", last_updated_fabula=14000, observed=False),
             },
         ),
         RelationshipEdge(
             source_entity_id="ENT_AMY", target_entity_id="ENT_MARGO",
             metrics={
-                "affinity":      RelationshipMetric(value=-0.5, inertia=0.5, evidence_strength="strong", last_updated_fabula=14000),
-                "power_dynamic": RelationshipMetric(value=0.4, inertia=0.65, evidence_strength="strong", last_updated_fabula=14000),
+                "affinity": RelationshipMetric(value=0.0, inertia=0.5, evidence_strength="strong", last_updated_fabula=14000, observed=False),
+                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.65, evidence_strength="strong", last_updated_fabula=14000, observed=False),
             },
         ),
         # Gilpin → Nick — uncomplicated hostility.
         RelationshipEdge(
             source_entity_id="ENT_GILPIN", target_entity_id="ENT_NICK",
             metrics={
-                "affinity":      RelationshipMetric(value=-0.6, inertia=0.5, evidence_strength="strong", last_updated_fabula=4000),
-                "power_dynamic": RelationshipMetric(value=0.5, inertia=0.7, evidence_strength="strong", last_updated_fabula=4000),
+                "affinity": RelationshipMetric(value=0.0, inertia=0.5, evidence_strength="strong", last_updated_fabula=4000, observed=False),
+                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.7, evidence_strength="strong", last_updated_fabula=4000, observed=False),
             },
         ),
         # Boney ↔ Gilpin — partners.
         RelationshipEdge(
             source_entity_id="ENT_BONEY", target_entity_id="ENT_GILPIN",
             metrics={
-                "affinity":      RelationshipMetric(value=0.5, inertia=0.5, evidence_strength="moderate", last_updated_fabula=3000),
-                "power_dynamic": RelationshipMetric(value=0.2, inertia=0.65, evidence_strength="moderate", last_updated_fabula=3000),
+                "affinity": RelationshipMetric(value=0.0, inertia=0.5, evidence_strength="moderate", last_updated_fabula=3000, observed=False),
+                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.65, evidence_strength="moderate", last_updated_fabula=3000, observed=False),
             },
         ),
         # Noelle → Amy / Nick.
         RelationshipEdge(
             source_entity_id="ENT_NOELLE", target_entity_id="ENT_AMY",
             metrics={
-                "affinity":      RelationshipMetric(value=0.7, inertia=0.5, evidence_strength="moderate", last_updated_fabula=3000),
-                "power_dynamic": RelationshipMetric(value=-0.3, inertia=0.65, evidence_strength="moderate", last_updated_fabula=3000),
+                "affinity": RelationshipMetric(value=0.0, inertia=0.5, evidence_strength="moderate", last_updated_fabula=3000, observed=False),
+                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.65, evidence_strength="moderate", last_updated_fabula=3000, observed=False),
             },
         ),
         RelationshipEdge(
@@ -1006,8 +1042,8 @@ world_state = WorldStateV1(
         RelationshipEdge(
             source_entity_id="ENT_MARYBETH", target_entity_id="ENT_AMY",
             metrics={
-                "affinity":      RelationshipMetric(value=0.7, inertia=0.55, evidence_strength="strong", last_updated_fabula=2000),
-                "power_dynamic": RelationshipMetric(value=0.4, inertia=0.7, evidence_strength="strong", last_updated_fabula=2000),
+                "affinity": RelationshipMetric(value=0.0, inertia=0.55, evidence_strength="strong", last_updated_fabula=2000, observed=False),
+                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.7, evidence_strength="strong", last_updated_fabula=2000, observed=False),
             },
         ),
         RelationshipEdge(
@@ -1020,8 +1056,8 @@ world_state = WorldStateV1(
         RelationshipEdge(
             source_entity_id="ENT_RAND", target_entity_id="ENT_NICK",
             metrics={
-                "affinity":      RelationshipMetric(value=0.5, inertia=0.5, evidence_strength="moderate", last_updated_fabula=3000),
-                "power_dynamic": RelationshipMetric(value=0.2, inertia=0.65, evidence_strength="moderate", last_updated_fabula=3000),
+                "affinity": RelationshipMetric(value=0.0, inertia=0.5, evidence_strength="moderate", last_updated_fabula=3000, observed=False),
+                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.65, evidence_strength="moderate", last_updated_fabula=3000, observed=False),
             },
         ),
     ],

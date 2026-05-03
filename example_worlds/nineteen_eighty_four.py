@@ -788,6 +788,31 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_UTT_CAFE_VICTORY_BULLETIN", target_id="EVT_CAFE_LOVES_BIG_BROTHER",
                    causality_type="chain_reaction", mechanism="psychological", evidence_strength="strong",
                    causal_force=7.0, fabula_time=18000, propagation_delay=0),
+
+        # ─── auto-patched mutation_social edges (per-axis coverage) ───
+        CausalEdge(source_id="EVT_OBRIEN_REVELATION", target_id="ENT_OBRIEN", rel_counterpart_id="ENT_WINSTON", causality_type="mutation_social", trait_target="affinity", trait_delta=0.4, mechanism="psychological", evidence_strength="strong", causal_force=6.0, fabula_time=15000, propagation_delay=0),
+        CausalEdge(source_id="EVT_BUYS_DIARY", target_id="ENT_CHARRINGTON", rel_counterpart_id="ENT_WINSTON", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.5, mechanism="betrayal", evidence_strength="strong", causal_force=5.0, fabula_time=3000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WORK_AT_MINITRUE", target_id="ENT_WINSTON", rel_counterpart_id="ENT_PARTY", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.3, mechanism="psychological", evidence_strength="strong", causal_force=5.0, fabula_time=1500, propagation_delay=0),
+        CausalEdge(source_id="EVT_DOWN_WITH_BIG_BROTHER", target_id="ENT_WINSTON", rel_counterpart_id="ENT_PARTY", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.4, mechanism="psychological", evidence_strength="strong", causal_force=7.0, fabula_time=3200, propagation_delay=0),
+        CausalEdge(source_id="EVT_READ_GOLDSTEIN", target_id="ENT_WINSTON", rel_counterpart_id="ENT_PARTY", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.25, mechanism="epistemic", evidence_strength="strong", causal_force=6.0, fabula_time=12000, propagation_delay=0),
+        CausalEdge(source_id="EVT_GOLDEN_COUNTRY", target_id="ENT_JULIA", rel_counterpart_id="ENT_PARTY", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.65, mechanism="emotional", evidence_strength="strong", causal_force=6.0, fabula_time=7000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_HATE_WEEK_ENEMY_SWITCH", target_id="ENT_PARSONS", rel_counterpart_id="ENT_PARTY", causality_type="mutation_social", trait_target="affinity", trait_delta=0.95, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=11000, propagation_delay=0),
+        CausalEdge(source_id="EVT_OBRIEN_REVELATION", target_id="ENT_OBRIEN", rel_counterpart_id="ENT_PARTY", causality_type="mutation_social", trait_target="affinity", trait_delta=1.0, mechanism="epistemic", evidence_strength="strong", causal_force=9.0, fabula_time=15000, propagation_delay=0),
+        CausalEdge(source_id="EVT_OPENING_DIARY_DATE", target_id="ENT_WINSTON", rel_counterpart_id="ENT_BIG_BROTHER", causality_type="mutation_social", trait_target="fear", trait_delta=0.5, mechanism="psychological", evidence_strength="strong", causal_force=6.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_DOWN_WITH_BIG_BROTHER", target_id="ENT_WINSTON", rel_counterpart_id="ENT_BIG_BROTHER", causality_type="mutation_social", trait_target="fear", trait_delta=0.45, mechanism="psychological", evidence_strength="strong", causal_force=7.0, fabula_time=3200, propagation_delay=0),
+        CausalEdge(source_id="EVT_WORK_AT_MINITRUE", target_id="ENT_WINSTON", rel_counterpart_id="ENT_PARTY", causality_type="mutation_social", trait_target="fear", trait_delta=0.3, mechanism="psychological", evidence_strength="strong", causal_force=5.0, fabula_time=1500, propagation_delay=0),
+        CausalEdge(source_id="EVT_ARREST", target_id="ENT_WINSTON", rel_counterpart_id="ENT_PARTY", causality_type="mutation_social", trait_target="fear", trait_delta=0.4, mechanism="physical", evidence_strength="strong", causal_force=9.0, fabula_time=13000, propagation_delay=0),
+        CausalEdge(source_id="EVT_OBRIEN_TORTURE", target_id="ENT_WINSTON", rel_counterpart_id="ENT_PARTY", causality_type="mutation_social", trait_target="fear", trait_delta=0.2, mechanism="physical", evidence_strength="strong", causal_force=8.0, fabula_time=14000, propagation_delay=0),
+        CausalEdge(source_id="EVT_OBRIEN_TORTURE", target_id="ENT_OBRIEN", rel_counterpart_id="ENT_WINSTON", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.95, mechanism="physical", evidence_strength="strong", causal_force=10.0, fabula_time=14000, propagation_delay=0),
+        CausalEdge(source_id="EVT_ARREST", target_id="ENT_CHARRINGTON", rel_counterpart_id="ENT_WINSTON", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.85, mechanism="betrayal", evidence_strength="strong", causal_force=9.0, fabula_time=13000, propagation_delay=0),
+        CausalEdge(source_id="EVT_OPENING_DIARY_DATE", target_id="ENT_WINSTON", rel_counterpart_id="ENT_BIG_BROTHER", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.5, mechanism="psychological", evidence_strength="strong", causal_force=6.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_ROOM_101", target_id="ENT_WINSTON", rel_counterpart_id="ENT_BIG_BROTHER", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.45, mechanism="psychological", evidence_strength="strong", causal_force=10.0, fabula_time=16000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WORK_AT_MINITRUE", target_id="ENT_WINSTON", rel_counterpart_id="ENT_PARTY", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.3, mechanism="social", evidence_strength="strong", causal_force=5.0, fabula_time=1500, propagation_delay=0),
+        CausalEdge(source_id="EVT_ARREST", target_id="ENT_WINSTON", rel_counterpart_id="ENT_PARTY", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.35, mechanism="physical", evidence_strength="strong", causal_force=9.0, fabula_time=13000, propagation_delay=0),
+        CausalEdge(source_id="EVT_ROOM_101", target_id="ENT_WINSTON", rel_counterpart_id="ENT_PARTY", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.3, mechanism="psychological", evidence_strength="strong", causal_force=10.0, fabula_time=16000, propagation_delay=0),
+        CausalEdge(source_id="EVT_ARREST", target_id="ENT_JULIA", rel_counterpart_id="ENT_PARTY", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.85, mechanism="physical", evidence_strength="strong", causal_force=9.0, fabula_time=13000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PARSONS_DENOUNCED", target_id="ENT_PARSONS", rel_counterpart_id="ENT_PARTY", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.85, mechanism="betrayal", evidence_strength="strong", causal_force=8.0, fabula_time=13500, propagation_delay=0),
+        CausalEdge(source_id="EVT_OBRIEN_INVITES", target_id="ENT_OBRIEN", rel_counterpart_id="ENT_PARTY", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.7, mechanism="social", evidence_strength="strong", causal_force=6.0, fabula_time=10000, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -989,7 +1014,7 @@ world_state = WorldStateV1(
         RelationshipEdge(
             source_entity_id="ENT_WINSTON", target_entity_id="ENT_KATHARINE",
             metrics={
-                "affinity": RelationshipMetric(value=-0.65, inertia=0.7, evidence_strength="moderate", last_updated_fabula=1000),
+                "affinity": RelationshipMetric(value=0.0, inertia=0.7, evidence_strength="moderate", last_updated_fabula=1000, observed=False),
             },
         ),
         # O'Brien ↔ Party.

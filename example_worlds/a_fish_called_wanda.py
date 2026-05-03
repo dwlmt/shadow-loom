@@ -724,6 +724,45 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_WANDA_DOUBLECROSSES_OTTO", target_id="ENT_OTTO",
                    causality_type="mutation", mechanism="emotional", evidence_strength="strong",
                    causal_force=7.0, fabula_time=22000, trait_target="vengeance", trait_delta=0.5),
+        # ── Fear-axis social mutations: danger curve evolution ──
+        # Otto is the film's primary terror source. These edges drive the
+        # `danger` aggregate (mean fear across observed relationships) up
+        # at each escalation point and back down once Otto is neutralised
+        # by the steamroller, so the timeseries reflects the actual
+        # threat trajectory instead of the static baseline.
+        # Otto discovers Wanda's affair → he is now an active threat to her.
+        CausalEdge(source_id="EVT_OTTO_DISCOVERS_BETRAYAL", target_id="ENT_WANDA",
+                   causality_type="mutation_social", mechanism="emotional", evidence_strength="strong",
+                   causal_force=7.0, fabula_time=11000,
+                   trait_target="fear", trait_delta=0.35, rel_counterpart_id="ENT_OTTO"),
+        # Otto tortures Ken with the fish — fear maxes for Ken.
+        CausalEdge(source_id="EVT_OTTO_INTERROGATES_KEN", target_id="ENT_KEN",
+                   causality_type="mutation_social", mechanism="physical", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=19000,
+                   trait_target="fear", trait_delta=0.4, rel_counterpart_id="ENT_OTTO"),
+        # Wanda double-crosses Otto in the cupboard — her fear of him spikes hard.
+        CausalEdge(source_id="EVT_WANDA_DOUBLECROSSES_OTTO", target_id="ENT_WANDA",
+                   causality_type="mutation_social", mechanism="emotional", evidence_strength="strong",
+                   causal_force=7.0, fabula_time=22000,
+                   trait_target="fear", trait_delta=0.4, rel_counterpart_id="ENT_OTTO"),
+        # Otto shoots out the cupboard Archie is hiding in — Archie's fear of Otto becomes acute.
+        CausalEdge(source_id="EVT_OTTO_SHOOTS_OUT_CUPBOARD", target_id="ENT_ARCHIE",
+                   causality_type="mutation_social", mechanism="physical", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=23000,
+                   trait_target="fear", trait_delta=0.6, rel_counterpart_id="ENT_OTTO"),
+        # Otto steamrolled — threat collapses; everyone's fear of him drops sharply.
+        CausalEdge(source_id="EVT_OTTO_STEAMROLLED", target_id="ENT_WANDA",
+                   causality_type="mutation_social", mechanism="physical", evidence_strength="strong",
+                   causal_force=7.0, fabula_time=25000,
+                   trait_target="fear", trait_delta=-0.45, rel_counterpart_id="ENT_OTTO"),
+        CausalEdge(source_id="EVT_OTTO_STEAMROLLED", target_id="ENT_ARCHIE",
+                   causality_type="mutation_social", mechanism="physical", evidence_strength="strong",
+                   causal_force=7.0, fabula_time=25000,
+                   trait_target="fear", trait_delta=-0.5, rel_counterpart_id="ENT_OTTO"),
+        CausalEdge(source_id="EVT_OTTO_STEAMROLLED", target_id="ENT_KEN",
+                   causality_type="mutation_social", mechanism="physical", evidence_strength="strong",
+                   causal_force=7.0, fabula_time=25000,
+                   trait_target="fear", trait_delta=-0.5, rel_counterpart_id="ENT_OTTO"),
         # affordance_gate
         CausalEdge(source_id="OBJ_DIAMONDS", target_id="EVT_HEIST",
                    causality_type="affordance_gate", mechanism="physical", evidence_strength="strong",
@@ -837,6 +876,23 @@ world_state = WorldStateV1(
         CausalEdge(source_id="WORLD_RESPECTABILITY_PRESSURE", target_id="EVT_ARCHIE_WANDA_FLY_AWAY",
                    causality_type="chain_reaction", mechanism="social", evidence_strength="weak",
                    causal_force=3.0, fabula_time=26000),
+
+        # ─── auto-patched mutation_social edges (per-axis coverage) ───
+        CausalEdge(source_id="EVT_WANDA_DOUBLECROSSES_OTTO", target_id="ENT_WANDA", rel_counterpart_id="ENT_OTTO", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.6, mechanism="betrayal", evidence_strength="strong", causal_force=8.0, fabula_time=22000, propagation_delay=0),
+        CausalEdge(source_id="EVT_GEORGE_INFORMS_ARCHIE_ABOUT_KEN", target_id="ENT_KEN", rel_counterpart_id="ENT_GEORGE", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.4, mechanism="betrayal", evidence_strength="strong", causal_force=7.0, fabula_time=20000, propagation_delay=0),
+        CausalEdge(source_id="EVT_OTTO_DISCOVERS_BETRAYAL", target_id="ENT_OTTO", rel_counterpart_id="ENT_ARCHIE", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.7, mechanism="emotional", evidence_strength="strong", causal_force=8.0, fabula_time=11000, propagation_delay=0),
+        CausalEdge(source_id="EVT_OTTO_SHOOTS_OUT_CUPBOARD", target_id="ENT_ARCHIE", rel_counterpart_id="ENT_OTTO", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.5, mechanism="emotional", evidence_strength="strong", causal_force=7.0, fabula_time=23000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WANDA_BETRAYS_GEORGE", target_id="ENT_GEORGE", rel_counterpart_id="ENT_OTTO", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.8, mechanism="betrayal", evidence_strength="strong", causal_force=8.0, fabula_time=3000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WANDA_DOUBLECROSSES_OTTO", target_id="ENT_WANDA", rel_counterpart_id="ENT_OTTO", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.5, mechanism="social", evidence_strength="strong", causal_force=8.0, fabula_time=22000, propagation_delay=0),
+        CausalEdge(source_id="EVT_OTTO_DISCOVERS_BETRAYAL", target_id="ENT_OTTO", rel_counterpart_id="ENT_WANDA", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.4, mechanism="psychological", evidence_strength="strong", causal_force=7.0, fabula_time=11000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WANDA_SEDUCES_ARCHIE", target_id="ENT_WANDA", rel_counterpart_id="ENT_ARCHIE", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.4, mechanism="social", evidence_strength="strong", causal_force=6.0, fabula_time=7000, propagation_delay=0),
+        CausalEdge(source_id="EVT_ARCHIE_WANDA_FLY_AWAY", target_id="ENT_WANDA", rel_counterpart_id="ENT_ARCHIE", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.3, mechanism="emotional", evidence_strength="moderate", causal_force=5.0, fabula_time=26000, propagation_delay=0),
+        CausalEdge(source_id="EVT_OTTO_STEAMROLLED", target_id="ENT_KEN", rel_counterpart_id="ENT_OTTO", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.8, mechanism="physical", evidence_strength="strong", causal_force=9.0, fabula_time=25000, propagation_delay=0),
+        CausalEdge(source_id="EVT_OTTO_INTERROGATES_KEN", target_id="ENT_OTTO", rel_counterpart_id="ENT_KEN", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.4, mechanism="physical", evidence_strength="strong", causal_force=8.0, fabula_time=19000, propagation_delay=0),
+        CausalEdge(source_id="EVT_OTTO_SHOOTS_OUT_CUPBOARD", target_id="ENT_OTTO", rel_counterpart_id="ENT_ARCHIE", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.5, mechanism="physical", evidence_strength="strong", causal_force=8.0, fabula_time=23000, propagation_delay=0),
+        CausalEdge(source_id="EVT_ARCHIE_TAUNTS_OTTO_VIETNAM", target_id="ENT_ARCHIE", rel_counterpart_id="ENT_OTTO", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.3, mechanism="psychological", evidence_strength="moderate", causal_force=6.0, fabula_time=24000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WENDY_DECIDES_DIVORCE", target_id="ENT_WENDY", rel_counterpart_id="ENT_ARCHIE", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.5, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=17000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WENDY_DECIDES_DIVORCE", target_id="ENT_ARCHIE", rel_counterpart_id="ENT_WENDY", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.4, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=17000, propagation_delay=0),
     ],
     spatial_topology=[
         SpatialEdge(source_id="LOC_HEATHROW", target_id="LOC_GEORGE_FLAT"),
@@ -967,7 +1023,7 @@ world_state = WorldStateV1(
             source_entity_id='ENT_WANDA', target_entity_id='ENT_OTTO',
             metrics={
                     "affinity":      RelationshipMetric(value=0.75, inertia=0.46, evidence_strength='moderate'),
-                    "fear":          RelationshipMetric(value=0.1, inertia=0.17, evidence_strength='weak'),
+                    "fear":          RelationshipMetric(value=0.15, inertia=0.17, evidence_strength='moderate'),
                     "power_dynamic": RelationshipMetric(value=0.3, inertia=0.57, evidence_strength='weak'),
                 },
         ),
@@ -1000,7 +1056,7 @@ world_state = WorldStateV1(
             metrics={
                     "affinity":      RelationshipMetric(value=0.7, inertia=0.46, evidence_strength='moderate'),
                     "fear":          RelationshipMetric(value=0.0, inertia=0.17, evidence_strength='weak', observed=False),
-                    "power_dynamic": RelationshipMetric(value=-0.3, inertia=0.57, evidence_strength='weak'),
+                    "power_dynamic": RelationshipMetric(value=0.0, inertia=0.57, evidence_strength='weak', observed=False),
                 },
         ),
         RelationshipEdge(
@@ -1014,7 +1070,7 @@ world_state = WorldStateV1(
         RelationshipEdge(
             source_entity_id='ENT_OTTO', target_entity_id='ENT_KEN',
             metrics={
-                    "affinity":      RelationshipMetric(value=-0.2, inertia=0.37, evidence_strength='weak'),
+                    "affinity": RelationshipMetric(value=0.0, inertia=0.37, evidence_strength='weak', observed=False),
                     "fear":          RelationshipMetric(value=0.0, inertia=0.17, evidence_strength='weak', observed=False),
                     "power_dynamic": RelationshipMetric(value=0.5, inertia=0.59, evidence_strength='weak'),
                 },
@@ -1028,11 +1084,25 @@ world_state = WorldStateV1(
                 },
         ),
         RelationshipEdge(
+            source_entity_id='ENT_ARCHIE', target_entity_id='ENT_OTTO',
+            metrics={
+                    "affinity":      RelationshipMetric(value=-0.7, inertia=0.4, evidence_strength='moderate'),
+                    # Fear baseline is low — Archie has only encountered Otto
+                    # peripherally before the cupboard‑shooting sequence — but it
+                    # MUST be observed so the danger‑curve sampler picks it up.
+                    # Driven upward at fabula 23000 by EVT_OTTO_SHOOTS_OUT_CUPBOARD
+                    # and back down at 25000 by EVT_OTTO_STEAMROLLED via the
+                    # mutation_social fear edges below.
+                    "fear":          RelationshipMetric(value=0.1, inertia=0.20, evidence_strength='moderate'),
+                    "power_dynamic": RelationshipMetric(value=-0.3, inertia=0.57, evidence_strength='weak'),
+                },
+        ),
+        RelationshipEdge(
             source_entity_id='ENT_GEORGE', target_entity_id='ENT_KEN',
             metrics={
-                    "affinity":      RelationshipMetric(value=0.5, inertia=0.39, evidence_strength='weak'),
+                    "affinity": RelationshipMetric(value=0.0, inertia=0.39, evidence_strength='weak', observed=False),
                     "fear":          RelationshipMetric(value=0.0, inertia=0.17, evidence_strength='weak', observed=False),
-                    "power_dynamic": RelationshipMetric(value=0.3, inertia=0.57, evidence_strength='weak'),
+                    "power_dynamic": RelationshipMetric(value=0.0, inertia=0.57, evidence_strength='weak', observed=False),
                 },
         ),
         RelationshipEdge(
@@ -1047,16 +1117,21 @@ world_state = WorldStateV1(
             source_entity_id='ENT_ARCHIE', target_entity_id='ENT_WENDY',
             metrics={
                     "affinity":      RelationshipMetric(value=0.2, inertia=0.47, evidence_strength='strong', last_updated_fabula=26000),
-                    "fear":          RelationshipMetric(value=0.3, inertia=0.16, evidence_strength='weak'),
+                    # Archie's domestic frostiness with Wendy is part of
+                    # the comic backdrop, but the film never dramatises
+                    # a fear-shifting event between them — declare
+                    # unobserved so the danger gauge isn't pinned by a
+                    # baseline that will never move.
+                    "fear":          RelationshipMetric(value=0.0, inertia=0.16, evidence_strength='weak', observed=False),
                     "power_dynamic": RelationshipMetric(value=-0.4, inertia=0.58, evidence_strength='weak'),
                 },
         ),
         RelationshipEdge(
             source_entity_id='ENT_WANDA', target_entity_id='ENT_KEN',
             metrics={
-                    "affinity":      RelationshipMetric(value=0.3, inertia=0.37, evidence_strength='weak'),
+                    "affinity": RelationshipMetric(value=0.0, inertia=0.37, evidence_strength='weak', observed=False),
                     "fear":          RelationshipMetric(value=0.0, inertia=0.17, evidence_strength='weak', observed=False),
-                    "power_dynamic": RelationshipMetric(value=0.4, inertia=0.58, evidence_strength='weak'),
+                    "power_dynamic": RelationshipMetric(value=0.0, inertia=0.58, evidence_strength='weak', observed=False),
                 },
         ),
         RelationshipEdge(
@@ -1064,15 +1139,19 @@ world_state = WorldStateV1(
             metrics={
                     "affinity":      RelationshipMetric(value=-0.6, inertia=0.4, evidence_strength='weak'),
                     "fear":          RelationshipMetric(value=0.0, inertia=0.17, evidence_strength='weak', observed=False),
-                    "power_dynamic": RelationshipMetric(value=-0.2, inertia=0.57, evidence_strength='weak'),
+                    "power_dynamic": RelationshipMetric(value=0.0, inertia=0.57, evidence_strength='weak', observed=False),
                 },
         ),
         RelationshipEdge(
             source_entity_id='ENT_GEORGE', target_entity_id='ENT_OTTO',
             metrics={
                     "affinity":      RelationshipMetric(value=-0.5, inertia=0.39, evidence_strength='weak'),
-                    "fear":          RelationshipMetric(value=0.0, inertia=0.17, evidence_strength='weak', observed=False),
-                    "power_dynamic": RelationshipMetric(value=-0.2, inertia=0.57, evidence_strength='weak'),
+                    # George spends nearly the entire film in custody;
+                    # there are no on-screen events that mutate his
+                    # fear of Otto. Mark unobserved so the danger gauge
+                    # isn't pinned by a static baseline.
+                    "fear":          RelationshipMetric(value=0.0, inertia=0.18, evidence_strength='weak', observed=False),
+                    "power_dynamic": RelationshipMetric(value=0.0, inertia=0.57, evidence_strength='weak', observed=False),
                 },
         ),
     ],

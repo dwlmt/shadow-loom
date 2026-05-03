@@ -42,7 +42,12 @@ You are a **Narrative Graph Auditor** for a causal physics engine. You receive a
 
 ### 7. Mutation Edge Coverage
 - For every significant event that changes a character's psychology (murders, betrayals, revelations, emotional crises), is there at least one `mutation` causal edge linking the event to the affected entity?
-- For every event that changes how one character feels about another, is there a `mutation_social` causal edge?
+- For every event that changes how one character feels about another, is there a `mutation_social` causal edge.
+- **Per-axis coverage on `mutation_social` (THIS IS THE MOST COMMON GAP).** The schema exposes three axes — `affinity`, `fear`, `power_dynamic` — and every dyad whose `RelationshipMetric.observed=True` on a given axis with a non-zero baseline **MUST** be touched by at least one `mutation_social` edge with that `trait_target`. Otherwise the axis sits constant for the whole story and the corresponding UI gauge (conflict / danger / power dynamic) reads as a flat line. Concretely:
+  - **`affinity`** — bonds, betrayals, alliances, marriages, divorces, fall-outs, reunions. *A romance with an observed positive affinity baseline that never dips, swells, or recovers is almost certainly missing affinity-mutation edges.*
+  - **`fear`** — violence, intimidation, kidnapping, torture, weapon-pointing, menacing pursuit. **Equally important: emit a counter-edge that DECREASES fear when the threat is neutralised** (perpetrator killed, jailed, defeated, befriended, or removed). Without the decay edge, fear ratchets monotonically and the threat arc reads as flat once it peaks.
+  - **`power_dynamic`** — promotion, succession, capture, hostage-taking, blackmail, debt forgiveness, surrender, escape, deposition. *A court-intrigue or hostage plot whose only social mutations target affinity is under-extracted.*
+- **Story-coverage rule of thumb:** if the fixture contains *any* `mutation_social` edges at all, it should usually contain edges targeting all three axes (unless the genre is genuinely single-axis — pure-romance stories may legitimately omit `power_dynamic` mutations). A fixture whose 100% of social mutations route through one axis is a red flag.
 - Are there events with obvious trait-changing consequences but zero mutation edges?
 
 ---

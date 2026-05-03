@@ -937,6 +937,35 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_LOCKWOOD_DREAMS", target_id="EVT_UTT_NELLY_NARRATES_TO_LOCKWOOD",
                    causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
                    causal_force=4.0, fabula_time=18000, propagation_delay=100),
+
+        # ─── auto-patched mutation_social edges (per-axis coverage) ───
+        CausalEdge(source_id="EVT_HINDLEY_DEMOTES_HEATHCLIFF", target_id="ENT_HINDLEY", rel_counterpart_id="ENT_HEATHCLIFF", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.95, mechanism="betrayal", evidence_strength="strong", causal_force=8.0, fabula_time=4000, propagation_delay=0),
+        CausalEdge(source_id="EVT_HINDLEY_DEMOTES_HEATHCLIFF", target_id="ENT_HINDLEY", rel_counterpart_id="ENT_HEATHCLIFF", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.7, mechanism="social", evidence_strength="strong", causal_force=8.0, fabula_time=4000, propagation_delay=0),
+        CausalEdge(source_id="EVT_CATHERINE_MARRIES_EDGAR", target_id="ENT_CATHERINE", rel_counterpart_id="ENT_EDGAR", causality_type="mutation_social", trait_target="affinity", trait_delta=0.6, mechanism="emotional", evidence_strength="strong", causal_force=7.0, fabula_time=9500, propagation_delay=0),
+        CausalEdge(source_id="EVT_CATHERINE_MARRIES_EDGAR", target_id="ENT_EDGAR", rel_counterpart_id="ENT_CATHERINE", causality_type="mutation_social", trait_target="affinity", trait_delta=0.8, mechanism="emotional", evidence_strength="strong", causal_force=7.0, fabula_time=9500, propagation_delay=0),
+        CausalEdge(source_id="EVT_CATHERINE_DIES", target_id="ENT_EDGAR", rel_counterpart_id="ENT_CATHERINE", causality_type="mutation_social", trait_target="affinity", trait_delta=0.15, mechanism="emotional", evidence_strength="strong", causal_force=9.0, fabula_time=11000, propagation_delay=0),
+        CausalEdge(source_id="EVT_HEATHCLIFF_RETURNS", target_id="ENT_EDGAR", rel_counterpart_id="ENT_HEATHCLIFF", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.7, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=9700, propagation_delay=0),
+        CausalEdge(source_id="EVT_CATHERINE_LOCKS_HERSELF", target_id="ENT_EDGAR", rel_counterpart_id="ENT_HEATHCLIFF", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.25, mechanism="emotional", evidence_strength="strong", causal_force=6.0, fabula_time=10500, propagation_delay=0),
+        CausalEdge(source_id="EVT_HEATHCLIFF_RETURNS", target_id="ENT_EDGAR", rel_counterpart_id="ENT_HEATHCLIFF", causality_type="mutation_social", trait_target="fear", trait_delta=0.5, mechanism="psychological", evidence_strength="moderate", causal_force=6.0, fabula_time=9700, propagation_delay=0),
+        CausalEdge(source_id="EVT_ISABELLA_ELOPES", target_id="ENT_HEATHCLIFF", rel_counterpart_id="ENT_ISABELLA", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.4, mechanism="social", evidence_strength="strong", causal_force=6.0, fabula_time=10000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_ISABELLA_LETTER_TO_NELLY", target_id="ENT_HEATHCLIFF", rel_counterpart_id="ENT_ISABELLA", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.45, mechanism="emotional", evidence_strength="strong", causal_force=7.0, fabula_time=11500, propagation_delay=0),
+        CausalEdge(source_id="EVT_ISABELLA_ELOPES", target_id="ENT_HEATHCLIFF", rel_counterpart_id="ENT_ISABELLA", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.85, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=10000, propagation_delay=0),
+        CausalEdge(source_id="EVT_ISABELLA_ELOPES", target_id="ENT_ISABELLA", rel_counterpart_id="ENT_HEATHCLIFF", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.85, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=10000, propagation_delay=0),
+        CausalEdge(source_id="EVT_ISABELLA_FLEES_SOUTH", target_id="ENT_ISABELLA", rel_counterpart_id="ENT_HEATHCLIFF", causality_type="mutation_social", trait_target="fear", trait_delta=0.95, mechanism="emotional", evidence_strength="strong", causal_force=9.0, fabula_time=11500, propagation_delay=0),
+        CausalEdge(source_id="EVT_LINTON_TAKEN_BY_FATHER", target_id="ENT_HEATHCLIFF", rel_counterpart_id="ENT_LINTON", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.3, mechanism="social", evidence_strength="strong", causal_force=6.0, fabula_time=15000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_HEATHCLIFF_COERCES_LINTON", target_id="ENT_HEATHCLIFF", rel_counterpart_id="ENT_LINTON", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.2, mechanism="betrayal", evidence_strength="strong", causal_force=7.0, fabula_time=15000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_HEATHCLIFF_COERCES_LINTON", target_id="ENT_HEATHCLIFF", rel_counterpart_id="ENT_LINTON", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.95, mechanism="social", evidence_strength="strong", causal_force=9.0, fabula_time=15000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_HEATHCLIFF_COERCES_LINTON", target_id="ENT_LINTON", rel_counterpart_id="ENT_HEATHCLIFF", causality_type="mutation_social", trait_target="fear", trait_delta=0.7, mechanism="psychological", evidence_strength="strong", causal_force=8.0, fabula_time=15000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_LINTON_COERCED_LETTERS_TO_CATHY", target_id="ENT_LINTON", rel_counterpart_id="ENT_HEATHCLIFF", causality_type="mutation_social", trait_target="fear", trait_delta=0.25, mechanism="psychological", evidence_strength="strong", causal_force=6.0, fabula_time=15800, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_HEATHCLIFF_COERCES_LINTON", target_id="ENT_LINTON", rel_counterpart_id="ENT_HEATHCLIFF", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.95, mechanism="social", evidence_strength="strong", causal_force=9.0, fabula_time=15000, propagation_delay=0),
+        CausalEdge(source_id="EVT_CATHY_FORCED_MARRIAGE", target_id="ENT_CATHY", rel_counterpart_id="ENT_HEATHCLIFF", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.85, mechanism="betrayal", evidence_strength="strong", causal_force=9.0, fabula_time=16000, propagation_delay=0),
+        CausalEdge(source_id="EVT_LINTON_DIES", target_id="ENT_CATHY", rel_counterpart_id="ENT_HEATHCLIFF", causality_type="mutation_social", trait_target="fear", trait_delta=0.5, mechanism="psychological", evidence_strength="strong", causal_force=7.0, fabula_time=17000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_CATHERINE_CONFESSES_TO_NELLY", target_id="ENT_NELLY", rel_counterpart_id="ENT_CATHERINE", causality_type="mutation_social", trait_target="affinity", trait_delta=0.55, mechanism="emotional", evidence_strength="strong", causal_force=6.0, fabula_time=7000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_CATHERINE_CONFESSES_TO_NELLY", target_id="ENT_NELLY", rel_counterpart_id="ENT_HEATHCLIFF", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.1, mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=7000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_ISABELLA_LETTER_TO_NELLY", target_id="ENT_NELLY", rel_counterpart_id="ENT_HEATHCLIFF", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.1, mechanism="informational", evidence_strength="moderate", causal_force=5.0, fabula_time=11500, propagation_delay=0),
+        CausalEdge(source_id="EVT_HEATHCLIFF_RETURNS", target_id="ENT_NELLY", rel_counterpart_id="ENT_HEATHCLIFF", causality_type="mutation_social", trait_target="fear", trait_delta=0.35, mechanism="psychological", evidence_strength="moderate", causal_force=5.0, fabula_time=9700, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_ISABELLA_LETTER_TO_NELLY", target_id="ENT_NELLY", rel_counterpart_id="ENT_HEATHCLIFF", causality_type="mutation_social", trait_target="fear", trait_delta=0.1, mechanism="informational", evidence_strength="moderate", causal_force=4.0, fabula_time=11500, propagation_delay=0),
+        CausalEdge(source_id="EVT_HEATHCLIFF_TAKES_HEIGHTS_MORTGAGE", target_id="ENT_HEATHCLIFF", rel_counterpart_id="ENT_HINDLEY", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.7, mechanism="social", evidence_strength="strong", causal_force=8.0, fabula_time=9900, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -1132,15 +1161,15 @@ world_state = WorldStateV1(
         RelationshipEdge(
             source_entity_id="ENT_HEATHCLIFF", target_entity_id="ENT_HARETON",
             metrics={
-                "affinity":      RelationshipMetric(value=0.4, inertia=0.5, evidence_strength="moderate", last_updated_fabula=12000),
-                "power_dynamic": RelationshipMetric(value=0.85, inertia=0.75, evidence_strength="strong", last_updated_fabula=12000),
+                "affinity": RelationshipMetric(value=0.0, inertia=0.5, evidence_strength="moderate", last_updated_fabula=12000, observed=False),
+                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.75, evidence_strength="strong", last_updated_fabula=12000, observed=False),
             },
         ),
         RelationshipEdge(
             source_entity_id="ENT_HARETON", target_entity_id="ENT_HEATHCLIFF",
             metrics={
-                "affinity":      RelationshipMetric(value=0.7, inertia=0.5, evidence_strength="strong", last_updated_fabula=19000),
-                "power_dynamic": RelationshipMetric(value=-0.7, inertia=0.7, evidence_strength="strong", last_updated_fabula=12000),
+                "affinity": RelationshipMetric(value=0.0, inertia=0.5, evidence_strength="strong", last_updated_fabula=19000, observed=False),
+                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.7, evidence_strength="strong", last_updated_fabula=12000, observed=False),
             },
         ),
         # Heathcliff ↔ Linton — owned son.

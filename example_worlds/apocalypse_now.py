@@ -805,6 +805,29 @@ world_state = WorldStateV1(
         # his death snapshot. They are a parallel consequence of his mortal realization,
         # not caused by the death-finalisation. The earlier KURTZ_KILLED -> LAST_WORDS
         # edge would imply post-mortem speech, so we drop it.
+
+
+        # ─── auto-patched mutation_social edges (per-axis coverage) ───
+        CausalEdge(source_id="EVT_ARRIVE_COMPOUND", target_id="ENT_KURTZ", rel_counterpart_id="ENT_WILLARD", causality_type="mutation_social", trait_target="affinity", trait_delta=0.4, mechanism="emotional", evidence_strength="strong", causal_force=7.0, fabula_time=6000, propagation_delay=0),
+        CausalEdge(source_id="EVT_BOARD_PBR", target_id="ENT_WILLARD", rel_counterpart_id="ENT_CHIEF", causality_type="mutation_social", trait_target="affinity", trait_delta=0.3, mechanism="social", evidence_strength="moderate", causal_force=5.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_BOARD_PBR", target_id="ENT_LANCE", rel_counterpart_id="ENT_CHEF", causality_type="mutation_social", trait_target="affinity", trait_delta=0.55, mechanism="social", evidence_strength="moderate", causal_force=5.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_BOARD_PBR", target_id="ENT_CHEF", rel_counterpart_id="ENT_LANCE", causality_type="mutation_social", trait_target="affinity", trait_delta=0.55, mechanism="social", evidence_strength="moderate", causal_force=5.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_SAMPAN_MASSACRE", target_id="ENT_CHEF", rel_counterpart_id="ENT_WILLARD", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.4, mechanism="betrayal", evidence_strength="strong", causal_force=8.0, fabula_time=3500, propagation_delay=0),
+        CausalEdge(source_id="EVT_BOARD_PBR", target_id="ENT_CLEAN", rel_counterpart_id="ENT_CHIEF", causality_type="mutation_social", trait_target="affinity", trait_delta=0.6, mechanism="social", evidence_strength="strong", causal_force=6.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_JOIN_KILGORE", target_id="ENT_KILGORE", rel_counterpart_id="ENT_WILLARD", causality_type="mutation_social", trait_target="affinity", trait_delta=0.5, mechanism="social", evidence_strength="moderate", causal_force=5.0, fabula_time=1500, propagation_delay=0),
+        CausalEdge(source_id="EVT_NAPALM_SURF_RAID", target_id="ENT_WILLARD", rel_counterpart_id="ENT_KILGORE", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.2, mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=1800, propagation_delay=0),
+        CausalEdge(source_id="EVT_ARRIVE_COMPOUND", target_id="ENT_LANCE", rel_counterpart_id="ENT_KURTZ", causality_type="mutation_social", trait_target="affinity", trait_delta=0.85, mechanism="emotional", evidence_strength="strong", causal_force=8.0, fabula_time=6000, propagation_delay=0),
+        CausalEdge(source_id="EVT_ARRIVE_COMPOUND", target_id="ENT_PHOTOJOURNALIST", rel_counterpart_id="ENT_KURTZ", causality_type="mutation_social", trait_target="affinity", trait_delta=0.95, mechanism="emotional", evidence_strength="strong", causal_force=6.0, fabula_time=6000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WILLARD_DEPARTS", target_id="ENT_WILLARD", rel_counterpart_id="ENT_LANCE", causality_type="mutation_social", trait_target="affinity", trait_delta=0.5, mechanism="emotional", evidence_strength="moderate", causal_force=6.0, fabula_time=8500, propagation_delay=0),
+        CausalEdge(source_id="EVT_SAMPAN_MASSACRE", target_id="ENT_CHEF", rel_counterpart_id="ENT_WILLARD", causality_type="mutation_social", trait_target="fear", trait_delta=0.45, mechanism="psychological", evidence_strength="strong", causal_force=7.0, fabula_time=3500, propagation_delay=0),
+        CausalEdge(source_id="EVT_WILLARD_CAGED", target_id="ENT_WILLARD", rel_counterpart_id="ENT_KURTZ", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.65, mechanism="physical", evidence_strength="strong", causal_force=9.0, fabula_time=6500, propagation_delay=0),
+        CausalEdge(source_id="EVT_WILLARD_CAGED", target_id="ENT_KURTZ", rel_counterpart_id="ENT_WILLARD", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.65, mechanism="physical", evidence_strength="strong", causal_force=9.0, fabula_time=6500, propagation_delay=0),
+        CausalEdge(source_id="EVT_SAMPAN_MASSACRE", target_id="ENT_CHIEF", rel_counterpart_id="ENT_WILLARD", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.3, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=3500, propagation_delay=0),
+        CausalEdge(source_id="EVT_SAMPAN_MASSACRE", target_id="ENT_WILLARD", rel_counterpart_id="ENT_CHIEF", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.3, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=3500, propagation_delay=0),
+        CausalEdge(source_id="EVT_BOARD_PBR", target_id="ENT_CLEAN", rel_counterpart_id="ENT_CHIEF", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.65, mechanism="social", evidence_strength="strong", causal_force=6.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_JOIN_KILGORE", target_id="ENT_KILGORE", rel_counterpart_id="ENT_WILLARD", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.65, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=1500, propagation_delay=0),
+        CausalEdge(source_id="EVT_ARRIVE_COMPOUND", target_id="ENT_LANCE", rel_counterpart_id="ENT_KURTZ", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.65, mechanism="social", evidence_strength="strong", causal_force=8.0, fabula_time=6000, propagation_delay=0),
+        CausalEdge(source_id="EVT_ARRIVE_COMPOUND", target_id="ENT_PHOTOJOURNALIST", rel_counterpart_id="ENT_KURTZ", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.65, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=6000, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ───────────────────────────────────────────────
@@ -1012,8 +1035,8 @@ world_state = WorldStateV1(
         RelationshipEdge(
             source_entity_id="ENT_COLBY", target_entity_id="ENT_KURTZ",
             metrics={
-                "affinity":      RelationshipMetric(value=0.95, inertia=0.95, evidence_strength="strong", last_updated_fabula=4500),
-                "power_dynamic": RelationshipMetric(value=-0.65, inertia=0.95, evidence_strength="strong", last_updated_fabula=4500),
+                "affinity": RelationshipMetric(value=0.0, inertia=0.95, evidence_strength="strong", last_updated_fabula=4500, observed=False),
+                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.95, evidence_strength="strong", last_updated_fabula=4500, observed=False),
             },
         ),
         # Willard ↔ Lance — the surviving pair.
