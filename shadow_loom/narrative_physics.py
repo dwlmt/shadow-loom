@@ -631,9 +631,23 @@ def _resolve_focus_entities(interventions: Dict[str, Any], global_world_state: W
     Given intervention keys like 'EVT_DUNCAN_MURDER.event_type' or 'ENT_MACBETH.status',
     collect ALL affected entities so the ego-graph is the union of their rooms.
     Genesis (.spawn) keys are skipped since their nodes don't exist yet.
+
+    For event references we expand to *every* actor AND every target on the
+    event (not just the first), so multi-actor events (e.g. a duel, a joint
+    decision) and victim-bearing events (e.g. a murder where actor !=
+    victim) all surface in the ego-graph. Without this an event like
+    ``EVT_KEN_KILLS_DOGS`` would only seed ``ENT_KEN`` even though the
+    dogs and their owner are equally part of the scene.
     """
-    seen = set()
-    focus_ids = []
+    seen: set = set()
+    focus_ids: List[str] = []
+
+    def _add(eid: Optional[str]) -> None:
+        if not eid:
+            return
+        if eid in global_world_state.entities and eid not in seen:
+            seen.add(eid)
+            focus_ids.append(eid)
 
     for target_path in interventions:
         if '.' not in target_path:
@@ -642,44 +656,35 @@ def _resolve_focus_entities(interventions: Dict[str, Any], global_world_state: W
         if prop == "spawn":
             continue
 
-        resolved = None
         # Direct entity reference
         if node_id in global_world_state.entities:
-            resolved = node_id
+            _add(node_id)
         else:
-            # Event reference — use the event's actor
+            # Event reference — pull in every actor and target so the
+            # ego-graph isn't truncated to a single participant.
             event = next((e for e in global_world_state.events if e.id == node_id), None)
             if event is not None:
-                if event.actor_ids:
-                    for _aid in event.actor_ids:
-                        if _aid in global_world_state.entities:
-                            resolved = _aid
-                            break
-                # Fallback: try target_ids if no actors
-                if resolved is None and event.target_ids:
-                    for _tid in event.target_ids:
-                        if _tid in global_world_state.entities:
-                            resolved = _tid
-                            break
+                for _aid in event.actor_ids or []:
+                    _add(_aid)
+                for _tid in event.target_ids or []:
+                    _add(_tid)
+                # Utterance speaker / addressees carry the same kind of
+                # multi-participant footprint.
+                _add(getattr(event, "speaker_id", None))
+                for _adid in getattr(event, "addressee_ids", []) or []:
+                    _add(_adid)
             else:
                 # Object reference — use the object's owner
                 obj = global_world_state.objects.get(node_id)
                 if obj and obj.owner_id and obj.owner_id in global_world_state.entities:
-                    resolved = obj.owner_id
-
-        if resolved and resolved not in seen:
-            seen.add(resolved)
-            focus_ids.append(resolved)
-            logger.debug("[ResolveFocus] %s → resolved entity %s", target_path, resolved)
+                    _add(obj.owner_id)
 
         # Also resolve comms targets so their rooms are in the ego-graph
         if prop == "communicating_with":
             value = interventions[target_path]
             if isinstance(value, list):
                 for tgt_id in value:
-                    if tgt_id in global_world_state.entities and tgt_id not in seen:
-                        seen.add(tgt_id)
-                        focus_ids.append(tgt_id)
+                    _add(tgt_id)
 
     # Last resort: first entity in the world state
     if not focus_ids and global_world_state.entities:

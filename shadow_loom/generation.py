@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, Iterable, List, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 from pydantic_ai import Agent, NativeOutput, RunContext
@@ -238,9 +238,14 @@ def _format_interventions(mechs: List[InterventionMechanism]) -> str:
         return ""
     lines = ["INTERVENTION PHYSICS (do-operator state changes you MUST render):"]
     for m in mechs:
+        tag = ""
+        if m.vacuous:
+            tag = " [VACUOUS — Rule 3 pruned: render local change only, NO downstream ripples]"
+        elif m.advisory:
+            tag = " [ADVISORY — Rule 3 unproven path: render downstream effects cautiously]"
         lines.append(
             f"  {m.node_id}: {m.old_state} → {m.new_state} "
-            f"via {m.mechanism_hint} (inertia={m.inertia:.2f})"
+            f"via {m.mechanism_hint} (inertia={m.inertia:.2f}){tag}"
         )
     return "\n".join(lines)
 
@@ -503,6 +508,43 @@ def assemble_rendering_prompt(
 # Brief builders for non-directive query types
 # =====================================================================
 
+def _entities_from_intervention_keys(
+    intervention_keys: Iterable[str],
+    world_state: WorldStateV1,
+) -> List[str]:
+    """Resolve an ``interventions`` dict's keys to a deduplicated list of
+    entity IDs.
+
+    Intervention keys may target entities directly (``ENT_KEN.fear``) or
+    events (``EVT_KEN_KILLS_DOGS.outcome``).  For the event case we
+    expand to the event's actors and targets so the rendered brief
+    knows which entities the alternate timeline is about — without
+    these the prompt logs ``entities=[]`` and downstream prompt
+    sections that key off ``brief.target_entities`` (POV selection,
+    auditor focus, etc.) get nothing to work with.
+    """
+    events_by_id = {e.id: e for e in getattr(world_state, "events", []) or []}
+    seen: List[str] = []
+    seen_set: set[str] = set()
+
+    def _add(eid: str) -> None:
+        if eid and eid.startswith("ENT_") and eid not in seen_set:
+            seen_set.add(eid)
+            seen.append(eid)
+
+    for key in intervention_keys:
+        node_id = key.split(".", 1)[0]
+        if node_id.startswith("ENT_"):
+            _add(node_id)
+        elif node_id.startswith("EVT_") and node_id in events_by_id:
+            evt = events_by_id[node_id]
+            for aid in getattr(evt, "actor_ids", []) or []:
+                _add(aid)
+            for tid in getattr(evt, "target_ids", []) or []:
+                _add(tid)
+    return seen
+
+
 def _user_intent_constraints(original_query: Optional[str]) -> List[ConstraintBlock]:
     """Lift the user's verbatim NL request into a HARD constraint.
 
@@ -571,6 +613,9 @@ def build_intervention_brief(
     rule3_pruning_mode: Literal["advisory", "prune"] = "advisory",
 ) -> CreativeBrief:
     """Build a CreativeBrief for intervention (do-calculus) queries."""
+    pruned_set = set(rule3_pruned_interventions or [])
+    is_prune_mode = rule3_pruning_mode == "prune"
+
     # Build InterventionMechanism entries from the interventions dict
     mechanisms: List[InterventionMechanism] = []
     for target_path, new_value in query.interventions.items():
@@ -648,6 +693,8 @@ def build_intervention_brief(
             new_state=str(new_value),
             mechanism_hint=mechanism,
             inertia=inertia,
+            vacuous=(target_path in pruned_set and is_prune_mode),
+            advisory=(target_path in pruned_set and not is_prune_mode),
         ))
 
     constraints: List[ConstraintBlock] = list(_user_intent_constraints(query.original_query))
@@ -721,15 +768,17 @@ def build_intervention_brief(
 
     return CreativeBrief(
         target_effect="intervention",
-        target_entities=list({
-            p.split(".")[0] for p in query.interventions
-            if p.split(".")[0].startswith("ENT_")
-        }),
+        target_entities=_entities_from_intervention_keys(
+            query.interventions, world_state
+        ),
         original_query=query.original_query,
         constraints=constraints,
         narrative_style=getattr(world_state, "narrative_style", None),
         rendering=RenderingDirective(
             rendering_mode="intervention",
+            pov_lock=(_entities_from_intervention_keys(
+                query.interventions, world_state
+            ) or [None])[0],
             pacing="normal",
             sensory_focus="normal",
             stylistic_instructions=[
@@ -861,17 +910,48 @@ def build_counterfactual_brief(
             evidence={"rule2_redundant": list(rule2_redundant_evidence)},
         ))
 
+    # Surface the present-day evidence the abduction was conditioned on.
+    # The auditor / generator otherwise have no idea which observed facts
+    # anchored the latent-trait inference, and the prose can drift away
+    # from the user's stated grounding.
+    evidence_ids = list(getattr(query, "evidence_node_ids", []) or [])
+    if evidence_ids:
+        constraints.append(ConstraintBlock(
+            constraint_type="mathematical",
+            priority="hard",
+            instruction=(
+                "PRESENT-DAY EVIDENCE (abduction was conditioned on these "
+                f"node states): {', '.join(evidence_ids)}. The alternate "
+                "timeline must remain consistent with these observed facts "
+                "where they are not directly contradicted by the historical "
+                "intervention — they are the anchor that justified the "
+                "inferred hidden-variable shifts."
+            ),
+            evidence={"evidence_node_ids": evidence_ids},
+        ))
+
+    # Resolve target entities from the historical intervention keys
+    # (entity props OR event participants) and union with any explicit
+    # downstream target nodes the user named.
+    target_entities = _entities_from_intervention_keys(
+        query.historical_interventions, world_state
+    )
+    extra_targets = _entities_from_intervention_keys(
+        getattr(query, "target_node_ids", []) or [], world_state
+    )
+    for eid in extra_targets:
+        if eid not in target_entities:
+            target_entities.append(eid)
+
     return CreativeBrief(
         target_effect="counterfactual",
-        target_entities=list({
-            p.split(".")[0] for p in query.historical_interventions
-            if p.split(".")[0].startswith("ENT_")
-        }),
+        target_entities=target_entities,
         original_query=query.original_query,
         constraints=constraints,
         narrative_style=getattr(world_state, "narrative_style", None),
         rendering=RenderingDirective(
             rendering_mode="counterfactual",
+            pov_lock=target_entities[0] if target_entities else None,
             pacing="normal",
             sensory_focus="normal",
             stylistic_instructions=[

@@ -271,6 +271,24 @@ class InterventionMechanism(BaseModel):
         ),
     )
     inertia: float = 0.5
+    vacuous: bool = Field(
+        default=False,
+        description=(
+            "True when ctf-calculus Rule 3 (Exclusion) proved this "
+            "do-surgery has no directed path to the user's target nodes "
+            "on the AMWN. The local change still occurs, but the "
+            "renderer must not invent downstream causal ripples for it."
+        ),
+    )
+    advisory: bool = Field(
+        default=False,
+        description=(
+            "True when Rule 3 flagged the surgery as advisory-only "
+            "(extracted topology may be missing latent confounders). "
+            "Render downstream consequences cautiously — favour "
+            "atmospheric echoes over loud causal chains."
+        ),
+    )
 
 
 class AbductionTruth(BaseModel):
