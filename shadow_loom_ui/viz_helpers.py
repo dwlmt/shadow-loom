@@ -2635,7 +2635,22 @@ def affective_timeseries(
     series: dict[str, list[float]] = {}
     for i, t in enumerate(times):
         snap = snapshot_world_at(ws, t)
-        scores = compute_affective_scores(snap, entity_ids=entity_ids)
+        # Anchor the reader to "everything that has happened in fabula
+        # time so far". Without this the cached default in
+        # ``_compute_affective_scores_uncached`` falls back to
+        # ``min_syuzhet - 1``, which empties the revealed set on a
+        # fabula-trimmed snapshot — pinning ``dramatic_irony`` flat at
+        # 0.0 (early-out on empty revealed set) and ``mystery`` at 1.0
+        # (every causal ancestor counts as hidden). Mapping fabula
+        # progress onto the latest syuzhet index in the trimmed
+        # snapshot keeps the reader's knowledge in step with the
+        # fabula cursor and restores the rising/falling shape.
+        anchor = max(
+            (e.syuzhet_index for e in snap.events), default=None,
+        )
+        scores = compute_affective_scores(
+            snap, entity_ids=entity_ids, syuzhet_anchor=anchor,
+        )
         # Back-pad any newly-discovered metric so its column lines up
         # with previous time samples (missing = 0.0).
         for k in scores:
