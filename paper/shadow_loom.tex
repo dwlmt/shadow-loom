@@ -38,17 +38,18 @@
 \maketitle
 
 \begin{abstract}
-Stories interest us not because they are sequences of likely
-next words, but because they have causes, secrets, and
-consequences. \textbf{Shadow-Loom} is an experimental open-source
-framework that takes a narrative and turns it into a typed,
-versioned \emph{graphical world model}. Two engines act on that
-model --- both are themselves \emph{graphical world models} in
-their own right, since each defines a typed dynamics over the
-shared graph --- in the spirit of a game engine that pairs a
-physics simulator with a higher-level director. The first engine
-is a \emph{causal physics} (a Pearl-style graphical world model of
-cause and effect) grounded in Pearl's ladder of causation
+Stories hold a reader's attention not, on the whole, because they
+are sequences of likely next words, but because they have causes,
+secrets, and consequences. \textbf{Shadow-Loom} is an experimental
+open-source framework that takes a narrative and turns it into a
+typed, versioned \emph{graphical world model}. Two engines act on
+that model --- both, on this account, \emph{graphical world
+models} in their own right, since each defines a typed dynamics
+over the shared graph --- in something of the spirit of a game
+engine that pairs a physics simulator with a higher-level
+director. The first engine is a \emph{causal physics} (a
+Pearl-style graphical world model of cause and effect) grounded
+in Pearl's ladder of causation
 \citep{pearl2009causality,pearl2018book,bareinboim2022pearl} and
 the recently proposed counterfactual calculus over Ancestral
 Multi-World Networks \citep{correa2025amwn}. The second is a
@@ -57,48 +58,51 @@ affect) that scores the same graph against four
 structural reader-states --- mystery, dramatic irony, suspense
 \citep{wilmot2020suspense}, and surprise \citep{ittibaldi2009surprise}
 --- in the tradition of Sternberg's curiosity / suspense /
-surprise triad \citep{sternberg1992telling}, and plays the role of
-the drama manager in classical interactive-narrative architectures
+surprise triad \citep{sternberg1992telling}, and plays something
+like the role of the drama manager in classical
+interactive-narrative architectures
 \citep{mateas2003facade,riedl2013interactive,ware2014glaive}.
 Large language models are used only at the boundary: extraction,
 rendering, and audit. Identification, intervention, and
-counterfactual reasoning happen in typed code over the graph, much
-as a game engine restricts a stochastic agent to physically
-admissible actions \citep{ha2018world,park2023generative}. The
-same loop --- ingest, simulate, generate, audit, re-ingest ---
+counterfactual reasoning are carried out in typed code over the
+graph, in much the way a game engine restricts a stochastic agent
+to physically admissible actions \citep{ha2018world,park2023generative}.
+The same loop --- ingest, simulate, generate, audit, re-ingest ---
 runs over user prose and produces a versioned world model with
 explicit, inspectable mathematical structure.
 
-Two motivations drive the design. First, counterfactual
-reasoning sits exactly on the rung of Pearl's hierarchy where
-current LLMs are weakest. They are competent at observational
+Two motivations sit behind the design. First, counterfactual
+reasoning sits on the rung of Pearl's hierarchy where current
+LLMs are weakest. They are reasonably competent at observational
 and even interventional causal questions in text
-\citep{kiciman2024causal}, but they fail to act on the implicit
-beliefs and counterfactual states they themselves infer
+\citep{kiciman2024causal}, but they tend to fail to act on the
+implicit beliefs and counterfactual states they themselves infer
 \citep{gu2026simpletom,kim2023fantom,xu2025echoes}, and the
-foundations of rung-3 reasoning need dedicated graphical machinery
+foundations of rung-3 reasoning appear to need dedicated
+graphical machinery
 \citep{correa2025amwn,bareinboim2022pearl,halpern2016actual}.
-Second, coding agents reliably outperform open-domain agents at
-fixed model capacity because their outputs can be compiled,
-executed, and tested against a typed substrate. Shadow-Loom
-gives narrative reasoning the same affordance: candidate
-continuations are propagated through the graph, checked against
-counterfactual-calculus-style independence and exclusion rules
-\citep{correa2025amwn}, and re-ingested for round-trip verification
+Second, coding agents tend to outperform open-domain agents at
+fixed model capacity, presumably because their outputs can be
+compiled, executed, and tested against a typed substrate.
+Shadow-Loom attempts to give narrative reasoning the same
+affordance: candidate continuations are propagated through the
+graph, checked against counterfactual-calculus-style independence
+and exclusion rules \citep{correa2025amwn}, and re-ingested for
+round-trip verification
 \citep{madaan2023selfrefine,bai2022constitutional,gu2024judge}.
 
-The system is presented as a research artefact, not as a
+The system is offered as a research artefact rather than as a
 benchmarked NLP model. Formal evaluation is left to future work.
-The more modest claim made here is that wiring a
-causal-graphical substrate underneath a constrained-LLM renderer
-is a tractable design point, with plausible relevance to
-controllable generation, narrative theory of mind, computational
-social science, and the digital humanities. Code, fixtures, and
-pipeline are released open source so that other researchers --- in
-NLP, in computational social science, and in the digital
-humanities --- can adapt the substrate to their own questions.
-Definitions and equations for each pipeline stage are given in
-the appendix.
+The modest claim made here is that wiring a causal-graphical
+substrate underneath a constrained-LLM renderer is a tractable
+design point, with some apparent relevance to controllable
+generation, narrative theory of mind, computational social
+science, and the digital humanities. Code, fixtures, and pipeline
+are released open source in the hope that other researchers ---
+in NLP, in computational social science, and in the digital
+humanities --- may find the substrate useful and adapt it to
+their own questions. Definitions and equations for each pipeline
+stage are given in the appendix.
 \end{abstract}
 
 
@@ -131,44 +135,45 @@ a language model; ``does Poirot know the conspirators are still
 lovers?''\ becomes a finite belief-set membership test
 (App.~\ref{app:ex-narrative}) rather than a single forward pass.
 
-\paragraph{Motivation 1: counterfactuals are exactly where LLMs
+\paragraph{Motivation 1: counterfactuals are where LLMs tend to
 struggle.} Pearl's hierarchy is provably non-collapsible. Rung-3
-quantities are not in general identifiable from rung-2 data, let
-alone from rung-1 observation \citep{bareinboim2022pearl}.
+quantities are not, in general, identifiable from rung-2 data,
+let alone from rung-1 observation \citep{bareinboim2022pearl}.
 Empirically, LLMs reproduce surface causal patterns from their
-training corpus \citep{kiciman2024causal} but degrade sharply on
-multi-hop belief-conditioned action prediction
+training corpus \citep{kiciman2024causal} but tend to degrade
+sharply on multi-hop belief-conditioned action prediction
 \citep{kim2023fantom,gu2026simpletom} and on story-internal
 counterfactual consistency \citep{xu2025echoes}. The questions
-that matter to a reader of a story --- ``what if Macbeth had
-refused?'', ``what if Roy had told Mary the truth?'' --- live on
-the rung where the modern foundations (AMWN + ctf-calculus,
-\citealp{correa2025amwn}) are designed to operate, and where
-end-to-end neural generators are not. A typed graph plus an
-explicit do-operator and abduction step turns each such question
-into a finite sequence of well-defined operations
+that ordinarily matter to a reader of a story --- ``what if
+Macbeth had refused?'', ``what if Roy had told Mary the truth?''
+--- live on the rung where the modern foundations (AMWN +
+ctf-calculus, \citealp{correa2025amwn}) are designed to operate,
+and where end-to-end neural generators are not. A typed graph
+plus an explicit do-operator and abduction step turns each such
+question into a finite sequence of well-defined operations
 \citep{pearl2009causality,halpern2005causes,halpern2016actual}
-rather than into a free-form imagination task.
+rather than a free-form imagination task.
 
-\paragraph{Motivation 2: coding agents work better because they
-compile and test.} A familiar pattern in agent design is that
-coding agents outperform open-domain agents at fixed model
-capacity. Their outputs can be compiled, executed against a test
-suite, and rejected when they fail. The lever is the
-\emph{typed substrate underneath the natural-language reasoning},
-not the model itself. Shadow-Loom imports that lever into
-narrative. A continuation is rejected if (a) its causal
-propagation (Eq.~\ref{eq:impact}) violates inertia or affordance
-gating; (b) its counterfactual branch fails an AMWN-style
-consistency, independence, or exclusion check
-\citep{correa2025amwn}; or (c) its re-extraction does not match
-the brief that licensed it (the audit pass, in the LLM-as-judge
-tradition of \citealp{bai2022constitutional,
-madaan2023selfrefine,gu2024judge}). The graph plays the role of
-the compiler; the auditor plays the role of the test suite.
+\paragraph{Motivation 2: coding agents do better, arguably,
+because they compile and test.} A familiar pattern in agent
+design is that coding agents tend to outperform open-domain
+agents at fixed model capacity. Their outputs can be compiled,
+executed against a test suite, and rejected when they fail. The
+lever, on this reading, is the \emph{typed substrate underneath
+the natural-language reasoning}, not the model itself.
+Shadow-Loom borrows that lever for narrative. A continuation is
+rejected if (a) its causal propagation (Eq.~\ref{eq:impact})
+violates inertia or affordance gating; (b) its counterfactual
+branch fails an AMWN-style consistency, independence, or
+exclusion check \citep{correa2025amwn}; or (c) its re-extraction
+does not match the brief that licensed it (the audit pass, in
+the LLM-as-judge tradition of
+\citealp{bai2022constitutional,madaan2023selfrefine,gu2024judge}).
+The graph plays something like the role of the compiler; the
+auditor plays something like the role of the test suite.
 
-The framework combines four ideas which, to the best of my
-knowledge, have not been wired together in a single open-source
+The framework combines four ideas which, so far as I can tell,
+have not previously been wired together in a single open-source
 pipeline:
 
 \begin{enumerate}
@@ -444,12 +449,11 @@ a game engine than to a sequence model: a typed simulation step
 renderer) only through a constrained action interface, in the
 lineage of Mimesis / Fa\c{c}ade-style interactive drama
 \citep{mateas2003facade,riedl2013interactive} and narrative
-planners such as CPOCL/Glaive \citep{ware2014glaive}. The
-generative-agent line of work \citep{park2023generative} and the
-``world model'' line in deep RL
-\citep{ha2018world,lecun2022jepa,hao2023rap} make the same bet from the opposite direction: that an explicit,
-manipulable latent world is what makes long-horizon coherent
-behaviour tractable. The shadow branches in Shadow-Loom play the
+planners such as CPOCL/Glaive \citep{ware2014glaive}. The generative-agent line of work
+\citep{park2023generative} and the ``world model'' line in deep RL
+\citep{ha2018world,lecun2022jepa,hao2023rap} make a similar wager
+from the opposite direction: that an explicit, manipulable latent
+world is what makes long-horizon coherent behaviour tractable. The shadow branches in Shadow-Loom play the
 role those world models play --- a sandbox in which counterfactual
 rollouts can be evaluated before being committed --- but with a
 typed, inspectable schema in place of an opaque latent state. The bundled example
@@ -479,7 +483,7 @@ elson2012sig}; and the narratological foundations
 ryan1991possible,herman2002story,zwaan1998situation}).
 
 \paragraph{Novel as a combination.} I am not aware of another
-open-source pipeline that simultaneously: (a) runs all three
+open-source pipeline that, taken together: (a) runs all three
 Pearl rungs over a typed narrative graph; (b) tags every node
 and edge with an AMWN \texttt{world\_id}
 \citep{correa2025amwn} so that counterfactuals are first-class
@@ -489,11 +493,11 @@ cognition; (d) uses the resulting score as a loss function over
 candidate interventions, with the LLM constrained to render the
 winner; and (e) closes the loop by re-extracting the rendered
 prose and comparing it against the brief. Each ingredient is
-borrowed. The composition is the contribution: a typed
+borrowed. The composition is the modest contribution: a typed
 two-engine substrate underneath a constrained renderer.
-Architecturally the closest analogue is a game engine for
-narrative: a typed simulation step gated by a drama-manager-like
-scorer
+Architecturally the closest analogue is something like a game
+engine for narrative: a typed simulation step gated by a
+drama-manager-like scorer
 \citep{mateas2003facade,riedl2013interactive,ware2014glaive},
 driving a constrained stochastic actor in the spirit of recent
 generative-agent and world-model work
@@ -555,17 +559,17 @@ keep both, or promote.
 \section{Why this might matter beyond fiction}
 \label{sec:relevance}
 
-\paragraph{NLP / reasoning.} Narrative is a tractable test bed for
-counterfactual and theory-of-mind reasoning because the ground
-truth (what happens, who knows what) is finite and authored. A
-typed-graph + symbolic-physics + constrained-renderer architecture
-is one concrete instantiation of the neuro-symbolic stance for
-controllable generation; the audit pass produces a falsifiable
-record of where the LLM departed from the brief. Recent ToM
-benchmarks \citep{gu2026simpletom,kim2023fantom,cross2024hyp} ask
-exactly the kind of behaviour-given-belief questions that an
-explicit \texttt{Belief} field with provenance is designed to
-support.
+\paragraph{NLP / reasoning.} Narrative is, for these purposes, a
+reasonably tractable test bed for counterfactual and
+theory-of-mind reasoning, because the ground truth (what happens,
+who knows what) is finite and authored. A typed-graph + symbolic
+physics + constrained-renderer architecture is one concrete
+instantiation of the neuro-symbolic stance for controllable
+generation; the audit pass produces a falsifiable record of
+where the LLM departed from the brief. Recent ToM benchmarks
+\citep{gu2026simpletom,kim2023fantom,cross2024hyp} ask exactly
+the kind of behaviour-given-belief questions that an explicit
+\texttt{Belief} field with provenance is designed to support.
 
 \paragraph{Computational social science and digital humanities.}
 Many socio-historical and humanistic questions are counterfactual
@@ -594,36 +598,36 @@ are not specific to fiction. Computational social scientists
 records, parliamentary debates, oral histories, news streams ---
 as data, and digital-humanities scholarship has long sought
 structured, sharable representations of literary works that can
-support both close and distant reading. Shadow-Loom can be read as
-one such representation: an open, typed, version-controlled graph
-with an explicit counterfactual sandbox and an audit trail back to
-the source text. I expressly invite researchers in those
-communities, as well as in narratology and cognitive science, to
-fork the schema, swap in their own ingestion prompts and affective
-scorers, and report what they find. The pipeline ships with
-sixteen worked example worlds drawn from canonical literature and
-film, which can serve as a common reference set for cross-group
-experimentation.
+support both close and distant reading. Shadow-Loom may be read
+as one such representation: an open, typed, version-controlled
+graph with an explicit counterfactual sandbox and an audit trail
+back to the source text. Researchers in those communities, as
+well as in narratology and cognitive science, are warmly invited
+to fork the schema, swap in their own ingestion prompts and
+affective scorers, and report what they find. The pipeline ships
+with sixteen worked example worlds drawn from canonical
+literature and film, which may serve as a common reference set
+for cross-group experimentation.
 
 
 \section{Limitations and future evaluation}
 \label{sec:limits}
 
-Shadow-Loom is an experimental research artefact, not a benchmarked
-NLP system, and I am explicit about what that does and does not
-imply. I report no headline numbers against an external dataset:
-the scores produced by the narrative physics are design choices
-grounded in narratological theory rather than validated
-reader-reaction models, and the causal physics borrows the AMWN
-naming and three-rule mental model of \citet{correa2025amwn}
-without implementing their identification algorithm literally ---
-the graph is heavily typed for narrative use rather than for
-rigorous structural causal model identification. The ingestion
-pipeline depends on LLM extraction, and although a programmatic
-validation and auto-repair loop catches the obvious failure modes,
-extraction errors can still propagate. The current unit-test suite
-covers the symbolic layers but does not constitute external
-evaluation.
+Shadow-Loom is an experimental research artefact rather than a
+benchmarked NLP system, and I want to be explicit about what that
+does and does not imply. No headline numbers are reported against
+an external dataset: the scores produced by the narrative physics
+are design choices grounded in narratological theory rather than
+validated reader-reaction models, and the causal physics borrows
+the AMWN naming and three-rule mental model of
+\citet{correa2025amwn} without implementing their identification
+algorithm literally --- the graph is heavily typed for narrative
+use rather than for rigorous structural causal model
+identification. The ingestion pipeline depends on LLM extraction,
+and although a programmatic validation and auto-repair loop
+catches the more obvious failure modes, extraction errors can
+still propagate. The current unit-test suite covers the symbolic
+layers but does not amount to external evaluation.
 
 Formal evaluation is therefore deferred to future work, along
 several complementary axes: (i)~human-judgement studies of the

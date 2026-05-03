@@ -311,12 +311,28 @@ def _build_command_bar(state: AppState) -> None:
                 state.finish_task(task, error=str(e))
                 notify_task_complete(task)
             finally:
-                typing_row.set_visibility(False)
-                send_btn.props(remove="loading")
+                # All post-task UI mutations need guarding: the user
+                # may have navigated away mid-query, in which case the
+                # owning client is gone and any element access raises
+                # ``RuntimeError("…has been deleted.")``.
+                try:
+                    typing_row.set_visibility(False)
+                    send_btn.props(remove="loading")
+                except RuntimeError as exc:
+                    logger.debug(
+                        "[chat] post-task UI cleanup skipped "
+                        "(dead client): %s", exc,
+                    )
                 _is_running["v"] = False
 
-            _render_messages(chat_container, messages)
-            _refresh_implausible_row(result)
+            try:
+                _render_messages(chat_container, messages)
+                _refresh_implausible_row(result)
+            except RuntimeError as exc:
+                logger.debug(
+                    "[chat] post-task render skipped "
+                    "(dead client): %s", exc,
+                )
 
         # ── Listen for prompt suggestions from other components ───
         def _on_suggestion(**kwargs):
@@ -339,16 +355,36 @@ def _build_context_suggestions(state: AppState, container) -> None:  # pragma: n
 
 
 def _render_messages(container, messages: List[dict]) -> None:
-    """Re-render chat messages."""
-    container.clear()
-    with container:
-        for msg in messages[-30:]:
-            is_user = msg["role"] == "user"
-            with ui.chat_message(
-                sent=is_user,
-                name="You" if is_user else "Shadow Loom",
-            ).classes("w-full"):
-                ui.markdown(msg["text"])
+    """Re-render chat messages.
+
+    Background tasks routinely outlive the page they were launched
+    from. If the user navigates away (or refreshes) mid-query, the
+    chat container's owning NiceGUI client has been deleted by the
+    time the task completes and tries to re-render. Swallow the
+    resulting ``RuntimeError`` rather than letting it crash the
+    background-task handler.
+    """
+    try:
+        container.clear()
+        with container:
+            for msg in messages[-30:]:
+                is_user = msg["role"] == "user"
+                with ui.chat_message(
+                    sent=is_user,
+                    name="You" if is_user else "Shadow Loom",
+                ).classes("w-full"):
+                    ui.markdown(msg["text"])
+    except RuntimeError as exc:
+        msg = str(exc)
+        if (
+            "has been deleted" in msg
+            or "no current slot" in msg.lower()
+        ):
+            logger.debug(
+                "[chat] _render_messages skipped (dead client/slot): %s", exc,
+            )
+            return
+        raise
 
 
 def _append_result(messages: List[dict], result: NLQueryResult) -> None:
