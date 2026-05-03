@@ -1032,7 +1032,19 @@ counterfactual probes (``if the diary were truthful, would the
 prose still hold?''); a ``yes'' here means the prose has
 collapsed Amy's two faces into one, and is rejected. The
 \emph{affective audit} measures the realised dramatic-irony gap
-against the target. The aggregated \texttt{FeedbackLoopResult}
+against the target. A \emph{style-fidelity audit} compares the
+prose against the \texttt{NarrativeStyle} profile recovered at
+ingestion --- word-count budget, prose density, register, POV,
+tense, and form class (\texttt{news\_article},
+\texttt{historical\_account}, \texttt{thought\_experiment}, etc.)
+--- raising \texttt{style\_mismatch} on drift. A
+\emph{meta-narration audit} runs on counterfactual and
+abduction-driven scenes: it flags prose that comments on its own
+branch structure (\textit{timeline}, \textit{divergence},
+\textit{the alternative holds}, conditional/subjunctive
+framings used to \emph{describe} rather than \emph{narrate} the
+counterfactual) instead of rendering the alternate world as a
+lived past-tense scene, raising \texttt{meta\_narration}. The aggregated \texttt{FeedbackLoopResult}
 exposes both an \texttt{engine\_thresholds\_passed} gate
 (deterministic: number of miracle steps, max trait drift) and an
 \texttt{llm\_pass} gate (literary critique); either failing

@@ -317,6 +317,16 @@ generated prose:
   implicit events hold up.
 * **Affective audit** — measures the actual epistemic gap in the prose vs the
   intended target (e.g. did the renderer accidentally spoil a twist?).
+* **Style-fidelity audit** — when the ingested source declared a
+  `NarrativeStyle` profile, checks the rendered prose against the target word
+  budget, prose density, register/POV/tense, and form class
+  (`news_article`, `historical_account`, `thought_experiment`, `essay`,
+  `case_study`, `transcript`); raises `style_mismatch` violations on drift.
+* **Meta-narration audit** — runs on counterfactual / abduction-driven
+  scenes. Flags prose that comments on its own counterfactual structure
+  ("timeline", "divergence", "the alternative holds", `If he had…/would have…`
+  framings, abstract aphorisms about fate or possibility) instead of rendering
+  the alternate world as a lived past-tense scene; raises `meta_narration`.
 
 If the auditor returns non-zero loss the refinement loop in
 `pipeline.py::run_pipeline()` regenerates with the auditor's feedback

@@ -841,6 +841,17 @@ auditor in §7 checks that envelope.
 * **Affective audit** — measures the *actual* dramatic-irony score in
   the prose against the brief's target. For this run: target 0.85,
   measured 0.83 → within tolerance, audit passes.
+* **Style-fidelity audit** — runs when the ingested source carried a
+  `NarrativeStyle` profile. Counts words, checks prose density
+  (`sparse`/`moderate`/`rich`), register/POV/tense, and form class
+  (e.g. `news_article` must read as inverted-pyramid reportage, not
+  dramatised scene work). Off-target output raises `style_mismatch`.
+* **Meta-narration audit** — runs on counterfactual and abduction
+  scenes. Flags prose that stands outside the alternate world and
+  comments on it ("the timeline fractures", "the alternative holds
+  through sheer momentum", `If he had…/would have…` used to *describe*
+  the branch rather than narrate it) instead of rendering it as plain
+  past-tense events. Raises `meta_narration`.
 
 If any audit fails, the loop regenerates (up to
 `max_correction_retries`) with the auditor's feedback appended to the
