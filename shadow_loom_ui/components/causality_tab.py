@@ -30,7 +30,6 @@ from shadow_loom_ui.viz import (
     render_empty_state,
     render_entity_state_timeline,
     render_event_timeline,
-    render_node_legend,
     render_physics_trajectory,
     render_propagation_graph,
     render_propagation_waterfall,
@@ -204,14 +203,6 @@ def _build_causal_topology(state: AppState) -> None:
                 "(circular = ring; cartesian = time on x-axis)"
             )
 
-        # Legend strip
-        legend_row = ui.row().classes(
-            "w-full bg-white border border-slate-200 rounded-xl shadow-sm "
-            "px-3 py-2"
-        )
-        with legend_row:
-            render_node_legend()
-
         # ── Filter row (Sankey only) — sticky for tall diagrams ────
         filter_row = ui.row().classes(
             "w-full items-center gap-4 bg-white border border-slate-200 "
@@ -298,7 +289,6 @@ def _build_causal_topology(state: AppState) -> None:
             ws = state.world_state
             if ws is None:
                 filter_row.set_visibility(False)
-                legend_row.set_visibility(False)
                 with graph_container:
                     # If a background task (typically ingestion) is
                     # populating the world, show a pulsing skeleton
@@ -316,7 +306,6 @@ def _build_causal_topology(state: AppState) -> None:
 
             is_sankey = view_toggle.value == "sankey"
             filter_row.set_visibility(is_sankey)
-            legend_row.set_visibility(True)
 
             # Sync the time slider widget without bouncing user input back.
             _sync_time_slider(ws)
