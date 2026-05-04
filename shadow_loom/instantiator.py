@@ -8,6 +8,21 @@ from typing import Dict, Any
 from shadow_loom.settings import get_settings as _get_settings
 from shadow_loom.models import default_relationship_metrics_dict
 
+
+def _surgery_log_level() -> int:
+    """Return the appropriate log level for surgery banner lines.
+
+    Demoted to ``DEBUG`` while a Monte-Carlo sample is running so a
+    128-sample sweep doesn't emit 128 \u00d7 N "Forced State" banners
+    at INFO. Imported lazily to avoid a circular import with
+    ``shadow_loom.causal_physics``.
+    """
+    try:
+        from shadow_loom.causal_physics import is_in_mc_sample
+    except ImportError:
+        return logging.INFO
+    return logging.DEBUG if is_in_mc_sample() else logging.INFO
+
 logger = logging.getLogger(__name__)
 
 
@@ -600,8 +615,9 @@ class AMWNInstantiator:
                 if target_val is not None:
                     desired_shift = target_val - current_val
                     if abs(desired_shift) <= trait_inertia + _inertia_epsilon():
-                        logger.info("[Surgery] Inertia blocked: %s.%s shift=%.2f <= inertia=%.2f. No change.",
-                                     node_id, path, abs(desired_shift), trait_inertia)
+                        logger.log(_surgery_log_level(),
+                                   "[Surgery] Inertia blocked: %s.%s shift=%.2f <= inertia=%.2f. No change.",
+                                   node_id, path, abs(desired_shift), trait_inertia)
                         return  # Trait resists — do NOT sever edges
                     # Dampen: effective shift = desired_shift - sign(shift)*inertia
                     sign = 1 if desired_shift > 0 else -1
@@ -613,8 +629,9 @@ class AMWNInstantiator:
                         # standard mutation updates the value inside the dict
                         # instead of replacing the entire TraitVector.
                         keys = [keys[0], keys[1], "value"]
-                    logger.info("[Surgery] Inertia dampened: %s.%s desired=%.2f, inertia=%.2f, effective=%.2f",
-                                 node_id, path, target_val, trait_inertia, effective_val)
+                    logger.log(_surgery_log_level(),
+                               "[Surgery] Inertia dampened: %s.%s desired=%.2f, inertia=%.2f, effective=%.2f",
+                               node_id, path, target_val, trait_inertia, effective_val)
 
         # --- STANDARD STATE MUTATION ---
         current_level = node_data
@@ -632,7 +649,9 @@ class AMWNInstantiator:
                 edges_to_remove.append((u, v, key))
         sandbox.remove_edges_from(edges_to_remove)
         
-        logger.info("[Surgery] Forced State: do(%s.%s = %s)", node_id, path, new_value)
+        logger.log(_surgery_log_level(),
+                   "[Surgery] Forced State: do(%s.%s = %s)",
+                   node_id, path, new_value)
 
     # ==========================================
     # SURGERY 5: GENESIS (Create from nothing)

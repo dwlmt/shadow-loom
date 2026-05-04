@@ -19,6 +19,7 @@ Key improvements over the inline helpers in narrative_physics.py:
 
 from __future__ import annotations
 
+import contextvars
 import copy
 import logging
 import math
@@ -39,6 +40,34 @@ from shadow_loom.models import (
 from shadow_loom.settings import get_settings as _get_settings
 
 logger = logging.getLogger(__name__)
+
+# Context flag: True while a Monte-Carlo sub-sample is running. Per-sample
+# physics steps (abduction, do-surgery, propagate, social, result) demote
+# their INFO logs to DEBUG so a 128-sample sweep does not spam 128×N
+# banner blocks at INFO level. ``execute_distribution`` emits a single
+# INFO summary at the end instead. Used both inside the engine and by
+# ``shadow_loom.instantiator.AMWNInstantiator._intervene_state`` (a
+# staticmethod called during do-surgery), which is why this is a
+# module-level contextvar rather than an instance attribute.
+_in_mc_sample_var: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "shadow_loom_causal_physics_in_mc_sample", default=False,
+)
+
+
+def is_in_mc_sample() -> bool:
+    """Public read-only check for callers outside this module."""
+    return _in_mc_sample_var.get()
+
+
+def _physics_log(level_when_normal: int = logging.INFO) -> int:
+    """Return the log level to use for per-step physics chatter.
+
+    DEBUG inside a Monte-Carlo sample, ``level_when_normal`` otherwise.
+    """
+    if _in_mc_sample_var.get():
+        return logging.DEBUG
+    return level_when_normal
+
 
 # =====================================================================
 # Result Model
@@ -558,7 +587,8 @@ class CausalPhysicsEngine:
                     if rel_deltas:
                         existing_deltas = self._hidden_deltas.setdefault(eid, {})
                         existing_deltas.update(rel_deltas)
-                        logger.info(
+                        logger.log(
+                            _physics_log(),
                             "[CausalPhysics·Abduction·Rel] %s→%s deltas: %s",
                             eid, other_id, rel_deltas,
                         )
@@ -600,7 +630,11 @@ class CausalPhysicsEngine:
                     ):
                         existing.append(b_dict)
 
-                logger.info("[CausalPhysics·Abduction] Conditioned entity %s (deltas: %s).", eid, deltas)
+                logger.log(
+                    _physics_log(),
+                    "[CausalPhysics·Abduction] Conditioned entity %s (deltas: %s).",
+                    eid, deltas,
+                )
 
             # Case 2 — Evidence is an Event
             elif self.sandbox.has_node(eid):
@@ -619,7 +653,8 @@ class CausalPhysicsEngine:
                         node_data.get("event_type") == "utterance"
                         and node_data.get("truth_value") in ("false", "performative")
                     ):
-                        logger.info(
+                        logger.log(
+                            _physics_log(),
                             "[CausalPhysics·Abduction] Skipping back-prop for "
                             "utterance %s (truth_value=%s).",
                             eid, node_data.get("truth_value"),
@@ -672,7 +707,11 @@ class CausalPhysicsEngine:
                                     trait_data["value"] = max(0.0, min(1.0, old_val + mult * force_scale * _mechanism_fallback_factor()))
                                     logger.debug("[CausalPhysics·Abduction] Event %s → %s.%s: mechanism=%s fallback, old=%.3f new=%.3f",
                                                  eid, ce.target_id, trait_name, ce.mechanism, old_val, trait_data["value"])
-                    logger.info("[CausalPhysics·Abduction] Propagated evidence from event %s.", eid)
+                    logger.log(
+                        _physics_log(),
+                        "[CausalPhysics·Abduction] Propagated evidence from event %s.",
+                        eid,
+                    )
             else:
                 logger.warning("[CausalPhysics·Abduction] Evidence node %s not in sandbox. Skipping.", eid)
 
@@ -763,7 +802,8 @@ class CausalPhysicsEngine:
             # status / location_id / beliefs / properties / etc. don't pin
             # any trait \u2014 propagation over the entity's traits is unaffected.
 
-        logger.info(
+        logger.log(
+            _physics_log(),
             "[CausalPhysics·do] Surgeries applied. Intervened roots: %s; pinned traits: %s",
             self._intervened_nodes, self._intervened_traits,
         )
@@ -1287,7 +1327,8 @@ class CausalPhysicsEngine:
                 # intermediate pre-drift number.
                 mut.new_value = drifted
 
-        logger.info(
+        logger.log(
+            _physics_log(),
             "[CausalPhysics·Propagate] %d mutations applied, %d blocked.",
             len(self._mutations), len(self._blocked),
         )
@@ -1515,8 +1556,11 @@ class CausalPhysicsEngine:
                         inertia=rel_inertia,
                         triggered_by=source_id,
                     ))
-                    logger.info("[CausalPhysics·SocialProp] %s→%s %s: %.3f→%.3f (trigger=%s, delta=%.3f, inertia=%.3f)",
-                                target_id, counterpart_id, metric, current_val, new_val, source_id, scaled_delta, rel_inertia)
+                    logger.log(
+                        _physics_log(),
+                        "[CausalPhysics·SocialProp] %s→%s %s: %.3f→%.3f (trigger=%s, delta=%.3f, inertia=%.3f)",
+                        target_id, counterpart_id, metric, current_val, new_val, source_id, scaled_delta, rel_inertia,
+                    )
                     break
 
             # No existing relationship edge — create one with full per-axis metrics
@@ -1554,10 +1598,17 @@ class CausalPhysicsEngine:
                     inertia=_relationship_inertia_default(),
                     triggered_by=source_id,
                 ))
-                logger.info("[CausalPhysics·SocialProp] Created relationship %s→%s with %s=%.3f (trigger=%s)",
-                            target_id, counterpart_id, metric, edge_attrs[metric], source_id)
+                logger.log(
+                    _physics_log(),
+                    "[CausalPhysics·SocialProp] Created relationship %s→%s with %s=%.3f (trigger=%s)",
+                    target_id, counterpart_id, metric, edge_attrs[metric], source_id,
+                )
 
-        logger.info("[CausalPhysics·SocialProp] %d social mutations applied.", len(self._social_mutations))
+        logger.log(
+            _physics_log(),
+            "[CausalPhysics·SocialProp] %d social mutations applied.",
+            len(self._social_mutations),
+        )
 
     # ------------------------------------------------------------------
     # Spatial reachability helper
@@ -1910,6 +1961,11 @@ class CausalPhysicsEngine:
             # ``execute_distribution`` and recurse forever.
             sub._in_mc_sample = True
             sub._sample_noisy_or = True
+            # Flip the module-level contextvar so per-step physics logs
+            # (abduction, do-surgery, propagate, social, result) demote
+            # to DEBUG for this sample. Reset in finally so we don't leak
+            # the flag to the caller after the sweep.
+            mc_token = _in_mc_sample_var.set(True)
             try:
                 last_result = sub.execute(
                     rung,
@@ -1924,6 +1980,8 @@ class CausalPhysicsEngine:
                     i + 1, n,
                 )
                 continue
+            finally:
+                _in_mc_sample_var.reset(mc_token)
 
             # Collect post-propagation trait values from this sample.
             for nid, ndata in sample_sandbox.nodes(data=True):
@@ -1979,6 +2037,46 @@ class CausalPhysicsEngine:
             )
 
         last_result.trait_distributions = distributions
+
+        # Single INFO summary for the whole MC sweep (per-sample logs
+        # were already demoted to DEBUG via the contextvar).
+        if logger.isEnabledFor(logging.INFO):
+            label = _RUNG_NAMES.get(rung, f"Rung {rung}")
+            n_dist_traits = sum(len(v) for v in distributions.values())
+            summary_lines = [
+                f"[CausalPhysics·MC] {label} — Monte-Carlo sweep complete: "
+                f"{n} sample(s), {len(distributions)} entity nodes, "
+                f"{n_dist_traits} trait distributions."
+            ]
+            if interventions:
+                summary_lines.append(
+                    f"  Interventions: {sorted(interventions)}"
+                )
+            if evidence_node_ids:
+                summary_lines.append(
+                    f"  Abduction evidence: {evidence_node_ids[:8]}"
+                    + (f" (+{len(evidence_node_ids) - 8} more)"
+                       if len(evidence_node_ids) > 8 else "")
+                )
+            # Spotlight a few representative trait posteriors so the
+            # operator can sanity-check magnitude without a 128-line dump.
+            shown = 0
+            for nid, by_trait in distributions.items():
+                if shown >= 5:
+                    summary_lines.append(
+                        f"  … (+{len(distributions) - shown} more entities; "
+                        "see CausalPhysicsResult.trait_distributions)"
+                    )
+                    break
+                for tname, td in by_trait.items():
+                    summary_lines.append(
+                        f"  {nid}.{tname}: mean={td.mean:.3f} "
+                        f"std={td.std:.3f} p5={td.p5:.3f} p95={td.p95:.3f} "
+                        f"(N={td.samples_count})"
+                    )
+                shown += 1
+            logger.info("\n".join(summary_lines))
+
         return last_result
 
 
@@ -2007,7 +2105,8 @@ def _log_physics_result(
     blocked, and what hidden counterfactual deltas were inferred — each
     truncated to a sensible cap.
     """
-    if not logger.isEnabledFor(logging.INFO):
+    log_level = _physics_log()
+    if not logger.isEnabledFor(log_level):
         return
 
     lines: list[str] = []
@@ -2125,7 +2224,7 @@ def _log_physics_result(
         for k in result.rule2_redundant_evidence[:max_lines_per_section]:
             lines.append(f"    × {k}")
 
-    logger.info("\n".join(lines))
+    logger.log(log_level, "\n".join(lines))
 
 
 # Resolve forward references in CausalPhysicsResult — the typed fields

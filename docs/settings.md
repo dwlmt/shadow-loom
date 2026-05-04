@@ -117,6 +117,27 @@ The thresholds map directly onto the auditor categories described in
 > lever in the pipeline: each iteration runs one audit + one re-render, so
 > raising it from 3 to 5 can ~70% the audit-step cost in the worst case.
 
+> **Loop discipline (non-tunable, but worth knowing).** The refinement
+> loop is hardened against the classic ping-pong failure where each
+> iteration fixes one category and regresses on a previous one:
+>
+> * `meta` (meta-narration) and `style` (style-fidelity) audits run for
+>   *every* `target_effect` regardless of the brief's `audit_categories`;
+>   per-effect categories layer on top via
+>   `auditor.resolve_audit_categories(...)`. The judge prompt is told to
+>   surface violations *only* for resolved categories — anything else
+>   would be silently discarded by the loop.
+> * Each refinement call passes prior violations as
+>   `=== NON-REGRESSION CONSTRAINTS ===` so earlier fixes are preserved.
+> * `style_mismatch` violations are graded `critical` (form-class
+>   breach), `major` (word count >±50% off-budget or density+form drift),
+>   or `minor` (pure prose-density drift inside band). When *all*
+>   surfaced violations in an iteration are `minor`, the loop short-
+>   circuits to `llm_passed=True` instead of burning another regeneration.
+> * When `affective_loss_mse` has no scorable target the evaluation
+>   prompt prints `not measured (no scorable target — ignore in
+>   evaluation)` instead of formatting a misleading `0.0000`.
+
 ---
 
 ## 6. Extraction / ingestion (Steps 1–2 — text → graph)
@@ -178,6 +199,7 @@ refactor; defaults preserve previous behaviour for everything except
 | `PHYSICS_CAUSAL_FORCE_SIGMA_STRONG` | `0.05` | Same for `evidence_strength="strong"`. |
 | `PHYSICS_MONTE_CARLO_SAMPLES` | `128` | When > 0, the plain `CausalPhysicsEngine.execute()` auto-routes through `execute_distribution`, which returns a per-trait distribution (mean / p5 / p50 / p95) instead of a point estimate. Default of 128 gives a posterior-mean Monte-Carlo standard error of `sigma/sqrt(N) <= 0.044` for [0,1] traits while keeping per-call cost bounded; raise to 500–1000 for tight tail estimation, set to `0` to disable Monte-Carlo entirely. Cost scales linearly: every `execute()` call runs N propagations (affects `directive_assembly.evaluate_candidate_events` and `narrative_physics`). |
 | `PHYSICS_MONTE_CARLO_SEED` | unset | Optional RNG seed for reproducible Monte-Carlo runs. |
+| *(logging — non-tunable)* | — | Inside a Monte-Carlo sweep the per-sample physics traces (`[CausalPhysics·Abduction]`, `[CausalPhysics·Result]`, `[Surgery]` inertia messages) are demoted from `INFO` to `DEBUG` via a `ContextVar` set by `execute_distribution`. A single aggregated `[CausalPhysics·MC]` summary banner at `INFO` level is emitted once per sweep with the trait-posterior spotlight (means / std / p5 / p95 for up to 5 entities), so console logs stay readable while DEBUG retains full per-sample detail for forensics. |
 | `PHYSICS_ABDUCTION_BLEND_MODE` | `bayesian` | `legacy`: `blended = old + delta * (1 - inertia)`. `bayesian`: `posterior = (inertia*old + ev_precision*evidence) / (inertia + ev_precision)`. |
 | `PHYSICS_ABDUCTION_EVIDENCE_PRECISION` | `1.0` | Precision (1/variance) of present-day evidence in the Bayesian abduction blend. |
 | `PHYSICS_ENTITY_TRAIT_INERTIA_DEFAULT` | `0.5` | Fallback inertia for an Entity trait when extraction is silent. |

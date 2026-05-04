@@ -329,8 +329,13 @@ Shadow-Loom has to keep the fiction internally consistent.
 
 ### What the auditor catches
 
-After generation, three audits run in parallel
-(`shadow_loom/auditor.py::run_feedback_loop`):
+After generation, audits run in parallel
+(`shadow_loom/auditor.py::run_feedback_loop`). The category set is
+resolved by `auditor.resolve_audit_categories(target_effect)` —
+`meta` and `style` are universal (run for every effect); per-effect
+categories layer on top. The judge is told to surface violations
+*only* for the resolved set; out-of-scope categories would be silently
+discarded.
 
 * **Causal audit** — reverse-engineers prose into `(source, target,
   modality)` causal claims and matches them against the brief. Any
@@ -367,6 +372,20 @@ The deterministic gate is what stops the loop on adversarial cases
 where the LLM auditor would happily approve plausible-sounding but
 miracle-laden prose. The LLM gate is what stops it on cases where the
 deterministic checks pass but the prose is dramatically inert.
+
+Two further safeguards keep iteration counts bounded:
+
+* **Non-regression carry-forward.** Each refinement call passes prior
+  violations into the regeneration prompt under
+  `=== NON-REGRESSION CONSTRAINTS ===` (deduplicated, excluding
+  still-active types) so a fix from iteration 1 cannot be silently
+  dropped by iteration 2's rewrite.
+* **Minor-only short-circuit.** `style_mismatch` is graded
+  `critical` (form-class breach), `major` (>±50% off word budget or
+  density+form drift), or `minor` (pure prose-density drift inside
+  band). When *every* surfaced violation is `minor`, the loop returns
+  `llm_passed=True` instead of regenerating — cosmetic density drift
+  isn't worth a full re-render.
 
 ---
 

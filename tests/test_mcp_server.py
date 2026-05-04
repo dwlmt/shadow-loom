@@ -3,9 +3,10 @@
 
 """Integration tests for the Shadow-Loom MCP server (v2).
 
-Tests the 20 MCP tools and 5 resources against an in-memory SQLite DB
-with the Macbeth world state fixture. All LLM-calling paths are mocked;
-computational paths (physics, graph, assembler) run un-mocked.
+Tests the 41 MCP tools (4 coarse-grained dispatchers + 37 granular tools)
+and 5 resources against an in-memory SQLite DB with the Macbeth world
+state fixture. All LLM-calling paths are mocked; computational paths
+(physics, graph, assembler) run un-mocked.
 
 Auth is tested in open mode (no bearer token → require_scope returns None).
 """

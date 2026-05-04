@@ -186,6 +186,86 @@ def _format_rendering_directive(r: RenderingDirective) -> str:
     return "\n".join(parts)
 
 
+# Source formats whose register is summary / non-scenic. The
+# rendering-mode templates in ``prompts/generation.md`` say things like
+# "render as the actual lived world \u2014 a concrete scene grounded in
+# physical action, sensory detail, and character behaviour", which is
+# exactly the wrong instruction for these formats. The form-class
+# override below tells the renderer to read those template lines as
+# *form-agnostic guidance about what to depict*, not as a license to
+# inflate to scene length / density.
+_SUMMARY_FORMS: frozenset[str] = frozenset({
+    "plot_summary", "synopsis", "outline",
+})
+_NON_NARRATIVE_FORMS: frozenset[str] = frozenset({
+    "news_article", "historical_account", "thought_experiment",
+    "essay", "case_study", "transcript",
+})
+
+# Rendering modes whose default template language pulls toward scenic
+# rendering. We override only these; modes like ``mystery`` already
+# carry their own register cues that survive the form-class
+# constraint.
+_SCENIC_MODES: frozenset[str] = frozenset({
+    "observation", "intervention", "counterfactual", "default", "fallback",
+})
+
+
+def _form_class_render_override(format_str: str, mode: str) -> str:
+    """Return a HARD form-class override for the rendering prompt.
+
+    Empty string when no override is needed (the source format is
+    natively scenic, or the rendering mode already carries register
+    cues that conflict with form-class guidance).
+    """
+    if mode not in _SCENIC_MODES:
+        return ""
+
+    if format_str in _SUMMARY_FORMS:
+        return (
+            "=== FORM-CLASS OVERRIDE (HARD \u2014 supersedes the rendering "
+            "mode's default register) ===\n"
+            f"  Source format: {format_str} \u2014 the source text is a "
+            "compressed plot summary, not a scene. Read the rendering "
+            "mode template above as guidance about *what* to depict "
+            "(which beats, which abduction truths, which intervention "
+            "mechanism), NOT as a license to render a fully drawn "
+            "scene. Specifically:\n"
+            "  \u2022 Use compressed third-person past-tense plot summary "
+            "diction \u2014 one declarative sentence per story beat.\n"
+            "  \u2022 Do NOT add multi-sentence physical descriptions, "
+            "extended sensory passages, or interior monologue beyond what "
+            "the mode template *explicitly* requires (e.g. regret's "
+            "\"if only\u2026\" is still permitted; a lingering paragraph "
+            "of posture and gaze is not).\n"
+            "  \u2022 Honour the abduction / intervention payloads by "
+            "embedding them in the summary cadence: a single behavioural "
+            "cue per hidden truth, not a paragraph dramatising it.\n"
+            "  \u2022 The auditor will flag a `style_mismatch` violation "
+            "if the prose drifts into novelistic scene work."
+        )
+
+    if format_str in _NON_NARRATIVE_FORMS:
+        return (
+            "=== FORM-CLASS OVERRIDE (HARD \u2014 supersedes the rendering "
+            "mode's default register) ===\n"
+            f"  Source format: {format_str} \u2014 the source text is "
+            "non-narrative discursive writing, not fiction. The rendering "
+            "mode template above describes *which content* to surface "
+            "(an intervention, a counterfactual, an observation), NOT "
+            "the form to render it in. Stay inside the source's native "
+            "register: journalistic inverted-pyramid for `news_article`, "
+            "dated historiographic narration for `historical_account`, "
+            "discursive (\"Suppose\u2026\") framing for "
+            "`thought_experiment`, signposted thesis for `essay`, "
+            "background \u2192 findings \u2192 recommendations for "
+            "`case_study`, alternating speaker-tagged turns for "
+            "`transcript`. Do NOT render fictional scene work."
+        )
+
+    return ""
+
+
 def _format_threat_proximity(tp: ThreatProximity) -> str:
     lines = ["THREAT PROXIMITY:"]
     if tp.threat_event_id:
@@ -375,6 +455,27 @@ def assemble_rendering_prompt(
     if brief.rendering:
         sections.append("=== RENDERING DIRECTIVE (Step 10 — How to write) ===")
         sections.append(_format_rendering_directive(brief.rendering))
+        # Form-class override. The COUNTERFACTUAL / OBSERVATION /
+        # INTERVENTION mode templates in ``prompts/generation.md`` all
+        # default to "render as a lived scene grounded in physical
+        # action and sensory detail" \u2014 which directly contradicts
+        # the STYLE FIDELITY block when the source format is a summary
+        # form (synopsis, plot_summary, outline) or a non-narrative
+        # form (news_article, historical_account, etc.). Without this
+        # override the auditor reliably ping-pongs between
+        # ``style_mismatch`` (too scenic) and ``meta_narration`` /
+        # ``abduction_failure`` (too clinical) on every iteration of
+        # the refinement loop. We surface the form-class as an
+        # explicit HARD instruction that the rendering directive must
+        # be filtered through.
+        if brief.narrative_style is not None:
+            override = _form_class_render_override(
+                brief.narrative_style.format,
+                brief.rendering.rendering_mode,
+            )
+            if override:
+                sections.append("")
+                sections.append(override)
         sections.append("")
 
     # === Effect-specific payloads ===
