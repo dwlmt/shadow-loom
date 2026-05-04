@@ -105,7 +105,7 @@ this stage discriminates between.
 | `AUDITOR_MAX_TOKENS_GENERATION` | `64000` | Token budget for re-renders. |
 | `AUDITOR_MIN_FORESHADOWING_SCORE` | `0.6` | Pass threshold for foreshadowing payoff. |
 | `AUDITOR_MAX_AFFECTIVE_LOSS` | `0.3` | Max allowed drift between requested and delivered affective score. |
-| `AUDITOR_MIN_COGNITIVE_PLAUSIBILITY` | `0.7` | Minimum cognitive-plausibility score to pass. |
+| `AUDITOR_MIN_COGNITIVE_PLAUSIBILITY` | `0.7` | Minimum cognitive-plausibility score to pass. Counts entities whose *actions* contradict their *own* established beliefs; merely holding a belief that turns out to be wrong (dramatic irony) is **not** penalised. |
 | `AUDITOR_MAX_MIRACLE_STEPS` | `0` | Number of unmechanism'd jumps tolerated before failing. |
 | `AUDITOR_IGNORE_SPATIAL_BLOCKS` | `false` | If true, suppresses affordance/co-location violations (debugging only). |
 

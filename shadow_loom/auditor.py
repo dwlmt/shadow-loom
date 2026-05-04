@@ -595,20 +595,30 @@ def compute_causal_feedback(
             avg_disp = sum(abs(nt.displacement) for nt in withheld) / len(withheld)
             foreshadowing_score = max(0.0, 1.0 - avg_disp)
 
-    # --- Cognitive plausibility: entities NOT acting on false beliefs ---
+    # --- Cognitive plausibility: entities acting CONSISTENTLY with their
+    # own beliefs (true or false). False beliefs are realistic — humans
+    # routinely hold beliefs contradicted by reality (dramatic irony is
+    # built on this). Penalising contradicted beliefs per se conflates
+    # "character is mistaken" (a feature of fiction) with "character
+    # acts on knowledge they don't possess" (the actual implausibility).
+    #
+    # Without an explicit "acted_against_own_belief" signal in the
+    # epistemic-gap data, the deterministic feedback defaults to 1.0
+    # and reports contradicted beliefs as informational dramatic-irony
+    # context, not as a violation. The LLM-side cognitive_plausibility
+    # check on NarrativeOrderObject still flags genuine
+    # belief/action mismatches.
     if brief.epistemic_gaps:
         total = len(brief.epistemic_gaps)
         contradicted = sum(
             1 for g in brief.epistemic_gaps if g.gap_type == "contradicted"
         )
-        # Plausibility = fraction of beliefs that are NOT contradicted
-        cog_plausibility_score = round(
-            (total - contradicted) / total if total > 0 else 1.0, 4
-        )
+        cog_plausibility_score = 1.0
         if contradicted:
             cog_details = (
-                f"{contradicted}/{total} entity beliefs are contradicted by "
-                f"reality. Characters may be acting on false information."
+                f"{contradicted}/{total} entity beliefs are currently "
+                f"contradicted by reality (dramatic irony — not a "
+                f"plausibility violation by itself)."
             )
         else:
             cog_details = (
