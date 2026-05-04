@@ -1,0 +1,43 @@
+# Build context exclusions — keep the image lean and avoid leaking
+# local secrets into a shared registry.
+
+# Python build cruft
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+*.egg-info
+build/
+dist/
+.tox/
+.coverage
+htmlcov/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Local dev artefacts
+.env
+.env.*
+!.env.production.example
+config.env
+*.db
+*.sqlite
+*.sqlite3
+shadow_loom*.db
+pipeline_output/
+logs/
+scripts/
+docs/
+tests/
+
+# Git
+.git
+.gitignore
+.github/

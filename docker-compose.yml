@@ -1,0 +1,76 @@
+# =====================================================================
+# Shadow Loom — local development stack
+# =====================================================================
+# Spins up Postgres + the Shadow Loom UI as containers. The host's
+# Ollama (running natively for GPU access) is reached via the
+# host.docker.internal alias. If you don't have Ollama, change
+# DEFAULT_MODEL in .env to an openrouter:* or openai:* model and
+# Postgres-only deployment still works.
+#
+# Bring up:        docker compose up --build
+# Tail logs:       docker compose logs -f app
+# Reset DB:        docker compose down -v   # ⚠ wipes the postgres volume
+# =====================================================================
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: shadow_loom
+      POSTGRES_PASSWORD: shadow_loom
+      POSTGRES_DB: shadow_loom
+    ports:
+      - "5432:5432"
+    volumes:
+      - shadow_loom_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shadow_loom"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "7860:7860"
+    environment:
+      # Connect the app container to the postgres service.
+      DATABASE_URL: postgresql+psycopg://shadow_loom:shadow_loom@postgres:5432/shadow_loom
+      # Talk to a host-side Ollama daemon (Linux: needs --add-host).
+      # On Docker Desktop (Mac/Windows) host.docker.internal is built in.
+      OLLAMA_BASE_URL: http://host.docker.internal:11434/v1/
+      STORAGE_SECRET: ${STORAGE_SECRET:-local-dev-not-a-real-secret}
+      UI_HOST: 0.0.0.0
+      UI_PORT: 7860
+      UI_SOURCE_URL: ${UI_SOURCE_URL:-https://github.com/dwlmt/shadow-loom}
+      # Forward LLM provider keys from the host shell or .env (compose
+      # auto-loads .env from the project root for ${VAR} interpolation).
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      FIREWORKS_API_KEY: ${FIREWORKS_API_KEY:-}
+      FEATHERLESS_API_KEY: ${FEATHERLESS_API_KEY:-}
+      TOGETHER_API_KEY: ${TOGETHER_API_KEY:-}
+      DEEPINFRA_API_KEY: ${DEEPINFRA_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      ANYSCALE_API_KEY: ${ANYSCALE_API_KEY:-}
+      PERPLEXITY_API_KEY: ${PERPLEXITY_API_KEY:-}
+      SHADOW_LOOM_PROVIDERS: ${SHADOW_LOOM_PROVIDERS:-}
+      DEFAULT_MODEL: ${DEFAULT_MODEL:-ollama:qwen3.6:35b}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      # Optional research provider (off unless explicitly enabled).
+      # Forward TAVILY_API_KEY from the host if set; safe to leave blank.
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      EXTRACTION_ENABLE_RESEARCH_AGENT: ${EXTRACTION_ENABLE_RESEARCH_AGENT:-false}
+      EXTRACTION_RESEARCH_PROVIDER: ${EXTRACTION_RESEARCH_PROVIDER:-none}
+    extra_hosts:
+      # Linux Docker Engine doesn't auto-create host.docker.internal.
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  shadow_loom_pg:

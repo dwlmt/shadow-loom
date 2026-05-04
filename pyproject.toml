@@ -1,0 +1,69 @@
+[project]
+name = "shadow-loom"
+version = "0.1.0"
+description = "Neuro-symbolic causal narrative AI framework."
+readme = "README.md"
+requires-python = ">=3.13"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE", "COPYRIGHT", "COMMERCIAL-LICENSE.md", "CLA.md"]
+authors = [
+    { name = "David Rae Wilmot", email = "david.wilmot@gmail.com" },
+]
+dependencies = [
+    # Core engine
+    "networkx>=3.6.1",
+    "ollama>=0.6.1",
+    "pydantic-ai>=1.84.1",
+    # UI
+    "nicegui>=2.0",
+    "sqlalchemy>=2.0",
+    "sqlmodel>=0.0.22",
+    "psycopg[binary]>=3.2",
+    "authlib>=1.4",
+    "itsdangerous>=2.2",
+    "httpx>=0.28",
+    "langfuse>=2.60.2",
+    # MCP
+    "fastmcp>=3.0",
+]
+
+[project.optional-dependencies]
+# Development tooling — install with: pip install -e ".[dev]"
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.7",
+    "mypy>=1.13",
+]
+
+# Optional external research provider — install with: pip install -e ".[research]"
+# Off by default; required only when ExtractionConfig.enable_research_agent
+# is set and research_provider="tavily". See docs/research-extraction-plan.md.
+research = [
+    "tavily-python>=0.5",
+]
+
+# ─────────────────────────────────────────────────────────────────
+# Build configuration
+# ─────────────────────────────────────────────────────────────────
+# Explicit package list — `sample_plots/` and `example_worlds/` are
+# data directories that look like packages to setuptools' flat-layout
+# auto-discovery, so we name the real Python packages instead.
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = [
+    "shadow_loom",
+    "shadow_loom.prompts",
+    "shadow_loom_ui",
+    "shadow_loom_ui.components",
+    "shadow_loom_mcp",
+    "example_worlds",
+    "sample_plots",
+]
+
+[tool.setuptools.package-data]
+"shadow_loom" = ["prompts/*.md"]
+"sample_plots" = ["*.txt"]

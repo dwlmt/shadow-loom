@@ -1,0 +1,1061 @@
+# SPDX-FileCopyrightText: 2026 David Rae Wilmot
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+"""Death on the Nile — high-fidelity WorldStateV1 test fixture.
+
+Authored against the current ingestion prompts. Demonstrates all five
+CausalEdge modalities, per-axis ``RelationshipMetric``, explicit
+``evidence_strength``, and named-latent WORLD_ traits (Anglo-American
+inherited-money apparatus, the closed-society of a tour steamer,
+gentleman-detective epistemology) wired as common-cause parents over
+the events they jointly drive.
+"""
+from shadow_loom.models import (
+    Channel,
+    WorldStateV1, Location, Entity, EventNode, NarrativeObject,
+    CausalEdge, SpatialEdge, RelationshipEdge, RelationshipMetric, TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
+    GlobalTrait, WorldTraitSnapshot,
+    NarrativeStyle,
+)
+
+world_state = WorldStateV1(
+    narrative_style=NarrativeStyle(
+        format='synopsis',
+        target_word_min=350,
+        target_word_max=1312,
+        prose_density='sparse',
+        voice='synoptic narration; no dialogue; condensed scene description; third-person POV; past tense',
+        style_exemplar='Hercule Poirot is vacationing in Aswan, waiting to board the steamer Karnak, which will tour along the Nile River from Shellal to Wadi Halfa. He is approached by wealthy heiress Linnet Doyle (née Ridgeway), who attempts to hire him. Linnet has recently married Simon Doyle, ex-fiancé of her former friend Jacqueline de Bellefort. Bitterly jealous, Jacqueline has taken to hounding and stalking the couple all throughout their honeymoon.',
+        source_word_count=875,
+    ),
+    # ── LOCATIONS ──────────────────────────────────────────────────────
+    locations={
+        "LOC_ASWAN": Location(
+            name="Cataract Hotel, Aswan",
+            description="The terrace where Poirot is approached by Linnet and tries to dissuade Jacqueline.",
+            ambient_state={
+                "leisure_class_pretension": AmbientVector(value=0.85, volatility=0.2, evidence_strength="strong"),
+            },
+        ),
+        "LOC_KARNAK_LOUNGE": Location(
+            name="S.S. Karnak — Observation Lounge",
+            description="The brightly lit observation lounge where Jacqueline performs her drunken shooting of Simon.",
+            ambient_state={
+                "performed_intimacy": AmbientVector(value=0.7, volatility=0.3, evidence_strength="strong"),
+            },
+        ),
+        "LOC_KARNAK_LINNET_CABIN": Location(
+            name="S.S. Karnak — Linnet's Cabin",
+            description="The owner's cabin where Linnet is shot in her sleep.",
+            ambient_state={
+                "false_security": AmbientVector(value=0.85, volatility=0.2, evidence_strength="strong"),
+            },
+        ),
+        "LOC_KARNAK_BESSNER_CABIN": Location(
+            name="S.S. Karnak — Dr Bessner's Cabin",
+            description="Where Simon is treated for his faked leg wound and remains under Bessner's supposed surveillance.",
+            ambient_state={
+                "alibi_construction": AmbientVector(value=0.85, volatility=0.2, evidence_strength="strong"),
+            },
+        ),
+        "LOC_KARNAK_LOUISE_CABIN": Location(
+            name="S.S. Karnak — Louise Bourget's Cabin",
+            description="The maid's cabin where she is found stabbed.",
+            ambient_state={
+                "service_quarter": AmbientVector(value=0.7, volatility=0.2, evidence_strength="moderate"),
+            },
+        ),
+        "LOC_ABU_SIMBEL": Location(
+            name="Abu Simbel — Cliff Above the Temples",
+            description="The cliff from which a boulder is dislodged at Linnet, the staged 'first attempt'.",
+            ambient_state={
+                "monumental_isolation": AmbientVector(value=0.85, volatility=0.1, evidence_strength="strong"),
+                "physical_danger": AmbientVector(value=0.5, volatility=0.4, evidence_strength="moderate"),
+            },
+        ),
+        "LOC_WADI_HALFA": Location(
+            name="Wadi Halfa Landing",
+            description="The southern turning point where Colonel Race joins the Karnak.",
+            ambient_state={
+                "official_arrival": AmbientVector(value=0.7, volatility=0.2, evidence_strength="moderate"),
+            },
+        ),
+        "LOC_SHELLAL": Location(
+            name="Shellal Quay",
+            description="Where the steamer returns and Jacqueline shoots herself and Simon to escape the gallows.",
+            ambient_state={
+                "official_disembarkation": AmbientVector(value=0.7, volatility=0.3, evidence_strength="strong"),
+            },
+        ),
+    },
+
+    # ── OBJECTS ────────────────────────────────────────────────────────
+    objects={
+        "OBJ_PISTOL_PEARL": NarrativeObject(
+            id="OBJ_PISTOL_PEARL", name="Jacqueline's Pearl-Handled .22 Pistol",
+            location_id="LOC_KARNAK_LOUNGE", owner_id="ENT_JACQUELINE",
+            properties={"state": "two_shots_fired_overall", "later_recovered_from": "the_nile"},
+            affordances=[Affordance(action="kill_owner_or_witness", target_type="Entity")],
+        ),
+        "OBJ_VAN_SCHUYLER_STOLE": NarrativeObject(
+            id="OBJ_VAN_SCHUYLER_STOLE", name="Marie Van Schuyler's Velvet Stole",
+            location_id="LOC_KARNAK_LOUNGE", owner_id="ENT_VAN_SCHUYLER",
+            properties={"state": "powder_burnt", "function": "improvised_silencer"},
+            affordances=[Affordance(action="muffle_pistol", target_type="Entity")],
+        ),
+        "OBJ_RED_INK_BOTTLE": NarrativeObject(
+            id="OBJ_RED_INK_BOTTLE", name="Nail-Polish Bottle of Red Ink",
+            location_id="LOC_KARNAK_LINNET_CABIN", owner_id="ENT_SIMON",
+            properties={"state": "smells_wrong", "actual_contents": "red_ink"},
+            affordances=[Affordance(action="fake_blood", target_type="Entity")],
+        ),
+        "OBJ_REAL_PEARLS": NarrativeObject(
+            id="OBJ_REAL_PEARLS", name="Linnet's Real Pearl Necklace",
+            location_id="LOC_KARNAK_LINNET_CABIN", owner_id="ENT_LINNET",
+            properties={"state": "swapped_for_imitation", "true_holder": "ENT_TIM"},
+            affordances=[Affordance(action="motivate_secondary_theft", target_type="Entity")],
+        ),
+        "OBJ_FAKE_PEARLS": NarrativeObject(
+            id="OBJ_FAKE_PEARLS", name="Imitation Pearl Necklace",
+            location_id="LOC_KARNAK_LINNET_CABIN", owner_id="ENT_LINNET",
+            properties={"state": "stolen_by_van_schuyler"},
+            affordances=[Affordance(action="confound_first_theft_inquiry", target_type="Entity")],
+        ),
+        "OBJ_PENNINGTONS_REVOLVER": NarrativeObject(
+            id="OBJ_PENNINGTONS_REVOLVER", name="Pennington's Revolver",
+            location_id="LOC_KARNAK_LOUNGE", owner_id="ENT_PENNINGTON",
+            properties={"state": "borrowed_for_otterbourne_shooting"},
+            affordances=[Affordance(action="kill_witness", target_type="Entity")],
+        ),
+        "OBJ_BACKUP_PISTOL": NarrativeObject(
+            id="OBJ_BACKUP_PISTOL", name="Jacqueline's Concealed Second Pistol",
+            location_id="LOC_SHELLAL", owner_id="ENT_JACQUELINE",
+            properties={"state": "concealed_until_disembarkation"},
+            affordances=[Affordance(action="suicide_pact", target_type="Entity")],
+        ),
+        "OBJ_TRUSTEE_DOCUMENTS": NarrativeObject(
+            id="OBJ_TRUSTEE_DOCUMENTS", name="Pennington's Trustee Documents",
+            location_id="LOC_KARNAK_LOUNGE", owner_id="ENT_PENNINGTON",
+            properties={"state": "unsigned", "purpose": "exonerate_pennington_of_speculation"},
+            affordances=[Affordance(action="legalise_embezzlement", target_type="Entity")],
+        ),
+    },
+
+    # ── ENTITIES ────────────────────────────────────────────────────────
+    entities={
+        "ENT_POIROT": Entity(
+            id="ENT_POIROT", name="Hercule Poirot",
+            location_id="LOC_ASWAN", status="healthy",
+            traits={
+                "deductive_reason": TraitVector(value=0.95, inertia=0.9, evidence_strength="strong"),
+                "moral_seriousness": TraitVector(value=0.85, inertia=0.85, evidence_strength="strong"),
+                "psychological_intuition": TraitVector(value=0.95, inertia=0.85, evidence_strength="strong"),
+                "tact":            TraitVector(value=0.8, inertia=0.8, evidence_strength="strong"),
+            },
+            beliefs=[
+                Belief(target_id="ENT_JACQUELINE",
+                       perceived_state="dangerous when she opens her heart to evil",
+                       confidence=0.85, inertia=0.7, established_at_fabula=1000, evidence_strength="strong"),
+            ],
+            state_timeline=[
+                EntityStateSnapshot(fabula_time=4000, triggered_by="EVT_BOARD_KARNAK",
+                    location_id="LOC_KARNAK_LOUNGE"),
+                EntityStateSnapshot(fabula_time=11000, triggered_by="EVT_REAL_PEARLS_RECOVERED",
+                    beliefs_added=[
+                        Belief(target_id="ENT_TIM",
+                               perceived_state="professional pearl thief operating throughout Europe",
+                               confidence=0.95, inertia=0.85, established_at_fabula=11000, evidence_strength="strong"),
+                    ]),
+                EntityStateSnapshot(fabula_time=13000, triggered_by="EVT_POIROT_SOLVES",
+                    beliefs_invalidated=["ENT_JACQUELINE"],
+                    beliefs_added=[
+                        Belief(target_id="ENT_SIMON",
+                               perceived_state="actual murderer of Linnet, working in concert with Jacqueline",
+                               confidence=1.0, inertia=0.9, established_at_fabula=13000, evidence_strength="strong"),
+                    ]),
+            ],
+        ),
+        "ENT_LINNET": Entity(
+            id="ENT_LINNET", name="Linnet Doyle (née Ridgeway)",
+            location_id="LOC_ASWAN", status="healthy",
+            traits={
+                "wealth":         TraitVector(value=0.95, inertia=0.9, evidence_strength="strong"),
+                "imperiousness":  TraitVector(value=0.85, inertia=0.85, evidence_strength="strong"),
+                "self_assurance": TraitVector(value=0.85, inertia=0.85, evidence_strength="strong"),
+                "moral_blindness": TraitVector(value=0.7, inertia=0.7, evidence_strength="moderate"),
+            },
+            beliefs=[
+                Belief(target_id="ENT_SIMON",
+                       perceived_state="my devoted husband",
+                       confidence=0.95, inertia=0.7, established_at_fabula=2000, evidence_strength="strong"),
+                Belief(target_id="ENT_PENNINGTON",
+                       perceived_state="my reliable family trustee",
+                       confidence=0.8, inertia=0.7, established_at_fabula=1000, evidence_strength="moderate"),
+            ],
+            state_timeline=[
+                EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_HONEYMOON_STALKING",
+                    traits={
+                        "self_assurance": TraitVector(value=0.75, inertia=0.85, evidence_strength="moderate"),
+                    }),
+                EntityStateSnapshot(fabula_time=4000, triggered_by="EVT_BOARD_KARNAK",
+                    location_id="LOC_KARNAK_LOUNGE"),
+                EntityStateSnapshot(fabula_time=6000, triggered_by="EVT_BOULDER",
+                    traits={
+                        "moral_blindness": TraitVector(value=0.65, inertia=0.70, evidence_strength="moderate"),
+                    }),EntityStateSnapshot(fabula_time=9000, triggered_by="EVT_LINNET_KILLED",
+                    status="dead", location_id="LOC_KARNAK_LINNET_CABIN"),
+                
+            ],
+        ),
+        "ENT_SIMON": Entity(
+            id="ENT_SIMON", name="Simon Doyle",
+            location_id="LOC_ASWAN", status="healthy",
+            traits={
+                "physical_ease":  TraitVector(value=0.85, inertia=0.85, evidence_strength="strong"),
+                "low_cunning":    TraitVector(value=0.7, inertia=0.7, evidence_strength="strong"),
+                "intellectual_dullness": TraitVector(value=0.8, inertia=0.85, evidence_strength="strong"),
+                "greed":          TraitVector(value=0.85, inertia=0.8, evidence_strength="strong"),
+                "loyalty_to_jacqueline": TraitVector(value=0.95, inertia=0.85, evidence_strength="strong"),
+            },
+            beliefs=[
+                Belief(target_id="ENT_JACQUELINE",
+                       perceived_state="my real love and accomplice",
+                       confidence=1.0, inertia=0.9, established_at_fabula=500, evidence_strength="strong"),
+                Belief(target_id="ENT_LINNET",
+                       perceived_state="vain heiress to be murdered for her money",
+                       confidence=0.95, inertia=0.85, established_at_fabula=1000, evidence_strength="strong"),
+            ],
+            state_timeline=[
+                EntityStateSnapshot(fabula_time=500, triggered_by="EVT_LINNET_STEALS_SIMON",
+                    traits={
+                        "greed": TraitVector(value=1.00, inertia=0.80, evidence_strength="moderate"),
+                    }),
+                EntityStateSnapshot(fabula_time=4000, triggered_by="EVT_BOARD_KARNAK",
+                    location_id="LOC_KARNAK_LOUNGE"),
+                EntityStateSnapshot(fabula_time=8500, triggered_by="EVT_FAKE_LEG_WOUND",
+                    status="ill", location_id="LOC_KARNAK_BESSNER_CABIN"),
+                EntityStateSnapshot(fabula_time=9000, triggered_by="EVT_LINNET_KILLED",
+                    traits={
+                        "low_cunning": TraitVector(value=0.85, inertia=0.70, evidence_strength="moderate"),
+                    }),EntityStateSnapshot(fabula_time=14000, triggered_by="EVT_JACQUELINE_SUICIDE_PACT",
+                    status="dead", location_id="LOC_SHELLAL"),
+                
+            ],
+        ),
+        "ENT_JACQUELINE": Entity(
+            id="ENT_JACQUELINE", name="Jacqueline de Bellefort",
+            location_id="LOC_ASWAN", status="healthy",
+            traits={
+                "intelligence":    TraitVector(value=0.9, inertia=0.85, evidence_strength="strong"),
+                "passion":         TraitVector(value=0.95, inertia=0.85, evidence_strength="strong"),
+                "scheming":        TraitVector(value=0.95, inertia=0.85, evidence_strength="strong"),
+                "love_for_simon":  TraitVector(value=1.0, inertia=0.9, evidence_strength="strong"),
+                "performed_grievance": TraitVector(value=0.85, inertia=0.7, evidence_strength="strong"),
+            },
+            beliefs=[
+                Belief(target_id="ENT_SIMON",
+                       perceived_state="he is mine; he never really left me",
+                       confidence=1.0, inertia=0.9, established_at_fabula=500, evidence_strength="strong"),
+            ],
+            state_timeline=[
+                EntityStateSnapshot(fabula_time=500, triggered_by="EVT_LINNET_STEALS_SIMON",
+                    traits={
+                        "performed_grievance": TraitVector(value=1.00, inertia=0.70, evidence_strength="moderate"),
+                    }),
+                EntityStateSnapshot(fabula_time=4000, triggered_by="EVT_BOARD_KARNAK",
+                    location_id="LOC_KARNAK_LOUNGE"),
+                EntityStateSnapshot(fabula_time=8000, triggered_by="EVT_LOUNGE_SHOOTING",
+                    traits={
+                        "performed_grievance": TraitVector(value=1.00, inertia=0.70, evidence_strength="moderate"),
+                    }),
+                EntityStateSnapshot(fabula_time=9500, triggered_by="EVT_LOUISE_KILLED",
+                    location_id="LOC_KARNAK_LOUISE_CABIN"),
+                EntityStateSnapshot(fabula_time=10000, triggered_by="EVT_OTTERBOURNE_KILLED",
+                    traits={
+                        "passion": TraitVector(value=1.00, inertia=0.85, evidence_strength="moderate"),
+                    }),EntityStateSnapshot(fabula_time=14000, triggered_by="EVT_JACQUELINE_SUICIDE_PACT",
+                    status="dead", location_id="LOC_SHELLAL"),
+                
+            ],
+        ),
+        "ENT_RACE": Entity(
+            id="ENT_RACE", name="Colonel Race",
+            location_id="LOC_WADI_HALFA", status="healthy",
+            traits={
+                "official_competence": TraitVector(value=0.85, inertia=0.85, evidence_strength="strong"),
+                "imperial_authority":  TraitVector(value=0.85, inertia=0.85, evidence_strength="strong"),
+            },
+            beliefs=[
+                Belief(target_id="ENT_RICHETTI",
+                       perceived_state="political agitator under archaeologist cover",
+                       confidence=0.85, inertia=0.7, established_at_fabula=6000, evidence_strength="moderate"),
+            ],
+        ),
+        "ENT_LOUISE": Entity(
+            id="ENT_LOUISE", name="Louise Bourget",
+            location_id="LOC_KARNAK_LOUISE_CABIN", status="healthy",
+            traits={
+                "venality":      TraitVector(value=0.7, inertia=0.7, evidence_strength="strong"),
+                "petulance":     TraitVector(value=0.6, inertia=0.6, evidence_strength="moderate"),
+                "service_class_resentment": TraitVector(value=0.7, inertia=0.7, evidence_strength="moderate"),
+            },
+            beliefs=[
+                Belief(target_id="ENT_SIMON",
+                       perceived_state="he entered the cabin; he will pay me to keep silent",
+                       confidence=0.85, inertia=0.5, established_at_fabula=9000, evidence_strength="strong"),
+            ],
+            state_timeline=[
+                EntityStateSnapshot(fabula_time=9500, triggered_by="EVT_LOUISE_KILLED",
+                    status="dead"),
+            ],
+        ),
+        "ENT_PENNINGTON": Entity(
+            id="ENT_PENNINGTON", name="Andrew Pennington",
+            location_id="LOC_ASWAN", status="healthy",
+            traits={
+                "speculative_recklessness": TraitVector(value=0.85, inertia=0.85, evidence_strength="strong"),
+                "respectable_facade":       TraitVector(value=0.85, inertia=0.8, evidence_strength="strong"),
+                "desperation":              TraitVector(value=0.7, inertia=0.65, evidence_strength="strong"),
+            },
+            beliefs=[
+                Belief(target_id="OBJ_TRUSTEE_DOCUMENTS",
+                       perceived_state="must be signed before Linnet examines them",
+                       confidence=0.95, inertia=0.7, established_at_fabula=3000, evidence_strength="strong"),
+            ],
+            state_timeline=[
+                EntityStateSnapshot(fabula_time=6000, triggered_by="EVT_BOULDER",
+                    location_id="LOC_ABU_SIMBEL"),
+            ],
+        ),
+        "ENT_TIM": Entity(
+            id="ENT_TIM", name="Tim Allerton",
+            location_id="LOC_KARNAK_LOUNGE", status="healthy",
+            traits={
+                "charm":                 TraitVector(value=0.85, inertia=0.8, evidence_strength="strong"),
+                "criminal_professionalism": TraitVector(value=0.85, inertia=0.85, evidence_strength="strong"),
+                "filial_devotion":       TraitVector(value=0.7, inertia=0.7, evidence_strength="moderate"),
+            },
+            beliefs=[],
+            state_timeline=[
+                EntityStateSnapshot(fabula_time=11000, triggered_by="EVT_REAL_PEARLS_RECOVERED",
+                    traits={
+                        "criminal_professionalism": TraitVector(value=0.2, inertia=0.5, evidence_strength="strong"),
+                    },
+                    beliefs_added=[
+                        Belief(target_id="ENT_POIROT",
+                               perceived_state="the detective who has exposed me but spared prosecution",
+                               confidence=0.9, inertia=0.7, established_at_fabula=11000, evidence_strength="strong"),
+                    ]),
+            ],
+        ),
+        "ENT_VAN_SCHUYLER": Entity(
+            id="ENT_VAN_SCHUYLER", name="Marie Van Schuyler",
+            location_id="LOC_KARNAK_LOUNGE", status="healthy",
+            traits={
+                "snobbery":      TraitVector(value=0.95, inertia=0.9, evidence_strength="strong"),
+                "kleptomania":   TraitVector(value=0.85, inertia=0.85, evidence_strength="strong"),
+            },
+            beliefs=[],
+        ),
+        "ENT_BOWERS": Entity(
+            id="ENT_BOWERS", name="Miss Bowers",
+            location_id="LOC_KARNAK_LOUNGE", status="healthy",
+            traits={
+                "professional_discretion": TraitVector(value=0.9, inertia=0.85, evidence_strength="strong"),
+                "watchfulness":            TraitVector(value=0.85, inertia=0.8, evidence_strength="strong"),
+            },
+            beliefs=[],
+        ),
+        "ENT_OTTERBOURNE": Entity(
+            id="ENT_OTTERBOURNE", name="Salome Otterbourne",
+            location_id="LOC_KARNAK_LOUNGE", status="healthy",
+            traits={
+                "alcoholism":      TraitVector(value=0.85, inertia=0.85, evidence_strength="strong"),
+                "self_dramatisation": TraitVector(value=0.95, inertia=0.85, evidence_strength="strong"),
+            },
+            beliefs=[],
+            state_timeline=[
+                EntityStateSnapshot(fabula_time=10000, triggered_by="EVT_OTTERBOURNE_KILLED",
+                    status="dead", location_id="LOC_KARNAK_BESSNER_CABIN"),
+            ],
+        ),
+        "ENT_RICHETTI": Entity(
+            id="ENT_RICHETTI", name="Guido Richetti",
+            location_id="LOC_KARNAK_LOUNGE", status="healthy",
+            traits={
+                "political_zeal":   TraitVector(value=0.85, inertia=0.85, evidence_strength="strong"),
+                "academic_cover":   TraitVector(value=0.85, inertia=0.85, evidence_strength="strong"),
+            },
+            beliefs=[],
+            state_timeline=[
+                EntityStateSnapshot(fabula_time=11500, triggered_by="EVT_RACE_IDS_RICHETTI",
+                    traits={
+                        "academic_cover": TraitVector(value=0.1, inertia=0.4, evidence_strength="strong"),
+                    }),
+                EntityStateSnapshot(fabula_time=13800, triggered_by="EVT_ARRESTS",
+                    location_id="LOC_SHELLAL"),
+            ],
+        ),
+        "ENT_BESSNER": Entity(
+            id="ENT_BESSNER", name="Dr Bessner",
+            location_id="LOC_KARNAK_BESSNER_CABIN", status="healthy",
+            traits={
+                "professional_competence": TraitVector(value=0.85, inertia=0.85, evidence_strength="strong"),
+                "credulity_in_a_pinch":    TraitVector(value=0.7, inertia=0.7, evidence_strength="moderate"),
+            },
+            beliefs=[],
+            state_timeline=[
+                EntityStateSnapshot(fabula_time=8300, triggered_by="EVT_FAKE_LEG_WOUND",
+                    location_id="LOC_KARNAK_BESSNER_CABIN",
+                    beliefs_added=[
+                        Belief(target_id="ENT_SIMON",
+                               perceived_state="genuinely wounded patient under my care",
+                               confidence=0.85, inertia=0.6, established_at_fabula=8300, evidence_strength="strong"),
+                    ]),
+                EntityStateSnapshot(fabula_time=13000, triggered_by="EVT_POIROT_SOLVES",
+                    beliefs_invalidated=["ENT_SIMON"]),
+            ],
+        ),
+        "ENT_FANTHORP": Entity(
+            id="ENT_FANTHORP", name="Jim Fanthorp",
+            location_id="LOC_KARNAK_LOUNGE", status="healthy",
+            traits={
+                "professional_caution": TraitVector(value=0.85, inertia=0.85, evidence_strength="strong"),
+            },
+            beliefs=[],
+        ),
+        "ENT_CORNELIA": Entity(
+            id="ENT_CORNELIA", name="Cornelia Robson",
+            location_id="LOC_KARNAK_LOUNGE", status="healthy",
+            traits={
+                "kindness":      TraitVector(value=0.9, inertia=0.85, evidence_strength="strong"),
+                "naivety":       TraitVector(value=0.7, inertia=0.7, evidence_strength="moderate"),
+            },
+            beliefs=[],
+        ),
+    },
+
+    # ── EVENTS ──────────────────────────────────────────────────────────
+    events=[
+        EventNode(id="EVT_LINNET_STEALS_SIMON", fabula_time=500, syuzhet_index=2,
+                  event_type="choice", actor_ids=["ENT_LINNET", "ENT_SIMON"], target_ids=["ENT_JACQUELINE"],
+                  description="Linnet seduces Jacqueline's fiancé Simon away from her and marries him; in fact Simon and Jacqueline have together planned this as cover for Linnet's eventual murder."),
+        EventNode(id="EVT_HONEYMOON_STALKING", fabula_time=1000, syuzhet_index=3,
+                  event_type="choice", actor_ids=["ENT_JACQUELINE"], target_ids=["ENT_LINNET", "ENT_SIMON"],
+                  description="Jacqueline conspicuously follows the Doyles' honeymoon to plant the public motive that will mask her conspiracy with Simon."),
+        EventNode(id="EVT_POIROT_REFUSES_LINNET", fabula_time=2000, syuzhet_index=1,
+                  event_type="choice", actor_ids=["ENT_POIROT"], target_ids=["ENT_LINNET"],
+                  description="In Aswan, Poirot refuses to be hired to deal with Jacqueline; he privately warns Jacqueline against opening her heart to evil."),
+        EventNode(id="EVT_BOARD_KARNAK", fabula_time=4000, syuzhet_index=4,
+                  event_type="choice", actor_ids=["ENT_LINNET", "ENT_SIMON"], target_ids=[],
+                  description="The Doyles secretly board the Karnak to escape Jacqueline, who has anticipated and forestalled them."),
+        EventNode(id="EVT_BOULDER", fabula_time=6000, syuzhet_index=5,
+                  event_type="choice", actor_ids=["ENT_PENNINGTON"], target_ids=["ENT_LINNET"],
+                  description="At Abu Simbel a boulder is dislodged and nearly crushes Linnet — an independent attempt by Pennington that will later muddy the inquiry."),
+        EventNode(id="EVT_RACE_BOARDS", fabula_time=7000, syuzhet_index=6,
+                  event_type="choice", actor_ids=["ENT_RACE"], target_ids=["ENT_RICHETTI"],
+                  description="At Wadi Halfa Colonel Race boards in pursuit of an unidentified political agitator among the passengers."),
+        EventNode(id="EVT_LOUNGE_SHOOTING", fabula_time=8000, syuzhet_index=7,
+                  event_type="choice", actor_ids=["ENT_JACQUELINE", "ENT_SIMON"], target_ids=["ENT_SIMON"],
+                  description="In the lounge Jacqueline drunkenly fires her pistol at Simon and grazes him; she becomes hysterical and is led away by Cornelia, while Fanthorp finds the dropped pistol — only later to discover it gone."),
+        EventNode(id="EVT_FAKE_LEG_WOUND", fabula_time=8300, syuzhet_index=8,
+                  event_type="choice", actor_ids=["ENT_SIMON"], target_ids=["ENT_BESSNER"],
+                  description="Simon, with his pre-prepared red-ink wound, is carried to Dr Bessner's cabin where he establishes his alibi."),
+        EventNode(id="EVT_LINNET_KILLED", fabula_time=9000, syuzhet_index=9,
+                  event_type="outcome", actor_ids=["ENT_SIMON"], target_ids=["ENT_LINNET"],
+                  description="Slipping from the lounge between the two stagings, Simon enters Linnet's cabin and shoots her in the temple, then plants the red-ink bottle on the washstand."),
+        EventNode(id="EVT_PISTOL_THROWN", fabula_time=9200, syuzhet_index=10,
+                  event_type="choice", actor_ids=["ENT_SIMON"], target_ids=["ENT_JACQUELINE"],
+                  description="Simon wraps the pistol in Van Schuyler's stole as a silencer, fires the second shot into his own leg in the lounge, and throws the wrapped weapon overboard."),
+        EventNode(id="EVT_LOUISE_BLACKMAILS", fabula_time=9400, syuzhet_index=11,
+                  event_type="choice", actor_ids=["ENT_LOUISE"], target_ids=["ENT_SIMON"],
+                  description="Interviewed by Poirot in Bessner's cabin, Louise drops calculated hints meant for Simon: she saw him enter the cabin and proposes to be paid for her silence."),
+        EventNode(id="EVT_LOUISE_KILLED", fabula_time=9500, syuzhet_index=12,
+                  event_type="outcome", actor_ids=["ENT_JACQUELINE"], target_ids=["ENT_LOUISE"],
+                  description="Sent by Simon, Jacqueline stabs Louise to death in her cabin with a scalpel."),
+        EventNode(id="EVT_PEARLS_RETURNED", fabula_time=9700, syuzhet_index=13,
+                  event_type="revelation", actor_ids=["ENT_BOWERS"], target_ids=["ENT_POIROT"],
+                  description="Miss Bowers quietly returns the pearls Van Schuyler stole; Poirot recognises them as imitation."),
+        EventNode(id="EVT_OTTERBOURNE_KILLED", fabula_time=10000, syuzhet_index=14,
+                  event_type="outcome", actor_ids=["ENT_JACQUELINE"], target_ids=["ENT_OTTERBOURNE"],
+                  description="Otterbourne, claiming to have seen Jacqueline enter Louise's cabin, comes to Bessner's room to denounce her; alerted by Simon's raised voice, Jacqueline shoots her dead from outside the door using Pennington's borrowed revolver."),
+        EventNode(id="EVT_PENNINGTON_CONFRONTED", fabula_time=10800, syuzhet_index=15,
+                  event_type="revelation", actor_ids=["ENT_POIROT"], target_ids=["ENT_PENNINGTON"],
+                  description="Poirot extracts from Pennington the truth about the boulder, the speculation, and the trustee documents — but believes him innocent of the murders themselves."),
+        EventNode(id="EVT_REAL_PEARLS_RECOVERED", fabula_time=11000, syuzhet_index=16,
+                  event_type="revelation", actor_ids=["ENT_POIROT"], target_ids=["ENT_TIM"],
+                  description="Poirot recovers the real pearls from Tim Allerton, exposing him as a professional thief who substituted the imitation."),
+        EventNode(id="EVT_RACE_IDS_RICHETTI", fabula_time=11500, syuzhet_index=17,
+                  event_type="revelation", actor_ids=["ENT_RACE"], target_ids=["ENT_RICHETTI"],
+                  description="Race confirms Richetti is the political agitator he was sent to take."),
+        EventNode(id="EVT_POIROT_SOLVES", fabula_time=13000, syuzhet_index=18,
+                  event_type="revelation", actor_ids=["ENT_POIROT"], target_ids=["ENT_SIMON", "ENT_JACQUELINE"],
+                  description="Poirot lays out to Race, Bessner and Cornelia the conspiracy: Simon and Jacqueline are the murderers; Simon confesses."),
+        EventNode(id="EVT_ARRESTS", fabula_time=13800, syuzhet_index=19,
+                  event_type="outcome", actor_ids=["ENT_RACE"], target_ids=["ENT_SIMON", "ENT_JACQUELINE", "ENT_RICHETTI"],
+                  description="Simon, Jacqueline and Richetti are placed under arrest pending disembarkation at Shellal."),
+        EventNode(id="EVT_JACQUELINE_SUICIDE_PACT", fabula_time=14000, syuzhet_index=20,
+                  event_type="choice", actor_ids=["ENT_JACQUELINE"], target_ids=["ENT_SIMON", "ENT_JACQUELINE"],
+                  description="At Shellal Jacqueline shoots Simon and then herself with the second pistol Poirot had let her keep."),
+
+        # ── Utterance events (on-page speech-acts) ───────────────────────
+        EventNode(
+            id="EVT_UTT_LINNET_HIRES_POIROT", event_type="utterance",
+            speaker_id="ENT_LINNET", addressee_ids=["ENT_POIROT"],
+            actor_ids=["ENT_LINNET"], target_ids=["EVT_HONEYMOON_STALKING", "ENT_JACQUELINE"],
+            description="Linnet appeals to Poirot on the Aswan terrace to take a commission against Jacqueline.",
+            content="Jacqueline is following us everywhere — would you, Monsieur Poirot, undertake to make her stop?",
+            via_channel_id=None, truth_value="true",
+            fabula_time=1500, syuzhet_index=21,
+        ),
+        EventNode(
+            id="EVT_UTT_POIROT_WARNS_JACQUELINE", event_type="utterance",
+            speaker_id="ENT_POIROT", addressee_ids=["ENT_JACQUELINE"],
+            actor_ids=["ENT_POIROT"], target_ids=["ENT_JACQUELINE"],
+            description="Poirot privately begs Jacqueline not to open her heart to evil.",
+            content="Mademoiselle, do not open your heart to evil — for if you do, evil will come.",
+            via_channel_id=None, truth_value="performative",
+            fabula_time=2000, syuzhet_index=22,
+        ),
+        EventNode(
+            id="EVT_UTT_RACE_BRIEFS_POIROT_AGITATOR", event_type="utterance",
+            speaker_id="ENT_RACE", addressee_ids=["ENT_POIROT"],
+            actor_ids=["ENT_RACE"], target_ids=["ENT_RICHETTI"],
+            description="On boarding at Wadi Halfa, Race tells Poirot that a wanted political agitator is among the passengers.",
+            content="One of your fellow passengers is the agitator I've been chasing — I need your eyes as well as mine.",
+            via_channel_id=None, truth_value="true",
+            fabula_time=7000, syuzhet_index=23,
+        ),
+        EventNode(
+            id="EVT_UTT_JACQUELINE_DRUNK_OUTBURST", event_type="utterance",
+            speaker_id="ENT_JACQUELINE",
+            addressee_ids=["ENT_SIMON", "ENT_FANTHORP", "ENT_CORNELIA"],
+            actor_ids=["ENT_JACQUELINE"], target_ids=["ENT_SIMON", "EVT_LOUNGE_SHOOTING"],
+            description="In the Karnak lounge a drunken-seeming Jacqueline screams at Simon before firing — the public face of the conspirators' alibi script.",
+            content="You ruined my life, Simon Doyle — I told you what I'd do!",
+            via_channel_id="CHN_SIMON_JACQUELINE_PLOT", truth_value="performative",
+            fabula_time=8000, syuzhet_index=24,
+        ),
+        EventNode(
+            id="EVT_UTT_LOUISE_HINTS_BLACKMAIL", event_type="utterance",
+            speaker_id="ENT_LOUISE", addressee_ids=["ENT_POIROT", "ENT_RACE", "ENT_SIMON"],
+            actor_ids=["ENT_LOUISE"], target_ids=["EVT_LINNET_KILLED", "ENT_SIMON"],
+            description="Interviewed in Bessner's cabin, Louise obliquely hints to Poirot that she saw something incriminating — addressed in Simon's hearing as a covert demand for payment.",
+            content="If, naturellement, I had been unable to sleep — if I had gone up on deck — I might have seen the assassin enter or leave the cabin... but as it is, I saw nothing.",
+            via_channel_id=None, truth_value="false",
+            fabula_time=9400, syuzhet_index=25,
+        ),
+        EventNode(
+            id="EVT_UTT_BOWERS_RETURNS_PEARLS", event_type="utterance",
+            speaker_id="ENT_BOWERS", addressee_ids=["ENT_POIROT"],
+            actor_ids=["ENT_BOWERS"], target_ids=["OBJ_FAKE_PEARLS", "ENT_VAN_SCHUYLER"],
+            description="Discreetly, Bowers returns the pearls Miss Van Schuyler had stolen, explaining the kleptomania.",
+            content="My patient took these in one of her spells — I beg you keep it confidential.",
+            via_channel_id=None, truth_value="true",
+            fabula_time=9700, syuzhet_index=26,
+        ),
+        EventNode(
+            id="EVT_UTT_OTTERBOURNE_DENUNCIATION", event_type="utterance",
+            speaker_id="ENT_OTTERBOURNE",
+            addressee_ids=["ENT_POIROT", "ENT_RACE", "ENT_SIMON"],
+            actor_ids=["ENT_OTTERBOURNE"], target_ids=["EVT_LOUISE_KILLED"],
+            description="Otterbourne barges into Bessner's cabin claiming she saw who entered Louise's cabin and stabbed her.",
+            content="I saw with my own eyes who went into that cabin — the murderer is...",
+            via_channel_id=None, truth_value="true",
+            fabula_time=10000, syuzhet_index=27,
+        ),
+        EventNode(
+            id="EVT_UTT_SIMON_LOUD_SIGNAL", event_type="utterance",
+            speaker_id="ENT_SIMON", addressee_ids=["ENT_JACQUELINE"],
+            actor_ids=["ENT_SIMON"], target_ids=["EVT_OTTERBOURNE_KILLED", "ENT_OTTERBOURNE"],
+            description="Simon's loud, theatrical exclamation of surprise carries through the door — the pre-arranged covert cue for Jacqueline to fire on Otterbourne.",
+            content="WHAT?! You actually saw the killer?",
+            via_channel_id="CHN_SIMON_JACQUELINE_PLOT", truth_value="performative",
+            fabula_time=10000, syuzhet_index=28,
+        ),
+        EventNode(
+            id="EVT_UTT_POIROT_REVEALS_SOLUTION", event_type="utterance",
+            speaker_id="ENT_POIROT",
+            addressee_ids=["ENT_RACE", "ENT_BESSNER", "ENT_CORNELIA"],
+            actor_ids=["ENT_POIROT"],
+            target_ids=["EVT_LINNET_KILLED", "ENT_SIMON", "ENT_JACQUELINE"],
+            description="Poirot lays out the conspiracy aloud to Race, Bessner and Cornelia.",
+            content="Mes amis — Madame Doyle was killed by her husband, and the whole plan was Mademoiselle de Bellefort's.",
+            via_channel_id=None, truth_value="true",
+            fabula_time=13000, syuzhet_index=29,
+        ),
+        EventNode(
+            id="EVT_UTT_SIMON_CONFESSES", event_type="utterance",
+            speaker_id="ENT_SIMON", addressee_ids=["ENT_POIROT", "ENT_RACE"],
+            actor_ids=["ENT_SIMON"],
+            target_ids=["EVT_LINNET_KILLED", "EVT_FAKE_LEG_WOUND", "ENT_JACQUELINE"],
+            description="Confronted with Poirot's reconstruction, Simon breaks down and confesses.",
+            content="All right, all right — yes, I shot her. Jackie planned every step. Don't let them hang Jackie.",
+            via_channel_id=None, truth_value="true",
+            fabula_time=13200, syuzhet_index=30,
+        ),
+    ],
+
+    # ── CAUSAL TOPOLOGY ────────────────────────────────────────────────
+    causal_topology=[
+        # ── chain_reaction ──
+        CausalEdge(source_id="EVT_LINNET_STEALS_SIMON", target_id="EVT_HONEYMOON_STALKING",
+                   causality_type="chain_reaction", mechanism="psychological", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=500, propagation_delay=500),
+        CausalEdge(source_id="EVT_HONEYMOON_STALKING", target_id="EVT_BOARD_KARNAK",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=1000, propagation_delay=3000),
+        CausalEdge(source_id="EVT_HONEYMOON_STALKING", target_id="EVT_POIROT_REFUSES_LINNET",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=1000, propagation_delay=1000),
+        CausalEdge(source_id="EVT_BOARD_KARNAK", target_id="EVT_BOULDER",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=4000, propagation_delay=2000),
+        CausalEdge(source_id="EVT_BOARD_KARNAK", target_id="EVT_LOUNGE_SHOOTING",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=4000, propagation_delay=4000),
+        CausalEdge(source_id="EVT_LOUNGE_SHOOTING", target_id="EVT_FAKE_LEG_WOUND",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=8000, propagation_delay=300),
+        CausalEdge(source_id="EVT_FAKE_LEG_WOUND", target_id="EVT_LINNET_KILLED",
+                   causality_type="chain_reaction", mechanism="psychological", evidence_strength="strong",
+                   causal_force=10.0, fabula_time=8300, propagation_delay=700),
+        CausalEdge(source_id="EVT_LINNET_KILLED", target_id="EVT_PISTOL_THROWN",
+                   causality_type="chain_reaction", mechanism="physical", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=9000, propagation_delay=200),
+        CausalEdge(source_id="EVT_LINNET_KILLED", target_id="EVT_LOUISE_BLACKMAILS",
+                   causality_type="chain_reaction", mechanism="informational", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=9000, propagation_delay=400),
+        CausalEdge(source_id="EVT_LOUISE_BLACKMAILS", target_id="EVT_LOUISE_KILLED",
+                   causality_type="chain_reaction", mechanism="psychological", evidence_strength="strong",
+                   causal_force=10.0, fabula_time=9400, propagation_delay=100),
+        CausalEdge(source_id="EVT_LOUISE_KILLED", target_id="EVT_OTTERBOURNE_KILLED",
+                   causality_type="chain_reaction", mechanism="informational", evidence_strength="strong",
+                   causal_force=9.0, fabula_time=9500, propagation_delay=500),
+        CausalEdge(source_id="EVT_BOULDER", target_id="EVT_PENNINGTON_CONFRONTED",
+                   causality_type="chain_reaction", mechanism="informational", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=6000, propagation_delay=4800),
+        CausalEdge(source_id="EVT_PEARLS_RETURNED", target_id="EVT_REAL_PEARLS_RECOVERED",
+                   causality_type="chain_reaction", mechanism="informational", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=9700, propagation_delay=1300),
+        CausalEdge(source_id="EVT_RACE_BOARDS", target_id="EVT_RACE_IDS_RICHETTI",
+                   causality_type="chain_reaction", mechanism="informational", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=7000, propagation_delay=4500),
+        CausalEdge(source_id="EVT_OTTERBOURNE_KILLED", target_id="EVT_POIROT_SOLVES",
+                   causality_type="chain_reaction", mechanism="epistemic", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=10000, propagation_delay=3000),
+        CausalEdge(source_id="EVT_PENNINGTON_CONFRONTED", target_id="EVT_POIROT_SOLVES",
+                   causality_type="chain_reaction", mechanism="epistemic", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=10800, propagation_delay=2200),
+        CausalEdge(source_id="EVT_POIROT_SOLVES", target_id="EVT_ARRESTS",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=13000, propagation_delay=800),
+        CausalEdge(source_id="EVT_ARRESTS", target_id="EVT_JACQUELINE_SUICIDE_PACT",
+                   causality_type="chain_reaction", mechanism="psychological", evidence_strength="strong",
+                   causal_force=10.0, fabula_time=13800, propagation_delay=200),
+        CausalEdge(source_id="EVT_LOUNGE_SHOOTING", target_id="EVT_LINNET_KILLED",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=9.0, fabula_time=8000, propagation_delay=1000),
+
+        # ── mutation ──
+        CausalEdge(source_id="EVT_LINNET_STEALS_SIMON", target_id="ENT_JACQUELINE",
+                   causality_type="mutation", mechanism="psychological", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=500,
+                   trait_target="performed_grievance", trait_delta=0.6),
+        CausalEdge(source_id="EVT_LINNET_STEALS_SIMON", target_id="ENT_SIMON",
+                   causality_type="mutation", mechanism="psychological", evidence_strength="strong",
+                   causal_force=7.0, fabula_time=500,
+                   trait_target="greed", trait_delta=0.2),
+        CausalEdge(source_id="EVT_HONEYMOON_STALKING", target_id="ENT_LINNET",
+                   causality_type="mutation", mechanism="psychological", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=1000,
+                   trait_target="self_assurance", trait_delta=-0.1),
+        CausalEdge(source_id="EVT_BOULDER", target_id="ENT_LINNET",
+                   causality_type="mutation", mechanism="psychological", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=6000,
+                   trait_target="moral_blindness", trait_delta=-0.05),
+        CausalEdge(source_id="EVT_BOULDER", target_id="ENT_PENNINGTON",
+                   causality_type="mutation", mechanism="psychological", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=6000,
+                   trait_target="desperation", trait_delta=0.2),
+        CausalEdge(source_id="EVT_LOUNGE_SHOOTING", target_id="ENT_JACQUELINE",
+                   causality_type="mutation", mechanism="psychological", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=8000,
+                   trait_target="performed_grievance", trait_delta=0.2),
+        CausalEdge(source_id="EVT_LINNET_KILLED", target_id="ENT_SIMON",
+                   causality_type="mutation", mechanism="psychological", evidence_strength="strong",
+                   causal_force=7.0, fabula_time=9000,
+                   trait_target="low_cunning", trait_delta=0.15),
+        CausalEdge(source_id="EVT_LOUISE_KILLED", target_id="ENT_JACQUELINE",
+                   causality_type="mutation", mechanism="psychological", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=9500,
+                   trait_target="scheming", trait_delta=0.05),
+        CausalEdge(source_id="EVT_OTTERBOURNE_KILLED", target_id="ENT_JACQUELINE",
+                   causality_type="mutation", mechanism="psychological", evidence_strength="strong",
+                   causal_force=9.0, fabula_time=10000,
+                   trait_target="passion", trait_delta=0.05),
+        CausalEdge(source_id="EVT_POIROT_SOLVES", target_id="ENT_POIROT",
+                   causality_type="mutation", mechanism="epistemic", evidence_strength="strong",
+                   causal_force=4.0, fabula_time=13000,
+                   trait_target="moral_seriousness", trait_delta=0.1),
+        CausalEdge(source_id="EVT_JACQUELINE_SUICIDE_PACT", target_id="ENT_JACQUELINE",
+                   causality_type="mutation", mechanism="psychological", evidence_strength="strong",
+                   causal_force=10.0, fabula_time=14000,
+                   trait_target="love_for_simon", trait_delta=0.0),
+
+        # ── mutation_social ──
+        CausalEdge(source_id="EVT_LINNET_STEALS_SIMON", target_id="ENT_JACQUELINE",
+                   causality_type="mutation_social", mechanism="betrayal", evidence_strength="strong",
+                   causal_force=10.0, fabula_time=500,
+                   trait_target="affinity", trait_delta=-0.95, rel_counterpart_id="ENT_LINNET"),
+        CausalEdge(source_id="EVT_HONEYMOON_STALKING", target_id="ENT_LINNET",
+                   causality_type="mutation_social", mechanism="psychological", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=1000,
+                   trait_target="fear", trait_delta=0.5, rel_counterpart_id="ENT_JACQUELINE"),
+        CausalEdge(source_id="EVT_LOUNGE_SHOOTING", target_id="ENT_SIMON",
+                   causality_type="mutation_social", mechanism="emotional", evidence_strength="strong",
+                   causal_force=4.0, fabula_time=8000,
+                   trait_target="affinity", trait_delta=0.05, rel_counterpart_id="ENT_JACQUELINE"),
+        CausalEdge(source_id="EVT_LOUISE_BLACKMAILS", target_id="ENT_SIMON",
+                   causality_type="mutation_social", mechanism="betrayal", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=9400,
+                   trait_target="affinity", trait_delta=-0.95, rel_counterpart_id="ENT_LOUISE"),
+        CausalEdge(source_id="EVT_LOUISE_KILLED", target_id="ENT_JACQUELINE",
+                   causality_type="mutation_social", mechanism="emotional", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=9500,
+                   trait_target="affinity", trait_delta=0.1, rel_counterpart_id="ENT_SIMON"),
+        CausalEdge(source_id="EVT_POIROT_SOLVES", target_id="ENT_POIROT",
+                   causality_type="mutation_social", mechanism="epistemic", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=13000,
+                   trait_target="affinity", trait_delta=-0.85, rel_counterpart_id="ENT_SIMON"),
+        CausalEdge(source_id="EVT_ARRESTS", target_id="ENT_JACQUELINE",
+                   causality_type="mutation_social", mechanism="social", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=13800,
+                   trait_target="power_dynamic", trait_delta=-0.6, rel_counterpart_id="ENT_RACE"),
+
+        # ── affordance_gate ──
+        CausalEdge(source_id="OBJ_PISTOL_PEARL", target_id="EVT_LOUNGE_SHOOTING",
+                   causality_type="affordance_gate", mechanism="physical", evidence_strength="strong",
+                   causal_force=10.0, fabula_time=8000),
+        CausalEdge(source_id="OBJ_PISTOL_PEARL", target_id="EVT_LINNET_KILLED",
+                   causality_type="affordance_gate", mechanism="physical", evidence_strength="strong",
+                   causal_force=10.0, fabula_time=9000),
+        CausalEdge(source_id="OBJ_VAN_SCHUYLER_STOLE", target_id="EVT_PISTOL_THROWN",
+                   causality_type="affordance_gate", mechanism="physical", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=9200),
+        CausalEdge(source_id="OBJ_RED_INK_BOTTLE", target_id="EVT_FAKE_LEG_WOUND",
+                   causality_type="affordance_gate", mechanism="physical", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=8300),
+        CausalEdge(source_id="OBJ_PENNINGTONS_REVOLVER", target_id="EVT_OTTERBOURNE_KILLED",
+                   causality_type="affordance_gate", mechanism="physical", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=10000),
+        CausalEdge(source_id="OBJ_BACKUP_PISTOL", target_id="EVT_JACQUELINE_SUICIDE_PACT",
+                   causality_type="affordance_gate", mechanism="physical", evidence_strength="strong",
+                   causal_force=10.0, fabula_time=14000),
+        CausalEdge(source_id="OBJ_REAL_PEARLS", target_id="EVT_REAL_PEARLS_RECOVERED",
+                   causality_type="affordance_gate", mechanism="informational", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=11000),
+        CausalEdge(source_id="OBJ_TRUSTEE_DOCUMENTS", target_id="EVT_BOULDER",
+                   causality_type="affordance_gate", mechanism="social", evidence_strength="strong",
+                   causal_force=7.0, fabula_time=6000),
+
+        # ── ambient_propagation ──
+        CausalEdge(source_id="LOC_KARNAK_LOUNGE", target_id="ENT_JACQUELINE",
+                   causality_type="ambient_propagation", mechanism="psychological", evidence_strength="strong",
+                   causal_force=4.0, fabula_time=8000),
+        CausalEdge(source_id="LOC_KARNAK_BESSNER_CABIN", target_id="ENT_SIMON",
+                   causality_type="ambient_propagation", mechanism="social", evidence_strength="strong",
+                   causal_force=4.0, fabula_time=8300),
+        CausalEdge(source_id="LOC_ABU_SIMBEL", target_id="ENT_PENNINGTON",
+                   causality_type="ambient_propagation", mechanism="psychological", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=6000),
+
+        # ── WORLD_ → Event ──
+        CausalEdge(source_id="WORLD_INHERITED_MONEY", target_id="EVT_LINNET_STEALS_SIMON",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=500),
+        CausalEdge(source_id="WORLD_INHERITED_MONEY", target_id="EVT_LINNET_KILLED",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=7.0, fabula_time=9000),
+        CausalEdge(source_id="WORLD_INHERITED_MONEY", target_id="EVT_BOULDER",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=6000),
+        CausalEdge(source_id="WORLD_INHERITED_MONEY", target_id="EVT_PENNINGTON_CONFRONTED",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=10800),
+        CausalEdge(source_id="WORLD_CLOSED_SOCIETY", target_id="EVT_LOUNGE_SHOOTING",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=8000),
+        CausalEdge(source_id="WORLD_CLOSED_SOCIETY", target_id="EVT_LOUISE_BLACKMAILS",
+                   causality_type="chain_reaction", mechanism="informational", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=9400),
+        CausalEdge(source_id="WORLD_CLOSED_SOCIETY", target_id="EVT_OTTERBOURNE_KILLED",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=10000),
+        CausalEdge(source_id="WORLD_DETECTIVE_EPISTEMOLOGY", target_id="EVT_POIROT_REFUSES_LINNET",
+                   causality_type="chain_reaction", mechanism="epistemic", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=2000),
+        CausalEdge(source_id="WORLD_DETECTIVE_EPISTEMOLOGY", target_id="EVT_PEARLS_RETURNED",
+                   causality_type="chain_reaction", mechanism="epistemic", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=9700),
+        CausalEdge(source_id="WORLD_DETECTIVE_EPISTEMOLOGY", target_id="EVT_POIROT_SOLVES",
+                   causality_type="chain_reaction", mechanism="epistemic", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=13000),
+
+        # ── orphan utterance wirings ──
+        CausalEdge(source_id="EVT_HONEYMOON_STALKING", target_id="EVT_UTT_LINNET_HIRES_POIROT",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=1000, propagation_delay=500),
+        CausalEdge(source_id="EVT_UTT_LINNET_HIRES_POIROT", target_id="EVT_POIROT_REFUSES_LINNET",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=1500, propagation_delay=500),
+        CausalEdge(source_id="EVT_POIROT_REFUSES_LINNET", target_id="EVT_UTT_POIROT_WARNS_JACQUELINE",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_RACE_BRIEFS_POIROT_AGITATOR", target_id="EVT_RACE_IDS_RICHETTI",
+                   causality_type="chain_reaction", mechanism="informational", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=7000, propagation_delay=4500),
+        CausalEdge(source_id="EVT_UTT_JACQUELINE_DRUNK_OUTBURST", target_id="EVT_LOUNGE_SHOOTING",
+                   causality_type="chain_reaction", mechanism="emotional", evidence_strength="strong",
+                   causal_force=7.0, fabula_time=8000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_LOUISE_HINTS_BLACKMAIL", target_id="EVT_LOUISE_KILLED",
+                   causality_type="chain_reaction", mechanism="performative", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=9400, propagation_delay=100),
+        CausalEdge(source_id="EVT_UTT_BOWERS_RETURNS_PEARLS", target_id="EVT_REAL_PEARLS_RECOVERED",
+                   causality_type="chain_reaction", mechanism="informational", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=9700, propagation_delay=1300),
+        CausalEdge(source_id="EVT_UTT_OTTERBOURNE_DENUNCIATION", target_id="EVT_UTT_SIMON_LOUD_SIGNAL",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=10000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_SIMON_LOUD_SIGNAL", target_id="EVT_OTTERBOURNE_KILLED",
+                   causality_type="chain_reaction", mechanism="performative", evidence_strength="strong",
+                   causal_force=10.0, fabula_time=10000, propagation_delay=0),
+        CausalEdge(source_id="EVT_POIROT_SOLVES", target_id="EVT_UTT_POIROT_REVEALS_SOLUTION",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=13000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_POIROT_REVEALS_SOLUTION", target_id="EVT_UTT_SIMON_CONFESSES",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=13000, propagation_delay=200),
+        CausalEdge(source_id="EVT_UTT_SIMON_CONFESSES", target_id="EVT_ARRESTS",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=13200, propagation_delay=600),
+
+        # ─── auto-patched mutation_social edges (per-axis coverage) ───
+        CausalEdge(source_id="EVT_LINNET_STEALS_SIMON", target_id="ENT_SIMON", rel_counterpart_id="ENT_LINNET", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.85, mechanism="betrayal", evidence_strength="strong", causal_force=9.0, fabula_time=500, propagation_delay=0),
+        CausalEdge(source_id="EVT_HONEYMOON_STALKING", target_id="ENT_SIMON", rel_counterpart_id="ENT_LINNET", causality_type="mutation_social", trait_target="affinity", trait_delta=0.0, mechanism="psychological", evidence_strength="strong", causal_force=5.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_BOARD_KARNAK", target_id="ENT_SIMON", rel_counterpart_id="ENT_LINNET", causality_type="mutation_social", trait_target="affinity", trait_delta=0.0, mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=4000, propagation_delay=0),
+        CausalEdge(source_id="EVT_LINNET_KILLED", target_id="ENT_SIMON", rel_counterpart_id="ENT_LINNET", causality_type="mutation_social", trait_target="affinity", trait_delta=0.0, mechanism="betrayal", evidence_strength="strong", causal_force=10.0, fabula_time=9000, propagation_delay=0),
+        CausalEdge(source_id="EVT_LINNET_STEALS_SIMON", target_id="ENT_LINNET", rel_counterpart_id="ENT_SIMON", causality_type="mutation_social", trait_target="affinity", trait_delta=0.85, mechanism="emotional", evidence_strength="strong", causal_force=8.0, fabula_time=500, propagation_delay=0),
+        CausalEdge(source_id="EVT_HONEYMOON_STALKING", target_id="ENT_LINNET", rel_counterpart_id="ENT_SIMON", causality_type="mutation_social", trait_target="affinity", trait_delta=0.0, mechanism="emotional", evidence_strength="strong", causal_force=6.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_BOARD_KARNAK", target_id="ENT_LINNET", rel_counterpart_id="ENT_SIMON", causality_type="mutation_social", trait_target="affinity", trait_delta=0.0, mechanism="emotional", evidence_strength="strong", causal_force=5.0, fabula_time=4000, propagation_delay=0),
+        CausalEdge(source_id="EVT_LINNET_STEALS_SIMON", target_id="ENT_LINNET", rel_counterpart_id="ENT_JACQUELINE", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.7, mechanism="betrayal", evidence_strength="strong", causal_force=7.0, fabula_time=500, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_LINNET_HIRES_POIROT", target_id="ENT_LINNET", rel_counterpart_id="ENT_JACQUELINE", causality_type="mutation_social", trait_target="affinity", trait_delta=0.0, mechanism="psychological", evidence_strength="strong", causal_force=6.0, fabula_time=1500, propagation_delay=0),
+        CausalEdge(source_id="EVT_BOULDER", target_id="ENT_PENNINGTON", rel_counterpart_id="ENT_LINNET", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.4, mechanism="betrayal", evidence_strength="moderate", causal_force=7.0, fabula_time=6000, propagation_delay=0),
+        CausalEdge(source_id="EVT_LOUISE_BLACKMAILS", target_id="ENT_LOUISE", rel_counterpart_id="ENT_SIMON", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.5, mechanism="betrayal", evidence_strength="strong", causal_force=8.0, fabula_time=9400, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_LOUISE_HINTS_BLACKMAIL", target_id="ENT_LOUISE", rel_counterpart_id="ENT_SIMON", causality_type="mutation_social", trait_target="affinity", trait_delta=0.0, mechanism="informational", evidence_strength="strong", causal_force=7.0, fabula_time=9400, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_RACE_BRIEFS_POIROT_AGITATOR", target_id="ENT_POIROT", rel_counterpart_id="ENT_RACE", causality_type="mutation_social", trait_target="affinity", trait_delta=0.0, mechanism="social", evidence_strength="strong", causal_force=6.0, fabula_time=7000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_POIROT_REVEALS_SOLUTION", target_id="ENT_POIROT", rel_counterpart_id="ENT_RACE", causality_type="mutation_social", trait_target="affinity", trait_delta=0.0, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=13000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_RACE_BRIEFS_POIROT_AGITATOR", target_id="ENT_RACE", rel_counterpart_id="ENT_POIROT", causality_type="mutation_social", trait_target="affinity", trait_delta=0.0, mechanism="social", evidence_strength="strong", causal_force=6.0, fabula_time=7000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_POIROT_REVEALS_SOLUTION", target_id="ENT_RACE", rel_counterpart_id="ENT_POIROT", causality_type="mutation_social", trait_target="affinity", trait_delta=0.0, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=13000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_POIROT_WARNS_JACQUELINE", target_id="ENT_POIROT", rel_counterpart_id="ENT_JACQUELINE", causality_type="mutation_social", trait_target="affinity", trait_delta=0.4, mechanism="emotional", evidence_strength="strong", causal_force=6.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_POIROT_SOLVES", target_id="ENT_POIROT", rel_counterpart_id="ENT_JACQUELINE", causality_type="mutation_social", trait_target="affinity", trait_delta=0.0, mechanism="epistemic", evidence_strength="strong", causal_force=5.0, fabula_time=13000, propagation_delay=0),
+        CausalEdge(source_id="EVT_JACQUELINE_SUICIDE_PACT", target_id="ENT_POIROT", rel_counterpart_id="ENT_JACQUELINE", causality_type="mutation_social", trait_target="affinity", trait_delta=0.0, mechanism="emotional", evidence_strength="strong", causal_force=8.0, fabula_time=14000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_BOWERS_RETURNS_PEARLS", target_id="ENT_VAN_SCHUYLER", rel_counterpart_id="ENT_BOWERS", causality_type="mutation_social", trait_target="affinity", trait_delta=0.0, mechanism="social", evidence_strength="moderate", causal_force=5.0, fabula_time=9700, propagation_delay=0),
+        CausalEdge(source_id="EVT_LINNET_STEALS_SIMON", target_id="ENT_JACQUELINE", rel_counterpart_id="ENT_SIMON", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.6, mechanism="psychological", evidence_strength="strong", causal_force=8.0, fabula_time=500, propagation_delay=0),
+        CausalEdge(source_id="EVT_HONEYMOON_STALKING", target_id="ENT_JACQUELINE", rel_counterpart_id="ENT_SIMON", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.0, mechanism="psychological", evidence_strength="strong", causal_force=6.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_LOUNGE_SHOOTING", target_id="ENT_JACQUELINE", rel_counterpart_id="ENT_SIMON", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.0, mechanism="psychological", evidence_strength="strong", causal_force=7.0, fabula_time=8000, propagation_delay=0),
+        CausalEdge(source_id="EVT_LOUISE_KILLED", target_id="ENT_JACQUELINE", rel_counterpart_id="ENT_SIMON", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.0, mechanism="psychological", evidence_strength="strong", causal_force=8.0, fabula_time=9500, propagation_delay=0),
+        CausalEdge(source_id="EVT_OTTERBOURNE_KILLED", target_id="ENT_JACQUELINE", rel_counterpart_id="ENT_SIMON", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.0, mechanism="psychological", evidence_strength="strong", causal_force=9.0, fabula_time=10000, propagation_delay=0),
+        CausalEdge(source_id="EVT_BOULDER", target_id="ENT_PENNINGTON", rel_counterpart_id="ENT_LINNET", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.3, mechanism="psychological", evidence_strength="moderate", causal_force=6.0, fabula_time=6000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_BOWERS_RETURNS_PEARLS", target_id="ENT_VAN_SCHUYLER", rel_counterpart_id="ENT_BOWERS", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.0, mechanism="social", evidence_strength="strong", causal_force=6.0, fabula_time=9700, propagation_delay=0),
+        # ─── placeholder remediation: Louise ↔ Linnet maid hierarchy ───
+        CausalEdge(source_id="EVT_BOARD_KARNAK", target_id="ENT_LOUISE", rel_counterpart_id="ENT_LINNET", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.8, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=4000, propagation_delay=0),
+        CausalEdge(source_id="EVT_BOARD_KARNAK", target_id="ENT_LINNET", rel_counterpart_id="ENT_LOUISE", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.8, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=4000, propagation_delay=0),
+    ],
+
+    # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
+    spatial_topology=[
+        SpatialEdge(source_id="LOC_ASWAN", target_id="LOC_KARNAK_LOUNGE"),
+        SpatialEdge(source_id="LOC_KARNAK_LOUNGE", target_id="LOC_KARNAK_LINNET_CABIN"),
+        SpatialEdge(source_id="LOC_KARNAK_LOUNGE", target_id="LOC_KARNAK_BESSNER_CABIN"),
+        SpatialEdge(source_id="LOC_KARNAK_LOUNGE", target_id="LOC_KARNAK_LOUISE_CABIN"),
+        SpatialEdge(source_id="LOC_KARNAK_LINNET_CABIN", target_id="LOC_KARNAK_LOUNGE"),
+        SpatialEdge(source_id="LOC_KARNAK_BESSNER_CABIN", target_id="LOC_KARNAK_LOUNGE"),
+        SpatialEdge(source_id="LOC_KARNAK_LOUISE_CABIN", target_id="LOC_KARNAK_LOUNGE"),
+        SpatialEdge(source_id="LOC_KARNAK_LOUNGE", target_id="LOC_ABU_SIMBEL"),
+        SpatialEdge(source_id="LOC_KARNAK_LOUNGE", target_id="LOC_WADI_HALFA"),
+        SpatialEdge(source_id="LOC_KARNAK_LOUNGE", target_id="LOC_SHELLAL"),
+    ],
+
+    # ── INFORMATION TOPOLOGY ────────────────────────────────────────────
+    # Only standing communication capabilities. One-shot speech-acts (the
+    # confession, Otterbourne's denunciation, Race's briefing, Bowers's
+    # discreet return, etc.) are modelled as bare utterance events with
+    # via_channel_id=None — they are not standing channels.
+    channels={
+        # The covert co-conspirator capability that lets Simon and Jacqueline
+        # coordinate their alibi script — opaque to every other passenger.
+        "CHN_SIMON_JACQUELINE_PLOT": Channel(
+            id="CHN_SIMON_JACQUELINE_PLOT",
+            name="Simon ↔ Jacqueline covert plot signalling",
+            medium="covert_signalling",
+            participant_ids=["ENT_SIMON", "ENT_JACQUELINE"],
+            directionality="duplex",
+            intelligibility={"ENT_SIMON": 1.0, "ENT_JACQUELINE": 1.0},
+            established_at_fabula=500,
+            terminated_at_fabula=14000,
+            evidence_strength="strong",
+        ),
+        # The standing trustee/correspondence channel through which Pennington
+        # has long managed (and quietly speculated with) Linnet's fortune.
+        "CHN_LINNET_PENNINGTON_TRUSTEE": Channel(
+            id="CHN_LINNET_PENNINGTON_TRUSTEE",
+            name="Linnet ↔ Pennington trustee correspondence",
+            medium="correspondence",
+            participant_ids=["ENT_LINNET", "ENT_PENNINGTON"],
+            directionality="duplex",
+            intelligibility={"ENT_LINNET": 0.5, "ENT_PENNINGTON": 1.0},
+            established_at_fabula=0,
+            terminated_at_fabula=9000,
+            evidence_strength="strong",
+        ),
+    },
+
+    # ── WORLD TRAITS ────────────────────────────────────────────────────
+    world_traits={
+        "WORLD_INHERITED_MONEY": GlobalTrait(
+            id="WORLD_INHERITED_MONEY",
+            name="Anglo-American Inherited-Money Apparatus",
+            description="The system of trustees, settlements, foreign holdings and marriage contracts that surrounds the Ridgeway fortune. Operates as common-cause parent over Pennington's speculation, Linnet's conspicuous appeal as a target, and the entire economic motive for Simon and Jacqueline's plot.",
+            category="economy",
+            magnitude=TraitVector(value=0.95, inertia=0.9, evidence_strength="strong"),
+            affected_domains=["social"],
+        ),
+        "WORLD_CLOSED_SOCIETY": GlobalTrait(
+            id="WORLD_CLOSED_SOCIETY",
+            name="Closed Society of the Tour Steamer",
+            description="The bounded passenger community of the Karnak — fixed cast, unmistakable absences, predictable timetables — that makes both the murders and their solution possible. Operates as the hidden epistemic infrastructure of the entire investigation.",
+            category="social_structure",
+            magnitude=TraitVector(value=0.85, inertia=0.85, evidence_strength="strong"),
+            affected_domains=["epistemic", "social"],
+        ),
+        "WORLD_DETECTIVE_EPISTEMOLOGY": GlobalTrait(
+            id="WORLD_DETECTIVE_EPISTEMOLOGY",
+            name="Gentleman-Detective Epistemology",
+            description="The unwritten interwar convention that an itinerant private detective may interview, accuse, and effectively try suspects on behalf of the state — and may even, in the final scene, knowingly permit their suicide rather than the gallows.",
+            category="cosmology",
+            magnitude=TraitVector(value=0.85, inertia=0.85, evidence_strength="strong"),
+            affected_domains=["epistemic", "social"],
+        ),
+    },
+
+    # ── SOCIAL TOPOLOGY ────────────────────────────────────────────────
+    social_topology=[
+        # The conspirators.
+        RelationshipEdge(
+            source_entity_id="ENT_SIMON", target_entity_id="ENT_JACQUELINE",
+            metrics={
+                "affinity": RelationshipMetric(value=0.95, inertia=0.55, evidence_strength="strong", last_updated_fabula=9500),
+            },
+        ),
+        RelationshipEdge(
+            source_entity_id="ENT_JACQUELINE", target_entity_id="ENT_SIMON",
+            metrics={
+                "affinity":      RelationshipMetric(value=1.0, inertia=0.6, evidence_strength="strong", last_updated_fabula=10000),
+                "power_dynamic": RelationshipMetric(value=0.6, inertia=0.7, evidence_strength="strong", last_updated_fabula=9500),
+            },
+        ),
+        # Simon ↔ Linnet — public marriage / private hatred.
+        RelationshipEdge(
+            source_entity_id="ENT_SIMON", target_entity_id="ENT_LINNET",
+            metrics={
+                "affinity": RelationshipMetric(value=-0.85, inertia=0.5, evidence_strength="strong", last_updated_fabula=4000),
+            },
+        ),
+        RelationshipEdge(
+            source_entity_id="ENT_LINNET", target_entity_id="ENT_SIMON",
+            metrics={
+                "affinity": RelationshipMetric(value=0.85, inertia=0.55, evidence_strength="strong", last_updated_fabula=4000),
+            },
+        ),
+        # Jacqueline → Linnet — performed and real hatred.
+        RelationshipEdge(
+            source_entity_id="ENT_JACQUELINE", target_entity_id="ENT_LINNET",
+            metrics={
+                "affinity": RelationshipMetric(value=-0.95, inertia=0.55, evidence_strength="strong", last_updated_fabula=1000),
+            },
+        ),
+        RelationshipEdge(
+            source_entity_id="ENT_LINNET", target_entity_id="ENT_JACQUELINE",
+            metrics={
+                "affinity": RelationshipMetric(value=-0.7, inertia=0.55, evidence_strength="strong", last_updated_fabula=1000),
+                "fear":     RelationshipMetric(value=0.5, inertia=0.2, evidence_strength="strong", last_updated_fabula=1000),
+            },
+        ),
+        # Pennington ↔ Linnet — trustee.
+        RelationshipEdge(
+            source_entity_id="ENT_PENNINGTON", target_entity_id="ENT_LINNET",
+            metrics={
+                "affinity":      RelationshipMetric(value=-0.4, inertia=0.55, evidence_strength="moderate", last_updated_fabula=6000),
+                "power_dynamic": RelationshipMetric(value=-0.3, inertia=0.7, evidence_strength="moderate", last_updated_fabula=3000),
+            },
+        ),
+        # Louise ↔ Linnet — service.
+        RelationshipEdge(
+            source_entity_id="ENT_LOUISE", target_entity_id="ENT_LINNET",
+            metrics={
+                "affinity": RelationshipMetric(value=0.0, inertia=0.55, evidence_strength="moderate", last_updated_fabula=4000, observed=False),
+                "power_dynamic": RelationshipMetric(value=-0.8, inertia=0.7, evidence_strength="strong", last_updated_fabula=4000),
+            },
+        ),
+        # Linnet → Louise — reverse: explicit employer-over-maid hierarchy.
+        RelationshipEdge(
+            source_entity_id="ENT_LINNET", target_entity_id="ENT_LOUISE",
+            metrics={
+                "power_dynamic": RelationshipMetric(value=0.8, inertia=0.7, evidence_strength="strong", last_updated_fabula=4000),
+            },
+        ),
+        # Louise → Simon — blackmail target.
+        RelationshipEdge(
+            source_entity_id="ENT_LOUISE", target_entity_id="ENT_SIMON",
+            metrics={
+                "affinity": RelationshipMetric(value=-0.5, inertia=0.5, evidence_strength="strong", last_updated_fabula=9400),
+            },
+        ),
+        # Poirot ↔ Race — collegial.
+        RelationshipEdge(
+            source_entity_id="ENT_POIROT", target_entity_id="ENT_RACE",
+            metrics={
+                "affinity": RelationshipMetric(value=0.85, inertia=0.7, evidence_strength="strong", last_updated_fabula=7000),
+            },
+        ),
+        RelationshipEdge(
+            source_entity_id="ENT_RACE", target_entity_id="ENT_POIROT",
+            metrics={
+                "affinity": RelationshipMetric(value=0.85, inertia=0.7, evidence_strength="strong", last_updated_fabula=7000),
+            },
+        ),
+        # Poirot → Jacqueline — moral interest.
+        RelationshipEdge(
+            source_entity_id="ENT_POIROT", target_entity_id="ENT_JACQUELINE",
+            metrics={
+                "affinity": RelationshipMetric(value=0.4, inertia=0.55, evidence_strength="strong", last_updated_fabula=2000),
+            },
+        ),
+        # Van Schuyler ↔ Bowers ↔ Cornelia — household.
+        RelationshipEdge(
+            source_entity_id="ENT_VAN_SCHUYLER", target_entity_id="ENT_BOWERS",
+            metrics={
+                "power_dynamic": RelationshipMetric(value=0.7, inertia=0.75, evidence_strength="strong", last_updated_fabula=4000),
+                "affinity":      RelationshipMetric(value=0.5, inertia=0.55, evidence_strength="moderate", last_updated_fabula=4000),
+            },
+        ),
+        RelationshipEdge(
+            source_entity_id="ENT_VAN_SCHUYLER", target_entity_id="ENT_CORNELIA",
+            metrics={
+                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.75, evidence_strength="strong", last_updated_fabula=4000, observed=False),
+                "affinity": RelationshipMetric(value=0.0, inertia=0.55, evidence_strength="moderate", last_updated_fabula=4000, observed=False),
+            },
+        ),
+    ],
+)
