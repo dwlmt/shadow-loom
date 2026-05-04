@@ -24,6 +24,49 @@ def build_export_tab(state: AppState) -> None:
     """Build the Export tab layout."""
 
     with ui.column().classes("w-full h-full p-6 gap-4 bg-slate-50"):
+        # ── Header with help popover ────────────────────────────────────
+        with ui.row().classes("w-full items-center gap-2"):
+            ui.icon("ios_share", color="primary")
+            ui.label("Export").classes(
+                "text-sm font-semibold text-slate-700"
+            )
+            ui.space()
+            from shadow_loom_ui.components.help_popover import help_popover
+            help_popover(
+                title="Export — download world state, prose, & graphs",
+                body_md=(
+                    "Get your data out of Shadow Loom in standard"
+                    " formats for use in other tools or for archival.\n\n"
+                    "### What you can export\n"
+                    "- **Prose (Markdown)** — every prose card from"
+                    " the active project, ordered by version, with"
+                    " version numbers and source query types as"
+                    " headings. Suitable for pasting into a manuscript"
+                    " or sharing as a one-file synopsis.\n"
+                    "- **World state (JSON)** — the full"
+                    " `WorldStateV1` payload of the active version:"
+                    " entities, events, all four topology layers,"
+                    " channels, and beliefs. Round-trips cleanly back"
+                    " into Shadow Loom and is the canonical interchange"
+                    " format.\n"
+                    "- **Causal graph (GraphML / DOT)** — the typed"
+                    " causal/social/spatial/information graph for use"
+                    " in Gephi, Cytoscape, NetworkX, or similar"
+                    " analysis tools.\n\n"
+                    "### Notes\n"
+                    "- Exports always reflect the **currently loaded"
+                    " version**. Switch versions in the left tree"
+                    " before exporting to capture a different branch"
+                    " or point in history.\n"
+                    "- Research facts are **not** included in any"
+                    " export — they live in a separate store. Pull"
+                    " them from the Research tab if needed.\n"
+                    "- Exports are read-only and never alter the"
+                    " project state."
+                ),
+                tooltip="What is this tab?",
+            )
+
         # ---- Export Prose ----
         with ui.card().classes(
             "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-6"

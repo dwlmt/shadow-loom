@@ -339,6 +339,15 @@ def build_workspace(state: AppState, project_id: int) -> None:
                         from shadow_loom_ui.components.export_tab import build_export_tab
                         build_export_tab(state)
 
+                # Answer panel — surfaces Ask / Interrogation results
+                # without polluting the Story tab. Sits between the
+                # tab content and the command bar so the user always
+                # sees the latest Q&A response next to the input.
+                from shadow_loom_ui.components.answer_panel import (
+                    build_answer_panel,
+                )
+                build_answer_panel(state)
+
                 # Bottom chat drawer
                 from shadow_loom_ui.components.chat import build_chat_drawer
                 build_chat_drawer(state)

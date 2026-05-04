@@ -131,9 +131,12 @@ observation → intervention → counterfactual.
 * Spirtes, P., Glymour, C., Scheines, R. (2000). *Causation, Prediction, and Search* (2nd ed.). MIT Press. — the other foundational text alongside Pearl 2009; PC algorithm and Markov equivalence.
 * Bareinboim, E., Correa, J. D., Ibeling, D., Icard, T. (2022). "On Pearl's Hierarchy and the Foundations of Causal Inference". Ch. 27 in *Probabilistic and Causal Inference: The Works of Judea Pearl*, pp. 507–556. ACM Books. DOI 10.1145/3501714.3501743. — the modern formal statement of the hierarchy and the impossibility results that motivate level-3 counterfactual machinery.
 
-`CausalPhysicsEngine.do_intervene()` implements rung-2 graph surgery:
-incoming causal edges into the intervened node are severed, downstream
-edges re-evaluated.
+`CausalPhysicsEngine.apply_do_operator()` implements rung-2 (Intervention) graph
+surgery: incoming causal edges into the intervened node are severed,
+the intervened path is overwritten, dependent provenance (beliefs
+whose `acquired_via_event_id` / `acquired_via_channel_id` pointed at
+a surgically invalidated event or severed channel) is pruned, and
+downstream edges are then re-evaluated by `propagate()`.
 
 ### 2.2 Ancestral Multi-World Networks and ctf-calculus — **Correa & Bareinboim, ICML 2025**
 
@@ -159,21 +162,29 @@ The paper introduces:
 
 In shadow-loom we adopt the AMWN naming for our sandbox graph (each
 counterfactual query spawns a `world_id="shadow"` mirror with the relevant
-intervention nodes "split" from their factual counterparts) and use the
-three-rule structure of ctf-calculus as the conceptual model for our query
-pipeline:
+intervention nodes "split" from their factual counterparts) **and** we
+implement the three rules of the ctf-calculus as a pre-flight check on
+every Rung-2 (Intervention) and Rung-3 (Counterfactual) query in [`shadow_loom/amwn.py`](../shadow_loom/amwn.py)
+(`build_amwn`, `check_consistency`, `check_ctf_independence`,
+`check_exclusion`, `apply_ctf_calculus`):
 
-| ctf-calculus rule | Shadow-loom analogue |
+| ctf-calculus rule | Shadow-loom implementation |
 |---|---|
-| **Consistency** (relate observed and intervened values) | `_intervene_state` keeps factual values where surgery doesn't apply. |
-| **Independence** (d-separation in the AMWN ⇒ conditional independence) | Ego-graph slicing in `extract_graph.py` (§2.5 below) is a heuristic Markov-blanket cut. |
-| **Exclusion** (eliminate interventions that don't reach a target) | `MECHANISM_TRAIT_MAP` gates which mechanisms can affect which trait families; affordance checks gate cross-location influence. |
+| **Rule 1 — Consistency** ($P(Y_{T*x}, X_{T*}=x) = P(Y_{T*}, X_{T*}=x)$) | `check_consistency()` suppresses vacuous `do(X = observed(X))` interventions; engine reports them as `rule1_redundant`. |
+| **Rule 2 — Independence** (d-separation in the AMWN ⇒ conditional independence) | `check_ctf_independence()` builds the AMWN $G^A(G, W^*)$ over the union of evidence and intervention targets, performs node-shadowing across worlds whose projected contexts on the ancestral set agree, and runs NetworkX `is_d_separator` over the result. Evidence flagged as redundant is reported as `rule2_redundant_evidence` but **not** silently dropped (abduction may still populate `hidden_deltas` that downstream consumers depend on). |
+| **Rule 3 — Exclusion** ($P(y_{xz}) = P(y_z)$ if $X \cap An(Y) = \emptyset$ in $G_{\bar Z}$) | `check_exclusion()` mutilates the diagram and tests ancestor-disjointness against the query targets. Pruned interventions are reported as `rule3_pruned_interventions`. By default the engine ships in **advisory mode** (the flagged interventions are surfaced to the auditor but retained in simulation), since a missed bidirected confounder would let a substantively meaningful intervention be d-separated into a no-op; **prune mode** (`rule3_pruning_mode='prune'`) is opt-in for confounder-complete topologies. |
 
-*We do not (yet) implement the algorithm of Correa & Bareinboim 2025
-literally* — our graph is heavily typed for narrative use rather than
-rigorous SCM identification — but the mental model and naming are theirs.
-See [design-decisions.md](design-decisions.md) D5–D6 for how we adapt it to
-a narrative setting.
+The construction matches Definition A.1 of Correa & Bareinboim 2025
+*in spirit* but operates on a **latent-free SCM** (no bidirected `U`
+arcs encoding shared unobserved confounders), so the
+implementation is **sound** for d-separation but **not complete
+across worlds with shared latents** — Rule 2 / 3 flags are
+advisory in that sense. Relationship metrics (affinity / fear /
+power_dynamic) are lifted into synthetic
+`REL::<src>::<tgt>::<metric>` diagram nodes so that
+`mutation_social` causal edges contribute to d-separation
+reasoning. See [design-decisions.md](design-decisions.md) D5–D6 for
+the rationale and the closed-world caveat.
 
 #### Predecessors and related machinery
 
@@ -193,14 +204,30 @@ Recent (2023–2026) — LLMs as causal reasoners, complementary to (not a repla
 
 ### 2.3 Abduction (`CausalPhysicsEngine.abduction_update`)
 
-Rung-3 counterfactuals require **abduction** — back-propagating present
-evidence onto a historical sandbox. Our implementation blends entity
-traits 50 % toward observed factual values, weighted by `evidence_strength`,
-and gates by mechanism.
+Rung-3 (Counterfactual) queries require **abduction** — back-propagating present
+evidence onto a historical sandbox. The default implementation is a
+**precision-weighted Bayesian blend**
+($\texttt{abduction\_blend\_mode = "bayesian"}$): trait inertia
+$\iota_T$ is reinterpreted as the precision of the historical prior,
+an evidence precision $\kappa_E$ (default $1$) is set on the
+present-day observation, and the posterior is
+
+$$T^{\text{post}} = \frac{\iota_T \cdot T^{\text{prior}} + \kappa_E \cdot T^{\text{evidence}}}{\iota_T + \kappa_E}.$$
+
+A legacy inertia-damped variant
+($T^{\text{post}} = T^{\text{prior}} + (1 - \iota_T)(T^{\text{evidence}} - T^{\text{prior}})$)
+is retained for ablation. The same Bayes blend runs per axis on
+outgoing relationship metrics. Belief back-propagation is gated
+by a per-recipient channel `intelligibility` threshold so a belief
+that could not plausibly have been acquired through its provenance
+channel is not reinstated. Where a present-day evidence event is
+applied via abduction, its outgoing causal edges are masked from
+the subsequent forward propagation pass to prevent
+double-counting.
 
 The philosophical and computational basis:
 
-* Pearl, J. (2000/2009). *Causality* §7 ("The logic of structure-based counterfactuals"). — the abduction–action–prediction recipe for rung-3 queries. Our pipeline implements the same three steps in `causal_physics.py`.
+* Pearl, J. (2000/2009). *Causality* §7 ("The logic of structure-based counterfactuals"). — the abduction–action–prediction recipe for rung-3 (Counterfactual) queries. Our pipeline implements the same three steps in `causal_physics.py`.
 * Halpern, J. Y. (2016). *Actual Causality*. MIT Press. — formal definitions of "actual cause" used to motivate `mechanism` and `causal_force`.
 * Halpern, J. Y. (2000). "Axiomatizing causal reasoning". *J. Artificial Intelligence Research* 12: 317–337. DOI 10.1613/jair.648.
 * Halpern, J. Y. & Pearl, J. (2005). "Causes and explanations: A structural-model approach. Part I: Causes". *British Journal for the Philosophy of Science* 56(4): 843–887. DOI 10.1093/bjps/axi147.
@@ -213,13 +240,20 @@ The philosophical and computational basis:
 
 ### 2.4 d-separation and ego-graph slicing
 
-When [`extract_graph.py`](../shadow_loom/extract_graph.py) limits the
-ego-graph to "1-hop spatial neighbours" + "events within `memory_limit`", we
-are heuristically approximating a Markov blanket: the minimal node set that
-d-separates the focal entities from the rest of the graph. With the AMWN of
-Correa & Bareinboim 2025, this becomes a *counterfactual* Markov-blanket
-argument — we are reading counterfactual conditional independences off the
-local subgraph rather than the full causal diagram.
+Two distinct uses of d-separation live in the codebase. (a) When
+[`extract_graph.py`](../shadow_loom/extract_graph.py) limits the ego-graph
+to "1-hop spatial neighbours" + "events within `memory_limit`", we are
+heuristically approximating a Markov blanket — the minimal node set that
+d-separates the focal entities from the rest of the graph — to keep the
+simulation sandbox tractable. (b) [`shadow_loom/amwn.py`](../shadow_loom/amwn.py)
+runs *exact* d-separation over the AMWN $G^A(G, W^*)$ via NetworkX
+`is_d_separator` (with a fallback to the legacy `d_separated` name),
+re-using `nx.ancestors` for the projection step `An(V)_{G_{T̄}}` of
+Definition A.1. The closed-world / latent-free caveat from §2.2 applies
+to both: an `allow_unobserved_confounders=True` setting in
+`CausalPhysicsSettings` injects explicit `U_<a>__<b>` shared-parent
+nodes for every observed-sibling pair, so d-separation refuses to mark
+two siblings independent purely on their observed-parent overlap.
 
 * Verma, T. & Pearl, J. (1988). "Causal networks: semantics and expressiveness". *Proc. UAI 1988*, pp. 69–78. — d-separation, formally.
 * Geiger, D., Verma, T., Pearl, J. (1990). "Identifying independence in Bayesian networks". *Networks* 20(5): 507–534. DOI 10.1002/net.3230200504.
@@ -230,14 +264,35 @@ local subgraph rather than the full causal diagram.
 
 ## 3. Computational models of suspense, surprise, and curiosity
 
-### 3.1 Suspense as uncertainty reduction — **Wilmot & Keller, ACL 2020**
+### 3.1 Suspense as hope/fear (here hope/threat) anticipation — structural-affect lineage
 
-`DirectiveAssembler.compute_suspense_score()` is directly inspired by
-Wilmot & Keller's framing of suspense as a *forward-looking* uncertainty
-measure rather than a *backward-looking* surprise measure. Our
-implementation aggregates the unrevealed forward causal momentum on
-each side of the entity's outcome ledger and combines the two sides
-as a **balance × stakes** product:
+`DirectiveAssembler.compute_suspense_score()` is **not** an
+implementation of Wilmot & Keller's information-theoretic
+uncertainty-reduction model. W&K define suspense as the entropy
+reduction (Hale-style surprisal differential) between the
+reader's distribution over story continuations before and after
+the next sentence — a forward-looking, neural-LM quantity that
+operates purely on the reader's epistemic horizon. We do not
+compute that quantity; the data layer is a discrete typed graph,
+not a sentence-level LM rollout. Instead we operationalise the
+older **structural-affect / hope-fear** lineage in which
+suspense is the audience's anxious anticipation of an outcome
+involving an entity they care about. The hope/fear pair is the
+canonical anticipation pair in OCC appraisal theory
+([Ortony, Clore & Collins, 1988](https://doi.org/10.1017/CBO9780511571299));
+the disposition-weighted variant is
+[Zillmann (1996)](https://psycnet.apa.org/record/1996-97152-009);
+the high-subjective-probability-of-aversive-outcome variant is
+[Comisky & Bryant (1982)](https://doi.org/10.1111/j.1468-2958.1982.tb00682.x);
+the planner-style operationalisation we follow most closely is
+Cheong & Young's *Suspenser*. We use *threat* in place of *fear*
+to keep the field name aligned with the typed-graph framing
+(an entity is acted upon vs. is acting), but the structural
+position is identical.
+
+The implementation aggregates the unrevealed forward causal
+momentum on each side of the entity's outcome ledger and combines
+the two sides as a **balance × stakes** product:
 
 $$\text{balance} = 1 - \frac{|w_\text{threat} - w_\text{hope}|}{w_\text{threat} + w_\text{hope}},
 \quad
@@ -272,10 +327,36 @@ Brewer & Lichtenstein structural-affect framing of suspense as a
 response to genuine outcome ambiguity rather than to one-sided
 causal dominance.
 
-* **Wilmot, D. & Keller, F. (2020).** "Modelling Suspense in Short Stories as Uncertainty Reduction over Neural Representation". *Proc. ACL 2020*, pp. 1763–1788. [aclanthology.org/2020.acl-main.161](https://aclanthology.org/2020.acl-main.161/) — the central reference.
+*Known limitations of this design (vs. richer suspense theory):*
+1. **Disposition-blind.** The actor/target classification does not
+   consult whether the focal entity *desires* the outcome
+   (Zillmann's disposition theory). An antagonist authoring a
+   successful misdeed registers as `hope` because they are the
+   *actor*; a fully disposition-aware variant requires a signed
+   valence on each (entity, event) pair and is left to future
+   work.
+2. **Outcome-uncertainty only, not paradox-of-suspense aware.** We
+   do not attempt to model the residual tension that survives
+   re-reading
+   ([Gerrig 1989](https://doi.org/10.1016/0749-596X(89)90001-6);
+   [Baroni 2007](https://www.seuil.com/ouvrage/la-tension-narrative-suspense-curiosite-surprise-raphael-baroni/9782020897624)).
+3. **Probability proxy is the max incoming edge weight**, not a
+   joint probability over the full causal path; this is a
+   deliberate tractability choice consistent with Cheong &
+   Young's planning-graph operationalisation.
+
+* **Wilmot, D. & Keller, F. (2020).** "Modelling Suspense in Short Stories as Uncertainty Reduction over Neural Representation". *Proc. ACL 2020*, pp. 1763–1788. [aclanthology.org/2020.acl-main.161](https://aclanthology.org/2020.acl-main.161/) — the related but distinct neural-LM uncertainty-reduction definition. We take their reader-uncertainty framing as conceptual support for the *dramatic-irony* scorer (§3.4) and for *mystery* (§3.2), not for our hope/threat suspense scorer.
 * Wilmot, D. & Keller, F. (2021a). "A Temporal Variational Model for Story Generation". arXiv:2109.06807 (preprint only).
 * Wilmot, D. & Keller, F. (2021b). "Memory and Knowledge Augmented Language Models for Inferring Salience in Long-Form Stories". *Proc. EMNLP 2021*, pp. 851–865. [aclanthology.org/2021.emnlp-main.65](https://aclanthology.org/2021.emnlp-main.65/) — extends uncertainty-reduction to long novels via memory-augmented LMs.
 * Wilmot, D. (2022). *Great Expectations: Unsupervised Inference of Suspense, Surprise and Salience in Storytelling*. PhD thesis, Univ. of Edinburgh. arXiv:2206.09708. — full discussion of suspense / surprise / salience as computable quantities; deep influence on our four-effect taxonomy.
+* **Comisky, P. & Bryant, J. (1982).** "Factors involved in generating suspense". *Human Communication Research* 9(1): 49–58. DOI 10.1111/j.1468-2958.1982.tb00682.x. — high subjective probability of harm to a liked protagonist.
+* **Zillmann, D. (1996).** "The psychology of suspense in dramatic exposition". In Vorderer, Wulff & Friedrichsen (eds.), *Suspense: Conceptualizations, Theoretical Analyses, and Empirical Explorations*, pp. 199–231. Lawrence Erlbaum. — disposition theory; suspense is noxious anticipation about a *liked* character.
+* **Ortony, A., Clore, G. L. & Collins, A. (1988).** *The Cognitive Structure of Emotions*. Cambridge UP. DOI 10.1017/CBO9780511571299. — OCC appraisal model; hope/fear is the canonical pair of *prospect-based* emotions.
+* Ely, J., Frankel, A. & Kamenica, E. (2015). "Suspense and Surprise". *Journal of Political Economy* 123(1): 215–260. DOI 10.1086/677350. — decision-theoretic complement to W&K: suspense as expected variance of next-period beliefs over a terminal outcome.
+* Gerrig, R. J. (1989). "Suspense in the Absence of Uncertainty". *Journal of Memory and Language* 28(6): 633–648. DOI 10.1016/0749-596X(89)90001-6. — the paradox of suspense; surveyed but not implemented.
+* Baroni, R. (2007). *La tension narrative: suspense, curiosité, surprise*. Paris: Éditions du Seuil. — the modern French-language synthesis distinguishing suspense, curiosity, and surprise as *narrative-tension* sub-types.
+* Brewer, W. F. & Lichtenstein, E. H. (1982) — see §3.2.
+* Cheong, Y.-G. & Young, R. M. (2015) — see §3.2.
 
 ### 3.2 The Sternberg triad (mystery / suspense / surprise)
 
@@ -346,17 +427,24 @@ to do*.
 
 ### 3.4 Dramatic irony as epistemic asymmetry
 
-`compute_dramatic_irony_score()` walks revealed causal edges where the
-source event is **not** in the focal entity's belief set at
-`temporal_anchor`. The framing of irony as a reader/character knowledge gap
-is classical:
+`compute_dramatic_irony_score()` returns the per-character mean
+intensity-weighted mass of revealed events the focal entity does
+**not** know about (by participation, by being addressed in a
+revealed utterance, or by holding an explicit `Belief` about
+that event), normalised by the total event mass plus a
+saturation constant `K=1`. The framing of irony as a
+reader/character knowledge gap is classical:
 
 * Booth, W. (1974). *A Rhetoric of Irony*. Univ. of Chicago Press.
 * Muecke, D. C. (1969). *The Compass of Irony*. Methuen.
+* Stanton, R. (1956). "Dramatic Irony in Hawthorne's Romances". *Modern Language Notes* 71(6): 420–426. DOI 10.2307/3043161. — explicit definition: "audience knows what the character does not".
 
-For computational treatments:
+For computational treatments and adjacent reader-uncertainty
+formalisms:
 
 * Gerrig, R. J. (1993). *Experiencing Narrative Worlds*. Yale UP. — the cognitive-pragmatic framework we borrow.
+* **Wilmot, D. & Keller, F. (2020).** "Modelling Suspense in Short Stories as Uncertainty Reduction over Neural Representation". *Proc. ACL 2020*, pp. 1763–1788. — although the W&K paper is titled *suspense*, its operationalisation (the entropy-reduction differential between the reader's distribution over continuations before and after the next sentence) is structurally a **reader-vs-future-state epistemic-asymmetry** measure: it quantifies *what the reader's model of the story does not yet contain*. That shape is closer to the dramatic-irony scorer here (reader vs. character knowledge gap) and to the mystery scorer (reader vs. complete causal-ancestor set, §3.2) than it is to our hope/threat suspense scorer (§3.1). Readers cross-comparing implementations should treat the W&K quantity as a neural-LM analogue of mystery / irony rather than of `compute_suspense_score`.
+* Ely, J., Frankel, A. & Kamenica, E. (2015). "Suspense and Surprise". *J. Political Economy* 123(1): 215–260. DOI 10.1086/677350. — decision-theoretic complement; their *suspense* is the expected variance of next-period beliefs about a terminal outcome, again an epistemic-asymmetry quantity adjacent to dramatic irony rather than to hope/fear anticipation.
 
 ---
 

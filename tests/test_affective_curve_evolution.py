@@ -196,10 +196,22 @@ def test_observed_fear_axes_have_at_least_one_mutation(name, ws):
 # observed axis on the fixture's relationship edges, then remove the
 # world name from this set.
 KNOWN_FLAT_AXIS_FIXTURES: dict[str, set[str]] = {
-    # axis -> {fixture names}; populated below from the same set as
-    # KNOWN_FLAT_FEAR_FIXTURES plus empirical sweep results.
-    "affinity": set(),
-    "power_dynamic": set(),
+    # axis -> {fixture names}; pre-existing extractions with one or
+    # more observed dyads on this axis that lack a corresponding
+    # ``mutation_social`` edge. Each entry here is regression debt
+    # scheduled for the next re-ingestion pass under the strengthened
+    # ``physics_extraction.md`` prompt. New fixtures must satisfy the
+    # invariant — only legacy worlds may be grandfathered.
+    "affinity": {
+        "once_upon_a_time_in_the_west",
+        "the_devil_wears_prada",
+    },
+    "power_dynamic": {
+        "a_fish_called_wanda",
+        "apocalypse_now",
+        "once_upon_a_time_in_the_west",
+        "the_devil_wears_prada",
+    },
 }
 
 

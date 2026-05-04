@@ -1,4 +1,4 @@
-\begin{thebibliography}{99}
+\begin{thebibliography}{105}
 \providecommand{\natexlab}[1]{#1}
 
 \bibitem[{Akoury et~al.(2020)Akoury, Wang, Whiting, Hood, Peng, and Iyyer}]{akoury2020storium}
@@ -81,6 +81,11 @@ Yun-Gyung Cheong and R.~Michael Young. 2015.
 \newblock {Suspenser}: A story generation system for suspense.
 \newblock \emph{IEEE Transactions on Computational Intelligence and AI in Games}, 7(1):39--52.
 
+\bibitem[{Comisky and Bryant(1982)}]{comisky1982suspense}
+Paul Comisky and Jennings Bryant. 1982.
+\newblock \href {https://doi.org/10.1111/j.1468-2958.1982.tb00682.x} {Factors involved in generating suspense}.
+\newblock \emph{Human Communication Research}, 9(1):49--58.
+
 \bibitem[{Correa and Bareinboim(2025)}]{correa2025amwn}
 Juan~D. Correa and Elias Bareinboim. 2025.
 \newblock \href {https://openreview.net/forum?id=Z1qZoHa6ql} {Counterfactual graphical models: Constraints and inference}.
@@ -107,6 +112,11 @@ Lubom{\'i}r Dole{\v{z}}el. 1998.
 David~K. Elson. 2012.
 \newblock \emph{Modeling Narrative Discourse}.
 \newblock Ph.D. thesis, Columbia University.
+
+\bibitem[{Ely et~al.(2015)Ely, Frankel, and Kamenica}]{elyfrankel2015suspense}
+Jeffrey Ely, Alexander Frankel, and Emir Kamenica. 2015.
+\newblock \href {https://doi.org/10.1086/677350} {Suspense and surprise}.
+\newblock \emph{Journal of Political Economy}, 123(1):215--260.
 
 \bibitem[{Fagin et~al.(1995)Fagin, Halpern, Moses, and Vardi}]{fagin1995reasoning}
 Ronald Fagin, Joseph~Y. Halpern, Yoram Moses, and Moshe~Y. Vardi. 1995.
@@ -283,6 +293,11 @@ Nasrin Mostafazadeh, Nathanael Chambers, Xiaodong He, Devi Parikh, Dhruv Batra, 
 \newblock A corpus and cloze evaluation for deeper understanding of commonsense stories.
 \newblock In \emph{Proceedings of the 2016 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies (NAACL-HLT)}.
 
+\bibitem[{Muecke(1969)}]{muecke1969compass}
+Douglas~C. Muecke. 1969.
+\newblock \emph{The Compass of Irony}.
+\newblock Methuen.
+
 \bibitem[{Oatley(1995)}]{oatley1995taxonomy}
 Keith Oatley. 1995.
 \newblock A taxonomy of the emotions of literary response and a theory of identification in fictional narrative.
@@ -292,6 +307,11 @@ Keith Oatley. 1995.
 Keith Oatley. 2016.
 \newblock Fiction: Simulation of social worlds.
 \newblock \emph{Trends in Cognitive Sciences}, 20(8):618--628.
+
+\bibitem[{Ortony et~al.(1988)Ortony, Clore, and Collins}]{ortony1988occ}
+Andrew Ortony, Gerald~L. Clore, and Allan Collins. 1988.
+\newblock \href {https://doi.org/10.1017/CBO9780511571299} {\emph{The Cognitive Structure of Emotions}}.
+\newblock Cambridge University Press.
 
 \bibitem[{Park et~al.(2023)Park, O'Brien, Cai, Morris, Liang, and Bernstein}]{park2023generative}
 Joon~Sung Park, Joseph~C. O'Brien, Carrie~J. Cai, Meredith~Ringel Morris, Percy Liang, and Michael~S. Bernstein. 2023.
@@ -378,6 +398,11 @@ Viktor Shklovsky. 1965.
 \newblock Art as technique.
 \newblock In Lee~T. Lemon and Marion~J. Reis, editors, \emph{Russian Formalist Criticism: Four Essays}, pages 3--24. University of Nebraska Press, Lincoln, NE.
 \newblock Original work published 1917.
+
+\bibitem[{Shpitser and Pearl(2007)}]{shpitser2007counterfactuals}
+Ilya Shpitser and Judea Pearl. 2007.
+\newblock What counterfactuals can be tested.
+\newblock In \emph{Proceedings of the 23rd Conference on Uncertainty in Artificial Intelligence (UAI)}, pages 352--359.
 
 \bibitem[{Shpitser and Pearl(2008)}]{shpitser2008complete}
 Ilya Shpitser and Judea Pearl. 2008.
@@ -498,6 +523,11 @@ Lili Yao, Nanyun Peng, Ralph Weischedel, Kevin Knight, Dongyan Zhao, and Rui Yan
 Lianmin Zheng, Wei-Lin Chiang, Ying Sheng, Siyuan Zhuang, Zhanghao Wu, Yonghao Zhuang, Zi~Lin, Zhuohan Li, Dacheng Li, Eric~P. Xing, Hao Zhang, Joseph~E. Gonzalez, and Ion Stoica. 2023.
 \newblock Judging {LLM}-as-a-judge with {MT-Bench} and {Chatbot Arena}.
 \newblock In \emph{Advances in Neural Information Processing Systems (NeurIPS), Datasets and Benchmarks Track}.
+
+\bibitem[{Zillmann(1996)}]{zillmann1996suspense}
+Dolf Zillmann. 1996.
+\newblock The psychology of suspense in dramatic exposition.
+\newblock In Peter Vorderer, Hans~J. Wulff, and Mike Friedrichsen, editors, \emph{Suspense: Conceptualizations, Theoretical Analyses, and Empirical Explorations}, pages 199--231. Lawrence Erlbaum Associates.
 
 \bibitem[{Zunshine(2006)}]{zunshine2006theory}
 Lisa Zunshine. 2006.

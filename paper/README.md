@@ -5,27 +5,43 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 
 # Shadow-Loom — overview paper
 
-This directory contains a short (4-page main body + appendix) project
-overview paper in ACL style.
+This directory contains a short main-body project overview paper plus
+extensive appendices, in ACL style.
 
 ## Files
 
 - [shadow_loom.tex](shadow_loom.tex) — main LaTeX source.
 - [references.bib](references.bib) — BibTeX in ACL `acl_natbib` style.
+- [acl.sty](acl.sty), [acl_natbib.bst](acl_natbib.bst) — bundled
+  copies of the official ACL style files
+  (<https://github.com/acl-org/acl-style-files>).
 
-## Building
+## Building locally
 
-The paper uses the official ACL style files. Download them from
-<https://github.com/acl-org/acl-style-files> and place `acl.sty` and
-`acl_natbib.bst` next to `shadow_loom.tex` (or install them onto your
-TeX path), then:
+The paper uses the bundled ACL style files; no extra installation is
+required as long as the `paper/` directory is the current working
+directory:
 
 ```bash
+cd paper
 pdflatex shadow_loom
 bibtex   shadow_loom
 pdflatex shadow_loom
 pdflatex shadow_loom
 ```
+
+## Building an arXiv submission
+
+A reproducible source tarball is built by:
+
+```bash
+make -C paper arxiv          # produces paper/shadow_loom_arxiv.tar.gz
+```
+
+The resulting tarball contains `shadow_loom.tex`, `references.bib`,
+`acl.sty`, `acl_natbib.bst`, and the pre-built `shadow_loom.bbl`
+(arXiv does not always re-run BibTeX). Logs, intermediate `.aux` files,
+and the locally compiled PDF are excluded.
 
 ## Scope
 
@@ -38,18 +54,19 @@ Per the brief, the paper:
   than as a benchmarked NLP system.
 - Argues relevance to future NLP / reasoning work and to
   computational social science.
-- Keeps the main body short (around 5 pages).
+- Keeps the main body short (around five pages).
 - Defers all definitions and equations (schema, ingestion, AMWN
   sandbox, causal physics, narrative physics, generation, audit) to
   Appendix A.
 - Provides an extended end-to-end narrative walkthrough of the whole
   pipeline on the *Macbeth* fixture in Appendix B
-  (`app:walkthrough`), every intermediate object shown.
+  (`app:walkthrough`), with every intermediate object shown.
 - Provides per-stage worked examples drawn from the bundled plot
   fixtures in Appendix C (`app:examples`).
 - Provides a dedicated appendix on the authoring user interface ---
-  every tab, the version sidebar, the cross-tab event bus, and
-  example sessions on real fixtures --- in Appendix D (`app:ui`).
+  every tab, the version sidebar, the chat / command bar, the
+  Answer panel, the cross-tab event bus, and example sessions on
+  real fixtures --- in Appendix D (`app:ui`).
 
 ## Cross-references to the Markdown docs
 

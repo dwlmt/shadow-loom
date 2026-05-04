@@ -79,7 +79,61 @@ def build_world_tab(state: AppState) -> None:
                 _VIEW_MODES,
                 value="overview",
             ).props("dense no-caps")
-
+            from shadow_loom_ui.components.help_popover import help_popover
+            help_popover(
+                title="World — state-at-time inspector",
+                body_md=(
+                    "The world model rendered at a chosen **fabula"
+                    " time** (in-story chronology). Slide the time"
+                    " cursor to watch the world evolve.\n\n"
+                    "### View modes\n"
+                    "- **Overview** — high-level summary: counts of"
+                    " entities/locations/events, status distribution,"
+                    " current-location heatmap.\n"
+                    "- **Social** — graph of relationships between"
+                    " entities, weighted by relationship strength /"
+                    " type. Force or circular layout. Pick a *metric*"
+                    " to colour edges (trust, hostility, kinship…).\n"
+                    "- **Spatial** — location graph (rooms / regions)"
+                    " with the doors/paths between them, plus current"
+                    " entity positions.\n"
+                    "- **Information** — standing communication"
+                    " channels (telephones, mind-links, classified"
+                    " pipelines) and which entities can transmit /"
+                    " overhear / are deaf to them.\n"
+                    "- **Ego-Graph** — the world filtered to one or"
+                    " more focus entities: just what *they* can"
+                    " plausibly perceive, hear, or remember at the"
+                    " current anchor.\n"
+                    "- **Temporal** — a single entity's full trajectory"
+                    " (status, location, traits, beliefs) across"
+                    " fabula time.\n"
+                    "- **Composition** — trait-vector composition"
+                    " breakdowns (what makes Macbeth *Macbeth*).\n"
+                    "- **Epistemic** — belief panels: who believes"
+                    " what, where the belief came from (utterance,"
+                    " observation, inference), and where divergent"
+                    " beliefs create dramatic irony.\n"
+                    "- **Comparison** — side-by-side trait /"
+                    " relationship table for 2–6 picked entities.\n\n"
+                    "### Reading the diagrams\n"
+                    "- Node colour usually encodes **type** (entity,"
+                    " location, object) or **status** (alive, dead,"
+                    " injured).\n"
+                    "- Edge thickness usually encodes **strength** of"
+                    " the underlying relationship / connection.\n"
+                    "- Hover any node or edge for a tooltip with the"
+                    " raw payload.\n\n"
+                    "### Time cursor\n"
+                    "Most views are **time-sliced**: events with"
+                    " `fabula_time > cursor` are hidden, social /"
+                    " spatial / channel edges that hadn't been"
+                    " established yet are pruned, and entity"
+                    " snapshots reflect the most recent change at or"
+                    " before the cursor. Drag the cursor to scrub."
+                ),
+                tooltip="What is this tab?",
+            )
             # Ego-graph entity selector
             ego_select = ui.select(
                 options=[],

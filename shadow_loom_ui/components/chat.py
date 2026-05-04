@@ -35,14 +35,18 @@ _QUERY_TYPES = [
     ("evaluate", "Evaluate", "fact_check"),
 ]
 
-# Writer-friendly prompt starters mapped to query types
+# Writer-friendly prompt starters mapped to query types.
+# Every starter must be runnable as written — no unbound
+# ``{entity}`` placeholders that would make it through to the parser
+# untouched. Suggestions that need a specific entity are emitted by
+# the Explorer / World tabs, where the selected node is in scope.
 _PROMPT_STARTERS = [
     ("Continue the story…", "observation"),
     ("What would happen if…", "counterfactual"),
     ("Make this scene more suspenseful…", "directive"),
-    ("Why does this character…", "interrogate"),
-    ("What does {entity} know?", "interrogate"),
-    ("Show me {entity}'s relationships", "general"),
+    ("Why does this character do that?", "interrogate"),
+    ("Who knows what at this point in the story?", "interrogate"),
+    ("What are the active relationships right now?", "general"),
 ]
 
 
@@ -146,15 +150,47 @@ def _build_command_bar(state: AppState) -> None:
                 "unelevated round dense color=primary"
             ).classes("shadow-sm").style("height: 40px; width: 40px;")
 
-            # Help icon \u2014 hover overlay explains what the channel does.
-            with ui.icon("help_outline").classes(
-                "text-slate-400 cursor-help text-base"
-            ):
-                ui.tooltip(
-                    "Channel \u2014 your natural-language conduit to the world "
-                    "model. Ask questions, run counterfactuals, request "
-                    "interventions, or write canon prose."
-                ).classes("max-w-md text-sm")
+            # Help icon — click for full mode reference.
+            from shadow_loom_ui.components.help_popover import help_popover
+            help_popover(
+                title="Channel — the natural-language command bar",
+                body_md=(
+                    "This bar is your conduit to the world model. Type a"
+                    " question or instruction, optionally pick a **mode**,"
+                    " and hit **Send** (or `Enter`; `Shift+Enter` for a"
+                    " newline).\n\n"
+                    "### Modes\n"
+                    "| Mode | What it does | Saves a version? | Surfaces in |\n"
+                    "|------|--------------|------------------|-------------|\n"
+                    "| **Auto-detect** | Parses the text and routes to the best mode. | depends | depends |\n"
+                    "| **Ask** | Read-only Q&A over the world graph. | no | Answer panel |\n"
+                    "| **Continue** | Generate the next scene. | yes (factual) | Story tab |\n"
+                    "| **Intervene** | Force a change *now* and continue. | yes (factual) | Story tab |\n"
+                    "| **What-If** | Replay an alternate history from a past divergence. | yes (shadow) | Story tab |\n"
+                    "| **Direct** | Target an emotional effect (dread, suspense, irony). | yes (factual) | Story tab |\n"
+                    "| **Interrogation** | Diagnostic causal Q&A; can require explicit proof. | no | Answer panel |\n"
+                    "| **Evaluate** | Audit the whole story for quality / plausibility. | no | Audit tab |\n"
+                    "| **✏ Write prose** | Paste your own canon prose; re-extracted into the model. | yes (factual) | Story tab |\n\n"
+                    "### Implausibility gate\n"
+                    "If the engine cannot resolve your request against the"
+                    " current world state (unknown character, dead"
+                    " already, etc.) it short-circuits with an"
+                    " explanation and **does not change the world**. A"
+                    " *Force generate anyway* button appears so you can"
+                    " override.\n\n"
+                    "### Tips\n"
+                    "- Reference characters by name; the parser resolves"
+                    " them to ids.\n"
+                    "- Be concrete: `Kill Macbeth at the castle` beats"
+                    " `something bad happens`.\n"
+                    "- Background tasks survive tab navigation; the"
+                    " tasks indicator (top bar) shows in-flight work.\n"
+                    "- The Reasoning tab shows the engine's step-by-step"
+                    " trace for the most recent rung-2/rung-3 query."
+                ),
+                tooltip="What can I type here?",
+                icon_classes="text-slate-400 cursor-pointer text-base",
+            )
 
         # ── Keyboard shortcut ─────────────────────────────────────
         text_input.on(

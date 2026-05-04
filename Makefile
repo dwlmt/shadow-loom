@@ -140,3 +140,35 @@ clean:  ## Remove caches, build artifacts, and SQLite DBs.
 	rm -rf build dist *.egg-info .pytest_cache .ruff_cache .mypy_cache
 	find . -type d -name __pycache__ -exec rm -rf {} +
 	rm -f shadow_loom.db
+
+# ── Paper ───────────────────────────────────────────────────────────────
+
+PAPER_DIR  := paper
+PAPER_NAME := shadow_loom
+ARXIV_TARBALL := $(PAPER_DIR)/$(PAPER_NAME)_arxiv.tar.gz
+
+.PHONY: paper
+paper:  ## Build paper/shadow_loom.pdf (pdflatex + bibtex + 2 reruns).
+	cd $(PAPER_DIR) && pdflatex -interaction=nonstopmode -halt-on-error $(PAPER_NAME)
+	cd $(PAPER_DIR) && bibtex $(PAPER_NAME)
+	cd $(PAPER_DIR) && pdflatex -interaction=nonstopmode -halt-on-error $(PAPER_NAME)
+	cd $(PAPER_DIR) && pdflatex -interaction=nonstopmode -halt-on-error $(PAPER_NAME)
+
+.PHONY: paper-clean
+paper-clean:  ## Remove paper build artefacts (keeps PDF and tarball).
+	cd $(PAPER_DIR) && rm -f *.aux *.log *.out *.blg *.toc *.lof *.lot *.fls *.fdb_latexmk *.synctex.gz \
+	    b1.log b2.log b3.log bb.log build1.log build2.log build3.log build_bib.log missfont.log
+
+.PHONY: arxiv
+arxiv: paper  ## Build paper/shadow_loom_arxiv.tar.gz suitable for arXiv submission.
+	@rm -f $(ARXIV_TARBALL)
+	@tmp=$$(mktemp -d) && pkg=$$tmp/$(PAPER_NAME) && mkdir -p $$pkg && \
+	    cp $(PAPER_DIR)/$(PAPER_NAME).tex $$pkg/ && \
+	    cp $(PAPER_DIR)/references.bib    $$pkg/ && \
+	    cp $(PAPER_DIR)/acl.sty           $$pkg/ && \
+	    cp $(PAPER_DIR)/acl_natbib.bst    $$pkg/ && \
+	    cp $(PAPER_DIR)/$(PAPER_NAME).bbl $$pkg/ && \
+	    tar -C $$tmp -czf $(ARXIV_TARBALL) $(PAPER_NAME) && \
+	    rm -rf $$tmp
+	@echo "Wrote $(ARXIV_TARBALL):"
+	@tar -tzf $(ARXIV_TARBALL)

@@ -17,7 +17,7 @@ Usage:
 
 import json
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -61,7 +61,7 @@ def usage_summary(days: int, user_id: Optional[int], project_id: Optional[int]):
     
     try:
         # Calculate date range
-        end_date = datetime.utcnow()
+        end_date = datetime.now(timezone.utc)
         start_date = end_date - timedelta(days=days)
         
         print(f"📊 Usage Summary ({start_date.date()} to {end_date.date()})")
@@ -147,7 +147,7 @@ def usage_by_user(days: int, top: int):
     session = get_session()
     
     try:
-        end_date = datetime.utcnow()
+        end_date = datetime.now(timezone.utc)
         start_date = end_date - timedelta(days=days)
         
         print(f"👥 Top {top} Users by Usage ({start_date.date()} to {end_date.date()})")

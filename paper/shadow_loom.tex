@@ -25,9 +25,7 @@
 \usepackage{url}
 \usepackage{hyperref}
 
-\title{Shadow-Loom: An Experimental Framework for Combining
-       Graphical Causal Reasoning with a Game-Engine-Style
-       Graphical World Model of Narrative}
+\title{Shadow-Loom: Causal Reasoning over a Graphical World Model}
 
 \author{David Wilmot \\
         david.wilmot@gmail.com \\
@@ -38,71 +36,26 @@
 \maketitle
 
 \begin{abstract}
-Stories hold a reader's attention not, on the whole, because they
-are sequences of likely next words, but because they have causes,
+Stories hold a reader's attention because they have causes,
 secrets, and consequences. \textbf{Shadow-Loom} is an experimental
-open-source framework that takes a narrative and turns it into a
-typed, versioned \emph{graphical world model}. Two engines act on
-that model --- both, on this account, \emph{graphical world
-models} in their own right, since each defines a typed dynamics
-over the shared graph --- in something of the spirit of a game
-engine that pairs a physics simulator with a higher-level
-director. The first engine is a \emph{causal physics} (a
-Pearl-style graphical world model of cause and effect) grounded
-in Pearl's ladder of causation
-\citep{pearl2009causality,pearl2018book,bareinboim2022pearl} and
-the recently proposed counterfactual calculus over Ancestral
-Multi-World Networks \citep{correa2025amwn}. The second is a
-\emph{narrative physics} (a graphical world model of reader
-affect) that scores the same graph against four
-structural reader-states --- mystery, dramatic irony, suspense
-\citep{wilmot2020suspense}, and surprise \citep{ittibaldi2009surprise}
---- in the tradition of Sternberg's curiosity / suspense /
-surprise triad \citep{sternberg1992telling}, and plays something
-like the role of the drama manager in classical
-interactive-narrative architectures
-\citep{mateas2003facade,riedl2013interactive,ware2014glaive}.
-Large language models are used only at the boundary: extraction,
-rendering, and audit. Identification, intervention, and
-counterfactual reasoning are carried out in typed code over the
-graph, in much the way a game engine restricts a stochastic agent
-to physically admissible actions \citep{ha2018world,park2023generative}.
-The same loop --- ingest, simulate, generate, audit, re-ingest ---
-runs over user prose and produces a versioned world model with
-explicit, inspectable mathematical structure.
-
-Two motivations sit behind the design. First, counterfactual
-reasoning sits on the rung of Pearl's hierarchy where current
-LLMs are weakest. They are reasonably competent at observational
-and even interventional causal questions in text
-\citep{kiciman2024causal}, but they tend to fail to act on the
-implicit beliefs and counterfactual states they themselves infer
-\citep{gu2026simpletom,kim2023fantom,xu2025echoes}, and the
-foundations of rung-3 reasoning appear to need dedicated
-graphical machinery
-\citep{correa2025amwn,bareinboim2022pearl,halpern2016actual}.
-Second, coding agents tend to outperform open-domain agents at
-fixed model capacity, presumably because their outputs can be
-compiled, executed, and tested against a typed substrate.
-Shadow-Loom attempts to give narrative reasoning the same
-affordance: candidate continuations are propagated through the
-graph, checked against counterfactual-calculus-style independence
-and exclusion rules \citep{correa2025amwn}, and re-ingested for
-round-trip verification
-\citep{madaan2023selfrefine,bai2022constitutional,gu2024judge}.
-
-The system is offered as a research artefact rather than as a
-benchmarked NLP model. Formal evaluation is left to future work.
-The modest claim made here is that wiring a causal-graphical
-substrate underneath a constrained-LLM renderer is a tractable
-design point, with some apparent relevance to controllable
-generation, narrative theory of mind, computational social
-science, and the digital humanities. Code, fixtures, and pipeline
-are released open source in the hope that other researchers ---
-in NLP, in computational social science, and in the digital
-humanities --- may find the substrate useful and adapt it to
-their own questions. Definitions and equations for each pipeline
-stage are given in the appendix.
+open-source framework that turns a narrative into a versioned
+\emph{graphical world model} and lets two engines act
+on it: a \emph{causal physics} grounded in Pearl's ladder of
+causation \citep{pearl2009causality,bareinboim2022pearl} and the
+recently proposed counterfactual calculus over Ancestral
+Multi-World Networks \citep{correa2025amwn}; and a
+\emph{narrative physics} that scores the same graph against four
+structural reader-states --- mystery, dramatic irony, suspense,
+and surprise --- in the tradition of Sternberg's curiosity /
+suspense / surprise triad \citep{sternberg1992telling}, with
+suspense formalised in the structural-affect line of
+\citet{brewer1982stories}, \citet{comisky1982suspense} and
+\citet{cheong2015suspenser}. Large language models are used
+only at the boundary: extraction, rendering, and audit;
+identification, intervention, and counterfactual reasoning are
+carried out in typed code over the graph. The system is offered
+as a research artefact rather than as a benchmarked NLP model;
+code, fixtures, and pipeline are released open source.
 \end{abstract}
 
 
@@ -114,8 +67,8 @@ sequence-prediction problem and absorb the causal, temporal, and
 epistemic structure of the story into the weights of a single
 model. Recent work shows that such models are competent at
 \emph{reading} causal relations from text
-\citep{kiciman2024causal} but markedly weaker at \emph{acting} on
-the implicit beliefs of characters they have just inferred
+\citep{kiciman2024causal} but markedly weaker at \emph{acting}
+on the implicit beliefs of characters they have just inferred
 \citep{gu2026simpletom,kim2023fantom,cross2024hyp}; in
 unconditioned generation they tend to collapse onto a small set
 of shared plot tropes \citep{xu2025echoes,tian2024human}. The
@@ -128,17 +81,18 @@ reasoning over it symbolically
 using the LLM only as a constrained renderer
 \citep{riedlyoung2010narrative,yao2019planwrite,
 goldfarbtarrant2020aristotelian,yang2023doc}. Concretely, a
-query like ``what if Macbeth refuses to murder Duncan?''\ becomes
-a rung-2 do-operation on a typed event graph extracted from the
+query such as ``what if Macbeth refuses to murder Duncan?'' becomes
+a rung-2 (Intervention) do-operation on a typed event graph extracted from the
 play (App.~\ref{app:ex-amwn}) rather than a free-form prompt to
 a language model; ``does Poirot know the conspirators are still
-lovers?''\ becomes a finite belief-set membership test
+lovers?'' becomes a finite belief-set membership test
 (App.~\ref{app:ex-narrative}) rather than a single forward pass.
 
 \paragraph{Motivation 1: counterfactuals are where LLMs tend to
 struggle.} Pearl's hierarchy is provably non-collapsible. Rung-3
-quantities are not, in general, identifiable from rung-2 data,
-let alone from rung-1 observation \citep{bareinboim2022pearl}.
+quantities (Counterfactuals) are not, in general, identifiable from rung-2
+(Intervention) data, let alone from rung-1 (Observation) data
+\citep{bareinboim2022pearl}.
 Empirically, LLMs reproduce surface causal patterns from their
 training corpus \citep{kiciman2024causal} but tend to degrade
 sharply on multi-hop belief-conditioned action prediction
@@ -162,12 +116,13 @@ executed against a test suite, and rejected when they fail. The
 lever, on this reading, is the \emph{typed substrate underneath
 the natural-language reasoning}, not the model itself.
 Shadow-Loom borrows that lever for narrative. A continuation is
-rejected if (a) its causal propagation (Eq.~\ref{eq:impact})
-violates inertia or affordance gating; (b) its counterfactual
-branch fails an AMWN-style consistency, independence, or
-exclusion check \citep{correa2025amwn}; or (c) its re-extraction
-does not match the brief that licensed it (the audit pass, in
-the LLM-as-judge tradition of
+rejected if any of three checks fails: (a) its causal
+propagation (Eq.~\ref{eq:impact}) violates inertia or
+affordance gating; (b) its counterfactual branch fails an
+AMWN-style consistency, independence, or exclusion check
+\citep{correa2025amwn}; or (c) its re-extraction does not match
+the brief that licensed it (the audit pass, in the
+LLM-as-judge tradition of
 \citealp{bai2022constitutional,madaan2023selfrefine,gu2024judge}).
 The graph plays something like the role of the compiler; the
 auditor plays something like the role of the test suite.
@@ -192,11 +147,20 @@ pipeline:
 \item A \textbf{narrative physics layer} --- a graphical world
       model of reader affect over the same graph --- that scores it
       against closed-form information-state functionals for mystery,
-      dramatic irony, suspense, and surprise. Suspense extends the
-      hope/threat formulation of \citet{wilmot2020suspense} as a
+      dramatic irony, suspense, and surprise. Suspense uses the
+      hope/fear (here \emph{hope/threat}) anticipation pair from the
+      structural-affect tradition
+      \citep{brewer1982stories,comisky1982suspense,ortony1988occ,
+      zillmann1996suspense} as operationalised by
+      \citet{cheong2015suspenser}, combined as a
       \emph{balance$\,\times\,$stakes} product over the unrevealed
-      ledger; surprise is binary KL divergence between a
-      leave-one-out corpus-marginal prior, evidence-updated by
+      ledger; this is a deliberate departure from the
+      information-theoretic uncertainty-reduction formulation of
+      \citet{wilmot2020suspense}, whose reader-vs-future-state
+      epistemic-asymmetry shape we instead borrow for the dramatic
+      irony scorer in \S\ref{app:narrative}. Surprise is binary KL
+      divergence between a leave-one-out corpus-marginal prior,
+      evidence-updated by
       revealed causal edges, and the entity's reconstructed final
       state.
 \item A \textbf{constrained-LLM renderer + recursive auditor} loop
@@ -217,7 +181,7 @@ reasoning, and social science; Section~\ref{sec:limits} states the
 limitations honestly. Equations and per-stage definitions are in
 App.~\ref{app:defs}; an extended narrative walkthrough of the
 whole loop on a single fixture is in App.~\ref{app:walkthrough};
-worked examples drawn from the sixteen bundled plot fixtures
+worked examples drawn from the twenty bundled plot fixtures
 follow in App.~\ref{app:examples}; and a separate appendix on the
 authoring user interface, with screenshots and step-by-step
 example sessions, is in App.~\ref{app:ui}.
@@ -299,7 +263,7 @@ with the auditor's feedback appended, up to a configurable retry
 budget.
 
 The entire loop is exposed both through a NiceGUI authoring
-workspace (eight cross-linked tabs over a versioned project DAG;
+workspace (nine cross-linked tabs over a versioned project DAG;
 App.~\ref{app:ui}) and through a Model-Context-Protocol server
 with roughly forty tools, so a downstream agent can drive
 shadow-branch creation, scoring, and promotion programmatically.
@@ -384,14 +348,27 @@ auditor's separate behaviour-given-belief consistency check.
 \paragraph{Sternberg's curiosity / suspense / surprise triad
 \citep{sternberg1978expositional,sternberg1992telling,
 brewer1982stories} and its computational realisations
-\citep{cheong2015suspenser,baeyoung2008surprise,wilmot2020suspense,
-wilmot2021emnlp,wilmot2022phd}.} The four structural scorers
-(\textsc{Mys}, \textsc{Iro}, \textsc{Susp}, \textsc{Sur}) extend the
-triad with dramatic irony \citep{booth1974irony,gerrig1993narrative}.
-Suspense uses the hope/threat ledger of
-\citet{wilmot2020suspense} but combines the two sides as a
-\emph{balance$\,\times\,$stakes} product, peaking under genuine
-outcome uncertainty rather than under one-sided dominance; surprise
+\citep{cheong2015suspenser,baeyoung2008surprise,
+elyfrankel2015suspense,wilmot2020suspense,wilmot2021emnlp,
+wilmot2022phd}.} The four structural scorers (\textsc{Mys},
+\textsc{Iro}, \textsc{Susp}, \textsc{Sur}) extend the triad with
+dramatic irony \citep{booth1974irony,gerrig1993narrative}. The
+suspense scorer follows the hope/fear anticipation pair of the
+structural-affect and appraisal traditions
+\citep{brewer1982stories,comisky1982suspense,ortony1988occ,
+zillmann1996suspense} as operationalised in narrative planning by
+\citet{cheong2015suspenser}, combining the two sides as a
+\emph{balance$\,\times\,$stakes} product that peaks under genuine
+outcome uncertainty rather than under one-sided dominance. This is
+a deliberate departure from \citet{wilmot2020suspense}, whose
+suspense is information-theoretic uncertainty reduction over neural
+state representations and whose decision-theoretic counterpart is
+\citet{elyfrankel2015suspense}; that reader-vs-future-state
+epistemic-asymmetry shape (the reader knows things the focal future
+does not yet contain) is structurally closer to dramatic irony
+(reader knows things the characters do not) than to a hope/threat
+ledger, and motivates the irony scorer in
+App.~\ref{app:narrative} rather than the suspense scorer. Surprise
 follows \citet{ittibaldi2009surprise} with a geometric prior update
 over a leave-one-out corpus marginal; emotional arc analytics owe
 to \citet{reagan2016arcs}.
@@ -455,16 +432,19 @@ a game engine than to a sequence model: a typed simulation step
 renderer) only through a constrained action interface, in the
 lineage of Mimesis / Fa\c{c}ade-style interactive drama
 \citep{mateas2003facade,riedl2013interactive} and narrative
-planners such as CPOCL/Glaive \citep{ware2014glaive}. The generative-agent line of work
-\citep{park2023generative} and the ``world model'' line in deep RL
-\citep{ha2018world,lecun2022jepa,hao2023rap} make a similar wager
-from the opposite direction: that an explicit, manipulable latent
-world is what makes long-horizon coherent behaviour tractable. The shadow branches in Shadow-Loom play the
-role those world models play --- a sandbox in which counterfactual
+planners such as CPOCL/Glaive \citep{ware2014glaive}. The
+generative-agent line of work \citep{park2023generative} and
+the ``world model'' line in deep RL
+\citep{ha2018world,lecun2022jepa,hao2023rap} make a similar
+wager from the opposite direction: that an explicit, manipulable
+latent world is what makes long-horizon coherent behaviour
+tractable. Shadow-Loom's shadow branches play the role those
+world models play --- a sandbox in which counterfactual
 rollouts can be evaluated before being committed --- but with a
-typed, inspectable schema in place of an opaque latent state. The bundled example
-worlds and authoring tools relate Shadow-Loom to the broader
-procedural-content-generation tradition
+typed, inspectable schema in place of an opaque latent state.
+The bundled example worlds and authoring tools relate
+Shadow-Loom to the broader procedural-content-generation
+tradition
 \citep{smelik2014procedural,summerville2018pcgml,kreminski2020wereyaknow}.
 
 
@@ -475,8 +455,13 @@ procedural-content-generation tradition
 Section~\ref{sec:lineage} is borrowed: Pearl's ladder
 \citep{pearl2009causality,bareinboim2022pearl}; the AMWN +
 ctf-calculus framework \citep{correa2025amwn}; actual-causality
-semantics \citep{halpern2016actual}; the suspense and surprise
-formalisms of \citet{wilmot2020suspense} and
+semantics \citep{halpern2016actual}; the structural-affect /
+hope-fear anticipation pair underlying the suspense scorer
+\citep{brewer1982stories,comisky1982suspense,ortony1988occ,
+zillmann1996suspense,cheong2015suspenser}; the
+uncertainty-reduction view of suspense (re-used here as the
+epistemic-asymmetry shape of the irony scorer) of
+\citet{wilmot2020suspense}; the Bayesian-surprise formalism of
 \citet{ittibaldi2009surprise}; the LLM-as-judge audit pattern
 \citep{bai2022constitutional,madaan2023selfrefine,gu2024judge};
 the plan-and-render line in neural story generation
@@ -539,7 +524,8 @@ the graph; the narrative physics decides \emph{which of the allowed
 things would be most readable}. Decoupling licensing from
 desirability lets the system score and rank candidate
 interventions before any text is generated, and lets the same
-engine serve both ``what-if'' analytical queries (rung 2/3) and
+engine serve both ``what-if'' analytical queries (rung-2 Intervention
+and rung-3 Counterfactual) and
 high-level affective directives (``maximise dramatic irony for
 character X'').
 
@@ -611,7 +597,7 @@ back to the source text. Researchers in those communities, as
 well as in narratology and cognitive science, are warmly invited
 to fork the schema, swap in their own ingestion prompts and
 affective scorers, and report what they find. The pipeline ships
-with sixteen worked example worlds drawn from canonical
+with twenty worked example worlds drawn from canonical
 literature and film, which may serve as a common reference set
 for cross-group experimentation.
 
@@ -702,6 +688,138 @@ $\textsc{Reconstruct}(e_i, t)$ replays sparse
 \texttt{state\_timeline} deltas to give the entity's effective
 state at any fabula time $t$.
 
+\paragraph{Node types and their carrying state.}
+Table~\ref{tab:nodes} summarises the six node families and the
+typed state each carries. All six share a common
+\texttt{AMWNNode} base that carries the branch tag $\tau$
+(\texttt{world\_id}), a syuzhet-indexed
+\texttt{state\_timeline}, and \texttt{evidence\_strength}.
+
+\begin{table*}[h]
+\centering\small
+\begin{tabular}{@{}p{2cm}p{4.0cm}p{8.5cm}@{}}
+\toprule
+Node ID prefix & Pydantic class & Distinctive state \\
+\midrule
+\texttt{ENT\_} & \texttt{Entity} & \texttt{traits: Dict[str, TraitVector]}; \texttt{beliefs: List[Belief]}; \texttt{constants: List[str]}; \texttt{location\_id}; \texttt{status}; \texttt{state\_timeline} of \texttt{EntityStateSnapshot} deltas. \\
+\texttt{EVT\_} & \texttt{EventNode} & \texttt{event\_type} (\texttt{action} / \texttt{utterance} / \texttt{outcome} / \texttt{revelation} / \texttt{choice} / \dots); \texttt{actor\_ids}, \texttt{target\_ids}; \texttt{fabula\_time}, \texttt{syuzhet\_index}; for \texttt{utterance}: \texttt{speaker\_id}, \texttt{addressee\_ids}, \texttt{via\_channel\_id}, \texttt{content}, \texttt{truth\_value} $\in$ \{\texttt{true}, \texttt{false}, \texttt{uncertain}\}. \\
+\texttt{LOC\_} & \texttt{Location} & \texttt{ambient\_state: Dict[str, AmbientVector]} (e.g.\ \textit{tension}, \textit{bustle}, \textit{supernatural}); \texttt{capacity}; outgoing \texttt{SpatialEdge}s. \\
+\texttt{OBJ\_} & \texttt{Object} & \texttt{location\_id} or \texttt{owner\_id}; \texttt{properties}; \texttt{affordances: List[Affordance]} (typed action/target gates). \\
+\texttt{CHN\_} & \texttt{Channel} & \texttt{medium}, \texttt{directionality}, \texttt{participant\_ids}; \texttt{intelligibility: Dict[entity\_id, float]} per-participant; \texttt{established\_at\_fabula}, \texttt{terminated\_at\_fabula}. \\
+\texttt{WORLD\_} & \texttt{GlobalTrait} & Standing pressure (e.g.\ \texttt{WORLD\_REGENCY\_RANK} in Persuasion, \texttt{WORLD\_SOVIET\_PENETRATION} in Tinker Tailor): a single value $v$, \texttt{inertia}, \texttt{evidence\_strength}, plus a \texttt{state\_timeline} of \texttt{WorldTraitSnapshot}s. \\
+\bottomrule
+\end{tabular}
+\caption{Node families in \texttt{WorldStateV1}. Each
+\texttt{ID\_} prefix maps to one Pydantic class in
+\texttt{shadow\_loom/models.py} and carries its own typed state.
+The same six prefixes are used as node-ID conventions throughout
+the codebase, the bundled fixtures, and the renderer's brief.}
+\label{tab:nodes}
+\end{table*}
+
+\paragraph{Edge families and their roles.}
+Edges live on three orthogonal layers, each a separate Pydantic
+class with its own validator:
+
+\begin{description}
+  \item[\texttt{CausalEdge}] (event$\rightleftarrows$event,
+        event$\to$state, state$\to$event, state$\to$state). A
+        single class with five \texttt{causality\_type}
+        modalities --- \texttt{chain\_reaction},
+        \texttt{mutation}, \texttt{mutation\_social},
+        \texttt{affordance\_gate}, \texttt{ambient\_propagation}
+        --- and a model validator that enforces source/target
+        type matches modality. Each edge carries
+        \texttt{mechanism} (e.g.\ \textit{psychological},
+        \textit{physical}, \textit{social}, \textit{epistemic},
+        \textit{betrayal}), \texttt{evidence\_strength} $\in$
+        \{\texttt{weak}, \texttt{moderate}, \texttt{strong}\},
+        \texttt{causal\_force} $\in [0, 10]$, a fabula
+        timestamp, an optional \texttt{propagation\_delay}, and
+        --- for \texttt{mutation} / \texttt{mutation\_social} ---
+        a \texttt{trait\_target} and signed
+        \texttt{trait\_delta}. \texttt{mutation\_social} edges
+        additionally carry a \texttt{rel\_counterpart\_id} so
+        that a single event can shock a relationship axis
+        (e.g.\ Lady Macbeth's \emph{power\_dynamic} against
+        Macbeth) rather than a free-standing trait.
+  \item[\texttt{RelationshipEdge}]
+        (entity$\rightleftarrows$entity). One edge per ordered
+        pair, with a per-axis
+        \texttt{metrics: Dict[axis, AxisMetric]} where
+        $\texttt{axis} \in \{\textit{affinity},\
+        \textit{fear},\ \textit{power\_dynamic}\}$. Each axis
+        owns its own \texttt{value}, \texttt{inertia},
+        \texttt{evidence\_strength}, and
+        \texttt{last\_updated\_fabula}. Flat back-compat
+        properties expose the canonical
+        \emph{affinity} value as \texttt{.value}.
+  \item[\texttt{SpatialEdge}] (location$\to$location). Optional
+        \texttt{is\_locked} plus \texttt{barrier\_item\_id};
+        unlocked edges contribute to the spatial-affordance
+        path-check that gates cross-location causal influence
+        (Eq.~\ref{eq:impact}).
+\end{description}
+
+Communication is \emph{not} an edge --- standing capability lives
+on the \texttt{Channel} \emph{node}, and discrete messages are
+first-class \texttt{EventNode}s with \texttt{event\_type=
+"utterance"} pointing at a channel via \texttt{via\_channel\_id}.
+This is what makes the lying-narrator pattern (Amy's diary in
+\emph{Gone Girl}, Pip's misattributed benefactor in \emph{Great
+Expectations}, the Witches' equivocations in \emph{Macbeth}) a
+single uniform construct: an \texttt{utterance} event with
+\texttt{truth\_value="false"} broadcast through a channel whose
+addressees have non-zero \texttt{intelligibility}.
+
+\paragraph{Worked illustration --- a slice of \emph{Macbeth}.}
+The Inverness night reduces to a small, fully typed sub-graph:
+\begin{itemize}\itemsep1pt
+\item \textbf{Entities.} \texttt{ENT\_MACBETH} with traits
+      \texttt{ambition} ($v\!=\!0.7$, $\iota\!=\!0.5$),
+      \texttt{courage} ($0.85$, $0.7$), \texttt{guilt}
+      ($0.1$, $0.25$), \texttt{paranoia} ($0.2$, $0.3$); a
+      \texttt{Belief(target\_id="ENT\_WITCHES",\ confidence=0.4,\ \\
+      inertia=0.35)}.
+\item \textbf{Object.} \texttt{OBJ\_BLOODY\_DAGGERS} with
+      \texttt{Affordance(action="kill",\ target\_type="Entity")}
+      --- the precondition gate the engine checks before
+      \texttt{EVT\_DUNCAN\_MURDER} fires.
+\item \textbf{Location.} \texttt{LOC\_INVERNESS\_CASTLE} with
+      ambient \textit{tension} = $0.6$.
+      \texttt{LOC\_HEATH} carries
+      \texttt{ambient\_state\{supernatural:\ 0.9,\
+      concealment:\ 0.7\}}, the source of the heath-night
+      ambient-propagation edge that biases Macbeth's uptake of
+      the prophecy belief.
+\item \textbf{Channel.} \texttt{CHN\_HEATH\_PROPHECY} with
+      \texttt{participants=[\\
+      ENT\_MACBETH,\ ENT\_BANQUO,\ ENT\_WITCHES]}, used by the
+      utterance event \texttt{EVT\_UTT\_PROPHECY\_HEATH}
+      ($\texttt{truth\_value}=\textit{uncertain}$).
+\item \textbf{Causal sub-graph.} \texttt{EVT\_LADY\_MACBETH\_PERSUADES
+      $\to$ EVT\_DUNCAN\_MURDER} (\texttt{chain\_reaction},
+      $\texttt{causal\_force}=8.0$); \texttt{OBJ\_BLOODY\_DAGGERS
+      $\to$ EVT\_DUNCAN\_MURDER} (\texttt{affordance\_gate},
+      $9.0$); \texttt{EVT\_LADY\_MACBETH\_PERSUADES $\to$
+      ENT\_LADY\_MACBETH} (\texttt{mutation\_social},
+      \emph{power\_dynamic} against \texttt{ENT\_MACBETH},
+      $\Delta=+0.4$, $7.0$); \texttt{EVT\_BANQUO\_GHOST $\to$
+      ENT\_MACBETH} (\texttt{mutation\_social}, \emph{fear}
+      against \texttt{ENT\_BANQUO}, $\Delta=+0.5$, $6.0$);
+      \texttt{LOC\_HEATH $\to$ ENT\_MACBETH}
+      (\texttt{ambient\_propagation}, $\textit{epistemic}$).
+\end{itemize}
+Every value above is read directly from
+\texttt{example\_worlds/macbeth.py}; the same six-prefix /
+three-edge / typed-state pattern carries through every bundled
+fixture, from a Regency drawing-room (\emph{Persuasion}) to a
+Cold-War mole hunt (\emph{Tinker Tailor Soldier Spy}). The
+fixture-level diversity of \emph{ambient\_state} tags,
+\emph{mechanism} labels, \emph{trait} dictionaries, and
+\emph{intelligibility} maps is intentional: the schema is fixed,
+the populated typology is fixture-specific.
+
 \subsection{Ingestion}
 \label{app:ingestion}
 
@@ -735,11 +853,74 @@ the $k$-hop spatial / causal / social neighbourhood of $F$ at
 fabula time $t$, with belief and trait values reconstructed at
 $t$ so future information cannot leak into a counterfactual. The
 \texttt{AMWNInstantiator} mirrors $\mathcal{G}_{F,t}$ as a
-NetworkX \texttt{MultiDiGraph}, in the spirit of the AMWN
-construction \citep{correa2025amwn}, with edge types
-\{\texttt{located\_in}, \texttt{owned\_by}, \texttt{causal},
-\texttt{relationship}, \texttt{connected\_to},
+NetworkX \texttt{MultiDiGraph} for the simulation sandbox, with
+edge types \{\texttt{located\_in}, \texttt{owned\_by},
+\texttt{causal}, \texttt{relationship}, \texttt{connected\_to},
 \texttt{communicating\_with}, \texttt{eavesdropped\_by}\}.
+
+\paragraph{Causal diagram and AMWN proper.}
+\textsl{Separately} from the simulation mirror,
+\texttt{shadow\_loom.amwn.build\_causal\_diagram} strips
+\texttt{WorldStateV1.causal\_topology} to a typed structural
+diagram $G$ and \texttt{build\_amwn} constructs the
+\textsl{Ancestral Multi-World Network} $G^A(G, W^*)$ of
+\citet{correa2025amwn} over a query's intervention/evidence set
+$W^* = \{V_t, \ldots\}$. Three implementation details bridge the
+narrative graph and Definition~A.1 of the paper:
+\begin{enumerate}
+  \item \textbf{Node shadowing.} A counterfactual variable
+        $V_t$ is identified by the pair
+        $(V, \text{proj}(T, \text{An}(V)_{G_{\bar T}}))$, where
+        the intervention context $T$ is projected onto $V$'s
+        ancestors in the mutilated diagram. Two copies of $V$
+        coming from different worlds are \emph{the same node}
+        when their projected contexts agree --- this is the
+        AMWN's mechanism for avoiding the exponential
+        $k$-plet blow-up of \citet{shpitser2007counterfactuals}.
+        d-Separation (Rule~2) is then read off $G^A$ via
+        NetworkX \texttt{is\_d\_separator}.
+  \item \textbf{Synthetic relationship-metric nodes.}
+        Relationship metrics (affinity, fear, power\_dynamic)
+        live on edges in
+        \texttt{social\_topology}, not as first-class nodes, so
+        \texttt{mutation\_social} causal edges would otherwise be
+        invisible to d-separation. We promote each
+        $(\textit{src}, \textit{tgt}, \textit{metric})$ triple
+        into a synthetic node
+        \texttt{REL::}\textit{src}\texttt{::}\textit{tgt}\texttt{::}\textit{metric}
+        with both endpoint entities and the triggering event as
+        parents. Static-topology axes that were never observed
+        ($m.\textit{observed} = \texttt{false}$) are skipped to
+        avoid injecting phantom variables into latent queries.
+  \item \textbf{Channel and utterance routing.} Communication
+        channels are first-class diagram nodes. Each
+        utterance event is wired
+        \emph{speaker} $\to$ \emph{utterance} $\to$ \emph{channel}
+        $\to$ \emph{addressees}, with bidirectional standing
+        capability edges \emph{channel} $\leftrightarrow$
+        \emph{participant}. A Rule-3 surgery on a channel
+        therefore cuts both the standing capability and every
+        per-utterance content path --- exactly the closure
+        property the channel-utterance integration relies on.
+\end{enumerate}
+
+\paragraph{Latent-free SCM and the optional U-confounder switch.}
+The diagram is built from the engine's ground-truth
+\texttt{causal\_topology}, with no bidirected $U$ arcs; reading
+$G^A$ for d-separation is therefore \textbf{sound} but
+\textbf{incomplete with respect to unobserved confounders} --- a
+latent common cause that LLM extraction missed is silently
+treated as absent. To make the limitation explicit, the
+\texttt{allow\_unobserved\_confounders} setting injects, for
+every pair of distinct nodes that share at least one observed
+parent, a latent shared parent
+\texttt{U\_}\textit{a}\texttt{\_\_}\textit{b}; d-separation on
+the resulting diagram refuses to mark such siblings independent
+because the latent opens an active path. This produces the
+sound-but-incomplete behaviour callers expect from the
+narrative-extraction setting and is recommended for any pipeline
+where Rule~3 pruning will be promoted from advisory to
+authoritative.
 
 \subsection{Causal physics}
 \label{app:causal}
@@ -754,7 +935,7 @@ Interventions} ($\mathrm{do}(X = x)$, severing incoming edges into
 $X$), and \textbf{rung~3 is Counterfactuals} (abduction over
 latent exogenous values, then a do-operation on the abducted
 world). Each rung corresponds to one query type in
-Section~\ref{sec:queries}: \texttt{ObservationQuery},
+Section~\ref{sec:pipeline}: \texttt{ObservationQuery},
 \texttt{InterventionQuery}, and \texttt{CounterfactualQuery}
 respectively.
 
@@ -763,31 +944,126 @@ Given a sandbox $\mathcal{G}$ and an intervention specification:
 $P(Y \mid X = x)$ directly off the ego-graph; no edge surgery.
 \paragraph{Action (rung~2 --- Interventions):} $\mathrm{do}(X = x)$
 severs every incoming causal edge into $X$ and writes
-$V_X \leftarrow x$.
+$V_X \leftarrow x$. Channel surgery
+($\mathrm{do}(\textsc{ch}.\textit{status} = \text{severed})$) and
+event invalidation ($\mathrm{do}(e.\textit{truth\_value} =
+\text{false})$) additionally trigger a \emph{provenance prune}:
+beliefs whose \texttt{acquired\_via\_event\_id} or
+\texttt{acquired\_via\_channel\_id} pointed at the surgically
+disabled object are dropped from the sandbox before propagation,
+because they are no longer epistemically licensed in the
+counterfactual world.
 \paragraph{Abduction (rung~3 --- Counterfactuals):} for evidence
-$E$, each entity trait blends 50\% toward its observed factual
-value, weighted by edge $\sigma_{\mathrm{evidence}}$ and gated by
-a typed \texttt{MECHANISM\_TRAIT\_MAP} that says which mechanisms
-can touch which trait families. The do-operation of rung~2 is
-then re-applied on the abducted world.
-\paragraph{Propagation:} a topological sort over the causal
-sub-graph applies, for each downstream node $u$ with parent $p$
-and edge weight $w$:
+$E$, each entity trait $T$ is updated by a precision-weighted
+Bayesian blend of the historical sandbox prior and the present-day
+observed value: writing $\iota_T$ for the trait's typed inertia
+(reinterpreted as the precision of the historical prior) and
+$\kappa_E$ for an evidence precision (default $1$),
+\begin{equation}
+\label{eq:abduction}
+T^{\mathrm{post}} =
+\frac{\iota_T \cdot T^{\mathrm{prior}} +
+      \kappa_E \cdot T^{\mathrm{evidence}}}{\iota_T + \kappa_E},
+\end{equation}
+so high-inertia traits shrink toward the historical baseline and
+low-inertia traits snap to the evidence. (A legacy
+inertia-damped variant
+$T^{\mathrm{post}} = T^{\mathrm{prior}} +
+(1 - \iota_T)\,(T^{\mathrm{evidence}} - T^{\mathrm{prior}})$ is
+retained for ablation.) The same Bayes blend is applied per axis
+to relationship metrics on outgoing social edges. Belief
+back-propagation is gated by a per-recipient
+\texttt{intelligibility} threshold so a belief that could not
+plausibly have been acquired through its provenance channel is
+not reinstated. The do-operation of rung~2 is then re-applied on
+the abducted world.
+
+\paragraph{Counterfactual (ctf-) calculus pre-flight.} Before any
+sandbox surgery, every Rung-2/3 query is screened against the
+three rules of the ctf-calculus of \citet{correa2025amwn},
+specialised to a latent-free SCM:
+\begin{description}
+  \item[Rule~1 (Consistency)] suppresses vacuous interventions
+        $\mathrm{do}(X = x)$ for which the observed factual value
+        of $X$ is already $x$.
+  \item[Rule~2 (Independence)] builds the AMWN
+        $G^A(G, W^*)$ over the union of evidence and intervention
+        targets, with node-shadowing across worlds whose projected
+        contexts on the ancestral set agree, and tests
+        $(Y_r \perp\!\!\!\perp X_t \mid W^*)$ via d-separation on
+        the AMWN. Evidence flagged as redundant is reported but
+        not silently dropped.
+  \item[Rule~3 (Exclusion)] tests
+        $X \cap \mathrm{An}(Y) = \emptyset$ in the mutilated
+        diagram $G_{\bar Z}$ and flags interventions that are
+        provably vacuous with respect to the query targets. The
+        engine ships in \emph{advisory} mode by default (the
+        flagged interventions are surfaced to the auditor but
+        retained in the simulation), since a missed bidirected
+        confounder would otherwise let a substantively meaningful
+        intervention be d-separated into a no-op; \emph{prune}
+        mode is opt-in for confounder-complete topologies.
+\end{description}
+The construction matches Definition~A.1 of
+\citet{correa2025amwn} in spirit, with the following deliberate
+restrictions: (a) we operate on a latent-free SCM, so soundness
+for d-separation holds but completeness across worlds with
+shared unobserved confounders would require explicit bidirected
+edges that the data model does not yet encode; (b) Rule-2
+flags are advisory rather than authoritative; and (c) the
+relationship-edge axes (affinity, fear, power\_dynamic) are
+lifted into synthetic
+\texttt{REL::}{\textit{src}}\texttt{::}{\textit{tgt}}\texttt{::}{\textit{metric}}
+diagram nodes so that
+\texttt{mutation\_social} edges contribute to d-separation
+reasoning.
+
+\paragraph{Propagation.} A topological sort over the causal
+sub-graph (with strongly connected components condensed and the
+members of each non-trivial SCM cycle blocked with reason
+\texttt{cycle}) applies, for each downstream entity trait $T$ at
+node $u$ with active parents $\{p_i\}$ and edge weights
+$\{w_i\}$ (where each $w_i = \sigma_i \cdot \phi_i$ is the
+product of an evidence-strength weight $\sigma_i \in \{0.25,
+0.5, 0.75\}$ and a causal-force scalar $\phi_i$, attenuated by a
+mechanism / world-domain fallback when the edge mechanism is
+outside the trait's typed
+\texttt{MECHANISM\_TRAIT\_MAP}):
 \begin{equation}
 \label{eq:impact}
-I(u) = (V_p - V_u)\, w,
-\qquad
+I_i = (V_{p_i} - V_u)\, w_i,
+\quad
+\bar I = \frac{\sum_i I_i}{\max(1,\, \sum_i w_i)},
+\quad
 \Delta_u =
 \begin{cases}
-I(u) - \mathrm{sgn}(I(u))\, \iota_u & \text{if } |I(u)| > \iota_u,\\
-0 & \text{otherwise}.
+\bar I - \mathrm{sgn}(\bar I)\, \iota_u & \text{if } |\bar I| > \iota_u + \varepsilon,\\
+0 & \text{otherwise.}
 \end{cases}
 \end{equation}
-A spatial affordance check additionally blocks cross-location
-influence unless an unbroken \texttt{connected\_to} path exists.
-The result is a structured
+The $\max(1, \cdot)$ divisor makes the gate scale-invariant only
+\emph{above unit weight}: a single weak edge with
+$\sum w_i = 0.1$ is not artificially inflated to clear an
+arbitrary inertia, while ten stacking weak edges no longer
+dominate one canonical strong source. A spatial affordance check
+additionally blocks cross-location influence unless an unbroken
+\texttt{connected\_to} path exists. An optional noisy-OR
+propagation mode replaces the deterministic
+$|\bar I| > \iota_u$ gate with a Bernoulli aggregation of
+per-edge fire probabilities
+$p_i = \sigma(\beta\,(|I_i| - \iota_u))$ followed by an
+$\bigvee_i p_i = 1 - \prod_i (1 - p_i)$ aggregator and a
+threshold (or, under
+\texttt{execute\_distribution}, a Monte-Carlo Bernoulli draw); a
+post-pass \emph{baseline drift} optionally pulls mutated traits
+back toward type by $(1 - \iota_u)\cdot \rho$. Both are off by
+default so the canonical engine is bit-for-bit reproducible. The
+result is a structured
 \texttt{CausalPhysicsResult\{mutations, blocked, hidden\_deltas,
-intervened\_nodes\}}.
+intervened\_nodes, rule3\_pruned\_interventions,
+rule2\_redundant\_evidence, noisy\_or\_probabilities,
+pruned\_beliefs\_count, pruned\_utterance\_event\_ids,
+disabled\_channel\_ids\}}.
 
 \subsection{Narrative physics (affective calculus)}
 \label{app:narrative}
@@ -804,15 +1080,35 @@ event $e$ with $s(e) \le t_s$. Define $\mathrm{Anc}(e)$ as the
 causal ancestors of $e$ in the graph and $B(F, t_f)$ as the union
 of belief sets of $F$ reconstructed at $t_f$.
 
-\paragraph{Mystery.} For each revealed effect $e$,
+\paragraph{Mystery (Sternberg's curiosity).}
+The Sternberg-style curiosity operationalisation
+\citep{sternberg1978expositional,sternberg1992telling,
+brewer1982stories} aggregates over revealed effects $e$ involving
+the focal cast (events with $s(e) \le t_s$ and at least one focal
+participant), pooled with the focal entities themselves as
+permissible effect-nodes (an entity is itself a causal target of
+every revealed action against it). Writing $w(a \to e)$ for the
+strongest single-edge weight from ancestor $a$ to effect $e$
+(falling back to the strongest outgoing weight of $a$ for
+multi-hop ancestors as a cheap upper bound on its contribution,
+and to $0.5$ in the absence of any weight),
 \begin{equation}
 \label{eq:mystery}
-\mathrm{Mys}(e) =
-\frac{|\{a \in \mathrm{Anc}(e) : s(a) > t_s\}|}{|\mathrm{Anc}(e)|},
+\mathrm{Mys} =
+\frac{\sum_{e \in \mathrm{eff}}\,
+        \sum_{a \in \mathrm{Anc}(e),\; s(a) > t_s} w(a \to e)}
+     {\sum_{e \in \mathrm{eff}}\,
+        \sum_{a \in \mathrm{Anc}(e)} w(a \to e)},
 \end{equation}
-the fraction of $e$'s causes still hidden from the reader.
+the strength-weighted fraction of focal-effect causes still
+hidden from the reader. The unweighted ratio
+$|\{a : s(a) > t_s\}|/|\mathrm{Anc}(e)|$ is the equivalent simple
+form when all edge weights are unit.
 
-\paragraph{Dramatic irony.} For each focal entity $c \in F$
+\paragraph{Dramatic irony
+\citep{booth1974irony,muecke1969compass,gerrig1993narrative}.}
+Following the classical reader/character knowledge-asymmetry
+framing, for each focal entity $c \in F$
 let $K_c$ be the set of events $c$ knows at the anchor: events
 $c$ participates in (as actor or target) whose fabula time falls
 at or before the syuzhet anchor's fabula frontier, plus events
@@ -839,12 +1135,28 @@ gap mass climb monotonically with reveals and \emph{fall} when
 characters acquire knowledge later in the story --- the
 dramatic-irony arc the formal definition is supposed to track.
 
-\paragraph{Suspense \citep{wilmot2020suspense}.} For each
+\paragraph{Suspense
+\citep{brewer1982stories,comisky1982suspense,ortony1988occ,
+zillmann1996suspense,cheong2015suspenser}.} The scorer follows
+the hope/fear (here \emph{hope/threat}) anticipation pair from the
+structural-affect and OCC-appraisal traditions --- not the
+information-theoretic uncertainty-reduction formulation of
+\citet{wilmot2020suspense}, which is structurally closer to the
+dramatic-irony scorer above and is borrowed there instead. For each
 unrevealed event $e$ with strongest incoming causal weight
 $p_e \in (0, 1]$, classify focal entities per-event: an entity
 acted upon without itself acting contributes to threat, an
-entity acting contributes to hope. Aggregating these per-entity
-contributions:
+entity acting contributes to hope. We note this binary
+actor/target classification is a known limitation of plan-based
+suspense scorers in the lineage of \citet{cheong2015suspenser}: it
+does not consult the desirability of the outcome to the entity
+(an antagonist authoring a successful misdeed registers as
+\emph{hope}), and it does not model reader disposition toward the
+character in the sense of \citet{zillmann1996suspense}. The
+balance$\,\times\,$stakes combiner partially absorbs this by
+requiring \emph{both} sides to be populated, but a fully
+disposition-aware variant is left to future work. Aggregating
+per-entity contributions:
 \begin{equation}
 w_{\mathrm{threat}} \!=\!\!\!\sum_{\substack{e \notin \mathrm{rev} \\ x \in F \cap \mathrm{target}(e) \setminus \mathrm{actor}(e)}}\!\!\! p_e,
 \quad
@@ -993,7 +1305,7 @@ preserving canon.
 \section{Worked examples on real plot fixtures}
 \label{app:examples}
 
-The repository ships sixteen hand-authored \texttt{example\_worlds/}
+The repository ships twenty hand-authored \texttt{example\_worlds/}
 fixtures paired with prose synopses in \texttt{sample\_plots/}. A
 small subset is used below to illustrate each component
 end-to-end. Field
@@ -1012,8 +1324,9 @@ The entity \texttt{ENT\_MACBETH} is a bundle of typed
 \texttt{TraitVector}s: \texttt{ambition}, \texttt{courage} (high
 inertia $0.7$, hard to shake), \texttt{guilt} (low inertia $0.25$,
 highly mutable), and so on; an initial
-\texttt{Belief(target=PROPHECY, confidence=0.4)} sits on his belief
-list with its own inertia. \texttt{OBJ\_BLOODY\_DAGGERS} declares
+\texttt{Belief(target\_id="ENT\_WITCHES",\ perceived\_state=\\
+``The witches' prophecies may yet prove true'',\ confidence=0.4,\ inertia=0.35)}
+sits on his belief list. \texttt{OBJ\_BLOODY\_DAGGERS} declares
 \texttt{Affordance(action="kill", target\_type="Entity")} ---
 the precondition gate the engine checks before it lets
 \texttt{EVT\_DUNCAN\_MURDER} fire. Every \texttt{EventNode} carries
@@ -1039,8 +1352,10 @@ the same \texttt{Channel.intelligibility} map.
 \label{app:ex-amwn}
 
 The query ``Macbeth refuses to murder Duncan'' is a rung-2
-intervention. \texttt{AMWNInstantiator.create\_sandbox(F=\{ENT\_MACBETH\},
-t)} mirrors the ego-graph as a \texttt{MultiDiGraph}; a sibling
+(Intervention) query. The router builds an ego-payload focused on
+\texttt{ENT\_MACBETH} at the Inverness anchor, and
+\texttt{AMWNInstantiator.create\_sandbox(ego\_payload,\ query\_type="intervention")}
+mirrors it as a \texttt{MultiDiGraph}; a sibling
 \texttt{VersionRow} with \texttt{world\_id="shadow"} holds the fork.
 \texttt{apply\_do\_operator(\{EVT\_DUNCAN\_MURDER: $\oslash$\})}
 severs the murder's incoming causal edges; the downstream
@@ -1056,18 +1371,34 @@ diffable, and promotable from the UI.
 \label{app:ex-causal}
 
 After the do-operator, \texttt{propagate()} topologically sorts the
-causal sub-graph. For the original (factual) chain, the edge
-\texttt{EVT\_BANQUO\_GHOST $\to$ ENT\_MACBETH.guilt} with weight
-$w=0.7$ and source delta $V_p - V_u = 0.6$ produces
-$I = 0.42$. Because \texttt{guilt}'s post-shock inertia $\iota$ has
-been bumped to $\sim 0.3$ from its baseline $0.25$ by the previous
-\texttt{state\_timeline} entry, the gate $|I| > \iota$ passes and
-$\Delta = 0.42 - 0.3 = 0.12$ is written. A symmetrical attempt to
-shock \texttt{courage} (initial inertia $0.7$) at $w=0.5$,
-$\Delta_\text{src}=0.4$ gives $I=0.20<0.7$ and is \emph{blocked} ---
-exactly the play's psychology, in which his nerve outlasts his
-conscience. Spatial affordance gating additionally blocks
-cross-location shocks unless a \texttt{connected\_to} path exists.
+causal sub-graph. For the original (factual) chain, the only
+active inbound edge into \texttt{ENT\_LADY\_MACBETH} from
+\texttt{EVT\_LADY\_MACBETH\_PERSUADES} (a
+\texttt{mutation\_social} edge with
+$\texttt{trait\_target}=\textit{power\_dynamic}$ and
+$\texttt{causal\_force}=7.0$ against
+\texttt{ENT\_MACBETH}) lifts her relational dominance over
+Macbeth by $\Delta = +0.4$, while the symmetrical edge
+\texttt{EVT\_BANQUO\_GHOST $\to$ ENT\_MACBETH}
+($\texttt{trait\_target}=\textit{fear}$,
+$\texttt{trait\_delta}=+0.5$, $\texttt{causal\_force}=6.0$
+against \texttt{ENT\_BANQUO}) shocks Macbeth's
+\textit{fear-of-Banquo} channel by $\Delta = +0.5$. With a single
+active source per channel the normaliser
+$\max(1, \sum w_i) = 1$, so $\bar I = I$, and both are above the
+trait inertia (Lady Macbeth's resolve-related inertia $\sim 0.3$;
+Macbeth's per-relation inertia for an unestablished fear is
+low). A symmetrical attempt to shock Macbeth's
+\texttt{courage} (initial inertia $0.7$) at
+$w \approx 0.5$, $\Delta_\text{src}=0.4$ would give
+$\bar I = 0.20 < 0.7$ and is \emph{blocked} --- exactly the
+play's psychology, in which his nerve outlasts his conscience.
+With multiple stacking weak sources the divisor switches to
+$\sum w_i$ and the aggregate behaves as a weighted average,
+preventing ten weak rumours from outweighing one canonical
+strong cause. Spatial affordance gating additionally blocks
+cross-location shocks unless a \texttt{connected\_to} path
+exists.
 The truth-value guard generalises the same gate to utterance evidence:
 \texttt{EVT\_UTT\_NOELLE\_PREGNANCY\_CLAIM} (Gone Girl,
 \texttt{truth\_value="false"}) and
@@ -1088,9 +1419,9 @@ Dogs, Romeo and Juliet, Macbeth}
 The four structural scorers each have a canonical fixture.
 
 \paragraph{Mystery (Macbeth Act II).} Eq.~\ref{eq:mystery} on the
-revealed effect \texttt{EVT\_DUNCAN\_FOUND\_DEAD}: of its causal
-ancestors, \texttt{EVT\_LADY\_PERSUADES} and
-\texttt{EVT\_DAGGERS\_PLACED} are still hidden at the audience's
+revealed effect \texttt{EVT\_DUNCAN\_DISCOVERED\_MURDERED}: of
+its causal ancestors, \texttt{EVT\_LADY\_MACBETH\_PERSUADES} and
+\texttt{EVT\_SERVANTS\_FRAMED} are still hidden at the audience's
 \texttt{syuzhet\_anchor} early in the act; the score is
 $2/3 \approx 0.67$, falling to $0$ once Act V resolves the
 provenance.
@@ -1099,7 +1430,7 @@ provenance.
 Jacqueline and Simon are conspirators (\texttt{EVT\_PLAN\_HATCHED}
 revealed at low syuzhet); Poirot and the suspect pool do not.
 With $F = \{\text{ENT\_PENNINGTON}, \text{ENT\_VAN\_SCHUYLER},
-\text{ENT\_ALLERTON}\}$, the conspiracy and its downstream
+\text{ENT\_TIM}\}$, the conspiracy and its downstream
 revealed effects sit in the
 $\sum_{e \in \mathrm{rev}, e \notin K_c} w_e$ numerator of
 Eq.~\ref{eq:irony} for every $c \in F$. The gauge climbs through
@@ -1117,15 +1448,21 @@ to $w_\text{hope}$. Threat dominates. As Romeo drinks, $w_\text{hope}
 suspense--despair boundary is hit cleanly.
 
 \paragraph{Surprise (Reservoir Dogs reveal).}
-\texttt{EVT\_ORANGE\_RECRUITED} sits at low fabula time but high
-syuzhet; before the reveal the corpus-marginal prior on
-\texttt{ENT\_ORANGE.role} starts at $q=0.5$, and the few revealed
-edges into Orange give a small geometric pull keeping $q \approx
-0.6$ ``criminal''. After the reveal the actual value $p \approx
-0.95$ ``cop''. Eq.~\ref{eq:surprise} gives a per-trait KL spike
-that is large but \emph{licensed} --- the engine had the cause
-present at low fabula time, only locked behind syuzhet, so
-re-extraction will not flag a miracle step.
+\texttt{EVT\_ORANGE\_REVEALED} sits at high fabula time
+($f \approx 9000$) but earlier syuzhet ($s = 11$ relative to
+the heist's chronological ordering, but late in the audience's
+presentation), with the underlying ground truth
+(\texttt{ENT\_ORANGE.constants = ["undercover\_cop", \ldots]})
+present at fabula time zero. Before the reveal, the corpus-marginal
+prior on \texttt{ENT\_ORANGE.role} starts at $q=0.5$ and the few
+revealed edges into Orange (\texttt{EVT\_ORANGE\_KILLS\_BLONDE},
+the earlier paternal-tenderness edges from \texttt{ENT\_WHITE})
+give a small geometric pull keeping $q \approx 0.6$ ``criminal''.
+After the reveal the actual value $p \approx 0.95$ ``cop''.
+Eq.~\ref{eq:surprise} gives a per-trait KL spike that is large
+but \emph{licensed} --- the engine had the cause present at low
+fabula time, only locked behind syuzhet, so re-extraction will
+not flag a miracle step.
 
 \paragraph{Emotion targets (Gone Girl, Brief Encounter).} The six
 emotion scorers (\texttt{grief, rage, joy, regret, love, fear})
@@ -1228,7 +1565,7 @@ read the source. The fixture used throughout is
 \texttt{example\_worlds/macbeth.py}, paired with the synopsis in
 \texttt{sample\_plots/macbeth.txt}; the query is the canonical
 counterfactual ``what if Macbeth refuses to murder Duncan?''.
-The same loop runs identically on the other fifteen bundled
+The same loop runs identically on the other nineteen bundled
 fixtures.
 
 \subsection{Step 0: the source text and the user's query}
@@ -1328,6 +1665,7 @@ windows are stable across re-ingestion. The output is a single
 \label{app:wk-route}
 
 The \texttt{CounterfactualQuery} is dispatched to the rung-3
+(Counterfactual)
 handler. The handler first consults the \texttt{NarrativePhysics}
 router, which selects an \emph{ego-graph} around the focal
 entities at the query's fabula anchor: Macbeth's $k$-hop
@@ -1345,7 +1683,7 @@ into the counterfactual past.
 \subsection{Step 3: AMWN sandbox and the do-operator}
 \label{app:wk-amwn}
 
-\texttt{AMWNInstantiator.create\_sandbox(F=\{ENT\_MACBETH\}, t)}
+\texttt{AMWNInstantiator.create\_sandbox(ego\_payload, query\_type="counterfactual")}
 mirrors the ego-graph as a NetworkX \texttt{MultiDiGraph}, in
 the spirit of the Ancestral Multi-World Network construction of
 \citet{correa2025amwn}. A sibling \texttt{VersionRow} with
@@ -1386,12 +1724,14 @@ edge. Concretely:
       the \texttt{Belief(target=ENT\_MACBETH, perceived\_state=
       "Macbeth might be the king's killer")} is absent from his
       reconstructed belief set in the shadow branch.
-\item \texttt{EVT\_LADY\_PERSUADES $\to$ ENT\_LADY\_MACBETH.dominance}
-      (\texttt{mutation\_social}, $w=0.5$): \emph{not} blocked,
-      because the persuasion event itself is upstream of the
-      intervention. Lady Macbeth's dominance still spikes; her
-      subsequent collapse arc is then re-evaluated against the
-      now-absent causal trigger of guilt.
+\item \texttt{EVT\_LADY\_MACBETH\_PERSUADES $\to$
+      ENT\_LADY\_MACBETH} (\texttt{mutation\_social}, axis
+      \textit{power\_dynamic} against \texttt{ENT\_MACBETH},
+      $\Delta=+0.4$): \emph{not} blocked, because the persuasion
+      event itself is upstream of the intervention. Lady
+      Macbeth's relational dominance over Macbeth still spikes;
+      her subsequent collapse arc is then re-evaluated against
+      the now-absent causal trigger of his guilt.
 \item Spatial affordance check at every step: a putative shock
       from \texttt{LOC\_DUNSINANE\_CASTLE} to \texttt{ENT\_MACDUFF}
       requires a connected spatial path; if Macduff is in
@@ -1493,9 +1833,11 @@ violet, can diff it against the factual mainline, and can
 
 Three properties matter. \textbf{Inspectability:} every
 intermediate object --- the ego-graph, the
-\texttt{CausalPhysicsResult}, the \texttt{CreativeBrief}, the
-\texttt{AuditReport} --- is a typed Pydantic value, persisted and
-visible in the UI. \textbf{Locality of LLM authority:} the LLM
+\texttt{CausalPhysicsResult}, the \texttt{CreativeBrief}, and
+the per-iteration \texttt{AuditCycleSnapshot.audit\_result}
+(an \texttt{AuditResult}) inside the final
+\texttt{FeedbackLoopResult} --- is a typed Pydantic value,
+persisted and visible in the UI. \textbf{Locality of LLM authority:} the LLM
 authors the initial ontology (Step~1), the candidate prose (Step~7),
 and the audit critique (Step~8); everything else is symbolic
 computation over typed code. \textbf{Branch safety:} the
@@ -1510,13 +1852,18 @@ DAG records the lineage.
 The authoring workspace is a NiceGUI single-page application
 (\texttt{shadow\_loom\_ui/app.py}) reachable on
 \texttt{http://localhost:7860}. It is organised as a left-hand
-\emph{version sidebar} and eight cross-linked tabs that share a
-central \texttt{AppState} pub/sub event bus
-(\texttt{shadow\_loom\_ui/state.py}). The same active-version
-pointer is mirrored to the database so an MCP client and the UI
-always see the same tip. This appendix walks through every
-surface in turn, with a concrete example session drawn from the
-bundled plot fixtures.
+\emph{version sidebar}, a top-level \emph{chat / command bar}, a
+dedicated \emph{Answer panel} for read-only Q\&A results, and nine
+cross-linked tabs that share a central \texttt{AppState} pub/sub event
+bus (\texttt{shadow\_loom\_ui/state.py}). The same active-version
+pointer is mirrored to the database so an MCP client and the UI always
+see the same tip. Every panel header carries a clickable info-icon
+help popover (\texttt{components/help\_popover.py}) opening a
+structured Markdown reference for the surface --- what the panel does,
+how to read its diagrams, what the controls mean, and what does
+\emph{not} appear there --- so the workspace doubles as its own
+documentation. This appendix walks through every surface in turn,
+with a concrete example session drawn from the bundled plot fixtures.
 
 \subsection{Version sidebar}
 \label{app:ui-sidebar}
@@ -1658,14 +2005,25 @@ inspected. The chat box accepts natural-language queries that are
 parsed into one of the eight typed query objects
 (\texttt{ObservationQuery}, \texttt{InterventionQuery},
 \texttt{CounterfactualQuery}, \texttt{DirectiveQuery},
-\texttt{InterrogateQuery}, \texttt{GeneralQuery},
-\texttt{ManualEditQuery}, \texttt{EvaluateQuery}). The result
-panel uses \texttt{reasoning\_helpers.py} to format the
+\texttt{InterrogationQuery}, \texttt{GeneralQuery},
+\texttt{ManualEditQuery}, \texttt{EvaluationQuery}).
+Write-mode queries route their result into this tab, where
+\texttt{reasoning\_helpers.py} formats the
 \texttt{CausalPhysicsResult}: each mutation is shown with its
 $(I, \iota, \Delta)$ triple, each blocked propagation with the
 reason (inertia, affordance, spatial), each abduction back-fill
 with the evidence weight, and any hidden deltas with the
 syuzhet window in which they will be revealed.
+Read-mode queries (\texttt{InterrogationQuery},
+\texttt{GeneralQuery}) skip this tab entirely: they are dispatched
+through \texttt{shadow\_loom/answer.py} and surface in the
+dedicated \emph{Answer panel} above the chat bar
+(\texttt{components/answer\_panel.py}) as a card with the model's
+claim, a confidence badge, an evidence-id list back to the graph
+nodes consulted, and any caveats. The Answer panel clears on
+\texttt{VERSION\_CHANGED} and \texttt{PROJECT\_LOADED} so a stale
+answer never lingers across versions; no \texttt{VersionRow} is
+written for a read-mode query.
 
 \paragraph{Example.} On Macbeth, typing \emph{``If Macbeth had
 told Banquo about the prophecy on the heath, would Banquo have
@@ -1686,7 +2044,7 @@ secrets defused).
 
 The \textsc{Audit} tab
 (\texttt{components/audit\_tab.py}) displays the structured
-\texttt{AuditReport} for the most recently rendered scene. The
+\texttt{AuditResult} for the most recently rendered scene. The
 three sections (causal, abductive, affective) each show their
 loss values and any offending prose spans, highlighted inline. A
 green badge indicates a passed pass; an amber badge indicates a
@@ -1700,6 +2058,33 @@ causal edge in the brief. The auditor's structured feedback is
 displayed alongside the offending span, and the user can either
 accept the auto-rerun or open the brief in the
 \textsc{Reasoning} tab to widen the envelope.
+
+\subsection{Research tab}
+\label{app:ui-research}
+
+The \textsc{Research} tab
+(\texttt{components/research\_tab.py}) is the optional
+open-web companion: the user manages a list of research topics,
+launches background lookup tasks (currently against Tavily; see
+\S\ref{app:ingestion}), and browses the resulting facts, each
+carrying a source URL and a confidence score. The crucial design
+point is \emph{segregation}: research is a separate store. Facts
+are not written into the world model automatically; they are
+reference material available to the author and to the renderer's
+prompt scaffolding (as a \texttt{BACKGROUND CONTEXT --- NOT
+AUTHORITATIVE} block) only. Promoting a research finding into
+canon is a deliberate, manual edit in the \textsc{Editor} tab.
+A status strip at the top of the panel shows in-flight lookups,
+the stored fact counts per topic, and the last refresh time.
+
+\paragraph{Example.} Authoring an alternate-history fork on the
+\emph{Tinker, Tailor, Soldier, Spy} fixture, the user adds the
+topic \emph{``Cambridge Five chronology, declassified MI6
+sources''}, runs lookup, and reviews the returned facts before
+citing one as inspiration for a new \texttt{EventNode} in the
+\textsc{Editor} tab. The world model itself is unchanged until
+the user explicitly authors the new event; the research entry
+remains visible as provenance for the editorial decision.
 
 \subsection{Editor tab}
 \label{app:ui-editor}
@@ -1748,7 +2133,7 @@ download the version tree as a structured JSONL file, or copy the
 active version row ID for use with the MCP server or scripts.
 
 \paragraph{Example.} A researcher running cross-fixture
-comparisons exports each of the sixteen bundled fixtures'
+comparisons exports each of the twenty bundled fixtures'
 \texttt{world\_state.json} files, computes the entity-degree
 distribution and the per-fixture suspense time-series in a
 notebook, and persists the results without ever loading the UI's
@@ -1792,10 +2177,10 @@ makes branch lineage visible; the Causality tab makes the
 affective scorers' trajectories visible; the Reasoning tab makes
 the causal-physics trace visible; and the Audit tab makes the
 brief-vs-prose mismatch visible. A reviewer or collaborator can
-load any of the sixteen bundled fixtures, run the
+load any of the twenty bundled fixtures, run the
 counterfactuals discussed in App.~\ref{app:examples}, and
 inspect every intermediate object without writing a line of code.
 That inspectability is what the typed-substrate design was meant
-to buy; the UI is where it is cashed in.
+to buy; the UI is where it is realised.
 
 \end{document}

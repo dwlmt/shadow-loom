@@ -20,9 +20,12 @@ links into all three rather than re-explaining them.
 > file under [`example_worlds/`](../example_worlds) and a synopsis under
 > [`sample_plots/`](../sample_plots). The fixtures are hand-authored
 > against the live ingestion schema, so you can load any of them in the
-> UI's example seeder, the MCP `seed_example_world` tool, or directly via
+> UI's example seeder, or directly via
 > `from example_worlds.macbeth import world_state` and run the same
-> queries shown below.
+> queries shown below. (There is no `seed_example_world` MCP tool;
+> agents that want to start from a bundled fixture should call
+> `ingest(...)` against the corresponding `sample_plots/*.txt` synopsis
+> or use the UI's seeder.)
 
 ---
 
@@ -531,8 +534,8 @@ a real event:
   and fear (+0.90) at fabula 8000 — the De Lacey scene is the largest
   single-event delta on the curve.
 
-The same discipline is now enforced across all sixteen bundled
-fixtures; see [design-decisions.md §D5d](design-decisions.md#d5d-per-axis-mutation_social-coverage-across-all-16-fixtures-may-2026-rebuild)
+The same discipline is now enforced across all twenty bundled
+fixtures; see [design-decisions.md §D5d](design-decisions.md#d5d-per-axis-mutation_social-coverage-across-all-20-fixtures-may-2026-rebuild)
 for the audit/applier tooling.
 
 ### Generation prompt fragment
@@ -559,8 +562,8 @@ audit catches prose that flattens the asymmetry.
 Austen is the cleanest test of `ObservationQuery` — Pearl's Rung 1, the
 "natural progression" cycle. The story turns on what people **observe and
 infer** without anyone intervening, and on the economic and class
-machinery (`WORLD_PRIMOGENITURE`, `WORLD_REGENCY_RANK`,
-`WORLD_NAPOLEONIC_PRIZE_ECONOMY`) that *constrains every choice from
+machinery (`WORLD_PRIMOGENITURE_ENTAIL`, `WORLD_REGENCY_RANK`,
+`WORLD_NAVAL_PRIZE_ECONOMY`) that *constrains every choice from
 above*.
 
 ### `ObservationQuery` — Rung 1 in action
@@ -595,43 +598,40 @@ The cycle still produces prose — but the brief carries no `must` events,
 only a constraint envelope ("character locations pinned, channel
 intelligibility recomputed, no new causal edges allowed").
 
-### The overheard-conversation channel
+### The overheard-conversation event
 
-The pivotal scene is a `Channel` with deliberately *asymmetric*
-intelligibility:
+The White Hart drawing-room scene is modelled as the standalone
+*utterance* event `EVT_UTT_ANNE_WOMEN_CONSTANCY` with `via_channel_id=None`
+(no standing channel: it is one-off speech in a public room). What makes
+Wentworth a covert addressee is the ambient `bustle=0.7` of
+`LOC_WHITE_HART` plus the spatial co-location of the participants —
+`propagate_social()` fires `mutation_social` edges that update
+Wentworth's `Belief(target_id=ENT_ANNE, perceived_state="loves me yet")`
+from `confidence=0.20` to `≈ 0.95` in a single pass. The result is the
+famous hand-delivered letter — and the engine flags the belief flip as
+the single mutation that licenses the climax. (The fixture's standing
+`Channel` objects, `CHN_MRS_SMITH_CONFIDANT` and
+`CHN_WILLIAM_FLATTERING_DISCOURSE`, support a *different* pair of
+epistemic arcs — the late-act revelation about William Elliot — not
+the White Hart scene.) No murder, no surprise reveal: just observation
++ ambient + belief update. *That* is the Rung-1 cycle at full power.
 
-```python
-"CHN_ANNE_HARVILLE_OVERHEARD": Channel(
-    id="CHN_ANNE_HARVILLE_OVERHEARD",
-    participant_ids=["ENT_ANNE", "ENT_HARVILLE", "ENT_WENTWORTH"],
-    intelligibility={
-        "ENT_ANNE":      1.0,    # speaker
-        "ENT_HARVILLE":  1.0,    # her direct interlocutor
-        "ENT_WENTWORTH": 0.85,   # eavesdropping at his writing desk
-    },
-)
-```
-
-Wentworth is **not in `addressee_ids`** but his intelligibility is above
-`physics.intelligibility_threshold`, so `propagate_social()` updates his
-`Belief(target_id=ENT_ANNE, perceived_state="loves me yet")` from
-`confidence=0.20` to `≈0.95` in a single pass. The result is the famous
-hand-delivered letter — and the engine flags the belief flip as the
-single mutation that licenses the climax. No murder, no surprise reveal:
-just observation + channel physics + belief update. *That* is the Rung-1
-cycle at full power.
-
-### `WORLD_PRIMOGENITURE` as economic constraint
+### `WORLD_PRIMOGENITURE_ENTAIL` as economic constraint
 
 Sir Walter's debts are **not** an event in the timeline; they are a
-standing pressure encoded as a `GlobalTrait` value of 0.8 on
-`WORLD_PRIMOGENITURE` plus an `ambient_propagation` edge into
-`LOC_KELLYNCH_HALL.fiscal_strain`. Every later choice — the let to the
-Crofts, the move to Bath, Elizabeth's competition with Mrs Clay — has a
-licensing edge that traces back to this single constant. Run
-`do(WORLD_PRIMOGENITURE = 0.1)` and the engine cleanly cascades the
-counterfactual ("Sir Walter inherits in trust, not absolutely") through
-every downstream estate-decision event.
+standing pressure encoded as a `GlobalTrait` on
+`WORLD_PRIMOGENITURE_ENTAIL` plus an `ambient_propagation` edge
+`LOC_KELLYNCH_HALL → ENT_SIR_WALTER` (mechanism `psychological`) that
+biases his behaviour at the seat. The world traits in turn drive
+downstream events through `chain_reaction` edges: `WORLD_REGENCY_RANK`
+into `EVT_BROKEN_ENGAGEMENT` / `EVT_KELLYNCH_LET` / etc.,
+`WORLD_NAVAL_PRIZE_ECONOMY` into `EVT_WAR_AND_PRIZE_MONEY` /
+`EVT_WENTWORTH_RETURNS` / `EVT_KELLYNCH_LET`, and
+`WORLD_PRIMOGENITURE_ENTAIL` into `EVT_WILLIAM_RETURNS_TO_FAMILY` /
+`EVT_MRS_SMITH_REVEALS_ELLIOT` / `EVT_MRS_CLAY_FOLLOWS_WILLIAM`. Run
+`do(WORLD_PRIMOGENITURE_ENTAIL = 0.1)` and the engine cleanly cascades
+the counterfactual ("Sir Walter inherits in trust, not absolutely")
+through every downstream estate-decision event.
 
 This is why the Austen fixture is the textbook example for the
 `WORLD_*`-as-common-cause-parent pattern in
@@ -988,7 +988,7 @@ The final `0.0` is the engine *correctly* refusing to call this scene
 suspenseful — see the `if hope_prob <= 0.0: return 0.0` early-return in
 [`directive_assembly.py::compute_suspense_score`](../shadow_loom/directive_assembly.py)
 and [academic-foundations.md
-§3.1](academic-foundations.md#31-suspense-as-uncertainty-reduction--wilmot--keller-acl-2020).
+§3.1](academic-foundations.md#31-suspense-as-hopefear-here-hopethreat-anticipation--structural-affect-lineage).
 The auditor flags any prose that *reads* as suspenseful at this
 syuzhet point as having mistaken despair for tension.
 
@@ -1245,9 +1245,12 @@ print(result.physics_result["status"])
 
 In the UI: open the example seeder dropdown (top of the **Story** tab),
 pick the fixture, then drive queries from the **Causality** or
-**Explorer** tabs. From an MCP client, call `seed_example_world` with
-the fixture name and then any of the query tools (`intervene`,
-`counterfactual`, `direct`, `narrate`, `evaluate`, `inspect`, `ask`).
+**Explorer** tabs. From an MCP client, call `ingest(...)` to load the
+fixture's plot synopsis, then drive the world with `narrate(...)`
+(NL-routed `observation` / `intervention` / `counterfactual`),
+`direct(...)` (typed `DirectiveQuery`), `write(...)` (manual edit),
+`ask(...)` (read-only Q&A returning an `AnswerCard`), or any of the
+graph-read tools listed in [mcp-guide.md](mcp-guide.md).
 
 ---
 

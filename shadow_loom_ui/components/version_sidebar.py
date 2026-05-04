@@ -41,6 +41,54 @@ def build_version_sidebar(state: AppState) -> None:
             ui.label("Versions").classes(
                 "text-sm font-semibold text-slate-700"
             )
+            ui.space()
+            from shadow_loom_ui.components.help_popover import help_popover
+            help_popover(
+                title="Versions — the project's branching DAG",
+                body_md=(
+                    "Every generative query (Continue, Intervene,"
+                    " What-If, Direct, Write prose) saves a **new"
+                    " version** branching from the version that was"
+                    " active when it ran. Read-only modes (Ask,"
+                    " Interrogation, Evaluate) never create versions.\n\n"
+                    "### Reading the tree\n"
+                    "- **Highlighted node** — the version currently"
+                    " loaded in every panel.\n"
+                    "- **Edges** — ancestor relationships. A child"
+                    " version's world state is the merge of its"
+                    " ancestor plus the changeset produced by the query"
+                    " that created it.\n"
+                    "- **Node colour / decoration** — distinguishes"
+                    " factual mainline from shadow branches.\n\n"
+                    "### Branches\n"
+                    "- **Factual** — your canonical story. Default for"
+                    " Continue / Intervene / Direct / Write prose.\n"
+                    "- **Shadow** — a What-If experiment, kept separate"
+                    " so it doesn't pollute canon. Promote it to make"
+                    " it factual; diff it against the factual head to"
+                    " see what would change.\n\n"
+                    "### Interactions\n"
+                    "- **Click** any node to load that version. Story"
+                    " prose, World state, Causality graph, Audit log,"
+                    " Reasoning trace, and the MCP active-version"
+                    " pointer all switch in lockstep.\n"
+                    "- **Active-version pointer** — your selection is"
+                    " remembered per project, so MCP tool calls and"
+                    " your next session default to the same view.\n\n"
+                    "### Owner / editor controls (top-row icons)\n"
+                    "- 🗑 **Delete** — remove the current version."
+                    " Children rejoin its parent (or cascade if you"
+                    " tick the box). The root v0 cannot be deleted.\n"
+                    "- 🔀 **Reparent** — graft the current version"
+                    " under a different ancestor (useful when a branch"
+                    " was started from the wrong point).\n"
+                    "- ⏫ **Promote** — copy this shadow version onto"
+                    " the factual mainline as a new canonical version.\n"
+                    "- ⇄ **Diff** — side-by-side prose comparison"
+                    " between this shadow version and the factual head."
+                ),
+                tooltip="What is the version tree?",
+            )
 
         with ui.scroll_area().classes("w-full flex-grow"):
             container = ui.column().classes("w-full p-1")
@@ -152,11 +200,6 @@ def _render_versions(state: AppState, container) -> None:
                     f"flat dense {'' if is_shadow else 'disable'}"
                 ).tooltip("Diff this shadow version against factual head")
 
-        orient_toggle = ui.toggle(
-            {"vertical": "Vertical", "radial": "Radial"},
-            value="vertical",
-        ).props("dense no-caps").tooltip("Layout of the version tree")
-
         tree_holder = ui.column().classes("w-full")
 
         def _draw_tree():
@@ -167,10 +210,9 @@ def _render_versions(state: AppState, container) -> None:
                     current_version_id=state.current_version_row_id,
                     on_click=_on_version_click,
                     height="calc(100vh - 280px)",
-                    orient=orient_toggle.value or "vertical",
+                    orient="vertical",
                 )
 
-        orient_toggle.on("update:model-value", lambda _e: _draw_tree())
         _draw_tree()
 
 

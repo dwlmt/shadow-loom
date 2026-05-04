@@ -45,6 +45,50 @@ def build_editor_tab(state: AppState) -> None:
     """Build the Editor tab — view & manually edit the world model JSON."""
 
     with ui.column().classes("w-full h-full p-6 gap-3 bg-slate-50"):
+        # ── Header with help popover ────────────────────────────────────
+        with ui.row().classes("w-full items-center gap-2"):
+            ui.icon("edit_note", color="primary")
+            ui.label("World-Model Editor").classes(
+                "text-sm font-semibold text-slate-700"
+            )
+            ui.space()
+            from shadow_loom_ui.components.help_popover import help_popover
+            help_popover(
+                title="Editor — hand-edit the world model JSON",
+                body_md=(
+                    "Direct read/write access to the underlying"
+                    " `WorldStateV1` JSON for surgical fixes the LLM"
+                    " pipeline can't make. Use this when you need to"
+                    " correct an extraction error or patch in a node"
+                    " the ingestion missed.\n\n"
+                    "### What you can do\n"
+                    "- **Add, remove, or modify** any node or edge:"
+                    " entities, locations, objects, events, causal /"
+                    " social / spatial / information edges, world"
+                    " traits.\n"
+                    "- **Validate** — type-checks the JSON against"
+                    " the Pydantic schema; errors **block** save,"
+                    " warnings can be acknowledged.\n"
+                    "- **Save** — creates a new version branching from"
+                    " the active one (just like a generative query),"
+                    " so the change is reversible by switching"
+                    " versions.\n\n"
+                    "### Cautions\n"
+                    "- Hand-edits **do not** trigger re-extraction or"
+                    " auditing. Inconsistent state (e.g. an event"
+                    " referencing a deleted entity) will surface as a"
+                    " validation error or, worse, propagate into"
+                    " downstream queries.\n"
+                    "- Prefer the natural-language **Intervene** mode"
+                    " for routine state changes — it audits and"
+                    " re-extracts, keeping prose and graph in sync.\n"
+                    "- Use this editor for graph topology fixes that"
+                    " don't have a natural prose representation"
+                    " (renaming an id, adding a missing causal edge)."
+                ),
+                tooltip="What is this tab?",
+            )
+
         container = ui.column().classes(
             "w-full bg-white border border-slate-200 rounded-xl shadow-sm "
             "p-4 gap-2"

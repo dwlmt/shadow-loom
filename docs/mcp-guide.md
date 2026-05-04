@@ -26,7 +26,7 @@ The server reads its configuration from `config.env` /
 
 | Env var | Purpose |
 |---|---|
-| `SHADOW_LOOM_DATABASE_URL` | SQLite / Postgres URL backing the version store. |
+| `DATABASE_URL` | SQLite / Postgres URL backing the version store. |
 | `MCP_ALLOW_OPEN_MODE` | If `true`, falls back to the most-recently-cached token when a request arrives without an active context (dev/test only — fail-open). Default `false`. |
 | `MCP_SKIP_AUDIT` | Default value of the `skip_audit` flag on `narrate` / `direct`. |
 | `MCP_INGEST_FABULA_TIME_SPACING` | Spacing for fabula ticks during `ingest` (default 1000). |
@@ -41,7 +41,7 @@ The server reads its configuration from `config.env` /
       "command": "python",
       "args": ["-m", "shadow_loom_mcp"],
       "env": {
-        "SHADOW_LOOM_DATABASE_URL": "sqlite:///shadow_loom.db"
+        "DATABASE_URL": "sqlite:///shadow_loom.db"
       }
     }
   }
@@ -202,7 +202,7 @@ integrations can migrate one call at a time.
 
 | Tool | Scope | Purpose |
 |---|---|---|
-| `ask(question)` | read | Routes through `parse_query` → `GeneralQuery` / `InterrogationQuery` (no prose, no version write). |
+| `ask(question)` | read | Routes through `parse_query` → `GeneralQuery` / `InterrogationQuery`. After `calculate_narrative_physics` runs, the tool dispatches `shadow_loom.answer.answer_question` to render an `AnswerCard{answer, confidence, caveats, evidence_node_ids}`; the response object surfaces those four fields directly alongside the underlying physics state. No prose, no version write. |
 | `compute_tension(vector_id, …)` | read | Runs the affective scorers (mystery / irony / suspense / surprise) over the current graph for a given POV. |
 | `diff_versions(v_a, v_b)` | read | Structured changeset between two versions. |
 
@@ -247,7 +247,8 @@ so one user's lookups are never reused for another.
 | `get_project_settings()` | read | Per-project settings — currently `research_topics: list[str]`. Settings live outside `WorldStateV1` so they never fork with shadow branches and never bloat version snapshots. |
 | `set_project_settings(research_topics)` | write | Replace the project's `research_topics` list. Topics are stripped + de-duplicated. Pass `[]` to clear. Editing settings does not mutate any version. |
 
-See [docs/research-extraction-plan.md](research-extraction-plan.md) for
+See the research section of
+[docs/architecture.md](architecture.md#step-3d--optional-external-research-segregated-off-by-default) for
 the segregation contract and [CONTENT-POLICY.md §6.4a](../CONTENT-POLICY.md)
 for the user-facing guarantees.
 

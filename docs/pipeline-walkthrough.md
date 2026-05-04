@@ -181,10 +181,10 @@ walkthrough; the headline is:
 | Query | What this step does |
 |---|---|
 | `observation` | Multi-ego graph extraction (or full omniscient state if no POV). |
-| `intervention` | Plausibility gate → AMWN sandbox → Rung-2 do-calculus → propagation. |
-| `counterfactual` | Plausibility gate → AMWN sandbox → Rung-3 abduction → Rung-2 → propagation. |
+| `intervention` | Plausibility gate → AMWN sandbox → Rung-2 (Intervention) do-calculus → propagation. |
+| `counterfactual` | Plausibility gate → AMWN sandbox → Rung-3 (Counterfactual) abduction → Rung-2 (Intervention) do → propagation. |
 | `directive` | Sandbox → candidate enumeration → physics per candidate → affective scoring → `CreativeBrief`. |
-| `interrogate` / `general` | Graph RAG / pathfinding only (no time advance, no prose). |
+| `interrogate` / `general` | Read-only Q&A: graph RAG / pathfinding only (no time advance, no prose, no version). |
 | `manual_edit` | Bypassed entirely. |
 | `evaluate` | Full-story scorecard branch (handled below). |
 
@@ -221,8 +221,15 @@ continues into generation.
 
 Two query types stop here without rendering prose:
 
-* `interrogate` and `general` — return the physics state for the caller to
-  consume directly (graph RAG, Q&A).
+* `interrogate` and `general` — read-only Q&A. The pipeline calls
+  `_run_answer_step`, which dispatches
+  [`shadow_loom.answer.answer_question`](../shadow_loom/answer.py) on the
+  compressed physics state. The resulting `AnswerCard` is folded back
+  into `physics_result` as the keys `answer`, `confidence`, `caveats`,
+  `evidence_node_ids`, plus a `proof` list of `{id, kind: "evidence"}`
+  entries so `structured_response_data` picks the answer up. The MCP
+  server's `ask` tool and the UI's **Answer panel** both surface those
+  fields directly. **No version is written.**
 * `evaluate` — the dedicated `_run_evaluation_branch` runs the
   `NarrativeOrderObject` scorecard (causal physics feedback + affective
   feedback + LLM literary critique) and returns. No new version is written
@@ -407,5 +414,5 @@ already coordinate their own concurrency internally.
 * [design-decisions.md](design-decisions.md) — *why* re-extraction is mandatory, *why* implausibility short-circuits, *why* the auditor is separate from the renderer.
 * [academic-foundations.md](academic-foundations.md) — the literature behind ingestion's Socratic scaffold ([§6.5](academic-foundations.md#65-computational-narratology-and-story-understanding)), the auditor's LLM-as-judge protocol ([§4.3](academic-foundations.md#43-llm-as-judge-audit-loop)), and the merge's changeset model.
 * [settings.md](settings.md) — every per-step `*Config` value (`GENERATION_*`, `EXTRACTION_*`, `AUDITOR_*`, `PHYSICS_*`) and the env vars that override them.
-* [paper/shadow_loom.pdf](../paper/shadow_loom.pdf) **Appendix B** (`app:walkthrough`) — the same loop described as long-form prose on the *Macbeth* fixture, with every intermediate object (`GlobalRegister`, ego-graph, `CausalPhysicsResult`, `CreativeBrief`, `AuditReport`) shown step by step.
+* [paper/shadow_loom.pdf](../paper/shadow_loom.pdf) **Appendix B** (`app:walkthrough`) — the same loop described as long-form prose on the *Macbeth* fixture, with every intermediate object (`GlobalRegister`, ego-graph, `CausalPhysicsResult`, `CreativeBrief`, `AuditResult`) shown step by step.
 * [paper/shadow_loom.pdf](../paper/shadow_loom.pdf) **Appendix A** (`app:defs`) — the formal definitions and equations underlying each step (Eq. `eq:impact` for propagation, Eq. `eq:mystery` for mystery, Eq. `eq:surprise` for surprise).

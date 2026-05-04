@@ -116,6 +116,67 @@ def build_causality_tab(state: AppState) -> None:
     """Build the Causality tab with four sub-views."""
 
     with ui.column().classes("w-full h-full bg-slate-50"):
+        with ui.row().classes(
+            "w-full items-center px-4 py-2 border-b border-slate-200 gap-2 bg-white"
+        ):
+            ui.icon("account_tree", color="primary")
+            ui.label("Causality").classes(
+                "text-sm font-semibold text-slate-700"
+            )
+            ui.space()
+            from shadow_loom_ui.components.help_popover import help_popover
+            help_popover(
+                title="Causality — typed causal graph & affective dashboard",
+                body_md=(
+                    "Five sub-views into the causal/social/spatial/"
+                    "information graph and the engine's affective"
+                    " calculus over the syuzhet (reading order).\n\n"
+                    "### Sub-tabs\n"
+                    "- **Causal Topology** — the directed graph of"
+                    " cause→effect edges between events, plus social"
+                    " and spatial slices.\n"
+                    "  - *Sankey Flow* shows volume of causal flow"
+                    " between event clusters.\n"
+                    "  - *Force Graph* lays nodes out by causal"
+                    " proximity — tightly entangled events cluster"
+                    " together. Try *Circular* / *Cartesian* layouts"
+                    " too.\n"
+                    "  - *Aspect* picks which slice to draw (causal"
+                    " only, social, spatial, information, or"
+                    " combined).\n"
+                    "- **Evolution** — how the topology grows over"
+                    " fabula time. Step through the time cursor to"
+                    " watch new events and edges appear.\n"
+                    "- **What-If Workbench** — build interventions or"
+                    " counterfactuals visually: pick a target node,"
+                    " specify the change, run, and inspect mutations,"
+                    " blocked propagations, and hidden deltas.\n"
+                    "- **Directive Builder** — craft an emotional"
+                    " directive (target effect + target entities +"
+                    " intensity) without writing prose. Useful for"
+                    " understanding which levers the engine has.\n"
+                    "- **Affective Dashboard** — heatmaps of"
+                    " *suspense*, *surprise*, *irony*, *love*, and"
+                    " *regret* scored per syuzhet index. Reveals where"
+                    " the story spikes or sags emotionally.\n\n"
+                    "### Reading the diagrams\n"
+                    "- **Node colour** — event type (choice, outcome,"
+                    " revelation, utterance) or aspect category.\n"
+                    "- **Edge style** — solid for causal, dashed for"
+                    " social, dotted for informational.\n"
+                    "- **Edge thickness** — strength / confidence of"
+                    " the relationship.\n"
+                    "- **Hover** any node / edge for a tooltip with"
+                    " the raw ids and metadata.\n\n"
+                    "### What you can do\n"
+                    "- Filter by aspect, time range, or focus entity.\n"
+                    "- Click an event in the topology to deep-link to"
+                    " its inspector in the Explorer tab.\n"
+                    "- Use the What-If Workbench to design and run a"
+                    " counterfactual without natural language."
+                ),
+                tooltip="What is this tab?",
+            )
         with ui.tabs().props(
             "dense no-caps indicator-color=primary active-color=primary align=left"
         ).classes(

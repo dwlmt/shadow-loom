@@ -1157,6 +1157,30 @@ def ask(
         logger.exception("Physics calculation failed")
         return {"error": f"Analysis failed: {e}"}
 
+    # Run the LLM Q&A step over the physics-state slice so the MCP
+    # response carries a real natural-language answer (matches what
+    # the UI Answer panel surfaces). Without this the tool would
+    # bottom out at the physics envelope alone, which is exactly the
+    # behaviour that made the UI's Ask/Interrogation feel broken.
+    if isinstance(physics, dict) and physics.get("query_type") in (
+        "interrogate", "general",
+    ):
+        try:
+            from shadow_loom.answer import answer_question
+
+            card = answer_question(
+                question=question,
+                physics_state=physics.get("physics_state"),
+                query_type=physics.get("query_type", "interrogate"),
+                require_proof=bool(getattr(query, "require_proof", False)),
+            )
+            physics["answer"] = card.answer
+            physics["confidence"] = card.confidence
+            physics["caveats"] = list(card.caveats)
+            physics["evidence_node_ids"] = list(card.evidence_node_ids)
+        except Exception:
+            logger.exception("[MCP·ask] answer_question failed")
+
     result: dict[str, Any] = {
         "question": question,
         "query_type": query.query_type,
@@ -1170,6 +1194,12 @@ def ask(
     if isinstance(physics, dict):
         if "answer" in physics:
             result["answer"] = physics["answer"]
+        if "confidence" in physics:
+            result["confidence"] = physics["confidence"]
+        if physics.get("caveats"):
+            result["caveats"] = list(physics["caveats"])
+        if physics.get("evidence_node_ids"):
+            result["evidence_node_ids"] = list(physics["evidence_node_ids"])
         if "ego_graph" in physics:
             ego = physics["ego_graph"]
             if isinstance(ego, dict):

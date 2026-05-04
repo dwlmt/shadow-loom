@@ -15,7 +15,7 @@ For the static schema reference, see
 provenance, see
 [academic-foundations.md §2.1 (Pearl's three rungs)](academic-foundations.md#21-three-rungs-of-causation-observationquery-interventionquery-counterfactualquery),
 [§2.2 (AMWN / ctf-calculus)](academic-foundations.md#22-ancestral-multi-world-networks-and-ctf-calculus--correa--bareinboim-icml-2025),
-[§3.1 (Wilmot suspense)](academic-foundations.md#31-suspense-as-uncertainty-reduction--wilmot--keller-acl-2020),
+[§3.1 (Wilmot suspense)](academic-foundations.md#31-suspense-as-hopefear-here-hopethreat-anticipation--structural-affect-lineage),
 and [§3.4 (dramatic irony)](academic-foundations.md#34-dramatic-irony-as-epistemic-asymmetry).
 
 ---
@@ -381,9 +381,12 @@ Step 2:
   ⑤ engine.execute(rung=3, historical_interventions, evidence_node_ids,
                    target_node_ids)
         – ABDUCTION: back-propagate present evidence into the historical
-          sandbox; entity traits blend 50% toward observed factual values;
-          beliefs propagate backward weighted by evidence_strength;
-          MECHANISM_TRAIT_MAP gates which mechanisms touch which trait families
+          sandbox; the default `abduction_blend_mode="bayesian"` updates
+          each entity trait by a precision-weighted posterior (trait
+          inertia as the precision of the historical prior); beliefs
+          propagate backward subject to per-channel intelligibility
+          gating; MECHANISM_TRAIT_MAP gates which mechanisms touch which
+          trait families
         – ACTION: do(historical_interventions)
         – PROPAGATION: forward cascade as in Rung 2
   ⑥ _check_engine_vacuity(result, rung=3) — also checks hidden_deltas
@@ -434,36 +437,47 @@ The brief is the **only** thing the renderer LLM sees. The renderer cannot
 invent causal edges or shift entity state — its job is to dramatise the
 mathematical envelope.
 
-### 3.5 Interrogate cycle (graph RAG)
+### 3.5 Interrogate cycle (graph RAG + LLM answer)
 
 ```
 parse_query → InterrogationQuery
        │
 Step 2: physics_state = extract_full_world_state(ws, temporal_anchor)
-        return {status:"success", question, require_proof}
+Step 2.5: card = answer_question(question, physics_state,
+                                  query_type="interrogate",
+                                  require_proof, world_state, config)
+          physics_result.update(answer=card.answer,
+                                confidence=card.confidence,
+                                caveats=card.caveats,
+                                evidence_node_ids=card.evidence_node_ids,
+                                proof=[{id, kind:"evidence"}, ...])
        │
-return PipelineResult                              # NO Steps 3–7
+return PipelineResult                              # NO Steps 3–7, NO version write
 ```
 
-The pipeline early-returns at the end of Step 2. No prose, no version
-write. When `require_proof=true`, the consumer is expected to walk
-`physics_state.causal_topology` to construct the Causal Bridge that
-answers the question.
+The pipeline early-returns after the answer step. No prose is rendered
+and no `VersionRow` is created — the result is consumed directly by the
+MCP `ask` tool and by the UI's **Answer panel**. When `require_proof=true`
+the `evidence_node_ids` list (plus the `proof` array) lets the consumer
+walk `physics_state.causal_topology` to construct the Causal Bridge that
+backs the answer.
 
-### 3.6 General cycle (full-graph Q&A)
+### 3.6 General cycle (full-graph Q&A + LLM answer)
 
 ```
 parse_query → GeneralQuery
        │
 Step 2: physics_state = extract_full_world_state(ws, temporal_anchor)
-        return {status:"success", question, include_topology}
+Step 2.5: card = answer_question(question, physics_state,
+                                  query_type="general", ...)
+          physics_result.update(answer, confidence, caveats,
+                                evidence_node_ids, proof)
        │
-return PipelineResult                              # NO Steps 3–7
+return PipelineResult                              # NO Steps 3–7, NO version write
 ```
 
-Same shape as `interrogate` but always returns the omniscient state
-(including topology unless the caller turns it off) so a downstream LLM can
-reason freely.
+Same shape as `interrogate` but the omniscient state (including topology
+unless the caller turns it off) is the context the LLM answers from.
 
 ### 3.7 Manual-edit cycle
 
@@ -536,5 +550,5 @@ graph is unchanged.
 * [architecture.md §2 (Director intent)](architecture.md) and [§3 (causal physics)](architecture.md) — the conceptual map of the eight types and the engine they drive.
 * [mcp-guide.md §3 (CREATE)](mcp-guide.md) — `narrate`, `direct`, `write`, `ingest` — the agent-facing surface that builds these queries.
 * [ui-guide.md](ui-guide.md) — the **Story** and **Reasoning** tabs where users issue these queries interactively.
-* [academic-foundations.md](academic-foundations.md) — Pearl's three rungs ([§2.1](academic-foundations.md#21-three-rungs-of-causation-observationquery-interventionquery-counterfactualquery)) mapped to observation/intervention/counterfactual; AMWN sandboxing ([§2.2](academic-foundations.md#22-ancestral-multi-world-networks-and-ctf-calculus--correa--bareinboim-icml-2025)); Wilmot suspense ([§3.1](academic-foundations.md#31-suspense-as-uncertainty-reduction--wilmot--keller-acl-2020)); KL surprise ([§3.3](academic-foundations.md#33-surprise-as-kl-divergence)); Halpern actual causality ([§2.3](academic-foundations.md#23-abduction-causalphysicsengineabduction_update)).
+* [academic-foundations.md](academic-foundations.md) — Pearl's three rungs ([§2.1](academic-foundations.md#21-three-rungs-of-causation-observationquery-interventionquery-counterfactualquery)) mapped to observation/intervention/counterfactual; AMWN sandboxing ([§2.2](academic-foundations.md#22-ancestral-multi-world-networks-and-ctf-calculus--correa--bareinboim-icml-2025)); Wilmot suspense ([§3.1](academic-foundations.md#31-suspense-as-hopefear-here-hopethreat-anticipation--structural-affect-lineage)); KL surprise ([§3.3](academic-foundations.md#33-surprise-as-kl-divergence)); Halpern actual causality ([§2.3](academic-foundations.md#23-abduction-causalphysicsengineabduction_update)).
 * [settings.md](settings.md) — runtime knobs that control parsing retries, intervention defaults, and the audit thresholds the cycle is checked against.

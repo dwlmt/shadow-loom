@@ -40,7 +40,64 @@ logger = logging.getLogger(__name__)
 def build_audit_tab(state: AppState) -> None:
     """Build the Audit tab layout."""
 
-    with ui.column().classes("w-full h-full p-6 gap-4 bg-slate-50"):
+    with ui.column().classes("w-full h-full p-6 gap-4 bg-slate-50"):        # ── Header with help popover ────────────────────────────────────
+        with ui.row().classes("w-full items-center gap-2"):
+            ui.icon("fact_check", color="primary")
+            ui.label("Audit").classes(
+                "text-sm font-semibold text-slate-700"
+            )
+            ui.space()
+            from shadow_loom_ui.components.help_popover import help_popover
+            help_popover(
+                title="Audit — quality scorecard & activity log",
+                body_md=(
+                    "Two things in one tab:\n\n"
+                    "### Full-story evaluation (top)\n"
+                    "Run an LLM-backed quality audit over the entire"
+                    " prose corpus on the active version's lineage."
+                    " Click a chip to launch a focused evaluation:\n"
+                    "- **Run full evaluation** — NarrativeOrder"
+                    " composite scorecard (foreshadowing pay-off,"
+                    " cognitive plausibility, affective fit).\n"
+                    "- **Check for miracle steps** — detects"
+                    " unexplained jumps in entity state (a character"
+                    " teleporting, a death undone) the engine could"
+                    " not justify from prior events.\n"
+                    "- **Evaluate character consistency** — cognitive"
+                    " plausibility per entity: do their choices match"
+                    " their established traits and beliefs?\n\n"
+                    "Scorecards include:\n"
+                    "- **Foreshadowing pay-off score** — set-ups that"
+                    " landed vs dropped threads.\n"
+                    "- **Cognitive plausibility score** — weighted"
+                    " average over per-entity belief consistency.\n"
+                    "- **Affective loss MSE** — distance between the"
+                    " requested emotional trajectory and what the"
+                    " prose actually achieved (lower is better).\n"
+                    "- **Miracle steps detected** — list of"
+                    " unexplained state changes with offending event"
+                    " ids.\n"
+                    "- **Rewrite directives** — actionable suggestions"
+                    " the auditor produced; clicking one populates the"
+                    " command bar with a Direct query.\n\n"
+                    "### Activity log (below)\n"
+                    "Chronological feed of every action on this"
+                    " project: ingestion, queries, manual edits,"
+                    " version saves, deletes, branch promotions. Each"
+                    " entry shows the user, timestamp, raw NL"
+                    " question, parsed query, and a diff summary of"
+                    " the world-state changeset.\n\n"
+                    "### Tips\n"
+                    "- Evaluation does **not** create a new version —"
+                    " it only scores existing prose.\n"
+                    "- Click any version row to load that version into"
+                    " every panel.\n"
+                    "- Use the *engine threshold failures* chips on"
+                    " each entry to jump back to the offending audit"
+                    " iteration."
+                ),
+                tooltip="What is this tab?",
+            )
         # ── NL prompt for evaluation ──────────────────────────────
         with ui.row().classes("w-full gap-2 flex-wrap"):
             ui.chip(

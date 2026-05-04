@@ -13,17 +13,28 @@ version rows; there is no longer an explicit workspace-level Save button.
 Manual saves still exist on the Story tab (Save & Re-ingest) and the Editor
 tab (Save / Save Anyway), as documented below.
 
-The workspace is composed of a left-hand **version sidebar** and eight tabs
-defined in [`components/workspace.py`](../shadow_loom_ui/components/workspace.py):
+The workspace is composed of a left-hand **version sidebar**, a top-level
+**chat / command bar**, a dedicated **Answer panel** (above the chat bar,
+for read-only Q&A results), and nine cross-linked tabs defined in
+[`components/workspace.py`](../shadow_loom_ui/components/workspace.py):
 
 ```
-story · explorer · world · causality · reasoning · audit · editor · export
+story · explorer · world · causality · reasoning · audit · research · editor · export
 ```
 
 State is centralised in [`state.py::AppState`](../shadow_loom_ui/state.py),
 a pub/sub event bus. Every tab subscribes to the events it cares about
 (`PROJECT_LOADED`, `WORLD_STATE_CHANGED`, `FABULA_CURSOR_CHANGED`,
-`SYUZHET_CURSOR_CHANGED`, `VERSION_CHANGED`, `ACTIVE_PATH_CHANGED`).
+`SYUZHET_CURSOR_CHANGED`, `VERSION_CHANGED`, `ACTIVE_PATH_CHANGED`,
+`PIPELINE_RESULT`, `QUERY_STARTED`).
+
+Every panel header carries a clickable info-icon **help popover**
+([`components/help_popover.py`](../shadow_loom_ui/components/help_popover.py))
+that opens a Markdown reference for that surface — what the panel does,
+how to read its diagrams, what each control means, and what does *not*
+appear there. The popovers are intended as in-product documentation that
+tracks the code; the equivalent material is reproduced here for
+reference.
 
 ---
 
@@ -31,11 +42,12 @@ a pub/sub event bus. Every tab subscribes to the events it cares about
 
 [`components/version_sidebar.py`](../shadow_loom_ui/components/version_sidebar.py)
 
-* Tree of every `VersionRow` in the project, rooted at the original
-  ingestion. Branches reflect manual edits, pipeline runs, and counterfactual
-  branches. **Factual** rows render in green; **shadow** branches (the
-  persisted forks produced by counterfactual queries under
-  `branch_policy=auto`) render in violet.
+* Vertical tree of every `VersionRow` in the project, rooted at the
+  original ingestion. Branches reflect manual edits, pipeline runs, and
+  counterfactual branches. **Factual** rows render in green; **shadow**
+  branches (the persisted forks produced by counterfactual queries under
+  `branch_policy=auto`) render in violet. The legacy radial layout has
+  been removed; the tree is the only view.
 * Click a row to swap the active version (`AppState.load_db_version`).
   Cursors are reset; every tab re-renders.
 * Toolbar:
@@ -53,6 +65,30 @@ shows the same version as the UI for that user.
 
 ---
 
+## Chat / command bar and Answer panel
+
+The chat bar at the bottom of the workspace dispatches one of the eight
+typed query objects (see
+[query-and-cycles.md](query-and-cycles.md)). Two of those query types are
+read-only:
+
+* `general` — open Q&A about the world ("who knows what at this point?").
+* `interrogate` — targeted questioning of an entity, event, or belief.
+
+Read-only queries do **not** create a new `VersionRow`. Their result is
+rendered in the dedicated **Answer panel**
+([`components/answer_panel.py`](../shadow_loom_ui/components/answer_panel.py))
+that sits directly above the chat bar: a card with the model's claim, a
+confidence badge (🟢 ≥ 70 / 🟡 40–69 / 🔴 < 40), an evidence-id list
+(linking back to the graph nodes consulted), and any caveats. The panel
+clears on `VERSION_CHANGED` and `PROJECT_LOADED` so a stale answer never
+lingers across versions.
+
+Write-mode queries (`observation` / `intervention` / `counterfactual` /
+`directive` / `evaluate` / `manual_edit`) take their normal pipeline
+route and surface in whichever tab consumes their result
+(Story / Reasoning / Audit / Causality).
+
 ## 1. Story tab
 
 [`components/story_tab.py`](../shadow_loom_ui/components/story_tab.py)
@@ -63,6 +99,10 @@ shows the same version as the UI for that user.
   result as a new version with `source="ingestion"` and the previous
   version as ancestor.
 * This tab is **not** autosaved — the textarea is plain prose, not graph.
+* Read-only Q&A queries (`general`, `interrogate`) are deliberately
+  filtered out of this tab's `PIPELINE_RESULT` listener: the prose feed
+  only re-renders when the result actually carries new prose, so a
+  question never perturbs the lineage view.
 
 ## 2. Explorer tab
 
@@ -112,7 +152,7 @@ the most recent render.
 
 [`components/audit_tab.py`](../shadow_loom_ui/components/audit_tab.py)
 
-* Displays the structured `AuditReport` for the latest generated scene.
+* Displays the structured `AuditResult` (or, for full feedback-loop runs, the per-iteration `AuditCycleSnapshot.audit_result` inside the `FeedbackLoopResult`) for the latest generated scene.
 * Causal / abductive / affective sections each show their loss + offending
   prose spans.
 
@@ -201,7 +241,21 @@ Permission rules match the Story tab: project owner OR project role
 `editor` / `admin`. Users without write access see a read-only textarea
 and no Save button.
 
-## 8. Export tab
+## 8. Research tab
+
+[`components/research_tab.py`](../shadow_loom_ui/components/research_tab.py)
+
+* Manage research **topics**, run background lookup tasks, and browse the
+  resulting **facts** (each carrying a source URL and a confidence score).
+* **Segregation policy**: research is a separate store. Facts are not
+  written into the world model automatically; they are reference material
+  available to the author and (optionally) to the renderer's prompt
+  scaffolding. Promoting a research finding into canon is a deliberate,
+  manual step taken in the Editor tab.
+* A status strip at the top of the tab shows in-flight lookups, the
+  number of stored facts per topic, and the last refresh time.
+
+## 9. Export tab
 
 [`components/export_tab.py`](../shadow_loom_ui/components/export_tab.py)
 
@@ -247,10 +301,10 @@ hang fixes".
 
 ## See also
 
-* [architecture.md §9](architecture.md) — the conceptual map of the UI's eight tabs and the `AppState` event bus.
+* [architecture.md §9](architecture.md) — the conceptual map of the UI's nine tabs and the `AppState` event bus.
 * [pipeline-walkthrough.md](pipeline-walkthrough.md) — what happens behind the scenes when the **Story** tab issues a query.
-* [query-and-cycles.md](query-and-cycles.md) — the eight query types that the chat box and the **Reasoning** tab build.
+* [query-and-cycles.md](query-and-cycles.md) — the eight query types that the chat box and the **Reasoning** tab build, including the read-only `general` and `interrogate` cycles served by the **Answer panel**.
 * [mcp-guide.md](mcp-guide.md) — the agent-facing equivalent of the workspace; the active version pointer is shared so the UI and an MCP client always see the same tip.
 * [use-cases.md](use-cases.md) §5 — the **Editor** tab and the manual-editing workflow.
-* [paper/shadow_loom.pdf](../paper/shadow_loom.pdf) **Appendix D** (`app:ui`) — the same eight tabs described tab-by-tab with example sessions on bundled fixtures (Macbeth, Death on the Nile, Reservoir Dogs, Romeo and Juliet, Gone Girl).
+* [paper/shadow_loom.pdf](../paper/shadow_loom.pdf) **Appendix D** (`app:ui`) — the same surfaces described tab-by-tab with example sessions on bundled fixtures (Macbeth, Death on the Nile, Reservoir Dogs, Romeo and Juliet, Gone Girl).
 * [paper/shadow_loom.pdf](../paper/shadow_loom.pdf) **Appendix B** (`app:walkthrough`) — an end-to-end narrative walkthrough of the pipeline that the UI exposes, using the *Macbeth* fixture from Step 0 (the user typing a query) through Step 8 (audit, re-extraction, and merge).

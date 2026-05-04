@@ -154,7 +154,9 @@ feature is **off by default** and requires three things:
    `WorldFact` to the active project; `list_world_facts` and
    `delete_world_fact` round out the management surface. See
    [mcp-guide.md §3 RESEARCH](mcp-guide.md#research--look-up-real-world-background-on-a-topic-optional)
-   and [research-extraction-plan.md](research-extraction-plan.md) for the
+   and the research-related sections of
+   [docs/architecture.md](architecture.md#step-3d--optional-external-research-segregated-off-by-default)
+   and [CONTENT-POLICY.md](../CONTENT-POLICY.md#64-external-research-data) for the
    per-account isolation contract.
 
 Provider calls are cached per-account and never reused across users

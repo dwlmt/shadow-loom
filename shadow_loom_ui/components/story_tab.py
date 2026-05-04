@@ -30,6 +30,57 @@ def build_story_tab(state: AppState) -> None:
     """Build the Story tab — prose reading + generation display."""
 
     with ui.column().classes("w-full h-full p-6 gap-3 bg-slate-50"):
+        # ── Header with help popover ──────────────────────────────
+        with ui.row().classes("w-full items-center gap-2"):
+            ui.icon("auto_stories", color="primary")
+            ui.label("Story").classes(
+                "text-sm font-semibold text-slate-700"
+            )
+            ui.space()
+            from shadow_loom_ui.components.help_popover import help_popover
+            help_popover(
+                title="Story — prose reader & manual editor",
+                body_md=(
+                    "The reading pane for this version's narrative.\n\n"
+                    "### Sections\n"
+                    "**Source text** (collapsible)\n"
+                    "- The original prose the project was ingested"
+                    " from.\n"
+                    "- Owners and editors can edit it inline. **Save &"
+                    " Re-ingest** runs the full extraction pipeline"
+                    " (entities, events, causal/social/spatial graphs)"
+                    " and saves the result as a new version branching"
+                    " from the current one.\n"
+                    "- Read-only viewers see the textarea but cannot"
+                    " save.\n\n"
+                    "**Generated prose**\n"
+                    "- Every prose card produced by Continue /"
+                    " Intervene / What-If / Direct / Write prose along"
+                    " the **lineage from the root to the active"
+                    " version**. Switching branches in the version tree"
+                    " changes which cards appear here.\n"
+                    "- Each card shows the **query type** badge plus an"
+                    " audit-status badge (*converged* / *unconverged*)"
+                    " indicating whether the auditor accepted the prose"
+                    " within its iteration budget.\n\n"
+                    "### What you can do\n"
+                    "- **Read** the canonical narrative for any version"
+                    " by clicking it in the version tree.\n"
+                    "- **Re-ingest** edited source text to fork a new"
+                    " canonical baseline.\n"
+                    "- Use the command bar below to generate the next"
+                    " scene; the new card appears here automatically.\n\n"
+                    "### What does *not* appear here\n"
+                    "- **Ask** and **Interrogation** answers — those go"
+                    " to the Answer panel above the command bar so"
+                    " Q&A doesn't perturb the prose feed.\n"
+                    "- **Implausible** runs that the engine refused —"
+                    " their explanation surfaces as a chat message and"
+                    " no version is saved."
+                ),
+                tooltip="What is this tab?",
+            )
+
         # ── Source text (collapsible, editable) ─────────────
         source_container = ui.column().classes(
             "w-full bg-white border border-slate-200 rounded-xl shadow-sm"
@@ -42,10 +93,24 @@ def build_story_tab(state: AppState) -> None:
         _render_prose(state, prose_container)
 
         # ── Subscribe ─────────────────────────────────────────────
-        state.on(
-            StateEvent.PIPELINE_RESULT,
-            lambda **kw: _render_prose(state, prose_container),
-        )
+        def _on_pipeline_result(**kwargs):
+            # Ask / Interrogation queries are read-only Q&A: they don't
+            # advance the world model and don't produce prose. The
+            # Answer panel handles their results; re-rendering the
+            # Story tab on every Q&A run was causing the prose feed to
+            # flicker and scroll back to the top, which felt to users
+            # like the original story was being mutated by their
+            # questions. Skip the redraw when there is nothing new to
+            # show here.
+            result = kwargs.get("result")
+            pr = getattr(result, "pipeline_result", None) if result else None
+            if pr is None:
+                return
+            if not pr.prose and pr.query_type in ("general", "interrogate"):
+                return
+            _render_prose(state, prose_container)
+
+        state.on(StateEvent.PIPELINE_RESULT, _on_pipeline_result)
         state.on(
             StateEvent.PROJECT_LOADED,
             lambda **kw: (

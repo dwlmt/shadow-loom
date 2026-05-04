@@ -1184,10 +1184,14 @@ class DirectiveAssembler:
           itself maximally split, otherwise it pulls the reader's
           expectation toward what the rest of the cast looks like.
           For each *revealed* causal edge targeting this entity we then
-          apply a Bayesian-style additive update,
-          ``prior += w_i · (actual - base_prior)`` (clipped to ``[ε, 1-ε]``),
-          so the magnitude of the shift is tied directly to the edge
-          weight rather than the previous geometric ``* 0.5`` halving.
+          apply a **geometric** Bayesian-style pull,
+          ``prior += w_i · (actual - prior)`` (clipped to ``[ε, 1-ε]``),
+          so each successive piece of evidence asymptotes the prior
+          toward the truth without overshooting (an additive form
+          ``prior += w · (actual - base_prior)`` summed past the
+          actual value once ``Σw > 1``, producing a non-monotonic
+          surprise curve that contradicted the
+          "more-revealed → less-surprise" semantics).
         * **Posterior** — actual trait values from the sandbox
           (post-simulation) or world state (truth).
 

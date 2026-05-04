@@ -495,11 +495,20 @@ class AppState:
         )
         context_switched = project_switched or version_switched
 
-        # Update world model if pipeline produced a new versioned model
+        # Update world model if pipeline produced a new versioned model.
+        # Suppress the WORLD_STATE_CHANGED emit when the version hasn't
+        # actually advanced (e.g. read-only Ask/Interrogation queries
+        # return the same versioned model unchanged) so panels don't
+        # needlessly re-render and snapshot caches stay warm.
         if pipeline_result.world_model is not None and not context_switched:
+            world_advanced = (
+                prev_version is None
+                or pipeline_result.world_model.version != prev_version
+            )
             self.versioned_model = pipeline_result.world_model
             self.world_state = pipeline_result.world_model.current
-            self.emit(StateEvent.WORLD_STATE_CHANGED)
+            if world_advanced:
+                self.emit(StateEvent.WORLD_STATE_CHANGED)
 
         self.last_result = pipeline_result
 
@@ -512,12 +521,25 @@ class AppState:
             and pipeline_result.world_model.version == prev_version
             and not pipeline_result.feedback_result
         )
+        # Read-only Q&A queries (Ask / Interrogation) never advance the
+        # world model — pipeline returns early before generation. Saving
+        # them as new versions would litter the version tree with
+        # identical world-state snapshots and make branch lineage and
+        # the prose-by-lineage filter in the Story panel meaningless.
+        # The structured response card in chat is the only artifact a
+        # Q&A run should produce.
+        readonly_query = query.query_type in ("general", "interrogate")
         # Also skip when re-extraction failed: prose is present but the world
         # model was *not* advanced to reflect that prose. Persisting would
         # store divergent prose/world state under the same version row.
         # Skip persistence entirely when context switched mid-flight — the
         # ancestor lineage we captured is no longer the user's current view.
-        if not short_circuited and not pipeline_result.reextraction_failed and not context_switched:
+        if (
+            not short_circuited
+            and not readonly_query
+            and not pipeline_result.reextraction_failed
+            and not context_switched
+        ):
             self._save_version_to_db(
                 pipeline_result=pipeline_result,
                 # Prefer the user's verbatim NL request (now carried on

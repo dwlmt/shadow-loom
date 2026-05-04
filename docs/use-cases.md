@@ -63,7 +63,7 @@ on its own is useful:
 **Audience:** literary analysts, screenwriting students, game designers
 balancing branching narratives.
 
-Pearl rung-3 counterfactuals in a literary setting:
+Pearl rung-3 (Counterfactual) reasoning in a literary setting:
 
 * *"What if Macbeth had refused to kill Duncan?"* — `do(EVT_DUNCAN_MURDER =
   ⊘)` and replay forward physics. The system reports which downstream events
@@ -97,7 +97,7 @@ Pearl rung-3 counterfactuals in a literary setting:
 **Audience:** anyone who needs to dial the emotional intensity of a scene.
 
 Because suspense, mystery, dramatic irony and surprise are computable
-quantities (see [academic-foundations.md §3.1 (Wilmot & Keller suspense)](academic-foundations.md#31-suspense-as-uncertainty-reduction--wilmot--keller-acl-2020),
+quantities (see [academic-foundations.md §3.1 (Wilmot & Keller suspense)](academic-foundations.md#31-suspense-as-hopefear-here-hopethreat-anticipation--structural-affect-lineage),
 [§3.3 (KL surprise)](academic-foundations.md#33-surprise-as-kl-divergence),
 [§3.4 (dramatic irony)](academic-foundations.md#34-dramatic-irony-as-epistemic-asymmetry)),
 the user can:

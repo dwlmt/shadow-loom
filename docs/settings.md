@@ -137,7 +137,7 @@ The thresholds map directly onto the auditor categories described in
 | `EXTRACTION_RESEARCH_PROVIDER_MODEL` | *(empty)* | Provider-specific search depth (e.g. Tavily `basic` vs `advanced`). Hashed into the per-user cache key. |
 | `EXTRACTION_RESEARCH_MAX_RESULTS_PER_QUERY` | `5` | Cap on snippets returned per provider call. |
 | `EXTRACTION_RESEARCH_TOPICS` | *(empty)* | Pre-configured topics looked up at extraction time. Topics may also be added live via the `research_topic` MCP tool. |
-| `TAVILY_API_KEY` | *(empty)* | Required only when `EXTRACTION_RESEARCH_PROVIDER=tavily`. See [research-extraction-plan.md](research-extraction-plan.md). |
+| `TAVILY_API_KEY` | *(empty)* | Required only when `EXTRACTION_RESEARCH_PROVIDER=tavily`. See the research section of [docs/architecture.md](architecture.md#step-3d--optional-external-research-segregated-off-by-default). |
 
 The Socratic-scaffold extraction protocol is described in
 [pipeline-walkthrough.md §Steps 1–2](pipeline-walkthrough.md), with the

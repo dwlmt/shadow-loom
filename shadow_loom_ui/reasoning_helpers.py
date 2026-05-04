@@ -113,6 +113,18 @@ VIOLATION_EXPLANATIONS: Dict[str, str] = {
         "or acquired_via_channel) does not match how the prose said "
         "they came to know it. Reconcile the source of the knowledge."
     ),
+    "style_mismatch": (
+        "The prose register drifted from the source-style profile "
+        "captured at ingestion (sentence length, vocabulary tier, "
+        "voice). Tighten the wording to match the original author's "
+        "fingerprint."
+    ),
+    "meta_narration": (
+        "The prose stepped outside the diegesis to comment on its own "
+        "structure — timelines, branches, counterfactual machinery — "
+        "instead of rendering the world as a lived scene. Rewrite as "
+        "embodied action and observation."
+    ),
 }
 
 

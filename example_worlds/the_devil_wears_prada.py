@@ -598,6 +598,28 @@ world_state = WorldStateV1(
                    causal_force=5.0, fabula_time=10000,
                    trait_target="affinity", trait_delta=0.4, rel_counterpart_id="ENT_LILY"),
 
+        # ── mutation_social: fear arc (Andrea → Miranda) ──
+        # Fear rises sharply when Andrea steps into Miranda's orbit, peaks at the
+        # impossible Dior ultimatum, softens briefly during the Paris confidence,
+        # and crystallises at the final refusal. Terminal value tracks the
+        # ENT_ANDREA → ENT_MIRANDA fear baseline (0.7) on the social topology.
+        CausalEdge(source_id="EVT_HIRED_AS_JR_ASSISTANT", target_id="ENT_ANDREA",
+                   causality_type="mutation_social", mechanism="social", evidence_strength="strong",
+                   causal_force=7.0, fabula_time=2500,
+                   trait_target="fear", trait_delta=0.5, rel_counterpart_id="ENT_MIRANDA"),
+        CausalEdge(source_id="EVT_DIOR_DEMAND", target_id="ENT_ANDREA",
+                   causality_type="mutation_social", mechanism="psychological", evidence_strength="strong",
+                   causal_force=8.0, fabula_time=8000,
+                   trait_target="fear", trait_delta=0.3, rel_counterpart_id="ENT_MIRANDA"),
+        CausalEdge(source_id="EVT_MIRANDA_OPENS_UP", target_id="ENT_ANDREA",
+                   causality_type="mutation_social", mechanism="emotional", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=7000,
+                   trait_target="fear", trait_delta=-0.2, rel_counterpart_id="ENT_MIRANDA"),
+        CausalEdge(source_id="EVT_ANDREA_REFUSES", target_id="ENT_ANDREA",
+                   causality_type="mutation_social", mechanism="psychological", evidence_strength="strong",
+                   causal_force=6.0, fabula_time=8200,
+                   trait_target="fear", trait_delta=0.1, rel_counterpart_id="ENT_MIRANDA"),
+
         # ── affordance_gate ──
         CausalEdge(source_id="OBJ_ANDREA_RESUME", target_id="EVT_INTERVIEW_ELIAS_CLARKE",
                    causality_type="affordance_gate", mechanism="social", evidence_strength="strong",

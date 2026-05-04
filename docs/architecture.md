@@ -119,7 +119,6 @@ Step 10 prompt. Off by default; opt in via
 `EXTRACTION_RESEARCH_PROVIDER=tavily` plus `TAVILY_API_KEY`. Agents may
 also add facts live via the `research_topic` MCP tool. Provider calls
 are cached per-account (see
-[docs/research-extraction-plan.md](research-extraction-plan.md) and
 [CONTENT-POLICY.md §6.4 / §6.4a](../CONTENT-POLICY.md)).
 
 ### Step 3: Epistemic synchronisation
@@ -142,8 +141,8 @@ drive a generation cycle:
 | `InterventionQuery` | 2 | "What if X did Y?" — applies `do(X=y)`. |
 | `CounterfactualQuery` | 3 | "What if the past had been different?" — abduction + intervention. |
 | `DirectiveQuery` | — | High-level emotional target (`mystery`, `suspense`, `surprise`, `dramatic_irony`, plus emotion targets). |
-| `InterrogationQuery` | — | Graph RAG over the world model for Q&A. |
-| `GeneralQuery` | — | Free-form NL Q&A over the graph (ungrounded discussion). |
+| `InterrogationQuery` | — | Targeted Q&A over the typed graph ("who knows X?", "why does Y act?"). Read-only: dispatched through the same physics path as a rung-1 (Observation) query but the result is rendered by `shadow_loom/answer.py` as an `AnswerCard{answer, confidence, caveats, evidence_node_ids}` rather than persisted. |
+| `GeneralQuery` | — | Free-form Q&A over the world model. Read-only, same `AnswerCard` flow as `InterrogationQuery`. |
 | `ManualEditQuery` | — | User-supplied prose; routes to re-extraction without rendering. |
 | `EvaluationQuery` | — | Recompute affective metrics across all versions for scoring. |
 
@@ -178,7 +177,7 @@ committed back. Edge types laid down:
 * `causal` — `mechanism`, `evidence_strength`, `causal_force`,
   `propagation_delay`
 * `connected_to` — spatial, with `is_locked` and `barrier_item_id`
-* `communicating_with` — informational, derived from `Channel` participants and per-participant `intelligibility`. `Channel` carries `medium`, `directionality`, `participant_ids`, an `intelligibility` map, `established_at_fabula`, `terminated_at_fabula` (None while still open), `discovered_at_syuzhet` (for hidden-channel detection) and `evidence_strength`.
+* `communicating_with` — informational, derived from `Channel` participants and per-participant `intelligibility`. `Channel` carries `medium`, `directionality`, `participant_ids`, an `intelligibility` map, `established_at_fabula`, `terminated_at_fabula` (None while still open) and `evidence_strength`. (Hidden-channel discovery is tracked separately on `HiddenChannel.discovered_at_syuzhet` in the directive layer, not on `Channel` itself.)
 * `eavesdropped_by` — auto-derived for participants whose `intelligibility >= physics.intelligibility_threshold` but who are *not* in an utterance's `addressee_ids` (epistemic leakage)
 
 ### Step 7: Causal Physics ([`causal_physics.py`](../shadow_loom/causal_physics.py))
@@ -186,12 +185,16 @@ committed back. Edge types laid down:
 `CausalPhysicsEngine` implements all three rungs of Pearl's Ladder of
 Causation:
 
-* **Abduction (rung 3).** Back-propagates present-day evidence into the
-  historical sandbox. Entity traits blend 50 % toward observed factual
-  values; beliefs propagate backward; causal edges weighted by
-  `evidence_strength`. `MECHANISM_TRAIT_MAP` gates which mechanisms can touch
-  which trait families.
-* **Action (rung 2).** Applies `do(X=x)` via six surgery types:
+* **Abduction (rung 3 — Counterfactual).** Back-propagates present-day evidence into the
+  historical sandbox. The default `abduction_blend_mode="bayesian"` blends
+  each entity trait by a precision-weighted Bayesian update
+  (trait inertia $\iota$ as the precision of the historical prior,
+  evidence precision $\kappa$ on the present-day observation), with a
+  legacy inertia-damped variant retained for ablation; beliefs propagate
+  backward subject to per-channel intelligibility gating; relationship
+  metrics use the same per-axis Bayes blend. `MECHANISM_TRAIT_MAP` gates
+  which mechanisms can touch which trait families.
+* **Action (rung 2 — Intervention).** Applies `do(X=x)` via six surgery types:
   spatial (with affordance path-checking), inventory, relationship, state
   mutation, genesis (spawn new nodes), and comms (open / sever channels).
   Incoming causal edges into the intervened node are severed; downstream
@@ -218,7 +221,7 @@ Four structural-effect scorers operate purely on the graph geometry:
 |---|---|
 | **Mystery** | $\dfrac{\#\text{hidden ancestors}}{\#\text{total ancestors}}$ for each known effect; walks back through `causal_topology` and filters by ancestor events with `syuzhet_index > syuzhet_anchor`. |
 | **Dramatic Irony** | Per-character mean of $\dfrac{\sum_{e \in \text{revealed}, e \notin K_c} w_e}{\sum_{e \in \text{events}} w_e + K}$, where $K_c$ is what character $c$ knows at `syuzhet_anchor` and $w_e$ is event ``e``'s intensity (default 1.0; saturation constant $K = 1$). For each focal entity, the gap is the intensity-weighted mass of *revealed* events the entity does **not** know about, divided by the total event mass plus $K$. A character is treated as knowing an event when (a) they participate in it as actor or target *and* it has happened by the syuzhet anchor's fabula frontier, (b) a revealed utterance addressed to or spoken by them refers to it, or (c) they hold a Belief whose `target_id` matches the event id. The earlier *cumulative ratio over revealed-only edges* form ($\#\text{gaps}/\#\text{revealed connections}$) had numerator and denominator growing together and so plateaued at a story-specific asymptote by the third reveal — Reservoir Dogs even *decayed* from 0.25 to 0.06 because the protagonist became actor-of-record on more revealed edges as the syuzhet advanced. Normalising by the **full event mass** lets the curve rise smoothly with reveals and fall when characters acquire knowledge later, producing the dramatic-irony arc the gauge is supposed to depict. |
-| **Suspense** | $\text{balance} \times \text{stakes}$ clamped to $[0, 1]$, where $\text{balance} = 1 - \dfrac{|w_\text{threat} - w_\text{hope}|}{w_\text{threat} + w_\text{hope}}$ peaks at genuine outcome uncertainty and decays under one-sided dominance, and $\text{stakes} = \dfrac{w_\text{threat} + w_\text{hope}}{w_\text{threat} + w_\text{hope} + K}$ saturates so balanced fragments don't pin the gauge ($K = 2$ by default). For each focal entity, every unrevealed event in which the entity is a non-acting target contributes its `evidence_strength`-derived probability $p$ to $w_\text{threat}$, and every unrevealed event in which the entity is an actor contributes $p$ to $w_\text{hope}$. The probability proxy is the strongest incoming causal-edge weight on the event (outgoing as fallback, 0.5 default). Returns 0 at the **despair** boundary ($w_\text{hope} = 0$) and the **safety** boundary ($w_\text{threat} = 0$). The earlier asymmetric $\max(0, (w_\text{threat} - w_\text{hope})/(w_\text{threat}+w_\text{hope}))$ form collapsed to 0 on every fixture in which the protagonist authors most of their own forward events; balance × stakes follows Brewer & Lichtenstein's structural-affect framing of suspense as a response to outcome ambiguity. Inspired by Wilmot & Keller (2020); see [academic-foundations.md §3.1](academic-foundations.md#31-suspense-as-uncertainty-reduction--wilmot--keller-acl-2020). |
+| **Suspense** | $\text{balance} \times \text{stakes}$ clamped to $[0, 1]$, where $\text{balance} = 1 - \dfrac{|w_\text{threat} - w_\text{hope}|}{w_\text{threat} + w_\text{hope}}$ peaks at genuine outcome uncertainty and decays under one-sided dominance, and $\text{stakes} = \dfrac{w_\text{threat} + w_\text{hope}}{w_\text{threat} + w_\text{hope} + K}$ saturates so balanced fragments don't pin the gauge ($K = 2$ by default). For each focal entity, every unrevealed event in which the entity is a non-acting target contributes its `evidence_strength`-derived probability $p$ to $w_\text{threat}$, and every unrevealed event in which the entity is an actor contributes $p$ to $w_\text{hope}$. The probability proxy is the strongest incoming causal-edge weight on the event (outgoing as fallback, 0.5 default). Returns 0 at the **despair** boundary ($w_\text{hope} = 0$) and the **safety** boundary ($w_\text{threat} = 0$). The earlier asymmetric $\max(0, (w_\text{threat} - w_\text{hope})/(w_\text{threat}+w_\text{hope}))$ form collapsed to 0 on every fixture in which the protagonist authors most of their own forward events; balance × stakes follows Brewer & Lichtenstein's structural-affect framing of suspense as a response to outcome ambiguity. Inspired by Wilmot & Keller (2020); see [academic-foundations.md §3.1](academic-foundations.md#31-suspense-as-hopefear-here-hopethreat-anticipation--structural-affect-lineage). |
 | **Surprise** | Per-trait binary KL divergence $D_\text{KL}(p \| q) = p\log\tfrac{p}{q} + (1-p)\log\tfrac{1-p}{1-q}$. Posterior $p$ is the entity's *final-state* trait value resolved via `reconstruct_entity_at(ent, t_max)` so authored `state_timeline` arcs are honoured (sandbox-preferred when running counterfactuals). Prior $q$ starts at the **leave-one-out** per-trait corpus marginal (mean across every *other* entity, falling back to 0.5 when fewer than two other entities carry the trait) — leave-one-out prevents the focal entity from biasing its own prior, which would otherwise collapse KL on the small casts typical of the example fixtures. The prior is then pulled toward the actual value by a geometric update $q \mathrel{+}= w \cdot (\text{actual} - q)$ for each revealed causal edge whose target is the entity, monotonically converging on the truth as evidence accumulates rather than overshooting. Each per-trait KL is run through a soft-saturation $1 - e^{-\text{KL}}$ (so perceptually meaningful KLs in the 0.2–1.5 band map to 0.18–0.78 of the gauge) and the result is averaged across the focal traits. The earlier $\text{avg}(\text{KL})/\log(1/\varepsilon)$ form divided by the *theoretical* binary-KL maximum ($\approx 4.6$ at $\varepsilon = 0.01$), squashing the entire perceptual signal into the bottom 4% of the gauge — every ``example_world`` plot read as flat ≤ 0.10 even when canonical surprise traits (Macbeth's despair, Macduff's grief) carried per-trait KLs of 0.27–0.50. See [academic-foundations.md §3.3](academic-foundations.md#33-surprise-as-kl-divergence). |
 
 Six emotional effects (`grief`, `rage`, `joy`, `regret`, `love`, `fear`) use
@@ -404,12 +407,26 @@ merged nodes/edges so per-branch retrieval stays clean.
 
 ## 9. The UI — `shadow_loom_ui/`
 
-NiceGUI workspace ([`app.py`](../shadow_loom_ui/app.py)) composed of tabs in
+NiceGUI workspace ([`app.py`](../shadow_loom_ui/app.py)) composed of a
+left-hand version sidebar (vertical tree only — the legacy radial layout
+has been removed), a top-level **chat / command bar**, a dedicated
+**Answer panel** above the chat bar for read-only Q&A results, and nine
+cross-linked tabs in
 [`components/workspace.py`](../shadow_loom_ui/components/workspace.py):
 
 ```
-story · explorer · world · causality · reasoning · audit · editor · export
+story · explorer · world · causality · reasoning · audit · research · editor · export
 ```
+
+Every panel header carries an info-icon **help popover**
+([`components/help_popover.py`](../shadow_loom_ui/components/help_popover.py))
+opening a Markdown reference for that surface (what the panel does, how
+to read its diagrams, what the controls mean). The Answer panel
+([`components/answer_panel.py`](../shadow_loom_ui/components/answer_panel.py))
+renders the result of a `GeneralQuery` or `InterrogationQuery` as a card
+with claim, confidence badge, evidence-id list, and caveats; it clears on
+`VERSION_CHANGED` and `PROJECT_LOADED` so a stale answer never persists
+across versions.
 
 `AppState` ([`state.py`](../shadow_loom_ui/state.py)) is the central
 pub/sub. It debounces cursor scrubs (120 ms), gates panels by `active_path`,
@@ -438,7 +455,7 @@ the world model as tools and resources. Highlights:
 
 ## 11. Tests
 
-`tests/` contains 950+ pytest tests covering models, ingestion, AMWN,
+`tests/` contains roughly 1,300 pytest tests across 26 files covering models, ingestion, AMWN,
 causal physics, directive assembly, narrative physics, version mutations,
 reasoning helpers, viz helpers, the MCP server, and end-to-end pipeline
 integration. `test_live_e2e.py` is excluded by default — it requires a local
@@ -457,5 +474,5 @@ python -m pytest tests/ --ignore=tests/test_live_e2e.py -q
 * [mcp-guide.md](mcp-guide.md) — the agent-facing surface for everything in §10.
 * [ui-guide.md](ui-guide.md) — the human-facing surface for everything in §9.
 * [design-decisions.md](design-decisions.md) — *why* the schema looks the way it does.
-* [academic-foundations.md](academic-foundations.md) — citations for fabula/syuzhet ([§1.1](academic-foundations.md#11-fabula-vs-syuzhet-fabula_time--syuzhet_index)), Pearl's ladder ([§2.1](academic-foundations.md#21-three-rungs-of-causation-observationquery-interventionquery-counterfactualquery)), Wilmot suspense ([§3.1](academic-foundations.md#31-suspense-as-uncertainty-reduction--wilmot--keller-acl-2020)), KL surprise ([§3.3](academic-foundations.md#33-surprise-as-kl-divergence)), AMWN, ctf-calculus ([§2.2](academic-foundations.md#22-ancestral-multi-world-networks-and-ctf-calculus--correa--bareinboim-icml-2025)).
+* [academic-foundations.md](academic-foundations.md) — citations for fabula/syuzhet ([§1.1](academic-foundations.md#11-fabula-vs-syuzhet-fabula_time--syuzhet_index)), Pearl's ladder ([§2.1](academic-foundations.md#21-three-rungs-of-causation-observationquery-interventionquery-counterfactualquery)), Wilmot suspense ([§3.1](academic-foundations.md#31-suspense-as-hopefear-here-hopethreat-anticipation--structural-affect-lineage)), KL surprise ([§3.3](academic-foundations.md#33-surprise-as-kl-divergence)), AMWN, ctf-calculus ([§2.2](academic-foundations.md#22-ancestral-multi-world-networks-and-ctf-calculus--correa--bareinboim-icml-2025)).
 * [settings.md](settings.md) — every runtime knob (model strings, token budgets, physics constants, audit thresholds) and how to override them.

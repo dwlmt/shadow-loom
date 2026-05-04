@@ -551,7 +551,8 @@ class TestDirectiveEndToEnd:
         # Capture the prior_feedback arg across calls
         captured_feedback = []
 
-        def capture_audit(prose, brief, config=None, prior_feedback=None):
+        def capture_audit(prose, brief, config=None, prior_feedback=None,
+                          causal_feedback=None, *, world_state=None):
             captured_feedback.append(prior_feedback)
             if len(captured_feedback) < 3:
                 return _mock_failing_audit(f"Fix issue {len(captured_feedback)}")

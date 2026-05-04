@@ -55,6 +55,59 @@ def build_reasoning_tab(state: AppState) -> None:
     """Build the Reasoning tab layout."""
 
     with ui.column().classes("w-full h-full bg-slate-50"):
+        with ui.row().classes(
+            "w-full items-center px-4 py-2 border-b border-slate-200 gap-2 bg-white"
+        ):
+            ui.icon("psychology", color="primary")
+            ui.label("Reasoning").classes(
+                "text-sm font-semibold text-slate-700"
+            )
+            ui.space()
+            from shadow_loom_ui.components.help_popover import help_popover
+            help_popover(
+                title="Reasoning — the engine's step-by-step trace",
+                body_md=(
+                    "Inspect *why* the engine produced the result it"
+                    " did for the most recent rung-2 (intervention) or"
+                    " rung-3 (counterfactual) query, plus epistemic"
+                    " lenses onto the world model.\n\n"
+                    "### Sub-tabs\n"
+                    "- **Events** — chronological event navigator with"
+                    " causal predecessors, successors, and per-event"
+                    " affective scores. Click any event to deep-link.\n"
+                    "- **Trace** — the engine's reasoning steps for the"
+                    " most recent query: abduction (what hidden state"
+                    " was inferred?), intervention application, ctf"
+                    " pre-flight pruning (Pearl & Bareinboim Rule 2 /"
+                    " Rule 3), counterfactual replay, and which"
+                    " propagations were blocked by inertia or"
+                    " affordance gates.\n"
+                    "- **Belief lens** — *what does X believe right"
+                    " now?* Per-entity epistemic state with"
+                    " provenance (which utterance / observation /"
+                    " inference seeded each belief). Highlights"
+                    " divergent beliefs (dramatic irony).\n"
+                    "- **Hidden channels** — communication paths the"
+                    " audience knows about but characters may not."
+                    " Includes per-recipient *unintelligible_for*"
+                    " asymmetries.\n"
+                    "- **Why this?** — attribution view: for any"
+                    " event, which prior events and entity states"
+                    " caused it, weighted by causal contribution.\n"
+                    "- **Foreshadowing** — set-up→pay-off pairs the"
+                    " engine detected, with pay-off scores. Low"
+                    " scores flag dropped threads.\n"
+                    "- **Convergence** — audit-loop convergence chart"
+                    " for the latest generative query: per-iteration"
+                    " scores and where the auditor pushed back.\n\n"
+                    "### When the trace is empty\n"
+                    "The trace populates only after a rung-2 or"
+                    " rung-3 query has run in this session. Use the"
+                    " command bar (Intervene / What-If) or the What-If"
+                    " Workbench in the Causality tab to populate it."
+                ),
+                tooltip="What is this tab?",
+            )
         with ui.tabs().props(
             "dense no-caps indicator-color=primary active-color=primary align=left"
         ).classes(

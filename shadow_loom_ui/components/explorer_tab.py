@@ -44,6 +44,52 @@ def build_explorer_tab(state: AppState) -> None:
                 ui.label("World Explorer").classes(
                     "text-sm font-semibold text-slate-700"
                 )
+                ui.space()
+                from shadow_loom_ui.components.help_popover import (
+                    help_popover,
+                )
+                help_popover(
+                    title="Explorer — browse every node in the world",
+                    body_md=(
+                        "A two-pane register of every entity, location,"
+                        " object, world-trait, event, and information"
+                        " channel that exists in the active version.\n\n"
+                        "### Left pane — World tree\n"
+                        "Nodes are grouped by type and ordered by id."
+                        " Click any node to load it in the Inspector."
+                        " Group counts in the headers tell you the"
+                        " rough size of the world (e.g. *Entities (12)*).\n\n"
+                        "### Right pane — Inspector\n"
+                        "Type-specific deep dive for the selected node:\n"
+                        "- **Entity** — status, current location, traits"
+                        " (multidimensional psychology), beliefs,"
+                        " relationships, and the chronological"
+                        " state-timeline of changes through the story.\n"
+                        "- **Location** — entities currently here,"
+                        " spatial connections (paths in/out), and"
+                        " objects at this location.\n"
+                        "- **Event** — actors, targets, fabula vs"
+                        " syuzhet position, causal predecessors and"
+                        " successors, plus utterance content if"
+                        " applicable.\n"
+                        "- **Object** — owner, location, affordances"
+                        " (what can be done with it).\n"
+                        "- **Channel** — medium (telephone, mind-link,"
+                        " letter), participants, addressees, and the"
+                        " utterances transmitted on it.\n"
+                        "- **WorldTrait** — abstract setting properties"
+                        " (e.g. *political tension*, *technology level*).\n\n"
+                        "### Suggestion chips\n"
+                        "Each inspector view ends with a **Try:** row of"
+                        " context-aware suggestion chips. Clicking one"
+                        " populates the command bar with a runnable"
+                        " prompt for the selected node — e.g."
+                        " *Kill Macbeth* or *What if Birnam Wood never"
+                        " existed?* — already routed to the right query"
+                        " mode."
+                    ),
+                    tooltip="What is this tab?",
+                )
             with ui.scroll_area().classes("w-full flex-grow"):
                 explorer_container = ui.column().classes("w-full p-2")
                 _render_explorer(state, explorer_container)
@@ -610,7 +656,7 @@ def _inspector_suggestions(
         suggestions = [
             (f"What is happening at {name}?", "interrogate"),
             (f"Lock all exits from {name}", "intervention"),
-            (f"Describe the atmosphere at {name}", "general"),
+            (f"Describe the atmosphere at {name}", "observation"),
         ]
     elif node_type == "EventNode":
         suggestions = [

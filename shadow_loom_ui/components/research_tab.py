@@ -68,6 +68,42 @@ def build_research_tab(state: AppState) -> None:
                 "text-base font-semibold"
             ).style(f"color: {_ACCENT}")
             ui.space()
+            from shadow_loom_ui.components.help_popover import help_popover
+            help_popover(
+                title="Research — background facts, never canon",
+                body_md=(
+                    "Per-project reference material looked up from"
+                    " external providers (web, knowledge bases). Used"
+                    " by the engine as *background context* when"
+                    " generating prose, **never** written into the"
+                    " world model as canonical events.\n\n"
+                    "### What you can do\n"
+                    "- **Manage topics** — add, remove, or edit the"
+                    " research topics for this project (e.g."
+                    " *Edinburgh in 1040*, *Scottish succession"
+                    " law*). Each topic is queried independently.\n"
+                    "- **Run lookup** for one or all topics. Provider"
+                    " calls run as background tasks — you can"
+                    " navigate away and come back.\n"
+                    "- **Browse facts** — each retrieved fact carries"
+                    " its source URL and confidence; click to expand.\n\n"
+                    "### Segregation policy\n"
+                    "Research facts and the world model are kept in"
+                    " **separate stores**:\n"
+                    "- The pipeline injects research as *flavour"
+                    " notes* into the prompt for prose generation.\n"
+                    "- The re-extraction step that runs on the"
+                    " generated prose **does not** read from research,"
+                    " so research can never accidentally become a new"
+                    " canonical event or relationship.\n"
+                    "- Deleting a research fact does not delete any"
+                    " version or canon prose.\n\n"
+                    "### Status strip\n"
+                    "Shows whether a provider lookup is currently"
+                    " in-flight and the elapsed wall-clock time."
+                ),
+                tooltip="What is this tab?",
+            )
             status_label = ui.label("").classes("text-xs text-slate-600")
 
         # Empty-state copy + segregation reminder.

@@ -651,34 +651,51 @@ see §5.
 
 `compute_suspense_score` aggregates **unrevealed** events involving the
 target entity and classifies them as *threat* (entity is target) or
-*hope* (entity is actor). With **noisy-OR** combination:
+*hope* (entity is actor). The current scorer combines the two sides as a
+**balance × stakes** product over weighted event mass:
 
-$$P(\text{threat}) = 1 - \prod_i (1 - p_i^{\text{threat}}) \qquad P(\text{hope}) = 1 - \prod_i (1 - p_i^{\text{hope}})$$
+$$w_\text{threat} = \!\!\!\sum_{e \notin \text{rev},\, x \in F \cap \text{target}(e) \setminus \text{actor}(e)}\!\!\! p_e
+\qquad
+w_\text{hope}   = \!\!\!\sum_{e \notin \text{rev},\, x \in F \cap \text{actor}(e)}\!\!\! p_e$$
 
-$$\text{suspense} = \max(0, P(\text{threat}) - P(\text{hope}))$$
+$$\text{balance} = 1 - \frac{|w_\text{threat} - w_\text{hope}|}{T}, \quad
+  \text{stakes}  = \frac{T}{T + K}, \quad T = w_\text{threat} + w_\text{hope}$$
 
-…with the special case **`hope_prob ≤ 0 ⇒ suspense = 0`** (despair, not
-suspense — the Wilmot 2020 boundary).
+$$\text{suspense} = \mathrm{clip}_{[0,1]}\bigl(\text{balance} \cdot \text{stakes}\bigr)$$
+
+…with the special cases **`w_hope = 0 ⇒ suspense = 0`** (despair, not
+suspense — the Wilmot 2020 boundary) and **`w_threat = 0 ⇒ suspense = 0`**
+(safety). The default `K = 2` is calibrated so two strong unrevealed
+events on each side already register as fully high-stakes; this replaces
+an earlier asymmetric `max(0, P(threat) - P(hope))` form that collapsed
+to 0 on every fixture in which the protagonist authors most of their own
+forward events.
 
 For Romeo at the moment Juliet drinks the friar's potion
 (`syuzhet_anchor` set just before the tomb scene),
 `entity_ids=["ENT_ROMEO"]`:
 
 * Unrevealed events with Romeo as **target**: `EVT_FRIAR_LETTER_LOST`
-  (p=0.6), `EVT_BALTHASAR_REPORTS_DEATH` (p=0.8), `EVT_ROMEO_BUYS_POISON`
+  (p=0.6), `EVT_UTT_BALTHASAR_REPORTS_JULIETS_DEATH` (p=0.8), `EVT_ROMEO_BUYS_POISON`
   (p=0.7), `EVT_ROMEO_DIES` (p=0.85).
 * Unrevealed events with Romeo as **actor**: `EVT_ROMEO_RECONCILES`
   (p=0.2 — there is exactly one tenuous "reconciliation" path the
   fixture leaves alive).
 
 ```text
-P(threat) = 1 - (0.4 × 0.2 × 0.3 × 0.15) ≈ 1 - 0.0036 ≈ 0.996
-P(hope)   = 1 - (0.8)                             = 0.20
-suspense  = 0.996 - 0.20                          ≈ 0.80
+w_threat = 0.6 + 0.8 + 0.7 + 0.85           = 2.95
+w_hope   = 0.2                              = 0.20
+T        = 3.15
+balance  = 1 - |2.95 - 0.20| / 3.15         ≈ 0.127
+stakes   = 3.15 / (3.15 + 2)                ≈ 0.612
+suspense = 0.127 × 0.612                    ≈ 0.078
 ```
 
-…which is exactly the regime the directive assembler will hand the
-Friar's-letter-intercepted candidate (see §5) to push above 0.85.
+The gauge reads low precisely because hope has all but vanished; pushing
+hope back up (more actor-of-record events for Romeo) would *raise*
+balance and the suspense score together. That is exactly the regime the
+directive assembler will hand the Friar's-letter-intercepted candidate
+(see §5) to push the score into the target band.
 
 ### 4.4 Surprise — Reservoir Dogs reveal
 
@@ -801,15 +818,24 @@ and Juliet (see also [model-examples.md §4](model-examples.md#4-romeo-and-julie
 **User request** —
 
 ```python
-UserRequest(
-    query_type="directive",
+from shadow_loom.query_models import DirectiveQuery
+
+query = DirectiveQuery(
+    original_query="At the tomb, push Romeo's dramatic irony to its peak.",
+    target_entity_ids=["ENT_ROMEO"],
     target_effect="dramatic_irony",
-    target_value=0.85,
-    entity_ids=["ENT_ROMEO"],
+    intensity=0.85,
     syuzhet_anchor=27,           # tomb scene
-    constraint="no character may receive correct information about Juliet",
 )
 ```
+
+Directive queries are dispatched through `run_pipeline(world_state=...,
+query=query)`; the `_QueryBase` carries `original_query` and the optional
+`focus_entity_ids` / `syuzhet_anchor` / `fabula_anchor` envelope, while
+the directive-specific fields above tell the assembler which entity to
+optimise for and which effect to maximise. (Hard *must-not* clauses are
+encoded as constraint blocks downstream during brief assembly, not as a
+top-level query field.)
 
 **1. Candidate enumeration** —
 `DirectiveAssembler._enumerate_candidates()` walks the affordances of
@@ -958,8 +984,12 @@ actually rendered. Step 7 then merges that mini-state into the live
 
 * `intervention` / `counterfactual` queries land on a `world_id="shadow"`
   branch with `branch_label` derived from the query.
-* `directive` / `general` / `manual_edit` queries land on the canon
-  `factual` branch (the directive cycle is meant to *advance the story*).
+* `directive` / `manual_edit` queries land on the canon `factual` branch
+  (the directive cycle is meant to *advance the story*).
+* `general` / `interrogate` queries are **read-only**: they never reach
+  Step 7 at all (the pipeline early-returns after the answer step
+  described in [pipeline-walkthrough.md §2.5](pipeline-walkthrough.md)),
+  so no version is written.
 
 The merge is journalled as a `MergeStepRecord` containing the diff
 (events added, beliefs revised, traits shifted) so the analyst can
@@ -968,12 +998,12 @@ inspect or revert.
 For the Romeo & Juliet run above, the merge adds:
 
 * `EVT_LETTER_INTERCEPTED` (the new canonical event).
-* `EVT_UTT_BALTHASAR_REPORTS_DEATH` (the utterance the renderer chose
+* `EVT_UTT_BALTHASAR_REPORTS_JULIETS_DEATH` (the utterance the renderer chose
   to dramatise Romeo's misinformation).
 * `ENT_ROMEO.state_timeline += EntityStateSnapshot(despair=0.92, ...)`.
 * A new `Belief(target_id=EVT_JULIET_FAKE_DEATH,
   perceived_state="Juliet is dead", confidence=0.95)` on `ENT_ROMEO`,
-  acquired via `EVT_UTT_BALTHASAR_REPORTS_DEATH`.
+  acquired via `EVT_UTT_BALTHASAR_REPORTS_JULIETS_DEATH`.
 
 Subsequent queries reason against this updated world; the loop is
 closed.

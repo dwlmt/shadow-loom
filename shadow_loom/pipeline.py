@@ -684,13 +684,14 @@ def run_pipeline(
         )
 
     # =================================================================
-    # Non-prose queries stop here
+    # Non-prose queries: run the LLM Q&A step, then stop
     # =================================================================
     if query.query_type in ("interrogate", "general"):
         logger.info(
-            "[Pipeline] Query type '%s' — returning physics state (no prose).",
+            "[Pipeline] Query type '%s' — answering question over physics state.",
             query.query_type,
         )
+        _run_answer_step(query=query, physics_result=physics_result, cfg=cfg, history=history)
         return result
 
     # =================================================================
@@ -1021,6 +1022,11 @@ async def run_pipeline_async(
         )
 
     if query.query_type in ("interrogate", "general"):
+        logger.info(
+            "[Pipeline\u00b7Async] Query type '%s' \u2014 answering question over physics state.",
+            query.query_type,
+        )
+        _run_answer_step(query=query, physics_result=physics_result, cfg=cfg, history=history)
         return result
 
     # Evaluation: full-story quality audit (delegates to shared sync helper)
@@ -1167,6 +1173,63 @@ async def run_pipeline_async(
     logger.info("[Pipeline·Async] Complete — query_type=%s, prose=%s.",
                 query.query_type, "yes" if result.prose else "no")
     return result
+
+
+# =====================================================================
+# Internal: Q&A answer step for general / interrogate queries
+# =====================================================================
+
+def _run_answer_step(
+    *,
+    query: "UserRequest",
+    physics_result: Dict[str, Any],
+    cfg: "PipelineConfig",
+    history: "PipelineHistory",
+) -> None:
+    """Call the LLM Q&A agent and stash the result on ``physics_result``.
+
+    Mutates ``physics_result`` in place so downstream consumers
+    (chat card, Answer panel, MCP) read the answer from the same
+    structured dict they were already reading.
+    """
+    from shadow_loom.answer import answer_question
+
+    question = (
+        getattr(query, "question", None)
+        or getattr(query, "original_query", None)
+        or ""
+    )
+    require_proof = bool(getattr(query, "require_proof", False))
+    qtype = getattr(query, "query_type", "general")
+
+    card = answer_question(
+        question=question,
+        physics_state=physics_result.get("physics_state"),
+        query_type=qtype,
+        require_proof=require_proof,
+        config=cfg.generation_config,
+    )
+
+    physics_result["answer"] = card.answer
+    physics_result["confidence"] = card.confidence
+    physics_result["caveats"] = list(card.caveats)
+    physics_result["evidence_node_ids"] = list(card.evidence_node_ids)
+    # ``proof`` is the field ``structured_response_data`` already
+    # iterates for evidence rows; mirror evidence_node_ids onto it
+    # so the chat card surfaces them without further changes.
+    physics_result["proof"] = [
+        {"id": nid, "kind": "evidence"}
+        for nid in card.evidence_node_ids
+    ]
+
+    history.record("answer", {
+        "query_type": qtype,
+        "question": question[:200],
+        "answer_len": len(card.answer or ""),
+        "confidence": card.confidence,
+        "evidence_count": len(card.evidence_node_ids),
+        "caveats": card.caveats,
+    })
 
 
 # =====================================================================
