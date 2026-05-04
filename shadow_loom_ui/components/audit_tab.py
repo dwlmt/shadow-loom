@@ -27,6 +27,16 @@ _LIST_PREVIEW_ITEMS = 5
 _DIAGNOSTIC_PREVIEW_ITEMS = 20
 _CYCLE_VIOLATIONS_PREVIEW = 3
 
+# Affective loss above this counts as a complete miss when collapsing
+# the loss into the 0-1 "emotional fit" score shown in the hero tile.
+# Sourced from ``AuditorConfig.max_affective_loss`` so the tile and
+# the pass/fail gate share a single definition of "too far".
+try:
+    from shadow_loom.auditor import AuditorConfig as _AC
+    _AFFECTIVE_LOSS_FAIL: float = float(_AC.model_fields["max_affective_loss"].default)
+except Exception:
+    _AFFECTIVE_LOSS_FAIL = 0.3
+
 from shadow_loom_ui.state import AppState, NLQueryResult, StateEvent
 from shadow_loom_ui.task_helpers import run_query_as_task
 from shadow_loom_ui.reasoning_helpers import (
@@ -325,14 +335,19 @@ def _score_tone(score: float | None) -> tuple[str, str, str]:
 
 
 def _loss_tone(loss: float | None) -> tuple[str, str, str]:
-    """Map an MSE-style loss (lower=better) to a tile tone."""
+    """Map a signed affective loss (lower=better, range [-1, +1]) to a tile tone.
+
+    Negative values indicate a strong match (the structural-effect
+    score is subtracted from zero); the bands sit on the positive side
+    where the loss is genuinely measuring distance from the target.
+    """
     if loss is None:
         return ("grey", "—", "help")
     if loss <= 0.05:
         return ("positive", "strong", "check_circle")
     if loss <= 0.15:
         return ("primary", "okay", "trending_flat")
-    if loss <= 0.30:
+    if loss <= _AFFECTIVE_LOSS_FAIL:
         return ("warning", "needs work", "warning")
     return ("negative", "weak", "error")
 
@@ -353,10 +368,16 @@ def _render_hero_verdict(causal, affective) -> None:
     )
 
     # Convert loss to a 0-1 "fit" score for verdict aggregation.
+    # ``_AFFECTIVE_LOSS_FAIL`` matches the auditor's
+    # ``max_affective_loss`` threshold so the verdict average and the
+    # pass/fail gate agree on what counts as a failure boundary.
     if affective_loss is None:
         emotional_fit_score: float | None = None
     else:
-        emotional_fit_score = max(0.0, 1.0 - min(1.0, affective_loss / 0.3))
+        emotional_fit_score = max(
+            0.0,
+            1.0 - min(1.0, max(0.0, affective_loss) / _AFFECTIVE_LOSS_FAIL),
+        )
 
     scores = [s for s in (plausibility, foreshadowing, emotional_fit_score)
               if s is not None]

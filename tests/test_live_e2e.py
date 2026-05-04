@@ -875,7 +875,11 @@ class TestEvaluationE2E:
         cf = narrative_order.causal_feedback
         af = narrative_order.affective_feedback
         assert isinstance(cf.foreshadowing_payoff_score, (int, float))
-        assert isinstance(af.affective_loss_mse, (int, float))
+        # ``affective_loss_mse`` is Optional \u2014 None when no target
+        # entities are supplied; otherwise a float.
+        assert af.affective_loss_mse is None or isinstance(
+            af.affective_loss_mse, (int, float)
+        )
         # Aggregated prose must be present when include_full_prose=True
         assert result.evaluation_result.story_prose_evaluated
 

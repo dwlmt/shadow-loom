@@ -276,7 +276,8 @@ def run_and_save(
             if af is not None:
                 if af.emotional_trajectory_scores:
                     response["achieved_intensity"] = dict(af.emotional_trajectory_scores)
-                response["affective_loss"] = af.affective_loss_mse
+                if af.affective_loss_mse is not None:
+                    response["affective_loss"] = af.affective_loss_mse
             if cf is not None:
                 response["foreshadowing_score"] = cf.foreshadowing_payoff_score
                 response["cognitive_plausibility_score"] = cf.cognitive_plausibility_score

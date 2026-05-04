@@ -785,7 +785,9 @@ class TestAffectiveStateFeedback:
         fb = AffectiveStateFeedback()
         assert fb.emotional_trajectory_scores == {}
         assert fb.kl_divergence_prediction_error is None
-        assert fb.affective_loss_mse == 0.0
+        # ``affective_loss_mse`` now defaults to ``None`` to mean
+        # "not measured" — distinct from a measured 0.0.
+        assert fb.affective_loss_mse is None
 
     def test_round_trip(self):
         fb = AffectiveStateFeedback(
@@ -824,7 +826,7 @@ class TestNarrativeOrderObject:
         noo = NarrativeOrderObject()
         assert noo.overall_pass is False
         assert noo.causal_feedback.miracle_steps_detected == []
-        assert noo.affective_feedback.affective_loss_mse == 0.0
+        assert noo.affective_feedback.affective_loss_mse is None
 
     def test_round_trip(self):
         noo = NarrativeOrderObject(
@@ -884,7 +886,7 @@ class TestChangeImpactMetrics:
     def test_defaults(self):
         ci = ChangeImpactMetrics()
         assert ci.causal_feedback.miracle_steps_detected == []
-        assert ci.affective_feedback.affective_loss_mse == 0.0
+        assert ci.affective_feedback.affective_loss_mse is None
 
     def test_round_trip(self):
         ci = ChangeImpactMetrics(
@@ -1028,7 +1030,25 @@ class TestComputeAffectiveFeedback:
         fb = compute_affective_feedback(brief, None)
         assert fb.emotional_trajectory_scores == {}
         assert fb.kl_divergence_prediction_error is None
-        assert fb.affective_loss_mse == 0.0
+        # "Not measured" sentinel rather than a misleading 0.0.
+        assert fb.affective_loss_mse is None
+
+    def test_no_target_entities_returns_none_loss(self):
+        """Empty ``target_entities`` should yield a None loss, not 0.0.
+
+        Without entities to score against the affective loss is
+        undefined — returning 0.0 would be silently mapped to
+        "strong fit" by the UI loss tile.
+        """
+        ws = macbeth_ws
+        ego = extract_ego_graph_from_memory(ws, ["ENT_MACBETH"])
+        assembler = DirectiveAssembler(
+            sandbox=None, ego_payload=ego.model_dump(), world_state=ws,
+        )
+        brief = _make_brief(effect="suspense")
+        brief.target_entities = []  # _make_brief's `or` fallback would re-fill
+        fb = compute_affective_feedback(brief, assembler)
+        assert fb.affective_loss_mse is None
 
     def test_with_assembler_on_macbeth(self):
         ws = macbeth_ws
@@ -1042,6 +1062,19 @@ class TestComputeAffectiveFeedback:
         # Should have computed at least some structural scores
         assert isinstance(fb.emotional_trajectory_scores, dict)
         assert isinstance(fb.affective_loss_mse, float)
+        # Non-surprise target → KL divergence stays None even though
+        # the surprise trajectory was computed for the dashboard.
+        assert fb.kl_divergence_prediction_error is None
+
+    def test_surprise_target_populates_kl(self):
+        ws = macbeth_ws
+        ego = extract_ego_graph_from_memory(ws, ["ENT_MACBETH"])
+        assembler = DirectiveAssembler(
+            sandbox=None, ego_payload=ego.model_dump(), world_state=ws,
+        )
+        brief = _make_brief(effect="surprise", entities=["ENT_MACBETH"])
+        fb = compute_affective_feedback(brief, assembler, ["ENT_MACBETH"])
+        assert fb.kl_divergence_prediction_error is not None
 
 
 class TestComputeOverallPass:

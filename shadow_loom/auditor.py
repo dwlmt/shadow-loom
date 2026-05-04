@@ -187,11 +187,20 @@ class AffectiveStateFeedback(BaseModel):
             "and actual revelation (critical for Surprise)."
         ),
     )
-    affective_loss_mse: float = Field(
-        default=0.0,
+    affective_loss_mse: Optional[float] = Field(
+        default=None,
         description=(
-            "The Mean Squared Error delta between the requested emotional "
-            "intensity and the actual intensity achieved."
+            "Signed affective loss for the brief's ``target_effect`` —"
+            " lower is better, range ``[-1, +1]``. Negative values"
+            " indicate a strong match (the structural-effect score, or"
+            " trait closeness for emotion targets, is subtracted from"
+            " zero); positive values indicate a poor match. Despite"
+            " the legacy ``_mse`` suffix this is *not* a Mean Squared"
+            " Error — no squaring is performed — kept for backward"
+            " compatibility with serialized scorecards. ``None`` when"
+            " the brief has no target entities or the assembler is"
+            " unavailable, so downstream consumers can distinguish"
+            " \"perfect fit\" from \"not measured\"."
         ),
     )
 
@@ -516,6 +525,12 @@ def compute_causal_feedback(
     foreshadowing_score = 1.0
     cog_plausibility_score = 1.0
     cog_details = ""
+    # Total event count is used to normalise miracle-step penalties
+    # below — a single block in a 5-event vignette should hurt more
+    # than the same block in a 200-event saga.
+    total_event_count = (
+        len(world_state.events) if world_state is not None else 0
+    )
 
     # --- Miracle steps: blocked propagations where impact failed inertia ---
     # Cycle blocks indicate static-topology extraction problems (the
@@ -566,28 +581,43 @@ def compute_causal_feedback(
         rule2_redundant = list(physics_result.rule2_redundant_evidence)
 
     # --- Foreshadowing payoff: ratio of withheld narrative tensions resolved ---
+    # A withheld_cause is "paid off" when one of its downstream
+    # chain_reaction effects is REVEALED to the reader (i.e. the
+    # effect event exists in the world AND its ``syuzhet_index``
+    # appears earlier than the cause's reveal). The previous form
+    # accepted *any* chain_reaction edge regardless of whether the
+    # effect was on-page, so virtually every plot scored 1.0 — the
+    # check did not actually verify pay-off, only causal fan-out.
+    # See ``foreshadowing_arcs_data`` in shadow_loom_ui for the
+    # equivalent syuzhet-aware logic the UI already uses.
     if brief.narrative_tensions:
         withheld = [
             nt for nt in brief.narrative_tensions
             if nt.tension_type == "withheld_cause"
         ]
         if withheld and world_state is not None:
-            # A withheld event is "resolved" if any downstream chain_reaction
-            # CausalEdge from it exists (it was eventually paid off).
+            events_by_id = {e.id: e for e in world_state.events}
+            withheld_by_id = {nt.event_id: nt for nt in withheld}
             resolved_ids: set[str] = set()
-            withheld_ids = {nt.event_id for nt in withheld}
             for ce in world_state.causal_topology:
-                if (
-                    ce.source_id in withheld_ids
-                    and ce.causality_type == "chain_reaction"
-                ):
+                if ce.causality_type != "chain_reaction":
+                    continue
+                if ce.source_id not in withheld_by_id:
+                    continue
+                effect = events_by_id.get(ce.target_id)
+                if effect is None:
+                    # Loose Chekhov's gun — effect was promised but
+                    # never instantiated as an on-page event.
+                    continue
+                cause_nt = withheld_by_id[ce.source_id]
+                # "Foreshadowing" requires the effect to have surfaced
+                # before (or at) the cause's reveal — that is exactly
+                # what makes it a set-up the reader can retro-fit.
+                if effect.syuzhet_index <= cause_nt.syuzhet_index:
                     resolved_ids.add(ce.source_id)
-            # Denominator must match the numerator's set semantics —
-            # using ``len(withheld)`` (the list) double-counts duplicate
-            # ``event_id`` references and biases the score low.
             foreshadowing_score = (
-                len(resolved_ids) / len(withheld_ids)
-                if withheld_ids
+                len(resolved_ids) / len(withheld_by_id)
+                if withheld_by_id
                 else 1.0
             )
         elif withheld:
@@ -595,25 +625,28 @@ def compute_causal_feedback(
             avg_disp = sum(abs(nt.displacement) for nt in withheld) / len(withheld)
             foreshadowing_score = max(0.0, 1.0 - avg_disp)
 
-    # --- Cognitive plausibility: entities acting CONSISTENTLY with their
-    # own beliefs (true or false). False beliefs are realistic — humans
-    # routinely hold beliefs contradicted by reality (dramatic irony is
-    # built on this). Penalising contradicted beliefs per se conflates
-    # "character is mistaken" (a feature of fiction) with "character
-    # acts on knowledge they don't possess" (the actual implausibility).
-    #
-    # Without an explicit "acted_against_own_belief" signal in the
-    # epistemic-gap data, the deterministic feedback defaults to 1.0
-    # and reports contradicted beliefs as informational dramatic-irony
-    # context, not as a violation. The LLM-side cognitive_plausibility
-    # check on NarrativeOrderObject still flags genuine
-    # belief/action mismatches.
+    # --- Cognitive plausibility: penalise actual physical impossibilities
+    # surfaced by the engine. Miracle-step blocks ARE the plausibility
+    # signal we have access to deterministically — a state-change the
+    # engine refused to derive is, by definition, an implausible jump.
+    # Belief contradictions are dramatic irony (a feature of fiction)
+    # so they enter only as informational ``cog_details``, never as a
+    # numeric penalty. Previously this score was hard-coded to 1.0
+    # which made one of the three hero tiles guaranteed-strong on
+    # every report, biasing the verdict average upward.
+    miracle_count = len(miracle_steps)
+    if total_event_count > 0 and miracle_count > 0:
+        cog_plausibility_score = max(
+            0.0, 1.0 - miracle_count / total_event_count
+        )
+    else:
+        cog_plausibility_score = 1.0
+
     if brief.epistemic_gaps:
         total = len(brief.epistemic_gaps)
         contradicted = sum(
             1 for g in brief.epistemic_gaps if g.gap_type == "contradicted"
         )
-        cog_plausibility_score = 1.0
         if contradicted:
             cog_details = (
                 f"{contradicted}/{total} entity beliefs are currently "
@@ -624,6 +657,12 @@ def compute_causal_feedback(
             cog_details = (
                 f"All {total} tracked beliefs are consistent with reality."
             )
+    if miracle_count > 0:
+        miracle_note = (
+            f"{miracle_count} miracle-step block(s) reduced plausibility "
+            f"to {cog_plausibility_score:.2f}."
+        )
+        cog_details = f"{cog_details} {miracle_note}".strip()
 
     feedback = CausalPhysicsFeedback(
         miracle_steps_detected=miracle_steps,
@@ -658,9 +697,13 @@ def compute_affective_feedback(
     eids = entity_ids or brief.target_entities
     trajectory_scores: Dict[str, float] = {}
     kl_divergence: Optional[float] = None
-    affective_loss = 0.0
+    affective_loss: Optional[float] = None
 
-    if assembler is None:
+    if assembler is None or not eids:
+        # No assembler OR no entities to score against → return a
+        # "not measured" envelope rather than a misleading 0.0 (which
+        # the UI would map to ``loss=0 → fit=strong``). Empty target
+        # entities is a brief-quality issue, not a story-quality one.
         return AffectiveStateFeedback(
             emotional_trajectory_scores=trajectory_scores,
             kl_divergence_prediction_error=kl_divergence,
@@ -688,14 +731,22 @@ def compute_affective_feedback(
         except Exception:
             logger.debug("[AffectiveFeedback] %s failed", method_name)
 
-    # KL divergence (surprise-specific)
-    if "surprise" in trajectory_scores:
+    # KL divergence is only meaningful when the brief actually targets
+    # surprise — the field's docstring says "divergence between the
+    # reader's prior expectation and actual revelation", which
+    # ``compute_surprise_score`` computes. For other targets the
+    # surprise-trajectory value is recorded in
+    # ``emotional_trajectory_scores['surprise']`` (still useful) but
+    # mislabelling it as a prediction-error here was confusing.
+    if target == "surprise" and "surprise" in trajectory_scores:
         kl_divergence = trajectory_scores["surprise"]
 
     feedback = AffectiveStateFeedback(
         emotional_trajectory_scores=trajectory_scores,
         kl_divergence_prediction_error=kl_divergence,
-        affective_loss_mse=round(affective_loss, 4),
+        affective_loss_mse=(
+            round(affective_loss, 4) if affective_loss is not None else None
+        ),
     )
     log_agent_output(
         logger,
@@ -717,7 +768,13 @@ def compute_overall_pass(
         return False
     if cf.cognitive_plausibility_score < config.min_cognitive_plausibility:
         return False
-    if af.affective_loss_mse > config.max_affective_loss:
+    # ``affective_loss_mse`` may be ``None`` when the brief has no
+    # target entities to score against — treat that as "not measured"
+    # rather than "failed".
+    if (
+        af.affective_loss_mse is not None
+        and af.affective_loss_mse > config.max_affective_loss
+    ):
         return False
     if _count_miracle_step_failures(
         cf.miracle_steps_detected,
@@ -789,7 +846,10 @@ def _engine_thresholds_check(
             )
 
     if af is not None:
-        if af.affective_loss_mse > config.max_affective_loss:
+        if (
+            af.affective_loss_mse is not None
+            and af.affective_loss_mse > config.max_affective_loss
+        ):
             failures.append(
                 f"affective_loss_mse={af.affective_loss_mse:.3f} "
                 f"> max={config.max_affective_loss:.3f}"
