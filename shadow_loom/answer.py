@@ -241,7 +241,12 @@ Rules:
   • If the answer is not deducible, say so plainly and lower confidence.
   • Reference characters, events, and locations by their human names
     in the prose answer; list the exact node ids in evidence_node_ids.
-  • Keep the answer short and direct — at most a few sentences.
+  • Length should match the question. Use a single sentence for a
+    factual lookup; use several short paragraphs (with line breaks)
+    for synthesis questions that span multiple entities, events, or
+    causal chains. Markdown bullet points are welcome when the
+    answer is genuinely a list. Do not pad — add a sentence only
+    when it carries new information.
   • Caveats should call out missing information, ambiguity, or
     inferences that go beyond what is stated.
 """
@@ -260,15 +265,23 @@ You will be given:
 
 Rules:
   • When asked "why" or "what caused", trace through the causal_topology
-    edges and recent events to construct a causal chain.
+    edges and recent events to construct a causal chain. Walk the
+    chain explicitly — "A → B → C because …" — rather than
+    collapsing the answer to a single conclusion.
   • When asked "what does X know", consult X's beliefs and the
-    information channels they participate in.
+    information channels they participate in. Distinguish between
+    direct knowledge, inference, and what X is unaware of.
   • When asked about relationships or spatial reachability, walk the
     social_topology / spatial_topology edges.
   • If require_proof is true, only assert claims you can back with at
     least one explicit edge or event in the supplied data.
   • Return the supporting node ids in evidence_node_ids so the UI can
     highlight them.
+  • Length is set by the question. Diagnostic answers can be
+    multi-paragraph when the causal chain is long; structure them
+    with markdown line breaks or bullet points so the user can
+    follow each step. Avoid both one-line shrugs and unnecessary
+    padding.
   • If the world state does not support an answer, say so plainly,
     lower confidence to <=0.3, and add a caveat naming the missing
     information.

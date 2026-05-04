@@ -528,7 +528,16 @@ class AppState:
         # the prose-by-lineage filter in the Story panel meaningless.
         # The structured response card in chat is the only artifact a
         # Q&A run should produce.
-        readonly_query = query.query_type in ("general", "interrogate")
+        #
+        # ``evaluate`` is also read-only: it scores the existing prose
+        # corpus and returns a report. Persisting that report as a new
+        # VersionRow caused the report text to leak into the Story
+        # tab's prose feed via ``get_all_prose`` (which reads
+        # ``VersionRow.prose`` regardless of source). The Audit tab is
+        # the canonical surface for evaluation results.
+        readonly_query = query.query_type in (
+            "general", "interrogate", "evaluate",
+        )
         # Also skip when re-extraction failed: prose is present but the world
         # model was *not* advanced to reflect that prose. Persisting would
         # store divergent prose/world state under the same version row.
