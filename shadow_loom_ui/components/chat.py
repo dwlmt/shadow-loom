@@ -26,12 +26,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _QUERY_TYPES = [
-    ("general", "General", "chat"),
+    ("general", "Ask", "chat"),
     ("observation", "Continue", "auto_stories"),
     ("intervention", "Intervene", "flash_on"),
     ("counterfactual", "What-If", "alt_route"),
     ("directive", "Direct", "theater_comedy"),
-    ("interrogate", "Ask", "psychology"),
+    ("interrogate", "Interrogation", "psychology"),
     ("evaluate", "Evaluate", "fact_check"),
 ]
 

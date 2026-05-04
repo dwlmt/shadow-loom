@@ -53,6 +53,28 @@ def build_story_tab(state: AppState) -> None:
                 _render_prose(state, prose_container),
             ),
         )
+        # Branch switch / delete / promote all funnel through
+        # ``load_db_version``, which fires WORLD_STATE_CHANGED +
+        # VERSION_CHANGED in lockstep. Without these subscriptions the
+        # prose reader keeps rendering the previous branch's prose
+        # cards and the source-text expansion keeps the previous
+        # branch's textarea contents, even though every other panel
+        # has already swapped over. Re-render on either event so the
+        # Story tab tracks the active branch.
+        state.on(
+            StateEvent.VERSION_CHANGED,
+            lambda **kw: (
+                _render_source_text(state, source_container),
+                _render_prose(state, prose_container),
+            ),
+        )
+        state.on(
+            StateEvent.WORLD_STATE_CHANGED,
+            lambda **kw: (
+                _render_source_text(state, source_container),
+                _render_prose(state, prose_container),
+            ),
+        )
 
 
 def _build_prompt_starters(state: AppState) -> None:  # pragma: no cover - removed
@@ -269,11 +291,24 @@ def _render_prose(state: AppState, container) -> None:
 
     prose_entries: list[tuple[str, str, bool | None, int]] = []
 
-    # Load from DB if project is active
+    # Load from DB if project is active. When a specific version is
+    # active, restrict the prose feed to that version's lineage
+    # (root → current) so switching branches actually shows different
+    # prose; otherwise the reader pools every version's prose across
+    # every fork of the project, which made branch deletes / selects
+    # look like no-ops in the Story panel.
     if state.project_id:
         try:
-            from shadow_loom_ui.db import get_all_prose
-            db_prose = get_all_prose(state.project_id)
+            from shadow_loom_ui.db import get_all_prose, get_version_by_id, get_version_lineage
+            branch_path: list[int] | None = None
+            if state.current_version_row_id is not None:
+                cur_row = get_version_by_id(state.current_version_row_id)
+                if cur_row is not None:
+                    lineage = get_version_lineage(
+                        state.project_id, cur_row.version,
+                    )
+                    branch_path = [entry["id"] for entry in lineage]
+            db_prose = get_all_prose(state.project_id, branch_path=branch_path)
             for entry in db_prose:
                 # Skip if it'll be duplicated from session history
                 prose_entries.append((
