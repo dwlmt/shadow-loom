@@ -337,11 +337,14 @@ choices that shape the public surface and what we deliberately rejected.
 
 **Copyright © 2026 David Rae Wilmot.** Shadow Loom is **dual-licensed**:
 
-* **Open source** under the [GNU Affero General Public License v3.0](LICENSE)
-  (AGPLv3). If you modify Shadow Loom or make it available to users over a
-  network (SaaS, hosted MCP server, internal web service, etc.), AGPLv3
-  § 5 and § 13 require you to release the **complete corresponding source
-  code of the entire combined work** to those users under AGPLv3.
+* **Open source** under the [GNU Affero General Public License v3.0 or
+  later](LICENSE) (AGPL-3.0-or-later). If you modify Shadow Loom and
+  convey those modifications, AGPLv3 § 5 requires you to release the
+  modified source under AGPLv3. If you make Shadow Loom (modified or
+  not) available to users over a network — SaaS, hosted MCP server,
+  internal web service, hosted API, etc. — AGPLv3 § 13 additionally
+  requires you to offer the **complete corresponding source code of
+  the entire combined work** to those network users under AGPLv3.
 * **Commercial license (AGPLv3 exception)** — see
   [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md). Organisations that
   cannot or do not wish to comply with AGPLv3's network-use disclosure
@@ -360,20 +363,27 @@ Quick guide — **not legal advice**. The authoritative texts are
 [LICENSE](LICENSE), [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md) and
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-**Open-source use (AGPLv3) plus Non-Commercial Clause:**
+**Open-source use (AGPL-3.0-or-later):**
 
-- [x] Use it for personal projects, research, and learning.
+AGPLv3 permits commercial use; what it requires is reciprocity —
+copyleft on modifications and source-code disclosure to network users.
+The commercial licence exists for organisations that cannot meet that
+disclosure obligation, not because AGPLv3 forbids commercial use.
+
+- [x] Use it for personal projects, research, learning, **and
+      commercial work** — provided you comply with AGPLv3.
 - [x] Read, modify, and fork the source code.
 - [x] Run it on your own machine without restriction.
-- [x] Redistribute it — as long as you keep it under AGPL-3.0-or-later.
+- [x] Redistribute it — as long as you keep it under AGPL-3.0-or-later
+      and convey the corresponding source under AGPLv3 § 5.
 - [ ] ⚠ Host it as a network service (SaaS, MCP server, hosted UI):
-      you must offer the complete corresponding source code (including
-      your modifications) to your users under AGPLv3.
-- [ ] ⚠ Embed or link it into a larger product: the whole combined
-      work must also be released under AGPLv3.
-- [ ] ✗ Use it commercially without complying with AGPLv3 § 13
-      (network-use disclosure) — that requires a paid commercial
-      licence.
+      AGPLv3 § 13 requires you to offer the complete corresponding
+      source code (including your modifications) to your users under
+      AGPLv3.
+- [ ] ⚠ Embed or link it into a larger product you convey: the whole
+      combined work must also be released under AGPLv3.
+- [ ] ✗ Deploy it as a network service **without** complying with
+      AGPLv3 § 13 — that requires a paid commercial licence.
 - [ ] ✗ Re-license it under a more permissive licence, or ship it
       inside closed-source software, without a commercial licence.
 

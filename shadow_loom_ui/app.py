@@ -205,8 +205,8 @@ def _build_app_footer() -> None:
         "flex items-center justify-between text-xs text-slate-500"
     ).props("elevated=false flat"):
         ui.label(
-            "Shadow Loom — AGPL-3.0-or-later plus Non-Commercial Clause. "
-            "This is free software with NO WARRANTY."
+            "Shadow Loom — AGPL-3.0-or-later, with a commercial licence "
+            "available. This is free software with NO WARRANTY."
         )
         with ui.row().classes("items-center gap-3"):
             ui.link("Source", source_url, new_tab=True).classes(
@@ -244,27 +244,28 @@ def _build_licence_guide_dialog(source_url: str):
     # ✓ allowed under AGPLv3, ✗ requires commercial licence / forbidden,
     # ⚠ allowed but with obligations.
     permissions = [
-        ("check_circle", "positive", "Use it for personal projects, research, and learning."),
+        ("check_circle", "positive", "Use it for personal projects, research, learning, and commercial work — provided you comply with AGPLv3."),
         ("check_circle", "positive", "Read, modify, and fork the source code."),
         ("check_circle", "positive", "Run it on your own machine without restriction."),
-        ("check_circle", "positive", "Redistribute it — as long as you keep it under AGPL-3.0-or-later."),
+        ("check_circle", "positive", "Redistribute it — as long as you keep it under AGPL-3.0-or-later and convey the corresponding source under AGPLv3 § 5."),
         (
             "warning",
             "warning",
             "Host it as a network service (SaaS, MCP server, hosted UI): "
-            "you must offer the complete corresponding source code "
-            "(including your modifications) to your users under AGPLv3.",
+            "AGPLv3 § 13 requires you to offer the complete corresponding "
+            "source code (including your modifications) to your users "
+            "under AGPLv3.",
         ),
         (
             "warning",
             "warning",
-            "Embed or link it into a larger product: the whole combined "
-            "work must also be released under AGPLv3.",
+            "Embed or link it into a larger product you convey: the whole "
+            "combined work must also be released under AGPLv3.",
         ),
         (
             "cancel",
             "negative",
-            "Use it commercially without complying with AGPLv3 § 13 "
+            "Deploy it as a network service without complying with AGPLv3 § 13 "
             "(network-use disclosure) — that requires a paid commercial licence.",
         ),
         (
@@ -301,7 +302,9 @@ def _build_licence_guide_dialog(source_url: str):
         (
             "warning",
             "warning",
-            "You must be 18 or over to use the hosted service.",
+            "You must be 13 or over to use the hosted service; under-18s "
+            "require parent or guardian permission. Individual LLM "
+            "providers may impose stricter age limits.",
         ),
         (
             "warning",
