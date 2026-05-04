@@ -167,11 +167,6 @@ def render_attribution_graph(
     chart = ui.echart({
         "backgroundColor": th["bg"],
         "tooltip": {**th["tooltip"], "trigger": "item"},
-        "legend": {
-            "data": [c["name"] for c in cats],
-            "textStyle": {"color": th["text"]},
-            "top": 0, "right": 10,
-        },
         "series": [{
             "type": "graph",
             "layout": "force",
