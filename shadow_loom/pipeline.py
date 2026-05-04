@@ -456,7 +456,7 @@ def humanize_pipeline_result(
 
 _FRIENDLY_THRESHOLD_LABELS = {
     "foreshadowing_payoff_score": "foreshadowing pay-off was below the minimum",
-    "cognitive_plausibility_score": "characters' beliefs were less consistent than allowed",
+    "cognitive_plausibility_score": "a character acted against their own established beliefs",
     "affective_loss_mse": "the scene's emotional fit was further from the target than allowed",
     "miracle_steps_detected": "the scene contained an unexplained leap the engine couldn't justify",
 }

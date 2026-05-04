@@ -955,7 +955,15 @@ class TestComputeCausalFeedback:
         finally:
             physics_settings.propagation_mode = saved_mode
 
-    def test_epistemic_gaps_affect_cognitive_plausibility(self):
+    def test_contradicted_beliefs_do_not_lower_cognitive_plausibility(self):
+        """Contradicted beliefs are dramatic irony, not implausibility.
+
+        In real fiction (and real life) characters routinely hold
+        beliefs contradicted by reality. The deterministic feedback
+        must not penalise the cognitive_plausibility_score for that —
+        only acting against one's own belief should count, and that
+        signal isn't carried by ``EpistemicGap.gap_type`` alone.
+        """
         brief = _make_brief(
             epistemic_gaps=[
                 EpistemicGap(
@@ -971,8 +979,8 @@ class TestComputeCausalFeedback:
             ],
         )
         fb = compute_causal_feedback(None, brief)
-        assert fb.cognitive_plausibility_score == pytest.approx(0.5)
-        assert "1/2" in fb.cognitive_plausibility_details
+        assert fb.cognitive_plausibility_score == pytest.approx(1.0)
+        assert "dramatic irony" in fb.cognitive_plausibility_details
 
     def test_foreshadowing_with_narrative_tensions(self):
         """Withheld causes with matching chain_reaction edges score higher."""

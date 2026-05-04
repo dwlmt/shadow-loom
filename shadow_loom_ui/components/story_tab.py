@@ -116,6 +116,12 @@ def build_story_tab(state: AppState) -> None:
                 return
             if not pr.prose and pr.query_type in ("general", "interrogate"):
                 return
+            # Evaluate queries produce an audit report, not story
+            # prose — they belong in the Audit tab, not the Story
+            # reader feed. Skip the redraw so the prose pane doesn't
+            # flicker / scroll on every full-story evaluation.
+            if pr.query_type == "evaluate":
+                return
             _render_prose(state, prose_container)
 
         state.on(StateEvent.PIPELINE_RESULT, _on_pipeline_result)
@@ -398,6 +404,13 @@ def _render_prose(state: AppState, container) -> None:
     for result in state.query_history:
         pr = result.pipeline_result
         if pr and pr.prose:
+            # Evaluation queries produce an audit *report* — not story
+            # prose — and surfacing them in the reader's prose feed
+            # makes the report look like newly-written narrative. The
+            # full evaluation output (scorecard + textual summary)
+            # lives in the Audit tab; skip it here.
+            if pr.query_type == "evaluate":
+                continue
             # De-duplicate against DB entries by content hash
             key = pr.prose[:200]
             if key not in {p[1][:200] for p in prose_entries}:

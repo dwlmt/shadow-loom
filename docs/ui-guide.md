@@ -99,10 +99,12 @@ route and surface in whichever tab consumes their result
   result as a new version with `source="ingestion"` and the previous
   version as ancestor.
 * This tab is **not** autosaved — the textarea is plain prose, not graph.
-* Read-only Q&A queries (`general`, `interrogate`) are deliberately
-  filtered out of this tab's `PIPELINE_RESULT` listener: the prose feed
-  only re-renders when the result actually carries new prose, so a
-  question never perturbs the lineage view.
+* Read-only Q&A queries (`general`, `interrogate`) and full-story
+  `evaluate` runs are deliberately filtered out of this tab's
+  `PIPELINE_RESULT` listener: the prose feed only re-renders when the
+  result actually carries new *story* prose, so a question or an audit
+  report never perturbs the lineage view. (Evaluation reports surface
+  on the Audit tab.)
 
 ## 2. Explorer tab
 
@@ -155,6 +157,21 @@ the most recent render.
 * Displays the structured `AuditResult` (or, for full feedback-loop runs, the per-iteration `AuditCycleSnapshot.audit_result` inside the `FeedbackLoopResult`) for the latest generated scene.
 * Causal / abductive / affective sections each show their loss + offending
   prose spans.
+* **Layout: text first, charts underneath.** Each scorecard renders
+  textual findings (Quality Synthesis directives → Causal findings →
+  Affective findings) in a stack of cards, then a single "Supporting
+  charts" card holds the gauges (foreshadowing / plausibility /
+  emotional trajectory) below. The per-query Audit Loop block follows
+  the same convention: per-iteration cycle prose, pass-rate table and
+  violations list render before the pass-rate pictorial and
+  convergence trajectory chart.
+* Note on cognitive plausibility: a character holding a belief that is
+  contradicted by reality is treated as *dramatic irony*, not as a
+  plausibility violation. The deterministic
+  `cognitive_plausibility_score` only drops when an entity's *actions*
+  are inconsistent with their *own* established beliefs (the LLM-side
+  `NarrativeOrderObject` check); contradicted-belief counts are
+  reported as informational context.
 
 ## 7. Editor tab — **manual world-model editing**
 

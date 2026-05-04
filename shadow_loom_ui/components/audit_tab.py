@@ -296,33 +296,55 @@ def _render_scorecard(container, eval_result) -> None:
         # multi-dimensional score is misleading. Users get the
         # per-section signals below (causal, affective, quality
         # synthesis) plus the convergence row above.
-
-        # Causal feedback
+        #
+        # Layout: text-first findings, then supporting charts. Reading
+        # the audit should feel like reading a report — the prose /
+        # directives / counts go up top, and the gauges / pictorials
+        # below are visual evidence backing the claims, not the
+        # primary surface.
         causal = getattr(narrative_order, "causal_feedback", None)
-        if causal:
-            _render_causal_section(causal)
-
-        # Affective feedback
         affective = getattr(narrative_order, "affective_feedback", None)
-        if affective:
-            _render_affective_section(affective)
-
-        # Quality synthesis
         quality = getattr(narrative_order, "quality_synthesis", None)
+
+        # ── Findings (text) ───────────────────────────────────────
         if quality:
             _render_quality_synthesis(quality)
+        if causal:
+            _render_causal_text(causal)
+        if affective:
+            _render_affective_text(affective)
+
+        # ── Supporting charts (visualisations of the above) ───────
+        has_charts = (
+            (causal and _causal_has_charts(causal))
+            or (affective and _affective_has_charts(affective))
+        )
+        if has_charts:
+            with ui.card().classes(
+                "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-4"
+            ):
+                ui.label("Supporting charts").classes(
+                    "text-sm font-semibold text-slate-700 mb-2"
+                )
+                if causal and _causal_has_charts(causal):
+                    _render_causal_charts(causal)
+                if affective and _affective_has_charts(affective):
+                    _render_affective_charts(affective)
 
 
-def _render_causal_section(causal) -> None:
-    """Render the Causal Metrics card. Skips entirely if no signals."""
-    scores: dict[str, float] = {}
-    if hasattr(causal, "foreshadowing_payoff_score") \
-            and causal.foreshadowing_payoff_score is not None:
-        scores["Foreshadowing"] = causal.foreshadowing_payoff_score
-    if hasattr(causal, "cognitive_plausibility_score") \
-            and causal.cognitive_plausibility_score is not None:
-        scores["Plausibility"] = causal.cognitive_plausibility_score
+def _causal_has_charts(causal) -> bool:
+    """True if the causal section has any chartable signals."""
+    has_score = (
+        getattr(causal, "foreshadowing_payoff_score", None) is not None
+        or getattr(causal, "cognitive_plausibility_score", None) is not None
+    )
+    return bool(has_score)
 
+
+def _render_causal_text(causal) -> None:
+    """Render the textual half of the Causal Metrics card (counts,
+    miracle steps, plausibility narrative, ctf-calculus diagnostics).
+    The supporting gauges render separately under the charts block."""
     miracles = getattr(causal, "miracle_steps_detected", []) or []
     details = getattr(causal, "cognitive_plausibility_details", "")
     diagnostic_fields = [
@@ -341,26 +363,19 @@ def _render_causal_section(causal) -> None:
     ]
     has_diagnostics = any(items for _, _, items in diagnostic_items)
 
-    if not (scores or miracles or details or has_diagnostics):
+    if not (miracles or details or has_diagnostics):
         return
 
     with ui.card().classes(
         "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-4"
     ):
-        ui.label("Causal Metrics").classes(
+        ui.label("Causal findings").classes(
             "text-sm font-semibold text-slate-700 mb-2"
         )
-        if scores:
-            with_expand(
-                lambda h, s=scores: render_emotional_gauges(s, height=h),
-                title="Causal metrics",
-                height="150px",
-            )
-
         # Miracle steps — use icons (not emoji) to match the rest of
         # the UI's iconographic vocabulary.
         if miracles:
-            with ui.row().classes("items-center gap-1 mt-2"):
+            with ui.row().classes("items-center gap-1"):
                 ui.icon("warning", color="negative")
                 ui.label(
                     f"Miracle steps detected: {len(miracles)}"
@@ -372,7 +387,7 @@ def _render_causal_section(causal) -> None:
                     f"… and {len(miracles) - _LIST_PREVIEW_ITEMS} more"
                 ).classes("text-xs text-slate-400 italic ml-4")
         else:
-            with ui.row().classes("items-center gap-1 mt-2"):
+            with ui.row().classes("items-center gap-1"):
                 ui.icon("check_circle", color="positive")
                 ui.label("No miracle steps").classes(
                     "text-positive text-sm"
@@ -410,38 +425,50 @@ def _render_causal_section(causal) -> None:
                             ).classes("text-xs text-slate-400 italic")
 
 
-def _render_affective_section(affective) -> None:
-    """Render the Affective Metrics card. Skips entirely if no signals."""
+def _render_causal_charts(causal) -> None:
+    """Render the gauge half of the Causal Metrics card."""
+    scores: dict[str, float] = {}
+    if hasattr(causal, "foreshadowing_payoff_score") \
+            and causal.foreshadowing_payoff_score is not None:
+        scores["Foreshadowing"] = causal.foreshadowing_payoff_score
+    if hasattr(causal, "cognitive_plausibility_score") \
+            and causal.cognitive_plausibility_score is not None:
+        scores["Plausibility"] = causal.cognitive_plausibility_score
+    if not scores:
+        return
+    ui.label("Causal metrics").classes(
+        "text-xs font-semibold text-slate-600 mt-2"
+    )
+    with_expand(
+        lambda h, s=scores: render_emotional_gauges(s, height=h),
+        title="Causal metrics",
+        height="150px",
+    )
+
+
+def _affective_has_charts(affective) -> bool:
+    """True if the affective section has any chartable trajectory."""
     trajectory = getattr(
         affective, "emotional_trajectory_scores", None,
     ) or {}
+    return bool(trajectory)
+
+
+def _render_affective_text(affective) -> None:
+    """Render the textual half of the Affective Metrics card (loss
+    badge + KL surprise). The trajectory gauges live under charts."""
     loss = getattr(affective, "affective_loss_mse", None)
     kl = getattr(affective, "kl_divergence_prediction_error", None)
 
-    if not (trajectory or loss is not None or kl is not None):
+    if loss is None and kl is None:
         return
 
     with ui.card().classes(
         "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-4"
     ):
-        ui.label("Affective Metrics").classes(
+        ui.label("Affective findings").classes(
             "text-sm font-semibold text-slate-700 mb-2"
         )
-        # Emotional trajectory scores are 0–1 "higher is better"
-        # intensities — render as gauges.
-        if trajectory:
-            with_expand(
-                lambda h, s=dict(trajectory): render_emotional_gauges(
-                    s, height=h
-                ),
-                title="Emotional trajectory (achieved intensity)",
-                height="150px",
-            )
-        else:
-            ui.label("No targeted emotions to score.").classes(
-                "text-xs text-slate-400 italic"
-            )
-
         # Affective loss MSE is unbounded and "lower is better" —
         # must NOT be rendered on a 0–1 gauge.
         if loss is not None:
@@ -453,7 +480,7 @@ def _render_affective_section(affective) -> None:
                 loss_color, loss_word = "warning", "weak fit"
             else:
                 loss_color, loss_word = "negative", "poor fit"
-            with ui.row().classes("items-center gap-2 mt-2"):
+            with ui.row().classes("items-center gap-2"):
                 ui.label("Affective loss (MSE, lower=better):").classes(
                     "text-xs text-slate-600"
                 )
@@ -465,7 +492,26 @@ def _render_affective_section(affective) -> None:
         if kl is not None:
             ui.label(
                 f"KL Divergence (surprise): {kl:.3f}"
-            ).classes("text-xs text-slate-500 mt-2")
+            ).classes("text-xs text-slate-500 mt-1")
+
+
+def _render_affective_charts(affective) -> None:
+    """Render the trajectory gauge half of the Affective card."""
+    trajectory = getattr(
+        affective, "emotional_trajectory_scores", None,
+    ) or {}
+    if not trajectory:
+        return
+    ui.label("Emotional trajectory").classes(
+        "text-xs font-semibold text-slate-600 mt-2"
+    )
+    with_expand(
+        lambda h, s=dict(trajectory): render_emotional_gauges(
+            s, height=h
+        ),
+        title="Emotional trajectory (achieved intensity)",
+        height="150px",
+    )
 
 
 def _render_quality_synthesis(quality) -> None:
@@ -642,8 +688,9 @@ def _render_query_audit_entry(index: int, result: NLQueryResult, state: AppState
                     else ui.column().classes("w-full")
                 )
                 with loop_container:
-                    # Build per-iteration audit history for the
-                    # pass-rate pictorial chart + table.
+                    # Build per-iteration audit history rows up-front;
+                    # they back both the text summary and the
+                    # pass-rate pictorial below.
                     history_rows: list[dict] = []
                     for cycle in feedback.history:
                         audit = getattr(cycle, "audit_result", None)
@@ -669,16 +716,12 @@ def _render_query_audit_entry(index: int, result: NLQueryResult, state: AppState
                             ],
                         })
 
+                    # ── Text first: per-iteration cycle prose +
+                    #    pass-rate table + violations summary ──────
+                    for cycle in feedback.history:
+                        _render_audit_cycle(cycle)
+
                     if history_rows:
-                        with_expand(
-                            lambda h, hr=history_rows: (
-                                render_audit_passrate_pictorial(
-                                    hr, height=h
-                                )
-                            ),
-                            title="Audit pass-rate per iteration",
-                            height="220px",
-                        )
                         _, _, table_rows = audit_passrate_data(history_rows)
                         with ui.expansion(
                             "Pass-rate table", icon="table_view",
@@ -695,8 +738,23 @@ def _render_query_audit_entry(index: int, result: NLQueryResult, state: AppState
                                 pagination={"rowsPerPage": 10},
                             ).props("dense flat bordered").classes("w-full")
 
-                    for cycle in feedback.history:
-                        _render_audit_cycle(cycle)
+                    if all_violations:
+                        with ui.expansion(f"Violations ({len(all_violations)})").props("dense"):
+                            for v in all_violations:
+                                _render_violation(v, state=state)
+
+                    # ── Supporting charts (visual evidence under
+                    #    the textual findings above) ───────────────
+                    if history_rows:
+                        with_expand(
+                            lambda h, hr=history_rows: (
+                                render_audit_passrate_pictorial(
+                                    hr, height=h
+                                )
+                            ),
+                            title="Audit pass-rate per iteration",
+                            height="220px",
+                        )
 
                     # Convergence trajectory line chart
                     with_expand(
@@ -706,12 +764,6 @@ def _render_query_audit_entry(index: int, result: NLQueryResult, state: AppState
                         title="Convergence trajectory",
                         height="240px",
                     )
-
-                # Violations summary from audit cycles
-                if all_violations:
-                    with ui.expansion(f"Violations ({len(all_violations)})").props("dense"):
-                        for v in all_violations:
-                            _render_violation(v, state=state)
 
         # Parse info
         if result.parse_result and result.parse_result.parsed:
