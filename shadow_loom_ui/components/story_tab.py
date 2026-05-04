@@ -71,9 +71,10 @@ def build_story_tab(state: AppState) -> None:
                     "- Use the command bar below to generate the next"
                     " scene; the new card appears here automatically.\n\n"
                     "### What does *not* appear here\n"
-                    "- **Ask** and **Interrogation** answers — those go"
-                    " to the Answer panel above the command bar so"
-                    " Q&A doesn't perturb the prose feed.\n"
+                    "- **Ask** and **Interrogation** answers appear in"
+                    " the Answer panel at the bottom of this tab,"
+                    " below the source text and any generated prose,"
+                    " so Q&A doesn't perturb the prose feed.\n"
                     "- **Implausible** runs that the engine refused —"
                     " their explanation surfaces as a chat message and"
                     " no version is saved."
@@ -91,7 +92,14 @@ def build_story_tab(state: AppState) -> None:
         # ── Generated Prose ───────────────────────────────────────
         prose_container = ui.column().classes("w-full gap-3")
         _render_prose(state, prose_container)
-
+        # ── Answer panel (Ask / Interrogation results) ──────────
+        # Sits below the source text and any generated prose so
+        # read-only Q&A answers are visible alongside the narrative
+        # they refer to without disturbing the prose feed.
+        from shadow_loom_ui.components.answer_panel import (
+            build_answer_panel,
+        )
+        build_answer_panel(state)
         # ── Subscribe ─────────────────────────────────────────────
         def _on_pipeline_result(**kwargs):
             # Ask / Interrogation queries are read-only Q&A: they don't

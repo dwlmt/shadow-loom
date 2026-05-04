@@ -7,9 +7,10 @@ Read-only Q&A queries (``general`` / ``interrogate``) intentionally do
 not advance the world model and do not write prose. Without a
 dedicated surface their answers used to be buried in transient toast
 notifications, which made them feel like the engine was ignoring the
-user's question. This panel lives just above the bottom command bar
-and shows the structured response card (claim · evidence · confidence
-· caveats) for the most recent Q&A run.
+user's question. This panel lives at the bottom of the Story tab,
+beneath the source text and any generated prose, and shows the
+structured response card (claim · evidence · confidence · caveats)
+for the most recent Q&A run.
 
 The panel clears whenever:
   * a new project is loaded (``PROJECT_LOADED``)
@@ -40,15 +41,16 @@ _READONLY_TYPES = {"general", "interrogate"}
 
 
 def build_answer_panel(state: AppState) -> None:
-    """Render the always-visible Answer panel.
+    """Render the Answer panel inside the Story tab.
 
-    The panel collapses to a thin strip when there is no answer to
-    show, so it never wastes vertical real estate on tabs the user
-    isn't using for Q&A.
+    The panel is hidden entirely when there is no answer to show, so
+    it never wastes vertical real estate. It re-appears whenever an
+    Ask / Interrogation query completes, and is cleared on project /
+    version switches so a stale answer never lingers next to a world
+    state it no longer matches.
     """
-    container = ui.column().classes("w-full gap-0").style(
-        "border-top: 1px solid #e2e8f0; background: #f8fafc; "
-        "flex: 0 0 auto; max-height: 30vh; overflow-y: auto;"
+    container = ui.column().classes(
+        "w-full gap-0 rounded-xl border border-slate-200 bg-white shadow-sm"
     )
 
     # Mutable state captured by closures — the latest result and
