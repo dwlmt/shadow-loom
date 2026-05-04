@@ -1,5 +1,11 @@
 # Shadow Loom
 
+> **Status: alpha.** Shadow-Loom is under active development and APIs,
+> data formats, and behaviour may change without notice. A publicly
+> hosted, deployed version will be made available once the current
+> round of bug fixes and stabilisation work is complete. Until then,
+> run it locally — see [Quick start](#quick-start) below.
+
 A **neuro-symbolic causal narrative AI framework**. Shadow-Loom treats a story
 as a typed graph of entities, events and edges with explicit physics
 (causality, beliefs, information flow, spatial topology) and uses a Large
