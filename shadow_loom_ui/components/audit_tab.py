@@ -243,16 +243,20 @@ def _render_evaluation_result(container, result: NLQueryResult) -> None:
                 )
                 ui.markdown(pr.prose)
 
-        # Convergence info
-        if pr.converged is not None:
+        # Convergence info — show iteration count even when
+        # ``converged`` is None (e.g. EvaluationQuery doesn't run
+        # the rewrite loop, but the auditor may still have iterated).
+        iterations = getattr(pr, "audit_iterations", 0) or 0
+        if pr.converged is not None or iterations:
             with ui.card().classes(
                 "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-4"
             ):
-                status = "Converged" if pr.converged else "Did not converge"
-                color = "positive" if pr.converged else "warning"
                 with ui.row().classes("items-center gap-2"):
-                    ui.badge(status, color=color)
-                    ui.label(f"Audit iterations: {pr.audit_iterations}").classes(
+                    if pr.converged is not None:
+                        status = "Converged" if pr.converged else "Did not converge"
+                        color = "positive" if pr.converged else "warning"
+                        ui.badge(status, color=color)
+                    ui.label(f"Audit iterations: {iterations}").classes(
                         "text-xs text-slate-500"
                     )
 
@@ -311,6 +315,43 @@ def _render_scorecard(container, eval_result) -> None:
                 else:
                     ui.label("✓ No miracle steps").classes("text-positive mt-2")
 
+                # Plausibility narrative + ctf-calculus diagnostics
+                # (cycles, noisy-OR absorptions, pruned interventions,
+                # redundant evidence). These are populated by the
+                # auditor but were previously hidden in the UI.
+                details = getattr(causal, "cognitive_plausibility_details", "")
+                if details:
+                    with ui.expansion(
+                        "Plausibility details", icon="psychology",
+                    ).props("dense").classes("mt-2"):
+                        ui.markdown(details)
+
+                diagnostic_fields = [
+                    ("cyclic_propagation_clusters",
+                     "Cyclic propagation clusters", "loop"),
+                    ("noisy_or_absorbed_propagations",
+                     "Noisy-OR absorbed propagations", "filter_alt"),
+                    ("rule3_pruned_interventions",
+                     "Rule-3 pruned interventions", "block"),
+                    ("rule2_redundant_evidence",
+                     "Rule-2 redundant evidence", "science"),
+                ]
+                for attr, label, icon in diagnostic_fields:
+                    items = getattr(causal, attr, []) or []
+                    if not items:
+                        continue
+                    with ui.expansion(
+                        f"{label} ({len(items)})", icon=icon,
+                    ).props("dense").classes("mt-1"):
+                        for item in items[:20]:
+                            ui.label(f"• {item}").classes(
+                                "text-xs text-slate-600"
+                            )
+                        if len(items) > 20:
+                            ui.label(
+                                f"… and {len(items) - 20} more"
+                            ).classes("text-xs text-slate-400 italic")
+
         # Affective feedback
         affective = getattr(narrative_order, "affective_feedback", None)
         if affective:
@@ -320,23 +361,49 @@ def _render_scorecard(container, eval_result) -> None:
                 ui.label("Affective Metrics").classes(
                     "text-sm font-semibold text-slate-700 mb-2"
                 )
-                scores = {}
-                if hasattr(affective, "emotional_trajectory_scores") and affective.emotional_trajectory_scores:
-                    scores.update(affective.emotional_trajectory_scores)
-                if hasattr(affective, "affective_loss_mse"):
-                    scores["Affective Loss"] = affective.affective_loss_mse
-                if scores:
+                # Emotional trajectory scores are 0–1 "higher is
+                # better" intensities — render as gauges.
+                trajectory = getattr(
+                    affective, "emotional_trajectory_scores", None,
+                ) or {}
+                if trajectory:
                     with_expand(
-                        lambda h, s=scores: render_emotional_gauges(
+                        lambda h, s=dict(trajectory): render_emotional_gauges(
                             s, height=h
                         ),
-                        title="Affective metrics",
+                        title="Emotional trajectory (achieved intensity)",
                         height="150px",
                     )
+                else:
+                    ui.label("No targeted emotions to score.").classes(
+                        "text-xs text-slate-400 italic"
+                    )
 
-                if hasattr(affective, "kl_divergence_prediction_error"):
+                # Affective loss MSE is unbounded and "lower is
+                # better" — must NOT be rendered on a 0–1 gauge.
+                loss = getattr(affective, "affective_loss_mse", None)
+                if loss is not None:
+                    if loss <= 0.05:
+                        loss_color, loss_word = "positive", "excellent fit"
+                    elif loss <= 0.15:
+                        loss_color, loss_word = "primary", "good fit"
+                    elif loss <= 0.30:
+                        loss_color, loss_word = "warning", "weak fit"
+                    else:
+                        loss_color, loss_word = "negative", "poor fit"
+                    with ui.row().classes("items-center gap-2 mt-2"):
+                        ui.label("Affective loss (MSE, lower=better):").classes(
+                            "text-xs text-slate-600"
+                        )
+                        ui.badge(
+                            f"{loss:.3f} — {loss_word}",
+                            color=loss_color,
+                        ).props("dense")
+
+                kl = getattr(affective, "kl_divergence_prediction_error", None)
+                if kl is not None:
                     ui.label(
-                        f"KL Divergence (surprise): {affective.kl_divergence_prediction_error:.3f}"
+                        f"KL Divergence (surprise): {kl:.3f}"
                     ).classes("text-xs text-slate-500 mt-2")
 
         # Quality synthesis
@@ -356,7 +423,11 @@ def _render_scorecard(container, eval_result) -> None:
                         ui.markdown(quality.reward_hacking_diagnostics)
                 if hasattr(quality, "actionable_rewrite_directives") and quality.actionable_rewrite_directives:
                     with ui.expansion("Rewrite Directives", icon="edit_note").props("dense"):
-                        ui.markdown(quality.actionable_rewrite_directives)
+                        directives = quality.actionable_rewrite_directives
+                        if isinstance(directives, list):
+                            ui.markdown("\n".join(f"- {d}" for d in directives))
+                        else:
+                            ui.markdown(str(directives))
 
 
 # =====================================================================
@@ -450,6 +521,18 @@ def _render_query_audit_entry(index: int, result: NLQueryResult, state: AppState
             if pr.prose:
                 with ui.expansion("Prose", icon="article").props("dense"):
                     ui.markdown(pr.prose[:500] + ("…" if len(pr.prose) > 500 else ""))
+
+            # Evaluation scorecard — when this query was an
+            # ``evaluate`` (e.g. triggered from the chat command bar
+            # or an audit-tab chip), surface the same scorecard the
+            # dedicated "Run Evaluation" button shows so users don't
+            # have to re-run the audit just to see results.
+            if getattr(pr, "evaluation_result", None) is not None:
+                with ui.expansion(
+                    "Evaluation Scorecard", icon="fact_check",
+                ).props("dense"):
+                    scorecard_container = ui.column().classes("w-full gap-2")
+                    _render_scorecard(scorecard_container, pr.evaluation_result)
 
             # Audit loop replay (if feedback_result has history)
             feedback = getattr(pr, "feedback_result", None)
