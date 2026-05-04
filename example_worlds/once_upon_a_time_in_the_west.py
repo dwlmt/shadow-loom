@@ -23,8 +23,8 @@ from shadow_loom.models import (
 world_state = WorldStateV1(
     narrative_style=NarrativeStyle(
         format='synopsis',
-        target_word_min=240,
-        target_word_max=640,
+        target_word_min=208,
+        target_word_max=780,
         prose_density='sparse',
         voice='operatic Western synopsis; long held silences; ritual gunfight; third-person past tense',
         style_exemplar="A train arrives at the Old West town of Flagstone where a man with a harmonica kills three men attempting to ambush him. Meanwhile, Frank and his gang murder Brett McBain and his three children at his ranch Sweetwater. Shortly after, a former prostitute arrives at Sweetwater and reveals she is Jill McBain, who married McBain a month earlier in New Orleans.",

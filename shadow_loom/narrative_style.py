@@ -290,10 +290,11 @@ def infer_narrative_style(text: str) -> NarrativeStyle:
         # essentially no dialogue.
         fmt = "plot_summary"
         density = "sparse"
-        # Match the source order of magnitude (~1× source length per
-        # render), capped to avoid runaway outputs.
-        target_min = max(120, min(word_count, 250))
-        target_max = max(target_min + 80, min(int(word_count * 1.2), 1000))
+        # Match the source order of magnitude with a wide register hint
+        # (≈0.4× to ≈1.5× source) so user queries can stretch the
+        # band in either direction without misfiring.
+        target_min = max(120, int(word_count * 0.4))
+        target_max = max(target_min + 200, int(word_count * 1.5))
         voice_parts.append(
             "third-person past-tense plot summary; condensed beat-by-beat "
             "diction; no quoted dialogue; uses temporal connectors "
@@ -302,13 +303,13 @@ def infer_narrative_style(text: str) -> NarrativeStyle:
     elif word_count < 1500 and dialogue_frac < 0.05:
         fmt = "synopsis"
         density = "sparse"
-        target_min = max(150, word_count // 3)
-        target_max = max(target_min + 100, min(word_count, 600))
+        target_min = max(120, int(word_count * 0.4))
+        target_max = max(target_min + 200, int(word_count * 1.5))
         voice_parts.append("synoptic narration; no dialogue; condensed scene description")
     elif word_count < 4000:
         fmt = "scene" if dialogue_frac >= 0.05 else "short_story"
         density = "moderate"
-        target_min, target_max = 600, 1800
+        target_min, target_max = 400, 2400
         voice_parts.append(
             "scene-level prose with some dialogue and sensory detail"
             if dialogue_frac >= 0.05
@@ -317,7 +318,7 @@ def infer_narrative_style(text: str) -> NarrativeStyle:
     else:
         fmt = "novel_excerpt"
         density = "rich"
-        target_min, target_max = 800, 2500
+        target_min, target_max = 600, 3500
         voice_parts.append(
             "novelistic prose with full sensory texture, interiority, "
             "and varied sentence rhythm"
@@ -355,23 +356,122 @@ def infer_narrative_style(text: str) -> NarrativeStyle:
     )
 
 
-def format_narrative_style_block(style: NarrativeStyle, *, header: str = "STYLE FIDELITY (HARD)") -> str:
+# --- Query-aware length-intent loosener ----------------------------
+# The ingested NarrativeStyle.target_word_{min,max} captures the
+# *source* register's natural envelope. But the user's specific
+# request can legitimately stretch or compress that envelope: an
+# "in detail" query against a plot-summary world should be allowed
+# to render long; a "one-paragraph" query against a novel-excerpt
+# world should be allowed to render short. These regexes detect
+# that intent and return a (min_factor, max_factor, label) triple
+# applied multiplicatively to the source band.
+
+_INTENT_EXPAND = re.compile(
+    r"\b(in (?:full |great |fine )?detail|"
+    r"detailed|expand(?:ed)?|elaborate|fully|at length|"
+    r"long(?:er)?|exhaustive|thorough(?:ly)?|"
+    r"flesh(?:ed)? out|render fully|as a (?:scene|short story|chapter|novel)|"
+    r"novelis(?:e|tic)|dramati[sz]e)\b",
+    re.IGNORECASE,
+)
+_INTENT_CONDENSE = re.compile(
+    r"\b(brief(?:ly)?|short(?:er)?|terse|concise(?:ly)?|"
+    r"summari[sz]e|summary|in (?:a |one )?(?:sentence|paragraph|line)|"
+    r"one[- ]paragraph|one[- ]liner|tl;dr|tldr|"
+    r"in a few words|outline)\b",
+    re.IGNORECASE,
+)
+_INTENT_SCENE = re.compile(
+    r"\b(write (?:the |a )?scene|render (?:the |a )?scene|as a scene|"
+    r"dramatise|dramatize)\b",
+    re.IGNORECASE,
+)
+
+
+def derive_length_intent(query: str | None) -> tuple[float, float, str]:
+    """Infer how much the user query stretches the source word band.
+
+    Returns ``(min_factor, max_factor, label)``. The factors are
+    applied multiplicatively to ``target_word_min`` / ``target_word_max``;
+    the label is a short tag for downstream prompt copy and
+    diagnostics. ``label == "default"`` means no stretch was inferred.
+
+    The mapping is intentionally conservative — narrow enough that a
+    neutral question produces no change, broad enough that an explicit
+    "in detail" or "briefly" instruction visibly reshapes the band.
+    """
+    if not query:
+        return (1.0, 1.0, "default")
+    expand = bool(_INTENT_EXPAND.search(query)) or bool(_INTENT_SCENE.search(query))
+    condense = bool(_INTENT_CONDENSE.search(query))
+    if expand and not condense:
+        return (1.0, 3.0, "expand")
+    if condense and not expand:
+        return (0.25, 0.6, "condense")
+    if expand and condense:  # mixed signals — small loosening only
+        return (0.75, 1.5, "mixed")
+    return (1.0, 1.0, "default")
+
+
+def adjusted_word_band(
+    style: NarrativeStyle,
+    query: str | None,
+) -> tuple[int, int, str]:
+    """Return ``(adjusted_min, adjusted_max, intent_label)``.
+
+    Floors to a minimum 60-word lower bound and a 60-word ceiling
+    above ``adjusted_min`` so the band always remains usable.
+    """
+    fmin, fmax, label = derive_length_intent(query)
+    adj_min = max(60, int(round(style.target_word_min * fmin)))
+    adj_max = max(adj_min + 60, int(round(style.target_word_max * fmax)))
+    return adj_min, adj_max, label
+
+
+def format_narrative_style_block(
+    style: NarrativeStyle,
+    *,
+    header: str = "STYLE FIDELITY (HARD)",
+    original_query: str | None = None,
+    audit_tolerance_pct: int = 25,
+) -> str:
     """Render a NarrativeStyle as a prompt section.
 
     Used by both the rendering prompt (Step 10) and the audit prompt
     (Step 11) so the same fidelity contract drives generation and
-    evaluation.
+    evaluation. When ``original_query`` is supplied, the displayed
+    target word band is loosened in the direction the query asks for
+    (``"in detail"`` → wider upper bound; ``"briefly"`` → tighter,
+    smaller band) and the prompt explicitly tells the consumer that
+    the source band is a *register hint*, not a hard ceiling.
     """
+    adj_min, adj_max, intent = adjusted_word_band(style, original_query)
     lines = [f"=== {header} ==="]
     lines.append(
-        "The rendered prose MUST mirror the source text's *form* — "
-        "matching its length envelope, prose density, and narrative "
-        "voice. Do not inflate a plot summary into a short story, "
-        "and do not condense a short story into a synopsis."
+        "The rendered prose SHOULD mirror the source text's *form* — "
+        "its prose density and narrative voice — and stay broadly "
+        "within the target word band below. Treat the band as a "
+        "register hint, not a hard ceiling: the user's request "
+        "(\"in detail\", \"briefly\", \"one paragraph\", \"as a "
+        "scene\") legitimately stretches or compresses it. Do not, "
+        "however, drift across registers — a plot-summary seed should "
+        "not become novelistic interiority just because it ran long."
     )
     lines.append(f"  Source format: {style.format}")
+    if intent != "default" and (adj_min, adj_max) != (style.target_word_min, style.target_word_max):
+        lines.append(
+            f"  Target length: {adj_min}\u2013{adj_max} words "
+            f"(source band {style.target_word_min}\u2013{style.target_word_max}, "
+            f"loosened by user-intent='{intent}')"
+        )
+    else:
+        lines.append(
+            f"  Target length: {adj_min}\u2013{adj_max} words"
+        )
     lines.append(
-        f"  Target length: {style.target_word_min}\u2013{style.target_word_max} words"
+        f"  Tolerance: aim within \u00b1{audit_tolerance_pct}% of the "
+        "band; the auditor only flags style_mismatch when prose drifts "
+        "outside that envelope."
     )
     lines.append(f"  Prose density: {style.prose_density}")
     if style.voice:

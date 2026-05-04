@@ -20,8 +20,8 @@ from shadow_loom.models import (
 world_state = WorldStateV1(
     narrative_style=NarrativeStyle(
         format='synopsis',
-        target_word_min=260,
-        target_word_max=600,
+        target_word_min=312,
+        target_word_max=1172,
         prose_density='sparse',
         voice='synoptic narration; no dialogue; condensed scene description; third-person POV; past tense',
         style_exemplar='As the narrative opens on "April 4th, 1984", a date whose validity is questioned by the protagonist, Winston Smith, the world has been ravaged for decades by global war, civil conflict and revolution. What was formerly known as the island of Great Britain is "Airstrip One", a province of Oceania, one of the three totalitarian super-states that rule the world. It is ruled by "The Party" under the ideology of "Ingsoc": a Newspeak shortening of "English Socialism". Also present is the mysterious leader Big Brother, who has an intense cult of personality.',

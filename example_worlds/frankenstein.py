@@ -22,8 +22,8 @@ from shadow_loom.models import (
 world_state = WorldStateV1(
     narrative_style=NarrativeStyle(
         format='scene',
-        target_word_min=600,
-        target_word_max=1800,
+        target_word_min=271,
+        target_word_max=1016,
         prose_density='moderate',
         voice='scene-level prose with some dialogue and sensory detail; first-person POV; past tense',
         style_exemplar='Victor Frankenstein, born in Naples to an upper-class Genevese family, spends his youth obsessed with alchemy. As he grows older, he develops an interest in modern sciences such as chemistry and electricity. After his mother Caroline dies of scarlet fever, Victor leaves home to attend the University of Ingolstadt. Through his studies, Victor discovers a new way to create life, assembling human body parts stolen from charnel houses and fresh graves, which he uses to create a large and grotesque humanoid creature.',

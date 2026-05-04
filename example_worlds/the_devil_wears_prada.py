@@ -23,8 +23,8 @@ from shadow_loom.models import (
 world_state = WorldStateV1(
     narrative_style=NarrativeStyle(
         format='synopsis',
-        target_word_min=200,
-        target_word_max=560,
+        target_word_min=184,
+        target_word_max=690,
         prose_density='moderate',
         voice='contemporary urban synopsis; brisk indirect discourse; third-person past tense',
         style_exemplar="Andrea Sachs, a recent graduate of Brown University with a degree in English, moves to New York City with her best friend, Lily, a graduate student at Columbia. Andrea hopes to find a career in publishing and blankets the city with her résumé. She gets a surprise interview at the Elias-Clarke Group and is hired as junior assistant for Miranda Priestly, editor-in-chief of the fashion magazine Runway.",

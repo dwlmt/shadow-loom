@@ -55,9 +55,11 @@ def test_infer_plot_summary():
     ns = infer_narrative_style(src.read_text())
     assert ns.format == "plot_summary"
     assert ns.prose_density == "sparse"
-    # Length budget tracks the source order of magnitude.
+    # Length budget tracks the source order of magnitude with a
+    # generous ≈1.5× ceiling so user queries can stretch the band.
     assert ns.target_word_min < ns.target_word_max
-    assert ns.target_word_max <= 1000
+    assert ns.source_word_count is not None
+    assert ns.target_word_max <= int(ns.source_word_count * 1.5) + 1
     assert "third-person" in ns.voice
     assert "past tense" in ns.voice
     assert ns.style_exemplar

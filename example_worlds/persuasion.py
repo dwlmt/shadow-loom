@@ -20,8 +20,8 @@ from shadow_loom.models import (
 world_state = WorldStateV1(
     narrative_style=NarrativeStyle(
         format='synopsis',
-        target_word_min=459,
-        target_word_max=600,
+        target_word_min=552,
+        target_word_max=2068,
         prose_density='sparse',
         voice='synoptic narration; no dialogue; condensed scene description; third-person POV; past tense',
         style_exemplar="The story begins seven years after the broken engagement of Anne Elliot to Frederick Wentworth. Having just turned nineteen years old, Anne fell in love and had accepted a proposal of marriage from Wentworth, then a young and as yet undistinguished naval officer. Wentworth was considered clever, confident and ambitious, but his low social status and lack of wealth made Anne's family — her vain father Sir Walter Elliot and her older sister Elizabeth — view him as an unsuitable match for the daughter of a baronet.",

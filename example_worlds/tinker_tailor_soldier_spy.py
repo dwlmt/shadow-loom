@@ -33,8 +33,8 @@ from shadow_loom.models import (
 world_state = WorldStateV1(
     narrative_style=NarrativeStyle(
         format='synopsis',
-        target_word_min=466,
-        target_word_max=650,
+        target_word_min=339,
+        target_word_max=1270,
         prose_density='rich',
         voice='synoptic narration; minimal dialogue; condensed scene description; third-person POV; past tense; espionage register',
         style_exemplar='In October 1973, Control (John Hurt), the head of British Intelligence ("the Circus"), sends agent Jim Prideaux (Mark Strong) to Communist Hungary to meet a Hungarian general who had promised to sell information. However, Prideaux is shot and captured by Soviet agents. Amid the international incident that follows, Control and his right-hand man George Smiley (Gary Oldman) are forced into retirement. Control, already ill, dies soon afterwards.',

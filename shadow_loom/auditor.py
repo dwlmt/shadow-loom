@@ -901,20 +901,32 @@ def assemble_audit_prompt(
         )
         sections.append("")
 
-    # Source-style fidelity contract: the prose MUST match the form of
-    # the source text (plot-summary length stays summary-length, etc.).
-    # Mismatches are a `style_mismatch` violation.
+    # Source-style fidelity contract: the prose SHOULD match the form
+    # of the source text. The band is loosened in the direction the
+    # user query asks for ("in detail" widens, "briefly" tightens),
+    # and only drifts >50% outside the loosened band are flagged as
+    # `style_mismatch` violations.
     if brief.narrative_style is not None:
-        from shadow_loom.narrative_style import format_narrative_style_block
+        from shadow_loom.narrative_style import (
+            adjusted_word_band, format_narrative_style_block,
+        )
+        adj_min, adj_max, _intent = adjusted_word_band(
+            brief.narrative_style, brief.original_query,
+        )
         sections.append(format_narrative_style_block(
             brief.narrative_style,
-            header="STYLE FIDELITY (HARD \u2014 mismatches are `style_mismatch` violations)",
+            header="STYLE FIDELITY (SOFT \u2014 large mismatches are `style_mismatch` violations)",
+            original_query=brief.original_query,
+            audit_tolerance_pct=50,
         ))
         sections.append(
-            "  Word-count gate: count the words in the prose above. "
-            "If it falls outside the target range by >25%, raise a "
-            "`style_mismatch` violation with severity 'major' and "
-            "feedback that names the actual word count and the target."
+            f"  Word-count gate: count the words in the prose above. "
+            f"Only raise a `style_mismatch` violation when the count "
+            f"falls outside the loosened band ({adj_min}\u2013{adj_max} "
+            f"words) by more than \u00b150%. Severity is 'minor' when "
+            f"the prose is otherwise on-register; reserve 'major' for "
+            f"genuine form-class mismatches (e.g.\u00a0summary rendered "
+            f"as full novelistic scene, or vice versa)."
         )
         sections.append("")
 

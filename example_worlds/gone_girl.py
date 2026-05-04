@@ -24,8 +24,8 @@ from shadow_loom.models import (
 world_state = WorldStateV1(
     narrative_style=NarrativeStyle(
         format='synopsis',
-        target_word_min=318,
-        target_word_max=600,
+        target_word_min=382,
+        target_word_max=1434,
         prose_density='sparse',
         voice='synoptic narration; no dialogue; condensed scene description; third-person POV; past tense',
         style_exemplar="The narrative alternates between the point of view of Nick and Amy Dunne (née Elliott). Nick's narration begins shortly after arriving home on his fifth wedding anniversary to find Amy is missing from their home; there are signs of a struggle. Amy's narration comes in the form of her diaries and follows the earlier stages of their relationship.\n\nThe diary entries describe how Amy met Nick in New York City, where they both worked as writers. Nick was a journalist who wrote movie and TV reviews, while Amy wrote personality quizzes for women's magazines. After two years of dating, they married.",

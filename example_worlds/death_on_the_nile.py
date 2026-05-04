@@ -21,8 +21,8 @@ from shadow_loom.models import (
 world_state = WorldStateV1(
     narrative_style=NarrativeStyle(
         format='synopsis',
-        target_word_min=291,
-        target_word_max=600,
+        target_word_min=350,
+        target_word_max=1312,
         prose_density='sparse',
         voice='synoptic narration; no dialogue; condensed scene description; third-person POV; past tense',
         style_exemplar='Hercule Poirot is vacationing in Aswan, waiting to board the steamer Karnak, which will tour along the Nile River from Shellal to Wadi Halfa. He is approached by wealthy heiress Linnet Doyle (née Ridgeway), who attempts to hire him. Linnet has recently married Simon Doyle, ex-fiancé of her former friend Jacqueline de Bellefort. Bitterly jealous, Jacqueline has taken to hounding and stalking the couple all throughout their honeymoon.',

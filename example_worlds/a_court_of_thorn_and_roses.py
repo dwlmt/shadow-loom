@@ -31,8 +31,8 @@ from shadow_loom.models import (
 world_state = WorldStateV1(
     narrative_style=NarrativeStyle(
         format='scene',
-        target_word_min=600,
-        target_word_max=1800,
+        target_word_min=426,
+        target_word_max=1598,
         prose_density='moderate',
         voice='scene-level prose with some dialogue and sensory detail; third-person POV; past tense',
         style_exemplar='As a huntress and her family’s primary source of survival, nineteen-year-old Feyre stalks the bleak woods, a little farther from home than usual. Her family was once very wealthy, but they now live in poverty. Feyre’s luck turns when she spots a deer. At the same time, an enormous wolf appears out of nowhere. Feyre wonders if the wolf is a faerie in disguise. She hates faeries for all the harm they have done to humans. Feyre decides to use a precious ash arrow, a surefire method to kill a faerie, just in case. She fires the arrow as the wolf attacks the deer, killing the beast.',

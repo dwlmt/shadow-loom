@@ -22,8 +22,8 @@ from shadow_loom.models import (
 world_state = WorldStateV1(
     narrative_style=NarrativeStyle(
         format='synopsis',
-        target_word_min=222,
-        target_word_max=600,
+        target_word_min=267,
+        target_word_max=1000,
         prose_density='sparse',
         voice='synoptic narration; no dialogue; condensed scene description; third-person POV; past tense',
         style_exemplar="The play, set in Verona, Italy, begins with a street brawl between Montague and Capulet servants who, like the masters they serve, are sworn enemies. Prince Escalus of Verona intervenes and declares that further breach of the peace will be punishable by death. Later, Count Paris talks to Capulet about marrying his daughter Juliet, but Capulet asks Paris to wait another two years and invites him to attend a planned Capulet ball. Lady Capulet and Juliet's nurse try to persuade Juliet to accept Paris's courtship.",

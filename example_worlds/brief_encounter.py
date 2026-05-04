@@ -21,8 +21,8 @@ from shadow_loom.models import (
 world_state = WorldStateV1(
     narrative_style=NarrativeStyle(
         format='synopsis',
-        target_word_min=170,
-        target_word_max=512,
+        target_word_min=205,
+        target_word_max=768,
         prose_density='sparse',
         voice='synoptic narration; no dialogue; condensed scene description; third-person POV; present tense',
         style_exemplar="In a railway station refreshment room, a man and a woman are sitting glumly at a table. One of the woman's friends comes in and immediately begins chatting away. After some terse pleasantries, the man leaves to catch his train. The woman explains that the man is about to move to Africa. After the man leaves, the woman abruptly disappears but soon returns, explaining that she wanted to see the express train pass by. After a short interval, the two women head for their own train.\n\nAt home, Laura Jesson, the woman at the table, sits in the living room with her husband Fred.",

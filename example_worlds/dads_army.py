@@ -26,8 +26,8 @@ from shadow_loom.models import (
 world_state = WorldStateV1(
     narrative_style=NarrativeStyle(
         format='synopsis',
-        target_word_min=242,
-        target_word_max=600,
+        target_word_min=290,
+        target_word_max=1089,
         prose_density='sparse',
         voice='synoptic narration; no dialogue; condensed scene description; third-person POV; present tense',
         style_exemplar='1940 – The Dunkirk evacuation has just taken place. From the newly conquered French coastline, a Wehrmacht colonel looks out over the English Channel with powerful binoculars. Surveying the white cliffs of Dover, he spies Godfrey emerging from a lavatory. Godfrey joins the rest of his platoon, who are defiantly waving the Union Flag. The colonel fumes contemptuously, "How can the stupid British ever hope to win?!',

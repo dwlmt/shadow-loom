@@ -23,8 +23,8 @@ from shadow_loom.models import (
 world_state = WorldStateV1(
     narrative_style=NarrativeStyle(
         format='synopsis',
-        target_word_min=225,
-        target_word_max=600,
+        target_word_min=270,
+        target_word_max=1012,
         prose_density='sparse',
         voice='synoptic narration; no dialogue; condensed scene description; third-person POV; past tense',
         style_exemplar='Eight men planning to rob a jewelry store for a diamond shipment eat breakfast at a diner. To pull off the heist, boss Joe Cabot assembles six experienced robbers who are strangers to each other. Joe and his son, "Nice Guy" Eddie Cabot, have known some of the team for years, but to shield identities, the rest use aliases: Mr. White, a career criminal; Mr. Blonde, a trigger-happy ex-convict; Mr. Orange, a reputed drug dealer; Mr. Pink, a paranoid neurotic; Mr. Brown, a pseudo philosopher; and Mr. Blue, an even-tempered cohort.',

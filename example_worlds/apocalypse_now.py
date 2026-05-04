@@ -24,8 +24,8 @@ from shadow_loom.models import (
 world_state = WorldStateV1(
     narrative_style=NarrativeStyle(
         format='scene',
-        target_word_min=600,
-        target_word_max=1800,
+        target_word_min=437,
+        target_word_max=1640,
         prose_density='moderate',
         voice='scene-level prose with some dialogue and sensory detail; third-person POV; past tense',
         style_exemplar='Apocalypse Now opens in Saigon in 1968. Army captain and special intelligence agent Benjamin Willard is holed up in a hotel room, heavily intoxicated and desperate to get back into action. He has completed one tour of duty in Vietnam, only to go home a changed man, miserable amid the confines of civilization. After agreeing to a divorce, he has returned to Vietnam for a second tour and now waits restlessly for a mission.',

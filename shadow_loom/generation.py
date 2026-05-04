@@ -345,9 +345,15 @@ def assemble_rendering_prompt(
     # === Source Style Fidelity ===
     # Match the source text's *form* — a plot-summary seed renders a
     # summary-length passage, a short-story seed renders a scene, etc.
+    # The user's original query loosens the band ("in detail"
+    # widens; "briefly" tightens) so the same world can answer both
+    # quick-look and deep-dive questions without misfiring.
     if brief.narrative_style is not None:
         from shadow_loom.narrative_style import format_narrative_style_block
-        sections.append(format_narrative_style_block(brief.narrative_style))
+        sections.append(format_narrative_style_block(
+            brief.narrative_style,
+            original_query=brief.original_query,
+        ))
         sections.append("")
 
     # === Header ===

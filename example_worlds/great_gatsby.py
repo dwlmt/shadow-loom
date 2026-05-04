@@ -21,8 +21,8 @@ from shadow_loom.models import (
 world_state = WorldStateV1(
     narrative_style=NarrativeStyle(
         format='plot_summary',
-        target_word_min=250,
-        target_word_max=872,
+        target_word_min=291,
+        target_word_max=1090,
         prose_density='sparse',
         voice='third-person past-tense plot summary; condensed beat-by-beat diction; no quoted dialogue; uses temporal connectors ("Later,", "The next day,"); third-person POV; past tense',
         style_exemplar='n spring 1922, Nick Carraway—a Yale alumnus from the Midwest and a World War I veteran—journeys to New York City to obtain employment as a bond salesman. He rents a bungalow in the Long Island village of West Egg, next to a luxurious estate inhabited by Jay Gatsby, an enigmatic multi-millionaire who hosts dazzling soirées, yet does not partake in them.\n\nOne evening, Nick dines with a distant cousin, Daisy Buchanan, in the old money town of East Egg. Daisy is married to Tom Buchanan, formerly a Yale football star whom Nick knew during his college days.',
