@@ -3,15 +3,26 @@
 
 """Shadow-Loom MCP server — agent-first narrative intelligence.
 
-25 tools grouped by cognitive task:
-  ORIENT  (2) — list_projects, open_project
-  EXPLORE (5) — inspect, search, get_relationships, trace_causality, get_history
-  REASON  (3) — ask, compute_tension, diff_versions
-  CREATE  (4) — narrate, direct, write, ingest
-  JUDGE   (2) — evaluate, audit_log
-  MANAGE  (9) — branch, share, fork, update_project, delete_project,
-               delete_version, reparent_version,
-               set_active_version, get_active_version
+41 tools grouped by cognitive task. Four coarse-grained dispatchers wrap the
+granular surface so new integrations can reach most functionality through
+one well-known entry point; the granular tools remain registered for
+backward compatibility.
+
+  DISPATCHERS (4) — discover, trace, author, manage
+  ORIENT      (2) — list_projects, open_project
+  EXPLORE    (10) — inspect, search, get_relationships,
+                    list_channels, get_channel_history, who_can_hear,
+                    trace_causality, get_history, list_branches,
+                    export_prose
+  REASON      (3) — ask, compute_tension, diff_versions
+  CREATE      (4) — narrate, direct, write, ingest
+  JUDGE       (2) — evaluate, audit_log
+  RESEARCH    (6) — research_topic, list_world_facts, delete_world_fact,
+                    get_research_status, get_project_settings,
+                    set_project_settings
+  MANAGE     (10) — branch, fork, share, promote_branch,
+                    update_project_tool, delete_project, delete_version,
+                    reparent_version, set_active_version, get_active_version
 
 5 resources:
   world://projects

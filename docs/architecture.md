@@ -353,6 +353,42 @@ If the auditor returns non-zero loss the refinement loop in
 appended to the brief, up to `max_correction_retries`. On success the new
 world state is committed back to the canonical graph.
 
+**Audit-loop discipline.** The loop is engineered to avoid the classic
+ping-pong failure mode where each iteration fixes one category and
+regresses on the previous one:
+
+* **Universal categories.** `meta` (meta-narration) and `style`
+  (style-fidelity) audits run for every `target_effect` regardless of the
+  brief's `audit_categories`; per-effect categories layer on top via
+  `auditor.resolve_audit_categories(target_effect)`. The auditor prompt
+  also instructs the judge to surface violations *only* for categories on
+  the resolved list — anything else would be silently discarded by the
+  loop.
+* **Non-regression constraints.** Each refinement call passes the full
+  list of *prior* violations from earlier iterations into the regeneration
+  prompt under a dedicated `=== NON-REGRESSION CONSTRAINTS ===` section
+  (deduplicated by `(violation_type, feedback[:160])`, excluding still-
+  active types). The renderer is told explicitly to keep those fixes
+  intact while addressing the current iteration's feedback.
+* **Severity-aware short-circuit.** Style-fidelity is split into three
+  severities: `critical` (form-class breach, e.g. `synopsis` rendered as a
+  scene), `major` (word count >±50% off-budget or density+form drift), and
+  `minor` (pure prose-density drift inside the form-class band). When
+  *all* surfaced violations are `minor`, the loop short-circuits to
+  `llm_passed=True` instead of burning another regeneration cycle on
+  cosmetic refinement.
+* **Form-class aware rendering.** For `summary` forms
+  (`plot_summary` / `synopsis` / `outline`) and non-narrative forms
+  (`news_article` / `historical_account` / `thought_experiment` / `essay`
+  / `case_study` / `transcript`), `generation.assemble_rendering_prompt`
+  emits a HARD override block ahead of the rendering directive so the
+  scenic counterfactual / observation templates do not silently demand a
+  lived past-tense scene the form-class forbids.
+* **Evaluation "not measured" signal.** When `affective_loss_mse` is
+  `None` (no scorable target exists), the evaluation prompt prints
+  `Affective loss MSE: not measured (no scorable target — ignore in
+  evaluation)` instead of silently formatting a misleading `0.0000`.
+
 ---
 
 ## 7. Modules at a glance

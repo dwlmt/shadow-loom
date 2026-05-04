@@ -972,6 +972,21 @@ the LLM auditor's verdict — the engine can refuse a scene the LLM
 auditor approved if the measured affective score is more than
 `physics.affective_tolerance` off the directive's target.
 
+> **Loop discipline.** Style-fidelity violations are split into
+> `critical` (form-class breach) / `major` (word count >±50% off-budget
+> or density+form drift) / `minor` (pure density drift inside the
+> form-class band). When *every* surfaced violation in an iteration is
+> `minor`, the loop short-circuits to a pass instead of burning another
+> regeneration. Each refinement call also receives a
+> `=== NON-REGRESSION CONSTRAINTS ===` section listing prior fixes from
+> earlier iterations so the rewriter cannot ping-pong between violation
+> types. `meta` and `style` always run regardless of
+> `brief.audit_categories`; the prompt instructs the judge to surface
+> violations *only* for categories on the resolved list. When
+> `affective_loss_mse` has no measurable target the evaluation prompt
+> emits `not measured (no scorable target — ignore in evaluation)`
+> instead of a misleading `0.0000`.
+
 ---
 
 ## 8. Re-extraction and merge

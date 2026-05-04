@@ -58,6 +58,14 @@ _PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 # =====================================================================
 
 #: Maps each target_effect to the audit categories the auditor must run.
+#:
+#: Two categories run universally regardless of effect:
+#:   * ``meta`` (Category 4b) \u2014 meta-narration / pipeline leakage,
+#:     the most common cross-mode failure.
+#:   * ``style`` (Category 5) \u2014 source-style fidelity, only meaningful
+#:     when ``brief.narrative_style`` is populated but cheap to leave on.
+#: They're appended at the audit call-site so per-effect lookups stay
+#: focused on the structural categories the effect actually requires.
 EFFECT_AUDIT_CATEGORIES: Dict[str, List[str]] = {
     # Category 1: Epistemic Queries
     "mystery": ["epistemic", "physics"],
@@ -78,6 +86,31 @@ EFFECT_AUDIT_CATEGORIES: Dict[str, List[str]] = {
     "counterfactual": ["physics"],
     "general": ["physics"],
 }
+
+#: Categories that always run, regardless of target_effect. Kept
+#: separate from ``EFFECT_AUDIT_CATEGORIES`` so the per-effect maps
+#: remain a focused declaration of which structural audits each
+#: effect requires.
+UNIVERSAL_AUDIT_CATEGORIES: List[str] = ["meta", "style"]
+
+
+def resolve_audit_categories(target_effect: str) -> List[str]:
+    """Return the full audit-category list for a given target effect.
+
+    Combines the per-effect categories with
+    :data:`UNIVERSAL_AUDIT_CATEGORIES` (deduplicated, order-preserving).
+    Use this single helper at every call-site so the auditor prompt and
+    the run-audit log stay in sync.
+    """
+    base = EFFECT_AUDIT_CATEGORIES.get(target_effect, ["physics"])
+    seen: set[str] = set()
+    out: List[str] = []
+    for c in list(base) + UNIVERSAL_AUDIT_CATEGORIES:
+        if c in seen:
+            continue
+        seen.add(c)
+        out.append(c)
+    return out
 
 
 # =====================================================================
@@ -993,10 +1026,25 @@ def assemble_audit_prompt(
             f"  Word-count gate: count the words in the prose above. "
             f"Only raise a `style_mismatch` violation when the count "
             f"falls outside the loosened band ({adj_min}\u2013{adj_max} "
-            f"words) by more than \u00b150%. Severity is 'minor' when "
-            f"the prose is otherwise on-register; reserve 'major' for "
-            f"genuine form-class mismatches (e.g.\u00a0summary rendered "
-            f"as full novelistic scene, or vice versa)."
+            f"words) by more than \u00b150%."
+        )
+        sections.append(
+            "  Severity rules for `style_mismatch`:\n"
+            "    \u2022 `critical` \u2014 reserved for genuine "
+            "form-class breaches that destroy the source register "
+            "(e.g.\u00a0a `news_article` rendered as fictional scene "
+            "work, a `synopsis` rendered as a 2,000-word short story, "
+            "a `transcript` rendered as continuous narration). Always "
+            "trigger a regeneration.\n"
+            "    \u2022 `major` \u2014 reserved for word-count breaches "
+            "outside the \u00b150% loosened band, OR a `prose_density` "
+            "drift that has *also* dragged the prose across a form "
+            "boundary. Trigger a regeneration.\n"
+            "    \u2022 `minor` \u2014 default for everything else: "
+            "pure prose-density drift (slightly too lush or too "
+            "telegraphic) when the word count is inside the band and "
+            "the form-class is intact. The refinement loop should NOT "
+            "spend a regeneration cycle on this alone."
         )
         sections.append("")
 
@@ -1009,6 +1057,19 @@ def assemble_audit_prompt(
     sections.append("")
 
     sections.append(f"=== AUDIT CATEGORIES TO CHECK: {', '.join(audit_categories)} ===")
+    sections.append(
+        "Run ONLY the audit categories listed above. Do not surface "
+        "violations for any category not on the list \u2014 those are "
+        "out of scope for this audit pass and would be silently "
+        "discarded by the loop. The categories surface as: "
+        "`epistemic` \u2192 mystery / dramatic_irony / surprise audits; "
+        "`probabilistic` \u2192 suspense / fear / joy audits; "
+        "`counterfactual` \u2192 regret / grief / rage / love audits; "
+        "`physics` \u2192 intervention (Rung 2) and abduction (Rung 3) "
+        "audits; `meta` \u2192 universal meta-narration audit; "
+        "`style` \u2192 source-style fidelity audit (only when a STYLE "
+        "FIDELITY block is present above)."
+    )
     sections.append("")
 
     # World traits (structural constraints the prose must respect)
@@ -1373,6 +1434,7 @@ def _build_refinement_prompt(
     violations: List[AuditViolation],
     iteration: int,
     engine_failures: Optional[List[str]] = None,
+    prior_violations: Optional[List[AuditViolation]] = None,
 ) -> str:
     """Augment the original rendering prompt with auditor feedback.
 
@@ -1383,6 +1445,13 @@ def _build_refinement_prompt(
     physics scorecard, not the LLM auditor) are also surfaced when
     provided, so the rewriter sees BOTH signal sources rather than only
     the LLM violations.
+
+    ``prior_violations`` carries every violation flagged in earlier
+    iterations of the loop. They are surfaced as **non-regression
+    constraints** so the rewriter doesn't ping-pong between competing
+    fixes (a classic failure mode where the model fixes
+    ``style_mismatch`` by stripping voice, then regresses on
+    ``meta_narration`` next iteration, then back).
     """
     feedback_lines: List[str] = [
         "",
@@ -1415,6 +1484,44 @@ def _build_refinement_prompt(
         for i, f in enumerate(engine_failures, 1):
             feedback_lines.append(f"  E{i}. {f}")
         feedback_lines.append("")
+
+    if prior_violations:
+        # Deduplicate by (violation_type, feedback) so the same recurring
+        # gripe doesn't bloat the prompt across iterations. Skip
+        # violations whose ``violation_type`` already appears in the
+        # current ``violations`` list \u2014 those are still active and
+        # the rewriter is already looking at them above.
+        active_types = {v.violation_type for v in violations}
+        seen: set[tuple[str, str]] = set()
+        unique_prior: List[AuditViolation] = []
+        for v in prior_violations:
+            if v.violation_type in active_types:
+                continue
+            key = (v.violation_type, v.feedback[:160])
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_prior.append(v)
+
+        if unique_prior:
+            feedback_lines.append(
+                "=== NON-REGRESSION CONSTRAINTS "
+                "(fixed in earlier iterations \u2014 must remain fixed) ==="
+            )
+            feedback_lines.append(
+                "These violations were raised against earlier drafts and "
+                "have since been fixed. Do NOT reintroduce them while "
+                "addressing the current violations above. Optimising the "
+                "latest auditor note at the cost of regressing on a prior "
+                "fix is the most common loop-thrash pattern \u2014 hold the "
+                "line on each one."
+            )
+            feedback_lines.append("")
+            for i, v in enumerate(unique_prior, 1):
+                feedback_lines.append(
+                    f"  N{i}. [{v.violation_type}] {v.feedback}"
+                )
+            feedback_lines.append("")
 
     feedback_lines.append(
         "=== REWRITE TASK ===\n"
@@ -1585,9 +1692,21 @@ def assemble_evaluation_prompt(
                 f"  KL divergence (surprise): "
                 f"{affective_feedback.kl_divergence_prediction_error:.4f}"
             )
-        sections.append(
-            f"  Affective loss MSE: {affective_feedback.affective_loss_mse:.4f}"
-        )
+        # ``affective_loss_mse`` is ``None`` when the brief had no
+        # measurable target (e.g. observation queries without entities
+        # to score against). Treat as "not measured" rather than 0.0
+        # — the LLM evaluator must not penalise prose against a metric
+        # that did not actually run.
+        if affective_feedback.affective_loss_mse is not None:
+            sections.append(
+                f"  Affective loss MSE: "
+                f"{affective_feedback.affective_loss_mse:.4f}"
+            )
+        else:
+            sections.append(
+                "  Affective loss MSE: not measured "
+                "(no scorable target — ignore in evaluation)"
+            )
         sections.append("")
 
     sections.append(
@@ -1735,9 +1854,7 @@ def run_audit(
     """
     config = config or AuditorConfig()
 
-    categories = EFFECT_AUDIT_CATEGORIES.get(
-        brief.target_effect, ["physics"]
-    )
+    categories = resolve_audit_categories(brief.target_effect)
 
     audit_prompt = assemble_audit_prompt(
         prose, brief, categories, prior_feedback, causal_feedback,
@@ -1960,6 +2077,15 @@ def run_feedback_loop(
     current_scene = initial_scene
     history: List[AuditCycleSnapshot] = []
     accumulated_feedback: List[str] = []
+    # Violations from prior iterations, kept as structured objects so we
+    # can re-surface them in the refinement prompt as
+    # "non-regression constraints" \u2014 things the previous draft
+    # already fixed and must not regress on. Without this, the rewriter
+    # only sees the *latest* violation list and reliably ping-pongs
+    # between competing constraints (e.g.\u00a0fixing
+    # ``style_mismatch`` by stripping voice, then regressing on
+    # ``meta_narration``, then back).
+    accumulated_violations: List[AuditViolation] = []
     consecutive_failed_open = 0
     correction_error: Optional[str] = None
 
@@ -2098,6 +2224,29 @@ def run_feedback_loop(
         # (in which case prose cannot move them and gating on them
         # would create the infinite-rejection loop documented above).
         llm_passed = audit.passed and not audit.failed_open
+        # Treat an audit whose only verdict was minor violations as
+        # effectively passing for refinement-loop purposes. The
+        # rewriter is unlikely to address purely cosmetic drift
+        # without regressing on something more important, and burning
+        # an iteration on it is a common cause of pointless ping-pong
+        # (e.g.\u00a0iter 1 flags a minor density drift, iter 2 fixes
+        # it but reintroduces a meta-narration leak, iter 3 flags
+        # *that*\u2026). The audit object itself still carries
+        # ``passed=False`` and the violations so callers can render
+        # them in the UI \u2014 we just don't gate the loop on them.
+        if (
+            not llm_passed
+            and not audit.failed_open
+            and audit.violations
+            and all(v.severity == "minor" for v in audit.violations)
+        ):
+            logger.info(
+                "[FeedbackLoop] All %d violation(s) at iteration %d are "
+                "'minor' \u2014 treating as effectively passed; not "
+                "spending a regeneration cycle.",
+                len(audit.violations), iteration + 1,
+            )
+            llm_passed = True
         engine_blocks_convergence = (
             engine_passed is False
             and not (engine_invariant and baseline_engine_passed is False)
@@ -2186,12 +2335,21 @@ def run_feedback_loop(
         # ``engine_failures`` only landed in ``accumulated_feedback``
         # for the *auditor's* next-iteration prior context, never in
         # the rewrite prompt itself.
+        # ``accumulated_violations`` is the structured history of every
+        # violation flagged in earlier iterations. Pass it so the
+        # refinement prompt can list non-regression constraints and
+        # break the ping-pong cycle between competing fixes.
         refinement_prompt = _build_refinement_prompt(
             base_rendering_prompt,
             audit.violations,
             iteration + 1,
             engine_failures=engine_failures,
+            prior_violations=list(accumulated_violations),
         )
+
+        # Now extend with this iteration's violations so the *next*
+        # refinement pass sees them as non-regression constraints.
+        accumulated_violations.extend(audit.violations)
 
         # Re-generate the scene under the refinement system prompt so
         # the LLM is explicitly in rewrite mode (rather than reusing
