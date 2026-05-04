@@ -389,6 +389,13 @@ def _render_prose(state: AppState, container) -> None:
                     branch_path = [entry["id"] for entry in lineage]
             db_prose = get_all_prose(state.project_id, branch_path=branch_path)
             for entry in db_prose:
+                # Defensive filter for legacy data: evaluation queries
+                # used to be persisted as VersionRows with
+                # ``source="evaluate"`` and the report in ``prose``.
+                # That prose belongs in the Audit tab — never the
+                # Story reader.
+                if entry.get("source") == "evaluate":
+                    continue
                 # Skip if it'll be duplicated from session history
                 prose_entries.append((
                     entry.get("source", "pipeline"),

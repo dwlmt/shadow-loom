@@ -48,9 +48,18 @@ logger = logging.getLogger(__name__)
 
 
 def build_audit_tab(state: AppState) -> None:
-    """Build the Audit tab layout."""
+    """Build the Audit tab — quality report + activity log.
 
-    with ui.column().classes("w-full h-full p-6 gap-4 bg-slate-50"):        # ── Header with help popover ────────────────────────────────────
+    Author-first layout:
+    1. **Quality Report** (hero) — verdict, score tiles, top fixes.
+    2. **What the audit found** — plain-language findings, jargon
+       hidden behind ``Advanced`` expansions.
+    3. **Activity log** — every query / edit / version on this
+       project, in reverse-chronological order.
+    """
+
+    with ui.column().classes("w-full h-full p-6 gap-4 bg-slate-50"):
+        # ── Header with help popover ────────────────────────────────────
         with ui.row().classes("w-full items-center gap-2"):
             ui.icon("fact_check", color="primary")
             ui.label("Audit").classes(
@@ -59,155 +68,155 @@ def build_audit_tab(state: AppState) -> None:
             ui.space()
             from shadow_loom_ui.components.help_popover import help_popover
             help_popover(
-                title="Audit — quality scorecard & activity log",
+                title="Audit — quality report & activity log",
                 body_md=(
-                    "Two things in one tab:\n\n"
-                    "### Full-story evaluation (top)\n"
-                    "Run an LLM-backed quality audit over the entire"
-                    " prose corpus on the active version's lineage."
-                    " Click a chip to launch a focused evaluation:\n"
-                    "- **Run full evaluation** — NarrativeOrder"
-                    " composite scorecard (foreshadowing pay-off,"
-                    " cognitive plausibility, affective fit).\n"
-                    "- **Check for miracle steps** — detects"
-                    " unexplained jumps in entity state (a character"
-                    " teleporting, a death undone) the engine could"
-                    " not justify from prior events.\n"
-                    "- **Evaluate character consistency** — cognitive"
-                    " plausibility per entity: do their choices match"
-                    " their established traits and beliefs?\n\n"
-                    "Scorecards include:\n"
-                    "- **Foreshadowing pay-off score** — set-ups that"
-                    " landed vs dropped threads.\n"
-                    "- **Cognitive plausibility score** — weighted"
-                    " average over per-entity belief consistency.\n"
-                    "- **Affective loss MSE** — distance between the"
-                    " requested emotional trajectory and what the"
-                    " prose actually achieved (lower is better).\n"
-                    "- **Miracle steps detected** — list of"
-                    " unexplained state changes with offending event"
-                    " ids.\n"
-                    "- **Rewrite directives** — actionable suggestions"
-                    " the auditor produced; clicking one populates the"
-                    " command bar with a Direct query.\n\n"
+                    "Use this tab to ask: *is my story working?*\n\n"
+                    "### Quality report (top)\n"
+                    "Click **Get a quality report** to score the"
+                    " current branch's prose. You'll see:\n"
+                    "- a one-line verdict and three traffic-light"
+                    " tiles (plausibility, foreshadowing, emotional"
+                    " fit),\n"
+                    "- a **Top fixes** list — actionable rewrite"
+                    " ideas; click any one to pre-fill a Direct"
+                    " query in the command bar,\n"
+                    "- expandable **findings** with the auditor's"
+                    " full notes, and an **Advanced** section with"
+                    " the underlying scores and diagnostics.\n\n"
+                    "Quality reports never create a new version —"
+                    " they only score existing prose. Charts move"
+                    " into a *Show evidence* expansion so the report"
+                    " reads first.\n\n"
                     "### Activity log (below)\n"
-                    "Chronological feed of every action on this"
-                    " project: ingestion, queries, manual edits,"
-                    " version saves, deletes, branch promotions. Each"
-                    " entry shows the user, timestamp, raw NL"
-                    " question, parsed query, and a diff summary of"
-                    " the world-state changeset.\n\n"
-                    "### Tips\n"
-                    "- Evaluation does **not** create a new version —"
-                    " it only scores existing prose.\n"
-                    "- Click any version row to load that version into"
-                    " every panel.\n"
-                    "- Use the *engine threshold failures* chips on"
-                    " each entry to jump back to the offending audit"
-                    " iteration."
+                    "Every action on this project in reverse-chrono"
+                    " order: ingestion, queries, manual edits, branch"
+                    " promotions. Each entry shows whether the"
+                    " auditor accepted the prose and lets you replay"
+                    " its iterations."
                 ),
                 tooltip="What is this tab?",
             )
-        # ── NL prompt for evaluation ──────────────────────────────
-        with ui.row().classes("w-full gap-2 flex-wrap"):
-            ui.chip(
-                "Run full evaluation",
-                icon="fact_check",
-                on_click=lambda: state.emit(
-                    StateEvent.QUERY_STARTED,
-                    suggestion="Evaluate the story quality comprehensively",
-                    query_type="evaluate",
-                ),
-            ).props("dense outline clickable color=primary")
-            ui.chip(
-                "Check for miracle steps",
-                icon="warning",
-                on_click=lambda: state.emit(
-                    StateEvent.QUERY_STARTED,
-                    suggestion="Are there any miracle steps or impossible state changes in the story?",
-                    query_type="evaluate",
-                ),
-            ).props("dense outline clickable")
-            ui.chip(
-                "Evaluate character consistency",
-                icon="psychology",
-                on_click=lambda: state.emit(
-                    StateEvent.QUERY_STARTED,
-                    suggestion="Evaluate character consistency and cognitive plausibility",
-                    query_type="evaluate",
-                ),
-            ).props("dense outline clickable")
 
-        # ── Full Story Evaluation ─────────────────────────────────
+        # ── Quality Report (hero) ─────────────────────────────────
         with ui.card().classes(
             "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-6"
         ):
             with ui.row().classes("items-center gap-2"):
-                ui.icon("fact_check", size="md", color="primary")
-                ui.label("Full Story Evaluation").classes(
+                ui.icon("auto_awesome", size="md", color="primary")
+                ui.label("Quality Report").classes(
                     "text-lg font-semibold text-slate-800"
                 )
-
             ui.label(
-                "Run a comprehensive narrative quality evaluation across the entire world model."
+                "How well does the current story hold together? "
+                "Pick a focus or run the full report."
             ).classes("text-sm text-slate-500")
 
+            # Result + spinner surface lives here.
             eval_container = ui.column().classes("w-full q-mt-sm")
 
-            async def _run_evaluation():
-                if state.world_state is None:
-                    ui.notify("No world model loaded", type="warning")
-                    return
-
-                # Inline spinner inside the result container so progress
-                # appears where the user is looking, not in a stray
-                # label far above.
-                eval_container.clear()
-                with eval_container:
-                    with ui.row().classes("items-center gap-2 text-slate-600"):
-                        ui.spinner(size="sm")
-                        ui.label("Running evaluation…").classes("text-sm")
-                try:
-                    from shadow_loom.query_models import EvaluationQuery
-                    query = EvaluationQuery()
-                    result, _task = await run_query_as_task(
-                        state,
-                        label="Full-story evaluation",
-                        kind="evaluate",
-                        runner=lambda: asyncio.to_thread(
-                            state.run_structured_query, query,
-                        ),
-                        summary_fn=lambda r: (r.summary if r else "") or "Done",
-                    )
-                    _render_evaluation_result(eval_container, result)
-                except Exception as e:
-                    logger.exception("Evaluation failed")
+            def _make_runner(label: str, suggestion: str):
+                async def _run():
+                    if state.world_state is None:
+                        ui.notify("No world model loaded", type="warning")
+                        return
                     eval_container.clear()
                     with eval_container:
-                        ui.label(f"Error: {e}").classes(
-                            "text-sm text-negative"
+                        with ui.row().classes(
+                            "items-center gap-2 text-slate-600"
+                        ):
+                            ui.spinner(size="sm")
+                            ui.label(f"Running {label.lower()}…").classes(
+                                "text-sm"
+                            )
+                    try:
+                        from shadow_loom.query_models import EvaluationQuery
+                        # Keep using the structured EvaluationQuery so
+                        # we get a populated scorecard back; the
+                        # ``suggestion`` text is captured on the task
+                        # label for the activity log.
+                        query = EvaluationQuery()
+                        result, _task = await run_query_as_task(
+                            state,
+                            label=label,
+                            kind="evaluate",
+                            runner=lambda: asyncio.to_thread(
+                                state.run_structured_query, query,
+                            ),
+                            summary_fn=lambda r: (
+                                r.summary if r else ""
+                            ) or "Done",
                         )
+                        _render_evaluation_result(eval_container, result, state)
+                    except Exception as e:
+                        logger.exception("Evaluation failed")
+                        eval_container.clear()
+                        with eval_container:
+                            ui.label(f"Error: {e}").classes(
+                                "text-sm text-negative"
+                            )
+                return _run
 
-            ui.button(
-                "Run Evaluation", icon="play_arrow", on_click=_run_evaluation
-            ).props("unelevated color=primary no-caps").classes("rounded-lg shadow-sm")
+            with ui.row().classes("w-full gap-2 flex-wrap q-mt-sm"):
+                ui.button(
+                    "Get a quality report",
+                    icon="play_arrow",
+                    on_click=_make_runner(
+                        "Full quality report",
+                        "Evaluate the story quality comprehensively",
+                    ),
+                ).props(
+                    "unelevated color=primary no-caps"
+                ).classes("rounded-lg shadow-sm")
+                ui.button(
+                    "Check for impossible moments",
+                    icon="warning",
+                    on_click=_make_runner(
+                        "Impossible-moments check",
+                        "Are there any miracle steps or impossible "
+                        "state changes in the story?",
+                    ),
+                ).props("flat color=primary no-caps")
+                ui.button(
+                    "Check character consistency",
+                    icon="psychology",
+                    on_click=_make_runner(
+                        "Character consistency",
+                        "Evaluate character consistency and cognitive "
+                        "plausibility",
+                    ),
+                ).props("flat color=primary no-caps")
 
-        # ── Per-Query Audit History ────────────────────────
+            # Empty placeholder before any run.
+            with eval_container:
+                ui.label(
+                    "No report yet — pick an action above. The full "
+                    "report scores plausibility, foreshadowing, and "
+                    "emotional fit."
+                ).classes("text-sm text-slate-400 italic")
+
+        # ── Activity log ───────────────────────────────────────────
         with ui.card().classes(
             "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-6"
         ):
-            ui.label("Query Audit History").classes(
-                "text-lg font-semibold text-slate-800"
-            )
+            with ui.row().classes("items-center gap-2"):
+                ui.icon("history", color="primary")
+                ui.label("Activity log").classes(
+                    "text-lg font-semibold text-slate-800"
+                )
+            ui.label(
+                "Every query and edit on this project, newest first. "
+                "Expand a row to see what the auditor checked."
+            ).classes("text-sm text-slate-500 mb-2")
             history_container = ui.column().classes("w-full")
 
             def _refresh_history(**kw):
                 history_container.clear()
                 if not state.query_history:
                     with history_container:
-                        ui.label("No queries yet. Use the command bar to ask questions.").classes(
-                            "text-sm text-slate-400 italic"
-                        )
+                        ui.label(
+                            "Nothing yet — use the command bar at the "
+                            "bottom to ask a question or write a scene."
+                        ).classes("text-sm text-slate-400 italic")
                     return
 
                 with history_container:
@@ -230,8 +239,14 @@ def build_audit_tab(state: AppState) -> None:
 # Evaluation result renderer (NarrativeOrderObject scorecard)
 # =====================================================================
 
-def _render_evaluation_result(container, result: NLQueryResult) -> None:
-    """Render the full-story evaluation with structured scorecard."""
+def _render_evaluation_result(container, result: NLQueryResult, state: AppState) -> None:
+    """Render the quality report — hero verdict, score tiles, top
+    fixes, then findings, then evidence/advanced.
+
+    Order matters: lay-author readers should see *what to do* before
+    *why*. Charts and engine internals live in collapsed expansions
+    so they don't dominate the page.
+    """
     container.clear()
 
     if result.error:
@@ -247,89 +262,378 @@ def _render_evaluation_result(container, result: NLQueryResult) -> None:
             )
         return
 
+    eval_result = getattr(pr, "evaluation_result", None)
+
     with container:
-        # Convergence summary first — sets context for the scorecard
-        # below. Iteration count is shown even when ``converged`` is
-        # None (EvaluationQuery skips the rewrite loop, but the
-        # auditor may still have iterated internally).
+        # Pure-prose evaluations (rare — scorecard couldn't be parsed)
+        # just dump the auditor's narrative; nothing else useful.
+        if eval_result is None:
+            if pr.prose:
+                with ui.card().classes(
+                    "w-full bg-white border border-slate-200 "
+                    "rounded-xl shadow-sm p-4"
+                ):
+                    ui.label("Auditor's notes").classes(
+                        "text-sm font-semibold text-slate-700"
+                    )
+                    ui.markdown(pr.prose)
+            return
+
+        narrative_order = getattr(eval_result, "narrative_order", None)
+        causal = getattr(narrative_order, "causal_feedback", None) \
+            if narrative_order else None
+        affective = getattr(narrative_order, "affective_feedback", None) \
+            if narrative_order else None
+        quality = getattr(narrative_order, "quality_synthesis", None) \
+            if narrative_order else None
+
+        # ── Hero verdict + score tiles ─────────────────────────────
+        _render_hero_verdict(causal, affective)
+
+        # ── Top fixes (action-first) ──────────────────────────────
+        if quality is not None:
+            _render_top_fixes(quality, state)
+
+        # ── Findings (plain language) ─────────────────────────────
+        if causal is not None:
+            _render_causal_text(causal)
+        if affective is not None:
+            _render_affective_text(affective)
+        if quality is not None:
+            _render_quality_extras(quality)
+
+        # ── Convergence + evidence (charts + raw scores) ──────────
+        _render_evidence_block(pr, causal, affective, narrative_order)
+
+
+# ── Hero / verdict helpers ──────────────────────────────────────────
+
+def _score_tone(score: float | None) -> tuple[str, str, str]:
+    """Map a 0-1 score to (color, plain-word, icon).
+
+    Used for traffic-light score tiles. None → grey/"unknown".
+    """
+    if score is None:
+        return ("grey", "—", "help")
+    if score >= 0.75:
+        return ("positive", "strong", "check_circle")
+    if score >= 0.5:
+        return ("primary", "okay", "trending_flat")
+    if score >= 0.25:
+        return ("warning", "needs work", "warning")
+    return ("negative", "weak", "error")
+
+
+def _loss_tone(loss: float | None) -> tuple[str, str, str]:
+    """Map an MSE-style loss (lower=better) to a tile tone."""
+    if loss is None:
+        return ("grey", "—", "help")
+    if loss <= 0.05:
+        return ("positive", "strong", "check_circle")
+    if loss <= 0.15:
+        return ("primary", "okay", "trending_flat")
+    if loss <= 0.30:
+        return ("warning", "needs work", "warning")
+    return ("negative", "weak", "error")
+
+
+def _render_hero_verdict(causal, affective) -> None:
+    """One-line plain-English verdict + three score tiles."""
+    plausibility = (
+        getattr(causal, "cognitive_plausibility_score", None)
+        if causal else None
+    )
+    foreshadowing = (
+        getattr(causal, "foreshadowing_payoff_score", None)
+        if causal else None
+    )
+    affective_loss = (
+        getattr(affective, "affective_loss_mse", None)
+        if affective else None
+    )
+
+    # Convert loss to a 0-1 "fit" score for verdict aggregation.
+    if affective_loss is None:
+        emotional_fit_score: float | None = None
+    else:
+        emotional_fit_score = max(0.0, 1.0 - min(1.0, affective_loss / 0.3))
+
+    scores = [s for s in (plausibility, foreshadowing, emotional_fit_score)
+              if s is not None]
+    if scores:
+        avg = sum(scores) / len(scores)
+        if avg >= 0.75:
+            verdict = "Your story is holding together well."
+            v_color, v_icon = "positive", "celebration"
+        elif avg >= 0.5:
+            verdict = "Mostly working — a couple of spots to tighten."
+            v_color, v_icon = "primary", "thumb_up"
+        elif avg >= 0.25:
+            verdict = "Some real trouble spots to address."
+            v_color, v_icon = "warning", "build"
+        else:
+            verdict = "Significant rework recommended."
+            v_color, v_icon = "negative", "report_problem"
+    else:
+        verdict = "Quality report ready."
+        v_color, v_icon = "primary", "info"
+
+    with ui.card().classes(
+        "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-4"
+    ):
+        with ui.row().classes("items-center gap-2"):
+            ui.icon(v_icon, color=v_color, size="md")
+            ui.label(verdict).classes(
+                "text-base font-semibold text-slate-800"
+            )
+
+        # Three score tiles, side by side. Each shows: title, big
+        # plain-English word, color badge.
+        with ui.row().classes("w-full gap-3 mt-3 flex-wrap"):
+            _render_score_tile(
+                "Plausibility",
+                "Do events follow from what came before?",
+                plausibility,
+                kind="score",
+            )
+            _render_score_tile(
+                "Foreshadowing",
+                "Do set-ups pay off?",
+                foreshadowing,
+                kind="score",
+            )
+            _render_score_tile(
+                "Emotional fit",
+                "Did the prose hit the requested feeling?",
+                affective_loss,
+                kind="loss",
+            )
+
+
+def _render_score_tile(title: str, sub: str, value, *, kind: str) -> None:
+    """Single tile in the hero score row.
+
+    ``kind`` is ``"score"`` (0-1, higher better) or ``"loss"``
+    (0-∞, lower better). Tiles flex-grow so three sit nicely on
+    desktop and stack on narrow widths.
+    """
+    if kind == "loss":
+        color, word, icon = _loss_tone(value)
+    else:
+        color, word, icon = _score_tone(value)
+    with ui.card().classes(
+        "flex-1 min-w-[180px] bg-slate-50 border border-slate-200 "
+        "rounded-lg shadow-none p-3"
+    ):
+        with ui.row().classes("items-center gap-2"):
+            ui.icon(icon, color=color)
+            ui.label(title).classes(
+                "text-sm font-semibold text-slate-700"
+            )
+        ui.label(sub).classes("text-[11px] text-slate-500")
+        with ui.row().classes("items-center gap-2 mt-2"):
+            ui.badge(word, color=color).props("dense")
+            if value is not None:
+                if kind == "loss":
+                    ui.label(f"loss {value:.2f}").classes(
+                        "text-[11px] text-slate-400"
+                    )
+                else:
+                    ui.label(f"{value:.0%}").classes(
+                        "text-[11px] text-slate-400"
+                    )
+
+
+def _render_top_fixes(quality, state: AppState) -> None:
+    """Action-first card surfacing rewrite directives as primary CTAs.
+
+    Directives are the single most useful auditor output for an
+    author — pull them out of the old "Quality Synthesis" expansion
+    so they sit right under the verdict.
+    """
+    directives = getattr(quality, "actionable_rewrite_directives", None)
+    if not directives:
+        return
+    items: list[str]
+    if isinstance(directives, list):
+        items = [str(d).strip() for d in directives if str(d).strip()]
+    else:
+        items = [s.strip("-• \t") for s in str(directives).splitlines()
+                 if s.strip("-• \t")]
+    if not items:
+        return
+
+    with ui.card().classes(
+        "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-4"
+    ):
+        with ui.row().classes("items-center gap-2"):
+            ui.icon("auto_fix_high", color="primary")
+            ui.label("Top fixes to try").classes(
+                "text-sm font-semibold text-slate-700"
+            )
+        ui.label(
+            "Click a fix to pre-fill it as a Direct query in the "
+            "command bar — review, edit, then send."
+        ).classes("text-[11px] text-slate-500 mb-2")
+
+        for text in items[:_LIST_PREVIEW_ITEMS]:
+            with ui.row().classes(
+                "w-full items-start gap-2 p-2 rounded-md "
+                "bg-slate-50 border border-slate-100"
+            ):
+                ui.icon("arrow_right", color="primary").classes("mt-1")
+                ui.label(text).classes(
+                    "text-sm text-slate-700 flex-1"
+                )
+
+                def _on_click(t=text, s=state):
+                    s.emit(
+                        StateEvent.QUERY_STARTED,
+                        suggestion=t,
+                        query_type="directive",
+                    )
+                    ui.notify(
+                        "Pre-filled as a Direct query in the command bar.",
+                        type="positive",
+                    )
+
+                ui.button("Use this fix", icon="auto_fix_high",
+                          on_click=_on_click).props(
+                    "dense outline color=primary size=sm no-caps"
+                )
+        if len(items) > _LIST_PREVIEW_ITEMS:
+            ui.label(
+                f"… plus {len(items) - _LIST_PREVIEW_ITEMS} more in "
+                "the full findings below."
+            ).classes("text-xs text-slate-400 italic")
+
+
+def _render_quality_extras(quality) -> None:
+    """Coherence review + reward-hacking notes (less actionable than
+    directives — kept in expansions)."""
+    coherence = getattr(quality, "coherence_and_consistency_review", None)
+    reward_hacking = getattr(quality, "reward_hacking_diagnostics", None)
+    if not (coherence or reward_hacking):
+        return
+    with ui.card().classes(
+        "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-4"
+    ):
+        ui.label("Auditor's broader notes").classes(
+            "text-sm font-semibold text-slate-700 mb-2"
+        )
+        if coherence:
+            with ui.expansion(
+                "Consistency review", icon="check_circle",
+            ).props("dense"):
+                ui.markdown(coherence)
+        if reward_hacking:
+            with ui.expansion(
+                "Shortcuts the auditor caught", icon="warning",
+            ).props("dense"):
+                ui.markdown(reward_hacking)
+
+
+def _render_evidence_block(pr, causal, affective, narrative_order) -> None:
+    """Bottom card: convergence, charts, raw scores. Collapsed by
+    default — authors don't need this to act on the report."""
+    with ui.expansion(
+        "Show evidence (charts & raw scores)",
+        icon="bar_chart",
+    ).props("dense").classes(
+        "w-full bg-white border border-slate-200 rounded-xl shadow-sm"
+    ):
+        # Convergence row
         iterations = getattr(pr, "audit_iterations", 0) or 0
         if pr.converged is not None or iterations:
-            with ui.row().classes("items-center gap-2"):
+            with ui.row().classes("items-center gap-2 p-2"):
                 if pr.converged is not None:
-                    status = "Converged" if pr.converged else "Did not converge"
+                    status = (
+                        "Auditor agreed" if pr.converged
+                        else "Auditor still flagging issues"
+                    )
                     color = "positive" if pr.converged else "warning"
-                    icon = "check_circle" if pr.converged else "sync_problem"
+                    icon = (
+                        "check_circle" if pr.converged
+                        else "sync_problem"
+                    )
                     ui.icon(icon, color=color)
                     ui.badge(status, color=color).props("dense")
-                ui.label(f"Audit iterations: {iterations}").classes(
-                    "text-xs text-slate-500"
+                ui.label(
+                    f"{iterations} audit iteration"
+                    f"{'s' if iterations != 1 else ''}"
+                ).classes("text-xs text-slate-500")
+
+        # Charts
+        if causal is not None and _causal_has_charts(causal):
+            _render_causal_charts(causal)
+        if affective is not None and _affective_has_charts(affective):
+            _render_affective_charts(affective)
+
+        # Raw numeric scores (for power users / debugging)
+        with ui.expansion(
+            "Raw scores", icon="numbers",
+        ).props("dense"):
+            rows = []
+            if causal is not None:
+                p = getattr(causal, "cognitive_plausibility_score", None)
+                f = getattr(causal, "foreshadowing_payoff_score", None)
+                if p is not None:
+                    rows.append(("Cognitive plausibility", f"{p:.3f}"))
+                if f is not None:
+                    rows.append(("Foreshadowing pay-off", f"{f:.3f}"))
+            if affective is not None:
+                loss = getattr(affective, "affective_loss_mse", None)
+                kl = getattr(
+                    affective, "kl_divergence_prediction_error", None,
+                )
+                if loss is not None:
+                    rows.append(("Affective loss (MSE, ↓)", f"{loss:.3f}"))
+                if kl is not None:
+                    rows.append(("KL divergence (surprise)", f"{kl:.3f}"))
+            if rows:
+                with ui.column().classes("gap-1 p-2"):
+                    for k, v in rows:
+                        with ui.row().classes("items-center gap-2"):
+                            ui.label(k).classes(
+                                "text-xs text-slate-600"
+                            )
+                            ui.badge(v, color="grey").props(
+                                "dense outline"
+                            )
+            else:
+                ui.label("No numeric scores available.").classes(
+                    "text-xs text-slate-400 italic p-2"
                 )
 
-        # Evaluation scorecard (NarrativeOrderObject)
-        eval_result = getattr(pr, "evaluation_result", None)
 
-        if eval_result:
-            _render_scorecard(container, eval_result)
-        elif pr.prose:
-            with ui.card().classes(
-                "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-4"
-            ):
-                ui.label("Evaluation Report").classes(
-                    "text-sm font-semibold text-slate-700"
-                )
-                ui.markdown(pr.prose)
-
-
-def _render_scorecard(container, eval_result) -> None:
-    """Render NarrativeOrderObject scorecard with gauges and metrics."""
+def _render_scorecard(container, eval_result, state: AppState | None = None) -> None:
+    """Compatibility shim — the per-query audit entries call this to
+    re-render the scorecard inside an expansion. Delegates to the
+    same flow as the hero renderer (verdict tiles + findings) but
+    skips the action-first directives card (which would be confusing
+    when a per-query audit is expanded inside the activity log)."""
     with container:
-        # Extract scores
         narrative_order = getattr(eval_result, "narrative_order", None)
         if narrative_order is None:
             ui.label("No scorecard data.").classes(
                 "text-sm text-slate-400 italic"
             )
             return
-
-        # Note: per UX decision we deliberately do NOT render an
-        # overall PASS/FAIL badge here — a single binary verdict on a
-        # multi-dimensional score is misleading. Users get the
-        # per-section signals below (causal, affective, quality
-        # synthesis) plus the convergence row above.
-        #
-        # Layout: text-first findings, then supporting charts. Reading
-        # the audit should feel like reading a report — the prose /
-        # directives / counts go up top, and the gauges / pictorials
-        # below are visual evidence backing the claims, not the
-        # primary surface.
         causal = getattr(narrative_order, "causal_feedback", None)
         affective = getattr(narrative_order, "affective_feedback", None)
         quality = getattr(narrative_order, "quality_synthesis", None)
 
-        # ── Findings (text) ───────────────────────────────────────
-        if quality:
-            _render_quality_synthesis(quality)
-        if causal:
+        _render_hero_verdict(causal, affective)
+        if causal is not None:
             _render_causal_text(causal)
-        if affective:
+        if affective is not None:
             _render_affective_text(affective)
-
-        # ── Supporting charts (visualisations of the above) ───────
-        has_charts = (
-            (causal and _causal_has_charts(causal))
-            or (affective and _affective_has_charts(affective))
-        )
-        if has_charts:
-            with ui.card().classes(
-                "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-4"
-            ):
-                ui.label("Supporting charts").classes(
-                    "text-sm font-semibold text-slate-700 mb-2"
-                )
-                if causal and _causal_has_charts(causal):
-                    _render_causal_charts(causal)
-                if affective and _affective_has_charts(affective):
-                    _render_affective_charts(affective)
+        if quality is not None:
+            # Inside an activity-log expansion, directives + extras
+            # collapse together to save vertical space.
+            if state is not None:
+                _render_top_fixes(quality, state)
+            _render_quality_extras(quality)
 
 
 def _causal_has_charts(causal) -> bool:
@@ -514,44 +818,6 @@ def _render_affective_charts(affective) -> None:
     )
 
 
-def _render_quality_synthesis(quality) -> None:
-    """Render the Quality Synthesis card. Directives first (most
-    actionable), opened by default; reviews and diagnostics follow."""
-    directives = getattr(quality, "actionable_rewrite_directives", None)
-    coherence = getattr(quality, "coherence_and_consistency_review", None)
-    reward_hacking = getattr(quality, "reward_hacking_diagnostics", None)
-
-    if not (directives or coherence or reward_hacking):
-        return
-
-    with ui.card().classes(
-        "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-4"
-    ):
-        ui.label("Quality Synthesis").classes(
-            "text-sm font-semibold text-slate-700 mb-2"
-        )
-        # Directives are the only actionable section — surface first
-        # and open by default.
-        if directives:
-            with ui.expansion(
-                "Rewrite Directives", icon="edit_note", value=True,
-            ).props("dense"):
-                if isinstance(directives, list):
-                    ui.markdown("\n".join(f"- {d}" for d in directives))
-                else:
-                    ui.markdown(str(directives))
-        if coherence:
-            with ui.expansion(
-                "Coherence Review", icon="check_circle",
-            ).props("dense"):
-                ui.markdown(coherence)
-        if reward_hacking:
-            with ui.expansion(
-                "Reward-Hacking Diagnostics", icon="warning",
-            ).props("dense"):
-                ui.markdown(reward_hacking)
-
-
 # =====================================================================
 # Per-query audit entry with loop replay
 # =====================================================================
@@ -665,7 +931,7 @@ def _render_query_audit_entry(index: int, result: NLQueryResult, state: AppState
                     "Evaluation Scorecard", icon="fact_check",
                 ).props("dense"):
                     scorecard_container = ui.column().classes("w-full gap-2")
-                    _render_scorecard(scorecard_container, pr.evaluation_result)
+                    _render_scorecard(scorecard_container, pr.evaluation_result, state)
 
             # Audit loop replay (if feedback_result has history)
             feedback = getattr(pr, "feedback_result", None)
