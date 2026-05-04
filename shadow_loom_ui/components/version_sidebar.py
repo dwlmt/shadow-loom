@@ -127,25 +127,36 @@ def _render_versions(state: AppState, container) -> None:
         return
 
     def _on_version_click(e):
-        data = e.args if isinstance(e.args, dict) else {}
-        # Prefer the ``_vid`` payload baked into every node by
-        # ``version_tree_to_echart_data`` — robust against label
-        # decoration. The previous string-match against
-        # ``f"v{version}"`` silently failed on shadow rows because
+        # ECharts click events deliver the whole event payload in
+        # ``e.args``; the per-node fields baked in by
+        # ``version_tree_to_echart_data`` (``_vid``, ``_version``,
+        # decorated ``name``) live under ``e.args["data"]``, NOT at the
+        # top level. The previous code read ``args.get("_vid")``
+        # directly, so ``_vid`` was *always* ``None`` and the handler
+        # silently fell through to the label-matching fallback —
+        # which itself failed on shadow rows because
         # ``version_tree_to_echart_data`` appends an em-dash + branch
-        # label suffix (``"v3 — What if Duncan lived"``), so clicking
-        # a shadow branch did nothing at all. ``_vid`` is the row id
-        # the click handler can index ``tree_data`` by directly.
-        vid = data.get("_vid")
+        # label suffix (``"v3 — What if Duncan lived"``), so clicking a
+        # shadow branch did nothing at all and Story / Audit / Source
+        # all kept rendering the previous branch's contents.
+        args = e.args if isinstance(e.args, dict) else {}
+        node = args.get("data") if isinstance(args.get("data"), dict) else {}
+        # Prefer the per-node ``_vid`` payload — robust against label
+        # decoration. Fall back to the top-level name in case a
+        # synthetic root or future ECharts version nests differently.
+        vid = node.get("_vid")
+        if vid is None and isinstance(args.get("_vid"), int):
+            vid = args["_vid"]
         if vid is not None:
             for v in tree_data:
                 if v["id"] == vid:
                     _load_version(state, v)
                     return
-        # Fallback: legacy label match (kept so the handler still
-        # behaves on synthetic roots / older payloads that don't carry
-        # ``_vid``).
-        name = data.get("name", "")
+        # Fallback: legacy label match against the *undecorated* name
+        # (``"v{version}"``). Only matches factual rows by design;
+        # shadow rows always carry ``_vid`` so they reach the handler
+        # via the path above.
+        name = node.get("name") or args.get("name", "")
         for v in tree_data:
             if f"v{v['version']}" == name:
                 _load_version(state, v)
