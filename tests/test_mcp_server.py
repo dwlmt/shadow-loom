@@ -935,3 +935,161 @@ class TestExportProseTool:
 
         result = mcp_export_prose(_ctx(), project_id=99999)
         assert "error" in result
+
+
+# =====================================================================
+# ACTIVE-VERSION POINTER (per-user-per-project)
+# =====================================================================
+# Read tools that omit ``version`` should resolve to the caller's
+# active-version pointer when set, falling back to the latest version
+# otherwise. The UI's version sidebar writes the same pointer on click,
+# so MCP tool calls follow the user's currently-loaded view.
+
+
+class TestActiveVersionMcp:
+    def _seed_two_versions(self):
+        """Project with v0 = original Macbeth WS, v1 = renamed Macbeth.
+
+        Same entity IDs in both versions but ``ENT_MACBETH.name`` is
+        rewritten on v1 — that lets us prove which version the read
+        tool actually loaded by comparing the returned name.
+        """
+        uid, pid, v0_id = _seed_project()
+        ws_v1 = deepcopy(macbeth_ws)
+        ws_v1.entities["ENT_MACBETH"].name = "Macbeth (v1)"
+        v1 = save_version(
+            project_id=pid,
+            world_state_json=ws_v1.model_dump_json(),
+            version=1,
+            source="test",
+            description="renamed",
+            user_id=uid,
+            ancestor_id=v0_id,
+        )
+        return uid, pid, v0_id, v1.id
+
+    def test_get_returns_inactive_when_unset(self):
+        from shadow_loom_mcp.server import (
+            get_active_version as mcp_get_active,
+        )
+
+        _, pid, _ = _seed_project()
+        result = mcp_get_active(_ctx(), project_id=pid)
+        assert result == {"active": False, "project_id": pid}
+
+    def test_set_by_version_number_then_get(self):
+        from shadow_loom_mcp.server import (
+            get_active_version as mcp_get_active,
+            set_active_version as mcp_set_active,
+        )
+
+        _, pid, v0_id, _ = self._seed_two_versions()
+        set_res = mcp_set_active(_ctx(), project_id=pid, version=0)
+        assert set_res["status"] == "set"
+        assert set_res["version_row_id"] == v0_id
+
+        got = mcp_get_active(_ctx(), project_id=pid)
+        assert got["active"] is True
+        assert got["version"] == 0
+        assert got["version_row_id"] == v0_id
+
+    def test_set_by_version_row_id(self):
+        from shadow_loom_mcp.server import (
+            set_active_version as mcp_set_active,
+        )
+
+        _, pid, _, v1_id = self._seed_two_versions()
+        result = mcp_set_active(
+            _ctx(), project_id=pid, version_row_id=v1_id,
+        )
+        assert result["status"] == "set"
+        assert result["version_row_id"] == v1_id
+
+    def test_set_unknown_version_returns_error(self):
+        from shadow_loom_mcp.server import (
+            set_active_version as mcp_set_active,
+        )
+
+        _, pid, _ = _seed_project()
+        result = mcp_set_active(_ctx(), project_id=pid, version=999)
+        assert "error" in result
+
+    def test_clear_removes_pointer(self):
+        from shadow_loom_mcp.server import (
+            get_active_version as mcp_get_active,
+            set_active_version as mcp_set_active,
+        )
+
+        _, pid, v0_id, _ = self._seed_two_versions()
+        mcp_set_active(_ctx(), project_id=pid, version=0)
+        assert mcp_get_active(_ctx(), project_id=pid)["active"] is True
+
+        cleared = mcp_set_active(_ctx(), project_id=pid)
+        assert cleared["status"] in ("cleared", "noop")
+        assert mcp_get_active(_ctx(), project_id=pid)["active"] is False
+
+    def test_inspect_falls_back_to_latest_when_no_pointer(self):
+        """v1 renamed Macbeth — inspect with no pointer should pick v1."""
+        _, pid, _, _ = self._seed_two_versions()
+        result = inspect(_ctx(), "ENT_MACBETH", project_id=pid)
+        assert "error" not in result
+        assert result["name"] == "Macbeth (v1)", (
+            "Without a pointer, the MCP read tool should resolve to "
+            "the latest version (v1)."
+        )
+
+    def test_inspect_honors_active_pointer(self):
+        """Pointer at v0 makes the same call resolve against v0."""
+        from shadow_loom_mcp.server import (
+            set_active_version as mcp_set_active,
+        )
+
+        _, pid, _, _ = self._seed_two_versions()
+        mcp_set_active(_ctx(), project_id=pid, version=0)
+        result = inspect(_ctx(), "ENT_MACBETH", project_id=pid)
+        assert "error" not in result
+        assert result["type"] == "Entity"
+        assert result["name"] != "Macbeth (v1)", (
+            "Pointer at v0 should resolve to v0's original Macbeth, "
+            "not the v1 renamed copy."
+        )
+
+    def test_explicit_version_arg_wins_over_pointer(self):
+        """An explicit ``version=N`` always overrides the pointer."""
+        from shadow_loom_mcp.server import (
+            set_active_version as mcp_set_active,
+        )
+
+        _, pid, _, _ = self._seed_two_versions()
+        # Pointer at v1.
+        mcp_set_active(_ctx(), project_id=pid, version=1)
+        # Explicit ``version=0`` should still load the v0 WS.
+        result = inspect(
+            _ctx(), "ENT_MACBETH", project_id=pid, version=0,
+        )
+        assert "error" not in result
+        assert result["name"] != "Macbeth (v1)"
+
+    def test_pointer_is_per_project(self):
+        """A pointer set on project A must not leak into project B."""
+        from shadow_loom_mcp.server import (
+            get_active_version as mcp_get_active,
+            set_active_version as mcp_set_active,
+        )
+
+        _, pid_a, _, _ = self._seed_two_versions()
+        # Second project, owned by the same authed user.
+        proj_b = create_project(name="OtherProj", owner_id=_ctx_user_id())
+        save_version(
+            project_id=proj_b.id, world_state_json="{}", version=0,
+            source="ingestion", description="seed",
+            user_id=_ctx_user_id(),
+        )
+        mcp_set_active(_ctx(), project_id=pid_a, version=0)
+        got_b = mcp_get_active(_ctx(), project_id=proj_b.id)
+        assert got_b["active"] is False
+
+
+def _ctx_user_id() -> int:
+    """Return the user_id wired into the auth cache by ``_seed_project``."""
+    return next(iter(mcp_auth._token_user_cache.values()))["user_id"]

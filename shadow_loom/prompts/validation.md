@@ -15,7 +15,7 @@ You are a **Narrative Graph Auditor** for a causal physics engine. You receive a
 - Are belief `perceived_state` descriptions contradicted by the events themselves?
 
 ### 2. Orphaned Nodes
-- Are there entities that never appear in any event (as actor or target), any relationship, or any information edge?
+- Are there entities that never appear in any event (as actor or target), any relationship, any utterance event, or any Channel?
 - Are there locations that no entity occupies and no spatial edge connects?
 - Are there objects that no entity owns and no event references?
 
@@ -26,7 +26,7 @@ You are a **Narrative Graph Auditor** for a causal physics engine. You receive a
 ### 4. Missing Information Flows
 - Are there events where characters learn something, but no utterance event or Channel captures the knowledge transfer?
 - Are there prophecies, letters, confessions, or conversations in the story that should produce utterance events (or standing Channels) but don't?
-- Are there characters who act on knowledge they shouldn't have (no information edge explains how they learned it)?
+- Are there characters who act on knowledge they shouldn't have (no utterance event or Channel path explains how they learned it)?
 
 ### 5. Narrative Completeness
 - Are there major plot events from the story that are missing from the event list?

@@ -459,6 +459,29 @@ def assemble_rendering_prompt(
     sections.append(f"Target entities: {', '.join(brief.target_entities)}")
     sections.append("")
 
+    # === Branch context (AMWN shadow vs factual) ===
+    # Surfaced only on shadow branches so the renderer can keep the
+    # scene in productive contrast with canon. Per Rule 10 in
+    # generation.md the renderer must use these fields silently —
+    # never echoing 'branch', 'timeline', 'in this branch', or any
+    # subjunctive author-voice framing into the prose.
+    if brief.branch_world_id == "shadow":
+        sections.append("=== BRANCH CONTEXT (background only — do NOT surface in prose) ===")
+        sections.append("branch_world_id: shadow")
+        if brief.branch_label:
+            sections.append(f"branch_label: {brief.branch_label}")
+        if brief.factual_contrast_summary:
+            sections.append("factual_mainline_at_same_horizon:")
+            sections.append(brief.factual_contrast_summary.strip())
+        sections.append(
+            "Use the contrast above silently to keep this scene divergent "
+            "from canon. Render the shadow scene as the actual lived world "
+            "in plain past-tense narration. Do NOT name the branch, the "
+            "mainline, the contrast, or any meta-structure in the prose "
+            "(see Rule 10)."
+        )
+        sections.append("")
+
     # === Scene Context ===
     sections.append("=== SCENE CONTEXT ===")
     sections.append(_format_scene_context(brief.scene_context))

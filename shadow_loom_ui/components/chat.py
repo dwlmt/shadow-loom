@@ -505,6 +505,40 @@ def _build_command_bar(state: AppState) -> None:
 
         state.on(StateEvent.QUERY_STARTED, _on_suggestion)
 
+        # ── Drop chat history when the active branch changes ──────
+        # Each chat message card represents the result of a query
+        # that was run against a *specific* version's world model
+        # (a What-If forked from C, an Interrogation answered from
+        # P, an Intervene against the previous head, …). When the
+        # user clicks a different version in the sidebar — including
+        # walking back to a parent — those cards no longer apply to
+        # the freshly loaded world: the answer is wrong, the What-If
+        # was branched off a sibling, the intervention targeted an
+        # event that may not even exist on this branch. Leaving them
+        # rendered makes the bar look as if the engine is still
+        # claiming those results for the current branch.
+        #
+        # ``load_db_version`` already clears ``state.query_history``
+        # (per-branch derived state) and emits VERSION_CHANGED in
+        # lockstep with WORLD_STATE_CHANGED. Mirror that here by
+        # dropping our in-closure ``messages`` buffer so the chat
+        # cards disappear at the same moment the world swaps.
+        def _clear_chat_on_branch(**_kwargs):
+            if not messages:
+                return
+            messages.clear()
+            try:
+                _render_messages(chat_container, messages)
+                implausible_row.set_visibility(False)
+            except RuntimeError as exc:
+                logger.debug(
+                    "[chat] clear-on-branch render skipped "
+                    "(dead client): %s", exc,
+                )
+
+        state.on(StateEvent.VERSION_CHANGED, _clear_chat_on_branch)
+        state.on(StateEvent.PROJECT_LOADED, _clear_chat_on_branch)
+
 
 def _build_context_suggestions(state: AppState, container) -> None:  # pragma: no cover - removed
     """Deprecated: in-bar suggestion chips were removed for less clutter."""

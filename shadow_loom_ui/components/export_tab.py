@@ -33,33 +33,35 @@ def build_export_tab(state: AppState) -> None:
             ui.space()
             from shadow_loom_ui.components.help_popover import help_popover
             help_popover(
-                title="Export — download world state, prose, & graphs",
+                title="Export — download world state, prose, & bundles",
                 body_md=(
                     "Get your data out of Shadow Loom in standard"
                     " formats for use in other tools or for archival.\n\n"
-                    "### What you can export\n"
-                    "- **Prose (Markdown)** — every prose card from"
-                    " the active project, ordered by version, with"
-                    " version numbers and source query types as"
-                    " headings. Suitable for pasting into a manuscript"
-                    " or sharing as a one-file synopsis.\n"
-                    "- **World state (JSON)** — the full"
-                    " `WorldStateV1` payload of the active version:"
-                    " entities, events, all four topology layers,"
-                    " channels, and beliefs. Round-trips cleanly back"
-                    " into Shadow Loom and is the canonical interchange"
-                    " format.\n"
-                    "- **Causal graph (GraphML / DOT)** — the typed"
-                    " causal/social/spatial/information graph for use"
-                    " in Gephi, Cytoscape, NetworkX, or similar"
-                    " analysis tools.\n\n"
+                    "### Three export cards\n"
+                    "- **Prose (Markdown)** — pick a scope: just the"
+                    " currently loaded version, the full root\u2192current"
+                    " branch lineage (default), or every version in"
+                    " the project. Branch-aware so a shadow fork's"
+                    " export doesn't pull in sibling branches.\n"
+                    "- **World model (JSON)** — the full"
+                    " `WorldStateV1` payload of the currently loaded"
+                    " version: entities, events, all topology layers,"
+                    " channels, beliefs, world traits. Round-trips"
+                    " cleanly back into Shadow Loom and is the"
+                    " canonical interchange format.\n"
+                    "- **Version bundle (JSON)** — one file with the"
+                    " version row metadata (id, ancestor, branch"
+                    " label, raw query, timestamp), the world model,"
+                    " and the prose for the loaded version. Useful"
+                    " for archival or moving a single version between"
+                    " projects.\n\n"
                     "### Notes\n"
                     "- Exports always reflect the **currently loaded"
                     " version**. Switch versions in the left tree"
                     " before exporting to capture a different branch"
                     " or point in history.\n"
                     "- Research facts are **not** included in any"
-                    " export — they live in a separate store. Pull"
+                    " export \u2014 they live in a separate store. Pull"
                     " them from the Research tab if needed.\n"
                     "- Exports are read-only and never alter the"
                     " project state."
@@ -68,58 +70,189 @@ def build_export_tab(state: AppState) -> None:
             )
 
         # ---- Export Prose ----
+        # Single prose-export card with a scope selector. Replaces the
+        # old "Export Prose" (project-wide, branch-blind) and the
+        # per-version "Download Prose" button which together produced
+        # three near-identical Markdown actions on this tab.
         with ui.card().classes(
             "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-6"
         ):
             with ui.row().classes("items-center gap-2"):
                 ui.icon("article", size="md", color="primary")
-                ui.label("Export Prose").classes(
+                ui.label("Export prose").classes(
                     "text-lg font-semibold text-slate-800"
                 )
+            ui.label(
+                "Download generated prose as Markdown. Pick the scope: "
+                "just this version, the full root\u2192current branch "
+                "lineage, or every version in the project."
+            ).classes("text-sm text-slate-500")
 
-            ui.label("Download all generated prose as Markdown.").classes(
-                "text-sm text-slate-500"
-            )
+            prose_scope = ui.toggle(
+                {
+                    "current": "Current version",
+                    "lineage": "This branch (root \u2192 current)",
+                    "project": "All versions in project",
+                },
+                value="lineage",
+            ).props("dense unelevated")
 
             async def _export_prose():
                 if state.project_id is None:
                     ui.notify("No project loaded", type="warning")
                     return
-                prose_list = db.get_all_prose(state.project_id)
-                if not prose_list:
-                    ui.notify("No prose found", type="info")
-                    return
-                md = f"# {state.project_name}\n\n"
-                for i, entry in enumerate(prose_list):
-                    md += f"## Version {entry['version']} ({entry['source']})\n\n{entry['prose']}\n\n---\n\n"
-
-                ui.download(
-                    md.encode("utf-8"),
-                    filename=f"{state.project_name.replace(' ', '_')}_prose.md",
+                scope = prose_scope.value or "lineage"
+                stem = (
+                    state.project_name.replace(" ", "_")
+                    if state.project_name else "project"
                 )
-                ui.notify("Prose exported!", type="positive")
+                if scope == "current":
+                    row = None
+                    if state.current_version_row_id is not None:
+                        row = db.get_version_by_id(
+                            state.current_version_row_id,
+                        )
+                    if row is None or not row.prose:
+                        ui.notify(
+                            "This version has no prose", type="info",
+                        )
+                        return
+                    md = (
+                        f"# {state.project_name} \u2014 v{row.version}\n\n"
+                        f"{row.prose}\n"
+                    )
+                    filename = f"{stem}_v{row.version}_prose.md"
+                else:
+                    branch_path: list[int] | None = None
+                    if scope == "lineage" and state.current_version_row_id:
+                        cur = db.get_version_by_id(
+                            state.current_version_row_id,
+                        )
+                        if cur is not None:
+                            from shadow_loom_ui.db import (
+                                get_version_lineage,
+                            )
+                            lineage = get_version_lineage(
+                                state.project_id, cur.version,
+                            )
+                            branch_path = [e["id"] for e in lineage]
+                    prose_list = db.get_all_prose(
+                        state.project_id, branch_path=branch_path,
+                    )
+                    if not prose_list:
+                        ui.notify("No prose found", type="info")
+                        return
+                    md = f"# {state.project_name}\n\n"
+                    for entry in prose_list:
+                        md += (
+                            f"## v{entry['version']} ({entry['source']})\n\n"
+                            f"{entry['prose']}\n\n---\n\n"
+                        )
+                    suffix = "branch" if scope == "lineage" else "all"
+                    filename = f"{stem}_prose_{suffix}.md"
 
-            ui.button("Download Prose (Markdown)", icon="download", on_click=_export_prose).props(
-                "unelevated no-caps color=primary"
-            ).classes("rounded-lg shadow-sm")
+                ui.download(md.encode("utf-8"), filename=filename)
+                ui.notify("Prose exported", type="positive")
 
-        # ---- Export Current Version (Prose + World Model) ----
+            ui.button(
+                "Download Markdown",
+                icon="download",
+                on_click=_export_prose,
+            ).props("unelevated no-caps color=primary").classes(
+                "rounded-lg shadow-sm"
+            )
+
+        # ---- Export World Model ----
+        # The world model is always the *currently loaded* snapshot
+        # \u2014 there is no meaningful "all versions" or "lineage" scope
+        # for a single JSON object, so this card stays single-purpose
+        # (download + copy) and is no longer duplicated by the old
+        # combined-bundle card below.
+        with ui.card().classes(
+            "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-6"
+        ):
+            with ui.row().classes("items-center gap-2"):
+                ui.icon("data_object", size="md", color="primary")
+                ui.label("Export world model").classes(
+                    "text-lg font-semibold text-slate-800"
+                )
+            ui.label(
+                "The full WorldStateV1 JSON for the currently loaded "
+                "version. Round-trips cleanly back into Shadow Loom."
+            ).classes("text-sm text-slate-500")
+
+            def _world_filename_stem() -> str:
+                stem = (
+                    state.project_name.replace(" ", "_")
+                    if state.project_name else "project"
+                )
+                row = None
+                if state.current_version_row_id is not None:
+                    row = db.get_version_by_id(state.current_version_row_id)
+                elif state.project_id is not None:
+                    row = db.get_latest_version(state.project_id)
+                if row is not None:
+                    stem += f"_v{row.version}"
+                return stem
+
+            def _export_world():
+                if state.world_state is None:
+                    ui.notify("No world model loaded", type="warning")
+                    return
+                data = state.world_state.model_dump_json(indent=2)
+                ui.download(
+                    data.encode("utf-8"),
+                    filename=f"{_world_filename_stem()}_world.json",
+                )
+                ui.notify("World model exported", type="positive")
+
+            def _copy_world():
+                if state.world_state is None:
+                    ui.notify("No world model loaded", type="warning")
+                    return
+                data = state.world_state.model_dump_json(indent=2)
+                ui.run_javascript(
+                    f"navigator.clipboard.writeText({json.dumps(data)})"
+                )
+                ui.notify("Copied to clipboard", type="positive")
+
+            with ui.row().classes("gap-2"):
+                ui.button(
+                    "Download JSON",
+                    icon="download",
+                    on_click=_export_world,
+                ).props("unelevated no-caps color=primary").classes(
+                    "rounded-lg shadow-sm"
+                )
+                ui.button(
+                    "Copy to clipboard",
+                    icon="content_copy",
+                    on_click=_copy_world,
+                ).props("no-caps outline color=secondary").classes(
+                    "rounded-lg"
+                )
+
+        # ---- Export Version Bundle (metadata + world + prose) ----
+        # The unique value-add over the two cards above: a single
+        # JSON containing the version row metadata, the world model,
+        # and the prose for the currently loaded version. Useful for
+        # archival or for moving a single version between projects.
         with ui.card().classes(
             "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-6"
         ):
             with ui.row().classes("items-center gap-2"):
                 ui.icon("inventory_2", size="md", color="primary")
-                ui.label("Export Current Version (JSON)").classes(
+                ui.label("Export version bundle").classes(
                     "text-lg font-semibold text-slate-800"
                 )
-
             ui.label(
-                "Download the currently loaded world model version. You can "
-                "grab the prose and world model JSON separately, or both "
-                "together in a single combined file."
+                "One JSON file with the version metadata (row id, "
+                "ancestor, branch label, raw query, timestamp), the "
+                "world model, and the prose. Currently loaded version "
+                "only."
             ).classes("text-sm text-slate-500")
 
-            def _build_version_payload() -> dict | None:
+            def _build_bundle() -> dict | None:
                 if state.world_state is None:
                     ui.notify("No world model loaded", type="warning")
                     return None
@@ -153,131 +286,42 @@ def build_export_tab(state: AppState) -> None:
                     payload["prose"] = None
                 return payload
 
-            def _version_filename_stem() -> str:
-                stem = state.project_name.replace(" ", "_") if state.project_name else "project"
-                row = None
-                if state.current_version_row_id is not None:
-                    row = db.get_version_by_id(state.current_version_row_id)
-                elif state.project_id is not None:
-                    row = db.get_latest_version(state.project_id)
-                if row is not None:
-                    stem += f"_v{row.version}"
-                return stem
-
-            def _export_version_json():
-                payload = _build_version_payload()
+            def _export_bundle():
+                payload = _build_bundle()
                 if payload is None:
                     return
                 data = json.dumps(payload, indent=2, default=str)
                 ui.download(
                     data.encode("utf-8"),
-                    filename=f"{_version_filename_stem()}_version.json",
+                    filename=f"{_world_filename_stem()}_bundle.json",
                 )
-                ui.notify("Version exported!", type="positive")
+                ui.notify("Bundle exported", type="positive")
 
-            def _copy_version_json():
-                payload = _build_version_payload()
+            def _copy_bundle():
+                payload = _build_bundle()
                 if payload is None:
                     return
                 data = json.dumps(payload, indent=2, default=str)
                 ui.run_javascript(
                     f"navigator.clipboard.writeText({json.dumps(data)})"
                 )
-                ui.notify("Copied to clipboard!", type="positive")
+                ui.notify("Copied to clipboard", type="positive")
 
-            def _export_version_prose():
-                payload = _build_version_payload()
-                if payload is None:
-                    return
-                prose = payload.get("prose")
-                if not prose:
-                    ui.notify("This version has no prose", type="info")
-                    return
-                ui.download(
-                    prose.encode("utf-8"),
-                    filename=f"{_version_filename_stem()}_prose.md",
-                )
-                ui.notify("Prose exported!", type="positive")
-
-            def _export_version_world_model():
-                if state.world_state is None:
-                    ui.notify("No world model loaded", type="warning")
-                    return
-                data = state.world_state.model_dump_json(indent=2)
-                ui.download(
-                    data.encode("utf-8"),
-                    filename=f"{_version_filename_stem()}_world.json",
-                )
-                ui.notify("World model exported!", type="positive")
-
-            with ui.row().classes("gap-2 flex-wrap"):
+            with ui.row().classes("gap-2"):
                 ui.button(
-                    "Download Prose (Markdown)",
-                    icon="article",
-                    on_click=_export_version_prose,
-                ).props("no-caps outline color=primary").classes("rounded-lg")
-                ui.button(
-                    "Download World Model (JSON)",
-                    icon="data_object",
-                    on_click=_export_version_world_model,
-                ).props("no-caps outline color=primary").classes("rounded-lg")
-                ui.button(
-                    "Download Combined (JSON)",
+                    "Download JSON",
                     icon="download",
-                    on_click=_export_version_json,
+                    on_click=_export_bundle,
                 ).props("unelevated no-caps color=primary").classes(
                     "rounded-lg shadow-sm"
                 )
                 ui.button(
-                    "Copy Combined",
+                    "Copy to clipboard",
                     icon="content_copy",
-                    on_click=_copy_version_json,
-                ).props("no-caps outline color=secondary").classes("rounded-lg")
-
-        # ---- Export World State ----
-        with ui.card().classes(
-            "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-6"
-        ):
-            with ui.row().classes("items-center gap-2"):
-                ui.icon("data_object", size="md", color="primary")
-                ui.label("Export World State").classes(
-                    "text-lg font-semibold text-slate-800"
+                    on_click=_copy_bundle,
+                ).props("no-caps outline color=secondary").classes(
+                    "rounded-lg"
                 )
-
-            ui.label("Download the current world model as JSON.").classes(
-                "text-sm text-slate-500"
-            )
-
-            def _export_json():
-                if state.world_state is None:
-                    ui.notify("No world model loaded", type="warning")
-                    return
-                data = state.world_state.model_dump_json(indent=2)
-                ui.download(
-                    data.encode("utf-8"),
-                    filename=f"{state.project_name.replace(' ', '_')}_world.json",
-                )
-                ui.notify("World state exported!", type="positive")
-
-            with ui.row().classes("gap-2"):
-                ui.button("Download JSON", icon="download", on_click=_export_json).props(
-                    "unelevated no-caps color=primary"
-                ).classes("rounded-lg shadow-sm")
-
-                # Copy to clipboard
-                def _copy_json():
-                    if state.world_state is None:
-                        ui.notify("No world model", type="warning")
-                        return
-                    data = state.world_state.model_dump_json(indent=2)
-                    ui.run_javascript(
-                        f"navigator.clipboard.writeText({json.dumps(data)})"
-                    )
-                    ui.notify("Copied to clipboard!", type="positive")
-
-                ui.button("Copy to Clipboard", icon="content_copy", on_click=_copy_json).props(
-                    "no-caps outline color=secondary"
-                ).classes("rounded-lg")
 
         # ---- Summary Stats ----
         stats_container = ui.column().classes("w-full")
@@ -333,6 +377,7 @@ def build_export_tab(state: AppState) -> None:
 
         _refresh_stats()
         state.on(StateEvent.WORLD_STATE_CHANGED, _refresh_stats)
+        state.on(StateEvent.VERSION_CHANGED, _refresh_stats)
 
         # ---- Share / Collaborate ----
         if state.user_id and state.project_id:

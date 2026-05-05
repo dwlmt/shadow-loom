@@ -368,11 +368,16 @@ class CreativeBrief(BaseModel):
         description=(
             "Which AMWN branch this brief is being rendered onto. "
             "'factual' = the prose extends the canonical mainline; "
-            "'shadow' = the prose lives on a counterfactual fork and "
-            "should be framed as a divergent possibility. Downstream "
-            "renderers use this to set tense/mood (e.g. subjunctive "
-            "framing, 'in this branch...' scaffolding) and to suppress "
-            "factual-mainline continuity assumptions."
+            "'shadow' = the prose lives on a counterfactual fork. The "
+            "shadow scene is still rendered as the actual lived world "
+            "in plain past-tense narration \u2014 the renderer must NOT "
+            "surface this flag in the prose (no 'in this branch', no "
+            "'timeline', no subjunctive author voice; see Rule 10 in "
+            "prompts/generation.md). The flag is used internally to "
+            "suppress factual-mainline continuity assumptions and to "
+            "unlock the BRANCH CONTEXT block that feeds "
+            "``factual_contrast_summary`` to the renderer as silent "
+            "background."
         ),
     )
     branch_label: Optional[str] = Field(
