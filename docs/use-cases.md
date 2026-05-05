@@ -274,11 +274,15 @@ asking *"if the party does X, what does NPC Y do?"*
   intimidate the captain into revealing the smuggling route")` against
   the current version. The physics engine resolves it against trait
   inertia, fear, and power-dynamic edges; the auditor flags any prose
-  that contradicts what the captain actually knows. The shadow-branch
-  mechanism means you can speculatively roll forward two or three
-  party choices, see which one produces the most dramatically interesting
-  scorecard, and only **promote to canon** the branch the table actually
-  takes.
+  that contradicts what the captain actually knows. The **World →
+  Relationships** view-mode surfaces every dyad's current `affinity`,
+  `fear`, and `power_dynamic` as snapshot cards plus an
+  entity×entity heatmap of the chosen metric, so the GM can see at a
+  glance who would actually back whom in this round. The
+  shadow-branch mechanism means you can speculatively roll forward
+  two or three party choices, see which one produces the most
+  dramatically interesting scorecard, and only **promote to canon**
+  the branch the table actually takes.
 * **Secret-keeping and dramatic irony.** `Channel.intelligibility` plus
   per-character `Belief` provenance encode *who knows what*. The directive
   assembler will refuse to leak a secret to an in-scene NPC who has no

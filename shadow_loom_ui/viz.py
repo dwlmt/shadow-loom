@@ -2415,19 +2415,146 @@ def render_epistemic_grid(
     return container
 
 
+def render_world_trait_state_card(
+    ws: WorldStateV1,
+    world_id: str,
+) -> ui.element:
+    """Snapshot card for one global trait at the current ``ws`` cursor.
+
+    Designed to mirror the per-believer belief card: shows the trait's
+    *current* magnitude and inertia (i.e. the values on ``ws`` after
+    ``snapshot_world_at``), the affected domains, the prose
+    description, and a compact inline sparkline of the magnitude
+    history so the reader can still see the trajectory without losing
+    the headline state-at-cursor reading.
+    """
+    from shadow_loom_ui.viz_helpers import world_trait_timeline_data
+
+    wt = ws.world_traits.get(world_id)
+    name = wt.name if wt else world_id
+    mag_val = float(wt.magnitude.value) if wt and wt.magnitude else 0.0
+    inertia = float(wt.magnitude.inertia) if wt and wt.magnitude else 0.0
+    description = (wt.description or "").strip() if wt else ""
+    domains = ", ".join(getattr(wt, "affected_domains", []) or []) if wt else ""
+    category = getattr(wt, "category", "") if wt else ""
+
+    # Magnitude band colours match the belief-card conviction palette.
+    if mag_val < 0.34:
+        bar_color = "#94a3b8"
+        band_label = "low"
+    elif mag_val < 0.67:
+        bar_color = "#3A7BD5"
+        band_label = "moderate"
+    else:
+        bar_color = "#6FBF3A"
+        band_label = "dominant"
+
+    container = ui.column().classes("w-full bg-white")
+    with container:
+        # Header strip mirrors render_entity_belief_chart.
+        with ui.row().classes(
+            "w-full items-baseline justify-between px-3 py-2 "
+            "border-b border-slate-200 bg-slate-50"
+        ):
+            ui.label(name).classes("text-sm font-semibold text-slate-800")
+            ui.label(category).classes(
+                "text-xs text-slate-500 italic"
+            )
+
+        with ui.column().classes("w-full gap-2 px-3 py-3"):
+            if description:
+                ui.label(description).classes(
+                    "text-sm text-slate-700 leading-snug"
+                )
+
+            # Big magnitude readout + bar.
+            with ui.row().classes("w-full items-center gap-2"):
+                ui.label(f"{mag_val:.2f}").classes(
+                    "text-2xl font-mono font-semibold text-slate-800 w-16"
+                )
+                with ui.column().classes("flex-grow gap-1"):
+                    with ui.row().classes(
+                        "w-full items-center gap-2 text-xs"
+                    ):
+                        ui.label(band_label).classes(
+                            "px-2 py-0.5 rounded-full text-white font-mono"
+                        ).style(f"background-color: {bar_color}")
+                        ui.label(f"inertia {inertia:.2f}").classes(
+                            "px-2 py-0.5 rounded-full bg-slate-200 "
+                            "text-slate-700 font-mono"
+                        )
+                        if domains:
+                            ui.label(domains).classes(
+                                "text-slate-500 truncate"
+                            )
+                    with ui.element("div").classes(
+                        "w-full h-2 rounded-full bg-slate-200 overflow-hidden"
+                    ):
+                        ui.element("div").classes(
+                            "h-full rounded-full"
+                        ).style(
+                            f"width: {int(max(0.0, min(1.0, mag_val)) * 100)}%; "
+                            f"background-color: {bar_color}"
+                        )
+
+            # Inline sparkline of the magnitude trajectory — kept small
+            # so the snapshot reading dominates.
+            try:
+                tl = world_trait_timeline_data(ws, world_id)
+            except Exception:
+                tl = {"times": [], "value": [], "inertia": []}
+            if tl["times"] and len(tl["times"]) > 1:
+                ui.echart({
+                    "backgroundColor": "transparent",
+                    "grid": {
+                        "top": 6, "bottom": 18, "left": 28, "right": 8,
+                    },
+                    "xAxis": {
+                        "type": "category",
+                        "data": [str(t) for t in tl["times"]],
+                        "axisLabel": {
+                            "color": "#94a3b8", "fontSize": 8,
+                            "interval": "auto",
+                        },
+                        "axisLine": {"lineStyle": {"color": "#cbd5e1"}},
+                        "axisTick": {"show": False},
+                    },
+                    "yAxis": {
+                        "type": "value", "min": 0, "max": 1,
+                        "axisLabel": {"color": "#94a3b8", "fontSize": 8},
+                        "splitLine": {"lineStyle": {"color": "#f1f5f9"}},
+                    },
+                    "tooltip": {**_CHART_TOOLTIP, "trigger": "axis"},
+                    "series": [{
+                        "type": "line",
+                        "step": "middle",
+                        "data": tl["value"],
+                        "showSymbol": False,
+                        "lineStyle": {"width": 1.5, "color": bar_color},
+                        "areaStyle": {"opacity": 0.15, "color": bar_color},
+                    }],
+                }).classes("w-full").style("height:64px")
+    return container
+
+
 def render_world_state_grid(
     ws: WorldStateV1,
     *,
     selected_ids: list[str] | None = None,
     chart_height: str = "300px",
 ) -> ui.element:
-    """Tiled grid of per-world-trait magnitude timelines.
+    """Tiled grid of per-world-trait **snapshot** cards at the cursor.
 
-    Mirrors :func:`render_epistemic_grid` but for ``WorldStateV1.world_traits``:
-    one card per global trait, each showing the trait's magnitude and
-    inertia stepping across fabula time (rendered by
-    :func:`render_world_trait_timeline`). ``selected_ids`` filters which
-    world traits to show (``None`` = all).
+    Mirrors :func:`render_epistemic_grid` but for
+    ``WorldStateV1.world_traits``: one snapshot card per global trait
+    rendered by :func:`render_world_trait_state_card`. ``ws`` is
+    expected to already be snapshotted to the active fabula cursor by
+    the caller (``snapshot_world_at``), so each card reads the
+    magnitude / inertia *at that time* directly. ``selected_ids``
+    filters which world traits to show (``None`` = all).
+
+    ``chart_height`` is accepted for back-compat but ignored — snapshot
+    cards size themselves to content.
     """
     from shadow_loom_ui.viz_helpers import list_world_traits
 
@@ -2447,31 +2574,172 @@ def render_world_state_grid(
             "w-full grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3"
         )
         with grid:
-            for wid, wname in traits:
+            for wid, _wname in traits:
                 with ui.element("div").classes(
                     "border border-slate-200 rounded-xl bg-white shadow-sm "
                     "overflow-hidden"
                 ):
-                    # Header strip mirrors the believer-card style.
-                    wt = ws.world_traits.get(wid)
-                    domains = ", ".join(
-                        getattr(wt, "affected_domains", []) or []
-                    ) if wt else ""
-                    mag_val = (
-                        wt.magnitude.value if wt and wt.magnitude else 0.5
+                    render_world_trait_state_card(ws, wid)
+    return container
+
+
+# ── Relationship snapshot cards (affinity / fear / power) ─────────
+
+def render_relationship_state_card(
+    ws: WorldStateV1,
+    rel,  # RelationshipEdge — typed loosely to avoid an import cycle.
+) -> ui.element:
+    """Per-dyad card showing affinity / fear / power_dynamic at the cursor.
+
+    Each axis is rendered as a labelled bar:
+      • **affinity** in [-1, +1] (red ↔ green, centered),
+      • **fear** in [0, 1] (cool grey → amber),
+      • **power_dynamic** in [-1, +1] (purple ↔ teal, centered, where
+        positive = source dominates target).
+
+    Only axes that the model has actually observed (``rel.metrics``)
+    are shown — an unobserved axis renders as a faint "—" so the
+    reader can distinguish "deliberately zero" from "no data".
+    """
+    src = ws.entities.get(rel.source_entity_id)
+    tgt = ws.entities.get(rel.target_entity_id)
+    src_name = src.name if src else rel.source_entity_id
+    tgt_name = tgt.name if tgt else rel.target_entity_id
+
+    def _signed_bar(value: float, *, neg_color: str, pos_color: str) -> None:
+        # Two-half bar centered on 0. ``value`` in [-1, 1].
+        v = max(-1.0, min(1.0, float(value)))
+        with ui.element("div").classes(
+            "w-full h-2 rounded-full bg-slate-200 overflow-hidden flex"
+        ):
+            with ui.element("div").classes(
+                "h-full flex items-center justify-end"
+            ).style("width: 50%"):
+                if v < 0:
+                    ui.element("div").classes("h-full rounded-l-full").style(
+                        f"width: {int(abs(v) * 100)}%; "
+                        f"background-color: {neg_color}"
                     )
-                    with ui.row().classes(
-                        "w-full items-baseline justify-between px-3 py-2 "
-                        "border-b border-slate-200 bg-slate-50"
-                    ):
-                        ui.label(wname).classes(
-                            "text-sm font-semibold text-slate-800"
+            with ui.element("div").classes(
+                "h-full flex items-center"
+            ).style("width: 50%"):
+                if v > 0:
+                    ui.element("div").classes("h-full rounded-r-full").style(
+                        f"width: {int(v * 100)}%; "
+                        f"background-color: {pos_color}"
+                    )
+
+    def _unsigned_bar(value: float, *, color: str) -> None:
+        v = max(0.0, min(1.0, float(value)))
+        with ui.element("div").classes(
+            "w-full h-2 rounded-full bg-slate-200 overflow-hidden"
+        ):
+            ui.element("div").classes("h-full rounded-full").style(
+                f"width: {int(v * 100)}%; background-color: {color}"
+            )
+
+    container = ui.column().classes("w-full bg-white")
+    with container:
+        with ui.row().classes(
+            "w-full items-baseline justify-between px-3 py-2 "
+            "border-b border-slate-200 bg-slate-50"
+        ):
+            ui.label(f"{src_name}  →  {tgt_name}").classes(
+                "text-sm font-semibold text-slate-800 truncate"
+            )
+            ui.label(f"t={rel.last_updated_fabula}").classes(
+                "text-xs font-mono text-slate-500"
+            )
+
+        with ui.column().classes("w-full gap-2 px-3 py-3"):
+            for axis_name, label, signed, neg_color, pos_color in (
+                ("affinity",      "Affinity",      True,  "#dc2626", "#16a34a"),
+                ("fear",          "Fear",          False, "#f59e0b", "#f59e0b"),
+                ("power_dynamic", "Power dynamic", True,  "#8a5cf0", "#0d9488"),
+            ):
+                m = rel.metrics.get(axis_name)
+                with ui.row().classes(
+                    "w-full items-center gap-2 text-xs"
+                ):
+                    ui.label(label).classes(
+                        "text-slate-600 w-28 shrink-0"
+                    )
+                    if m is None or not getattr(m, "observed", True):
+                        ui.label("—").classes(
+                            "font-mono text-slate-400 w-12 text-right"
                         )
+                        with ui.element("div").classes(
+                            "flex-grow h-2 rounded-full bg-slate-100"
+                        ):
+                            pass
+                    else:
+                        ui.label(f"{float(m.value):+.2f}" if signed
+                                 else f"{float(m.value):.2f}").classes(
+                            "font-mono text-slate-800 w-12 text-right"
+                        )
+                        with ui.column().classes("flex-grow gap-0"):
+                            if signed:
+                                _signed_bar(
+                                    m.value,
+                                    neg_color=neg_color,
+                                    pos_color=pos_color,
+                                )
+                            else:
+                                _unsigned_bar(m.value, color=pos_color)
                         ui.label(
-                            f"mag {mag_val:.2f}"
-                            + (f"  •  {domains}" if domains else "")
-                        ).classes("text-xs text-slate-500")
-                    render_world_trait_timeline(ws, wid, height=chart_height)
+                            f"i {float(getattr(m, 'inertia', 0.0)):.2f}"
+                        ).classes(
+                            "font-mono text-slate-500 w-10 text-right"
+                        )
+    return container
+
+
+def render_relationship_state_grid(
+    ws: WorldStateV1,
+    *,
+    selected_pairs: list[tuple[str, str]] | None = None,
+) -> ui.element:
+    """Tiled grid of per-dyad relationship snapshot cards.
+
+    ``ws`` is expected to be snapshotted to the active fabula cursor
+    by the caller, so each card reflects the relationship state at
+    that time. ``selected_pairs`` (optional) filters to specific
+    ``(source_id, target_id)`` dyads.
+    """
+    rels = list(ws.social_topology)
+    if selected_pairs:
+        wanted = {tuple(p) for p in selected_pairs}
+        rels = [
+            r for r in rels
+            if (r.source_entity_id, r.target_entity_id) in wanted
+        ]
+    # Sort by source then target name for stable grid ordering.
+    def _sort_key(r):
+        a = ws.entities.get(r.source_entity_id)
+        b = ws.entities.get(r.target_entity_id)
+        return (
+            (a.name if a else r.source_entity_id).lower(),
+            (b.name if b else r.target_entity_id).lower(),
+        )
+    rels.sort(key=_sort_key)
+
+    container = ui.column().classes("w-full gap-3")
+    with container:
+        if not rels:
+            ui.label(
+                "No relationships in this world model."
+            ).classes("text-sm text-slate-500 italic q-pa-lg")
+            return container
+        grid = ui.element("div").classes(
+            "w-full grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3"
+        )
+        with grid:
+            for rel in rels:
+                with ui.element("div").classes(
+                    "border border-slate-200 rounded-xl bg-white shadow-sm "
+                    "overflow-hidden"
+                ):
+                    render_relationship_state_card(ws, rel)
     return container
 
 

@@ -31,6 +31,7 @@ from shadow_loom_ui.viz import (
     render_population_summary,
     render_relationship_heatmap,
     render_relationship_heatmap_timeline,
+    render_relationship_state_grid,
     render_social_graph,
     render_spatial_map,
     render_status_donut,
@@ -73,6 +74,7 @@ _VIEW_MODES = {
     "composition": "Composition",
     "epistemic": "Character Beliefs",
     "world_state": "World State",
+    "relationships": "Relationships",
     "comparison": "Comparison",
 }
 
@@ -129,10 +131,17 @@ def build_world_tab(state: AppState) -> None:
                     " what, where the belief came from (utterance,"
                     " observation, inference), and where divergent"
                     " beliefs create dramatic irony.\n"
-                    "- **World State** — per-world-trait magnitude"
-                    " and inertia stepped across fabula time, one"
-                    " card per global trait. Mirrors the Character"
-                    " Beliefs grid but for *world*-level forces.\n"
+                    "- **World State** — per-world-trait"
+                    " **snapshot cards** at the current fabula"
+                    " cursor (magnitude, inertia, affected"
+                    " domains) with a small inline sparkline of the"
+                    " trajectory. Drag the time cursor to watch each"
+                    " card update in lockstep.\n"
+                    "- **Relationships** — every dyad's"
+                    " *affinity*, *fear* and *power_dynamic* at the"
+                    " cursor as snapshot cards, plus the"
+                    " entity×entity heatmap of the chosen metric"
+                    " (static or animated over fabula time).\n"
                     "- **Comparison** — side-by-side trait /"
                     " relationship table for 2–6 picked entities.\n\n"
                     "### Reading the diagrams\n"
@@ -240,8 +249,12 @@ def build_world_tab(state: AppState) -> None:
                 world_state_select.set_visibility(mode == "world_state")
                 compare_select.set_visibility(mode == "comparison")
                 social_layout.set_visibility(mode == "social")
-                social_metric.set_visibility(mode == "social")
-                social_over_time.set_visibility(mode == "social")
+                social_metric.set_visibility(
+                    mode in ("social", "relationships")
+                )
+                social_over_time.set_visibility(
+                    mode in ("social", "relationships")
+                )
                 spatial_animated.set_visibility(mode == "spatial")
                 _refresh()
 
@@ -685,6 +698,64 @@ def build_world_tab(state: AppState) -> None:
                         else:
                             wt_ids = None
                         render_world_state_grid(ws, selected_ids=wt_ids)
+                    elif mode == "relationships":
+                        # Per-dyad snapshot cards (affinity / fear /
+                        # power_dynamic at the cursor) plus the
+                        # entity\u00d7entity heatmap of the selected
+                        # metric. This is where power / affinity
+                        # numbers actually surface in the UI.
+                        chosen_metric = social_metric.value or "affinity"
+                        _metric_titles = {
+                            "affinity": "Affinity heatmap  (\u20131 hate \u2194 +1 love)",
+                            "fear": "Fear heatmap  (0 calm \u2192 1 terrified)",
+                            "power_dynamic": "Power dynamic  (\u20131 subservient \u2194 +1 dominant)",
+                        }
+                        animate = bool(social_over_time.value)
+                        heatmap_title = _metric_titles.get(
+                            chosen_metric, "Relationship heatmap"
+                        )
+                        if animate:
+                            heatmap_title = (
+                                f"{heatmap_title} \u2014 over fabula time"
+                            )
+                        with ui.expansion(
+                            heatmap_title,
+                            icon="grid_on",
+                            value=True,
+                        ).classes(
+                            "w-full bg-white border border-slate-200 "
+                            "rounded-xl mb-2"
+                        ):
+                            if animate:
+                                with_expand(
+                                    lambda h, m=chosen_metric: (
+                                        render_relationship_heatmap_timeline(
+                                            ws, metric=m, height=h,
+                                        )
+                                    ),
+                                    title=heatmap_title,
+                                    height="520px",
+                                )
+                            else:
+                                with_expand(
+                                    lambda h, m=chosen_metric: (
+                                        render_relationship_heatmap(
+                                            ws, metric=m, height=h,
+                                        )
+                                    ),
+                                    title=heatmap_title,
+                                    height="420px",
+                                )
+                        with ui.expansion(
+                            "Per-dyad snapshot cards "
+                            "(affinity \u2022 fear \u2022 power)",
+                            icon="favorite",
+                            value=True,
+                        ).classes(
+                            "w-full bg-white border border-slate-200 "
+                            "rounded-xl mb-2"
+                        ):
+                            render_relationship_state_grid(ws)
                     elif mode == "comparison":
                         # Side-by-side multi-entity comparison: radar
                         # overlay + grouped trait bars + ranked table.

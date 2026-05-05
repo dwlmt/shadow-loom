@@ -554,6 +554,7 @@ def _build_evolution_panel(state: AppState) -> None:
         with ui.tab_panels(evo_tabs, value="character").classes("w-full flex-grow"):
             # ── Character ────────────────────────────────────────
             with ui.tab_panel("character").classes("p-3"):
+                subtab_help("causality.evolution.character")
                 with ui.row().classes("w-full items-center gap-3"):
                     ui.icon("person", color="primary")
                     ui.label("Entity:").classes("text-sm text-slate-600")
@@ -601,6 +602,7 @@ def _build_evolution_panel(state: AppState) -> None:
 
             # ── Relationship ─────────────────────────────────────
             with ui.tab_panel("relationship").classes("p-3"):
+                subtab_help("causality.evolution.relationship")
                 with ui.row().classes("w-full items-center gap-3"):
                     ui.icon("people", color="primary")
                     ui.label("Pair:").classes("text-sm text-slate-600")

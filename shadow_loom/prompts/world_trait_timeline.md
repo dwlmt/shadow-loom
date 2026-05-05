@@ -29,9 +29,11 @@ For each world trait that changes during the story, return one or more `WorldTra
 
 ## Guidelines
 
-1. Most world traits change **0–2 times** in a typical story. Many don't change at all.
+1. Some world traits never change; others shift several times across a long story. Emit **as many inflection points as the events warrant** — do not artificially cap the count. A regime that rises, consolidates, fractures, and falls is four inflection points, not two.
 2. Only output timelines for traits that actually change. Omit traits with no inflection points.
 3. Every `triggered_by` MUST reference a valid EVT_ ID from the event list.
 4. Every `fabula_time` MUST exactly match the fabula_time of the triggering event.
-5. If a trait changes multiple times, order snapshots by fabula_time (ascending).
+5. If a trait changes multiple times, order snapshots by fabula_time (ascending). Each snapshot represents the state *after* its triggering event — do NOT re-emit the pre-story baseline.
 6. The initial state of each trait is already captured in its `magnitude` field — you are only identifying CHANGES from that baseline.
+7. **Be generous with mid-story inflections.** A character's death that ends a war, a coup that swaps regimes, a discovery that breaks a taboo, a treaty that reshapes power — all of these belong on the timeline. The UI's world-state view is currently driven by these snapshots; missing one means the corresponding world-state card sits at a stale value while the slider scrubs across that event.
+8. **Inflection sign matches the world-trait's framing.** If WORLD_SURVEILLANCE_STATE is named for *intensity of surveillance*, an event that cracks the panopticon should DECREASE its magnitude (not increase it). Re-read each trait's name and description before assigning the new magnitude.

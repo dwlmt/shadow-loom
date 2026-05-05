@@ -2345,6 +2345,84 @@ def _build_consequences_agent(
     return agent
 
 
+# =====================================================================
+# Per-chunk quality gates — soft retries that fire when the LLM
+# under-extracts on a structural axis the prompts already require but
+# the schema can't enforce. Each helper returns True iff a retry is
+# warranted; the caller is responsible for actually running it.
+# =====================================================================
+
+
+def _physics_causal_density_low(physics: "PhysicsExtraction") -> bool:
+    """True iff the chunk has events but suspiciously few causal edges.
+
+    Rule of thumb: every non-trivial event should participate in at
+    least one causal edge (rule #12 of the physics prompt). If a chunk
+    yields ``N >= 2`` events but ``len(causal_topology) < N``, the
+    extractor very likely missed mutation / chain_reaction /
+    affordance_gate edges. We retry with an explicit nudge.
+    """
+    n_evt = len(physics.events)
+    if n_evt < 2:
+        return False
+    return len(physics.causal_topology) < n_evt
+
+
+def _physics_missing_mutation_social(
+    physics: "PhysicsExtraction",
+    social: "SocialExtraction",
+) -> List[str]:
+    """Return a list of axes for which Social observed a non-zero value
+    but Physics emitted no matching ``mutation_social`` edge.
+
+    Per the per-axis coverage rule in ``physics_extraction.md``: every
+    ``RelationshipEdge`` axis with ``observed=True`` and ``value != 0``
+    commits Physics to at least one ``mutation_social`` edge for that
+    axis. Without it the affective gauges (danger, conflict,
+    power-dynamic) read flat. We collect violations as ``"axis"``
+    strings (deduplicated) so the retry message can be specific.
+    """
+    if not social.social_topology or not physics.events:
+        return []
+    observed_axes: set[str] = set()
+    for rel in social.social_topology:
+        for axis_name, m in rel.metrics.items():
+            if getattr(m, "observed", True) and float(m.value) != 0.0:
+                observed_axes.add(axis_name)
+    if not observed_axes:
+        return []
+    covered: set[str] = set()
+    for ce in physics.causal_topology:
+        if ce.causality_type == "mutation_social" and ce.trait_target:
+            covered.add(str(ce.trait_target))
+    missing = sorted(observed_axes - covered)
+    return missing
+
+
+def _consequences_mutation_parity_broken(
+    physics: "PhysicsExtraction",
+    consequences: "ConsequencesExtraction",
+) -> List[str]:
+    """Return entity ids that have an inbound mutation edge from Physics
+    but no matching ``EntityUpdate`` in Consequences.
+
+    Each ``mutation`` edge with an ``ENT_`` target should produce at
+    least one ``EntityUpdate`` for that entity (the parity contract
+    spelt out at the top of ``consequences_extraction.md``). When the
+    parity is broken, the snapshot the UI shows for that entity will
+    sit at the pre-story baseline and the trait shift the edge declared
+    is never anchored on the timeline.
+    """
+    targets: set[str] = set()
+    for ce in physics.causal_topology:
+        if ce.causality_type == "mutation" and ce.target_id.startswith("ENT_"):
+            targets.add(ce.target_id)
+    if not targets:
+        return []
+    covered: set[str] = {eu.entity_id for eu in consequences.entity_updates}
+    return sorted(targets - covered)
+
+
 def extract_topology(
     chunks: List[str],
     register: GlobalRegister,
@@ -2472,6 +2550,62 @@ def extract_topology(
                 log_agent_output(logger, f"PhysicsExtraction[chunk={i + 1},retry]", physics)
             except Exception:
                 logger.exception("[Step 3a] Chunk %d retry FAILED.", i + 1)
+
+        # Retry if events were extracted but causal density is too low
+        # (rule #12 — every event should participate in at least one
+        # causal edge). Without this, events sit as orphan nodes with
+        # no propagation effect on the world state.
+        if _physics_causal_density_low(physics):
+            n_evt = len(physics.events)
+            n_causal = len(physics.causal_topology)
+            logger.info(
+                "[Step 3a] Chunk %d: low causal density (%d edges across "
+                "%d events) — retrying with emphasis …",
+                i + 1, n_causal, n_evt,
+            )
+            density_msg = (
+                "IMPORTANT: The previous extraction produced "
+                f"{n_evt} events but only {n_causal} causal edges. "
+                "Every event MUST participate in at least one causal "
+                "edge — re-extract with explicit attention to:\n"
+                "  - chain_reaction edges between consecutive events,\n"
+                "  - mutation edges for every event that changes a "
+                "character's traits / status / location,\n"
+                "  - mutation_social edges for every event that "
+                "shifts a relationship axis (affinity / fear / "
+                "power_dynamic), with the rel_counterpart_id and "
+                "trait_target both set,\n"
+                "  - affordance_gate edges for state-prerequisites,\n"
+                "  - ambient_propagation for background drift.\n"
+                "Aim for AT LEAST one outgoing causal edge per event "
+                "and emit ALL implied mutations.\n\n" + physics_msg
+            )
+            try:
+                density_result = physics_agent.run_sync(
+                    density_msg, deps=physics_deps, **_user_kwargs(),
+                )
+                density_physics = density_result.output
+                log_agent_output(
+                    logger, f"PhysicsExtraction[chunk={i + 1},density_retry]",
+                    density_physics,
+                )
+                # Only adopt the retry if it actually improved density
+                # AND preserved the events list (we don't want a retry
+                # that drops events to silently win).
+                if (
+                    len(density_physics.events) >= n_evt
+                    and len(density_physics.causal_topology) > n_causal
+                ):
+                    physics = density_physics
+                    logger.info(
+                        "[Step 3a] Chunk %d: density retry recovered "
+                        "%d→%d causal edges.",
+                        i + 1, n_causal, len(physics.causal_topology),
+                    )
+            except Exception:
+                logger.exception(
+                    "[Step 3a] Chunk %d causal density retry FAILED.", i + 1,
+                )
 
         logger.info(
             "[Step 3a] Chunk %d: %d events, %d causal, %d spatial edges.",
@@ -2605,6 +2739,63 @@ def extract_topology(
                         )
                 except Exception:
                     logger.exception("[Step 3b] Chunk %d social retry FAILED.", i + 1)
+
+            # Per-axis mutation_social coverage — if Social observed
+            # any non-zero relationship axis but Physics never emitted
+            # a matching ``mutation_social`` edge, retry physics with
+            # the missing axes called out by name. Without this the
+            # affective gauges (danger / conflict / power-dynamic) sit
+            # at the baseline for the whole story.
+            missing_axes = _physics_missing_mutation_social(physics, social)
+            if missing_axes:
+                logger.info(
+                    "[Step 3a] Chunk %d: missing mutation_social axes %s "
+                    "— retrying physics with axis-specific emphasis …",
+                    i + 1, missing_axes,
+                )
+                axis_msg = (
+                    "IMPORTANT: The Social Agent observed non-zero "
+                    f"relationship reading(s) on the following axes "
+                    f"but the Physics Agent emitted NO matching "
+                    f"mutation_social causal edge for them: "
+                    f"{missing_axes}. For each axis, find the on-page "
+                    "event that produced the reading and emit a "
+                    "mutation_social edge with source_id=<that event>, "
+                    "target_id=<perspective entity>, "
+                    "rel_counterpart_id=<other entity>, "
+                    "trait_target=<axis>, and a signed trait_delta. "
+                    "Keep all events and causal edges from your "
+                    "previous extraction.\n\n" + physics_msg
+                )
+                try:
+                    axis_result = physics_agent.run_sync(
+                        axis_msg, deps=physics_deps, **_user_kwargs(),
+                    )
+                    axis_physics = axis_result.output
+                    log_agent_output(
+                        logger,
+                        f"PhysicsExtraction[chunk={i + 1},axis_retry]",
+                        axis_physics,
+                    )
+                    new_missing = _physics_missing_mutation_social(
+                        axis_physics, social,
+                    )
+                    if (
+                        len(axis_physics.events) >= len(physics.events)
+                        and len(new_missing) < len(missing_axes)
+                    ):
+                        physics = axis_physics
+                        logger.info(
+                            "[Step 3a] Chunk %d: axis retry covered "
+                            "%d/%d missing axes.",
+                            i + 1,
+                            len(missing_axes) - len(new_missing),
+                            len(missing_axes),
+                        )
+                except Exception:
+                    logger.exception(
+                        "[Step 3a] Chunk %d axis retry FAILED.", i + 1,
+                    )
         else:
             logger.info("[Step 3b] Chunk %d: skipping social pass (no events, no speech cues).", i + 1)
 
@@ -2644,6 +2835,63 @@ def extract_topology(
                     i + 1,
                 )
                 failure_counts["consequences"] += 1
+                consequences = ConsequencesExtraction()
+
+            # Mutation-parity retry — Physics declared mutation edges
+            # against entities, but Consequences emitted no
+            # EntityUpdates for them, so the snapshot timeline will be
+            # blank for those entities. Retry with the missing entity
+            # ids called out by name.
+            missing_entities = _consequences_mutation_parity_broken(
+                physics, consequences,
+            )
+            if missing_entities:
+                logger.info(
+                    "[Step 3c] Chunk %d: mutation parity broken for "
+                    "%d entit(y/ies) %s — retrying consequences …",
+                    i + 1, len(missing_entities), missing_entities,
+                )
+                parity_msg = (
+                    "IMPORTANT: The Physics Agent emitted mutation "
+                    "causal edges that target the following entities, "
+                    "but the previous extraction returned NO "
+                    f"EntityUpdate for them: {missing_entities}. For "
+                    "each one, emit at least one EntityUpdate "
+                    "anchored on the triggering event's fabula_time, "
+                    "with the new absolute trait values implied by "
+                    "the mutation edge's trait_target / trait_delta "
+                    "(and any implicit belief / status / location "
+                    "changes the event causes). Keep all "
+                    "EntityUpdates from your previous extraction.\n\n"
+                    + consequences_msg
+                )
+                try:
+                    parity_result = consequences_agent.run_sync(
+                        parity_msg, deps=consequences_deps, **_user_kwargs(),
+                    )
+                    parity_consequences = parity_result.output
+                    log_agent_output(
+                        logger,
+                        f"ConsequencesExtraction[chunk={i + 1},parity_retry]",
+                        parity_consequences,
+                    )
+                    new_missing = _consequences_mutation_parity_broken(
+                        physics, parity_consequences,
+                    )
+                    if len(new_missing) < len(missing_entities):
+                        consequences = parity_consequences
+                        entity_updates_final = consequences.entity_updates
+                        logger.info(
+                            "[Step 3c] Chunk %d: parity retry covered "
+                            "%d/%d missing entities.",
+                            i + 1,
+                            len(missing_entities) - len(new_missing),
+                            len(missing_entities),
+                        )
+                except Exception:
+                    logger.exception(
+                        "[Step 3c] Chunk %d parity retry FAILED.", i + 1,
+                    )
 
         # Merge into ChunkTopology. Utterance events emitted by the
         # Social Agent are appended to the chunk's event list so they
@@ -2886,6 +3134,52 @@ async def _extract_single_chunk_async(
         except Exception:
             logger.exception("[Step 3a·Async] Chunk %d retry FAILED.", i + 1)
 
+    # Causal-density retry — see sync path for rationale.
+    if _physics_causal_density_low(physics):
+        n_evt = len(physics.events)
+        n_causal = len(physics.causal_topology)
+        logger.info(
+            "[Step 3a·Async] Chunk %d: low causal density (%d edges across "
+            "%d events) — retrying with emphasis …",
+            i + 1, n_causal, n_evt,
+        )
+        density_msg = (
+            "IMPORTANT: The previous extraction produced "
+            f"{n_evt} events but only {n_causal} causal edges. "
+            "Every event MUST participate in at least one causal "
+            "edge — re-extract with explicit attention to:\n"
+            "  - chain_reaction edges between consecutive events,\n"
+            "  - mutation edges for every event that changes a "
+            "character's traits / status / location,\n"
+            "  - mutation_social edges for every event that "
+            "shifts a relationship axis (affinity / fear / "
+            "power_dynamic), with the rel_counterpart_id and "
+            "trait_target both set,\n"
+            "  - affordance_gate edges for state-prerequisites,\n"
+            "  - ambient_propagation for background drift.\n"
+            "Aim for AT LEAST one outgoing causal edge per event "
+            "and emit ALL implied mutations.\n\n" + physics_msg
+        )
+        try:
+            density_result = await physics_agent.run(
+                density_msg, deps=physics_deps, **_user_kwargs(),
+            )
+            density_physics = density_result.output
+            if (
+                len(density_physics.events) >= n_evt
+                and len(density_physics.causal_topology) > n_causal
+            ):
+                physics = density_physics
+                logger.info(
+                    "[Step 3a·Async] Chunk %d: density retry recovered "
+                    "%d→%d causal edges.",
+                    i + 1, n_causal, len(physics.causal_topology),
+                )
+        except Exception:
+            logger.exception(
+                "[Step 3a·Async] Chunk %d causal density retry FAILED.", i + 1,
+            )
+
     logger.info(
         "[Step 3a·Async] Chunk %d: %d events, %d causal, %d spatial edges.",
         i + 1, len(physics.events), len(physics.causal_topology),
@@ -3045,7 +3339,7 @@ async def _extract_single_chunk_async(
             consequences_result = await consequences_agent.run(
                 consequences_msg, deps=consequences_deps, **_user_kwargs(),
             )
-            return consequences_result.output
+            consequences = consequences_result.output
         except Exception:
             logger.exception(
                 "[Step 3c·Async] Chunk %d FAILED — falling back to physics.entity_updates.",
@@ -3054,7 +3348,105 @@ async def _extract_single_chunk_async(
             failure_flags["consequences"] = 1
             return None
 
+        # Mutation-parity retry — see sync path for rationale.
+        missing_entities = _consequences_mutation_parity_broken(
+            physics, consequences,
+        )
+        if missing_entities:
+            logger.info(
+                "[Step 3c·Async] Chunk %d: mutation parity broken for "
+                "%d entit(y/ies) %s — retrying consequences …",
+                i + 1, len(missing_entities), missing_entities,
+            )
+            parity_msg = (
+                "IMPORTANT: The Physics Agent emitted mutation "
+                "causal edges that target the following entities, "
+                "but the previous extraction returned NO "
+                f"EntityUpdate for them: {missing_entities}. For "
+                "each one, emit at least one EntityUpdate "
+                "anchored on the triggering event's fabula_time, "
+                "with the new absolute trait values implied by "
+                "the mutation edge's trait_target / trait_delta "
+                "(and any implicit belief / status / location "
+                "changes the event causes). Keep all "
+                "EntityUpdates from your previous extraction.\n\n"
+                + consequences_msg
+            )
+            try:
+                parity_result = await consequences_agent.run(
+                    parity_msg, deps=consequences_deps, **_user_kwargs(),
+                )
+                parity_consequences = parity_result.output
+                new_missing = _consequences_mutation_parity_broken(
+                    physics, parity_consequences,
+                )
+                if len(new_missing) < len(missing_entities):
+                    consequences = parity_consequences
+                    logger.info(
+                        "[Step 3c·Async] Chunk %d: parity retry covered "
+                        "%d/%d missing entities.",
+                        i + 1,
+                        len(missing_entities) - len(new_missing),
+                        len(missing_entities),
+                    )
+            except Exception:
+                logger.exception(
+                    "[Step 3c·Async] Chunk %d parity retry FAILED.", i + 1,
+                )
+        return consequences
+
     social = await _run_social()
+
+    # Per-axis mutation_social coverage — async equivalent of the sync
+    # path's axis retry. Refines ``physics`` in-place before the
+    # consequences pass so any newly-added mutation_social edges are
+    # visible to consequences (and to the assembler downstream).
+    missing_axes = _physics_missing_mutation_social(physics, social)
+    if missing_axes:
+        logger.info(
+            "[Step 3a·Async] Chunk %d: missing mutation_social axes %s "
+            "— retrying physics with axis-specific emphasis …",
+            i + 1, missing_axes,
+        )
+        axis_msg = (
+            "IMPORTANT: The Social Agent observed non-zero "
+            f"relationship reading(s) on the following axes "
+            f"but the Physics Agent emitted NO matching "
+            f"mutation_social causal edge for them: "
+            f"{missing_axes}. For each axis, find the on-page "
+            "event that produced the reading and emit a "
+            "mutation_social edge with source_id=<that event>, "
+            "target_id=<perspective entity>, "
+            "rel_counterpart_id=<other entity>, "
+            "trait_target=<axis>, and a signed trait_delta. "
+            "Keep all events and causal edges from your "
+            "previous extraction.\n\n" + physics_msg
+        )
+        try:
+            axis_result = await physics_agent.run(
+                axis_msg, deps=physics_deps, **_user_kwargs(),
+            )
+            axis_physics = axis_result.output
+            new_missing = _physics_missing_mutation_social(
+                axis_physics, social,
+            )
+            if (
+                len(axis_physics.events) >= len(physics.events)
+                and len(new_missing) < len(missing_axes)
+            ):
+                physics = axis_physics
+                logger.info(
+                    "[Step 3a·Async] Chunk %d: axis retry covered "
+                    "%d/%d missing axes.",
+                    i + 1,
+                    len(missing_axes) - len(new_missing),
+                    len(missing_axes),
+                )
+        except Exception:
+            logger.exception(
+                "[Step 3a·Async] Chunk %d axis retry FAILED.", i + 1,
+            )
+
     consequences_out = await _run_consequences(social)
     if consequences_out is not None:
         entity_updates_final = consequences_out.entity_updates
