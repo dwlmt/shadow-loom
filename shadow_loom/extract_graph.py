@@ -114,11 +114,20 @@ def extract_ego_graph_from_memory(
     world_state: WorldStateV1,
     focus_entity_ids: List[str],
     temporal_anchor: Optional[int] = None,
-    memory_limit: int = 5
+    memory_limit: int = 5,
+    syuzhet_anchor: Optional[int] = None,
 ) -> EgoGraphPayload:
     
     """
     Calculates the union of localized Ego-Graphs for multiple entities.
+
+    The ``syuzhet_anchor`` (if provided) gates events by the reader's
+    position in the text: events whose ``syuzhet_index`` exceeds the
+    anchor have not yet been narrated and must not appear in
+    ``recent_memory`` or ``relevant_utterance_events``. The
+    ``temporal_anchor`` (fabula time) gates by chronological time.
+    Both filters are applied independently — an event must pass both
+    to be included.
     """
     logger.info("Initiating Multi-Ego GraphRAG for: %s", focus_entity_ids)
 
@@ -239,6 +248,8 @@ def extract_ego_graph_from_memory(
     valid_events = world_state.events
     if temporal_anchor is not None:
         valid_events = [evt for evt in valid_events if evt.fabula_time <= temporal_anchor]
+    if syuzhet_anchor is not None:
+        valid_events = [evt for evt in valid_events if evt.syuzhet_index <= syuzhet_anchor]
 
     valid_events = sorted(valid_events, key=lambda x: x.fabula_time, reverse=True)
     recent_memory = [evt.model_dump() for evt in valid_events[:memory_limit]]
@@ -281,6 +292,8 @@ def extract_ego_graph_from_memory(
         if evt.event_type != "utterance":
             continue
         if temporal_anchor is not None and evt.fabula_time > temporal_anchor:
+            continue
+        if syuzhet_anchor is not None and evt.syuzhet_index > syuzhet_anchor:
             continue
         participants = set(evt.actor_ids) | set(evt.target_ids) | set(evt.addressee_ids)
         if evt.speaker_id:
@@ -425,10 +438,159 @@ def extract_full_world_state(
 # 4. PROSE → TOPOLOGY EXTRACTION
 # ==========================================
 
+def promote_sandbox_spawns(
+    world_state: WorldStateV1,
+    physics_state: Dict[str, Any] | None,
+) -> Dict[str, Dict[str, Any]]:
+    """Promote ``world_id="shadow"`` spawn nodes from the sandbox into
+    typed canonical-world records.
+
+    The Causal Engine handles ``<ID>.spawn`` interventions by adding
+    new nodes to a Rung-2/3 sandbox tagged ``world_id="shadow"`` (see
+    :func:`shadow_loom.instantiator._intervene_genesis`). Those nodes
+    never enter the canonical :class:`WorldStateV1` unless we promote
+    them here, *before* prose re-extraction runs — otherwise the
+    re-extractor's :class:`GlobalRegister` will not know the new IDs
+    and will either drop references or invent duplicate IDs.
+
+    Returns a dict ``{"entities": {...}, "objects": {...},
+    "locations": {...}, "world_traits": {...}}`` keyed by canonical
+    ID. Caller is expected to attach these to a :class:`ChunkTopology`
+    via its ``new_*`` fields and pre-register them in the
+    extraction-time register.
+
+    Channels (``Channel`` capabilities) are *not* promoted here because
+    the social agent already creates standing :class:`Channel`
+    capabilities from prose; sandbox channel spawns flow through
+    ``ChunkTopology.channels`` in the normal merge path.
+
+    The function never raises — malformed sandbox payloads are skipped
+    and logged. Existing canonical IDs are skipped (idempotent).
+    """
+    from shadow_loom.models import (
+        Entity,
+        GlobalTrait,
+        Location,
+        NarrativeObject,
+        TraitVector,
+    )
+
+    out: Dict[str, Dict[str, Any]] = {
+        "entities": {},
+        "objects": {},
+        "locations": {},
+        "world_traits": {},
+    }
+    if not physics_state:
+        return out
+
+    nodes = physics_state.get("nodes") or []
+    for node in nodes:
+        try:
+            if node.get("world_id") != "shadow":
+                continue
+            node_id = node.get("id")
+            if not node_id:
+                continue
+            node_type = (node.get("node_type") or "").strip()
+
+            if node_type == "Entity":
+                if node_id in world_state.entities or node_id in out["entities"]:
+                    continue
+                name = node.get("name") or node_id
+                location_id = node.get("located_in") or node.get("location_id")
+                if not location_id:
+                    # Entity requires a location — skip if we cannot infer one.
+                    logger.warning(
+                        "[promote_sandbox_spawns] Skipping entity %s — no location_id.",
+                        node_id,
+                    )
+                    continue
+                ent = Entity(
+                    id=node_id,
+                    name=name,
+                    location_id=location_id,
+                    status=node.get("status", "healthy"),
+                    traits=node.get("traits", {}) or {},
+                    beliefs=node.get("beliefs", []) or [],
+                    constants=node.get("constants", []) or [],
+                    state_timeline=node.get("state_timeline", []) or [],
+                )
+                out["entities"][node_id] = ent
+
+            elif node_type == "NarrativeObject":
+                if node_id in world_state.objects or node_id in out["objects"]:
+                    continue
+                obj = NarrativeObject(
+                    id=node_id,
+                    name=node.get("name") or node_id,
+                    location_id=node.get("location_id") or node.get("located_in"),
+                    owner_id=node.get("owner_id"),
+                    properties=node.get("properties", {}) or {},
+                    affordances=node.get("affordances", []) or [],
+                )
+                out["objects"][node_id] = obj
+
+            elif node_type == "Location":
+                if node_id in world_state.locations or node_id in out["locations"]:
+                    continue
+                # Location's id is the dict key, not a model field.
+                loc = Location(
+                    name=node.get("name") or node_id,
+                    description=node.get("description", "") or "",
+                    ambient_state=node.get("ambient_state", {}) or {},
+                )
+                out["locations"][node_id] = loc
+
+            elif node_type in ("WorldTrait", "GlobalTrait"):
+                if node_id in world_state.world_traits or node_id in out["world_traits"]:
+                    continue
+                # GlobalTrait requires category + magnitude — supply
+                # neutral defaults if the sandbox payload omitted them.
+                magnitude_payload = node.get("magnitude")
+                if isinstance(magnitude_payload, TraitVector):
+                    magnitude = magnitude_payload
+                elif isinstance(magnitude_payload, dict):
+                    magnitude = TraitVector(**magnitude_payload)
+                else:
+                    magnitude = TraitVector(
+                        value=0.5, inertia=0.5, evidence_strength="moderate",
+                    )
+                wt = GlobalTrait(
+                    id=node_id,
+                    name=node.get("name") or node_id,
+                    description=node.get("description", "") or "",
+                    category=node.get("category", "social_structure"),
+                    magnitude=magnitude,
+                    affected_domains=node.get("affected_domains", []) or [],
+                    state_timeline=node.get("state_timeline", []) or [],
+                )
+                out["world_traits"][node_id] = wt
+            # Channels and EventNodes are handled by the normal social /
+            # physics extraction path; nothing to do here.
+        except Exception:
+            logger.exception(
+                "[promote_sandbox_spawns] Failed to promote sandbox node %r — skipped.",
+                node.get("id"),
+            )
+            continue
+
+    if any(out[k] for k in out):
+        logger.info(
+            "[promote_sandbox_spawns] Promoted spawns — entities=%d, objects=%d, "
+            "locations=%d, world_traits=%d.",
+            len(out["entities"]), len(out["objects"]),
+            len(out["locations"]), len(out["world_traits"]),
+        )
+    return out
+
+
 def extract_topology_from_prose(
     prose: str,
     world_state: WorldStateV1,
     config: "ExtractionConfig | None" = None,
+    *,
+    spawns: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> "ChunkTopology":
     """Extract graph topology from generated prose using the existing physics + social agents.
 
@@ -436,6 +598,13 @@ def extract_topology_from_prose(
     ontology extraction needed — the entities/locations/objects are already
     known) and then runs the physics and social extraction agents on the
     prose as a single chunk.
+
+    If ``spawns`` is provided (output of :func:`promote_sandbox_spawns`),
+    the new entities / objects / locations / world_traits are pre-registered
+    in the ``GlobalRegister`` so the extractor LLMs use the canonical
+    spawn IDs instead of inventing duplicates, and the resulting
+    :class:`ChunkTopology` carries them on its ``new_*`` fields so
+    ``VersionedWorldModel.merge`` records the genesis in the changeset.
 
     Returns a :class:`ChunkTopology` containing new events, edges, and
     entity state updates found in the prose.
@@ -456,11 +625,19 @@ def extract_topology_from_prose(
     if config is None:
         config = ExtractionConfig()
 
+    # Merge sandbox spawns into the registry so the LLM agents see them
+    # as canonical / known entities and refer to them by their spawn IDs.
+    spawns = spawns or {}
+    locations_known = {**world_state.locations, **spawns.get("locations", {})}
+    objects_known = {**world_state.objects, **spawns.get("objects", {})}
+    entities_known = {**world_state.entities, **spawns.get("entities", {})}
+    world_traits_known = {**world_state.world_traits, **spawns.get("world_traits", {})}
+
     register = GlobalRegister(
-        locations=world_state.locations,
-        objects=world_state.objects,
-        entities=world_state.entities,
-        world_traits=world_state.world_traits,
+        locations=locations_known,
+        objects=objects_known,
+        entities=entities_known,
+        world_traits=world_traits_known,
     )
 
     empty_scaffold = SocraticScaffold(qa_pairs=[])
@@ -497,6 +674,10 @@ def extract_topology_from_prose(
         entity_updates=physics_result.entity_updates,
         channels=social_result.channels,
         social_topology=social_result.social_topology,
+        new_entities=spawns.get("entities", {}),
+        new_objects=spawns.get("objects", {}),
+        new_locations=spawns.get("locations", {}),
+        new_world_traits=spawns.get("world_traits", {}),
     )
 
     logger.info(
@@ -522,6 +703,14 @@ class MergeChangeset(BaseModel):
     social_edges_added: int = 0
     entity_updates_applied: int = 0
     entity_updates_skipped: List[str] = Field(default_factory=list)
+    # Genesis-promoted nodes — populated when the upstream topology
+    # carries ``new_entities`` / ``new_objects`` / ``new_locations``
+    # / ``new_world_traits`` from a sandbox spawn. Default zero so
+    # plain ingestion merges still serialize unchanged.
+    entities_added: int = 0
+    objects_added: int = 0
+    locations_added: int = 0
+    world_traits_added: int = 0
 
 
 class WorldModelVersion(BaseModel):
@@ -742,7 +931,44 @@ class VersionedWorldModel(BaseModel):
                 re.world_id = world_id
             for ch in topology.channels.values():
                 ch.world_id = world_id
+            for ent in topology.new_entities.values():
+                ent.world_id = world_id
+            for obj in topology.new_objects.values():
+                obj.world_id = world_id
+            for loc in topology.new_locations.values():
+                loc.world_id = world_id
+            for wt in topology.new_world_traits.values():
+                wt.world_id = world_id
         changeset = MergeChangeset()
+
+        # --- Genesis-promoted nodes (entities / objects / locations /
+        # world_traits) — written first so subsequent edge / event /
+        # entity_update merges can reference them. Existing IDs are
+        # left untouched; only brand-new ones are added.
+        for eid, ent in topology.new_entities.items():
+            if eid in merged.entities:
+                logger.debug(
+                    "[VersionedWorldModel·merge] Spawn entity %s already exists — kept existing.",
+                    eid,
+                )
+                continue
+            merged.entities[eid] = ent
+            changeset.entities_added += 1
+        for oid, obj in topology.new_objects.items():
+            if oid in merged.objects:
+                continue
+            merged.objects[oid] = obj
+            changeset.objects_added += 1
+        for lid, loc in topology.new_locations.items():
+            if lid in merged.locations:
+                continue
+            merged.locations[lid] = loc
+            changeset.locations_added += 1
+        for wid, wt in topology.new_world_traits.items():
+            if wid in merged.world_traits:
+                continue
+            merged.world_traits[wid] = wt
+            changeset.world_traits_added += 1
 
         # --- Events (deduplicate by ID, keep existing) ---
         pre_events = len(merged.events)
@@ -835,12 +1061,15 @@ class VersionedWorldModel(BaseModel):
 
         logger.info(
             "[VersionedWorldModel] v%d → v%d: +%d events, +%d causal, "
-            "+%d spatial, +%d info, +%d social, %d entity updates (%d skipped).",
+            "+%d spatial, +%d info, +%d social, %d entity updates (%d skipped), "
+            "+%d entities, +%d objects, +%d locations, +%d world_traits.",
             self.version, next_version,
             changeset.events_added, changeset.causal_edges_added,
             changeset.spatial_edges_added, changeset.information_edges_added,
             changeset.social_edges_added, changeset.entity_updates_applied,
             len(changeset.entity_updates_skipped),
+            changeset.entities_added, changeset.objects_added,
+            changeset.locations_added, changeset.world_traits_added,
         )
 
         # Build snapshot list: carry forward existing + add current merged state

@@ -5,15 +5,13 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from nicegui import app, ui
 
-from shadow_loom.ingestion import ExtractionConfig, run_extraction
-from shadow_loom_ui import config, db
+from shadow_loom_ui import db
+from shadow_loom_ui.components.dialogs import build_ingest_dialog
 from shadow_loom_ui.theme import (
     CARD_CLS,
     CARD_TIGHT_CLS,
@@ -26,8 +24,6 @@ if TYPE_CHECKING:
     from shadow_loom_ui.state import AppState
 
 logger = logging.getLogger(__name__)
-
-_SAMPLE_DIR = Path(__file__).resolve().parent.parent.parent / "sample_plots"
 
 
 # =====================================================================
@@ -46,7 +42,7 @@ def build_dashboard(state: AppState) -> None:
                     "Neuro-symbolic reasoning for ancestral and parallel worlds."
                 ).classes("text-sm text-slate-500 italic -mt-1")
             with ui.row().classes("gap-2"):
-                ingest_dlg = _build_ingest_dialog(state)
+                ingest_dlg = build_ingest_dialog(state)
                 with ui.button(on_click=ingest_dlg.open).props(
                     "unelevated color=primary no-caps"
                 ).classes("rounded-lg shadow-sm"):
@@ -283,142 +279,3 @@ def _example_project_chip(state: AppState, example: dict) -> None:
     ui.chip(example["name"], icon="auto_stories", on_click=_use_example).props(
         "clickable outline color=secondary"
     )
-
-
-# =====================================================================
-# Ingest dialog — create new project from raw text
-# =====================================================================
-
-def _build_ingest_dialog(state: AppState) -> ui.dialog:
-    """Dialog for ingesting raw narrative text into a new project."""
-
-    dialog = ui.dialog().props("persistent maximized")
-
-    with dialog, ui.card().classes("w-full max-w-3xl"):
-        ui.label("Ingest Narrative Text").classes(
-            "text-xl font-semibold text-slate-800"
-        )
-        ui.label(
-            "Paste or upload raw story text. The pipeline will extract "
-            "entities, events, locations, objects, and all topology edges."
-        ).classes("text-sm text-slate-500")
-
-        project_name = ui.input("Project Name", value="New Story").classes("w-full")
-        project_desc = ui.input("Description (optional)").classes("w-full")
-        text_area = ui.textarea(
-            "Story Text",
-            placeholder="Paste the full narrative text here...",
-        ).classes("w-full").props("rows=15")
-
-        # File upload
-        ui.label("Or upload a .txt file:").classes("text-xs text-slate-500 mt-2")
-
-        async def _handle_upload(e):
-            content = e.content.read().decode("utf-8")
-            text_area.value = content
-            ui.notify(f"Loaded {len(content)} characters")
-
-        ui.upload(on_upload=_handle_upload, auto_upload=True).props(
-            "accept=.txt flat dense"
-        ).classes("w-full")
-
-        # Sample plots
-        if _SAMPLE_DIR.exists():
-            sample_files = sorted(_SAMPLE_DIR.glob("*.txt"))
-            if sample_files:
-                ui.label("Or load a sample plot:").classes("text-xs text-slate-500 mt-2")
-                sample_select = ui.select(
-                    options={str(f): f.stem.replace("_", " ").title()
-                             for f in sample_files},
-                    label="Sample",
-                ).classes("w-64")
-
-                def _load_sample():
-                    path = sample_select.value
-                    if path:
-                        text_area.value = Path(path).read_text(encoding="utf-8")
-                        project_name.value = Path(path).stem.replace("_", " ").title()
-
-                sample_select.on("update:model-value", _load_sample)
-
-        status = ui.label("").classes("text-sm text-slate-600 mt-2")
-        progress = ui.linear_progress(value=0, show_value=False).classes("w-full")
-        progress.set_visibility(False)
-
-        with ui.row().classes("w-full justify-end gap-2 q-mt-md"):
-            ui.button("Cancel", on_click=dialog.close).props("flat")
-
-            async def _run_ingestion():
-                text = text_area.value.strip()
-                if not text:
-                    ui.notify("Enter some text first", type="warning")
-                    return
-
-                status.set_text("Extracting world model from text...")
-                progress.set_visibility(True)
-                progress.value = 0.1
-
-                try:
-                    cfg = ExtractionConfig(
-                        chunk_strategy="act_headings",
-                        fabula_time_spacing=100,
-                        output_retries=5,
-                        max_correction_retries=1,
-                    )
-
-                    ws, report = await asyncio.to_thread(
-                        run_extraction, text, cfg,
-                    )
-                    progress.value = 0.8
-
-                    proj = db.create_project(
-                        name=project_name.value or "Untitled",
-                        raw_text=text,
-                        description=project_desc.value or None,
-                        owner_id=state.user_id,
-                    )
-                    ver = db.save_version(
-                        project_id=proj.id,
-                        world_state_json=ws.model_dump_json(),
-                        source="ingestion",
-                        description="Initial ingestion",
-                        user_id=state.user_id,
-                    )
-
-                    progress.value = 1.0
-                    status.set_text(
-                        f"Done! {len(ws.entities)} entities, {len(ws.events)} events, "
-                        f"{len(ws.locations)} locations. "
-                        f"Validation: {'PASS' if report.is_valid else 'FAIL'}"
-                    )
-
-                    # Log activity
-                    if state.user_id:
-                        try:
-                            db.log_activity(
-                                project_id=proj.id,
-                                action="ingestion",
-                                user_id=state.user_id,
-                                summary=f"Ingested story: {proj.name}",
-                                version_id=ver.id,
-                            )
-                        except Exception:
-                            pass
-
-                    ui.notify("World model created!", type="positive")
-                    await asyncio.sleep(0.5)
-                    dialog.close()
-                    ui.navigate.to(f"/project/{proj.id}")
-
-                except Exception as e:
-                    logger.exception("Ingestion failed")
-                    status.set_text(f"Error: {e}")
-                    ui.notify(f"Ingestion failed: {e}", type="negative")
-                finally:
-                    progress.set_visibility(False)
-
-            ui.button("Ingest", on_click=_run_ingestion, icon="auto_fix_high").props(
-                "unelevated color=primary no-caps"
-            ).classes("rounded-lg shadow-sm")
-
-    return dialog

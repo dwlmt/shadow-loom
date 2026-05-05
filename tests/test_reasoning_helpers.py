@@ -308,12 +308,14 @@ class _FakeFeedback:
 
 
 def test_convergence_trajectory_counts_critical_separately():
+    # ``cycle.iteration`` is 0-based in the data model; the helper
+    # exposes a 1-based label for the chart x-axis.
     fb = _FakeFeedback([
-        _FakeCycle(1, _FakeAudit(
+        _FakeCycle(0, _FakeAudit(
             [_FakeViolation("critical"), _FakeViolation("minor")],
             passed=False,
         )),
-        _FakeCycle(2, _FakeAudit(
+        _FakeCycle(1, _FakeAudit(
             [_FakeViolation("minor")], passed=True,
         )),
     ])
@@ -323,6 +325,7 @@ def test_convergence_trajectory_counts_critical_separately():
     assert rows[0]["violation_count"] == 2
     assert rows[0]["critical_count"] == 1
     assert rows[0]["passed"] is False
+    assert rows[1]["iteration"] == 2
     assert rows[1]["violation_count"] == 1
     assert rows[1]["critical_count"] == 0
     assert rows[1]["passed"] is True

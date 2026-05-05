@@ -495,6 +495,17 @@ def _append_result(messages: List[dict], result: NLQueryResult) -> None:
                 status = "converged" if pr.converged else "did not converge"
                 parts.append(f"{icon} *Audit: {status} ({pr.audit_iterations} iterations)*")
 
+            # Surface correction_error so users see when the loop
+            # bypass-passed (failed-open auditor) or aborted on a
+            # generation/refinement failure. Without this, those paths
+            # can show "converged" with no explanation of what happened.
+            fb_err = getattr(getattr(pr, "feedback_result", None), "correction_error", None)
+            if fb_err:
+                parts.append(f"⚠ *Auditor diagnostic: {fb_err}*")
+            if getattr(pr, "reextraction_failed", False):
+                rx_err = getattr(pr, "reextraction_error", None) or "re-extraction skipped"
+                parts.append(f"⚠ *World model not updated — {rx_err}*")
+
             # Engine threshold gate + achieved-vs-target intensity ─
             # surface deterministic affective metrics so the user sees
             # WHY the auditor said pass/fail without opening the

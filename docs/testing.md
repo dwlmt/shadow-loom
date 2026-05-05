@@ -1,11 +1,14 @@
 # Testing
 
-Shadow-Loom ships with a large pytest suite spread across **26 files** in
-[`tests/`](../tests/), totalling around 1,300 collected tests. The suite
+Shadow-Loom ships with a large pytest suite spread across **28 files** in
+[`tests/`](../tests/), totalling around 1,350 collected tests. The suite
 is organised by pipeline phase: every major module in
 [`shadow_loom/`](../shadow_loom/) has a focused unit-test file, and
 several integration files exercise the engines together end-to-end. All
-LLM calls are mocked by default; one optional file
+LLM calls are mocked by default — including the Q&A `answer_question`
+call, which an autouse fixture in [`tests/conftest.py`](../tests/conftest.py)
+stubs out so non-prose query types (`InterrogationQuery`,
+`GeneralQuery`) don't block on a live model. One optional file
 ([`test_live_e2e.py`](../tests/test_live_e2e.py)) runs against a real
 Ollama instance.
 
@@ -43,7 +46,7 @@ skipped automatically when Ollama is unreachable.
 
 Counts below are the number of `test_*` functions in each file (a single
 `pytest --collect-only` against the full repository currently reports
-roughly 1,300 tests across the 26 files; per-file totals drift as new
+roughly 1,350 tests across the 28 files; per-file totals drift as new
 tests are added).
 
 ### Core engine — unit tests
@@ -56,6 +59,8 @@ tests are added).
 | [test_directive_assembly.py](../tests/test_directive_assembly.py) | 67 | Epistemic-gap computation, trait trajectories, relationship tensions, full `CreativeBrief` assembly for each directive effect. | [`directive_assembly.py`](../shadow_loom/directive_assembly.py) |
 | [test_narrative_physics.py](../tests/test_narrative_physics.py) | 156 | All five core query types (observation, intervention, counterfactual, directive, interrogation) against real plot models; verifies returned graph structures reflect expected mutations. Largest unit-test file. | [`narrative_physics.py`](../shadow_loom/narrative_physics.py) |
 | [test_branch_routing.py](../tests/test_branch_routing.py) | 10 | `_resolve_branch_policy`, `VersionedWorldModel.merge(world_id=…)` re-tagging, `db.list_branches` DAG walk, and `db.promote_branch` lifecycle. Covers the factual / shadow split that backs the AMWN persisted branches. | [`pipeline.py`](../shadow_loom/pipeline.py), [`extract_graph.py`](../shadow_loom/extract_graph.py), [`db.py`](../shadow_loom/db.py) |
+| [test_spawn_promotion.py](../tests/test_spawn_promotion.py) | 17 | Sandbox → canonical promotion of `world_id="shadow"` spawn nodes (`Entity` / `NarrativeObject` / `Location` / `WorldTrait`) by `extract_graph.promote_sandbox_spawns`, idempotent re-runs, malformed-payload tolerance, and end-to-end pipeline path that re-extracts prose with the spawn IDs pre-registered in the `GlobalRegister`. | [`extract_graph.py`](../shadow_loom/extract_graph.py), [`pipeline.py`](../shadow_loom/pipeline.py) |
+| [test_query_anchors.py](../tests/test_query_anchors.py) | — | Story-point anchor parsing: `temporal_anchor` (fabula time), `syuzhet_anchor` (reader position), and `anchor_after_event_id` extraction from natural-language queries; threading through `extract_ego_graph_from_memory`. | [`query_parsing.py`](../shadow_loom/query_parsing.py), [`extract_graph.py`](../shadow_loom/extract_graph.py) |
 | [test_channel_belief_integration.py](../tests/test_channel_belief_integration.py) | 22 | End-to-end coverage of the channel/utterance refactor: parser handling of `channel.*` / `utterance_event_ids` interventions, instantiator preservation of utterance attrs through sandboxing, causal-physics belief-provenance pruning, AMWN channel-as-node d-separation, generation-prompt fidelity block, auditor leak detection, and intelligibility-weighted hidden channels in directive assembly. | cross-cutting |
 | [test_query_parsing.py](../tests/test_query_parsing.py) | 115 | Natural-language → typed query, dynamic Literal ID grounding, parser fallbacks. | [`query_parsing.py`](../shadow_loom/query_parsing.py) |
 | [test_generation.py](../tests/test_generation.py) | 22 | Helper functions in the constrained renderer — prompt assembly, retry logic, output validation. | [`generation.py`](../shadow_loom/generation.py) |
@@ -78,6 +83,10 @@ tests are added).
 | File | Tests | What it covers |
 |---|---:|---|
 | [test_mcp_server.py](../tests/test_mcp_server.py) | 63 | FastMCP server tool routing and resource serving against an in-memory SQLite DB seeded with the Macbeth fixture. LLM-calling paths mocked; computational paths run un-mocked. Auth tested in open mode (no bearer token). |
+| [test_mcp_consolidated.py](../tests/test_mcp_consolidated.py) | 35 | The four consolidated MCP tools (`discover` / `manage` / `author` / `trace`) that wrap the underlying scope-specific tools — payload validation, error envelopes, and routing. |
+| [test_research_extraction.py](../tests/test_research_extraction.py) | — | Background research pipeline: provider stubs, snippet → `WorldFact` extraction, dedup, JSON serialisation of `datetime` fields via `model_dump(mode="json")`. |
+| [test_research_tab_e2e.py](../tests/test_research_tab_e2e.py) | 14 | Research tab end-to-end with stubbed provider + agent: topic persistence, fact CRUD, and `lookup_and_persist_topic` happy-path. Pinned during the May 2026 audit that surfaced four field-name and serialisation regressions in the research tab. |
+| [test_project_settings.py](../tests/test_project_settings.py) | — | Per-project settings persistence (`research_topics`, `research_provider`) plus the MCP `manage(action="get_settings")` / `set_settings` envelope. |
 | [test_reasoning_helpers.py](../tests/test_reasoning_helpers.py) | 33 | `shadow_loom_ui.reasoning_helpers` — formatting and shaping of pipeline output for the UI. |
 | [test_viz_helpers.py](../tests/test_viz_helpers.py) | 26 | `shadow_loom_ui.viz_helpers` — Sankey DAG safety, fabula snapshot construction. |
 

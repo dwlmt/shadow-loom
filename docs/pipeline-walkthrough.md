@@ -311,6 +311,29 @@ A focused LLM pass extracts only the **delta** topology from the new prose:
 new events, new causal edges, entity updates, new beliefs. The prompt
 explicitly forbids re-extracting nodes that already exist.
 
+**Genesis spawns.** Before Step 6 runs, the pipeline calls
+[`promote_sandbox_spawns(ws, physics_state)`](../shadow_loom/extract_graph.py)
+to walk the Rung-2/3 sandbox for nodes tagged `world_id="shadow"` and
+promote them into typed canonical records (`Entity`, `NarrativeObject`,
+`Location`, `WorldTrait`). The resulting bucket is passed to
+`extract_topology_from_prose(..., spawns=...)`, which (a) pre-registers
+the new IDs in the `GlobalRegister` so the extractor LLMs use the
+canonical IDs instead of inventing duplicates, and (b) attaches them to
+the returned `ChunkTopology.new_*` fields so Step 7's merge records the
+genesis in its `MergeChangeset`. This closes the loop on
+`*.spawn` interventions: a directive that says "spawn a new character
+called Banquo's son" creates `ENT_FLEANCE` in the sandbox, promotes it
+to canonical via this step, and the rendered prose is re-extracted with
+`ENT_FLEANCE` as a known ID.
+
+**Generation-failure skip.** If `result.scene.generation_error` is set
+(the renderer fell back to a placeholder scene because the LLM call
+raised), Step 6 is skipped entirely — merging a `[Generation failed:
+...]` placeholder into the canonical world state would pollute the
+graph with junk. The pipeline sets `result.reextraction_failed = True`
+with an explanatory `reextraction_error` so the UI and MCP can surface
+the failure, and the prior world model is preserved unchanged.
+
 ### Step 7 — `VersionedWorldModel.merge`
 
 Merges the topology delta into a versioned **deep copy** of the model:
@@ -318,8 +341,10 @@ Merges the topology delta into a versioned **deep copy** of the model:
 * Tagged with `source="pipeline"` (or `"manual_edit"` for `write` tool calls).
 * Stores the prose alongside the new version.
 * Computes a `Changeset` (events_added, causal_edges_added,
-  entity_updates_applied, entity_updates_skipped) recorded as a
-  `ReextractionStepRecord`.
+  entity_updates_applied, entity_updates_skipped, plus the genesis
+  counters `entities_added` / `objects_added` / `locations_added` /
+  `world_traits_added` populated by `promote_sandbox_spawns`) recorded
+  as a `ReextractionStepRecord`.
 * Bumps `vwm.version`; the new `VersionedWorldModel` replaces
   `result.world_model`.
 * **Branch routing.** `PipelineConfig.branch_policy`

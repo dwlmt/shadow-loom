@@ -969,6 +969,106 @@ def ws_to_timeline_data(
     ]
 
 
+def events_at_times(
+    ws: WorldStateV1,
+    times: list[int],
+) -> dict[int, list[dict]]:
+    """Group events by fabula_time, restricted to ``times``.
+
+    Returned dict maps each time present in ``times`` to a list of
+    event dicts ``{id, event_type, description}``. Used by the
+    stepped-line timeline charts (entity / relationship / world-trait)
+    to overlay markers explaining *why* a value changed at a tick.
+    """
+    if not times:
+        return {}
+    wanted = set(times)
+    out: dict[int, list[dict]] = {}
+    for evt in ws.events:
+        if evt.fabula_time in wanted:
+            out.setdefault(evt.fabula_time, []).append({
+                "id": evt.id,
+                "event_type": evt.event_type,
+                "description": (evt.description or "")[:120],
+            })
+    return out
+
+
+def event_overlay_series(
+    ws: WorldStateV1,
+    times: list[int],
+    *,
+    name: str = "events",
+    y_value: float = 0.0,
+) -> dict | None:
+    """Build a scatter series overlaying event markers at ``times``.
+
+    For each fabula_time in ``times`` that has one or more events, emit
+    a single scatter point at ``(time_string, y_value)`` whose data
+    payload carries the event ids/types/descriptions. The
+    accompanying chart's ``tooltip.formatter`` (added by callers) then
+    surfaces the per-event detail on hover.
+
+    Returns ``None`` when no events fall on any of the chart's times,
+    so callers can ``if series: series.append(overlay)``.
+
+    The series is keyed off the chart's category x-axis (``time_str``)
+    so it lines up with stepped-line charts that also use the same
+    ``[str(t) for t in times]`` axis labels.
+    """
+    grouped = events_at_times(ws, times)
+    if not grouped:
+        return None
+    data: list[dict] = []
+    for t in times:
+        evs = grouped.get(t)
+        if not evs:
+            continue
+        # Compose a multi-line label; rendered via ``:formatter`` on
+        # the chart's tooltip (axis trigger picks this series up at the
+        # hovered category).
+        lines = "<br/>".join(
+            f"<b>{e['id']}</b> [{e['event_type']}]: {e['description']}"
+            for e in evs[:5]
+        )
+        if len(evs) > 5:
+            lines += f"<br/>… (+{len(evs) - 5} more)"
+        data.append({
+            "name": f"events@{t}",
+            "value": [str(t), y_value],
+            "events": evs,
+            "events_html": lines,
+            "symbolSize": 10 if len(evs) == 1 else 14,
+            "itemStyle": {
+                "color": EVENT_TYPE_COLORS.get(evs[0]["event_type"], "#607D8B"),
+                "borderColor": "#1e293b",
+                "borderWidth": 1,
+                "opacity": 0.85,
+            },
+        })
+    if not data:
+        return None
+    return {
+        "name": name,
+        "type": "scatter",
+        "data": data,
+        "symbol": "diamond",
+        "z": 20,
+        "tooltip": {
+            ":formatter": (
+                "function(p){"
+                " if(p.data && p.data.events_html){"
+                "  return '<b>Events at t=' + p.data.value[0] +"
+                "    '</b><br/>' + p.data.events_html;"
+                " }"
+                " return p.name;"
+                "}"
+            ),
+        },
+        "legendHoverLink": True,
+    }
+
+
 # ── World stats summary ───────────────────────────────────────────
 
 def ws_stats(ws: WorldStateV1) -> dict[str, int]:
@@ -1563,14 +1663,23 @@ def ws_to_parallel_data(
 
 def ws_to_gantt_data(
     ws: WorldStateV1,
+    *,
+    entity_ids: list[str] | None = None,
 ) -> tuple[list[str], list[dict]]:
     """Build Gantt/swim-lane data: actor lanes x event time spans.
 
+    ``entity_ids``: if provided, restrict the lanes to this subset of
+    entity IDs (in declaration order). Useful when a multi-select
+    upstream wants to focus on a few characters out of a large cast.
+
     Returns ``(actor_names, event_items)``.
     """
+    keep: set[str] | None = set(entity_ids) if entity_ids else None
     actor_ids: list[str] = []
     actor_names: list[str] = []
     for eid, ent in ws.entities.items():
+        if keep is not None and eid not in keep:
+            continue
         actor_ids.append(eid)
         actor_names.append(ent.name)
     actor_idx = {aid: i for i, aid in enumerate(actor_ids)}
@@ -1606,7 +1715,11 @@ _STATUS_COLORS: dict[str, str] = {
 }
 
 
-def ws_to_lifeline_data(ws: WorldStateV1) -> dict:
+def ws_to_lifeline_data(
+    ws: WorldStateV1,
+    *,
+    entity_ids: list[str] | None = None,
+) -> dict:
     """Build per-entity lifeline segments for ``render_entity_lifelines``.
 
     Each entity gets a chronological list of ``(start, end, status,
@@ -1614,6 +1727,10 @@ def ws_to_lifeline_data(ws: WorldStateV1) -> dict:
     initial state. Status changes drive segment colour; location
     changes are emitted separately as point markers so the lifeline
     "kinks" visibly at every move.
+
+    ``entity_ids``: if provided, restrict the lanes to this subset.
+    Useful when an upstream multi-select wants to focus on a few
+    characters out of a large cast.
 
     Returns ``{"entities": [(eid, name)],
               "segments": [{"row", "start", "end", "status",
@@ -1629,9 +1746,20 @@ def ws_to_lifeline_data(ws: WorldStateV1) -> dict:
             "events": [], "tmin": 0, "tmax": 0,
         }
 
+    keep: set[str] | None = set(entity_ids) if entity_ids else None
+    sel_entities = {
+        eid: ent for eid, ent in ws.entities.items()
+        if keep is None or eid in keep
+    }
+    if not sel_entities:
+        return {
+            "entities": [], "segments": [], "moves": [],
+            "events": [], "tmin": 0, "tmax": 0,
+        }
+
     # Time bounds from snapshots + events; fall back to a unit range.
     times: set[int] = set()
-    for ent in ws.entities.values():
+    for ent in sel_entities.values():
         for snap in ent.state_timeline:
             times.add(int(snap.fabula_time))
     for evt in ws.events:
@@ -1644,7 +1772,7 @@ def ws_to_lifeline_data(ws: WorldStateV1) -> dict:
             tmax = tmin + 1
 
     entities: list[tuple[str, str]] = [
-        (eid, ent.name) for eid, ent in ws.entities.items()
+        (eid, ent.name) for eid, ent in sel_entities.items()
     ]
     row_for = {eid: i for i, (eid, _) in enumerate(entities)}
 
@@ -1657,7 +1785,7 @@ def ws_to_lifeline_data(ws: WorldStateV1) -> dict:
         loc = ws.locations.get(lid)
         return loc.name if loc else lid
 
-    for eid, ent in ws.entities.items():
+    for eid, ent in sel_entities.items():
         row = row_for[eid]
         snaps = sorted(ent.state_timeline, key=lambda s: s.fabula_time)
         cur_status = ent.status

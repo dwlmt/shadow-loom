@@ -2089,6 +2089,36 @@ def run_feedback_loop(
     consecutive_failed_open = 0
     correction_error: Optional[str] = None
 
+    # Initial-scene generation failure short-circuit. ``render_scene``
+    # returns a placeholder GeneratedScene with ``generation_error``
+    # set when the LLM call raises. There is no useful prose to audit
+    # or refine against \u2014 every retry would just be the auditor
+    # complaining about the placeholder text \u2014 and downstream
+    # re-extraction/merge must not absorb the placeholder into the
+    # canonical world state. Exit immediately as non-converged with a
+    # diagnostic, mirroring the refinement-failure exit below.
+    if initial_scene.generation_error:
+        logger.error(
+            "[FeedbackLoop] Initial render failed (generation_error=%s) "
+            "\u2014 skipping audit/refinement loop and returning the "
+            "placeholder scene as non-converged.",
+            initial_scene.generation_error,
+        )
+        return FeedbackLoopResult(
+            final_scene=initial_scene,
+            converged=False,
+            iterations=0,
+            history=[],
+            final_graph_version=(versioned.version if versioned else 0),
+            change_impact=None,
+            correction_error=(
+                f"Initial render produced fallback scene: "
+                f"{initial_scene.generation_error}"
+            ),
+            engine_thresholds_passed=None,
+            engine_threshold_failures=[],
+        )
+
     # Up-front structural baseline. ``physics_result``, ``world_state``
     # and ``brief`` (the only inputs ``compute_*_feedback`` reads) are
     # invariant across iterations of this loop unless the brief is

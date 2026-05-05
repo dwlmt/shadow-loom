@@ -202,16 +202,8 @@ KNOWN_FLAT_AXIS_FIXTURES: dict[str, set[str]] = {
     # scheduled for the next re-ingestion pass under the strengthened
     # ``physics_extraction.md`` prompt. New fixtures must satisfy the
     # invariant — only legacy worlds may be grandfathered.
-    "affinity": {
-        "once_upon_a_time_in_the_west",
-        "the_devil_wears_prada",
-    },
-    "power_dynamic": {
-        "a_fish_called_wanda",
-        "apocalypse_now",
-        "once_upon_a_time_in_the_west",
-        "the_devil_wears_prada",
-    },
+    "affinity": set(),
+    "power_dynamic": set(),
 }
 
 

@@ -187,7 +187,7 @@ def calculate_narrative_physics(
             }
 
         logger.info("[Observation] Multi-Ego extraction for POV: %s", request.focus_entity_ids)
-        ego_graph = extract_ego_graph_from_memory(global_world_state, request.focus_entity_ids, temporal_anchor)
+        ego_graph = extract_ego_graph_from_memory(global_world_state, request.focus_entity_ids, temporal_anchor, syuzhet_anchor=syuzhet_anchor)
 
         return {
             "status": "success",
@@ -224,7 +224,7 @@ def calculate_narrative_physics(
         logger.info("[Intervention] Resolved focus entities: %s from %d interventions", focus_ids, len(request.interventions))
 
         # 1. Time-Slice
-        ego_graph = extract_ego_graph_from_memory(global_world_state, focus_ids, temporal_anchor)
+        ego_graph = extract_ego_graph_from_memory(global_world_state, focus_ids, temporal_anchor, syuzhet_anchor=syuzhet_anchor)
 
         # 2. Build Sandbox & Apply Math
         shadow_graph = AMWNInstantiator.create_sandbox(ego_graph.model_dump(), "intervention")
@@ -378,7 +378,7 @@ def calculate_narrative_physics(
 
         focus_ids = _resolve_focus_entities(request.historical_interventions, global_world_state)
         logger.info("[Counterfactual] Point of Divergence: T=%d | Focus: %s", past_anchor, focus_ids)
-        ego_graph = extract_ego_graph_from_memory(global_world_state, focus_ids, past_anchor)
+        ego_graph = extract_ego_graph_from_memory(global_world_state, focus_ids, past_anchor, syuzhet_anchor=syuzhet_anchor)
         shadow_graph = AMWNInstantiator.create_sandbox(ego_graph.model_dump(), "counterfactual")
         logger.info("[Counterfactual] Historical sandbox built — %d nodes. Applying surgeries.",
                      shadow_graph.number_of_nodes())
@@ -525,7 +525,7 @@ def calculate_narrative_physics(
                 fallback,
             )
 
-        ego_graph = extract_ego_graph_from_memory(global_world_state, target_entity_ids, temporal_anchor)
+        ego_graph = extract_ego_graph_from_memory(global_world_state, target_entity_ids, temporal_anchor, syuzhet_anchor=syuzhet_anchor)
         ego_dump = ego_graph.model_dump()
 
         if use_causal_engine:

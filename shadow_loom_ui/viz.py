@@ -10,6 +10,7 @@ transformations are delegated to ``viz_helpers``.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Callable, Optional
 
@@ -283,6 +284,10 @@ def render_world_graph(
 ) -> ui.echart:
     """Full world graph — force layout with adjacency highlighting."""
     nodes, links, cats = ws_to_graph_data(ws)
+    # Always-on labels collapse into illegible noise once the graph
+    # holds more than ~25 nodes. Above that, hide them and let users
+    # hover/click for the name; below, keep them on for readability.
+    show_labels = len(nodes) <= 25
     chart = ui.echart({
         "backgroundColor": _CHART_BG,
         "tooltip": {**_CHART_TOOLTIP, "trigger": "item"},
@@ -304,7 +309,7 @@ def render_world_graph(
                 "friction": 0.6,
             },
             "label": {
-                "show": True,
+                "show": show_labels,
                 "position": "right",
                 "fontSize": 10,
                 "color": _CHART_TEXT,
@@ -330,6 +335,7 @@ def render_ego_graph(
 ) -> ui.echart:
     """Ego-graph centered on *focus_ids* with gold-bordered focus nodes."""
     nodes, links, cats = ws_to_ego_graph_data(ws, focus_ids, max_hops=max_hops)
+    show_labels = len(nodes) <= 25
     chart = ui.echart({
         "backgroundColor": _CHART_BG,
         "tooltip": {**_CHART_TOOLTIP, "trigger": "item"},
@@ -349,7 +355,7 @@ def render_ego_graph(
                 "edgeLength": [60, 160],
                 "friction": 0.6,
             },
-            "label": {"show": True, "position": "right", "fontSize": 10, "color": _CHART_TEXT},
+            "label": {"show": show_labels, "position": "right", "fontSize": 10, "color": _CHART_TEXT},
             "lineStyle": {"curveness": 0.15, "opacity": 0.6},
         }],
     }).classes("w-full").style(f"height:{height}")
@@ -374,6 +380,11 @@ def render_social_graph(
     ensemble casts where force layouts collapse into hairballs).
     """
     nodes, links, cats = ws_to_social_graph_data(ws)
+    # Circular layout copes with larger casts; force layout collapses
+    # earlier. Pick a label threshold per layout.
+    show_labels = (
+        len(nodes) <= 30 if layout == "circular" else len(nodes) <= 20
+    )
     series_extra: dict = (
         {"layout": "circular", "circular": {"rotateLabel": True}}
         if layout == "circular"
@@ -394,7 +405,7 @@ def render_social_graph(
             "categories": cats,
             "data": nodes,
             "links": links,
-            "label": {"show": True, "position": "right", "fontSize": 11, "color": _CHART_TEXT},
+            "label": {"show": show_labels, "position": "right", "fontSize": 11, "color": _CHART_TEXT},
             "lineStyle": {"curveness": 0.2, "opacity": 0.7},
             **series_extra,
         }],
@@ -421,6 +432,7 @@ def render_spatial_map(
     matter through the world.
     """
     nodes, links, cats = ws_to_spatial_graph_data(ws)
+    show_labels = len(nodes) <= 25
     series: list[dict] = [{
         "type": "graph",
         "layout": "force",
@@ -431,7 +443,7 @@ def render_spatial_map(
         "data": nodes,
         "links": links,
         "force": {"repulsion": 250, "gravity": 0.2, "edgeLength": [60, 140]},
-        "label": {"show": True, "position": "right", "fontSize": 11, "color": _CHART_TEXT},
+        "label": {"show": show_labels, "position": "right", "fontSize": 11, "color": _CHART_TEXT},
         "lineStyle": {"curveness": 0.1, "opacity": 0.7},
     }]
     if animated and links:
@@ -489,23 +501,31 @@ def render_causal_sankey(
             "text-grey q-pa-md"
         )
 
-    # Add a dataZoom for large Sankeys (>40 nodes) so users can scroll
-    # the vertical extent without losing the big picture.
-    extra: dict = {}
-    if len(nodes) > 40:
-        extra["dataZoom"] = [{
-            "type": "slider",
-            "yAxisIndex": 0,
-            "orient": "vertical",
-            "right": 4,
-            "width": 12,
-            "show": True,
-        }]
+    # Top-N pruning: Sankeys become unreadable past ~40 nodes / 60
+    # links. Keep the strongest links by ``value`` (causal_force or
+    # equivalent) and drop nodes that no longer participate.
+    truncated = False
+    MAX_LINKS = 60
+    if len(links) > MAX_LINKS:
+        links_sorted = sorted(
+            links,
+            key=lambda l: float(l.get("value", 0) or 0),
+            reverse=True,
+        )
+        links = links_sorted[:MAX_LINKS]
+        live_ids = {l.get("source") for l in links} | {
+            l.get("target") for l in links
+        }
+        nodes = [n for n in nodes if n.get("name") in live_ids]
+        truncated = True
 
-    chart = ui.echart({
+    # Hide always-on labels above the comfortable label-stacking
+    # threshold; rely on tooltip + emphasis.
+    show_labels = len(nodes) <= 25
+
+    options: dict = {
         "backgroundColor": _CHART_BG,
         "tooltip": {**_CHART_TOOLTIP, "trigger": "item"},
-        **extra,
         "series": [{
             "type": "sankey",
             "data": nodes,
@@ -526,11 +546,24 @@ def render_causal_sankey(
                 "borderColor": _CHART_TEXT,
             },
             "label": {
+                "show": show_labels,
                 "color": _CHART_TEXT,
                 "fontSize": 10,
             },
         }],
-    }).classes("w-full").style(f"height:{height}")
+    }
+    if truncated:
+        options["title"] = {
+            "text": f"showing top {MAX_LINKS} flows by force",
+            "top": 4,
+            "left": "center",
+            "textStyle": {
+                "color": _CHART_TEXT,
+                "fontSize": 10,
+                "fontWeight": "normal",
+            },
+        }
+    chart = ui.echart(options).classes("w-full").style(f"height:{height}")
 
     if on_click:
         chart.on("click", on_click)
@@ -606,6 +639,13 @@ def render_relationship_heatmap(
         vmin, vmax = -1.0, 1.0
         ramp = ["#D8334A", "#94a3b8", "#6FBF3A"]
 
+    # Per-cell value labels are only legible up to ~12×12. Beyond
+    # that they collide and turn into noise; rely on the colour ramp
+    # + tooltip instead. Axis labels also need thinning at scale.
+    n = len(names)
+    show_labels = n <= 12
+    label_interval = 0 if n <= 25 else max(0, n // 25)
+
     chart = ui.echart({
         "backgroundColor": _CHART_BG,
         "tooltip": {**_CHART_TOOLTIP, "position": "top"},
@@ -613,13 +653,22 @@ def render_relationship_heatmap(
         "xAxis": {
             "type": "category",
             "data": names,
-            "axisLabel": {"rotate": 45, "color": _CHART_TEXT, "fontSize": 10},
+            "axisLabel": {
+                "rotate": 45,
+                "color": _CHART_TEXT,
+                "fontSize": 10,
+                "interval": label_interval,
+            },
             "splitArea": {"show": True},
         },
         "yAxis": {
             "type": "category",
             "data": names,
-            "axisLabel": {"color": _CHART_TEXT, "fontSize": 10},
+            "axisLabel": {
+                "color": _CHART_TEXT,
+                "fontSize": 10,
+                "interval": label_interval,
+            },
             "splitArea": {"show": True},
         },
         "visualMap": {
@@ -636,7 +685,7 @@ def render_relationship_heatmap(
             "type": "heatmap",
             "name": metric,
             "data": data,
-            "label": {"show": True, "fontSize": 9, "color": "#eee"},
+            "label": {"show": show_labels, "fontSize": 9, "color": "#eee"},
             "emphasis": {"itemStyle": {"shadowBlur": 10, "shadowColor": "rgba(0,0,0,0.5)"}},
         }],
     }).classes("w-full").style(f"height:{height}")
@@ -876,12 +925,24 @@ def _event_overlay_series(
         })
     if not data:
         return None
+    # Shrink markers as the event count grows so they don't smear
+    # into a continuous strip on dense timelines (~150+ events). Keep
+    # opacity-based decluttering so peaks remain visible.
+    n = len(data)
+    if n <= 30:
+        sym_size = 9
+    elif n <= 80:
+        sym_size = 7
+    elif n <= 200:
+        sym_size = 5
+    else:
+        sym_size = 3
     return {
         "name": "events",
         "type": "scatter",
         "data": data,
         "symbol": "diamond",
-        "symbolSize": 9,
+        "symbolSize": sym_size,
         "z": 5,
         "tooltip": {
             "trigger": "item",
@@ -1060,6 +1121,9 @@ def affective_timeseries_options(
             ),
         },
         "legend": {
+            # Scroll mode keeps long series lists usable instead of
+            # truncating them off-screen at high entity/trait counts.
+            "type": "scroll",
             "data": [s["name"] for s in plot_series],
             "textStyle": {"color": _CHART_TEXT},
             "top": 0,
@@ -1283,7 +1347,14 @@ def event_timeline_options(
         "type": "scatter",
         "name": "events",
         "data": scatter_data,
-        "symbolSize": 14,
+        # Scale point size so dense plots (150+ events) don't turn
+        # into a single overplotted blob, while sparse plots remain
+        # easily clickable.
+        "symbolSize": (
+            14 if len(scatter_data) <= 40
+            else 10 if len(scatter_data) <= 120
+            else 6
+        ),
         "emphasis": {"scale": 1.6},
         "label": {"show": False},
     }]
@@ -1339,6 +1410,29 @@ def event_timeline_options(
         "tooltip": {
             **_CHART_TOOLTIP,
             "trigger": "item",
+            # Each scatter point carries ``description`` and
+            # ``event_type`` (see ``ws_to_timeline_data``); surface
+            # them so the user knows *what* the hovered event was
+            # without clicking through.
+            ":formatter": (
+                "function(p){"
+                " var d = p.data || {};"
+                " var lines = ["
+                "  '<b>' + (d.name || p.name) + '</b>'"
+                " ];"
+                " if(d.event_type){"
+                "  lines.push('<i>' + d.event_type + '</i>');"
+                " }"
+                " if(d.value){"
+                "  lines.push('fabula t=' + d.value[0] +"
+                "    ', syuzhet s=' + d.value[1]);"
+                " }"
+                " if(d.description){"
+                "  lines.push(d.description);"
+                " }"
+                " return lines.join('<br/>');"
+                "}"
+            ),
         },
         "grid": {
             "top": 40,
@@ -1415,9 +1509,21 @@ def render_displacement_chart(
         "tooltip": {
             **_CHART_TOOLTIP,
             "trigger": "item",
-            "formatter": (
-                "function(p){return '<b>'+p.value[2]+'</b><br/>'"
-                "+'displacement: '+p.value[1]+'<br/>'+p.value[3];}"
+            # Per-bar tooltip: event id, the displacement value, and
+            # a short description of what happened. Uses the
+            # ``:formatter`` (colon-prefixed) NiceGUI convention so
+            # the JS body is evaluated rather than rendered as a
+            # literal string.
+            ":formatter": (
+                "function(p){"
+                " var v = p.value || [];"
+                " var disp = v[1];"
+                " var dir = disp > 0 ? 'foreshadowed' :"
+                "   (disp < 0 ? 'flashback' : 'in order');"
+                " return '<b>' + v[2] + '</b><br/>'"
+                "  + 'displacement: ' + disp + ' (' + dir + ')<br/>'"
+                "  + (v[3] || '');"
+                "}"
             ),
         },
         "grid": {"top": 30, "bottom": 50, "left": 50, "right": 20},
@@ -1444,8 +1550,13 @@ def render_displacement_chart(
             "data": rows,
             "encode": {"x": 0, "y": 1, "tooltip": [2, 1, 3]},
             "itemStyle": {
-                "color": (
-                    "function(p){return p.value[1] >= 0 ? '#3A7BD5' : '#D8334A';}"
+                # JS callback: bars above zero (foreshadow) blue,
+                # below zero (flashback) red. Colon prefix tells
+                # NiceGUI to evaluate the body as JS rather than
+                # serialise the string.
+                ":color": (
+                    "function(p){return p.value[1] >= 0"
+                    "  ? '#3A7BD5' : '#D8334A';}"
                 ),
             },
             "barMaxWidth": 18,
@@ -1483,6 +1594,14 @@ def render_entity_state_timeline(
             "itemStyle": {"color": colors[i % len(colors)]},
         })
 
+    # Overlay event markers at each fabula tick that has events, so the
+    # user can see *what happened* at a step change without leaving
+    # the chart. Anchored at y=0 (the trait scale midpoint).
+    from shadow_loom_ui.viz_helpers import event_overlay_series
+    overlay = event_overlay_series(ws, data["times"], y_value=0.0)
+    if overlay is not None:
+        series.append(overlay)
+
     return ui.echart({
         "backgroundColor": _CHART_BG,
         "title": {
@@ -1492,6 +1611,7 @@ def render_entity_state_timeline(
         },
         "tooltip": {**_CHART_TOOLTIP, "trigger": "axis"},
         "legend": {
+            "type": "scroll",
             "data": list(data["series"].keys()),
             "textStyle": {"color": _CHART_TEXT},
             "top": 24,
@@ -1555,6 +1675,12 @@ def render_relationship_timeline(
         for i, (metric, values) in enumerate(data["series"].items())
     ]
 
+    # Overlay event markers (see ``render_entity_state_timeline``).
+    from shadow_loom_ui.viz_helpers import event_overlay_series
+    overlay = event_overlay_series(ws, data["times"], y_value=0.0)
+    if overlay is not None:
+        series.append(overlay)
+
     return ui.echart({
         "backgroundColor": _CHART_BG,
         "title": {
@@ -1564,6 +1690,7 @@ def render_relationship_timeline(
         },
         "tooltip": {**_CHART_TOOLTIP, "trigger": "axis"},
         "legend": {
+            "type": "scroll",
             "data": list(data["series"].keys()),
             "textStyle": {"color": _CHART_TEXT},
             "top": 24,
@@ -1608,6 +1735,33 @@ def render_world_trait_timeline(
     wt = ws.world_traits.get(world_id)
     title = wt.name if wt else world_id
 
+    series_list: list[dict] = [
+        {
+            "name": "intensity",
+            "type": "line",
+            "step": "middle",
+            "data": data["value"],
+            "itemStyle": {"color": "#2EA6A0"},
+            "lineStyle": {"width": 2},
+            "areaStyle": {"opacity": 0.15},
+        },
+        {
+            "name": "inertia",
+            "type": "line",
+            "step": "middle",
+            "data": data["inertia"],
+            "itemStyle": {"color": "#8A5CF0"},
+            "lineStyle": {"width": 2, "type": "dashed"},
+        },
+    ]
+    # Overlay event markers (see ``render_entity_state_timeline``).
+    # World traits live on a 0–1 magnitude scale so we anchor the
+    # markers at 0.5 for visibility.
+    from shadow_loom_ui.viz_helpers import event_overlay_series
+    overlay = event_overlay_series(ws, data["times"], y_value=0.5)
+    if overlay is not None:
+        series_list.append(overlay)
+
     return ui.echart({
         "backgroundColor": _CHART_BG,
         "title": {
@@ -1639,25 +1793,7 @@ def render_world_trait_timeline(
             "axisLabel": {"color": _CHART_TEXT},
             "splitLine": {"lineStyle": {"color": "#333"}},
         },
-        "series": [
-            {
-                "name": "intensity",
-                "type": "line",
-                "step": "middle",
-                "data": data["value"],
-                "itemStyle": {"color": "#2EA6A0"},
-                "lineStyle": {"width": 2},
-                "areaStyle": {"opacity": 0.15},
-            },
-            {
-                "name": "inertia",
-                "type": "line",
-                "step": "middle",
-                "data": data["inertia"],
-                "itemStyle": {"color": "#8A5CF0"},
-                "lineStyle": {"width": 2, "type": "dashed"},
-            },
-        ],
+        "series": series_list,
     }).classes("w-full").style(f"height:{height}")
 
 
@@ -1668,7 +1804,7 @@ def render_version_tree(
     current_version_id: int | None = None,
     *,
     on_click: OnClick = None,
-    height: str = "300px",
+    height: str | None = None,
     orient: str = "vertical",
 ) -> ui.echart:
     """Tree layout of project version history.
@@ -1676,10 +1812,19 @@ def render_version_tree(
     ``orient='radial'`` switches to a radial layout (root in centre),
     helpful when many shadow branches diverge from a single factual
     spine.
+
+    ``height`` defaults to a node-count driven minimum so deep or
+    wide histories stay legible.
     """
     root = version_tree_to_echart_data(tree_data, current_version_id)
     if not root:
         return ui.label("No versions.").classes("text-grey text-caption")
+
+    if height is None:
+        # Tree depth/breadth correlates with len(tree_data); use that
+        # as a proxy for required height.
+        n = len(tree_data) if tree_data else 0
+        height = f"{max(300, 18 * n + 80)}px"
 
     is_radial = orient == "radial"
     series_layout: dict = (
@@ -1789,6 +1934,7 @@ def render_causal_force_graph(
         "backgroundColor": _CHART_BG,
         "tooltip": {**_CHART_TOOLTIP, "trigger": "item"},
         "legend": {
+            "type": "scroll",
             "data": [c["name"] for c in cats],
             "textStyle": {"color": _CHART_TEXT},
             "top": 0,
@@ -1901,6 +2047,14 @@ def render_epistemic_map(
     if not data:
         return ui.label("No belief data.").classes("text-grey q-pa-md")
 
+    # Drop per-cell text and thin axis ticks once the matrix grows
+    # past what the eye can resolve. Tooltip still gives the exact
+    # confidence on hover.
+    n_cells = max(len(ent_names), len(target_names))
+    show_labels = n_cells <= 12
+    x_interval = 0 if len(target_names) <= 25 else max(0, len(target_names) // 25)
+    y_interval = 0 if len(ent_names) <= 25 else max(0, len(ent_names) // 25)
+
     chart = ui.echart({
         "backgroundColor": _CHART_BG,
         "tooltip": {**_CHART_TOOLTIP, "position": "top"},
@@ -1910,7 +2064,12 @@ def render_epistemic_map(
             "data": target_names,
             "name": "Belief About",
             "nameTextStyle": {"color": _CHART_TEXT},
-            "axisLabel": {"rotate": 45, "color": _CHART_TEXT, "fontSize": 10},
+            "axisLabel": {
+                "rotate": 45,
+                "color": _CHART_TEXT,
+                "fontSize": 10,
+                "interval": x_interval,
+            },
             "splitArea": {"show": True},
         },
         "yAxis": {
@@ -1918,7 +2077,11 @@ def render_epistemic_map(
             "data": ent_names,
             "name": "Believer",
             "nameTextStyle": {"color": _CHART_TEXT},
-            "axisLabel": {"color": _CHART_TEXT, "fontSize": 10},
+            "axisLabel": {
+                "color": _CHART_TEXT,
+                "fontSize": 10,
+                "interval": y_interval,
+            },
             "splitArea": {"show": True},
         },
         "visualMap": {
@@ -1934,7 +2097,7 @@ def render_epistemic_map(
         "series": [{
             "type": "heatmap",
             "data": data,
-            "label": {"show": True, "fontSize": 9, "color": "#eee"},
+            "label": {"show": show_labels, "fontSize": 9, "color": "#eee"},
             "emphasis": {"itemStyle": {"shadowBlur": 10}},
         }],
     }).classes("w-full").style(f"height:{height}")
@@ -2178,6 +2341,7 @@ def render_chord_diagram(
     metric: str = "affinity",
     height: str = "400px",
     use_v6_chord: bool = True,
+    max_entities: int = 20,
 ) -> ui.echart:
     """Chord diagram showing bidirectional relationship strengths.
 
@@ -2186,6 +2350,10 @@ def render_chord_diagram(
     cleaner colouring. Older ECharts builds fall back to the circular
     ``graph`` layout automatically (the option spec is JSON; an unknown
     ``type`` is skipped silently).
+
+    ``max_entities`` caps the diagram at the top-N entities by total
+    relationship strength. Past ~20 the ribbons turn into an
+    indecipherable ball; pass a larger value to override.
     """
     names, matrix = ws_to_chord_data(ws, metric=metric)
     if not names or all(all(v == 0 for v in row) for row in matrix):
@@ -2196,6 +2364,27 @@ def render_chord_diagram(
     for i, row in enumerate(matrix):
         out_strength[names[i]] = sum(row)
     max_out = max(out_strength.values()) or 1.0
+
+    # Top-N filter by combined in/out strength so the busiest cast
+    # members survive; rebuild ``names``/``matrix`` accordingly.
+    truncated = False
+    if len(names) > max_entities:
+        in_strength = [sum(row[i] for row in matrix) for i in range(len(names))]
+        combined = [
+            (i, out_strength[names[i]] + in_strength[i]) for i in range(len(names))
+        ]
+        keep_idx = sorted(
+            [i for i, _ in sorted(combined, key=lambda x: x[1], reverse=True)[:max_entities]]
+        )
+        names = [names[i] for i in keep_idx]
+        matrix = [[matrix[i][j] for j in keep_idx] for i in keep_idx]
+        out_strength = {n: 0.0 for n in names}
+        for i, row in enumerate(matrix):
+            out_strength[names[i]] = sum(row)
+        max_out = max(out_strength.values()) or 1.0
+        truncated = True
+
+    show_labels = len(names) <= 24
 
     if use_v6_chord:
         # v6 chord series: nodes are named slices, links are matrix entries.
@@ -2218,13 +2407,27 @@ def render_chord_diagram(
         return ui.echart({
             "backgroundColor": _CHART_BG,
             "tooltip": {**_CHART_TOOLTIP, "trigger": "item"},
+            "title": (
+                {
+                    "text": f"top {max_entities} by relationship strength",
+                    "top": 4,
+                    "left": "center",
+                    "textStyle": {
+                        "color": _CHART_TEXT,
+                        "fontSize": 10,
+                        "fontWeight": "normal",
+                    },
+                }
+                if truncated
+                else {"show": False}
+            ),
             "series": [{
                 "type": "chord",
                 "data": chord_nodes,
                 "links": chord_links,
                 "minAngle": 1,
                 "padAngle": 1,
-                "label": {"show": True, "color": _CHART_TEXT, "fontSize": 11},
+                "label": {"show": show_labels, "color": _CHART_TEXT, "fontSize": 11},
                 "lineStyle": {"color": "gradient", "opacity": 0.55},
                 "emphasis": {"focus": "adjacency",
                               "lineStyle": {"opacity": 0.85}},
@@ -2282,11 +2485,31 @@ def render_parallel_coords(
     ws: WorldStateV1,
     *,
     height: str = "400px",
+    max_entities: int = 25,
 ) -> ui.echart:
-    """Parallel coordinates comparing all entities' trait profiles."""
+    """Parallel coordinates comparing all entities' trait profiles.
+
+    ``max_entities`` caps the line count to keep the chart from
+    devolving into spaghetti; the highest-magnitude profiles win
+    (sum of |trait values|).
+    """
     dimensions, data_rows, entity_names = ws_to_parallel_data(ws)
     if not dimensions or not data_rows:
         return ui.label("No trait data for parallel view.").classes("text-grey q-pa-md")
+
+    truncated = False
+    if len(data_rows) > max_entities:
+        # Rank entities by total magnitude across dimensions so the
+        # most expressive profiles survive the prune.
+        ranked = sorted(
+            range(len(data_rows)),
+            key=lambda i: sum(abs(v or 0) for v in data_rows[i]),
+            reverse=True,
+        )[:max_entities]
+        keep = sorted(ranked)
+        data_rows = [data_rows[i] for i in keep]
+        entity_names = [entity_names[i] for i in keep]
+        truncated = True
 
     colors = CHART_COLORS
 
@@ -2331,7 +2554,7 @@ def render_event_gantt(
     ws: WorldStateV1,
     *,
     on_click: OnClick = None,
-    height: str = "400px",
+    height: str | None = None,
     show_status_marks: bool = True,
 ) -> ui.echart:
     """Swim-lane Gantt chart: events grouped by actor, x = fabula_time.
@@ -2344,12 +2567,19 @@ def render_event_gantt(
     With ``show_status_marks=True`` an extra scatter series annotates
     each tick where an entity's ``status`` flips (e.g. ❌ on the
     fabula tick they die).
+
+    ``height`` defaults to a lane-driven minimum (≈ 22px per actor)
+    so casts of 30+ don't get crushed into 400px. Pass an explicit
+    height to override.
     """
     from shadow_loom_ui.viz_helpers import EVENT_TYPE_COLORS
 
     actor_names, items = ws_to_gantt_data(ws)
     if not items:
         return ui.label("No actor events for swim lanes.").classes("text-grey q-pa-md")
+
+    if height is None:
+        height = f"{max(400, 22 * len(actor_names) + 80)}px"
 
     # Each datum: [actor_idx, start, end, event_type, description, event_id]
     data = [
@@ -2554,9 +2784,12 @@ def render_sunburst(
             "emphasis": {"focus": "ancestor"},
             "levels": [
                 {},
-                {"r0": "10%", "r": "35%", "label": {"rotate": "tangential", "color": _CHART_TEXT, "fontSize": 11}},
-                {"r0": "35%", "r": "65%", "label": {"rotate": "tangential", "color": _CHART_TEXT, "fontSize": 9}},
-                {"r0": "65%", "r": "90%", "label": {"rotate": "tangential", "color": _CHART_TEXT, "fontSize": 8}},
+                # Outer rings: only show labels when the slice is wide
+                # enough to fit text (``minAngle``) so we don't blast
+                # tiny illegible characters around the rim.
+                {"r0": "10%", "r": "35%", "label": {"rotate": "tangential", "color": _CHART_TEXT, "fontSize": 11, "minAngle": 4}},
+                {"r0": "35%", "r": "65%", "label": {"rotate": "tangential", "color": _CHART_TEXT, "fontSize": 9, "minAngle": 6}},
+                {"r0": "65%", "r": "90%", "label": {"rotate": "tangential", "color": _CHART_TEXT, "fontSize": 8, "minAngle": 8}},
             ],
             "label": {"color": _CHART_TEXT},
             "itemStyle": {"borderWidth": 1, "borderColor": "#ffffff"},
@@ -2589,7 +2822,9 @@ def render_event_calendar(
         "tooltip": {
             **_CHART_TOOLTIP,
             "position": "top",
-            "formatter": "Bucket {b}: {c[1]} event(s)",
+            # Series data is ``[i, 0, count]`` so the count lives at
+            # ``c[2]``; ``c[1]`` is the constant y-row index.
+            "formatter": "Bucket {b}: {c[2]} event(s)",
         },
         "grid": {"left": 40, "right": 20, "top": 20, "bottom": 30},
         "xAxis": {
@@ -2839,7 +3074,7 @@ def render_entity_lifelines(
     ws: WorldStateV1,
     *,
     on_click: OnClick = None,
-    height: str = "320px",
+    height: str | None = None,
 ) -> ui.echart:
     """Per-entity lifelines: status segments + location moves + events.
 
@@ -2854,12 +3089,19 @@ def render_entity_lifelines(
     "Temporal" top diagram because the lifeline view answers "who is
     where, doing what, when" at a glance — the old chart only spoke
     when the user pre-selected an entity.
+
+    ``height`` defaults to a lane-driven minimum (≈ 24px per entity)
+    so 20-character casts don't overlap. Pass an explicit height to
+    override.
     """
     from shadow_loom_ui.viz_helpers import ws_to_lifeline_data, _STATUS_COLORS
 
     data = ws_to_lifeline_data(ws)
     if not data["entities"]:
         return ui.label("No entities to show.").classes("text-grey q-pa-md")
+
+    if height is None:
+        height = f"{max(320, 24 * len(data['entities']) + 100)}px"
 
     names = [n for _eid, n in data["entities"]]
     tmin, tmax = data["tmin"], data["tmax"]
@@ -3003,9 +3245,13 @@ def render_entity_lifelines(
                 "symbol": "diamond",
                 "symbolSize": 12,
                 "data": [
+                    # Embed the destination location in the value
+                    # array (slot 2) so the tooltip formatter can
+                    # read it natively — ECharts can't address
+                    # arbitrary custom keys from a template string.
                     {
-                        "value": [m[0], m[1]],
-                        "_loc": m[2],
+                        "value": [m[0], m[1], m[2]],
+                        "name": str(m[2]),
                     }
                     for m in move_points
                 ],
@@ -3016,9 +3262,7 @@ def render_entity_lifelines(
                 },
                 "z": 3,
                 "tooltip": {
-                    "formatter": "Moved → {@[2]}"
-                    # NB: ECharts can't read custom keys; this is a
-                    # best-effort label; falls back to raw value.
+                    "formatter": "Moved → {@[2]}",
                 },
             },
             # Event markers (small coloured dots)
@@ -3237,6 +3481,7 @@ def render_propagation_graph(
     if not nodes:
         return ui.label("No propagation data.").classes("text-grey q-pa-md")
 
+    show_labels = len(nodes) <= 25
     chart = ui.echart({
         "backgroundColor": _CHART_BG,
         "tooltip": {**_CHART_TOOLTIP, "trigger": "item"},
@@ -3252,7 +3497,7 @@ def render_propagation_graph(
             "force": {"repulsion": 280, "gravity": 0.12, "edgeLength": [60, 140]},
             "edgeSymbol": ["none", "arrow"],
             "edgeSymbolSize": [0, 8],
-            "label": {"show": True, "position": "right",
+            "label": {"show": show_labels, "position": "right",
                        "fontSize": 10, "color": _CHART_TEXT},
             "emphasis": {"focus": "adjacency"},
         }],
@@ -3381,6 +3626,7 @@ def render_trait_radar_compare(
         "backgroundColor": _CHART_BG,
         "tooltip": _CHART_TOOLTIP,
         "legend": {
+            "type": "scroll",
             "data": [s["name"] for s in data["series"]],
             "textStyle": {"color": _CHART_TEXT},
             "top": 4,
@@ -3461,11 +3707,29 @@ def render_audit_passrate_pictorial(
     if not labels:
         return ui.label("No audit history.").classes("text-grey q-pa-md")
 
+    # Pre-index by label so the JS tooltip formatter can look up the
+    # full row (passed/total/converged) rather than just the label/value
+    # the chart sees natively.
+    rows_by_label = {r["iteration"]: r for r in _rows}
+
     return ui.echart({
         "backgroundColor": _CHART_BG,
         "tooltip": {
             **_CHART_TOOLTIP,
-            "formatter": "{b}: {c}",
+            "trigger": "item",
+            ":formatter": (
+                "function(p){"
+                f" var rows = {json.dumps(rows_by_label)};"
+                " var r = rows[p.name] || {};"
+                " var pct = (p.value * 100).toFixed(0);"
+                " var line1 = '<b>' + p.name + '</b>: ' + pct + '%';"
+                " var line2 = (r.passed != null && r.total != null) ?"
+                "   ('passed ' + r.passed + ' of ' + r.total + ' checks') : '';"
+                " var line3 = r.converged ? '\u2713 auditor passed this iteration'"
+                "   : 'auditor still flagged issues';"
+                " return [line1, line2, line3].filter(Boolean).join('<br/>');"
+                "}"
+            ),
         },
         "grid": {"top": 30, "bottom": 40, "left": 50, "right": 20},
         "xAxis": {

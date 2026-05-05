@@ -25,7 +25,10 @@ import asyncio
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Tuple
+
+if TYPE_CHECKING:
+    from shadow_loom.research import WorldFact
 
 from pydantic import BaseModel, Field, model_validator
 from pydantic_ai import Agent, ModelRetry, NativeOutput, RunContext
@@ -127,6 +130,12 @@ class ChunkTopology(BaseModel):
     ``channels`` carries standing :class:`Channel` capabilities
     extracted by the Social Agent, replacing the legacy
     ``information_topology`` field.
+
+    The ``new_*`` collections carry brand-new ontology nodes promoted
+    from a Rung-2/3 sandbox after a ``.spawn`` (genesis) intervention.
+    They are empty for plain ingestion chunks; the pipeline populates
+    them when a query introduces characters / objects / locations /
+    world-traits that did not exist in the canonical world state.
     """
     events: List[EventNode] = Field(default_factory=list)
     causal_topology: List[CausalEdge] = Field(default_factory=list)
@@ -134,6 +143,11 @@ class ChunkTopology(BaseModel):
     social_topology: List[RelationshipEdge] = Field(default_factory=list)
     spatial_topology: List[SpatialEdge] = Field(default_factory=list)
     entity_updates: List["EntityUpdate"] = Field(default_factory=list)
+    # Genesis spawns (post-physics promotion). Keyed by canonical id.
+    new_entities: Dict[str, Entity] = Field(default_factory=dict)
+    new_objects: Dict[str, NarrativeObject] = Field(default_factory=dict)
+    new_locations: Dict[str, Location] = Field(default_factory=dict)
+    new_world_traits: Dict[str, GlobalTrait] = Field(default_factory=dict)
 
 
 class QAPair(BaseModel):
@@ -3005,7 +3019,7 @@ def _run_research_step(
 
         # Build the user message — minimal, structured.
         snippet_block = "\n\n".join(
-            f"[{i+1}] {s.title}\nURL: {s.url}\n{s.snippet}"
+            f"[{i+1}] {s.title}\nURL: {s.url}\n{s.content}"
             for i, s in enumerate(snippets)
         )
         user_msg = (
@@ -3088,7 +3102,7 @@ async def _run_research_step_async(
             continue
 
         snippet_block = "\n\n".join(
-            f"[{i+1}] {s.title}\nURL: {s.url}\n{s.snippet}"
+            f"[{i+1}] {s.title}\nURL: {s.url}\n{s.content}"
             for i, s in enumerate(snippets)
         )
         user_msg = (
@@ -4849,6 +4863,13 @@ async def run_extraction_async(
 
     config = config or ExtractionConfig()
     logger.info("[Pipeline·Async] Starting extraction with model=%s, strategy=%s", config.model, config.chunk_strategy)
+
+    # Prepare user context for cost tracking
+    user_context = {
+        'user_id': user_id,
+        'project_id': project_id,
+        'version_id': version_id,
+    }
 
     # Step 1: Global Ontology (parallel 1b + 1c)
     # Step 1: Extract ontology

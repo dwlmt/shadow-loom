@@ -165,6 +165,25 @@ the most recent render.
   the same convention: per-iteration cycle prose, pass-rate table and
   violations list render before the pass-rate pictorial and
   convergence trajectory chart.
+* **Per-tile help popovers.** Every hero score tile (Cognitive
+  plausibility, Foreshadowing, Emotional fit) and every diagnostic row
+  (Quality thresholds, Achieved intensity, Audit pass-rate per
+  iteration, Convergence trajectory) carries an inline ⓘ popover that
+  explains what the metric measures, the score bands (`strong` /
+  `needs work` / `weak`), and how to read the chart. Click the icon
+  to read the in-product documentation; click anywhere else to
+  dismiss.
+* **Failure diagnostics surfaced inline.** When the feedback loop
+  bypass-passes (failed-open auditor) or aborts on a generation /
+  refinement LLM failure, the `correction_error` is rendered as an
+  amber "Auditor diagnostic" row right under the Converged badge.
+  When `result.reextraction_failed` is true (Step 6 skipped because
+  the renderer produced a `[Generation failed: ...]` placeholder
+  scene) a "World model not updated" amber row appears with the
+  `reextraction_error`. The chat card shows the same diagnostics so
+  users see them without opening the Audit tab.
+* Iteration numbers in cycle headers and chart x-axes are 1-indexed
+  (the data model stores them 0-indexed; the UI converts).
 * Note on cognitive plausibility: a character holding a belief that is
   contradicted by reality is treated as *dramatic irony*, not as a
   plausibility violation. The deterministic
@@ -270,7 +289,16 @@ and no Save button.
   scaffolding. Promoting a research finding into canon is a deliberate,
   manual step taken in the Editor tab.
 * A status strip at the top of the tab shows in-flight lookups, the
-  number of stored facts per topic, and the last refresh time.
+  number of stored facts per topic, and the last refresh time. The Run
+  buttons are gated on `settings.core.tavily_api_key` being present
+  *and* `settings.extraction.enable_research_agent` being true; if
+  either is missing the buttons stay disabled with an explanatory
+  tooltip.
+* Snippets surfaced in the topic preview render the provider's
+  `content` field (the long-form excerpt). The cached
+  `raw_snippets_json` blob serialises each snippet via
+  `model_dump(mode="json")` so `datetime` fields round-trip safely
+  through `json.dumps`.
 
 ## 9. Export tab
 
