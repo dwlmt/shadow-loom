@@ -832,6 +832,10 @@ world_state = WorldStateV1(
         # ─── per-axis coverage for newly-observed antagonism / bond axes ───
         CausalEdge(source_id="EVT_DO_LUNG_BRIDGE", target_id="ENT_COLBY", rel_counterpart_id="ENT_KURTZ", causality_type="mutation_social", trait_target="affinity", trait_delta=0.8, mechanism="epistemic", evidence_strength="strong", causal_force=6.0, fabula_time=4500, propagation_delay=0),
         CausalEdge(source_id="EVT_DO_LUNG_BRIDGE", target_id="ENT_COLBY", rel_counterpart_id="ENT_KURTZ", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.8, mechanism="epistemic", evidence_strength="strong", causal_force=6.0, fabula_time=4500, propagation_delay=0),
+        # Symmetric inverse: Kurtz's dominance over Colby (the prior assassin he turned)
+        # is established at the same Do Lung knowledge-pivot; without this edge the
+        # (KURTZ, COLBY) power_dynamic dyad reads as a flat baseline on the gauge.
+        CausalEdge(source_id="EVT_DO_LUNG_BRIDGE", target_id="ENT_KURTZ", rel_counterpart_id="ENT_COLBY", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.8, mechanism="epistemic", evidence_strength="strong", causal_force=6.0, fabula_time=4500, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ───────────────────────────────────────────────

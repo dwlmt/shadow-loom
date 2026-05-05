@@ -651,6 +651,22 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_UTT_HARMONICA_PLAYS_THEME", target_id="EVT_FRANK_DIES",
                    causality_type="chain_reaction", mechanism="psychological", evidence_strength="strong",
                    causal_force=6.0, fabula_time=3300, propagation_delay=50),
+
+        # ─── auto-patched mutation_social edges (per-axis coverage) ───
+        # Each observed affinity / power_dynamic dyad on the social topology
+        # needs at least one ``mutation_social`` causal edge with the matching
+        # ``trait_target`` so the corresponding gauge is not flat across the
+        # fabula timeline. These edges anchor the static baselines to the
+        # canonical events that establish them.
+        CausalEdge(source_id="EVT_FLASHBACK_HANGING", target_id="ENT_HARMONICA", rel_counterpart_id="ENT_FRANK", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.95, mechanism="emotional", evidence_strength="strong", causal_force=10.0, fabula_time=3300, propagation_delay=0),
+        CausalEdge(source_id="EVT_HARMONICA_ARRIVES", target_id="ENT_FRANK", rel_counterpart_id="ENT_HARMONICA", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.5, mechanism="psychological", evidence_strength="strong", causal_force=6.0, fabula_time=200, propagation_delay=0),
+        CausalEdge(source_id="EVT_HARMONICA_SAVES_JILL", target_id="ENT_HARMONICA", rel_counterpart_id="ENT_JILL", causality_type="mutation_social", trait_target="affinity", trait_delta=0.55, mechanism="emotional", evidence_strength="strong", causal_force=6.0, fabula_time=1700, propagation_delay=0),
+        CausalEdge(source_id="EVT_MCBAIN_FAMILY_MURDER", target_id="ENT_JILL", rel_counterpart_id="ENT_FRANK", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.85, mechanism="emotional", evidence_strength="strong", causal_force=9.0, fabula_time=300, propagation_delay=0),
+        CausalEdge(source_id="EVT_HARMONICA_MEETS_CHEYENNE", target_id="ENT_CHEYENNE", rel_counterpart_id="ENT_JILL", causality_type="mutation_social", trait_target="affinity", trait_delta=0.65, mechanism="emotional", evidence_strength="moderate", causal_force=5.0, fabula_time=1400, propagation_delay=0),
+        CausalEdge(source_id="EVT_MORTON_HIRES_FRANK", target_id="ENT_MORTON", rel_counterpart_id="ENT_FRANK", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.4, mechanism="social", evidence_strength="strong", causal_force=6.0, fabula_time=100, propagation_delay=0),
+        CausalEdge(source_id="EVT_MORTON_HIRES_FRANK", target_id="ENT_FRANK", rel_counterpart_id="ENT_MORTON", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.4, mechanism="social", evidence_strength="strong", causal_force=6.0, fabula_time=100, propagation_delay=0),
+        CausalEdge(source_id="EVT_FRANK_FORCES_JILL", target_id="ENT_JILL", rel_counterpart_id="ENT_FRANK", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.7, mechanism="physical", evidence_strength="strong", causal_force=8.0, fabula_time=1800, propagation_delay=0),
+        CausalEdge(source_id="EVT_FRANK_FORCES_JILL", target_id="ENT_FRANK", rel_counterpart_id="ENT_JILL", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.7, mechanism="physical", evidence_strength="strong", causal_force=8.0, fabula_time=1800, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────

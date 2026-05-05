@@ -699,6 +699,19 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_BREAKUP_WITH_ALEX", target_id="EVT_UTT_ALEX_PARTING_LINE",
                    causality_type="chain_reaction", mechanism="emotional", evidence_strength="strong",
                    causal_force=5.0, fabula_time=9500, propagation_delay=0),
+
+        # ─── auto-patched mutation_social edges (per-axis coverage) ───
+        # Anchor each remaining observed affinity / power_dynamic dyad to a
+        # canonical event so its gauge contribution actually evolves across
+        # the fabula timeline rather than reading as a flat baseline.
+        CausalEdge(source_id="EVT_MOVE_TO_NYC", target_id="ENT_ALEX", rel_counterpart_id="ENT_ANDREA", causality_type="mutation_social", trait_target="affinity", trait_delta=0.55, mechanism="emotional", evidence_strength="strong", causal_force=5.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PARIS_CHRISTIAN_ENCOUNTER", target_id="ENT_ANDREA", rel_counterpart_id="ENT_CHRISTIAN", causality_type="mutation_social", trait_target="affinity", trait_delta=0.5, mechanism="emotional", evidence_strength="moderate", causal_force=5.0, fabula_time=7800, propagation_delay=0),
+        CausalEdge(source_id="EVT_PARIS_CHRISTIAN_ENCOUNTER", target_id="ENT_CHRISTIAN", rel_counterpart_id="ENT_ANDREA", causality_type="mutation_social", trait_target="affinity", trait_delta=0.5, mechanism="emotional", evidence_strength="moderate", causal_force=5.0, fabula_time=7800, propagation_delay=0),
+        CausalEdge(source_id="EVT_HIRED_AS_JR_ASSISTANT", target_id="ENT_EMILY", rel_counterpart_id="ENT_ANDREA", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.55, mechanism="social", evidence_strength="strong", causal_force=6.0, fabula_time=2500, propagation_delay=0),
+        CausalEdge(source_id="EVT_EMILY_MONONUCLEOSIS", target_id="ENT_ANDREA", rel_counterpart_id="ENT_EMILY", causality_type="mutation_social", trait_target="affinity", trait_delta=0.2, mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=6500, propagation_delay=0),
+        CausalEdge(source_id="EVT_MOVE_TO_NYC", target_id="ENT_ANDREAS_PARENTS", rel_counterpart_id="ENT_ANDREA", causality_type="mutation_social", trait_target="affinity", trait_delta=0.95, mechanism="emotional", evidence_strength="strong", causal_force=5.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PARIS_CHRISTIAN_ENCOUNTER", target_id="ENT_CHRISTIAN", rel_counterpart_id="ENT_ANDREA", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.4, mechanism="social", evidence_strength="moderate", causal_force=5.0, fabula_time=7800, propagation_delay=0),
+        CausalEdge(source_id="EVT_HIRED_AS_JR_ASSISTANT", target_id="ENT_EMILY", rel_counterpart_id="ENT_ANDREA", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.4, mechanism="social", evidence_strength="strong", causal_force=6.0, fabula_time=2500, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────

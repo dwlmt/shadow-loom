@@ -900,6 +900,11 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_GEORGE_INFORMS_ARCHIE_ABOUT_KEN", target_id="ENT_GEORGE", rel_counterpart_id="ENT_KEN", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.4, mechanism="betrayal", evidence_strength="strong", causal_force=7.0, fabula_time=20000, propagation_delay=0),
         CausalEdge(source_id="EVT_WANDA_BETRAYS_GEORGE", target_id="ENT_GEORGE", rel_counterpart_id="ENT_WANDA", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.7, mechanism="betrayal", evidence_strength="strong", causal_force=8.0, fabula_time=3000, propagation_delay=0),
         CausalEdge(source_id="EVT_WANDA_BETRAYS_GEORGE", target_id="ENT_GEORGE", rel_counterpart_id="ENT_OTTO", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.7, mechanism="betrayal", evidence_strength="strong", causal_force=8.0, fabula_time=3000, propagation_delay=0),
+        # Symmetric inverses: Wanda's and Otto's leverage *over* George
+        # is what the betrayal sets up — without these the (WANDA, GEORGE)
+        # and (OTTO, GEORGE) power_dynamic dyads stay flat on the gauge.
+        CausalEdge(source_id="EVT_WANDA_BETRAYS_GEORGE", target_id="ENT_WANDA", rel_counterpart_id="ENT_GEORGE", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.7, mechanism="betrayal", evidence_strength="strong", causal_force=8.0, fabula_time=3000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WANDA_BETRAYS_GEORGE", target_id="ENT_OTTO", rel_counterpart_id="ENT_GEORGE", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.7, mechanism="betrayal", evidence_strength="strong", causal_force=8.0, fabula_time=3000, propagation_delay=0),
     ],
     spatial_topology=[
         SpatialEdge(source_id="LOC_HEATHROW", target_id="LOC_GEORGE_FLAT"),
