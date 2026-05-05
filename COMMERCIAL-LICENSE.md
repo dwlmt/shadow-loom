@@ -85,14 +85,26 @@ and you are unable or unwilling to comply with AGPLv3 § 13:
 * You are running Shadow Loom in a regulated environment whose
   procurement rules forbid AGPL-licensed components.
 
-You **do not** need the commercial license if **all** of the following
-apply:
+You **do not** need the commercial license if **either** of the
+following applies:
 
-* Your use of Shadow Loom is internal to your own organisation, and
-  you do not expose it as a service to external users; **or**
+* Your use of Shadow Loom is **internal to a single legal entity** —
+  the modified or unmodified version is made available only to
+  employees, contractors, or members of that entity acting in that
+  capacity, and is not exposed to users outside it (whether free,
+  paid, public, or behind authentication). Sharing a deployment
+  across separate legal entities (parent / subsidiary, contractor /
+  client, multi-tenant SaaS) is **not** internal use for these
+  purposes; **or**
 * You are willing to license your full combined work under AGPLv3 and
   to make the corresponding source available to your users in
   compliance with AGPLv3 § 13.
+
+Note that even strictly-internal use of an *unmodified* upstream
+build does not by itself trigger § 13; the obligation arises when a
+*modified* covered work is made available to users over a network.
+The internal-use bullet above is a conservative summary, not a
+licence amendment.
 
 When in doubt, ask. Compliance is cheaper than a dispute.
 
@@ -208,14 +220,21 @@ not a substitute for legal advice.**
 * Prompt templates, schemas, and configuration files distributed with
   Shadow Loom.
 
-**Considered NOT a derivative / NOT a combined work** (in the
-maintainer's good-faith interpretation, and subject to the
-limitations below):
+**Arm's-length interactions the maintainer does not, on their own,
+treat as creating a "modified version" or "work based on" Shadow
+Loom under AGPLv3 §§ 0 and 5** (interpretive guidance only — the
+courts, not the maintainer, ultimately decide derivative-work
+status, and the obligations of AGPLv3 § 13 are *not* affected by
+anything in this section):
 
-* **API consumers** that interact with Shadow Loom only through its
-  documented HTTP, MCP, or CLI interfaces, exchanging data over a
-  network or process boundary, without linking against Shadow Loom
-  code in the same process.
+* **Out-of-process API consumers.** A program that interacts with
+  Shadow Loom *solely* through its documented HTTP, MCP, or
+  command-line interfaces — over a network socket, pipe, or
+  separate-process boundary — and that does **not** import, link,
+  embed, vendor, or otherwise load any Shadow Loom source or
+  compiled artifact into its own address space, is communicating at
+  arm's length. Such interaction alone is not, in the maintainer's
+  view, sufficient to make the consumer a covered work.
 * **Independent services** running in separate containers or
   processes that communicate with Shadow Loom only through the
   interfaces above, where the consumer does not embed, redistribute,
@@ -230,26 +249,80 @@ limitations below):
 
 **Limitations on the above interpretation:**
 
-1. Distributing a modified Shadow Loom (even behind an API) still
-   triggers AGPLv3 § 13 — running the modified version on a public
-   network requires offering its corresponding source to users.
-2. Re-exporting Shadow Loom's internals through a thin API shim
-   purely to evade copyleft is not a good-faith integration and is
-   treated as a derivative work.
-3. Bundling Shadow Loom into the same distribution package, container
-   image, or installer as proprietary code may create a combined work
-   under AGPLv3 § 5 even when the runtime communication is over a
-   socket. When in doubt, isolate Shadow Loom in its own container or
-   service and obtain a commercial licence for tightly-coupled
-   embeddings.
-4. This section is not a licence exception. It explains how the
-   maintainer reads AGPLv3 in typical integration patterns; the
-   AGPLv3 itself remains the binding text.
+1. **AGPLv3 § 13 is unaffected.** Anyone who modifies Shadow Loom
+   and makes the modified version available to users over a network
+   — including making it reachable through the very HTTP, MCP, or
+   CLI interfaces named above — must offer those users the
+   Corresponding Source of the modified Shadow Loom. The arm's-length
+   reading concerns the *consumer's* code, not the operator's
+   obligations as a Shadow Loom modifier.
+2. **No additional permission is granted.** This section is
+   interpretive guidance, not an additional permission under
+   AGPLv3 § 7, and is not a license exception. The AGPLv3 itself
+   remains the binding text and the maintainer cannot waive
+   downstream recipients' rights under it.
+3. **In-process use is a combined work.** Importing any Shadow Loom
+   Python package (`shadow_loom`, `shadow_loom_mcp`, `shadow_loom_ui`,
+   or any submodule), subclassing its types, vendoring its source,
+   or statically/dynamically linking against it places the resulting
+   program inside the covered work regardless of whether it also
+   speaks to a separate Shadow Loom instance over a socket.
+4. **Anti-evasion.** Re-exporting Shadow Loom's internals through a
+   thin API shim, RPC wrapper, or fork-and-rename whose purpose is to
+   keep proprietary code in the same address space while pretending
+   the boundary is at the network is not a good-faith arm's-length
+   integration and is treated as a derivative work.
+5. **Bundling.** Shipping Shadow Loom in the same distribution
+   package, container image, installer, or virtual environment as
+   proprietary code may create a combined work under AGPLv3 § 5 even
+   when runtime communication is over a socket. When in doubt,
+   isolate Shadow Loom in its own container or service and obtain a
+   commercial licence for tightly-coupled embeddings.
+6. **Specific patterns are fact-specific.** This section does not
+   opine on whether any *particular* integration is arm's length;
+   that determination depends on facts the maintainer cannot verify
+   in advance.
 
 If you are unsure whether your integration crosses the line, **ask
 before shipping**. The maintainer can usually confirm in writing that
 a specific integration pattern does not require a commercial licence,
 or offer one if it does.
+
+### 7a. Additional permissions under AGPLv3 § 7
+
+For the avoidance of doubt, **no additional permissions are granted
+under AGPLv3 § 7** in respect of the AGPLv3-licensed distribution of
+Shadow Loom. The AGPLv3 text in [`LICENSE`](LICENSE) is the complete
+statement of the permissions granted to recipients of the
+open-source build. In particular:
+
+* No linking exception, classpath exception, or system-library
+  exception is granted. Any program that links Shadow Loom into the
+  same address space (importing `shadow_loom`, `shadow_loom_mcp`,
+  `shadow_loom_ui`, or any submodule; subclassing their types;
+  vendoring or statically/dynamically linking their compiled output)
+  forms a combined work under AGPLv3 § 5 and must itself be licensed
+  under AGPLv3 unless covered by a separately executed commercial
+  agreement under § 4 above.
+* No § 13 waiver is granted. Operators of modified versions of
+  Shadow Loom must continue to offer Corresponding Source to remote
+  users as required by AGPLv3 § 13.
+* The interpretive guidance in § 7 of this document (arm's-length
+  network use) is **not** an additional permission under AGPLv3 § 7.
+  It is the maintainer's good-faith reading of how AGPLv3 §§ 0 and 5
+  already apply to typical integration patterns; it does not modify
+  the licence and confers no rights that the licence itself does not
+  already confer.
+* Recipients of the AGPLv3 build may not add their own further
+  restrictions to the licence beyond those AGPLv3 § 7 itself
+  permits, and may not represent that any such additional
+  permissions originate from the maintainer.
+
+If at some future date the maintainer wishes to grant an additional
+permission (for example, an explicit linking exception for a named
+compatible licence), it will be added in this section as a numbered
+sub-clause and dated. Until then, treat the permissions in AGPLv3
+as exhaustive.
 
 ---
 

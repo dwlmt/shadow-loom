@@ -31,4 +31,27 @@ If you have not entered into a separate commercial agreement with the
 copyright holder, your use of Shadow Loom is governed solely by the
 AGPLv3 in LICENSE.
 
+----------------------------------------------------------------------
+Related documents
+----------------------------------------------------------------------
+
+  LICENSE              The full text of AGPL-3.0-or-later.
+  COMMERCIAL-LICENSE.md  The commercial-license offering and the
+                       maintainer's interpretive guidance on the
+                       AGPLv3 project boundary (§ 7 / § 7a).
+  CLA.md               The Contributor License Agreement that
+                       grants the maintainer the licence-back
+                       required to keep the dual-licence model.
+  AUTHORS.md           Roll of copyright holders.
+  TRADEMARK.md         Policy on use of the "Shadow Loom" name and
+                       marks. AGPLv3 § 7 expressly allows this kind
+                       of trademark restriction; nothing in LICENSE
+                       grants trademark rights.
+  NOTICE.md            Third-party attributions (in particular,
+                       in-copyright works summarised under
+                       example_worlds/ and sample_plots/).
+  CONTENT-POLICY.md    Acceptable-use guidance for the upstream
+                       hosted instance.
+  REUSE.toml           SPDX coverage manifest; run `reuse lint`.
+
 Contact: david.wilmot@gmail.com
