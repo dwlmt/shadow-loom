@@ -69,6 +69,21 @@ context priming. Every tool also checks **per-project membership** via
 `check_project_access(...)` so a `read`-scoped key cannot read another user's
 private project.
 
+**Per-project role enforcement.** `check_project_access(project_id, ctx, *, min_role=…)`
+takes a `min_role` discriminator (`"viewer" < "editor" < "admin"`) so
+mutating tools require a project-level role above bare membership. The
+project owner always passes; public projects only grant `viewer`-level
+access. Current call sites:
+
+| `min_role` | Tools |
+|---|---|
+| `viewer` (default) | All read paths, `set_active_version` (per-user pointer), `fork` (creates new project under caller) |
+| `editor` | `set_project_settings`, `branch`, `delete_version`, `reparent_version` |
+| `admin` | `share`, `delete_project` |
+
+A scoped-but-under-roled call returns `{"error": "min_role=admin required …"}`
+instead of executing.
+
 The fail-closed default means a tool returns `{"error": "missing scope: write"}`
 rather than executing if the bearer token is unknown or under-scoped.
 

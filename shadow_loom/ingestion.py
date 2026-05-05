@@ -3292,6 +3292,31 @@ def _build_research_agent(
     return agent
 
 
+_FACT_ID_RE = re.compile(r"^FACT_(\d+)$")
+
+
+def _next_fact_index(facts: List[Any]) -> int:
+    """Return the next collision-free numeric suffix for a FACT_ id.
+
+    Uses ``max(existing numeric suffix) + 1`` rather than ``len + 1``
+    so sparse / hand-edited fact lists don't generate ids that collide
+    with surviving entries (e.g. FACT_001, FACT_003 \u2192 next-by-length
+    would re-emit FACT_003).
+    """
+    highest = 0
+    for f in facts:
+        fid = getattr(f, "id", None)
+        if not isinstance(fid, str):
+            continue
+        m = _FACT_ID_RE.match(fid)
+        if m:
+            try:
+                highest = max(highest, int(m.group(1)))
+            except ValueError:
+                continue
+    return highest + 1
+
+
 def _run_research_step(
     world_state: WorldStateV1,
     config: ExtractionConfig,
@@ -3315,21 +3340,44 @@ def _run_research_step(
     )
 
     try:
+        # ``build_provider`` accepts a small fixed kwarg set
+        # (``api_key``, ``search_depth``) plus provider-specific extras
+        # forwarded into the provider constructor. Historically we
+        # passed ``provider_model`` / ``max_results`` here, but the
+        # Tavily constructor accepts neither and the call would raise
+        # silently into the broad ``except`` below — making research
+        # "work" only on the no-op NullProvider. ``provider_model`` is
+        # used as the Tavily search-depth ("basic" or "advanced");
+        # ``max_results`` is per-search and is forwarded into the
+        # ``provider.search`` call below instead of construction.
+        provider_kwargs: dict = {}
+        depth = (config.research_provider_model or "").strip().lower()
+        if depth in {"basic", "advanced"}:
+            provider_kwargs["search_depth"] = depth
         provider = build_provider(
             config.research_provider,
-            provider_model=config.research_provider_model or None,
-            max_results=config.research_max_results_per_query,
+            **provider_kwargs,
         )
     except Exception:
         logger.exception("[Pipeline·Research] failed to build provider — skipping.")
         return world_state
 
     agent = _build_research_agent(config)
-    next_idx = len(world_state.world_facts) + 1
+    # Compute the next FACT id from the highest existing numeric suffix
+    # rather than ``len(world_facts) + 1``. The latter collides when
+    # facts have been hand-edited / partially deleted upstream and the
+    # surviving id sequence is sparse (e.g. FACT_001, FACT_003 → next
+    # by length is FACT_003 again).
+    next_idx = _next_fact_index(world_state.world_facts)
 
     for topic in config.research_topics:
         try:
-            snippets: List[ResearchSnippet] = list(provider.search(topic))
+            snippets: List[ResearchSnippet] = list(
+                provider.search(
+                    topic,
+                    max_results=config.research_max_results_per_query,
+                )
+            )
         except Exception:
             logger.exception("[Pipeline·Research] provider.search failed for topic=%r", topic)
             continue
@@ -3396,23 +3444,32 @@ async def _run_research_step_async(
     )
 
     try:
+        # See ``_run_research_step`` for why we don't pass
+        # provider_model / max_results into ``build_provider``.
+        provider_kwargs: dict = {}
+        depth = (config.research_provider_model or "").strip().lower()
+        if depth in {"basic", "advanced"}:
+            provider_kwargs["search_depth"] = depth
         provider = build_provider(
             config.research_provider,
-            provider_model=config.research_provider_model or None,
-            max_results=config.research_max_results_per_query,
+            **provider_kwargs,
         )
     except Exception:
         logger.exception("[Pipeline·Research·Async] failed to build provider — skipping.")
         return world_state
 
     agent = _build_research_agent(config)
-    next_idx = len(world_state.world_facts) + 1
+    next_idx = _next_fact_index(world_state.world_facts)
 
     for topic in config.research_topics:
         try:
             # Provider.search is sync (Tavily client is sync); run in thread.
             snippets: List[ResearchSnippet] = list(
-                await asyncio.to_thread(provider.search, topic)
+                await asyncio.to_thread(
+                    provider.search,
+                    topic,
+                    config.research_max_results_per_query,
+                )
             )
         except Exception:
             logger.exception("[Pipeline·Research·Async] provider.search failed for topic=%r", topic)
@@ -3925,6 +3982,25 @@ deduplicate_causal = _deduplicate_causal
 deduplicate_channels = _deduplicate_channels
 
 
+def _snapshot_sort_key(s) -> tuple:
+    """Stable, deterministic sort key for snapshot lists.
+
+    Primary: ``fabula_time``. Secondary keys break ties when two extraction
+    runs (or correction patches) produce snapshots with identical fabula
+    times — without them, sort order depends on insertion order, which is
+    non-deterministic under async chunk processing. Works for both
+    :class:`EntityStateSnapshot` and :class:`WorldTraitSnapshot`.
+    """
+    return (
+        getattr(s, "fabula_time", 0),
+        getattr(s, "triggered_by", None) or "",
+        getattr(s, "status", None) or "",
+        getattr(s, "location_id", None) or "",
+        len(getattr(s, "traits", None) or {}),
+        len(getattr(s, "beliefs_added", None) or []),
+    )
+
+
 def _coalesce_snapshots(
     snaps: List[EntityStateSnapshot],
 ) -> List[EntityStateSnapshot]:
@@ -4147,7 +4223,7 @@ def assemble_world_state(
         objects=register.objects,
         entities={
             eid: (
-                ent.model_copy(update={"state_timeline": sorted(all_entity_updates[eid], key=lambda s: s.fabula_time)})
+                ent.model_copy(update={"state_timeline": sorted(all_entity_updates[eid], key=_snapshot_sort_key)})
                 if eid in all_entity_updates
                 else ent
             )
@@ -5591,7 +5667,7 @@ def _apply_world_state_patch(
                     snap.model_copy(update=snap_update) if snap_update else snap
                 )
             merged = list(ent.state_timeline) + normalised_extras
-            merged.sort(key=lambda s: s.fabula_time)
+            merged.sort(key=_snapshot_sort_key)
             update["state_timeline"] = merged
             changes.append(
                 f"Appended {len(normalised_extras)} state_timeline snapshot(s) to entity '{eid}'."
@@ -5801,6 +5877,22 @@ def _is_correction_regression(
             f"spatial_topology shrank from {len(before.spatial_topology)} "
             f"to {len(after.spatial_topology)} (>50% loss)"
         )
+    # Channels and world-traits are *narrative ontology* — a correction
+    # patch dropping more than half of either is almost certainly a
+    # destructive hallucination. Channel loss in particular silently
+    # severs every belief / utterance provenance edge that pointed at
+    # the dropped CHN_, which the existing belief-provenance warnings
+    # only surface *after* corruption has been persisted.
+    if before.channels and _ratio(len(after.channels), len(before.channels)) < 0.5:
+        return (
+            f"channels shrank from {len(before.channels)} to "
+            f"{len(after.channels)} (>50% loss)"
+        )
+    if before.world_traits and _ratio(len(after.world_traits), len(before.world_traits)) < 0.5:
+        return (
+            f"world_traits shrank from {len(before.world_traits)} to "
+            f"{len(after.world_traits)} (>50% loss)"
+        )
     return None
 
 
@@ -5944,6 +6036,7 @@ def _run_correction_patch(
     patch: WorldStatePatch = result.output
     if (
         not patch.event_renames
+        and not patch.channel_renames
         and not patch.drop_event_ids
         and not patch.update_event_fields
         and not patch.update_entity_location
@@ -6132,7 +6225,7 @@ def extract_world_trait_timelines(
     changes_applied = 0
     for wid, wt in ws.world_traits.items():
         if wid in extraction.timelines and extraction.timelines[wid]:
-            sorted_timeline = sorted(extraction.timelines[wid], key=lambda s: s.fabula_time)
+            sorted_timeline = sorted(extraction.timelines[wid], key=_snapshot_sort_key)
             updated_traits[wid] = wt.model_copy(update={"state_timeline": sorted_timeline})
             changes_applied += 1
             logger.info(
@@ -6188,7 +6281,7 @@ async def extract_world_trait_timelines_async(
     changes_applied = 0
     for wid, wt in ws.world_traits.items():
         if wid in extraction.timelines and extraction.timelines[wid]:
-            sorted_timeline = sorted(extraction.timelines[wid], key=lambda s: s.fabula_time)
+            sorted_timeline = sorted(extraction.timelines[wid], key=_snapshot_sort_key)
             updated_traits[wid] = wt.model_copy(update={"state_timeline": sorted_timeline})
             changes_applied += 1
             logger.info(

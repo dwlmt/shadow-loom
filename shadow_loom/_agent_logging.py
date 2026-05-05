@@ -24,6 +24,8 @@ from __future__ import annotations
 import inspect
 import json
 import logging
+import os
+import re
 import time
 from contextlib import contextmanager
 from typing import Any, Dict, Optional
@@ -38,6 +40,45 @@ _LANGFUSE_LOGGER = logging.getLogger(__name__)
 _LANGFUSE_CLIENT: Any | None = None
 _LANGFUSE_DISABLED = False
 _INSTRUMENTED = False
+
+# ---------------------------------------------------------------------
+# PII redaction
+# ---------------------------------------------------------------------
+# Narrative content is intentionally verbose, so we don't try to scrub
+# every name — that would defeat the point of the system. We DO scrub
+# operationally-leaked credentials and contact identifiers that might
+# end up in a prompt or agent output by mistake (a directive that
+# echoes the operator's email back, a stack trace embedding a bearer
+# token, an envvar dump, etc.). Disable per-call by setting
+# ``SHADOW_LOOM_DISABLE_LOG_REDACTION=1``.
+_REDACTORS: tuple[tuple[re.Pattern[str], str], ...] = (
+    # E-mail addresses
+    (re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b"), "[REDACTED_EMAIL]"),
+    # Shadow-Loom bearer tokens (prefixed sl_)
+    (re.compile(r"\bsl_[A-Za-z0-9_\-]{16,}\b"), "[REDACTED_SL_TOKEN]"),
+    # Generic API keys (sk-…, pk-…, key-…) — body may contain dashes/underscores
+    (re.compile(r"\b(?:sk|pk|key)[-_][A-Za-z0-9_\-]{16,}\b"), "[REDACTED_API_KEY]"),
+    # Bearer tokens in Authorization headers
+    (re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._\-]+"), r"\1[REDACTED]"),
+    # Credit-card-like 13-19 digit runs (with optional spaces / dashes)
+    (re.compile(r"\b(?:\d[ -]?){13,19}\b"), "[REDACTED_PAN]"),
+)
+
+
+def redact_pii(text: str) -> str:
+    """Scrub well-known credential / contact patterns from *text*.
+
+    Conservative on purpose: it removes things that are *almost
+    certainly* sensitive (emails, our own bearer-token format, common
+    third-party API-key prefixes, Authorization-header bearer tokens,
+    credit-card-like digit runs) and leaves narrative content alone.
+    """
+    if not text or os.environ.get("SHADOW_LOOM_DISABLE_LOG_REDACTION", "").lower() in {"1", "true", "yes", "on"}:
+        return text
+    redacted = text
+    for pattern, replacement in _REDACTORS:
+        redacted = pattern.sub(replacement, redacted)
+    return redacted
 
 # Database logging (imported lazily to avoid circular imports)
 _DB_LOGGING_AVAILABLE = True
@@ -74,6 +115,7 @@ def _safe_prompt_preview(prompt: Any, max_chars: int = 1000) -> str:
         text = str(prompt)
     except Exception:
         return "<unserializable prompt>"
+    text = redact_pii(text)
     if max_chars > 0 and len(text) > max_chars:
         return text[:max_chars] + f"... [+{len(text) - max_chars} chars]"
     return text
@@ -125,7 +167,7 @@ def _log_to_langfuse(
     payload: dict[str, Any] = {
         "name": f"shadow-loom.{agent_name}",
         "input": _safe_prompt_preview(prompt) if prompt is not None else None,
-        "output": _serialise(output) if output is not None else None,
+        "output": redact_pii(_serialise(output)) if output is not None else None,
         "metadata": metadata or {},
     }
     if error is not None:
@@ -564,6 +606,7 @@ def log_agent_output(
         to a non-positive number to disable truncation.
     """
     payload = _serialise(output)
+    payload = redact_pii(payload)
     if max_chars > 0 and len(payload) > max_chars:
         payload = payload[:max_chars] + f"... [+{len(payload) - max_chars} chars]"
     logger.info("[%s] Agent output: %s", agent_name, payload)

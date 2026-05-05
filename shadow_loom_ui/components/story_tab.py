@@ -19,6 +19,7 @@ from nicegui import ui
 from shadow_loom_ui import db
 from shadow_loom_ui.state import AppState, StateEvent
 from shadow_loom_ui.task_helpers import capture_logs_to_task, notify_task_complete
+from shadow_loom_ui.components._safe_md import safe_markdown
 
 if TYPE_CHECKING:
     pass
@@ -442,4 +443,4 @@ def _render_prose(state: AppState, container) -> None:
                         ui.badge(label, color=color).props("dense outline")
 
                 # Prose content
-                ui.markdown(prose)
+                safe_markdown(prose)

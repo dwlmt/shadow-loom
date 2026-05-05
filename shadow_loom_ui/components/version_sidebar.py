@@ -22,6 +22,7 @@ import logging
 from nicegui import ui
 
 from shadow_loom_ui import db
+from shadow_loom_ui.components._safe_md import safe_markdown
 from shadow_loom_ui.state import AppState, StateEvent
 from shadow_loom_ui.viz import render_version_tree
 
@@ -665,7 +666,7 @@ def _open_diff_dialog(
                 ui.label("Factual head").classes(
                     "text-xs font-semibold text-emerald-700"
                 )
-                ui.markdown(
+                safe_markdown(
                     factual_row.prose or "_(no prose)_",
                 ).classes(
                     "text-sm bg-emerald-50 p-2 rounded border "
@@ -675,7 +676,7 @@ def _open_diff_dialog(
                 ui.label("Shadow branch").classes(
                     "text-xs font-semibold text-violet-700"
                 )
-                ui.markdown(
+                safe_markdown(
                     shadow_row.prose or "_(no prose)_",
                 ).classes(
                     "text-sm bg-violet-50 p-2 rounded border "

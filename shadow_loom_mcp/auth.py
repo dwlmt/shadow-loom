@@ -173,27 +173,48 @@ def require_scope(ctx: Context, scope: str) -> Optional[str]:
 
 # ── Project access check ─────────────────────────────────────────
 
+# Role hierarchy used for ``min_role`` enforcement. Higher index =
+# stronger permission. ``viewer`` is read-only; ``editor`` may mutate
+# project content; ``admin`` may manage members and project settings.
+_ROLE_RANK = {"viewer": 0, "editor": 1, "admin": 2}
+
+
 def check_project_access(
     project_id: int,
     ctx: Context,
+    *,
+    min_role: str = "viewer",
 ) -> Optional[str]:
-    """Check if the authenticated user can access a project.
+    """Check if the authenticated user can access a project at *min_role*.
 
-    Returns None if allowed, or an error string if denied.
+    ``min_role`` defaults to ``"viewer"`` (read access). Pass
+    ``"editor"`` for mutating tools and ``"admin"`` for project-
+    management tools. The project owner always passes regardless of
+    *min_role*.
+
+    Returns ``None`` if allowed, or an error string if denied.
     """
     user_id = get_user_id(ctx)
     proj = get_project(project_id)
     if proj is None:
         return "Project not found."
-    # Owner always has access
+    # Owner always has access at every level.
     if proj.owner_id == user_id:
         return None
-    # Public projects are readable by all
-    if proj.is_public:
+    required_rank = _ROLE_RANK.get(min_role, 0)
+    # Public projects are readable by all, but writes still require an
+    # explicit member role at the requested level.
+    if proj.is_public and required_rank == 0:
         return None
-    # Check membership
+    # Check membership and role rank.
     if user_id is not None:
         role = get_user_project_role(project_id, user_id)
         if role is not None:
-            return None
+            actual_rank = _ROLE_RANK.get(role, 0)
+            if actual_rank >= required_rank:
+                return None
+            return (
+                f"Access denied: project role '{role}' is below required "
+                f"'{min_role}' for this operation."
+            )
     return "Access denied: you do not have permission to access this project."
