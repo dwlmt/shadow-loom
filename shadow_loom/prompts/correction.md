@@ -23,6 +23,7 @@ Return a single `WorldStatePatch` object with only the fields you need. Every fi
 | `add_social_edges: [RelationshipEdge, ...]` | Append a missing social edge. |
 | `drop_spatial_edges: [{source_id, target_id}, ...]` / `add_spatial_edges` | Spatial edges between locations. |
 | `drop_channel_ids: [channel_id, ...]` / `add_channels: {channel_id: Channel}` | Information-channel adds/drops. |
+| `channel_renames: {old_id: new_id}` | Fix typo / spelling drift in CHN_ IDs (e.g. `CHN_TELEPHONE_LINE` → `CHN_TELEPHONE_LINK`). The pipeline forwards every `via_channel_id` and `acquired_via_channel_id` reference automatically — prefer this over `drop_channel_ids` + `add_channels` when the channel itself is correct and only the id is wrong, otherwise every belief / utterance pointing at the old id silently loses its provenance.|
 | `notes: str` | Free-text rationale for the maintainer log. NOT applied to the world state. |
 
 ---
@@ -67,4 +68,4 @@ For `mutation_social` edges, ensure `rel_counterpart_id` is set to a valid `ENT_
 
 For `chain_reaction` edges with `propagation_delay > 0`, the target event's `fabula_time` must satisfy `target.fabula_time >= source.fabula_time + propagation_delay`.
 
-**Mechanism values**: prefer the five canonical values (`"physical"`, `"psychological"`, `"epistemic"`, `"social"`, `"emotional"`) but short descriptive labels (`"betrayal"`, `"seduction"`, `"coercion"`, `"deduction"`, `"kinetic"`, `"chemical"`) are also valid.
+**Mechanism values**: prefer the seven canonical values from `causal_physics.MECHANISM_TRAIT_MAP` — `"physical"`, `"psychological"`, `"epistemic"`, `"social"`, `"emotional"`, `"informational"`, `"betrayal"` — but short descriptive labels (`"seduction"`, `"coercion"`, `"deduction"`, `"kinetic"`, `"chemical"`) are also valid; off-list labels skip mechanism-trait routing rather than failing.

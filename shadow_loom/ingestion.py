@@ -1016,16 +1016,37 @@ def _format_scaffold(scaffold: SocraticScaffold) -> str:
 # retry quality gate uses this to avoid retrying on legitimate pure-action
 # chunks (chases, silent set-pieces, scenic description) where zero
 # channels and zero utterances is the *correct* answer.
+#
+# Quote-mark coverage:
+#   "  — straight double  (ASCII 0x22)
+#   \u201c \u201d         — curly double (English)
+#   \u2018 \u2019         — curly single (English)
+#   \u201a \u201e \u201f  — German low / high
+#   \u00ab \u00bb         — French / Russian guillemets
+#   \u2039 \u203a         — single guillemets
+#   \u300c \u300d         — Japanese corner brackets
 _SPEECH_CUE_RE = re.compile(
-    r'(?:["\u201c\u201d\u2018\u2019]|\b('
+    r'(?:["\u201c\u201d\u2018\u2019\u201a\u201e\u201f\u00ab\u00bb\u2039\u203a\u300c\u300d]'
+    r'|\b('
     r'said|says|told|tells|asked|asks|replied|replies|whispered|whispers|'
     r'shouted|shouts|cried|cries|murmured|murmurs|muttered|mutters|'
     r'declared|declares|announced|announces|warned|warns|promised|promises|'
     r'confessed|confesses|admitted|admits|wrote|writes|read|reads|'
     r'letter|letters|note|notes|message|messages|prophecy|prophesied|'
-    r'order|orders|command|commands|rumour|rumor|gossip'
+    r'order|orders|command|commands|rumour|rumor|gossip|spoke|speaks|'
+    r'answered|answers|interrupted|interrupts|exclaimed|exclaims'
     r')\b)',
     re.IGNORECASE,
+)
+
+# Em-dash dialogue convention (French, Russian, Spanish, James Joyce):
+#   — Have you no shame? he asked.
+# Detected as a line starting with em-dash or en-dash followed by a
+# capitalised letter (Latin or Cyrillic). Restricted to start-of-line
+# anchoring to avoid false positives on parenthetical em-dashes mid
+# sentence.
+_EMDASH_DIALOGUE_RE = re.compile(
+    r'(?:^|\n)\s*[\u2014\u2013]\s+[A-Z\u00C0-\u024f\u0400-\u04ff]'
 )
 
 
@@ -1034,7 +1055,9 @@ def _chunk_likely_contains_speech(chunk_text: str) -> bool:
     written/transmitted communication. Cheap heuristic used by the
     Social Agent's empty-result retry gate.
     """
-    return bool(_SPEECH_CUE_RE.search(chunk_text))
+    if _SPEECH_CUE_RE.search(chunk_text):
+        return True
+    return bool(_EMDASH_DIALOGUE_RE.search(chunk_text))
 
 
 def _build_valid_id_set(reg: GlobalRegister, event_ids: List[str] | None = None) -> set[str]:
@@ -2842,6 +2865,48 @@ async def _extract_single_chunk_async(
                     )
             except Exception:
                 logger.exception("[Step 3b·Async] Chunk %d info retry FAILED.", i + 1)
+
+        # Symmetric retry on empty social_topology when the chunk's
+        # events involve multiple distinct entities — ports the sync
+        # extract_topology behaviour so async runs don't quietly drop
+        # social-edge recall (audit item #6).
+        multi_entity_events = [
+            e for e in physics.events
+            if len(set(e.actor_ids) | set(e.target_ids)) >= 2
+        ]
+        if multi_entity_events and not local_social.social_topology:
+            logger.info(
+                "[Step 3b·Async] Chunk %d: 0 social edges across %d "
+                "multi-entity event(s) — retrying with emphasis …",
+                i + 1, len(multi_entity_events),
+            )
+            retry_rel_msg = (
+                "IMPORTANT: The previous extraction returned zero "
+                "RelationshipEdge entries despite the chunk containing "
+                "events with multiple distinct participants. For each "
+                "such event, infer the *minimum* relationship axes the "
+                "text supports — even one observed axis per dyad is "
+                "valuable. Use ``observed=True`` for axes the text "
+                "speaks to, and omit unobserved axes entirely (do not "
+                "fabricate neutral zeros).\n\n" + social_msg
+            )
+            try:
+                rel_retry_result = await social_agent.run(
+                    retry_rel_msg, deps=social_deps, **_user_kwargs(),
+                )
+                rel_retry = rel_retry_result.output
+                if rel_retry.social_topology:
+                    local_social = SocialExtraction(
+                        channels=local_social.channels,
+                        utterance_events=local_social.utterance_events,
+                        social_topology=rel_retry.social_topology,
+                    )
+                    logger.info(
+                        "[Step 3b·Async] Chunk %d: rel retry recovered %d social edges.",
+                        i + 1, len(local_social.social_topology),
+                    )
+            except Exception:
+                logger.exception("[Step 3b·Async] Chunk %d social retry FAILED.", i + 1)
         return local_social
 
     async def _run_consequences(local_social: SocialExtraction) -> Optional[ConsequencesExtraction]:
@@ -2984,8 +3049,19 @@ def _apply_event_renames(topo: ChunkTopology, rmap: Dict[str, str]) -> ChunkTopo
     def _r(eid: str) -> str:
         return rmap.get(eid, eid)
 
+    def _r_list(ids: List[str]) -> List[str]:
+        # ``target_ids`` may legitimately contain a renamed EVT_ ref
+        # (e.g. an utterance whose target is the prior choice it
+        # responds to). Preserve list order and identity for non-EVT ids.
+        return [rmap.get(i, i) for i in ids]
+
     new_events = [
-        e.model_copy(update={"id": _r(e.id)}) for e in topo.events
+        e.model_copy(update={
+            "id": _r(e.id),
+            "target_ids": _r_list(e.target_ids),
+            "actor_ids": _r_list(e.actor_ids),
+        })
+        for e in topo.events
     ]
     new_causal = [
         ce.model_copy(update={
@@ -3762,6 +3838,81 @@ deduplicate_causal = _deduplicate_causal
 deduplicate_channels = _deduplicate_channels
 
 
+def _coalesce_snapshots(
+    snaps: List[EntityStateSnapshot],
+) -> List[EntityStateSnapshot]:
+    """Merge same-fabula_time snapshots into a single deterministic snap.
+
+    When two chunks emit an EntityUpdate for the same (entity,
+    fabula_time) pair, the resulting EntityStateSnapshot list contains
+    both records and replay-order becomes extraction-order dependent
+    (audit item #10). This coalesces them per-tick using a stable rule
+    set and returns the list time-sorted. Order within the same tick
+    is preserved: the *first* snapshot at a tick keeps its position
+    after merging.
+    """
+    if not snaps:
+        return snaps
+    by_tick: Dict[int, List[EntityStateSnapshot]] = {}
+    order: List[int] = []
+    for s in snaps:
+        if s.fabula_time not in by_tick:
+            order.append(s.fabula_time)
+            by_tick[s.fabula_time] = []
+        by_tick[s.fabula_time].append(s)
+
+    coalesced: List[EntityStateSnapshot] = []
+    for tick in sorted(set(order)):
+        group = by_tick[tick]
+        if len(group) == 1:
+            coalesced.append(group[0])
+            continue
+        # Merge fields:
+        merged_traits: dict = {}
+        merged_beliefs_added: List[Belief] = []
+        seen_belief_keys: set = set()
+        merged_invalidated: List[str] = []
+        seen_invalid: set = set()
+        first_triggered_by: Optional[str] = None
+        first_status: Optional[str] = None
+        first_location_id: Optional[str] = None
+        for s in group:
+            # later wins per key — chunks ordered by extraction so
+            # later chunks describe later narration of the same tick
+            for k, v in (s.traits or {}).items():
+                merged_traits[k] = v
+            for b in s.beliefs_added or []:
+                # Dedup beliefs by (target_id, perceived_state) so identical
+                # beliefs emitted by two chunks are not double-counted.
+                key = (b.target_id, b.perceived_state)
+                if key in seen_belief_keys:
+                    continue
+                seen_belief_keys.add(key)
+                merged_beliefs_added.append(b)
+            for tgt in s.beliefs_invalidated or []:
+                if tgt in seen_invalid:
+                    continue
+                seen_invalid.add(tgt)
+                merged_invalidated.append(tgt)
+            if first_triggered_by is None and s.triggered_by:
+                first_triggered_by = s.triggered_by
+            if first_status is None and s.status:
+                first_status = s.status
+            if first_location_id is None and s.location_id:
+                first_location_id = s.location_id
+
+        coalesced.append(EntityStateSnapshot(
+            fabula_time=tick,
+            triggered_by=first_triggered_by,
+            traits=merged_traits,
+            beliefs_added=merged_beliefs_added,
+            beliefs_invalidated=merged_invalidated,
+            status=first_status,
+            location_id=first_location_id,
+        ))
+    return coalesced
+
+
 def assemble_world_state(
     register: GlobalRegister,
     topologies: List[ChunkTopology],
@@ -3824,6 +3975,19 @@ def assemble_world_state(
                 location_id=eu.new_location_id,
             )
             all_entity_updates.setdefault(eu.entity_id, []).append(snap)
+
+    # Coalesce same-(entity, fabula_time) snapshots into a single
+    # deterministic snapshot. Without this, two updates emitted by
+    # different chunks for the same tick get appended verbatim and
+    # replay order becomes extraction-order dependent \u2014 producing
+    # unstable reconstructed state and double-applied belief mutations
+    # (audit item #10). Merge rules per field:
+    #   - traits: later (later in input order) wins per key
+    #   - beliefs_added: union, deduped by target_id
+    #   - beliefs_invalidated: union
+    #   - triggered_by / status / location_id: first non-null wins
+    for eid, snaps in all_entity_updates.items():
+        all_entity_updates[eid] = _coalesce_snapshots(snaps)
 
     # Sort events chronologically
     events.sort(key=lambda e: e.fabula_time)
@@ -4606,6 +4770,32 @@ def _programmatic_validation(ws: WorldStateV1) -> List[ValidationIssue]:
                 ))
             prev_ft = snap.fabula_time
 
+    # Check world_trait state_timeline references (mirror of the entity
+    # block above). Without this, EVT renames / drops in the patch path
+    # silently leave dangling triggered_by ids on world traits, which
+    # the LLM auditor is unlikely to surface and downstream surgery
+    # cannot undo.
+    for wid, wt in ws.world_traits.items():
+        prev_ft = -1
+        for snap in wt.state_timeline:
+            if snap.triggered_by and snap.triggered_by not in event_ids:
+                issues.append(ValidationIssue(
+                    severity="warning", category="broken_link",
+                    detail=(
+                        f"World trait '{wid}' state_timeline triggered_by "
+                        f"'{snap.triggered_by}' not in events."
+                    ),
+                ))
+            if snap.fabula_time < prev_ft:
+                issues.append(ValidationIssue(
+                    severity="warning", category="temporal",
+                    detail=(
+                        f"World trait '{wid}' state_timeline not monotonic: "
+                        f"fabula_time {snap.fabula_time} follows {prev_ft}."
+                    ),
+                ))
+            prev_ft = snap.fabula_time
+
     # Check for duplicate event IDs
     seen_evt_ids: set[str] = set()
     for evt in ws.events:
@@ -5046,6 +5236,16 @@ class WorldStatePatch(BaseModel):
         default_factory=dict,
         description="New channels keyed by channel_id.",
     )
+    channel_renames: Dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Channel CHN_ ID renames: {old_id: new_id}. Forwards every "
+            "via_channel_id / acquired_via_channel_id reference to the "
+            "new id, so a simple typo fix does not have to be expressed "
+            "as drop+add (which would null the provenance of every "
+            "belief / utterance pointing at the old channel)."
+        ),
+    )
     notes: str = Field(
         default="",
         description="Free-text rationale for the maintainer log; not applied to the world state.",
@@ -5059,11 +5259,17 @@ def _apply_world_state_patch(
     changes: List[str] = []
     renames = dict(patch.event_renames)
     drop_evts = set(patch.drop_event_ids)
+    chan_renames = dict(patch.channel_renames)
 
     def _r(evt_id: Optional[str]) -> Optional[str]:
         if evt_id is None:
             return None
         return renames.get(evt_id, evt_id)
+
+    def _rc(chan_id: Optional[str]) -> Optional[str]:
+        if chan_id is None:
+            return None
+        return chan_renames.get(chan_id, chan_id)
 
     # 1. Apply renames + drops to events (with field updates).
     field_updates = patch.update_event_fields
@@ -5140,14 +5346,20 @@ def _apply_world_state_patch(
         new_spatial.append(se)
         changes.append(f"Added spatial edge {se.source_id}→{se.target_id}.")
 
-    # 6. Channels — drop / add. Rewrite via_channel_id on dropped channels.
+    # 6. Channels — rename, then drop, then add. Renames forward
+    #    references from old → new id; drops still null references.
     drop_chan_ids = set(patch.drop_channel_ids)
-    new_channels: Dict[str, Channel] = {
-        cid: ch for cid, ch in ws.channels.items() if cid not in drop_chan_ids
-    }
-    for cid in drop_chan_ids:
-        if cid in ws.channels:
+    new_channels: Dict[str, Channel] = {}
+    for cid, ch in ws.channels.items():
+        new_cid = chan_renames.get(cid, cid)
+        if new_cid in drop_chan_ids or cid in drop_chan_ids:
             changes.append(f"Dropped channel '{cid}'.")
+            continue
+        if new_cid != cid:
+            changes.append(f"Renamed channel '{cid}' → '{new_cid}'.")
+            new_channels[new_cid] = ch.model_copy(update={"id": new_cid})
+        else:
+            new_channels[cid] = ch
     for cid, ch in patch.add_channels.items():
         new_channels[cid] = ch
         changes.append(f"Added channel '{cid}'.")
@@ -5187,7 +5399,10 @@ def _apply_world_state_patch(
     #    counterfactual surgery relies on these refs to roll back
     #    beliefs when their source event/channel is removed (so dangling
     #    provenance silently leaks invalidated beliefs into do-surgery).
-    needs_rewrite = bool(renames) or bool(drop_evts) or bool(drop_chan_ids)
+    needs_rewrite = (
+        bool(renames) or bool(drop_evts)
+        or bool(drop_chan_ids) or bool(chan_renames)
+    )
     if needs_rewrite:
         def _rewrite_belief(b: Belief) -> Tuple[Belief, bool]:
             update: dict = {}
@@ -5197,8 +5412,12 @@ def _apply_world_state_patch(
                     update["acquired_via_event_id"] = None
                 elif new_evt != b.acquired_via_event_id:
                     update["acquired_via_event_id"] = new_evt
-            if b.acquired_via_channel_id and b.acquired_via_channel_id in drop_chan_ids:
-                update["acquired_via_channel_id"] = None
+            if b.acquired_via_channel_id:
+                new_chan = _rc(b.acquired_via_channel_id)
+                if new_chan in drop_chan_ids:
+                    update["acquired_via_channel_id"] = None
+                elif new_chan != b.acquired_via_channel_id:
+                    update["acquired_via_channel_id"] = new_chan
             return (b.model_copy(update=update), True) if update else (b, False)
 
         rewritten: Dict[str, Entity] = {}
@@ -5245,30 +5464,69 @@ def _apply_world_state_patch(
             rewritten[eid] = ent.model_copy(update=ent_update) if ent_update else ent
         new_entities = rewritten
 
-        # --- Utterance via_channel_id ---
-        if drop_chan_ids:
+        # --- Utterance via_channel_id (forward renames, null drops) ---
+        if drop_chan_ids or chan_renames:
             updated_events: List[EventNode] = []
             for evt in new_events:
-                if (
-                    evt.event_type == "utterance"
-                    and evt.via_channel_id
-                    and evt.via_channel_id in drop_chan_ids
-                ):
-                    updated_events.append(evt.model_copy(update={"via_channel_id": None}))
+                if evt.event_type == "utterance" and evt.via_channel_id:
+                    new_chan = _rc(evt.via_channel_id)
+                    if new_chan in drop_chan_ids:
+                        updated_events.append(evt.model_copy(update={"via_channel_id": None}))
+                        changes.append(
+                            f"Cleared dangling via_channel_id on utterance '{evt.id}' "
+                            f"(channel was dropped by patch)."
+                        )
+                        continue
+                    if new_chan != evt.via_channel_id:
+                        updated_events.append(evt.model_copy(update={"via_channel_id": new_chan}))
+                        continue
+                updated_events.append(evt)
+            new_events = updated_events
+
+        # --- World-trait state_timeline triggered_by ---
+        # The patch contract advertises that EVT renames/drops cascade
+        # everywhere. Without this block the world-trait timeline
+        # silently retains stale ids; the validator only catches it
+        # at warning severity so a renamed event can leak unfixed
+        # provenance into counterfactual surgery.
+        if renames or drop_evts:
+            new_world_traits: Dict[str, GlobalTrait] = {}
+            wt_changed_any = False
+            for wid, wt in ws.world_traits.items():
+                wt_tl_changed = False
+                new_wt_tl: List[Any] = []
+                for snap in wt.state_timeline:
+                    if snap.triggered_by:
+                        new_trig = _r(snap.triggered_by)
+                        if new_trig in drop_evts:
+                            new_wt_tl.append(snap.model_copy(update={"triggered_by": None}))
+                            wt_tl_changed = True
+                            continue
+                        if new_trig != snap.triggered_by:
+                            new_wt_tl.append(snap.model_copy(update={"triggered_by": new_trig}))
+                            wt_tl_changed = True
+                            continue
+                    new_wt_tl.append(snap)
+                if wt_tl_changed:
+                    new_world_traits[wid] = wt.model_copy(update={"state_timeline": new_wt_tl})
+                    wt_changed_any = True
                     changes.append(
-                        f"Cleared dangling via_channel_id on utterance '{evt.id}' "
-                        f"(channel was dropped by patch)."
+                        f"Forwarded EVT renames/drops on world_trait '{wid}' state_timeline."
                     )
                 else:
-                    updated_events.append(evt)
-            new_events = updated_events
+                    new_world_traits[wid] = wt
+            patched_world_traits = new_world_traits if wt_changed_any else ws.world_traits
+        else:
+            patched_world_traits = ws.world_traits
+    else:
+        patched_world_traits = ws.world_traits
 
     new_ws = WorldStateV1(
         locations=ws.locations,
         objects=ws.objects,
         entities=new_entities,
         events=new_events,
-        world_traits=ws.world_traits,
+        world_traits=patched_world_traits,
         causal_topology=new_causal,
         spatial_topology=new_spatial,
         channels=new_channels,
@@ -5741,6 +5999,62 @@ async def extract_world_trait_timelines_async(
     return ws
 
 
+def _build_compact_validation_view(ws: WorldStateV1) -> str:
+    """Return a topology-preserving compact JSON view for LLM validation.
+
+    Keeps every node/edge id, name, type and reference-bearing field so
+    the auditor can still spot cross-element contradictions, but strips
+    the deep nested arrays (entity beliefs / state_timelines / world
+    trait timelines) that dominate serialised size on long manuscripts.
+    Used by ``validate_world_state`` when the full ``model_dump_json``
+    exceeds the LLM context budget.
+    """
+    import json as _json
+
+    payload = {
+        "_compact_note": (
+            "Compact projection: nested entity beliefs / state_timelines "
+            "and world-trait state_timelines are omitted. Counts are "
+            "given so the auditor can still flag missing-data anomalies."
+        ),
+        "locations": {
+            lid: {"name": loc.name} for lid, loc in ws.locations.items()
+        },
+        "objects": {
+            oid: {"name": obj.name, "owner_id": obj.owner_id}
+            for oid, obj in ws.objects.items()
+        },
+        "entities": {
+            eid: {
+                "name": ent.name,
+                "status": ent.status,
+                "location_id": ent.location_id,
+                "n_beliefs": len(ent.beliefs),
+                "n_state_timeline": len(ent.state_timeline),
+                "trait_keys": sorted(ent.traits.keys()),
+            }
+            for eid, ent in ws.entities.items()
+        },
+        "world_traits": {
+            wid: {
+                "name": wt.name,
+                "n_state_timeline": len(wt.state_timeline),
+            }
+            for wid, wt in ws.world_traits.items()
+        },
+        "events": [e.model_dump(mode="json") for e in ws.events],
+        "causal_topology": [ce.model_dump(mode="json") for ce in ws.causal_topology],
+        "spatial_topology": [se.model_dump(mode="json") for se in ws.spatial_topology],
+        "channels": {
+            cid: ch.model_dump(mode="json") for cid, ch in ws.channels.items()
+        },
+        "social_topology": [
+            edge.model_dump(mode="json") for edge in ws.social_topology
+        ],
+    }
+    return _json.dumps(payload, indent=2)
+
+
 def validate_world_state(
     ws: WorldStateV1,
     config: ExtractionConfig | None = None,
@@ -5762,10 +6076,25 @@ def validate_world_state(
     # Phase B: LLM audit for semantic contradictions
     agent = _build_validation_agent(config)
     ws_json = ws.model_dump_json(indent=2)
-    # Truncate if extremely long to fit context window
+    # When the full state is too large, send a *compact* projection that
+    # preserves topology (events + edges + ontology header) but drops the
+    # verbose nested state_timeline and beliefs payloads, which dominate
+    # serialized size and rarely host the kind of cross-element semantic
+    # contradictions the LLM auditor catches. Prior behaviour silently
+    # truncated the JSON tail \u2014 invisible to the auditor and skewed
+    # corrections toward front-loaded sections (audit item #9).
     max_chars = 80_000
     if len(ws_json) > max_chars:
-        ws_json = ws_json[:max_chars] + "\n... [TRUNCATED]"
+        compact_payload = _build_compact_validation_view(ws)
+        if len(compact_payload) < len(ws_json):
+            logger.info(
+                "[Step 3\u00b7LLM] WorldState too large (%d chars); using "
+                "compact projection (%d chars) for LLM audit.",
+                len(ws_json), len(compact_payload),
+            )
+            ws_json = compact_payload
+        else:
+            ws_json = ws_json[:max_chars] + "\n... [TRUNCATED]"
 
     logger.info("[Step 3·LLM] Running validation agent (%d chars) …", len(ws_json))
 
@@ -6038,7 +6367,11 @@ async def run_extraction_async(
     # Step 5: Post-assembly world trait timeline extraction
     world_state = await extract_world_trait_timelines_async(world_state, config)
 
-    report = validate_world_state(world_state, config)
+    # Validation calls a sync LLM agent internally; offload it to a
+    # worker thread so we don't block the event loop while it runs
+    # (audit item #7 \u2014 same rationale for ``_run_correction_patch``
+    # below).
+    report = await asyncio.to_thread(validate_world_state, world_state, config)
 
     # Snapshot pre-correction event identity so we can detect rename /
     # drop / time-shift and re-run trait timelines once afterwards.
@@ -6046,7 +6379,7 @@ async def run_extraction_async(
         (e.id, e.fabula_time) for e in world_state.events
     )
 
-    # --- Correction retry loop (sync — fast relative to extraction) ---
+    # --- Correction retry loop ---
     for retry_num in range(config.max_correction_retries):
         prog_errors = [i for i in report.issues if i.severity == "error"]
         if not prog_errors:
@@ -6058,7 +6391,11 @@ async def run_extraction_async(
             log_prefix, len(prog_errors),
         )
 
-        new_world_state, change_log = _run_correction_patch(
+        # ``_run_correction_patch`` calls ``agent.run_sync`` internally;
+        # wrap it in ``to_thread`` so concurrent extraction tasks under
+        # the same event loop are not stalled by the LLM round-trip.
+        new_world_state, change_log = await asyncio.to_thread(
+            _run_correction_patch,
             world_state, prog_errors, config, log_prefix,
         )
         if not change_log:
@@ -6070,7 +6407,7 @@ async def run_extraction_async(
         world_state, new_repairs = _auto_repair(world_state)
         if new_repairs:
             repairs.extend(new_repairs)
-        report = validate_world_state(world_state, config)
+        report = await asyncio.to_thread(validate_world_state, world_state, config)
 
     post_correction_event_signature = tuple(
         (e.id, e.fabula_time) for e in world_state.events
@@ -6088,7 +6425,7 @@ async def run_extraction_async(
             world_state, post_repairs = _auto_repair(world_state)
             if post_repairs:
                 repairs.extend(post_repairs)
-            report = validate_world_state(world_state, config)
+            report = await asyncio.to_thread(validate_world_state, world_state, config)
         except Exception:
             logger.exception(
                 "[Pipeline·Async] Post-correction timeline re-extraction failed "
