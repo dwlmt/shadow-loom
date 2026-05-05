@@ -25,7 +25,10 @@ import asyncio
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Tuple
+
+if TYPE_CHECKING:
+    from shadow_loom.research import WorldFact
 
 from pydantic import BaseModel, Field, model_validator
 from pydantic_ai import Agent, ModelRetry, NativeOutput, RunContext
@@ -4849,6 +4852,13 @@ async def run_extraction_async(
 
     config = config or ExtractionConfig()
     logger.info("[Pipeline·Async] Starting extraction with model=%s, strategy=%s", config.model, config.chunk_strategy)
+
+    # Prepare user context for cost tracking
+    user_context = {
+        'user_id': user_id,
+        'project_id': project_id,
+        'version_id': version_id,
+    }
 
     # Step 1: Global Ontology (parallel 1b + 1c)
     # Step 1: Extract ontology

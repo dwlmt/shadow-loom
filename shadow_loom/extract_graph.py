@@ -114,11 +114,20 @@ def extract_ego_graph_from_memory(
     world_state: WorldStateV1,
     focus_entity_ids: List[str],
     temporal_anchor: Optional[int] = None,
-    memory_limit: int = 5
+    memory_limit: int = 5,
+    syuzhet_anchor: Optional[int] = None,
 ) -> EgoGraphPayload:
     
     """
     Calculates the union of localized Ego-Graphs for multiple entities.
+
+    The ``syuzhet_anchor`` (if provided) gates events by the reader's
+    position in the text: events whose ``syuzhet_index`` exceeds the
+    anchor have not yet been narrated and must not appear in
+    ``recent_memory`` or ``relevant_utterance_events``. The
+    ``temporal_anchor`` (fabula time) gates by chronological time.
+    Both filters are applied independently — an event must pass both
+    to be included.
     """
     logger.info("Initiating Multi-Ego GraphRAG for: %s", focus_entity_ids)
 
@@ -239,6 +248,8 @@ def extract_ego_graph_from_memory(
     valid_events = world_state.events
     if temporal_anchor is not None:
         valid_events = [evt for evt in valid_events if evt.fabula_time <= temporal_anchor]
+    if syuzhet_anchor is not None:
+        valid_events = [evt for evt in valid_events if evt.syuzhet_index <= syuzhet_anchor]
 
     valid_events = sorted(valid_events, key=lambda x: x.fabula_time, reverse=True)
     recent_memory = [evt.model_dump() for evt in valid_events[:memory_limit]]
@@ -281,6 +292,8 @@ def extract_ego_graph_from_memory(
         if evt.event_type != "utterance":
             continue
         if temporal_anchor is not None and evt.fabula_time > temporal_anchor:
+            continue
+        if syuzhet_anchor is not None and evt.syuzhet_index > syuzhet_anchor:
             continue
         participants = set(evt.actor_ids) | set(evt.target_ids) | set(evt.addressee_ids)
         if evt.speaker_id:

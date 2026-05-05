@@ -809,12 +809,22 @@ def run_pipeline(
             if query.query_type == "directive":
                 try:
                     from shadow_loom.extract_graph import extract_ego_graph_from_memory
-                    _ego = extract_ego_graph_from_memory(ws, brief.target_entities)
+                    _ego = extract_ego_graph_from_memory(ws, brief.target_entities, syuzhet_anchor=eff_syuzhet)
                     _assembler = DirectiveAssembler(
                         sandbox=None, ego_payload=_ego.model_dump(), world_state=ws,
                     )
                 except Exception:
-                    logger.debug("[Pipeline] Could not build assembler for engine metrics.")
+                    # Without the assembler, the auditor still runs but
+                    # affective-feedback metrics (achieved-vs-target
+                    # intensity, affective_loss_mse) won't be populated.
+                    # Surface this at WARNING so the missing chat
+                    # diagnostics aren't silently swallowed.
+                    logger.warning(
+                        "[Pipeline] Could not rebuild DirectiveAssembler for "
+                        "engine metrics; affective feedback will be missing "
+                        "from this query's audit.",
+                        exc_info=True,
+                    )
 
             feedback = render_and_audit(
                 brief=brief,
@@ -832,7 +842,7 @@ def run_pipeline(
             initial_scene = render_from_query(query, physics_result, ws, gen_cfg)
 
             # Build a brief for the auditor from the query
-            brief = _build_brief_for_query(query, physics_result, ws)
+            brief = _build_brief_for_query(query, physics_result, ws, syuzhet_anchor=eff_syuzhet)
             _stamp_brief_branch(brief, _branch_world_id, _branch_label)
 
             from shadow_loom.auditor import run_feedback_loop
@@ -864,6 +874,27 @@ def run_pipeline(
     # =================================================================
     if cfg.skip_reextraction:
         logger.info("[Pipeline] Steps 6–7: Re-extraction skipped.")
+    elif getattr(result.scene, "generation_error", None):
+        # The renderer fell back to a placeholder scene; merging that
+        # text into the canonical world state would pollute the graph
+        # with junk extracted from a "[Generation failed: ...]" string.
+        # Surface the failure on the result so the UI can show it and
+        # leave the world model untouched.
+        logger.error(
+            "[Pipeline] Steps 6–7: Re-extraction skipped — scene "
+            "carries generation_error=%s; refusing to merge fallback "
+            "prose into world state.",
+            result.scene.generation_error,
+        )
+        result.reextraction_failed = True
+        result.reextraction_error = (
+            f"Skipped re-extraction: generation failed "
+            f"({result.scene.generation_error})."
+        )
+        history.record(
+            "reextraction_merge",
+            {"error": "generation_failure_skipped"},
+        )
     else:
         logger.info("[Pipeline] Steps 6–7: Extracting topology from prose and merging.")
         try:
@@ -1099,12 +1130,17 @@ async def run_pipeline_async(
             if query.query_type == "directive":
                 try:
                     from shadow_loom.extract_graph import extract_ego_graph_from_memory
-                    _ego = extract_ego_graph_from_memory(ws, brief.target_entities)
+                    _ego = extract_ego_graph_from_memory(ws, brief.target_entities, syuzhet_anchor=eff_syuzhet)
                     _assembler = DirectiveAssembler(
                         sandbox=None, ego_payload=_ego.model_dump(), world_state=ws,
                     )
                 except Exception:
-                    logger.debug("[Pipeline·Async] Could not build assembler for engine metrics.")
+                    logger.warning(
+                        "[Pipeline·Async] Could not rebuild DirectiveAssembler "
+                        "for engine metrics; affective feedback will be missing "
+                        "from this query's audit.",
+                        exc_info=True,
+                    )
 
             feedback = render_and_audit(
                 brief=brief, world_state=ws,
@@ -1118,7 +1154,7 @@ async def run_pipeline_async(
         else:
             gen_cfg = cfg.generation_config or GenerationConfig()
             initial_scene = render_from_query(query, physics_result, ws, gen_cfg)
-            brief = _build_brief_for_query(query, physics_result, ws)
+            brief = _build_brief_for_query(query, physics_result, ws, syuzhet_anchor=eff_syuzhet)
             _stamp_brief_branch(brief, _branch_world_id, _branch_label)
             from shadow_loom.auditor import run_feedback_loop
             feedback = run_feedback_loop(
@@ -1140,6 +1176,22 @@ async def run_pipeline_async(
     # Steps 6–7: Re-extraction + merge (same as sync)
     if cfg.skip_reextraction:
         logger.info("[Pipeline·Async] Steps 6–7: Re-extraction skipped.")
+    elif getattr(result.scene, "generation_error", None):
+        logger.error(
+            "[Pipeline·Async] Steps 6–7: Re-extraction skipped — scene "
+            "carries generation_error=%s; refusing to merge fallback "
+            "prose into world state.",
+            result.scene.generation_error,
+        )
+        result.reextraction_failed = True
+        result.reextraction_error = (
+            f"Skipped re-extraction: generation failed "
+            f"({result.scene.generation_error})."
+        )
+        history.record(
+            "reextraction_merge",
+            {"error": "generation_failure_skipped"},
+        )
     else:
         logger.info("[Pipeline·Async] Steps 6–7: Extracting topology from prose and merging.")
         try:
@@ -1324,6 +1376,7 @@ def _build_brief_for_query(
     query: UserRequest,
     physics_result: Dict[str, Any],
     world_state: WorldStateV1,
+    syuzhet_anchor: Optional[int] = None,
 ) -> CreativeBrief:
     """Build a CreativeBrief from a non-directive query's physics result."""
     from shadow_loom.generation import (
@@ -1363,13 +1416,15 @@ def _build_brief_for_query(
         from shadow_loom.extract_graph import extract_ego_graph_from_memory
         target_entities = list(query.target_entity_ids or [])
         try:
-            ego = extract_ego_graph_from_memory(world_state, target_entities)
+            ego = extract_ego_graph_from_memory(
+                world_state, target_entities, syuzhet_anchor=syuzhet_anchor,
+            )
             assembler = DirectiveAssembler(
                 sandbox=None,
                 ego_payload=ego.model_dump(),
                 world_state=world_state,
             )
-            return assembler.assemble(query)
+            return assembler.assemble(query, syuzhet_anchor=syuzhet_anchor)
         except Exception:
             logger.exception(
                 "[Pipeline] DirectiveAssembler fallback failed — "

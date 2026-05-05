@@ -2273,7 +2273,7 @@ class DirectiveAssembler:
 
         elif effect == "regret":
             # Build counterfactual branch data
-            counterfactual_branch = self._build_counterfactual_branch(entity_ids)
+            counterfactual_branch = self._build_counterfactual_branch(entity_ids, syuzhet_anchor=syuzhet_anchor)
 
             rendering = RenderingDirective(
                 rendering_mode="regret",
@@ -2307,7 +2307,7 @@ class DirectiveAssembler:
 
         elif effect == "rage":
             # Build causal attribution — who caused the loss
-            causal_attribution = self._build_causal_attribution(entity_ids)
+            causal_attribution = self._build_causal_attribution(entity_ids, syuzhet_anchor=syuzhet_anchor)
 
             rendering = RenderingDirective(
                 rendering_mode="rage",
@@ -2341,6 +2341,15 @@ class DirectiveAssembler:
                 ],
             )
 
+        # Stamp the active syuzhet anchor into scene_context so
+        # downstream consumers (auditor leak-check, renderers) can
+        # locate the brief on the timeline without having to re-derive
+        # it from recent_memory (which is fabula-sorted and can sit
+        # ahead of the reader's current syuzhet position).
+        scene_context = dict(self.ego) if isinstance(self.ego, dict) else {}
+        if syuzhet_anchor is not None:
+            scene_context["syuzhet_anchor"] = syuzhet_anchor
+
         brief = CreativeBrief(
             target_effect=effect,
             target_entities=entity_ids,
@@ -2352,7 +2361,7 @@ class DirectiveAssembler:
             trait_trajectories=trajectories,
             relationship_tensions=rel_tensions,
             physics_override=physics_override,
-            scene_context=self.ego,
+            scene_context=scene_context,
             rendering=rendering,
             counterfactual_branch=counterfactual_branch,
             threat_proximity=threat_proximity,
@@ -2643,6 +2652,8 @@ class DirectiveAssembler:
     def _build_counterfactual_branch(
         self,
         entity_ids: List[str],
+        *,
+        syuzhet_anchor: Optional[int] = None,
     ) -> Optional[CounterfactualBranch]:
         """Build the actual vs. simulated outcome for regret rendering.
 
@@ -2650,8 +2661,14 @@ class DirectiveAssembler:
         'actual outcome', and looks for the most recent choice event by the
         entities as the divergence point whose alternate path would have
         led to a better state.
+
+        When ``syuzhet_anchor`` is provided, only events the reader has
+        already encountered (``syuzhet_index <= anchor``) are considered.
         """
         eid_set = set(entity_ids)
+
+        def _visible(evt) -> bool:
+            return syuzhet_anchor is None or evt.syuzhet_index <= syuzhet_anchor
 
         # Build a set of event IDs that have negative causal effects
         # (trait_delta < 0 on outgoing mutation edges).  Events with no
@@ -2676,6 +2693,7 @@ class DirectiveAssembler:
         negative_events = [
             e for e in sorted(self.world_state.events, key=lambda x: x.fabula_time, reverse=True)
             if e.event_type == "outcome" and (set(e.target_ids) & eid_set) and _is_likely_negative(e.id)
+            and _visible(e)
         ]
         if not negative_events:
             return None
@@ -2688,6 +2706,7 @@ class DirectiveAssembler:
             if e.event_type == "choice"
             and (set(e.actor_ids) & eid_set)
             and e.fabula_time <= actual_evt.fabula_time
+            and _visible(e)
         ]
         divergence_evt = choices[0] if choices else None
 
@@ -2706,10 +2725,20 @@ class DirectiveAssembler:
     def _build_causal_attribution(
         self,
         entity_ids: List[str],
+        *,
+        syuzhet_anchor: Optional[int] = None,
     ) -> Optional[CausalAttribution]:
-        """For rage: trace the causal chain from a loss back to a perpetrator."""
+        """For rage: trace the causal chain from a loss back to a perpetrator.
+
+        When ``syuzhet_anchor`` is provided, only events the reader has
+        already encountered (``syuzhet_index <= anchor``) are considered
+        as candidate loss events.
+        """
         eid_set = set(entity_ids)
         causal_g = self._build_causal_digraph()
+
+        def _visible(evt) -> bool:
+            return syuzhet_anchor is None or evt.syuzhet_index <= syuzhet_anchor
 
         # Identify events with negative causal effects (trait_delta < 0).
         negative_event_ids: set[str] = set()
@@ -2729,6 +2758,7 @@ class DirectiveAssembler:
         loss_events = [
             e for e in sorted(self.world_state.events, key=lambda x: x.fabula_time, reverse=True)
             if e.event_type == "outcome" and (set(e.target_ids) & eid_set) and _is_likely_negative(e.id)
+            and _visible(e)
         ]
         if not loss_events:
             return None
@@ -2775,12 +2805,20 @@ class DirectiveAssembler:
                 actor = anc_evt.actor_ids[0]
                 if actor not in eid_set:  # perpetrator is someone ELSE
                     perpetrator_id = actor
-                    # Build the causal chain path
+                    # Build the causal chain path. The shortest path may
+                    # traverse non-event nodes (entities, world traits)
+                    # because causal_topology is a mixed-node graph; the
+                    # CausalAttribution.causal_chain field is documented
+                    # as event IDs only, so we project the path down to
+                    # the events on it.
+                    event_ids = {e.id for e in self.world_state.events}
                     try:
                         path = nx.shortest_path(causal_g, anc_id, loss_evt.id)
-                        causal_chain = path
+                        causal_chain = [n for n in path if n in event_ids]
                     except nx.NetworkXNoPath:
                         causal_chain = [anc_id, loss_evt.id]
+                    if not causal_chain:
+                        causal_chain = [loss_evt.id]
                     break
 
         if not perpetrator_id and loss_evt.actor_ids:
@@ -2976,12 +3014,25 @@ def _log_creative_brief(brief: "CreativeBrief", *, max_items: int = 10) -> None:
             lines.append(f"    · {ep}")
 
     if brief.rendering:
-        lines.append("  Rendering directives:")
-        for r in brief.rendering[:max_items]:
-            lines.append(f"    → {r}")
-        if len(brief.rendering) > max_items:
+        r = brief.rendering
+        lines.append("  Rendering directive:")
+        lines.append(f"    → mode={r.rendering_mode}")
+        if r.pov_lock:
+            lines.append(f"      pov_lock={r.pov_lock}")
+        lines.append(
+            f"      pacing={r.pacing}, sensory_focus={r.sensory_focus}"
+        )
+        if r.tone_arc:
+            lines.append(f"      tone_arc={r.tone_arc}")
+        if r.stylistic_instructions:
             lines.append(
-                f"    … (+{len(brief.rendering) - max_items} more)"
+                f"      stylistic_instructions ({len(r.stylistic_instructions)}):"
             )
+            for instr in r.stylistic_instructions[:max_items]:
+                lines.append(f"        · {instr}")
+            if len(r.stylistic_instructions) > max_items:
+                lines.append(
+                    f"        … (+{len(r.stylistic_instructions) - max_items} more)"
+                )
 
     logger.info("\n".join(lines))

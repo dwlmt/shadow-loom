@@ -862,7 +862,10 @@ def convergence_trajectory_data(feedback_result: Any) -> List[Dict[str, Any]]:
             1 for v in violations if getattr(v, "severity", "") == "critical"
         )
         rows.append({
-            "iteration": int(getattr(cycle, "iteration", len(rows) + 1)),
+            # ``cycle.iteration`` is 0-based in the data model; humans
+            # count from 1, and the trajectory chart x-axis labels
+            # this value directly.
+            "iteration": int(getattr(cycle, "iteration", len(rows))) + 1,
             "violation_count": len(violations),
             "critical_count": crit,
             "passed": bool(getattr(audit, "passed", False)) if audit else False,

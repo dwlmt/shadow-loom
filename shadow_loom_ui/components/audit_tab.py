@@ -874,6 +874,29 @@ def _render_query_audit_entry(index: int, result: NLQueryResult, state: AppState
                     ui.badge(status, color=color).props("dense")
                     ui.label(f"{pr.audit_iterations} iterations").classes("text-xs text-slate-500")
 
+            # Surface correction_error from the feedback loop. This is
+            # populated when the loop bypass-passed (failed-open
+            # auditor) or aborted on a generation/refinement LLM
+            # failure. Without rendering it, those paths display a
+            # green "Converged" badge with no explanation.
+            fb_err = getattr(getattr(pr, "feedback_result", None), "correction_error", None)
+            if fb_err:
+                with ui.row().classes("items-center gap-2"):
+                    ui.icon("warning", color="warning")
+                    ui.label(f"Auditor diagnostic: {fb_err}").classes(
+                        "text-xs text-warning"
+                    )
+            if getattr(pr, "reextraction_failed", False):
+                rx_err = (
+                    getattr(pr, "reextraction_error", None)
+                    or "re-extraction skipped"
+                )
+                with ui.row().classes("items-center gap-2"):
+                    ui.icon("warning", color="warning")
+                    ui.label(
+                        f"World model not updated: {rx_err}"
+                    ).classes("text-xs text-warning")
+
             # Engine threshold gate + achieved-vs-target affective intensity.
             # Sourced from the deterministic CausalPhysicsFeedback /
             # AffectiveStateFeedback the auditor attaches to every cycle
@@ -993,7 +1016,7 @@ def _render_query_audit_entry(index: int, result: NLQueryResult, state: AppState
                             if getattr(v, "severity", "") not in ("critical", "major")
                         )
                         history_rows.append({
-                            "label": f"Iteration {getattr(cycle, 'iteration', '?')}",
+                            "label": f"Iteration {int(getattr(cycle, 'iteration', 0)) + 1}",
                             "passed": passed,
                             "total": total,
                             "converged": bool(getattr(audit, "passed", False)),
@@ -1064,7 +1087,10 @@ def _render_query_audit_entry(index: int, result: NLQueryResult, state: AppState
 
 def _render_audit_cycle(cycle) -> None:
     """Render a single audit cycle (iteration) in the replay view."""
-    iteration = getattr(cycle, "iteration", "?")
+    # ``cycle.iteration`` is 0-based in the data model; humans count
+    # from 1 in the UI.
+    raw_iter = getattr(cycle, "iteration", None)
+    iteration = (int(raw_iter) + 1) if isinstance(raw_iter, int) else "?"
     with ui.card().classes(
         "w-full p-3 mb-1 bg-slate-100 border border-slate-200 rounded-lg"
     ):
