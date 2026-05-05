@@ -55,6 +55,7 @@ def build_ingest_dialog(state: AppState) -> ui.dialog:
         ).classes("text-sm text-slate-500 mb-2")
 
         project_name = ui.input("Project Name", value="New Story").classes("w-full")
+        project_desc = ui.input("Description (optional)").classes("w-full")
         text_area = ui.textarea(
             "Story Text",
             placeholder="Paste a short summary or synopsis here \u2014 "
@@ -217,6 +218,7 @@ def build_ingest_dialog(state: AppState) -> ui.dialog:
                     proj = db.create_project(
                         name=pname,
                         raw_text=text,
+                        description=(project_desc.value or None),
                         owner_id=state.user_id,
                     )
                     db.save_version(
