@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from shadow_loom.research import WorldFact
 
 from pydantic import BaseModel, Field, model_validator
-from pydantic_ai import Agent, ModelRetry, NativeOutput, RunContext
+from pydantic_ai import Agent, ModelRetry, NativeOutput, PromptedOutput, RunContext
 
 from shadow_loom.settings import get_settings as _get_settings, resolve_model as _resolve_model
 
@@ -4468,10 +4468,19 @@ def _validate_time_ordering(ws: WorldStateV1) -> List[ValidationIssue]:
 
 
 def _build_validation_agent(config: ExtractionConfig) -> Agent[None, ValidationReport]:
-    """Construct the Step 3 LLM validation agent."""
+    """Construct the Step 3 LLM validation agent.
+
+    Uses :class:`PromptedOutput` rather than :class:`NativeOutput` because
+    Ollama's OpenAI-compat ``response_format=json_schema`` path can return
+    ``400 invalid message content type: <nil>`` for some models (e.g.
+    ``qwen3.6:35b``). Prompted output injects the schema into the system
+    prompt and parses JSON from plain text, which works reliably across
+    both the local Ollama backend and OpenAI-compat providers like
+    OpenRouter.
+    """
     return Agent(
         _resolve_model(config.model),
-        output_type=NativeOutput(ValidationReport),
+        output_type=PromptedOutput(ValidationReport),
         system_prompt=_load_prompt("validation.md"),
         retries=config.output_retries,
     )
@@ -4743,19 +4752,30 @@ def validate_world_state(
     else:
         preamble = "Programmatic validation found 0 issues.\n\n"
 
-    result = agent.run_sync(
-        preamble + f"Validate the following WorldStateV1 JSON:\n\n{ws_json}"
-    )
-    llm_report = result.output
+    try:
+        result = agent.run_sync(
+            preamble + f"Validate the following WorldStateV1 JSON:\n\n{ws_json}"
+        )
+        llm_report = result.output
+        llm_issues = llm_report.issues
+        llm_suggestions = llm_report.suggestions
+    except Exception as e:  # noqa: BLE001 — never crash import on validator failure
+        logger.warning(
+            "[Step 3·LLM] Validation agent failed (%s: %s) — "
+            "falling back to programmatic-only validation.",
+            type(e).__name__, e,
+        )
+        llm_issues = []
+        llm_suggestions = []
 
     # Merge programmatic + LLM issues
-    all_issues = prog_issues + llm_report.issues
+    all_issues = prog_issues + llm_issues
     has_errors = any(i.severity == "error" for i in all_issues)
 
     merged = ValidationReport(
         is_valid=not has_errors,
         issues=all_issues,
-        suggestions=llm_report.suggestions,
+        suggestions=llm_suggestions,
     )
     logger.info(
         "[Step 3] Validation complete — is_valid=%s, %d total issues.",
