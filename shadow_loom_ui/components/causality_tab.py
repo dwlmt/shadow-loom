@@ -40,6 +40,7 @@ from shadow_loom_ui.viz_helpers import (
     mutations_to_propagation_rows,
 )
 from shadow_loom_ui.components._subtab_help import subtab_help
+from shadow_loom_ui.components._safe_md import safe_markdown
 
 import json as _json
 
@@ -1127,7 +1128,7 @@ def _render_whatif_result(container, result: NLQueryResult) -> None:
 
             if pr.prose:
                 with ui.expansion("Generated Prose", icon="article", value=True).props("dense"):
-                    ui.markdown(pr.prose[:2000])
+                    safe_markdown(pr.prose[:2000])
 
             # Propagation waterfall (if mutations available in physics result)
             if pr.physics_result:
@@ -1362,7 +1363,7 @@ def _render_directive_result(container, result: NLQueryResult) -> None:
                     ui.badge(f"Audit: {status}", color=color).props("dense")
 
             if pr.prose:
-                ui.markdown(pr.prose)
+                safe_markdown(pr.prose)
 
 
 # =====================================================================

@@ -19,6 +19,7 @@ from nicegui import ui
 from shadow_loom_ui.state import AppState, NLQueryResult, StateEvent
 from shadow_loom_ui.task_helpers import capture_logs_to_task, notify_task_complete
 from shadow_loom_ui.components.help_popover import help_popover
+from shadow_loom_ui.components._safe_md import safe_markdown
 
 if TYPE_CHECKING:
     pass
@@ -564,7 +565,7 @@ def _render_messages(container, messages: List[dict]) -> None:
                     sent=is_user,
                     name="You" if is_user else "Shadow Loom",
                 ).classes("w-full"):
-                    ui.markdown(msg["text"])
+                    safe_markdown(msg["text"])
     except RuntimeError as exc:
         msg = str(exc)
         if (

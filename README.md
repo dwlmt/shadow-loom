@@ -382,7 +382,19 @@ choices that shape the public surface and what we deliberately rejected.
 Contributions are accepted under the [Developer Certificate of Origin](https://developercertificate.org/)
 plus a copyright licence-back to the maintainer that lets contributions
 be redistributed under both licences — see
-[COMMERCIAL-LICENSE.md § 5](COMMERCIAL-LICENSE.md#5-contributor-licensing).
+[COMMERCIAL-LICENSE.md § 5](COMMERCIAL-LICENSE.md#5-contributor-licensing)
+and the full text in [CLA.md](CLA.md). Copyright holders are listed
+in [AUTHORS.md](AUTHORS.md).
+
+**"Shadow Loom" is a trademark** of David Rae Wilmot — see
+[TRADEMARK.md](TRADEMARK.md) for the policy on forks, naming, and
+logo use. AGPLv3 § 7 explicitly permits this kind of trademark
+restriction.
+
+**Third-party content notice.** Some example fixtures under
+`example_worlds/` and `sample_plots/` summarise works that remain
+in copyright; see [NOTICE.md](NOTICE.md) for the per-file
+attribution and the fair-use / fair-dealing basis for inclusion.
 
 ### What can I do with Shadow Loom?
 

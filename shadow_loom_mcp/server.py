@@ -2303,7 +2303,7 @@ def set_project_settings(
     pid, err = resolve_project(project_id, project_name, ctx)
     if err:
         return {"error": err}
-    err = check_project_access(pid, ctx)
+    err = check_project_access(pid, ctx, min_role="editor")
     if err:
         return {"error": err}
     try:
@@ -2361,7 +2361,7 @@ def branch(
     if err:
         return {"error": err}
 
-    err = check_project_access(project_id, ctx)
+    err = check_project_access(project_id, ctx, min_role="editor")
     if err:
         return {"error": err}
 
@@ -2408,7 +2408,7 @@ def share(
         return {"error": err}
 
     user_row_id = get_user_id(ctx)
-    err = check_project_access(project_id, ctx)
+    err = check_project_access(project_id, ctx, min_role="admin")
     if err:
         return {"error": err}
 
@@ -2551,7 +2551,7 @@ def delete_project(
     if user_row_id is None:
         return {"error": "Authentication required to delete projects."}
 
-    err = check_project_access(project_id, ctx)
+    err = check_project_access(project_id, ctx, min_role="admin")
     if err:
         return {"error": err}
 
@@ -2595,7 +2595,7 @@ def delete_version(
     row = get_version_by_id(version_row_id)
     if row is None:
         return {"error": f"Version {version_row_id} not found."}
-    err = check_project_access(row.project_id, ctx)
+    err = check_project_access(row.project_id, ctx, min_role="editor")
     if err:
         return {"error": err}
 
@@ -2645,7 +2645,7 @@ def reparent_version(
     row = get_version_by_id(version_row_id)
     if row is None:
         return {"error": f"Version {version_row_id} not found."}
-    err = check_project_access(row.project_id, ctx)
+    err = check_project_access(row.project_id, ctx, min_role="editor")
     if err:
         return {"error": err}
 

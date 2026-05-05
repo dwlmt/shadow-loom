@@ -15,7 +15,7 @@ spotlight, OpenReview Z1qZoHa6ql), Wilmot & Keller 2020 (ACL pp. 1763–1788),
 Wilmot & Keller 2021 (EMNLP pp. 851–865), Wilmot 2022 (PhD, arXiv:2206.09708),
 and Tian et al. 2024 (EMNLP Outstanding Paper, pp. 17659–17681) — were each
 verified directly. Recent (2023–2026) LLM-era references added to §1.5,
-§2.2, §4.3 and §6.5 — Kıcıman et al. 2024 (TMLR, arXiv:2305.00050),
+§2.2, §4.3 and §7 — Kıcıman et al. 2024 (TMLR, arXiv:2305.00050),
 Kim et al. 2023 (FANToM, EMNLP, arXiv:2310.15421), Cross et al. 2024
 (Hypothetical Minds, arXiv:2407.07086), Gu et al. 2024 (LLM-as-a-Judge
 survey, arXiv:2411.15594), Gu et al. 2024/2026 (SimpleToM, ICLR 2026,
@@ -117,8 +117,8 @@ Recent (2023–2026) — LLM-era benchmarks for narrative ToM and belief trackin
 ## 2. Causal inference (Pearl's ladder, AMWN, ctf-calculus)
 
 This is the largest single intellectual debt in the codebase. The naming
-conventions (`AMWN`, `do_intervene`, `abduction_update`, `world_id∈{factual,
-shadow}`, `ctf-calculus`) come directly from this literature.
+conventions (`AMWN`, `do_intervene`, `abduction_update`,
+`world_id ∈ {factual, shadow}`, `ctf-calculus`) come directly from this literature.
 
 ### 2.1 Three rungs of causation (`ObservationQuery`, `InterventionQuery`, `CounterfactualQuery`)
 
@@ -521,7 +521,7 @@ These ground the six emotion targets (`grief`, `rage`, `joy`, `regret`,
 The information topology is modelled as a `Channel` *node* (standing
 capability between participants) plus discrete utterance `EventNode`s
 (messages) referencing the channel via `via_channel_id`. Per-participant
-`intelligibility \u2208 [0,1]` replaces the legacy `is_encrypted` boolean —
+`intelligibility ∈ [0,1]` replaces the legacy `is_encrypted` boolean —
 encryption is one limiting case (low intelligibility for non-keyholders),
 foreign language and partial overhearing are others on the same axis.
 Eavesdropping is derived: any non-addressee participant whose
@@ -540,7 +540,7 @@ implementation of belief revision in the AGM tradition.
 
 ---
 
-## 6.5 Computational narratology and story understanding
+## 7. Computational narratology and story understanding
 
 The codebase sits inside a long tradition of attempts to give stories a
 formal computational semantics. The references below are the load-bearing
@@ -600,7 +600,7 @@ context into all three downstream extraction agents.
 
 ---
 
-## 7. Citation map (one-line summary per module)
+## 8. Citation map (one-line summary per module)
 
 | Module | Primary debt |
 |---|---|
@@ -627,7 +627,7 @@ context into all three downstream extraction agents.
 
 ---
 
-## 8. Suggested further reading
+## 9. Suggested further reading
 
 For readers wanting the shortest path into the literature this codebase
 sits on top of:

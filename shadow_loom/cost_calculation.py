@@ -100,7 +100,15 @@ class CostCalculator:
             return 0.0
             
         # Apply pricing based on rule structure
-        if rule.input_cost_per_unit_usd and rule.output_cost_per_unit_usd:
+        # Use ``is not None`` so legitimately-zero pricing (free models /
+        # introductory tiers) still routes through the split-pricing
+        # branch. With truthiness the 0.0 falls through to the combined-
+        # token branch which mis-prices anything where one side is
+        # explicitly free.
+        if (
+            rule.input_cost_per_unit_usd is not None
+            and rule.output_cost_per_unit_usd is not None
+        ):
             # Separate input/output pricing (preferred for LLMs)
             input_tokens = log_entry.prompt_tokens or 0
             output_tokens = log_entry.completion_tokens or 0
@@ -160,22 +168,30 @@ class CostCalculator:
         
     def update_costs_batch(self, limit: int = 1000) -> Tuple[int, int]:
         """Update costs for entries that haven't been calculated yet.
-        
+
         Returns:
             Tuple of (agent_entries_updated, api_entries_updated)
-        """ 
+
+        Note on failed calls: rows with ``status != "success"`` are also
+        processed. Most providers (Ollama, OpenAI, Anthropic) do not bill
+        for fully-failed requests, but partial responses with usable
+        ``prompt_tokens`` / ``completion_tokens`` *are* billable. The
+        per-row calculator already returns ``0.0`` when ``total_tokens``
+        is falsy, so this naturally bills the partial-response case and
+        zeroes the all-failed case. Stamping all rows here also prevents
+        the "is None" filter from re-scanning failed calls forever.
+        """
         agent_count = 0
         api_count = 0
-        
+
         try:
-            # Update agent call costs
+            # Update agent call costs (all statuses; see docstring).
             agent_query = select(AgentCallLogRow).where(
                 AgentCallLogRow.estimated_cost_usd.is_(None),
-                AgentCallLogRow.status == "success"
             ).limit(limit)
-            
+
             agent_entries = self.session.exec(agent_query).all()
-            
+
             for entry in agent_entries:
                 try:
                     entry.estimated_cost_usd = self.calculate_agent_call_cost(entry)
@@ -183,11 +199,10 @@ class CostCalculator:
                 except Exception as e:
                     logger.error(f"Failed to calculate cost for agent call {entry.id}: {e}")
                     entry.estimated_cost_usd = 0.0
-            
-            # Update API call costs
+
+            # Update API call costs (all statuses; see docstring).
             api_query = select(ApiCallLogRow).where(
                 ApiCallLogRow.estimated_cost_usd.is_(None),
-                ApiCallLogRow.status == "success"  
             ).limit(limit)
             
             api_entries = self.session.exec(api_query).all()

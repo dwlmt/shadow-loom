@@ -50,6 +50,7 @@ from shadow_loom_ui.viz import (
     with_expand,
 )
 from shadow_loom_ui.viz_helpers import audit_passrate_data
+from shadow_loom_ui.components._safe_md import safe_markdown
 
 if TYPE_CHECKING:
     pass
@@ -286,7 +287,7 @@ def _render_evaluation_result(container, result: NLQueryResult, state: AppState)
                     ui.label("Auditor's notes").classes(
                         "text-sm font-semibold text-slate-700"
                     )
-                    ui.markdown(pr.prose)
+                    safe_markdown(pr.prose)
             return
 
         narrative_order = getattr(eval_result, "narrative_order", None)
@@ -605,12 +606,12 @@ def _render_quality_extras(quality) -> None:
             with ui.expansion(
                 "Consistency review", icon="check_circle",
             ).props("dense"):
-                ui.markdown(coherence)
+                safe_markdown(coherence)
         if reward_hacking:
             with ui.expansion(
                 "Shortcuts the auditor caught", icon="warning",
             ).props("dense"):
-                ui.markdown(reward_hacking)
+                safe_markdown(reward_hacking)
 
 
 def _render_evidence_block(pr, causal, affective, narrative_order) -> None:
@@ -782,7 +783,7 @@ def _render_causal_text(causal) -> None:
             with ui.expansion(
                 "Plausibility details", icon="psychology",
             ).props("dense").classes("mt-2"):
-                ui.markdown(details)
+                safe_markdown(details)
 
         # ctf-calculus diagnostics — grouped under one parent
         # expansion so the four sub-sections don't stack as visual
@@ -970,7 +971,7 @@ def _render_query_audit_entry(index: int, result: NLQueryResult, state: AppState
     ).classes("w-full").props("dense"):
         if result.summary:
             # Summary is now multi-line lay-user text (humanize_pipeline_result).
-            ui.markdown(result.summary).classes("text-sm text-slate-600")
+            safe_markdown(result.summary).classes("text-sm text-slate-600")
 
         if result.error:
             ui.label(f"Error: {result.error}").classes("text-xs text-negative")
@@ -1110,7 +1111,7 @@ def _render_query_audit_entry(index: int, result: NLQueryResult, state: AppState
             # Prose excerpt
             if pr.prose:
                 with ui.expansion("Prose", icon="article").props("dense"):
-                    ui.markdown(textwrap.shorten(
+                    safe_markdown(textwrap.shorten(
                         pr.prose,
                         width=_PROSE_PREVIEW_CHARS,
                         placeholder="…",
@@ -1300,7 +1301,7 @@ def _render_audit_cycle(cycle) -> None:
         # Prose excerpt for this iteration
         prose = getattr(cycle, "prose", "")
         if prose:
-            ui.markdown(textwrap.shorten(
+            safe_markdown(textwrap.shorten(
                 prose, width=_PROSE_PREVIEW_CHARS, placeholder="…",
             )).classes("text-xs text-slate-600")
 
@@ -1399,4 +1400,4 @@ def _render_violation(v, *, state: "AppState | None" = None, compact: bool = Fal
                     with ui.expansion(
                         "Auditor's rewrite instruction", icon="edit_note",
                     ).props("dense").classes("w-full"):
-                        ui.markdown(feedback)
+                        safe_markdown(feedback)

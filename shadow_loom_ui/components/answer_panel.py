@@ -30,6 +30,7 @@ from nicegui import ui
 
 from shadow_loom_ui.reasoning_helpers import structured_response_data
 from shadow_loom_ui.state import AppState, NLQueryResult, StateEvent
+from shadow_loom_ui.components._safe_md import safe_markdown
 
 if TYPE_CHECKING:
     pass
@@ -184,7 +185,7 @@ def _render_card(
                 ).props("flat dense round size=sm").tooltip("Dismiss")
 
             claim = card.get("claim") or "(no answer returned)"
-            ui.markdown(claim).classes(
+            safe_markdown(claim).classes(
                 "text-sm text-slate-800 leading-snug"
             )
 

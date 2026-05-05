@@ -387,7 +387,10 @@ class EventNode(AMWNNode):
 
 class AMWNEdge(BaseModel):
     """Base class for all topology edges. Distinct from AMWNNode."""
-    world_id: str = Field(default="factual", description="Allows edges to exist only in shadow branches.")
+    world_id: Literal["factual", "shadow"] = Field(
+        default="factual",
+        description="Allows edges to exist only in shadow branches.",
+    )
 
 # ==========================================
 # 1. THE STANDING CAPABILITY: Channel

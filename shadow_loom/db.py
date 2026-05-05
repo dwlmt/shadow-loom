@@ -548,6 +548,44 @@ class ProjectUsageSummaryRow(SQLModel, table=True):
     project: ProjectRow = Relationship()
 
 
+class SchemaVersionRow(SQLModel, table=True):
+    """Lightweight schema-version ledger.
+
+    Records every additive migration applied by
+    :func:`_run_lightweight_migrations` so operators can audit which
+    migrations have run on a given database without reverse-engineering
+    column lists. This is *not* Alembic — it does not generate
+    migrations or support down-revisions — but it gives us a paper
+    trail and a place to read the current schema version from
+    administrative tooling.
+
+    The current schema version is the maximum ``version`` value present.
+    A fresh database (post ``create_all``) is bootstrapped to the
+    pinned :data:`SCHEMA_VERSION_CURRENT` so future migrations only
+    apply deltas.
+    """
+    __tablename__ = "schema_versions"
+
+    version: int = Field(primary_key=True)
+    name: str = Field(max_length=128)
+    applied_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+
+
+# Bump when adding a new entry to ``_SCHEMA_MIGRATIONS`` below.
+SCHEMA_VERSION_CURRENT: int = 2
+
+# Ordered ledger of applied migrations: (version, name).
+# Version 1 is the historical baseline (everything before this ledger
+# existed); version 2 added world_id + branch_label columns to
+# ``versions`` (handled by ``_run_lightweight_migrations``).
+_SCHEMA_MIGRATIONS: list[tuple[int, str]] = [
+    (1, "baseline"),
+    (2, "versions.world_id+branch_label"),
+]
+
+
 # =====================================================================
 # Engine / Session factory
 # =====================================================================
@@ -606,8 +644,32 @@ def init_db(database_url: str = "sqlite:///shadow_loom.db") -> None:
 
     SQLModel.metadata.create_all(_engine)
     _run_lightweight_migrations(_engine)
+    _record_schema_versions(_engine)
     ensure_example_user()
     logger.info("[DB] Tables initialised on %s", database_url)
+
+
+def _record_schema_versions(engine) -> None:  # noqa: ANN001
+    """Stamp ``schema_versions`` so we can audit migration history.
+
+    Inserts every entry from :data:`_SCHEMA_MIGRATIONS` that isn't
+    already present. Idempotent: re-running just no-ops, so it's safe
+    to call on every startup.
+    """
+    with Session(engine) as s:
+        existing = set(s.exec(select(SchemaVersionRow.version)).all())
+        added = 0
+        for version, name in _SCHEMA_MIGRATIONS:
+            if version in existing:
+                continue
+            s.add(SchemaVersionRow(version=version, name=name))
+            added += 1
+        if added:
+            s.commit()
+            logger.info(
+                "[DB·migrate] Stamped %d schema version row(s); current=%d.",
+                added, SCHEMA_VERSION_CURRENT,
+            )
 
 
 def _run_lightweight_migrations(engine) -> None:  # noqa: ANN001
@@ -1446,6 +1508,8 @@ def save_version(
     label: str | None = None,
     world_id: str = "factual",
     branch_label: str | None = None,
+    pipeline_reextraction_failed: bool = False,
+    accept_partial: bool = False,
 ) -> VersionRow:
     """Persist a new version node in the version tree.
 
@@ -1453,7 +1517,46 @@ def save_version(
     integer for the project.  Auto-assignment is retried up to a few
     times on ``IntegrityError`` to absorb concurrent writers racing on
     the (project_id, version) unique constraint.
+
+    Hard guard: callers that ran an ingestion / re-extraction pipeline
+    must pass ``pipeline_reextraction_failed=True`` if the pipeline
+    raised, and ``accept_partial=True`` to acknowledge they intend to
+    persist the partial state anyway. Without that explicit
+    acknowledgement we refuse to save, so a silent ``except Exception:
+    save_version(...)`` cannot quietly persist a half-extracted graph.
     """
+    if pipeline_reextraction_failed and not accept_partial:
+        raise ValueError(
+            "save_version refused: caller passed "
+            "pipeline_reextraction_failed=True without accept_partial=True. "
+            "The pipeline failed; either persist the previous successful "
+            "version or pass accept_partial=True to explicitly accept the "
+            "partial extraction."
+        )
+    # Cheap shape-check at the persistence boundary so corrupted
+    # payloads are flagged early. Logged-only by default (warning) so
+    # legacy / stub callers continue to work; controlled by the
+    # ``SHADOW_LOOM_STRICT_PERSIST`` env var, which when set to
+    # ``"1"``/``"true"`` upgrades the warning to a hard ``ValueError``.
+    # Skipped entirely when ``accept_partial=True`` so explicit
+    # "persist what we have" callers still get through.
+    if not accept_partial:
+        try:
+            from shadow_loom.models import WorldStateV1
+            WorldStateV1.model_validate_json(world_state_json)
+        except Exception as exc:
+            import os as _os
+            strict = _os.environ.get("SHADOW_LOOM_STRICT_PERSIST", "").lower() in {"1", "true", "yes", "on"}
+            msg = (
+                f"save_version: world_state_json failed WorldStateV1 "
+                f"validation at persistence boundary: {exc}"
+            )
+            if strict:
+                raise ValueError(
+                    msg + " (SHADOW_LOOM_STRICT_PERSIST=1; pass "
+                    "accept_partial=True to bypass.)"
+                ) from exc
+            logger.warning(msg)
     # When an explicit version is supplied we honour it (single attempt).
     max_attempts = 1 if version is not None else 5
     last_err: Exception | None = None

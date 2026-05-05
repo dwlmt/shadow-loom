@@ -113,7 +113,7 @@ Same as before — relationships between `ENT_` ids with per-axis `metrics`. (Sc
   },
   "utterance_events": [
     {
-      "id": "EVT_MACBETH_LETTER_PROPHECY",
+      "id": "EVT_UTT_MACBETH_LETTER_PROPHECY",
       "event_type": "utterance",
       "description": "Macbeth writes to his wife relaying the witches' prophecy.",
       "content": "They met me in the day of success... and referred me to the coming on of time, with 'Hail, king that shalt be!'",
@@ -161,7 +161,7 @@ Same as before — relationships between `ENT_` ids with per-axis `metrics`. (Sc
   "channels": {},
   "utterance_events": [
     {
-      "id": "EVT_LADY_MACBETH_CONFESSION",
+      "id": "EVT_UTT_LADY_MACBETH_CONFESSION",
       "event_type": "utterance",
       "description": "Lady Macbeth, sleepwalking, confesses guilt aloud.",
       "speaker_id": "ENT_LADY_MACBETH",
