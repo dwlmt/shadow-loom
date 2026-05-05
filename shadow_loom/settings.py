@@ -260,6 +260,8 @@ class ExtractionSettings(BaseSettings):
     min_chunk_chars: int = Field(default=1500)
     chunk_overlap_chars: int = Field(default=300)
     max_correction_retries: int = Field(default=5)
+    validation_payload_max_chars: int = Field(default=600_000)
+    correction_subgraph_threshold_chars: int = Field(default=400_000)
     max_concurrent_chunks: int = Field(default=8)
     estimated_events_per_chunk: int = Field(default=10)
     enable_consequences_agent: bool = Field(default=True)
@@ -789,6 +791,8 @@ class Settings:
             "min_chunk_chars": self.extraction.min_chunk_chars,
             "chunk_overlap_chars": self.extraction.chunk_overlap_chars,
             "max_correction_retries": self.extraction.max_correction_retries,
+            "validation_payload_max_chars": self.extraction.validation_payload_max_chars,
+            "correction_subgraph_threshold_chars": self.extraction.correction_subgraph_threshold_chars,
             "max_concurrent_chunks": self.extraction.max_concurrent_chunks,
             "estimated_events_per_chunk": self.extraction.estimated_events_per_chunk,
             "enable_consequences_agent": self.extraction.enable_consequences_agent,

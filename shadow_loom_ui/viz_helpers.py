@@ -2311,6 +2311,78 @@ def relationship_timeline_data(
     return {"times": times, "series": series}
 
 
+def relationship_heatmap_frames(
+    ws: WorldStateV1,
+    *,
+    metric: str = "affinity",
+    num_frames: int = 12,
+) -> dict:
+    """Time-sliced entity×entity matrices for an animated heatmap.
+
+    Builds one matrix per fabula tick (capped at ``num_frames``,
+    distributed evenly between the world's earliest and latest
+    ``fabula_time``) using
+    :func:`reconstruct_relationship_with_causal` so each frame
+    reflects authored snapshots **and** ``mutation_social`` causal
+    edges accumulated through that tick. Two-cell symmetry mirrors
+    :func:`ws_to_heatmap_data` so both heatmaps render the same way.
+
+    Returns ``{"names": [...], "times": [...], "frames": [[[x,y,v]...], ...]}``
+    where ``frames[i]`` is the matrix at ``times[i]``. Returns empty
+    lists if the world has no entities or no events.
+    """
+    ent_ids = list(ws.entities.keys())
+    if not ent_ids:
+        return {"names": [], "times": [], "frames": []}
+    ent_names = [ws.entities[eid].name for eid in ent_ids]
+    idx = {eid: i for i, eid in enumerate(ent_ids)}
+
+    tmin, tmax = fabula_time_bounds(ws)
+    if tmax <= tmin:
+        # No span — emit a single frame so the chart still renders.
+        times = [tmax]
+    else:
+        n = max(2, min(num_frames, tmax - tmin + 1))
+        step = (tmax - tmin) / (n - 1)
+        times = [int(round(tmin + step * i)) for i in range(n)]
+        # Deduplicate while preserving order (small spans collapse).
+        seen: set[int] = set()
+        times = [t for t in times if not (t in seen or seen.add(t))]
+
+    # Walk every dyad once per frame using the causal-aware
+    # reconstructor. We deliberately iterate ``social_topology`` (not
+    # the cartesian product of entities) — characters with no edge
+    # have no signal to display and would clutter the matrix.
+    frames: list[list[list]] = []
+    for t in times:
+        frame_data: list[list] = []
+        seen_pairs: set[tuple[str, str]] = set()
+        for rel in ws.social_topology:
+            si = idx.get(rel.source_entity_id)
+            ti = idx.get(rel.target_entity_id)
+            if si is None or ti is None:
+                continue
+            pair_key = tuple(sorted([rel.source_entity_id, rel.target_entity_id]))
+            if pair_key in seen_pairs:
+                continue
+            seen_pairs.add(pair_key)
+            recon = reconstruct_relationship_with_causal(
+                ws, rel.source_entity_id, rel.target_entity_id, t
+            )
+            if recon is None:
+                continue
+            val = recon.get(metric, 0.0)
+            try:
+                v = round(float(val), 2)
+            except (TypeError, ValueError):
+                v = 0.0
+            frame_data.append([si, ti, v])
+            frame_data.append([ti, si, v])
+        frames.append(frame_data)
+
+    return {"names": ent_names, "times": times, "frames": frames}
+
+
 def list_relationship_pairs(ws: WorldStateV1) -> list[tuple[str, str, str, str]]:
     """List entity pairs that have *any* relationship signal.
 

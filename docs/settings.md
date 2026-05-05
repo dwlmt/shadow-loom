@@ -151,6 +151,8 @@ The thresholds map directly onto the auditor categories described in
 | `EXTRACTION_MIN_CHUNK_CHARS` | `1500` | Minimum chunk size before merging adjacent paragraphs. |
 | `EXTRACTION_CHUNK_OVERLAP_CHARS` | `300` | Trailing context prepended to the next chunk for coreference. |
 | `EXTRACTION_MAX_CORRECTION_RETRIES` | `5` | Max validation-feedback repair passes (after the initial extract). |
+| `EXTRACTION_VALIDATION_PAYLOAD_MAX_CHARS` | `600000` | Hard cap on the WorldStateV1 JSON sent to the LLM validator (Step 3 Phase B). When the serialised state exceeds this, the validator switches to a compact projection (timeline-stripped) before falling back to truncation. Sized for a 256K-token context window with headroom for system prompt and structured-output response — lower this for smaller-context models. |
+| `EXTRACTION_CORRECTION_SUBGRAPH_THRESHOLD_CHARS` | `400000` | When the WorldStateV1 JSON sent to the correction-patch agent exceeds this, fall back to an error-relevant subgraph (events named in errors + immediate causal neighbours + ontology header) instead of the full state. The patch contract still applies to the full world on the way out. |
 | `EXTRACTION_MAX_CONCURRENT_CHUNKS` | `8` | Parallel async LLM extraction concurrency. Tune to your model's throughput. |
 | `EXTRACTION_ESTIMATED_EVENTS_PER_CHUNK` | `10` | Pre-allocates syuzhet/fabula-time ranges for parallel extraction. |
 | `EXTRACTION_ENABLE_RESEARCH_AGENT` | `false` | Opt-in: run Step 3d external research after world-state assembly. Off by default. |

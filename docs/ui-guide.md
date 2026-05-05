@@ -125,6 +125,30 @@ route and surface in whichever tab consumes their result
   `state.set_fabula_cursor` (debounced 120 ms).
 * Gated by `is_path_visible("world")` so it only re-renders when visible.
 
+### View modes
+
+The toolbar `view_mode` toggle switches the main panel between several
+lenses on the same time-sliced world state. The mode keys are stable
+(used in deep links / state) even when labels change.
+
+| Mode key | Toolbar label | What it shows |
+| -------- | ------------- | ------------- |
+| `overview` | Overview | High-level world graph + status / population summaries. |
+| `social` | Social | Relationship graph between entities. Heatmap metric (`affinity` / `fear` / `power_dynamic`) and layout (`force` / `circular`) selectors appear in the toolbar. Tick **Animate over fabula time** to swap the static entity×entity heatmap for a timeline-scrubber heatmap that replays the matrix tick-by-tick (causal-aware: layers `mutation_social` causal edges and authored snapshots on top of the steady-state `RelationshipEdge` baseline). |
+| `spatial` | Spatial | Location graph with paths between rooms / regions and current entity positions. Animated location nodes (rippleEffect) toggleable. |
+| `information` | Information | Standing communication channels (telephones, mind-links, classified pipelines) and which entities can transmit / overhear / are deaf to them. |
+| `ego` | Ego-Graph | World filtered to one or more focus entities — just what they can plausibly perceive, hear, or remember at the cursor. |
+| `temporal` | Temporal | A single entity's full trajectory (status, location, traits, beliefs) across fabula time. |
+| `composition` | Composition | Trait-vector composition breakdowns + global `WorldTrait` magnitude/inertia bars + sunburst / treemap composition views. |
+| `epistemic` | **Character Beliefs** | Tiled grid of per-character belief panels — one card per believer showing perceived state, target, confidence, inertia, provenance (utterance / event / channel), and the fabula tick the belief was established at. The toolbar `Believers` multi-select filters which characters are shown. |
+| `world_state` | **World State** | Tiled grid of per-`GlobalTrait` magnitude timelines — one card per world trait, mirroring the Character Beliefs grid but for `WORLD_*` traits evolving across fabula time. Shows magnitude (solid line) + inertia (dashed) stepped on each `WorldTraitSnapshot`, with event-overlay markers. The toolbar `World traits` multi-select filters which traits are shown. |
+| `comparison` | Comparison | Side-by-side trait / relationship table for 2–6 picked entities (radar overlay + grouped trait bars + ranked table). |
+
+Heavy panels are always rendered against the snapshot returned by
+`snapshot_world_at(ws, fabula_cursor)` so dragging the cursor scrubs
+beliefs, world-trait magnitudes, and topology consistently with the
+rest of the UI.
+
 ## 4. Causality tab
 
 [`components/causality_tab.py`](../shadow_loom_ui/components/causality_tab.py)

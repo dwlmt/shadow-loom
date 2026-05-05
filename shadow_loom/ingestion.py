@@ -367,6 +367,33 @@ class ExtractionConfig(BaseModel):
         description="Maximum correction passes after validation. Each pass feeds "
         "programmatic errors back to the LLM for targeted repair.",
     )
+    validation_payload_max_chars: int = Field(
+        default=600_000,
+        description=(
+            "Hard char cap on the WorldStateV1 JSON sent to the LLM "
+            "validator (Step 3 Phase B). When the serialised state "
+            "exceeds this, the validator switches to a compact "
+            "projection (or, as a last resort, truncates). The default "
+            "(~600K chars \u2248 ~150K tokens) is sized for a 256K-token "
+            "context window with comfortable headroom for the system "
+            "prompt and the validator's structured-output response. "
+            "Lower this when targeting a smaller-context model."
+        ),
+    )
+    correction_subgraph_threshold_chars: int = Field(
+        default=400_000,
+        description=(
+            "When the WorldStateV1 JSON sent to the correction-patch "
+            "agent exceeds this size, fall back to an error-relevant "
+            "subgraph (events named in the errors + their immediate "
+            "causal neighbours + ontology header) instead of the full "
+            "state. The default (~400K chars \u2248 ~100K tokens) keeps "
+            "the patch contract rich enough for the LLM to reason "
+            "across the whole topology on a 256K-token model while "
+            "still cutting over before the prompt would crowd out the "
+            "patch response."
+        ),
+    )
     max_concurrent_chunks: int = Field(
         default=4,
         ge=1,
@@ -5996,7 +6023,7 @@ def _run_correction_patch(
     # subgraph (events mentioned in the error details + their immediate
     # causal neighbours + ontology header) instead of the full state.
     # The patch contract still applies to the full state on the way out.
-    SUBGRAPH_THRESHOLD = 60_000
+    SUBGRAPH_THRESHOLD = config.correction_subgraph_threshold_chars
     state_payload = ws_json
     payload_note = ""
     if len(ws_json) > SUBGRAPH_THRESHOLD:
@@ -6420,7 +6447,7 @@ def validate_world_state(
     # contradictions the LLM auditor catches. Prior behaviour silently
     # truncated the JSON tail \u2014 invisible to the auditor and skewed
     # corrections toward front-loaded sections (audit item #9).
-    max_chars = 80_000
+    max_chars = config.validation_payload_max_chars
     if len(ws_json) > max_chars:
         compact_payload = _build_compact_validation_view(ws)
         if len(compact_payload) < len(ws_json):

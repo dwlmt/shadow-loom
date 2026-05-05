@@ -53,6 +53,33 @@ def build_dashboard(state: AppState) -> None:
         projects_container = ui.row().classes("w-full gap-4 flex-wrap")
         _render_project_cards(state, projects_container)
 
+        # Re-render the project gallery whenever a project is
+        # created (post-ingestion) or deleted from elsewhere. Without
+        # this the user has to hard-refresh the dashboard after
+        # ingestion to see the new card. We unsubscribe automatically
+        # when the page client disconnects so the listener doesn't
+        # leak across hot-reloads.
+        from shadow_loom_ui.state import StateEvent
+
+        def _on_project_list_changed(**_kwargs):
+            try:
+                _render_project_cards(state, projects_container)
+            except Exception:
+                logger.exception("Project-list refresh failed")
+
+        state.on(StateEvent.PROJECT_LIST_CHANGED, _on_project_list_changed)
+        try:
+            ui.context.client.on_disconnect(
+                lambda: state.off(
+                    StateEvent.PROJECT_LIST_CHANGED, _on_project_list_changed
+                )
+            )
+        except Exception:
+            # Older NiceGUI versions or non-page contexts may not
+            # expose ``client.on_disconnect``; the leaked listener is
+            # harmless (idempotent re-render).
+            pass
+
         # ---- Usage Dashboard ----  
         if state.user_id:
             from shadow_loom_ui.components.usage_dashboard import render_usage_dashboard
@@ -222,6 +249,14 @@ async def _confirm_delete_project(
         return
     ui.notify("Project deleted", type="positive")
     _render_project_cards(state, container)
+    # Notify any other open dashboard tabs / dialogs so their
+    # project lists stay consistent without a manual refresh.
+    from shadow_loom_ui.state import StateEvent
+    state.emit(
+        StateEvent.PROJECT_LIST_CHANGED,
+        project_id=project["id"],
+        action="deleted",
+    )
 
 
 def _render_starred_cards(starred_ids: list[int], container: ui.row) -> None:

@@ -234,6 +234,16 @@ def build_ingest_dialog(state: AppState) -> ui.dialog:
                         world_state=ws,
                         raw_text=text,
                     )
+                    # Tell the dashboard (and any other subscriber)
+                    # to re-pull ``db.list_projects`` — without this
+                    # signal the project gallery only shows what was
+                    # in the DB at page-build time, so a freshly
+                    # ingested project doesn't appear until refresh.
+                    state.emit(
+                        StateEvent.PROJECT_LIST_CHANGED,
+                        project_id=proj.id,
+                        action="created",
+                    )
 
                     summary = (
                         f"{len(ws.entities)} entities, {len(ws.events)} events, "

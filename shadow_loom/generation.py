@@ -338,60 +338,477 @@ def _format_abduction(truths: List[AbductionTruth]) -> str:
     return "\n".join(lines)
 
 
-def _format_scene_context(ctx: Dict[str, Any]) -> str:
-    """Build a concise scene context from the ego-graph payload."""
-    lines: List[str] = []
+def _fmt_traits(traits: Dict[str, Any], *, threshold: float = 0.15) -> str:
+    """Render a traits dict as ``name=value`` pairs, skipping near-baseline."""
+    parts: List[str] = []
+    for tn, td in (traits or {}).items():
+        if isinstance(td, dict):
+            val = td.get("value", 0.5)
+            if abs(val - 0.5) >= threshold:
+                parts.append(f"{tn}={val:.2f}")
+        elif isinstance(td, (int, float)):
+            if abs(float(td) - 0.5) >= threshold:
+                parts.append(f"{tn}={float(td):.2f}")
+    return ", ".join(parts) if parts else "baseline"
 
-    # Focus entities
-    for ent in ctx.get("focus_entities", []):
-        eid = ent.get("id", "?")
-        name = ent.get("name", eid)
-        loc = ent.get("location_id", "unknown")
-        status = ent.get("status", "unknown")
-        traits = ent.get("traits", {})
-        trait_parts = []
-        for tn, td in traits.items():
-            if isinstance(td, dict):
-                val = td.get("value", 0.5)
-                if abs(val - 0.5) >= 0.15:
-                    trait_parts.append(f"{tn}={val:.2f}")
-        trait_str = ", ".join(trait_parts) if trait_parts else "baseline"
-        lines.append(f"  {name} ({eid}) — {status}, at {loc} [{trait_str}]")
 
-    # Present entities
-    for ent in ctx.get("present_entities", []):
-        eid = ent.get("id", "?")
-        name = ent.get("name", eid)
-        loc = ent.get("location_id", "unknown")
-        lines.append(f"  {name} ({eid}) — present at {loc}")
+def _fmt_beliefs(beliefs: List[Any], *, max_items: int = 6) -> List[str]:
+    out: List[str] = []
+    for b in (beliefs or [])[:max_items]:
+        if not isinstance(b, dict):
+            continue
+        target = b.get("target_id", "?")
+        state = b.get("perceived_state", "")
+        conf = b.get("confidence", 1.0)
+        out.append(f"      believes {target}: \"{state}\" (conf={conf:.2f})")
+    return out
 
-    # Locations (ego-graph uses "current_locations")
-    for loc in ctx.get("current_locations", ctx.get("relevant_locations", [])):
-        lid = loc.get("id", "?")
-        lname = loc.get("name", lid)
-        lines.append(f"  Location: {lname} ({lid})")
 
-    # Recent events (from memory)
-    for evt in ctx.get("recent_memory", []):
-        eid = evt.get("id", "?")
-        desc = evt.get("description", "")
-        lines.append(f"  Recent: {eid} — {desc}")
+def _normalise_omniscient_to_ego_shape(
+    ctx: Dict[str, Any],
+    *,
+    recent_event_limit: int = 20,
+) -> Dict[str, Any]:
+    """Convert a full ``WorldStateV1.model_dump()`` into the ego-graph
+    payload shape consumed by :func:`format_scene_context_for_prompt`.
 
-    # World traits (structural constraints)
-    for wt in ctx.get("world_traits", []):
-        wid = wt.get("id", "?")
-        name = wt.get("name", wid)
-        desc = wt.get("description", "")
-        mag = wt.get("magnitude", {})
-        mag_val = mag.get("value", 0.5) if isinstance(mag, dict) else 0.5
-        domains = ", ".join(wt.get("affected_domains", []))
-        lines.append(f"  World: {name} ({wid}) — mag={mag_val:.2f}, domains=[{domains}]")
-        if desc:
-            lines.append(f"    {desc[:120]}")
+    Rung-1 observation queries that don't pin a POV go through
+    :func:`extract_full_world_state`, which returns the whole world as
+    a ``WorldStateV1.model_dump()`` (``entities`` is a *dict* keyed by
+    id, ``events`` is a list, ``social_topology`` is a list, etc.).
+    The ego-graph extractor instead returns lists keyed
+    ``focus_entities`` / ``present_entities`` / ``current_locations`` /
+    ``recent_memory`` / ... With no shape coercion, the formatter
+    silently emits an empty scene context for omniscient observations.
 
-    if not lines:
+    This helper detects the omniscient shape (``entities`` is a dict
+    *and* no ego-graph keys are present) and rewrites it so all
+    downstream rendering paths see a uniform structure. Events are
+    sliced to the most recent ``recent_event_limit`` (sorted by
+    ``fabula_time`` descending) so omniscient prompts don't blow the
+    context window on long-running worlds; utterance events are
+    additionally split into their own ``relevant_utterance_events``
+    bucket so dialogue content surfaces under its own header.
+    """
+    if not ctx:
+        return {}
+    has_ego_keys = any(
+        k in ctx
+        for k in (
+            "focus_entities", "present_entities", "current_locations",
+            "recent_memory", "relevant_causal_edges", "relevant_relationships",
+        )
+    )
+    if has_ego_keys:
+        return ctx
+    entities = ctx.get("entities")
+    if not isinstance(entities, dict):
+        return ctx  # Unknown shape; let the formatter try its best.
+
+    def _to_list_with_id(d: Dict[str, Any] | Any) -> List[Dict[str, Any]]:
+        if not isinstance(d, dict):
+            return list(d) if d else []
+        out: List[Dict[str, Any]] = []
+        for k, v in d.items():
+            if isinstance(v, dict):
+                v = dict(v)  # shallow copy so we don't mutate caller
+                v.setdefault("id", k)
+                out.append(v)
+        return out
+
+    ent_list = _to_list_with_id(entities)
+    loc_list = _to_list_with_id(ctx.get("locations") or {})
+    obj_list = _to_list_with_id(ctx.get("objects") or {})
+    chan_list = _to_list_with_id(ctx.get("channels") or {})
+    wt_list = _to_list_with_id(ctx.get("world_traits") or {})
+
+    raw_events = list(ctx.get("events") or [])
+    raw_events.sort(
+        key=lambda e: (
+            e.get("fabula_time") if isinstance(e, dict) else 0
+        ) or 0,
+        reverse=True,
+    )
+    bounded = raw_events[:recent_event_limit]
+    recent_memory = [e for e in bounded if e.get("event_type") != "utterance"]
+    utterances = [e for e in bounded if e.get("event_type") == "utterance"]
+
+    return {
+        # Treat every entity as "focus" in the omniscient view so the
+        # formatter renders trait/belief blocks rather than the
+        # condensed co-present line. Empty present_entities avoids
+        # double-listing.
+        "focus_entities": ent_list,
+        "present_entities": [],
+        "current_locations": loc_list,
+        "present_objects": obj_list,
+        "relevant_relationships": list(ctx.get("social_topology") or []),
+        "relevant_causal_edges": list(ctx.get("causal_topology") or []),
+        "relevant_spatial_edges": list(ctx.get("spatial_topology") or []),
+        "relevant_channels": chan_list,
+        "relevant_utterance_events": utterances,
+        "recent_memory": recent_memory,
+        "world_traits": wt_list,
+    }
+
+
+def _normalise_sandbox_to_ego_shape(ctx: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert a ``nx.node_link_data(sandbox)`` payload into ego-graph
+    shape so :func:`format_scene_context_for_prompt` surfaces the
+    *post-surgery* scene for Rung-2 (intervention) and Rung-3
+    (counterfactual) queries.
+
+    Rung-2/3 set ``physics_state = nx.node_link_data(sandbox)`` after
+    the Causal Engine mutates the sandbox in place. Without coercion
+    the formatter sees ``{"nodes": [...], "links": [...]}`` — none of
+    its expected keys — and emits an empty scene context, hiding the
+    very ``do``-surgery the renderer needs to describe (and the
+    auditor needs to validate against). Reading directly off the
+    sandbox guarantees that whatever the engine *actually* changed
+    (trait values, statuses, locations, beliefs, social metrics,
+    pruned utterances, disabled channels, world-trait shifts) reaches
+    the prompt verbatim, not a snapshot of the pre-surgery ego graph.
+    """
+    if not isinstance(ctx, dict) or "nodes" not in ctx or "links" not in ctx:
+        return ctx
+    nodes = ctx.get("nodes") or []
+    links = ctx.get("links") or []
+
+    focus_entities: List[Dict[str, Any]] = []
+    present_objects: List[Dict[str, Any]] = []
+    locations: List[Dict[str, Any]] = []
+    recent_memory: List[Dict[str, Any]] = []
+    utterance_events: List[Dict[str, Any]] = []
+    world_traits: List[Dict[str, Any]] = []
+    channels: List[Dict[str, Any]] = []
+
+    for n in nodes:
+        if not isinstance(n, dict):
+            continue
+        nt = n.get("node_type")
+        # node_link_data may serialise the node id under "id"; the
+        # original ego payload also stored it under "id" so they
+        # collapse cleanly. Strip the bookkeeping fields we added in
+        # ``create_sandbox`` so the formatter doesn't see them.
+        node = {k: v for k, v in n.items() if k != "node_type"}
+        if nt == "Entity":
+            focus_entities.append(node)
+        elif nt == "NarrativeObject":
+            present_objects.append(node)
+        elif nt == "Location":
+            locations.append(node)
+        elif nt == "EventNode":
+            if node.get("event_type") == "utterance":
+                utterance_events.append(node)
+            else:
+                recent_memory.append(node)
+        elif nt == "WorldTrait":
+            world_traits.append(node)
+        elif nt == "Channel":
+            channels.append(node)
+
+    # Sort recent events by fabula_time desc so the prompt section
+    # leads with the most recent — matches the ego-graph contract.
+    recent_memory.sort(
+        key=lambda e: (e.get("fabula_time") or 0), reverse=True
+    )
+    utterance_events.sort(
+        key=lambda e: (e.get("fabula_time") or 0), reverse=True
+    )
+
+    # Lift relationship and spatial-connection edges back into the
+    # list-shaped buckets the formatter expects.
+    relationships: List[Dict[str, Any]] = []
+    spatial_edges: List[Dict[str, Any]] = []
+    causal_edges: List[Dict[str, Any]] = []
+    for link in links:
+        if not isinstance(link, dict):
+            continue
+        et = link.get("edge_type")
+        # node_link_data emits endpoints under "source"/"target"
+        src = link.get("source")
+        tgt = link.get("target")
+        if et == "relationship":
+            rel = dict(link)
+            rel.setdefault("source_entity_id", src)
+            rel.setdefault("target_entity_id", tgt)
+            relationships.append(rel)
+        elif et == "connected_to":
+            se = dict(link)
+            se.setdefault("source_id", src)
+            se.setdefault("target_id", tgt)
+            spatial_edges.append(se)
+        elif et == "causal":
+            ce = dict(link)
+            ce.setdefault("source_id", src)
+            ce.setdefault("target_id", tgt)
+            causal_edges.append(ce)
+
+    return {
+        "focus_entities": focus_entities,
+        "present_entities": [],
+        "current_locations": locations,
+        "present_objects": present_objects,
+        "relevant_relationships": relationships,
+        "relevant_causal_edges": causal_edges,
+        "relevant_spatial_edges": spatial_edges,
+        "relevant_channels": channels,
+        "relevant_utterance_events": utterance_events,
+        "recent_memory": recent_memory,
+        "world_traits": world_traits,
+    }
+
+
+def format_scene_context_for_prompt(ctx: Dict[str, Any]) -> str:
+    """Build a rich scene-context block from the full ego-graph payload.
+
+    Surfaces every field that ``extract_ego_graph_from_memory`` returns
+    (entities + traits + beliefs + status, co-present entities and
+    objects, locations + spatial topology, social relationships,
+    standing channels, recent events with actor / target / type /
+    timing, on-page utterances with content + truth-value, causal
+    edges between in-scene nodes, and world traits) so the renderer
+    and the auditor can both see the actual world rather than a
+    skeleton of names.
+
+    Accepts three input shapes and normalises them up-front:
+
+      1. The ego-graph payload itself (Rung 1 with POV; directives).
+      2. A full ``WorldStateV1.model_dump()`` (Rung 1 omniscient via
+         :func:`extract_full_world_state`) — see
+         :func:`_normalise_omniscient_to_ego_shape`.
+      3. An ``nx.node_link_data(sandbox)`` payload (Rung 2 / Rung 3
+         post-surgery) — see :func:`_normalise_sandbox_to_ego_shape`.
+         This is what surfaces the *shadow-branch* changes (mutated
+         traits, statuses, relationships, pruned utterances, …) so
+         the renderer and auditor read the same do-operated world.
+
+    Returned as a single multi-line string suitable for embedding
+    under a ``=== SCENE CONTEXT ===`` header.
+    """
+    if not ctx:
         return "(No scene context available.)"
-    return "\n".join(lines)
+
+    ctx = _normalise_sandbox_to_ego_shape(ctx)
+    ctx = _normalise_omniscient_to_ego_shape(ctx)
+    sections: List[str] = []
+
+    # ------------------------------------------------------------
+    # Locations + spatial topology
+    # ------------------------------------------------------------
+    locs = ctx.get("current_locations") or ctx.get("relevant_locations") or []
+    if locs:
+        sections.append("Locations:")
+        for loc in locs:
+            lid = loc.get("id", "?")
+            lname = loc.get("name", lid)
+            parent = loc.get("parent_location_id")
+            parent_str = f" [parent: {parent}]" if parent else ""
+            sections.append(f"  - {lname} ({lid}){parent_str}")
+            desc = (loc.get("description") or "").strip()
+            if desc:
+                sections.append(f"      {desc[:240]}")
+
+    spatial = ctx.get("relevant_spatial_edges") or []
+    if spatial:
+        sections.append("Spatial layout:")
+        for se in spatial:
+            src = se.get("source_id", "?")
+            tgt = se.get("target_id", "?")
+            kind = se.get("connection_type") or se.get("type") or "path"
+            arrow = "↔" if se.get("bidirectional", True) else "→"
+            sections.append(f"  - {src} {arrow} {tgt} ({kind})")
+
+    # ------------------------------------------------------------
+    # Focus entities — full traits, beliefs, status
+    # ------------------------------------------------------------
+    focus = ctx.get("focus_entities") or []
+    if focus:
+        sections.append("Focus entities (POV / target):")
+        for ent in focus:
+            eid = ent.get("id", "?")
+            name = ent.get("name", eid)
+            loc = ent.get("location_id", "unknown")
+            status = ent.get("status", "unknown")
+            sections.append(f"  - {name} ({eid}) — {status}, at {loc}")
+            sections.append(f"      traits: {_fmt_traits(ent.get('traits') or {})}")
+            sections.extend(_fmt_beliefs(ent.get("beliefs") or []))
+
+    # ------------------------------------------------------------
+    # Co-present entities — also need traits / status so the renderer
+    # can voice them correctly (previously dropped).
+    # ------------------------------------------------------------
+    present = ctx.get("present_entities") or []
+    if present:
+        sections.append("Co-present entities (same room as a focus entity):")
+        for ent in present:
+            eid = ent.get("id", "?")
+            name = ent.get("name", eid)
+            loc = ent.get("location_id", "unknown")
+            status = ent.get("status", "unknown")
+            sections.append(f"  - {name} ({eid}) — {status}, at {loc}")
+            traits_str = _fmt_traits(ent.get("traits") or {})
+            if traits_str != "baseline":
+                sections.append(f"      traits: {traits_str}")
+
+    # ------------------------------------------------------------
+    # Objects in the scene (held or on the floor)
+    # ------------------------------------------------------------
+    objs = ctx.get("present_objects") or []
+    if objs:
+        sections.append("Objects in scene:")
+        for obj in objs:
+            oid = obj.get("id", "?")
+            oname = obj.get("name", oid)
+            owner = obj.get("owner_id")
+            oloc = obj.get("location_id")
+            where = f"held by {owner}" if owner else (f"at {oloc}" if oloc else "loose")
+            sections.append(f"  - {oname} ({oid}) — {where}")
+            desc = (obj.get("description") or "").strip()
+            if desc:
+                sections.append(f"      {desc[:200]}")
+
+    # ------------------------------------------------------------
+    # Social relationships in the scene
+    # ------------------------------------------------------------
+    rels = ctx.get("relevant_relationships") or []
+    if rels:
+        sections.append("Relationships (in-scene):")
+        for r in rels:
+            src = r.get("source_entity_id") or r.get("source_id", "?")
+            tgt = r.get("target_entity_id") or r.get("target_id", "?")
+            metrics = r.get("metrics") or {}
+            metric_parts: List[str] = []
+            if isinstance(metrics, dict) and metrics:
+                for axis, m in metrics.items():
+                    if isinstance(m, dict) and "value" in m:
+                        metric_parts.append(f"{axis}={m['value']:+.2f}")
+                    elif isinstance(m, (int, float)):
+                        metric_parts.append(f"{axis}={float(m):+.2f}")
+            else:
+                # Legacy flat dict
+                for axis in ("affinity", "fear", "power_dynamic", "trust"):
+                    val = r.get(axis)
+                    if isinstance(val, (int, float)):
+                        metric_parts.append(f"{axis}={float(val):+.2f}")
+            metric_str = ", ".join(metric_parts) if metric_parts else "(no observed axes)"
+            sections.append(f"  - {src} → {tgt}: {metric_str}")
+
+    # ------------------------------------------------------------
+    # Standing comms channels involving the focus entities
+    # ------------------------------------------------------------
+    chans = ctx.get("relevant_channels") or []
+    if chans:
+        sections.append("Standing channels:")
+        for ch in chans:
+            cid = ch.get("id", "?")
+            cname = ch.get("name", cid)
+            medium = ch.get("medium", "?")
+            parts = ch.get("participant_ids") or []
+            direction = ch.get("directionality", "duplex")
+            sections.append(
+                f"  - {cname} ({cid}) — {medium}, {direction}, "
+                f"participants={parts}"
+            )
+
+    # ------------------------------------------------------------
+    # Recent events — surface actors / targets / type / timing so the
+    # renderer can describe them correctly.
+    # ------------------------------------------------------------
+    mem = ctx.get("recent_memory") or []
+    if mem:
+        sections.append("Recent events (most recent first):")
+        for evt in mem:
+            eid = evt.get("id", "?")
+            etype = evt.get("event_type", "event")
+            ft = evt.get("fabula_time")
+            syu = evt.get("syuzhet_index")
+            time_str = []
+            if ft is not None:
+                time_str.append(f"t={ft}")
+            if syu is not None:
+                time_str.append(f"syu={syu}")
+            time_blob = f"[{', '.join(time_str)}] " if time_str else ""
+            actors = evt.get("actor_ids") or []
+            targets = evt.get("target_ids") or []
+            desc = (evt.get("description") or "").strip()
+            sections.append(f"  - {time_blob}{eid} ({etype}): {desc}")
+            if actors or targets:
+                ats = []
+                if actors:
+                    ats.append(f"actors={actors}")
+                if targets:
+                    ats.append(f"targets={targets}")
+                sections.append(f"      {' '.join(ats)}")
+
+    # ------------------------------------------------------------
+    # On-page utterances — full content + truth-value so the renderer
+    # can quote / paraphrase faithfully and the auditor can flag
+    # truth_value=false lines that are narrated as fact.
+    # ------------------------------------------------------------
+    utts = ctx.get("relevant_utterance_events") or []
+    if utts:
+        sections.append("Recent dialogue (utterances):")
+        for u in utts:
+            uid = u.get("id", "?")
+            speaker = u.get("speaker_id") or (u.get("actor_ids") or ["?"])[0]
+            addressees = u.get("addressee_ids") or []
+            truth = u.get("truth_value")
+            content = (u.get("content") or "").strip()
+            desc = (u.get("description") or "").strip()
+            ft = u.get("fabula_time")
+            time_blob = f"[t={ft}] " if ft is not None else ""
+            tv = f" (truth={truth})" if truth else ""
+            sections.append(
+                f"  - {time_blob}{uid} — {speaker} → {addressees}{tv}"
+            )
+            if desc:
+                sections.append(f"      {desc[:200]}")
+            if content:
+                sections.append(f"      content: {content[:300]}")
+
+    # ------------------------------------------------------------
+    # Causal edges between in-scene nodes
+    # ------------------------------------------------------------
+    causal = ctx.get("relevant_causal_edges") or []
+    if causal:
+        sections.append("Causal edges (in-scene):")
+        for ce in causal:
+            src = ce.get("source_id", "?")
+            tgt = ce.get("target_id", "?")
+            kind = ce.get("relationship_type") or ce.get("type") or "causes"
+            strength = ce.get("strength")
+            s_str = f" [strength={strength:.2f}]" if isinstance(strength, (int, float)) else ""
+            sections.append(f"  - {src} --{kind}→ {tgt}{s_str}")
+
+    # ------------------------------------------------------------
+    # World traits (global structural constraints)
+    # ------------------------------------------------------------
+    wts = ctx.get("world_traits") or []
+    if wts:
+        sections.append("World traits:")
+        for wt in wts:
+            wid = wt.get("id", "?")
+            wname = wt.get("name", wid)
+            mag = wt.get("magnitude", {})
+            mag_val = mag.get("value", 0.5) if isinstance(mag, dict) else 0.5
+            domains = ", ".join(wt.get("affected_domains") or [])
+            sections.append(
+                f"  - {wname} ({wid}) — mag={mag_val:.2f}, domains=[{domains}]"
+            )
+            desc = (wt.get("description") or "").strip()
+            if desc:
+                sections.append(f"      {desc[:200]}")
+
+    if not sections:
+        return "(No scene context available.)"
+    return "\n".join(sections)
+
+
+# Backward-compat alias — kept private because external callers should
+# prefer the public ``format_scene_context_for_prompt`` name.
+def _format_scene_context(ctx: Dict[str, Any]) -> str:
+    return format_scene_context_for_prompt(ctx)
 
 
 def assemble_rendering_prompt(

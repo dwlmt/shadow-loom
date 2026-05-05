@@ -64,6 +64,7 @@ class StateEvent(Enum):
     SYUZHET_CURSOR_CHANGED = "syuzhet_cursor_changed"
     ACTIVE_PATH_CHANGED = "active_path_changed"
     WORLD_FACTS_CHANGED = "world_facts_changed"
+    PROJECT_LIST_CHANGED = "project_list_changed"
 
 
 # Debounce window (seconds) for cursor emit fan-out. Coalesces bursty

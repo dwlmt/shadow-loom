@@ -30,12 +30,14 @@ from shadow_loom_ui.viz import (
     render_object_ownership_bar,
     render_population_summary,
     render_relationship_heatmap,
+    render_relationship_heatmap_timeline,
     render_social_graph,
     render_spatial_map,
     render_status_donut,
     render_sunburst,
     render_theme_river,
     render_world_graph,
+    render_world_state_grid,
     render_world_trait_bars,
     render_world_treemap,
     with_expand,
@@ -69,7 +71,8 @@ _VIEW_MODES = {
     "ego": "Ego-Graph",
     "temporal": "Temporal",
     "composition": "Composition",
-    "epistemic": "Epistemic",
+    "epistemic": "Character Beliefs",
+    "world_state": "World State",
     "comparison": "Comparison",
 }
 
@@ -98,7 +101,14 @@ def build_world_tab(state: AppState) -> None:
                     "- **Social** — graph of relationships between"
                     " entities, weighted by relationship strength /"
                     " type. Force or circular layout. Pick a *metric*"
-                    " to colour edges (trust, hostility, kinship…).\n"
+                    " to colour edges (trust, hostility, kinship…)."
+                    " Below the graph is an entity\u00d7entity"
+                    " heatmap of the chosen metric; tick"
+                    " *Animate over fabula time* to replace it with a"
+                    " timeline-scrubber heatmap that shows how the"
+                    " same matrix evolves tick by tick (causal-aware,"
+                    " uses ``mutation_social`` edges plus authored"
+                    " snapshots).\n"
                     "- **Spatial** — location graph (rooms / regions)"
                     " with the doors/paths between them, plus current"
                     " entity positions.\n"
@@ -119,6 +129,10 @@ def build_world_tab(state: AppState) -> None:
                     " what, where the belief came from (utterance,"
                     " observation, inference), and where divergent"
                     " beliefs create dramatic irony.\n"
+                    "- **World State** — per-world-trait magnitude"
+                    " and inertia stepped across fabula time, one"
+                    " card per global trait. Mirrors the Character"
+                    " Beliefs grid but for *world*-level forces.\n"
                     "- **Comparison** — side-by-side trait /"
                     " relationship table for 2–6 picked entities.\n\n"
                     "### Reading the diagrams\n"
@@ -165,6 +179,17 @@ def build_world_tab(state: AppState) -> None:
                 "Filter which characters' belief panels are shown"
             )
 
+            # World-state world-trait filter (multi-select).
+            world_state_select = ui.select(
+                options=[],
+                label="World traits",
+                multiple=True,
+            ).classes("w-64").props("use-chips clearable")
+            world_state_select.set_visibility(False)
+            world_state_select.tooltip(
+                "Filter which world-trait timeline cards are shown"
+            )
+
             # Comparison entity multi-select
             compare_select = ui.select(
                 options=[],
@@ -195,6 +220,13 @@ def build_world_tab(state: AppState) -> None:
                 label="Heatmap metric",
             ).classes("w-64").props("dense outlined")
             social_metric.set_visibility(False)
+            social_over_time = ui.checkbox(
+                "Animate over fabula time", value=False,
+            ).tooltip(
+                "Replace the snapshot heatmap with an ECharts timeline "
+                "that scrubs through fabula ticks (causal-aware)."
+            )
+            social_over_time.set_visibility(False)
             spatial_animated = ui.checkbox("Animated", value=True).tooltip(
                 "Animate location nodes (rippleEffect)"
             )
@@ -205,15 +237,18 @@ def build_world_tab(state: AppState) -> None:
                 ego_select.set_visibility(mode == "ego")
                 temporal_select.set_visibility(mode == "temporal")
                 epistemic_select.set_visibility(mode == "epistemic")
+                world_state_select.set_visibility(mode == "world_state")
                 compare_select.set_visibility(mode == "comparison")
                 social_layout.set_visibility(mode == "social")
                 social_metric.set_visibility(mode == "social")
+                social_over_time.set_visibility(mode == "social")
                 spatial_animated.set_visibility(mode == "spatial")
                 _refresh()
 
             view_mode.on("update:model-value", _on_mode_change)
             social_layout.on("update:model-value", lambda _e: _refresh())
             social_metric.on("update:model-value", lambda _e: _refresh())
+            social_over_time.on("update:model-value", lambda _e: _refresh())
             spatial_animated.on("update:model-value", lambda _e: _refresh())
 
         # ── Fabula timeline slider ────────────────────────────────
@@ -379,6 +414,11 @@ def build_world_tab(state: AppState) -> None:
                 if ent.beliefs
             }
             epistemic_select.options = believer_opts
+            # World-state world-trait options.
+            world_trait_opts = {
+                wid: wt.name for wid, wt in ws.world_traits.items()
+            }
+            world_state_select.options = world_trait_opts
 
             mode = view_mode.value
             with graph_container:
@@ -416,24 +456,39 @@ def build_world_tab(state: AppState) -> None:
                                 title="Social graph (relationships)",
                                 height="420px",
                             )
+                        animate = bool(social_over_time.value)
+                        heatmap_title = _metric_titles.get(
+                            chosen_metric, "Relationship heatmap"
+                        )
+                        if animate:
+                            heatmap_title = f"{heatmap_title} — over fabula time"
                         with ui.expansion(
-                            _metric_titles.get(chosen_metric, "Relationship heatmap"),
+                            heatmap_title,
                             icon="grid_on",
                             value=True,
                         ).classes(
                             "w-full bg-white border border-slate-200 rounded-xl mb-2"
                         ):
-                            with_expand(
-                                lambda h, m=chosen_metric: (
-                                    render_relationship_heatmap(
-                                        ws, metric=m, height=h,
-                                    )
-                                ),
-                                title=_metric_titles.get(
-                                    chosen_metric, "Relationship heatmap",
-                                ),
-                                height="420px",
-                            )
+                            if animate:
+                                with_expand(
+                                    lambda h, m=chosen_metric: (
+                                        render_relationship_heatmap_timeline(
+                                            ws, metric=m, height=h,
+                                        )
+                                    ),
+                                    title=heatmap_title,
+                                    height="520px",
+                                )
+                            else:
+                                with_expand(
+                                    lambda h, m=chosen_metric: (
+                                        render_relationship_heatmap(
+                                            ws, metric=m, height=h,
+                                        )
+                                    ),
+                                    title=heatmap_title,
+                                    height="420px",
+                                )
                     elif mode == "spatial":
                         with_expand(
                             lambda h, an=bool(spatial_animated.value): (
@@ -618,6 +673,18 @@ def build_world_tab(state: AppState) -> None:
                         else:
                             sel_ids = None
                         render_epistemic_grid(ws, selected_ids=sel_ids)
+                    elif mode == "world_state":
+                        # Per-world-trait timeline panels — mirrors the
+                        # Character Beliefs grid but for global
+                        # ``GlobalTrait`` magnitudes evolving across
+                        # fabula time.
+                        sel = world_state_select.value
+                        wt_ids: list[str] | None
+                        if isinstance(sel, list) and sel:
+                            wt_ids = list(sel)
+                        else:
+                            wt_ids = None
+                        render_world_state_grid(ws, selected_ids=wt_ids)
                     elif mode == "comparison":
                         # Side-by-side multi-entity comparison: radar
                         # overlay + grouped trait bars + ranked table.

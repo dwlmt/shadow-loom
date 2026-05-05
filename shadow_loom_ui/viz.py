@@ -691,6 +691,135 @@ def render_relationship_heatmap(
     return chart
 
 
+# ── Relationship heatmap over time (animated) ─────────────────────
+
+def render_relationship_heatmap_timeline(
+    ws: WorldStateV1,
+    *,
+    metric: str = "affinity",
+    num_frames: int = 12,
+    height: str = "100%",
+) -> ui.echart:
+    """Animated entity×entity heatmap scrubbing across fabula time.
+
+    Same colour scale and axes as :func:`render_relationship_heatmap`,
+    but wrapped in an ECharts ``timeline`` so each step shows the dyad
+    matrix as it stood at that fabula tick. Frames are reconstructed
+    via :func:`relationship_heatmap_frames`, which layers
+    ``mutation_social`` causal edges and authored snapshots on top of
+    the steady-state ``RelationshipEdge`` baseline (see
+    :func:`viz_helpers.reconstruct_relationship_with_causal`).
+    """
+    from shadow_loom_ui.viz_helpers import relationship_heatmap_frames
+
+    payload = relationship_heatmap_frames(
+        ws, metric=metric, num_frames=num_frames
+    )
+    names = payload["names"]
+    times = payload["times"]
+    frames = payload["frames"]
+    if not names or not frames:
+        return ui.label(
+            f"No {metric} data over time — no social edges between entities."
+        ).classes("text-grey q-pa-md")
+
+    if metric == "fear":
+        vmin, vmax = 0.0, 1.0
+        ramp = ["#0F2233", "#3A7BD5", "#F5B43C", "#D8334A"]
+    elif metric == "power_dynamic":
+        vmin, vmax = -1.0, 1.0
+        ramp = ["#3A7BD5", "#94a3b8", "#F5B43C"]
+    else:
+        vmin, vmax = -1.0, 1.0
+        ramp = ["#D8334A", "#94a3b8", "#6FBF3A"]
+
+    n = len(names)
+    show_labels = n <= 12
+    label_interval = 0 if n <= 25 else max(0, n // 25)
+
+    base_option = {
+        "backgroundColor": _CHART_BG,
+        "tooltip": {**_CHART_TOOLTIP, "position": "top"},
+        # Bottom space: ~50px for visualMap + ~60px for the timeline.
+        "grid": {"top": 30, "bottom": 130, "left": 100, "right": 30},
+        "xAxis": {
+            "type": "category",
+            "data": names,
+            "axisLabel": {
+                "rotate": 45,
+                "color": _CHART_TEXT,
+                "fontSize": 10,
+                "interval": label_interval,
+            },
+            "splitArea": {"show": True},
+        },
+        "yAxis": {
+            "type": "category",
+            "data": names,
+            "axisLabel": {
+                "color": _CHART_TEXT,
+                "fontSize": 10,
+                "interval": label_interval,
+            },
+            "splitArea": {"show": True},
+        },
+        "visualMap": {
+            "min": vmin,
+            "max": vmax,
+            "calculable": True,
+            "orient": "horizontal",
+            "left": "center",
+            "bottom": 70,
+            "inRange": {"color": ramp},
+            "textStyle": {"color": _CHART_TEXT},
+        },
+        "timeline": {
+            "axisType": "category",
+            "data": [f"t={t}" for t in times],
+            "autoPlay": False,
+            "loop": False,
+            "playInterval": 1200,
+            "currentIndex": len(times) - 1,
+            "bottom": 10,
+            "left": 80,
+            "right": 60,
+            "label": {"color": _CHART_TEXT, "fontSize": 9},
+            "controlStyle": {"color": _CHART_TEXT, "borderColor": _CHART_TEXT},
+            "lineStyle": {"color": "#555"},
+            "checkpointStyle": {"color": "#3A7BD5"},
+            "itemStyle": {"color": "#777"},
+        },
+    }
+
+    options = [
+        {
+            "title": {
+                "text": f"{metric}  @  fabula t={t}",
+                "left": "center",
+                "textStyle": {"color": _CHART_TEXT, "fontSize": 12},
+            },
+            "series": [{
+                "type": "heatmap",
+                "name": metric,
+                "data": frame,
+                "label": {"show": show_labels, "fontSize": 9, "color": "#eee"},
+                "emphasis": {
+                    "itemStyle": {
+                        "shadowBlur": 10,
+                        "shadowColor": "rgba(0,0,0,0.5)",
+                    }
+                },
+            }],
+        }
+        for t, frame in zip(times, frames)
+    ]
+
+    return ui.echart({
+        "baseOption": base_option,
+        "options": options,
+    }).classes("w-full").style(f"height:{height}")
+
+
 # ── Emotional / narrative gauges ──────────────────────────────────
 
 def _gauge_grid_columns(n: int) -> int:
@@ -2283,6 +2412,66 @@ def render_epistemic_grid(
                     "overflow-hidden"
                 ):
                     render_entity_belief_chart(ws, eid, height=chart_height)
+    return container
+
+
+def render_world_state_grid(
+    ws: WorldStateV1,
+    *,
+    selected_ids: list[str] | None = None,
+    chart_height: str = "300px",
+) -> ui.element:
+    """Tiled grid of per-world-trait magnitude timelines.
+
+    Mirrors :func:`render_epistemic_grid` but for ``WorldStateV1.world_traits``:
+    one card per global trait, each showing the trait's magnitude and
+    inertia stepping across fabula time (rendered by
+    :func:`render_world_trait_timeline`). ``selected_ids`` filters which
+    world traits to show (``None`` = all).
+    """
+    from shadow_loom_ui.viz_helpers import list_world_traits
+
+    traits = list_world_traits(ws)
+    if selected_ids:
+        sel = set(selected_ids)
+        traits = [t for t in traits if t[0] in sel]
+
+    container = ui.column().classes("w-full gap-3")
+    with container:
+        if not traits:
+            ui.label(
+                "No world traits in this world model."
+            ).classes("text-sm text-slate-500 italic q-pa-lg")
+            return container
+        grid = ui.element("div").classes(
+            "w-full grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3"
+        )
+        with grid:
+            for wid, wname in traits:
+                with ui.element("div").classes(
+                    "border border-slate-200 rounded-xl bg-white shadow-sm "
+                    "overflow-hidden"
+                ):
+                    # Header strip mirrors the believer-card style.
+                    wt = ws.world_traits.get(wid)
+                    domains = ", ".join(
+                        getattr(wt, "affected_domains", []) or []
+                    ) if wt else ""
+                    mag_val = (
+                        wt.magnitude.value if wt and wt.magnitude else 0.5
+                    )
+                    with ui.row().classes(
+                        "w-full items-baseline justify-between px-3 py-2 "
+                        "border-b border-slate-200 bg-slate-50"
+                    ):
+                        ui.label(wname).classes(
+                            "text-sm font-semibold text-slate-800"
+                        )
+                        ui.label(
+                            f"mag {mag_val:.2f}"
+                            + (f"  •  {domains}" if domains else "")
+                        ).classes("text-xs text-slate-500")
+                    render_world_trait_timeline(ws, wid, height=chart_height)
     return container
 
 

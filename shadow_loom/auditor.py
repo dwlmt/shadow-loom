@@ -40,6 +40,7 @@ from shadow_loom.generation import (
     GeneratedScene,
     GenerationConfig,
     assemble_rendering_prompt,
+    format_scene_context_for_prompt,
     render_scene,
     _GenerationDeps,
     _build_generation_agent,
@@ -1129,23 +1130,20 @@ def assemble_audit_prompt(
     )
     sections.append("")
 
-    # World traits (structural constraints the prose must respect)
-    world_traits = brief.scene_context.get("world_traits", []) if brief.scene_context else []
-    if world_traits:
+    # Full scene context — same rich ego-graph the renderer sees.
+    # Without this the auditor was judging prose against world-traits
+    # alone and could not verify presence of co-located characters,
+    # objects, recent events, dialogue (with truth_value), causal
+    # edges, or standing channels — i.e. exactly the details the
+    # renderer was hallucinating because they were missing from its
+    # own prompt as well.
+    if brief.scene_context:
         sections.append(
-            "=== WORLD TRAITS (structural constraints — prose must be "
-            "consistent with these world-level facts) ==="
+            "=== SCENE CONTEXT (the same ego-graph the renderer saw — "
+            "use it as the ground-truth world state for every "
+            "category) ==="
         )
-        for wt in world_traits:
-            wid = wt.get("id", "?")
-            name = wt.get("name", wid)
-            desc = wt.get("description", "")
-            mag = wt.get("magnitude", {})
-            mag_val = mag.get("value", 0.5) if isinstance(mag, dict) else 0.5
-            domains = ", ".join(wt.get("affected_domains", []))
-            sections.append(f"  {name} ({wid}): mag={mag_val:.2f}, domains=[{domains}]")
-            if desc:
-                sections.append(f"    {desc[:120]}")
+        sections.append(format_scene_context_for_prompt(brief.scene_context))
         sections.append("")
 
     # Epistemic gaps for reference

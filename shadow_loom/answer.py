@@ -116,6 +116,52 @@ def _compress_world_state(
                 f"- `{ent_id}` {name} — status={status}, "
                 f"loc={loc}{const_str}"
             )
+            # Traits (≥0.15 from neutral) — without these the LLM
+            # has nothing to consult when asked "is X brave / angry /
+            # naive". WorldStateV1 nests traits as ``{name: {value,
+            # inertia, evidence_strength}}``; flat scalars are
+            # tolerated as a legacy shape.
+            traits = ent.get("traits") or {}
+            shown_traits: List[str] = []
+            for tname, tv in traits.items():
+                if isinstance(tv, dict):
+                    val = tv.get("value")
+                else:
+                    val = tv
+                try:
+                    fval = float(val)
+                except (TypeError, ValueError):
+                    continue
+                if abs(fval - 0.5) >= 0.15 or abs(fval) >= 0.15:
+                    shown_traits.append(f"{tname}={fval:+.2f}")
+            if shown_traits:
+                lines.append(f"    traits: {', '.join(shown_traits[:12])}")
+            # Beliefs — what this entity thinks is true about other
+            # nodes. Critical for "what does X know" / "what does X
+            # think Y did" questions; the system prompt already
+            # promises this is available.
+            beliefs = ent.get("beliefs") or []
+            if beliefs:
+                shown_beliefs: List[str] = []
+                for b in beliefs[:6]:
+                    if not isinstance(b, dict):
+                        continue
+                    tgt = b.get("target_id", "?")
+                    state = (b.get("perceived_state") or "").strip()
+                    if len(state) > 80:
+                        state = state[:77] + "…"
+                    conf = b.get("confidence")
+                    conf_str = (
+                        f" (conf={float(conf):.2f})"
+                        if isinstance(conf, (int, float)) else ""
+                    )
+                    shown_beliefs.append(f"re {tgt}: '{state}'{conf_str}")
+                if shown_beliefs:
+                    lines.append(
+                        "    beliefs: " + " | ".join(shown_beliefs)
+                    )
+                if len(beliefs) > 6:
+                    lines.append(f"    …(+{len(beliefs) - 6} more beliefs)")
         if len(entities) > max_entities:
             lines.append(f"  …(+{len(entities) - max_entities} more entities)")
 
@@ -225,6 +271,55 @@ def _compress_world_state(
             if branch_world_id == "shadow":
                 wid_tag = f" [{se.get('world_id', 'factual')}]"
             lines.append(f"- {a} ↔ {b}{wid_tag}{locked}")
+
+    # Surface utterance content + truth_value separately. Without
+    # this an interrogator asking "did X tell Y the truth about Z"
+    # gets no signal — the events list above only carries
+    # ``description``, while the actual quoted ``content`` and the
+    # ``truth_value`` (true / false / performative) live on the
+    # utterance event itself.
+    utterances = [
+        e for e in (physics_state.get("events", []) or [])
+        if e.get("event_type") == "utterance"
+    ]
+    if utterances:
+        utterances.sort(key=lambda e: e.get("fabula_time", 0))
+        lines.append("\n## Utterances (dialogue, with truth_value)")
+        for u in utterances[-max_events:]:
+            uid = u.get("id", "?")
+            ft = u.get("fabula_time", "?")
+            speaker = u.get("speaker_id") or (u.get("actor_ids") or ["?"])[0]
+            addressees = ",".join(u.get("addressee_ids") or []) or "—"
+            tv = u.get("truth_value")
+            tv_str = f" truth={tv}" if tv else ""
+            content = (u.get("content") or "").strip().replace("\n", " ")
+            if len(content) > 200:
+                content = content[:197] + "…"
+            wid_tag = ""
+            if branch_world_id == "shadow":
+                wid_tag = f" [{u.get('world_id', 'factual')}]"
+            lines.append(
+                f"- T={ft} `{uid}`{wid_tag} {speaker} → [{addressees}]"
+                f"{tv_str}: {content}"
+            )
+
+    world_traits = physics_state.get("world_traits", {}) or {}
+    if world_traits:
+        lines.append("\n## World traits (global forces)")
+        for wid, wt in list(world_traits.items())[:max_channels]:
+            name = wt.get("name", wid)
+            mag = wt.get("magnitude") or {}
+            mval = mag.get("value") if isinstance(mag, dict) else mag
+            mag_str = (
+                f" mag={float(mval):.2f}"
+                if isinstance(mval, (int, float)) else ""
+            )
+            domains = ", ".join(wt.get("affected_domains") or [])
+            domains_str = f" domains=[{domains}]" if domains else ""
+            wid_tag = ""
+            if branch_world_id == "shadow":
+                wid_tag = f" [{wt.get('world_id', 'factual')}]"
+            lines.append(f"- `{wid}` {name}{wid_tag}{mag_str}{domains_str}")
 
     channels = physics_state.get("channels", {}) or {}
     if channels:
