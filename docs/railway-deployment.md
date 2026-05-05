@@ -105,11 +105,14 @@ For Apple specifically:
 
 ```
 DEFAULT_MODEL=openrouter:qwen/qwen3.6-35b-a3b
-GENERATION_MODEL=openrouter:qwen/qwen3.6-35b-a3b
-QUERY_PARSING_MODEL=openrouter:qwen/qwen3.6-35b-a3b
-AUDITOR_MODEL=openrouter:qwen/qwen3.6-35b-a3b
-AUDITOR_GENERATION_MODEL=openrouter:qwen/qwen3.6-35b-a3b
-EXTRACTION_MODEL=openrouter:qwen/qwen3.6-35b-a3b
+# Per-stage overrides are optional — every stage inherits DEFAULT_MODEL
+# when the corresponding *_MODEL env var is unset or blank. Override
+# only when you want a stage to differ, e.g.:
+#   GENERATION_MODEL=openrouter:anthropic/claude-3.5-sonnet
+#   QUERY_PARSING_MODEL=openrouter:anthropic/claude-3.5-haiku
+#   AUDITOR_MODEL=openrouter:anthropic/claude-3.5-sonnet
+#   AUDITOR_GENERATION_MODEL=openrouter:anthropic/claude-3.5-sonnet
+#   EXTRACTION_MODEL=openrouter:google/gemini-2.5-pro
 
 # Output-token caps tuned for Qwen3.6-35B-A3B (262K native context).
 GENERATION_MAX_TOKENS=64000

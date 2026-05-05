@@ -74,17 +74,11 @@ services:
         sync: false
       - key: OPENROUTER_BASE_URL
         value: https://openrouter.ai/api/v1
+      # Set DEFAULT_MODEL once and every pipeline stage inherits it.
+      # Override individual stages (GENERATION_MODEL, AUDITOR_MODEL,
+      # AUDITOR_GENERATION_MODEL, EXTRACTION_MODEL, QUERY_PARSING_MODEL)
+      # only when you want them to differ from the default.
       - key: DEFAULT_MODEL
-        value: openrouter:qwen/qwen3.6-35b-a3b
-      - key: GENERATION_MODEL
-        value: openrouter:qwen/qwen3.6-35b-a3b
-      - key: AUDITOR_MODEL
-        value: openrouter:qwen/qwen3.6-35b-a3b
-      - key: AUDITOR_GENERATION_MODEL
-        value: openrouter:qwen/qwen3.6-35b-a3b
-      - key: EXTRACTION_MODEL
-        value: openrouter:qwen/qwen3.6-35b-a3b
-      - key: QUERY_PARSING_MODEL
         value: openrouter:qwen/qwen3.6-35b-a3b
 
       # Token caps tuned for Qwen3.6-35B-A3B (262K native context).

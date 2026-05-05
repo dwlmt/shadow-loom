@@ -55,7 +55,7 @@ defaults as the settings module — keep them in sync if you change one.
 | `OPENROUTER_API_KEY` | *(empty)* | Required when any `*_MODEL` uses the `openrouter:` prefix. |
 | `OPENAI_API_KEY` | *(empty)* | Required when any `*_MODEL` uses the `openai:` prefix. |
 | `LANGFUSE_*` | *(public demo keys)* | Optional tracing — replace with your own project keys or blank to disable. |
-| `DEFAULT_MODEL` | `ollama:qwen3.6:35b` | Fallback model string used when a sub-section's `*_MODEL` is unset. |
+| `DEFAULT_MODEL` | `ollama:qwen3.6:35b` | Fallback model string. Every stage-specific `*_MODEL` below inherits this value when left unset or blank — setting `DEFAULT_MODEL` alone is enough to route every pipeline stage at one model. |
 
 Model strings are parsed by PydanticAI: the prefix selects the provider
 (`ollama:`, `openrouter:`, `openai:`) and the suffix is the model id.
@@ -66,7 +66,7 @@ Model strings are parsed by PydanticAI: the prefix selects the provider
 
 | Variable | Default | Notes |
 |---|---|---|
-| `GENERATION_MODEL` | `ollama:qwen3.6:35b` | The "creative" model. Larger models pay off here. |
+| `GENERATION_MODEL` | *(inherits `DEFAULT_MODEL`)* | The "creative" model. Larger models pay off here. Set only to override `DEFAULT_MODEL` for this stage. |
 | `GENERATION_MAX_TOKENS` | `64000` | Tuned for the 256K-context qwen3.6:35b. Lower for smaller-context models. |
 | `GENERATION_TEMPERATURE` | `0.7` | Creative temperature for prose. |
 | `GENERATION_OUTPUT_RETRIES` | `5` | PydanticAI structured-output validation retries per call. |
@@ -81,7 +81,7 @@ for the brief-as-constraint pattern.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `QUERY_PARSING_MODEL` | `ollama:qwen3.6:35b` | Classification model — needs to be reliable on structured output, not creative. |
+| `QUERY_PARSING_MODEL` | *(inherits `DEFAULT_MODEL`)* | Classification model — needs to be reliable on structured output, not creative. Set only to override `DEFAULT_MODEL` for this stage. |
 | `QUERY_PARSING_MAX_TOKENS` | `64000` | Generous to allow long chain-of-thought. |
 | `QUERY_PARSING_TEMPERATURE` | `0.1` | Near-deterministic classification. |
 | `QUERY_PARSING_OUTPUT_RETRIES` | `5` | Retries if the parser returns invalid JSON. |
@@ -95,8 +95,8 @@ this stage discriminates between.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `AUDITOR_MODEL` | `ollama:qwen3.6:35b` | The judging model. |
-| `AUDITOR_GENERATION_MODEL` | `ollama:qwen3.6:35b` | The model used for re-renders inside the loop. |
+| `AUDITOR_MODEL` | *(inherits `DEFAULT_MODEL`)* | The judging model. Set only to override `DEFAULT_MODEL` for this stage. |
+| `AUDITOR_GENERATION_MODEL` | *(inherits `DEFAULT_MODEL`)* | The model used for re-renders inside the loop. Set only to override `DEFAULT_MODEL` for this stage. |
 | `AUDITOR_MAX_ITERATIONS` | `3` | Hard cap on audit → rewrite cycles. Each iteration costs two LLM calls. |
 | `AUDITOR_OUTPUT_RETRIES` | `5` | Structured-output retries per call. |
 | `AUDITOR_TEMPERATURE` | `0.2` | Low temperature for deterministic auditing. |
@@ -144,7 +144,7 @@ The thresholds map directly onto the auditor categories described in
 
 | Variable | Default | Notes |
 |---|---|---|
-| `EXTRACTION_MODEL` | `ollama:qwen3.6:35b` | Topology extractor. |
+| `EXTRACTION_MODEL` | *(inherits `DEFAULT_MODEL`)* | Topology extractor. Set only to override `DEFAULT_MODEL` for this stage. |
 | `EXTRACTION_CHUNK_STRATEGY` | `act_headings` | `act_headings` splits on `Act N` / `Chapter N` markers, `paragraph` packs by size. |
 | `EXTRACTION_OUTPUT_RETRIES` | `5` | First-pass structured-output retries. |
 | `EXTRACTION_FABULA_TIME_SPACING` | `1000` | Initial gap between fabula-time stamps; leaves room for flashbacks/inserts. |
@@ -299,10 +299,10 @@ Drop every `*_MAX_TOKENS` to ~4000, drop `EXTRACTION_MIN_CHUNK_CHARS` to
 have headroom for the prompt scaffold.
 
 **"I want OpenRouter / OpenAI everywhere."**
-Set `OPENROUTER_API_KEY` (or `OPENAI_API_KEY`) and replace each
-`*_MODEL` value with `openrouter:<provider>/<model>` (or
-`openai:<model>`). `DEFAULT_MODEL` is the fallback for any unset
-section.
+Set `OPENROUTER_API_KEY` (or `OPENAI_API_KEY`) and set `DEFAULT_MODEL`
+to `openrouter:<provider>/<model>` (or `openai:<model>`). Every stage
+inherits `DEFAULT_MODEL` automatically — only set the per-stage
+`*_MODEL` env vars when you want a specific stage to differ.
 
 **"I want fast iteration during development."**
 `PIPELINE_SKIP_AUDIT=true`, `PIPELINE_SKIP_REEXTRACTION=true`,

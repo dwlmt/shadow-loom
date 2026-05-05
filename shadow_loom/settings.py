@@ -159,7 +159,13 @@ class GenerationSettings(BaseSettings):
         extra="ignore",
     )
 
-    model: str = Field(default="ollama:qwen3.6:35b")
+    model: str = Field(
+        default="",
+        description=(
+            "PydanticAI model string for narrative generation. Leave "
+            "empty to fall back to ``CoreSettings.default_model``."
+        ),
+    )
     max_tokens: int = Field(default=128000)
     temperature: float = Field(default=0.7)
     output_retries: int = Field(default=5)
@@ -177,7 +183,13 @@ class QueryParsingSettings(BaseSettings):
         extra="ignore",
     )
 
-    model: str = Field(default="ollama:qwen3.6:35b")
+    model: str = Field(
+        default="",
+        description=(
+            "PydanticAI model string for query parsing. Leave empty to "
+            "fall back to ``CoreSettings.default_model``."
+        ),
+    )
     max_tokens: int = Field(default=32000)
     temperature: float = Field(default=0.1)
     output_retries: int = Field(default=5)
@@ -195,8 +207,21 @@ class AuditorSettings(BaseSettings):
         extra="ignore",
     )
 
-    model: str = Field(default="ollama:qwen3.6:35b", alias="AUDITOR_MODEL")
-    generation_model: str = Field(default="ollama:qwen3.6:35b")
+    model: str = Field(
+        default="",
+        alias="AUDITOR_MODEL",
+        description=(
+            "Model for the auditor. Leave empty to fall back to "
+            "``CoreSettings.default_model``."
+        ),
+    )
+    generation_model: str = Field(
+        default="",
+        description=(
+            "Model used by the auditor's regeneration step. Leave empty "
+            "to fall back to ``CoreSettings.default_model``."
+        ),
+    )
     max_iterations: int = Field(default=3)
     output_retries: int = Field(default=5)
     temperature: float = Field(default=0.2)
@@ -222,7 +247,13 @@ class ExtractionSettings(BaseSettings):
         extra="ignore",
     )
 
-    model: str = Field(default="ollama:qwen3.6:35b")
+    model: str = Field(
+        default="",
+        description=(
+            "PydanticAI model string for extraction. Leave empty to fall "
+            "back to ``CoreSettings.default_model``."
+        ),
+    )
     chunk_strategy: Literal["act_headings", "paragraph"] = Field(default="act_headings")
     output_retries: int = Field(default=5)
     fabula_time_spacing: int = Field(default=1000)
@@ -692,6 +723,23 @@ class Settings:
         self.pipeline = PipelineSettings()
         self.ui = UISettings()
         self.oauth = OAuthSettings()
+
+        # Fall back to core.default_model when a stage-specific model
+        # is not explicitly configured. This lets users set a single
+        # DEFAULT_MODEL (e.g. ``openrouter:qwen/qwen3-...``) and have
+        # every pipeline stage inherit it without enumerating each
+        # ``*_MODEL`` env var.
+        fallback = self.core.default_model
+        if not self.generation.model:
+            self.generation.model = fallback
+        if not self.query_parsing.model:
+            self.query_parsing.model = fallback
+        if not self.auditor.model:
+            self.auditor.model = fallback
+        if not self.auditor.generation_model:
+            self.auditor.generation_model = fallback
+        if not self.extraction.model:
+            self.extraction.model = fallback
 
     # ── Convenience builders for per-module Config objects ──────────
 
