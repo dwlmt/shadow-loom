@@ -120,7 +120,9 @@ The blueprint defaults every pipeline stage to OpenRouter
 the sparse-MoE 35B/3B-active model that local development also targets,
 so the prompts are tuned for it. It accepts a 262K-token context,
 streams structured output, costs ~$0.15/M in / $1/M out, and ships
-under Apache 2.0. Override per-stage via env vars:
+under Apache 2.0. Setting `DEFAULT_MODEL` alone is enough — every
+pipeline stage inherits it. Add per-stage overrides only when you want
+them to differ:
 
 ```
 DEFAULT_MODEL=openrouter:google/gemini-2.5-flash

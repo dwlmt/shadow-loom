@@ -200,11 +200,13 @@ def _extract_context_from_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Optional[i
         context['project_id'] = getattr(deps, 'project_id', None)
         context['version_id'] = getattr(deps, 'version_id', None)
     
-    # Also check direct kwargs
-    context['user_id'] = context['user_id'] or kwargs.get('user_id')
-    context['project_id'] = context['project_id'] or kwargs.get('project_id')
-    context['version_id'] = context['version_id'] or kwargs.get('version_id')
-    
+    # Also check direct kwargs. Pop them so they are not forwarded to
+    # PydanticAI's Agent.run/run_sync, which would raise TypeError on
+    # these unexpected keyword arguments.
+    context['user_id'] = context['user_id'] or kwargs.pop('user_id', None)
+    context['project_id'] = context['project_id'] or kwargs.pop('project_id', None)
+    context['version_id'] = context['version_id'] or kwargs.pop('version_id', None)
+
     return context
 
 

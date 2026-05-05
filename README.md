@@ -182,8 +182,9 @@ end-to-end orchestrator is
   * **[Ollama](https://ollama.com/download)** for local inference (default).
     After install: `ollama serve` then `ollama pull qwen3.6:35b`.
     Smaller models work too — set `DEFAULT_MODEL` in `.env`.
-  * **OpenRouter** — set `OPENROUTER_API_KEY` and a `*_MODEL` value
-    starting with `openrouter:` in `.env`.
+  * **OpenRouter** — set `OPENROUTER_API_KEY` and a `DEFAULT_MODEL`
+    starting with `openrouter:` in `.env`. Every pipeline stage inherits
+    `DEFAULT_MODEL`; set per-stage `*_MODEL` env vars only to override.
   * **OpenAI** — set `OPENAI_API_KEY` and use `openai:gpt-…` model strings.
   * **Other OpenAI-compatible clouds** — Fireworks, Featherless, Together,
     DeepInfra, Groq, Anyscale, and Perplexity are pre-registered. Set the
