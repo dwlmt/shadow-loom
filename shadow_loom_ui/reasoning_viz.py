@@ -10,6 +10,7 @@ mirroring the style of :mod:`shadow_loom_ui.viz`.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -46,13 +47,16 @@ def render_belief_provenance(
     ws: WorldStateV1,
     entity_id: str,
     *,
-    height: str = "320px",
+    height: str | None = None,
 ) -> ui.element:
     """Scatter timeline of how an entity's beliefs evolved.
 
     X-axis: fabula_time. Y-axis: belief target_id (categorical).
     Symbols: green ▲ for ``initial`` and ``added``, red ▼ for
     ``invalidated``. Tooltip names the trigger event.
+
+    ``height`` defaults to a target-count driven minimum so densely
+    populated belief sets don't collapse rows on top of each other.
     """
     rows = belief_provenance_data(ws, entity_id)
     if not rows:
@@ -62,6 +66,8 @@ def render_belief_provenance(
 
     th = _theme()
     targets = sorted({r["target_label"] for r in rows})
+    if height is None:
+        height = f"{max(320, 22 * len(targets) + 80)}px"
     series_added: List[List[Any]] = []
     series_invalid: List[List[Any]] = []
     for r in rows:
@@ -96,7 +102,9 @@ def render_belief_provenance(
 
     return ui.echart({
         "backgroundColor": th["bg"],
-        "tooltip": {**th["tooltip"], "formatter": {":fn": tooltip_fmt}},
+        # ``:formatter`` (colon prefix) tells NiceGUI to evaluate the
+        # body as a JS function rather than serialise it as a string.
+        "tooltip": {**th["tooltip"], ":formatter": tooltip_fmt},
         "grid": {"left": 160, "right": 30, "top": 30, "bottom": 60},
         "legend": {
             "data": ["formed/added", "invalidated"],
@@ -164,6 +172,9 @@ def render_attribution_graph(
         ).classes("text-grey text-caption q-pa-md")
 
     th = _theme()
+    # Hide always-on labels once the ancestor set grows beyond what
+    # can be read at a glance; users can still hover for the name.
+    show_labels = len(nodes) <= 20
     chart = ui.echart({
         "backgroundColor": th["bg"],
         "tooltip": {**th["tooltip"], "trigger": "item"},
@@ -174,7 +185,7 @@ def render_attribution_graph(
             "links": links,
             "categories": cats,
             "roam": True,
-            "label": {"show": True, "color": th["text"], "fontSize": 11},
+            "label": {"show": show_labels, "color": th["text"], "fontSize": 11},
             "edgeSymbol": ["none", "arrow"],
             "edgeSymbolSize": [0, 10],
             "force": {
@@ -186,7 +197,9 @@ def render_attribution_graph(
     }).classes("w-full").style(f"height:{height}")
 
     if on_click is not None:
-        chart.on("chart:click", on_click)
+        # Match the convention used by every other render_* in the
+        # codebase: ECharts emits ``click`` (not ``chart:click``).
+        chart.on("click", on_click)
     return chart
 
 
@@ -198,7 +211,7 @@ def render_attribution_graph(
 def render_foreshadowing_arcs(
     ws: WorldStateV1,
     *,
-    height: str = "360px",
+    height: str | None = None,
     show_loose_only: bool = False,
 ) -> ui.element:
     """Curved arcs from setup events to their payoff events.
@@ -257,6 +270,10 @@ def render_foreshadowing_arcs(
             points.append([t, lab])
 
     y_categories = sorted({p[1] for p in points})
+    if height is None:
+        # Each y-category needs ~22px to read its label without
+        # collision; arc-heavy worlds easily hit 50+ unique endpoints.
+        height = f"{max(360, 22 * len(y_categories) + 90)}px"
 
     return ui.echart({
         "backgroundColor": th["bg"],
@@ -314,13 +331,35 @@ def render_convergence_trajectory(
     total = [r["violation_count"] for r in rows]
     crit = [r["critical_count"] for r in rows]
     passed_marks = [
-        {"xAxis": r["iteration"], "label": {"formatter": "✓"}}
+        {"xAxis": r["iteration"], "label": {"formatter": "✓ passed"}}
         for r in rows if r["passed"]
     ]
+    # Per-iteration row index for the JS tooltip formatter so it can
+    # report not just the numbers on the lines but also whether the
+    # auditor passed that iteration.
+    rows_by_iter = {r["iteration"]: r for r in rows}
 
     return ui.echart({
         "backgroundColor": th["bg"],
-        "tooltip": {**th["tooltip"], "trigger": "axis"},
+        "tooltip": {
+            **th["tooltip"],
+            "trigger": "axis",
+            ":formatter": (
+                "function(params){"
+                f" var rows = {json.dumps(rows_by_iter)};"
+                " if(!params || !params.length) return '';"
+                " var key = params[0].axisValue;"
+                " var r = rows[key] || {};"
+                " var lines = ['<b>Iteration ' + key + '</b>'];"
+                " params.forEach(function(p){"
+                "  lines.push(p.marker + p.seriesName + ': ' + p.value);"
+                " });"
+                " lines.push(r.passed ? '\u2713 auditor passed this iteration'"
+                "   : 'auditor still flagged issues');"
+                " return lines.join('<br/>');"
+                "}"
+            ),
+        },
         "legend": {
             "data": ["all violations", "critical"],
             "textStyle": {"color": th["text"]},

@@ -416,22 +416,69 @@ def _render_hero_verdict(causal, affective) -> None:
                 "Do events follow from what came before?",
                 plausibility,
                 kind="score",
+                help_md=(
+                    "**Cognitive plausibility score** (0\u20131, higher is "
+                    "better).\n\n"
+                    "Measures how well each character's beliefs and "
+                    "actions follow from what they could plausibly know "
+                    "at that point in the story. Computed by the causal "
+                    "physics engine from belief provenance and information"
+                    " channels \u2014 *not* an LLM judgement.\n\n"
+                    "- **strong** \u2265 0.75 \u2014 character motivations "
+                    "are well-grounded.\n"
+                    "- **needs work** 0.4\u20130.75 \u2014 a character "
+                    "knows or does something the graph can't justify.\n"
+                    "- **weak** < 0.4 \u2014 substantial cognitive miracles."
+                ),
             )
             _render_score_tile(
                 "Foreshadowing",
                 "Do set-ups pay off?",
                 foreshadowing,
                 kind="score",
+                help_md=(
+                    "**Foreshadowing pay-off score** (0\u20131, higher is "
+                    "better).\n\n"
+                    "How well story set-ups are paid off (or set-ups exist "
+                    "for the pay-offs we see). The engine traces causal "
+                    "ancestors and flags pay-offs that *miracle in* "
+                    "without antecedent set-up, and set-ups left dangling.\n\n"
+                    "- **strong** \u2265 0.75 \u2014 most threads connect.\n"
+                    "- **needs work** 0.4\u20130.75 \u2014 several "
+                    "miracle steps or unpaid set-ups.\n"
+                    "- **weak** < 0.4 \u2014 the prose largely doesn't "
+                    "earn its outcomes."
+                ),
             )
             _render_score_tile(
                 "Emotional fit",
                 "Did the prose hit the requested feeling?",
                 affective_loss,
                 kind="loss",
+                help_md=(
+                    "**Affective loss MSE** (lower is better).\n\n"
+                    "Mean-squared error between the *requested* emotional "
+                    "trajectory (from the directive: target effect + "
+                    "intensity) and the *achieved* trajectory the engine "
+                    "extracts from the rendered prose.\n\n"
+                    "- **strong** loss < 0.05 \u2014 prose lands very close "
+                    "to the asked-for feeling.\n"
+                    "- **needs work** 0.05\u20130.20 \u2014 the right "
+                    "shape but the intensity is off.\n"
+                    "- **weak** \u2265 0.20 \u2014 the prose is reaching "
+                    "for a different emotional beat."
+                ),
             )
 
 
-def _render_score_tile(title: str, sub: str, value, *, kind: str) -> None:
+def _render_score_tile(
+    title: str,
+    sub: str,
+    value,
+    *,
+    kind: str,
+    help_md: str | None = None,
+) -> None:
     """Single tile in the hero score row.
 
     ``kind`` is ``"score"`` (0-1, higher better) or ``"loss"``
@@ -451,6 +498,14 @@ def _render_score_tile(title: str, sub: str, value, *, kind: str) -> None:
             ui.label(title).classes(
                 "text-sm font-semibold text-slate-700"
             )
+            if help_md:
+                ui.space()
+                from shadow_loom_ui.components.help_popover import help_popover
+                help_popover(
+                    title=title,
+                    body_md=help_md,
+                    tooltip=f"What does {title} measure?",
+                )
         ui.label(sub).classes("text-[11px] text-slate-500")
         with ui.row().classes("items-center gap-2 mt-2"):
             ui.badge(word, color=color).props("dense")
@@ -914,6 +969,24 @@ def _render_query_audit_entry(index: int, result: NLQueryResult, state: AppState
                             else "Quality thresholds: failed",
                             color=gate_color,
                         ).props("dense")
+                        from shadow_loom_ui.components.help_popover import help_popover
+                        help_popover(
+                            title="Quality thresholds",
+                            body_md=(
+                                "A *deterministic* gate run alongside the "
+                                "LLM auditor. The engine computes per-cycle "
+                                "metrics (foreshadowing pay-off, cognitive "
+                                "plausibility, miracle-step count, "
+                                "affective loss) and checks each against a "
+                                "configured floor.\n\n"
+                                "If any floor is missed the gate fails and "
+                                "the failures are listed below. The LLM "
+                                "verdict is independent: a query can have "
+                                "the auditor passing while the gate fails "
+                                "(or vice versa)."
+                            ),
+                            tooltip="What is the quality-thresholds gate?",
+                        )
                     if (not feedback.engine_thresholds_passed
                             and feedback.engine_threshold_failures):
                         with ui.column().classes("gap-0 mt-1 ml-2"):
@@ -950,6 +1023,25 @@ def _render_query_audit_entry(index: int, result: NLQueryResult, state: AppState
                                     f"{req_effect}: {achieved:.2f}",
                                     color="primary",
                                 ).props("dense")
+                            from shadow_loom_ui.components.help_popover import help_popover
+                            help_popover(
+                                title="Achieved intensity",
+                                body_md=(
+                                    "The intensity of the *requested* effect "
+                                    "(e.g. `fear`, `regret`, `joy`) measured "
+                                    "in the rendered prose, on a 0\u20131 "
+                                    "scale.\n\n"
+                                    "Computed by mapping the prose's emotional"
+                                    " trajectory back through the directive "
+                                    "vocabulary (positive + inverse "
+                                    "indicators per effect). The *gap* is "
+                                    "achieved \u2212 asked: positive means "
+                                    "the prose over-shot, negative means it "
+                                    "under-shot. A gap within \u00b10.15 is "
+                                    "considered on-target."
+                                ),
+                                tooltip="What does achieved intensity mean?",
+                            )
                     if af.affective_loss_mse is not None:
                         ui.label(
                             f"Affective loss (distance from target): "
@@ -1056,6 +1148,28 @@ def _render_query_audit_entry(index: int, result: NLQueryResult, state: AppState
                     # ── Supporting charts (visual evidence under
                     #    the textual findings above) ───────────────
                     if history_rows:
+                        with ui.row().classes("w-full items-center gap-1 mt-2"):
+                            ui.label("Audit pass-rate per iteration").classes(
+                                "text-xs font-semibold text-slate-600"
+                            )
+                            from shadow_loom_ui.components.help_popover import help_popover
+                            help_popover(
+                                title="Audit pass-rate per iteration",
+                                body_md=(
+                                    "Each bar = one refinement-loop "
+                                    "iteration. Fill height shows the "
+                                    "*pass-rate* (auditor checks that "
+                                    "passed \u00f7 total checks) for that "
+                                    "iteration.\n\n"
+                                    "Hover a bar to see passed / total and "
+                                    "whether the auditor accepted that "
+                                    "iteration. Earlier iterations on the "
+                                    "left, later iterations on the right \u2014 "
+                                    "a healthy run climbs leftto-right and "
+                                    "the final bar is full."
+                                ),
+                                tooltip="How do I read this chart?",
+                            )
                         with_expand(
                             lambda h, hr=history_rows: (
                                 render_audit_passrate_pictorial(
@@ -1067,6 +1181,32 @@ def _render_query_audit_entry(index: int, result: NLQueryResult, state: AppState
                         )
 
                     # Convergence trajectory line chart
+                    with ui.row().classes("w-full items-center gap-1 mt-2"):
+                        ui.label("Convergence trajectory").classes(
+                            "text-xs font-semibold text-slate-600"
+                        )
+                        from shadow_loom_ui.components.help_popover import help_popover
+                        help_popover(
+                            title="Convergence trajectory",
+                            body_md=(
+                                "Two lines per refinement-loop iteration:\n"
+                                "- **all violations** \u2014 every issue the "
+                                "auditor flagged that cycle.\n"
+                                "- **critical** \u2014 the subset rated "
+                                "critical (hard failures the rewriter must "
+                                "address).\n\n"
+                                "Dashed teal vertical lines mark iterations "
+                                "where the auditor *passed* outright. A "
+                                "well-behaved loop trends down on both lines "
+                                "and ends with a passed marker. A loop that "
+                                "never reaches a passed marker hit "
+                                "`max_iterations` without convergence \u2014 "
+                                "see the diagnostic warning above.\n\n"
+                                "Hover any iteration for the exact counts "
+                                "and pass status."
+                            ),
+                            tooltip="How do I read this chart?",
+                        )
                     with_expand(
                         lambda h, fb=feedback: render_convergence_trajectory(
                             fb, height=h,
