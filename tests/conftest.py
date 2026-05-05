@@ -41,3 +41,48 @@ def _disable_monte_carlo_for_tests():
         yield
     finally:
         physics.monte_carlo_samples = saved
+
+
+@pytest.fixture(autouse=True)
+def _stub_answer_question(monkeypatch):
+    """Stub the Q&A LLM call so non-prose pipeline tests don't hit the network.
+
+    ``shadow_loom.pipeline._run_answer_step`` calls
+    :func:`shadow_loom.answer.answer_question`, which in turn invokes
+    a pydantic-ai agent against the configured LLM endpoint. In a
+    test environment (no API keys / unreachable endpoint) the
+    underlying ``run_sync`` call hangs rather than returning a
+    network error, locking the suite at the first non-prose
+    parametrized case (``InterrogationQuery`` / ``GeneralQuery``).
+
+    We replace ``answer_question`` with a deterministic stub that
+    returns a neutral :class:`AnswerCard`. Tests that genuinely
+    exercise the live Q&A agent live in ``test_live_e2e.py`` (already
+    excluded from the default run) and can override this fixture.
+    """
+    try:
+        import shadow_loom.answer as _answer_module
+        from shadow_loom.answer import AnswerCard
+    except Exception:
+        yield
+        return
+
+    def _stub(question, physics_state, **kwargs):  # noqa: ARG001
+        return AnswerCard(
+            answer="(stubbed answer for test)",
+            evidence_node_ids=[],
+            confidence=0.5,
+            caveats=["test stub — LLM not invoked"],
+        )
+
+    monkeypatch.setattr(_answer_module, "answer_question", _stub)
+    # Also patch the symbol imported into pipeline.py if it has been
+    # bound at module load time (currently it's a deferred import
+    # inside ``_run_answer_step``, but guard against future hoisting).
+    try:
+        import shadow_loom.pipeline as _pipeline_module
+        if hasattr(_pipeline_module, "answer_question"):
+            monkeypatch.setattr(_pipeline_module, "answer_question", _stub)
+    except Exception:
+        pass
+    yield

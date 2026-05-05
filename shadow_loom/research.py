@@ -428,7 +428,7 @@ def lookup_and_persist_topic(
                 provider=config.research_provider,
                 provider_model=config.research_provider_model,
                 query=topic,
-                snippets_json=_json.dumps([s.model_dump() for s in snippets]),
+                snippets_json=_json.dumps([s.model_dump(mode="json") for s in snippets]),
             )
         except Exception:
             logger.exception("[Research] cache write failed for topic=%r", topic)
@@ -437,7 +437,7 @@ def lookup_and_persist_topic(
         return {"error": f"Provider returned no results for topic={topic!r}."}
 
     snippet_block = "\n\n".join(
-        f"[{i+1}] {s.title}\nURL: {s.url}\n{s.snippet}"
+        f"[{i+1}] {s.title}\nURL: {s.url}\n{s.content}"
         for i, s in enumerate(snippets)
     )
     user_msg = (
@@ -464,7 +464,7 @@ def lookup_and_persist_topic(
         source_url_primary=fact.source_url_primary or "",
         provider=config.research_provider,
         related_node_ids_json=_json.dumps(list(fact.related_node_ids)),
-        raw_snippets_json=_json.dumps([s.model_dump() for s in snippets]),
+        raw_snippets_json=_json.dumps([s.model_dump(mode="json") for s in snippets]),
     )
 
     return {

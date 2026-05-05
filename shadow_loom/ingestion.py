@@ -3019,7 +3019,7 @@ def _run_research_step(
 
         # Build the user message — minimal, structured.
         snippet_block = "\n\n".join(
-            f"[{i+1}] {s.title}\nURL: {s.url}\n{s.snippet}"
+            f"[{i+1}] {s.title}\nURL: {s.url}\n{s.content}"
             for i, s in enumerate(snippets)
         )
         user_msg = (
@@ -3102,7 +3102,7 @@ async def _run_research_step_async(
             continue
 
         snippet_block = "\n\n".join(
-            f"[{i+1}] {s.title}\nURL: {s.url}\n{s.snippet}"
+            f"[{i+1}] {s.title}\nURL: {s.url}\n{s.content}"
             for i, s in enumerate(snippets)
         )
         user_msg = (

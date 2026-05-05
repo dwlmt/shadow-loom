@@ -164,7 +164,7 @@ def build_research_tab(state: AppState) -> None:
             settings = get_settings()
             ext = settings.extraction
             provider = ext.research_provider
-            api_key_present = bool(getattr(settings, "tavily_api_key", "") or "")
+            api_key_present = bool(getattr(settings.core, "tavily_api_key", "") or "")
             enabled = bool(ext.enable_research_agent)
         except Exception:
             logger.exception("[Research tab] failed to read settings")
@@ -307,7 +307,7 @@ def build_research_tab(state: AppState) -> None:
                                 ui.link(url, url, new_tab=True).props(
                                     'rel="noopener noreferrer"'
                                 ).classes("text-xs text-slate-500")
-                            ui.label(s.get("snippet", "")).classes(
+                            ui.label(s.get("content", "")).classes(
                                 "text-xs text-slate-600 whitespace-pre-line"
                             )
 
