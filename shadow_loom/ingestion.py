@@ -22,6 +22,7 @@ in the ``prompts/`` directory inside the package.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
 from contextvars import ContextVar
@@ -368,8 +369,10 @@ class ExtractionConfig(BaseModel):
     )
     max_concurrent_chunks: int = Field(
         default=4,
+        ge=1,
         description="Maximum number of chunks to extract in parallel during "
-        "async topology extraction. Controls LLM request concurrency.",
+        "async topology extraction. Controls LLM request concurrency. Must be >= 1; "
+        "a value of 0 would create ``asyncio.Semaphore(0)`` and hang every chunk.",
     )
     estimated_events_per_chunk: int = Field(
         default=10,
@@ -725,6 +728,22 @@ def _user_kwargs() -> Dict[str, Optional[int]]:
     return dict(ctx) if ctx else {}
 
 
+@contextlib.contextmanager
+def _user_context_scope(user_context: Dict[str, Optional[int]]):
+    """Set ``_user_context_var`` for the duration of the with-block.
+
+    Captures the token returned by ``ContextVar.set`` and resets it on
+    exit (including exceptions). Without this scope, back-to-back
+    extractions on the same thread / async task would inherit stale
+    user attribution metadata from the previous run.
+    """
+    token = _user_context_var.set(user_context)
+    try:
+        yield
+    finally:
+        _user_context_var.reset(token)
+
+
 def extract_ontology(text: str, config: ExtractionConfig | None = None, 
                     user_context: Optional[Dict[str, Optional[int]]] = None) -> GlobalRegister:
     """
@@ -1017,7 +1036,10 @@ def _format_scaffold(scaffold: SocraticScaffold) -> str:
 # chunks (chases, silent set-pieces, scenic description) where zero
 # channels and zero utterances is the *correct* answer.
 #
-# Quote-mark coverage:
+# Quote-mark coverage (used for paired-quote detection only — a *single*
+# stray quote mark is no longer enough to trigger the retry, since
+# narrators routinely use quoted single words for titles, scare-quotes,
+# and proper-noun glosses):
 #   "  — straight double  (ASCII 0x22)
 #   \u201c \u201d         — curly double (English)
 #   \u2018 \u2019         — curly single (English)
@@ -1025,9 +1047,18 @@ def _format_scaffold(scaffold: SocraticScaffold) -> str:
 #   \u00ab \u00bb         — French / Russian guillemets
 #   \u2039 \u203a         — single guillemets
 #   \u300c \u300d         — Japanese corner brackets
-_SPEECH_CUE_RE = re.compile(
-    r'(?:["\u201c\u201d\u2018\u2019\u201a\u201e\u201f\u00ab\u00bb\u2039\u203a\u300c\u300d]'
-    r'|\b('
+_QUOTE_CHARS = '"\u201c\u201d\u2018\u2019\u201a\u201e\u201f\u00ab\u00bb\u2039\u203a\u300c\u300d'
+# Open/close pairs we accept as "balanced dialogue":
+_QUOTE_PAIRS = (
+    ("\u201c", "\u201d"),  # English curly double
+    ("\u2018", "\u2019"),  # English curly single
+    ("\u00ab", "\u00bb"),  # French guillemets
+    ("\u2039", "\u203a"),  # single guillemets
+    ("\u300c", "\u300d"),  # Japanese corner brackets
+    ("\u201e", "\u201c"),  # German low-high
+)
+_SPEECH_VERB_RE = re.compile(
+    r'\b('
     r'said|says|told|tells|asked|asks|replied|replies|whispered|whispers|'
     r'shouted|shouts|cried|cries|murmured|murmurs|muttered|mutters|'
     r'declared|declares|announced|announces|warned|warns|promised|promises|'
@@ -1035,7 +1066,7 @@ _SPEECH_CUE_RE = re.compile(
     r'letter|letters|note|notes|message|messages|prophecy|prophesied|'
     r'order|orders|command|commands|rumour|rumor|gossip|spoke|speaks|'
     r'answered|answers|interrupted|interrupts|exclaimed|exclaims'
-    r')\b)',
+    r')\b',
     re.IGNORECASE,
 )
 
@@ -1054,10 +1085,30 @@ def _chunk_likely_contains_speech(chunk_text: str) -> bool:
     """Return True if the chunk shows linguistic evidence of dialogue or
     written/transmitted communication. Cheap heuristic used by the
     Social Agent's empty-result retry gate.
+
+    Decision tree (any one is sufficient):
+      1. Em-dash / en-dash line opener (Joyce / French / Russian dialogue style).
+      2. A balanced pair of dialogue-class quote marks (≥2 straight
+         double-quotes, OR matching curly / guillemet / corner-bracket
+         pair). A single stray quote on its own no longer counts —
+         narrators routinely quote single words for titles, scare-quotes,
+         and proper-noun glosses, and that was generating spurious
+         social-extraction retries on action chunks.
+      3. A recognised speech / writing / transmission verb (covers
+         epistolary, reported speech, and channel-prose without quote
+         marks).
     """
-    if _SPEECH_CUE_RE.search(chunk_text):
+    if _EMDASH_DIALOGUE_RE.search(chunk_text):
         return True
-    return bool(_EMDASH_DIALOGUE_RE.search(chunk_text))
+    # Balanced quotes
+    if chunk_text.count('"') >= 2:
+        return True
+    for opener, closer in _QUOTE_PAIRS:
+        if opener in chunk_text and closer in chunk_text:
+            return True
+    if _SPEECH_VERB_RE.search(chunk_text):
+        return True
+    return False
 
 
 def _build_valid_id_set(reg: GlobalRegister, event_ids: List[str] | None = None) -> set[str]:
@@ -1078,6 +1129,29 @@ def _build_valid_id_set(reg: GlobalRegister, event_ids: List[str] | None = None)
 # =====================================================================
 
 
+def _normalize_id_candidate(candidate: str) -> str:
+    """Strip whitespace and uppercase the prefix segment of an ID.
+
+    LLMs occasionally emit IDs with stray whitespace (``"  ENT_X  "``)
+    or mixed-case prefixes (``"Ent_x"``) — both forms are obviously
+    broken but slip past exact-match before fuzzy lookup. Normalising
+    here lets the simple ``candidate in valid_ids`` test recover most
+    of these without burning a fuzzy-match round-trip.
+
+    The body after the prefix is left untouched: entity / event id
+    bodies are deliberately case-sensitive (``ENT_PETER`` vs
+    ``ENT_PETER_PAN`` etc.) and re-casing them would produce more
+    noise than signal.
+    """
+    if not isinstance(candidate, str):
+        return candidate
+    s = candidate.strip()
+    for p in ("EVT_", "ENT_", "LOC_", "OBJ_", "WORLD_", "CHN_"):
+        if s.upper().startswith(p):
+            return p + s[len(p):]
+    return s
+
+
 def _fuzzy_resolve_id(candidate: str, valid_ids: set[str]) -> Optional[str]:
     """Attempt to resolve *candidate* to a valid ID via fuzzy matching.
 
@@ -1090,6 +1164,7 @@ def _fuzzy_resolve_id(candidate: str, valid_ids: set[str]) -> Optional[str]:
     Only considers IDs sharing the same prefix (``EVT_``, ``ENT_``, etc.)
     so prefix semantics are preserved and ``model_validator`` stays happy.
     """
+    candidate = _normalize_id_candidate(candidate)
     if candidate in valid_ids:
         return candidate
 
@@ -2602,7 +2677,19 @@ def _check_chunk_failure_threshold(
     a given sub-stage the resulting graph is unreliable and we'd rather
     raise loudly than silently persist a half-extracted world.
     """
-    if total_chunks <= 1:
+    if total_chunks <= 0:
+        return
+    if total_chunks == 1:
+        # Single-chunk runs cannot have ">half" failures by ratio, but
+        # if the only chunk failed any sub-stage the resulting topology
+        # is silently empty. Escalate any failure on the only chunk.
+        breached = {s: c for s, c in failure_counts.items() if c >= 1}
+        if breached:
+            details = ", ".join(f"{s}={c}/1" for s, c in breached.items())
+            raise RuntimeError(
+                f"Single-chunk extraction failed sub-stages: {details}. "
+                f"Refusing to return an empty topology."
+            )
         return
     threshold = total_chunks / 2
     breached = {
@@ -3867,6 +3954,20 @@ def _coalesce_snapshots(
         if len(group) == 1:
             coalesced.append(group[0])
             continue
+        # All snapshots in a group MUST share a world_id; if a chunk
+        # mixed factual + shadow snapshots at the same tick that is
+        # itself a bug we want surfaced loudly rather than silently
+        # retagged. Default to the group's first world_id.
+        group_world_ids = {getattr(s, "world_id", "factual") for s in group}
+        if len(group_world_ids) > 1:
+            logger.warning(
+                "_coalesce_snapshots: tick %d has mixed world_ids %s; "
+                "keeping snapshots un-merged to preserve branch tagging.",
+                tick, group_world_ids,
+            )
+            coalesced.extend(group)
+            continue
+        merged_world_id = next(iter(group_world_ids))
         # Merge fields:
         merged_traits: dict = {}
         merged_beliefs_added: List[Belief] = []
@@ -3882,9 +3983,18 @@ def _coalesce_snapshots(
             for k, v in (s.traits or {}).items():
                 merged_traits[k] = v
             for b in s.beliefs_added or []:
-                # Dedup beliefs by (target_id, perceived_state) so identical
-                # beliefs emitted by two chunks are not double-counted.
-                key = (b.target_id, b.perceived_state)
+                # Dedup beliefs by (target_id, perceived_state,
+                # acquired_via_event_id, acquired_via_channel_id) so
+                # the *same* belief emitted twice is collapsed but two
+                # acquisitions of the same proposition through
+                # different provenance (e.g. directly witnessed AND
+                # later told) are both kept.
+                key = (
+                    b.target_id,
+                    b.perceived_state,
+                    getattr(b, "acquired_via_event_id", None),
+                    getattr(b, "acquired_via_channel_id", None),
+                )
                 if key in seen_belief_keys:
                     continue
                 seen_belief_keys.add(key)
@@ -3896,12 +4006,23 @@ def _coalesce_snapshots(
                 merged_invalidated.append(tgt)
             if first_triggered_by is None and s.triggered_by:
                 first_triggered_by = s.triggered_by
+            elif (
+                s.triggered_by
+                and first_triggered_by
+                and s.triggered_by != first_triggered_by
+            ):
+                logger.warning(
+                    "_coalesce_snapshots: tick %d has conflicting "
+                    "triggered_by values (%s vs %s); keeping first.",
+                    tick, first_triggered_by, s.triggered_by,
+                )
             if first_status is None and s.status:
                 first_status = s.status
             if first_location_id is None and s.location_id:
                 first_location_id = s.location_id
 
         coalesced.append(EntityStateSnapshot(
+            world_id=merged_world_id,
             fabula_time=tick,
             triggered_by=first_triggered_by,
             traits=merged_traits,
@@ -3989,9 +4110,17 @@ def assemble_world_state(
     for eid, snaps in all_entity_updates.items():
         all_entity_updates[eid] = _coalesce_snapshots(snaps)
 
-    # Sort events chronologically
-    events.sort(key=lambda e: e.fabula_time)
-    causal_topology.sort(key=lambda c: c.fabula_time)
+    # Sort events chronologically. Add stable secondary keys so two
+    # extraction runs over the same input produce byte-identical AMWN
+    # ordering even when several events share a fabula tick (a common
+    # case at chapter boundaries where multiple things happen "now").
+    # Without these tie-breakers ordering depends on chunk-extraction
+    # insertion order, which under async parallelism is itself
+    # non-deterministic.
+    events.sort(key=lambda e: (e.fabula_time, e.id))
+    causal_topology.sort(
+        key=lambda c: (c.fabula_time, c.source_id, c.target_id, c.causality_type)
+    )
 
     # Deduplicate relationship, spatial, causal across chunks (channels
     # were deduped earlier so the forwarding map could rewrite events).
@@ -4421,6 +4550,36 @@ def _programmatic_validation(ws: WorldStateV1) -> List[ValidationIssue]:
     """Fast structural checks that don't require an LLM."""
     issues: List[ValidationIssue] = []
 
+    # Cross-register ID-namespace collision check. The valid_ids set
+    # below is built by union, which silently absorbs collisions; e.g.
+    # a stray ``OBJ_DAGGER`` mistakenly registered under
+    # ``ws.entities`` and a real ``OBJ_DAGGER`` in ``ws.objects`` both
+    # collapse to a single membership token. Downstream lookups would
+    # then resolve the ID to whichever register the consumer happened
+    # to query first \u2014 a classic source of \"phantom entity\" bugs
+    # during counterfactual surgery.
+    register_views: List[Tuple[str, set]] = [
+        ("locations", set(ws.locations.keys())),
+        ("objects", set(ws.objects.keys())),
+        ("entities", set(ws.entities.keys())),
+        ("world_traits", set(ws.world_traits.keys())),
+        ("channels", set(ws.channels.keys())),
+    ]
+    for i in range(len(register_views)):
+        for j in range(i + 1, len(register_views)):
+            name_a, ids_a = register_views[i]
+            name_b, ids_b = register_views[j]
+            overlap = ids_a & ids_b
+            for dup in sorted(overlap):
+                issues.append(ValidationIssue(
+                    severity="error", category="duplicate",
+                    detail=(
+                        f"ID '{dup}' is registered in both "
+                        f"ws.{name_a} and ws.{name_b}; downstream "
+                        f"lookups will resolve ambiguously."
+                    ),
+                ))
+
     # Build the valid ID set
     valid_ids = (
         set(ws.locations.keys())
@@ -4486,6 +4645,16 @@ def _programmatic_validation(ws: WorldStateV1) -> List[ValidationIssue]:
                 severity="error", category="broken_link",
                 detail=f"Channel '{cid}' has fewer than 2 participants.",
             ))
+        if len(set(ch.participant_ids)) < len(ch.participant_ids):
+            dupes = [p for p in ch.participant_ids if ch.participant_ids.count(p) > 1]
+            issues.append(ValidationIssue(
+                severity="warning", category="duplicate",
+                detail=(
+                    f"Channel '{cid}' has duplicate participant_ids "
+                    f"{sorted(set(dupes))}; downstream consumers will see a "
+                    f"phantom n-way channel."
+                ),
+            ))
         for k in ch.intelligibility.keys():
             if k not in ch.participant_ids:
                 issues.append(ValidationIssue(
@@ -4531,6 +4700,29 @@ def _programmatic_validation(ws: WorldStateV1) -> List[ValidationIssue]:
                     f"not in channels."
                 ),
             ))
+        # If utterance routes through a channel, both speaker and every
+        # addressee must actually be participants in that channel —
+        # otherwise the propagator will silently drop the message at
+        # intelligibility-check time.
+        if evt.via_channel_id and evt.via_channel_id in ws.channels:
+            chan_participants = set(ws.channels[evt.via_channel_id].participant_ids)
+            if evt.speaker_id and evt.speaker_id not in chan_participants:
+                issues.append(ValidationIssue(
+                    severity="error", category="broken_link",
+                    detail=(
+                        f"Utterance '{evt.id}' speaker_id '{evt.speaker_id}' "
+                        f"is not a participant of via_channel_id '{evt.via_channel_id}'."
+                    ),
+                ))
+            for aid in evt.addressee_ids:
+                if aid not in chan_participants:
+                    issues.append(ValidationIssue(
+                        severity="error", category="broken_link",
+                        detail=(
+                            f"Utterance '{evt.id}' addressee '{aid}' is not a "
+                            f"participant of via_channel_id '{evt.via_channel_id}'."
+                        ),
+                    ))
         if evt.speaker_id and evt.speaker_id not in node_ids:
             issues.append(ValidationIssue(
                 severity="error", category="broken_link",
@@ -4748,6 +4940,21 @@ def _programmatic_validation(ws: WorldStateV1) -> List[ValidationIssue]:
                     severity="warning", category="broken_link",
                     detail=f"Entity '{eid}' belief target_id '{belief.target_id}' not in locations/objects/entities/events.",
                 ))
+        # Same shape applies to beliefs sitting on snapshots; they
+        # become an entity's live ``beliefs`` after world-state replay,
+        # so a dangling target_id here is just a delayed broken_link.
+        for snap in ent.state_timeline:
+            for belief in snap.beliefs_added:
+                if belief.target_id not in all_valid_belief_targets:
+                    issues.append(ValidationIssue(
+                        severity="warning", category="broken_link",
+                        detail=(
+                            f"Entity '{eid}' snapshot belief at "
+                            f"fabula={snap.fabula_time} target_id "
+                            f"'{belief.target_id}' not in "
+                            f"locations/objects/entities/events/world_traits."
+                        ),
+                    ))
 
     # Check entity state_timeline references
     for eid, ent in ws.entities.items():
@@ -6032,6 +6239,36 @@ def _build_compact_validation_view(ws: WorldStateV1) -> str:
                 "n_beliefs": len(ent.beliefs),
                 "n_state_timeline": len(ent.state_timeline),
                 "trait_keys": sorted(ent.traits.keys()),
+                # Belief summaries: keep the (target_id, perceived_state,
+                # confidence) triple so the LLM auditor can still spot
+                # internal contradictions like "two confident beliefs
+                # about the same target with opposite perceived_state".
+                # Provenance + inertia + evidence_strength are dropped.
+                "beliefs_summary": [
+                    {
+                        "target_id": b.target_id,
+                        "perceived_state": b.perceived_state,
+                        "confidence": round(float(getattr(b, "confidence", 1.0) or 1.0), 2),
+                    }
+                    for b in ent.beliefs
+                ],
+                # State-timeline summary: just the per-tick triggered_by
+                # + status / location transitions and the *count* of new
+                # beliefs / trait deltas. Lets the auditor catch missing
+                # status transitions ("alive entity referenced after
+                # EVT_X_KILLS_Y") and movement / location inconsistencies.
+                "timeline_summary": [
+                    {
+                        "fabula_time": s.fabula_time,
+                        "triggered_by": s.triggered_by,
+                        "status": s.status,
+                        "location_id": s.location_id,
+                        "n_traits_changed": len(s.traits or {}),
+                        "n_beliefs_added": len(s.beliefs_added or []),
+                        "n_beliefs_invalidated": len(s.beliefs_invalidated or []),
+                    }
+                    for s in ent.state_timeline
+                ],
             }
             for eid, ent in ws.entities.items()
         },
@@ -6039,6 +6276,13 @@ def _build_compact_validation_view(ws: WorldStateV1) -> str:
             wid: {
                 "name": wt.name,
                 "n_state_timeline": len(wt.state_timeline),
+                "timeline_summary": [
+                    {
+                        "fabula_time": s.fabula_time,
+                        "triggered_by": s.triggered_by,
+                    }
+                    for s in wt.state_timeline
+                ],
             }
             for wid, wt in ws.world_traits.items()
         },
@@ -6188,123 +6432,122 @@ def run_extraction(
     # Set ContextVar so internal agent calls (extract_topology,
     # _run_correction_patch, extract_world_trait_timelines, validation,
     # research) can splat the same kwargs into ``agent.run_sync`` for
-    # cost attribution \u2014 see ``_user_kwargs()``. We never reset it:
-    # ContextVar is local to this thread / async-task, and
-    # ``run_extraction[_async]`` is the top of the call stack for the
-    # extraction request.
-    _user_context_var.set(user_context)
+    # cost attribution — see ``_user_kwargs()``. The ``with`` block
+    # captures the set token and resets it on exit (including
+    # exceptions) so back-to-back extractions on the same thread don't
+    # inherit stale attribution metadata.
+    with _user_context_scope(user_context):
+        # Step 1: Global Ontology
+        # Step 1: Extract ontology
+        register = extract_ontology(text, config, user_context)
 
-    # Step 1: Global Ontology
-    # Step 1: Extract ontology
-    register = extract_ontology(text, config, user_context)
+        # Step 2: Chunk Topology
+        chunks = chunk_text(text, strategy=config.chunk_strategy, min_chunk_chars=config.min_chunk_chars)
+        logger.info("[Pipeline] Text split into %d chunks.", len(chunks))
+        topologies = extract_topology(chunks, register, config)
 
-    # Step 2: Chunk Topology
-    chunks = chunk_text(text, strategy=config.chunk_strategy, min_chunk_chars=config.min_chunk_chars)
-    logger.info("[Pipeline] Text split into %d chunks.", len(chunks))
-    topologies = extract_topology(chunks, register, config)
+        # Step 3: Assembly + Normalize + Auto-Repair + Validation
+        world_state = assemble_world_state(register, topologies)
 
-    # Step 3: Assembly + Normalize + Auto-Repair + Validation
-    world_state = assemble_world_state(register, topologies)
-
-    # Normalize fabula_time if the LLM used small integers
-    world_state = _normalize_fabula_times(world_state, config.fabula_time_spacing)
-
-    # Auto-repair broken links and duplicates before validation
-    world_state, repairs = _auto_repair(world_state)
-    if repairs:
-        logger.info("[Pipeline] Auto-repaired %d issues before validation.", len(repairs))
-
-    # Step 5: Post-assembly world trait timeline extraction
-    world_state = extract_world_trait_timelines(world_state, config)
-
-    report = validate_world_state(world_state, config)
-
-    # --- Correction retry loop ---
-    # If programmatic errors remain after auto-repair, attempt LLM correction.
-    # Snapshot event identity so we can re-run trait timelines afterwards if
-    # any patch renamed / dropped / time-shifted events (which would have
-    # left the pre-correction world-trait snapshots anchored to stale events).
-    pre_correction_event_signature = tuple(
-        (e.id, e.fabula_time) for e in world_state.events
-    )
-    for retry_num in range(config.max_correction_retries):
-        prog_errors = [i for i in report.issues if i.severity == "error"]
-        if not prog_errors:
-            break
-
-        log_prefix = f"[Pipeline·Correction {retry_num + 1}/{config.max_correction_retries}]"
-        logger.info(
-            "%s %d errors remain — running patch-based correction agent.",
-            log_prefix, len(prog_errors),
-        )
-
-        new_world_state, change_log = _run_correction_patch(
-            world_state, prog_errors, config, log_prefix,
-        )
-        if not change_log:
-            # No-op or rejected patch — retrying would just burn more tokens.
-            break
-        world_state = new_world_state
-        repairs.extend(change_log)
-
-        # Re-normalise, re-repair, and re-validate after the patch.
+        # Normalize fabula_time if the LLM used small integers
         world_state = _normalize_fabula_times(world_state, config.fabula_time_spacing)
-        world_state, new_repairs = _auto_repair(world_state)
-        if new_repairs:
-            repairs.extend(new_repairs)
+
+        # Auto-repair broken links and duplicates before validation
+        world_state, repairs = _auto_repair(world_state)
+        if repairs:
+            logger.info("[Pipeline] Auto-repaired %d issues before validation.", len(repairs))
+
+        # Step 5: Post-assembly world trait timeline extraction
+        world_state = extract_world_trait_timelines(world_state, config)
+
         report = validate_world_state(world_state, config)
 
-    # If correction renamed, dropped, or time-shifted events the
-    # pre-correction world-trait timelines may now reference stale ids
-    # or wrong fabula ticks. Re-run timeline extraction once and re-
-    # validate. Skipped when nothing relevant changed.
-    post_correction_event_signature = tuple(
-        (e.id, e.fabula_time) for e in world_state.events
-    )
-    if (
-        post_correction_event_signature != pre_correction_event_signature
-        and world_state.world_traits
-    ):
-        logger.info(
-            "[Pipeline] Re-running world-trait timeline extraction after "
-            "correction touched events.",
+        # --- Correction retry loop ---
+        # If programmatic errors remain after auto-repair, attempt LLM correction.
+        # Snapshot event identity so we can re-run trait timelines afterwards if
+        # any patch renamed / dropped / time-shifted events (which would have
+        # left the pre-correction world-trait snapshots anchored to stale events).
+        pre_correction_event_signature = tuple(
+            (e.id, e.fabula_time) for e in world_state.events
         )
-        try:
-            world_state = extract_world_trait_timelines(world_state, config)
-            world_state, post_repairs = _auto_repair(world_state)
-            if post_repairs:
-                repairs.extend(post_repairs)
-            report = validate_world_state(world_state, config)
-        except Exception:
-            logger.exception(
-                "[Pipeline] Post-correction timeline re-extraction failed — "
-                "keeping pre-correction timelines.",
+        for retry_num in range(config.max_correction_retries):
+            prog_errors = [i for i in report.issues if i.severity == "error"]
+            if not prog_errors:
+                break
+
+            log_prefix = f"[Pipeline·Correction {retry_num + 1}/{config.max_correction_retries}]"
+            logger.info(
+                "%s %d errors remain — running patch-based correction agent.",
+                log_prefix, len(prog_errors),
             )
 
-    # ------------------------------------------------------------------
-    # Step 3d — optional, segregated external research (post-assembly)
-    # ------------------------------------------------------------------
-    try:
-        world_state = _run_research_step(world_state, config)
-    except Exception:
-        logger.exception("[Pipeline·Research] unexpected failure — continuing without research.")
+            new_world_state, change_log = _run_correction_patch(
+                world_state, prog_errors, config, log_prefix,
+            )
+            if not change_log:
+                # No-op or rejected patch — retrying would just burn more tokens.
+                break
+            world_state = new_world_state
+            repairs.extend(change_log)
 
-    # ------------------------------------------------------------------
-    # Step 3e — capture source narrative style for downstream fidelity
-    # ------------------------------------------------------------------
-    try:
-        world_state.narrative_style = infer_narrative_style(text)
-        logger.info(
-            "[Pipeline] Narrative style inferred: format=%s, target=%d–%d words, density=%s.",
-            world_state.narrative_style.format,
-            world_state.narrative_style.target_word_min,
-            world_state.narrative_style.target_word_max,
-            world_state.narrative_style.prose_density,
+            # Re-normalise, re-repair, and re-validate after the patch.
+            world_state = _normalize_fabula_times(world_state, config.fabula_time_spacing)
+            world_state, new_repairs = _auto_repair(world_state)
+            if new_repairs:
+                repairs.extend(new_repairs)
+            report = validate_world_state(world_state, config)
+
+        # If correction renamed, dropped, or time-shifted events the
+        # pre-correction world-trait timelines may now reference stale ids
+        # or wrong fabula ticks. Re-run timeline extraction once and re-
+        # validate. Skipped when nothing relevant changed.
+        post_correction_event_signature = tuple(
+            (e.id, e.fabula_time) for e in world_state.events
         )
-    except Exception:
-        logger.exception("[Pipeline] Narrative-style inference failed — continuing without it.")
+        if (
+            post_correction_event_signature != pre_correction_event_signature
+            and world_state.world_traits
+        ):
+            logger.info(
+                "[Pipeline] Re-running world-trait timeline extraction after "
+                "correction touched events.",
+            )
+            try:
+                world_state = extract_world_trait_timelines(world_state, config)
+                world_state, post_repairs = _auto_repair(world_state)
+                if post_repairs:
+                    repairs.extend(post_repairs)
+                report = validate_world_state(world_state, config)
+            except Exception:
+                logger.exception(
+                    "[Pipeline] Post-correction timeline re-extraction failed — "
+                    "keeping pre-correction timelines.",
+                )
 
-    return world_state, report
+        # ------------------------------------------------------------------
+        # Step 3d — optional, segregated external research (post-assembly)
+        # ------------------------------------------------------------------
+        try:
+            world_state = _run_research_step(world_state, config)
+        except Exception:
+            logger.exception("[Pipeline·Research] unexpected failure — continuing without research.")
+
+        # ------------------------------------------------------------------
+        # Step 3e — capture source narrative style for downstream fidelity
+        # ------------------------------------------------------------------
+        try:
+            world_state.narrative_style = infer_narrative_style(text)
+            logger.info(
+                "[Pipeline] Narrative style inferred: format=%s, target=%d–%d words, density=%s.",
+                world_state.narrative_style.format,
+                world_state.narrative_style.target_word_min,
+                world_state.narrative_style.target_word_max,
+                world_state.narrative_style.prose_density,
+            )
+        except Exception:
+            logger.exception("[Pipeline] Narrative-style inference failed — continuing without it.")
+
+        return world_state, report
 
 async def run_extraction_async(
     text: str,
@@ -6345,111 +6588,113 @@ async def run_extraction_async(
         'version_id': version_id,
     }
     # See ``run_extraction`` for rationale; ContextVar is async-task
-    # local under ``asyncio``.
-    _user_context_var.set(user_context)
+    # local under ``asyncio``. Note: ``asyncio.to_thread`` calls below
+    # automatically copy the current Context (via
+    # ``contextvars.copy_context``), so the worker thread sees the same
+    # ``_user_context_var`` as the orchestrator task.
+    with _user_context_scope(user_context):
+        # Step 1: Global Ontology (parallel 1b + 1c)
+        # Step 1: Extract ontology
+        register = await extract_ontology_async(text, config, user_context)
 
-    # Step 1: Global Ontology (parallel 1b + 1c)
-    # Step 1: Extract ontology
-    register = await extract_ontology_async(text, config, user_context)
+        # Step 2: Chunk Topology (parallel chunks)
+        chunks = chunk_text(text, strategy=config.chunk_strategy, min_chunk_chars=config.min_chunk_chars)
+        logger.info("[Pipeline·Async] Text split into %d chunks.", len(chunks))
+        topologies = await extract_topology_async(chunks, register, config)
 
-    # Step 2: Chunk Topology (parallel chunks)
-    chunks = chunk_text(text, strategy=config.chunk_strategy, min_chunk_chars=config.min_chunk_chars)
-    logger.info("[Pipeline·Async] Text split into %d chunks.", len(chunks))
-    topologies = await extract_topology_async(chunks, register, config)
-
-    # Step 3: Assembly + Normalize + Auto-Repair + Validation (same as sync)
-    world_state = assemble_world_state(register, topologies)
-    world_state = _normalize_fabula_times(world_state, config.fabula_time_spacing)
-    world_state, repairs = _auto_repair(world_state)
-    if repairs:
-        logger.info("[Pipeline·Async] Auto-repaired %d issues before validation.", len(repairs))
-
-    # Step 5: Post-assembly world trait timeline extraction
-    world_state = await extract_world_trait_timelines_async(world_state, config)
-
-    # Validation calls a sync LLM agent internally; offload it to a
-    # worker thread so we don't block the event loop while it runs
-    # (audit item #7 \u2014 same rationale for ``_run_correction_patch``
-    # below).
-    report = await asyncio.to_thread(validate_world_state, world_state, config)
-
-    # Snapshot pre-correction event identity so we can detect rename /
-    # drop / time-shift and re-run trait timelines once afterwards.
-    pre_correction_event_signature = tuple(
-        (e.id, e.fabula_time) for e in world_state.events
-    )
-
-    # --- Correction retry loop ---
-    for retry_num in range(config.max_correction_retries):
-        prog_errors = [i for i in report.issues if i.severity == "error"]
-        if not prog_errors:
-            break
-
-        log_prefix = f"[Pipeline·Async·Correction {retry_num + 1}/{config.max_correction_retries}]"
-        logger.info(
-            "%s %d errors remain — running patch-based correction agent.",
-            log_prefix, len(prog_errors),
-        )
-
-        # ``_run_correction_patch`` calls ``agent.run_sync`` internally;
-        # wrap it in ``to_thread`` so concurrent extraction tasks under
-        # the same event loop are not stalled by the LLM round-trip.
-        new_world_state, change_log = await asyncio.to_thread(
-            _run_correction_patch,
-            world_state, prog_errors, config, log_prefix,
-        )
-        if not change_log:
-            break
-        world_state = new_world_state
-        repairs.extend(change_log)
-
+        # Step 3: Assembly + Normalize + Auto-Repair + Validation (same as sync)
+        world_state = assemble_world_state(register, topologies)
         world_state = _normalize_fabula_times(world_state, config.fabula_time_spacing)
-        world_state, new_repairs = _auto_repair(world_state)
-        if new_repairs:
-            repairs.extend(new_repairs)
+        world_state, repairs = _auto_repair(world_state)
+        if repairs:
+            logger.info("[Pipeline·Async] Auto-repaired %d issues before validation.", len(repairs))
+
+        # Step 5: Post-assembly world trait timeline extraction
+        world_state = await extract_world_trait_timelines_async(world_state, config)
+
+        # Validation calls a sync LLM agent internally; offload it to a
+        # worker thread so we don't block the event loop while it runs
+        # (audit item #7 — same rationale for ``_run_correction_patch``
+        # below).
         report = await asyncio.to_thread(validate_world_state, world_state, config)
 
-    post_correction_event_signature = tuple(
-        (e.id, e.fabula_time) for e in world_state.events
-    )
-    if (
-        post_correction_event_signature != pre_correction_event_signature
-        and world_state.world_traits
-    ):
-        logger.info(
-            "[Pipeline·Async] Re-running world-trait timeline extraction "
-            "after correction touched events.",
+        # Snapshot pre-correction event identity so we can detect rename /
+        # drop / time-shift and re-run trait timelines once afterwards.
+        pre_correction_event_signature = tuple(
+            (e.id, e.fabula_time) for e in world_state.events
         )
-        try:
-            world_state = await extract_world_trait_timelines_async(world_state, config)
-            world_state, post_repairs = _auto_repair(world_state)
-            if post_repairs:
-                repairs.extend(post_repairs)
-            report = await asyncio.to_thread(validate_world_state, world_state, config)
-        except Exception:
-            logger.exception(
-                "[Pipeline·Async] Post-correction timeline re-extraction failed "
-                "— keeping pre-correction timelines.",
+
+        # --- Correction retry loop ---
+        for retry_num in range(config.max_correction_retries):
+            prog_errors = [i for i in report.issues if i.severity == "error"]
+            if not prog_errors:
+                break
+
+            log_prefix = f"[Pipeline·Async·Correction {retry_num + 1}/{config.max_correction_retries}]"
+            logger.info(
+                "%s %d errors remain — running patch-based correction agent.",
+                log_prefix, len(prog_errors),
             )
 
-    # ------------------------------------------------------------------
-    # Step 3d — optional, segregated external research (post-assembly)
-    # ------------------------------------------------------------------
-    try:
-        world_state = await _run_research_step_async(world_state, config)
-    except Exception:
-        logger.exception("[Pipeline·Research·Async] unexpected failure — continuing without research.")
+            # ``_run_correction_patch`` calls ``agent.run_sync`` internally;
+            # wrap it in ``to_thread`` so concurrent extraction tasks under
+            # the same event loop are not stalled by the LLM round-trip.
+            new_world_state, change_log = await asyncio.to_thread(
+                _run_correction_patch,
+                world_state, prog_errors, config, log_prefix,
+            )
+            if not change_log:
+                break
+            world_state = new_world_state
+            repairs.extend(change_log)
 
-    try:
-        world_state.narrative_style = infer_narrative_style(text)
-        logger.info(
-            "[Pipeline·Async] Narrative style inferred: format=%s, target=%d–%d words, density=%s.",
-            world_state.narrative_style.format,
-            world_state.narrative_style.target_word_min,
-            world_state.narrative_style.target_word_max,
-            world_state.narrative_style.prose_density,
+            world_state = _normalize_fabula_times(world_state, config.fabula_time_spacing)
+            world_state, new_repairs = _auto_repair(world_state)
+            if new_repairs:
+                repairs.extend(new_repairs)
+            report = await asyncio.to_thread(validate_world_state, world_state, config)
+
+        post_correction_event_signature = tuple(
+            (e.id, e.fabula_time) for e in world_state.events
         )
-    except Exception:
-        logger.exception("[Pipeline·Async] Narrative-style inference failed — continuing without it.")
+        if (
+            post_correction_event_signature != pre_correction_event_signature
+            and world_state.world_traits
+        ):
+            logger.info(
+                "[Pipeline·Async] Re-running world-trait timeline extraction "
+                "after correction touched events.",
+            )
+            try:
+                world_state = await extract_world_trait_timelines_async(world_state, config)
+                world_state, post_repairs = _auto_repair(world_state)
+                if post_repairs:
+                    repairs.extend(post_repairs)
+                report = await asyncio.to_thread(validate_world_state, world_state, config)
+            except Exception:
+                logger.exception(
+                    "[Pipeline·Async] Post-correction timeline re-extraction failed "
+                    "— keeping pre-correction timelines.",
+                )
 
-    return world_state, report
+        # ------------------------------------------------------------------
+        # Step 3d — optional, segregated external research (post-assembly)
+        # ------------------------------------------------------------------
+        try:
+            world_state = await _run_research_step_async(world_state, config)
+        except Exception:
+            logger.exception("[Pipeline·Research·Async] unexpected failure — continuing without research.")
+
+        try:
+            world_state.narrative_style = infer_narrative_style(text)
+            logger.info(
+                "[Pipeline·Async] Narrative style inferred: format=%s, target=%d–%d words, density=%s.",
+                world_state.narrative_style.format,
+                world_state.narrative_style.target_word_min,
+                world_state.narrative_style.target_word_max,
+                world_state.narrative_style.prose_density,
+            )
+        except Exception:
+            logger.exception("[Pipeline·Async] Narrative-style inference failed — continuing without it.")
+
+        return world_state, report

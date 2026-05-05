@@ -533,7 +533,7 @@ world_state = WorldStateV1(
             actor_ids=["ENT_JACQUELINE"], target_ids=["ENT_SIMON", "EVT_LOUNGE_SHOOTING"],
             description="In the Karnak lounge a drunken-seeming Jacqueline screams at Simon before firing — the public face of the conspirators' alibi script.",
             content="You ruined my life, Simon Doyle — I told you what I'd do!",
-            via_channel_id="CHN_SIMON_JACQUELINE_PLOT", truth_value="performative",
+            via_channel_id=None, truth_value="performative",
             fabula_time=8000, syuzhet_index=24,
         ),
         EventNode(
