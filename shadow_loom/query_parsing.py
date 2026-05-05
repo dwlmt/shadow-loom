@@ -1215,7 +1215,18 @@ def _validate_parsed_query(
                 # Keys are dotted paths like 'ENT_MACBETH.status'; validate
                 # the base node ID, not the full key.
                 base_id = key.split(".", 1)[0] if "." in key else key
-                _check_id(base_id, "interventions")
+                prop_root = (
+                    key.split(".", 1)[1].split(".", 1)[0]
+                    if "." in key else ""
+                )
+                # ``.spawn`` keys are genesis events: they intentionally
+                # introduce a brand-new ID (entity, object, event,
+                # location, channel, world-trait). Skip the existence
+                # check — the engine's _intervene_genesis surgery
+                # creates the node in the sandbox and re-extraction +
+                # merge promotes it into the canonical world state.
+                if prop_root != "spawn":
+                    _check_id(base_id, "interventions")
                 # Catch property/type mismatches like ``EVT_X.traits.guilt``
                 # — events don't have traits, so the engine would silently
                 # no-op or crash. Surface it here for a clean error.
@@ -1232,7 +1243,13 @@ def _validate_parsed_query(
         else:
             for key in parsed.historical_interventions:
                 base_id = key.split(".", 1)[0] if "." in key else key
-                _check_id(base_id, "historical_interventions")
+                prop_root = (
+                    key.split(".", 1)[1].split(".", 1)[0]
+                    if "." in key else ""
+                )
+                # See note above — ``.spawn`` introduces a new node.
+                if prop_root != "spawn":
+                    _check_id(base_id, "historical_interventions")
                 prop_err = _validate_property_path(
                     key, "historical_interventions",
                 )

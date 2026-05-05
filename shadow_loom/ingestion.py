@@ -130,6 +130,12 @@ class ChunkTopology(BaseModel):
     ``channels`` carries standing :class:`Channel` capabilities
     extracted by the Social Agent, replacing the legacy
     ``information_topology`` field.
+
+    The ``new_*`` collections carry brand-new ontology nodes promoted
+    from a Rung-2/3 sandbox after a ``.spawn`` (genesis) intervention.
+    They are empty for plain ingestion chunks; the pipeline populates
+    them when a query introduces characters / objects / locations /
+    world-traits that did not exist in the canonical world state.
     """
     events: List[EventNode] = Field(default_factory=list)
     causal_topology: List[CausalEdge] = Field(default_factory=list)
@@ -137,6 +143,11 @@ class ChunkTopology(BaseModel):
     social_topology: List[RelationshipEdge] = Field(default_factory=list)
     spatial_topology: List[SpatialEdge] = Field(default_factory=list)
     entity_updates: List["EntityUpdate"] = Field(default_factory=list)
+    # Genesis spawns (post-physics promotion). Keyed by canonical id.
+    new_entities: Dict[str, Entity] = Field(default_factory=dict)
+    new_objects: Dict[str, NarrativeObject] = Field(default_factory=dict)
+    new_locations: Dict[str, Location] = Field(default_factory=dict)
+    new_world_traits: Dict[str, GlobalTrait] = Field(default_factory=dict)
 
 
 class QAPair(BaseModel):

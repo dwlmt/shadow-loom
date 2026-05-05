@@ -44,6 +44,7 @@ from shadow_loom.extract_graph import (
     VersionedWorldModel,
     WorldModelVersion,
     extract_topology_from_prose,
+    promote_sandbox_spawns,
 )
 from shadow_loom.generation import (
     GeneratedScene,
@@ -898,10 +899,12 @@ def run_pipeline(
     else:
         logger.info("[Pipeline] Steps 6–7: Extracting topology from prose and merging.")
         try:
+            spawns = promote_sandbox_spawns(ws, physics_state)
             topology = extract_topology_from_prose(
                 prose=result.prose,
                 world_state=ws,
                 config=cfg.extraction_config,
+                spawns=spawns,
             )
             description = (
                 f"Pipeline merge after {query.query_type} query"
@@ -1195,8 +1198,10 @@ async def run_pipeline_async(
     else:
         logger.info("[Pipeline·Async] Steps 6–7: Extracting topology from prose and merging.")
         try:
+            spawns = promote_sandbox_spawns(ws, physics_state)
             topology = extract_topology_from_prose(
                 prose=result.prose, world_state=ws, config=cfg.extraction_config,
+                spawns=spawns,
             )
             description = (
                 f"Pipeline merge after {query.query_type} query"
