@@ -1446,6 +1446,8 @@ def save_version(
     label: str | None = None,
     world_id: str = "factual",
     branch_label: str | None = None,
+    pipeline_reextraction_failed: bool = False,
+    accept_partial: bool = False,
 ) -> VersionRow:
     """Persist a new version node in the version tree.
 
@@ -1453,7 +1455,22 @@ def save_version(
     integer for the project.  Auto-assignment is retried up to a few
     times on ``IntegrityError`` to absorb concurrent writers racing on
     the (project_id, version) unique constraint.
+
+    Hard guard: callers that ran an ingestion / re-extraction pipeline
+    must pass ``pipeline_reextraction_failed=True`` if the pipeline
+    raised, and ``accept_partial=True`` to acknowledge they intend to
+    persist the partial state anyway. Without that explicit
+    acknowledgement we refuse to save, so a silent ``except Exception:
+    save_version(...)`` cannot quietly persist a half-extracted graph.
     """
+    if pipeline_reextraction_failed and not accept_partial:
+        raise ValueError(
+            "save_version refused: caller passed "
+            "pipeline_reextraction_failed=True without accept_partial=True. "
+            "The pipeline failed; either persist the previous successful "
+            "version or pass accept_partial=True to explicitly accept the "
+            "partial extraction."
+        )
     # When an explicit version is supplied we honour it (single attempt).
     max_attempts = 1 if version is not None else 5
     last_err: Exception | None = None

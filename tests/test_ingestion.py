@@ -170,12 +170,15 @@ class TestDeduplication:
     def test_social_empty(self):
         assert _deduplicate_social([]) == []
 
-    def test_spatial_keeps_latest(self):
+    def test_spatial_keeps_earliest_established(self):
+        # Lifecycle contract: when two duplicates differ in
+        # ``established_at_fabula``, the earliest tick wins so the
+        # spatial relation's lifespan is not silently truncated.
         e1 = SpatialEdge(source_id="LOC_A", target_id="LOC_B", established_at_fabula=0)
         e2 = SpatialEdge(source_id="LOC_A", target_id="LOC_B", established_at_fabula=100)
         result = _deduplicate_spatial([e1, e2])
         assert len(result) == 1
-        assert result[0].established_at_fabula == 100
+        assert result[0].established_at_fabula == 0
 
     def test_spatial_empty(self):
         assert _deduplicate_spatial([]) == []
