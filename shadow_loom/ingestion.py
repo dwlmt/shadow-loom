@@ -2988,9 +2988,7 @@ def _run_research_step(
 
     from shadow_loom.research import (
         ResearchSnippet,
-        WorldFact,
         build_provider,
-        cache_key,
     )
 
     try:
@@ -3071,7 +3069,6 @@ async def _run_research_step_async(
 
     from shadow_loom.research import (
         ResearchSnippet,
-        WorldFact,
         build_provider,
     )
 
@@ -3358,18 +3355,50 @@ def _deduplicate_spatial(edges: List[SpatialEdge]) -> List[SpatialEdge]:
     return list(best.values())
 
 
-def _deduplicate_causal(edges: List[CausalEdge]) -> List[CausalEdge]:
+def _deduplicate_causal(
+    edges: List[CausalEdge],
+    *,
+    fabula_tolerance: int = 1,
+) -> List[CausalEdge]:
     """Deduplicate causal edges by (source, target, causality_type, fabula_time).
 
     Keeps the edge with the highest ``causal_force`` when duplicates
     are found (the stronger signal wins).
+
+    A second pass collapses neighbouring duplicates whose
+    ``fabula_time`` differs by at most ``fabula_tolerance`` ticks
+    (default ``1``). This absorbs LLM tick-jitter on re-extraction
+    of the same causal arc, which previously survived as separate
+    edges because the exact ``fabula_time`` differed by a single
+    tick. Set ``fabula_tolerance=0`` to restore strict dedup.
     """
     best: dict[tuple, CausalEdge] = {}
     for e in edges:
         key = (e.source_id, e.target_id, e.causality_type, e.fabula_time)
         if key not in best or e.causal_force > best[key].causal_force:
             best[key] = e
-    return list(best.values())
+    deduped = list(best.values())
+    if fabula_tolerance <= 0:
+        return deduped
+
+    # Second pass: collapse neighbouring (source, target, type) edges
+    # whose fabula_time is within tolerance, keeping the higher force.
+    deduped.sort(key=lambda e: (e.source_id, e.target_id, e.causality_type, e.fabula_time))
+    collapsed: List[CausalEdge] = []
+    for e in deduped:
+        if collapsed:
+            prev = collapsed[-1]
+            if (
+                prev.source_id == e.source_id
+                and prev.target_id == e.target_id
+                and prev.causality_type == e.causality_type
+                and abs(e.fabula_time - prev.fabula_time) <= fabula_tolerance
+            ):
+                if e.causal_force > prev.causal_force:
+                    collapsed[-1] = e
+                continue
+        collapsed.append(e)
+    return collapsed
 
 
 def _deduplicate_channels_with_map(
@@ -3632,17 +3661,32 @@ def _auto_repair(ws: WorldStateV1) -> Tuple[WorldStateV1, List[str]]:
 
     # --- Fix broken event actor_ids / target_ids references ---
     object_ids = set(ws.objects.keys())
+    world_trait_ids = set(ws.world_traits.keys())
+    event_id_set = {e.id for e in deduped_events}
     clean_events: List[EventNode] = []
     for evt in deduped_events:
         updates: dict = {}
-        bad_actors = [a for a in evt.actor_ids if a not in entity_ids]
+        # Match the validator's per-event-type allowlist (see
+        # _programmatic_validation): utterance actors may include OBJ_
+        # (a dossier, a telescreen broadcast etc.), and utterance
+        # targets additionally include EVT_/WORLD_/LOC_. Stripping all
+        # non-entity actors here would silently destroy valid
+        # speech-act provenance.
+        is_utterance = evt.event_type == "utterance"
+        actor_allowed = (entity_ids | object_ids) if is_utterance else entity_ids
+        target_allowed = (
+            entity_ids | object_ids | event_id_set | world_trait_ids | location_ids
+            if is_utterance
+            else entity_ids | object_ids
+        )
+        bad_actors = [a for a in evt.actor_ids if a not in actor_allowed]
         if bad_actors:
             repairs.append(f"Removed invalid actor_ids {bad_actors} from event '{evt.id}'.")
-            updates["actor_ids"] = [a for a in evt.actor_ids if a in entity_ids]
-        bad_targets = [t for t in evt.target_ids if t not in (entity_ids | object_ids)]
+            updates["actor_ids"] = [a for a in evt.actor_ids if a in actor_allowed]
+        bad_targets = [t for t in evt.target_ids if t not in target_allowed]
         if bad_targets:
             repairs.append(f"Removed invalid target_ids {bad_targets} from event '{evt.id}'.")
-            updates["target_ids"] = [t for t in evt.target_ids if t in (entity_ids | object_ids)]
+            updates["target_ids"] = [t for t in evt.target_ids if t in target_allowed]
         clean_events.append(evt.model_copy(update=updates) if updates else evt)
 
     # --- Fix broken entity location_ids ---

@@ -8,13 +8,11 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from nicegui import app, ui
+from nicegui import ui
 
 from shadow_loom_ui import db
 from shadow_loom_ui.components.dialogs import build_ingest_dialog
 from shadow_loom_ui.theme import (
-    CARD_CLS,
-    CARD_TIGHT_CLS,
     PAGE_TITLE_CLS,
     SECTION_TITLE_CLS,
     feather,
@@ -117,7 +115,12 @@ def _render_project_cards(state: AppState, container: ui.row) -> None:
     """Populate the project card gallery."""
     container.clear()
     user_id = state.user_id
-    projects = db.list_projects(user_id=user_id) if user_id else db.list_projects()
+    # Anonymous (logged-out) callers must not enumerate the global
+    # project table: ``db.list_projects()`` with no user_id returns
+    # every non-example project, including private ones owned by
+    # other users. Example projects are surfaced separately via
+    # ``list_example_projects`` and copied on selection.
+    projects = db.list_projects(user_id=user_id) if user_id else []
 
     if not projects:
         with container:

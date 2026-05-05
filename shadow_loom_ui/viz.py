@@ -21,7 +21,6 @@ from shadow_loom_ui.theme import CHART_COLORS, chart_theme
 from shadow_loom_ui.viz_helpers import (
     CATEGORIES,
     EDGE_COLORS,
-    NODE_COLORS,
     audit_passrate_data,
     entity_state_timeline_data,
     entity_to_radar_compare_data,
@@ -29,12 +28,10 @@ from shadow_loom_ui.viz_helpers import (
     explain_node_causes,
     explain_node_effects,
     mutations_to_propagation_graph,
-    mutations_to_propagation_rows,
     mutations_to_waterfall_data,
     version_tree_to_echart_data,
     ws_sankey_for_aspect,
     ws_to_calendar_graph_data,
-    ws_to_calendar_graph_rows,
     ws_to_causal_cartesian_data,
     ws_to_causal_force_data,
     ws_to_chord_data,
@@ -47,7 +44,6 @@ from shadow_loom_ui.viz_helpers import (
     ws_to_heatmap_data,
     ws_to_parallel_data,
     ws_to_polar_event_data,
-    ws_to_sankey_data,
     ws_to_social_graph_data,
     ws_to_spatial_graph_data,
     ws_to_sunburst_data,
@@ -2760,7 +2756,280 @@ def render_propagation_waterfall(
     }).classes("w-full").style(f"height:{height}")
 
 
-# ── World sunburst ────────────────────────────────────────────────
+# ── Composition charts ────────────────────────────────────────────
+# Small, focused diagrams that replace the old sunburst+treemap pair.
+# Each answers ONE composition question rather than trying to show
+# the whole hierarchy at once (which produced unreadable rims and
+# text overlaps).
+
+def render_population_summary(
+    ws: WorldStateV1,
+    *,
+    height: str = "120px",
+) -> ui.element:
+    """Compact tile-row of headline counts (entities / locations / events / …)."""
+    alive = sum(1 for e in ws.entities.values() if e.status == "healthy")
+    injured = sum(1 for e in ws.entities.values() if e.status in ("injured", "ill", "unconscious"))
+    dead = sum(1 for e in ws.entities.values() if e.status == "dead")
+    utterances = sum(1 for ev in ws.events if ev.event_type == "utterance")
+    tiles = [
+        ("Entities", len(ws.entities), f"{alive} alive · {injured} hurt · {dead} dead", "person", "#3b82f6"),
+        ("Locations", len(ws.locations), "spatial nodes", "place", "#10b981"),
+        ("Objects", len(ws.objects), "narrative props", "inventory_2", "#a855f7"),
+        ("World traits", len(ws.world_traits), "global forces", "public", "#f59e0b"),
+        ("Events", len(ws.events), f"{utterances} utterances", "bolt", "#ef4444"),
+        ("Causal", len(ws.causal_topology), "edges", "trending_up", "#0ea5e9"),
+        ("Spatial", len(ws.spatial_topology), "edges", "map", "#22c55e"),
+        ("Social", len(ws.social_topology), "edges", "people", "#ec4899"),
+        ("Channels", len(ws.channels), "comm. capabilities", "mail", "#8b5cf6"),
+    ]
+    container = ui.row().classes("w-full gap-2 flex-wrap").style(f"min-height:{height}")
+    with container:
+        for label, value, sub, icon, color in tiles:
+            with ui.card().classes(
+                "p-3 gap-1 flex-grow bg-white border border-slate-200 rounded-xl shadow-sm"
+            ).style("min-width:140px;"):
+                with ui.row().classes("items-center gap-2"):
+                    ui.icon(icon).style(f"color:{color};font-size:20px;")
+                    ui.label(str(value)).classes(
+                        "text-2xl font-semibold text-slate-800"
+                    )
+                ui.label(label).classes("text-xs uppercase tracking-wide text-slate-500")
+                ui.label(sub).classes("text-xs text-slate-400")
+    return container
+
+
+def render_status_donut(
+    ws: WorldStateV1,
+    *,
+    on_click: OnClick = None,
+    height: str = "260px",
+) -> ui.echart:
+    """Donut of entity status distribution (healthy / injured / dead / …)."""
+    counts: dict[str, int] = {}
+    for e in ws.entities.values():
+        counts[e.status] = counts.get(e.status, 0) + 1
+    if not counts:
+        return ui.label("No entities to summarise.").classes("text-grey q-pa-md")
+    palette = {
+        "healthy": "#10b981",
+        "injured": "#f59e0b",
+        "ill": "#eab308",
+        "unconscious": "#94a3b8",
+        "dead": "#ef4444",
+    }
+    data = [
+        {"name": k, "value": v, "itemStyle": {"color": palette.get(k, "#64748b")}}
+        for k, v in counts.items()
+    ]
+    chart = ui.echart({
+        "backgroundColor": _CHART_BG,
+        "tooltip": {**_CHART_TOOLTIP, "trigger": "item",
+                    "formatter": "{b}: {c} ({d}%)"},
+        "legend": {"bottom": 0, "textStyle": {"color": _CHART_TEXT, "fontSize": 10}},
+        "series": [{
+            "type": "pie",
+            "radius": ["48%", "78%"],
+            "avoidLabelOverlap": True,
+            "itemStyle": {"borderColor": _CHART_BG, "borderWidth": 2},
+            "label": {"show": True, "color": _CHART_TEXT, "fontSize": 10,
+                       "formatter": "{b}\n{c}"},
+            "labelLine": {"show": True, "length": 6, "length2": 6},
+            "data": data,
+        }],
+    }).classes("w-full").style(f"height:{height}")
+    if on_click:
+        chart.on("click", on_click)
+    return chart
+
+
+def render_location_occupancy_bar(
+    ws: WorldStateV1,
+    *,
+    on_click: OnClick = None,
+    height: str = "320px",
+    top_n: int = 12,
+) -> ui.echart:
+    """Horizontal stacked bar: per location, count of entities + objects."""
+    rows: list[tuple[str, str, int, int]] = []
+    for lid, loc in ws.locations.items():
+        n_ent = sum(1 for e in ws.entities.values() if e.location_id == lid)
+        n_obj = sum(1 for o in ws.objects.values() if o.location_id == lid)
+        if n_ent + n_obj == 0:
+            continue
+        rows.append((lid, loc.name, n_ent, n_obj))
+    if not rows:
+        return ui.label("No occupied locations.").classes("text-grey q-pa-md")
+    rows.sort(key=lambda r: -(r[2] + r[3]))
+    rows = rows[:top_n]
+    rows.reverse()  # ECharts horizontal: largest at top
+    names = [r[1] for r in rows]
+    ents = [r[2] for r in rows]
+    objs = [r[3] for r in rows]
+    chart = ui.echart({
+        "backgroundColor": _CHART_BG,
+        "tooltip": {**_CHART_TOOLTIP, "trigger": "axis",
+                    "axisPointer": {"type": "shadow"}},
+        "legend": {"top": 0, "right": 10, "textStyle": {"color": _CHART_TEXT, "fontSize": 10}},
+        "grid": {"left": 100, "right": 30, "top": 30, "bottom": 24},
+        "xAxis": {"type": "value", "axisLabel": {"color": _CHART_TEXT, "fontSize": 10}},
+        "yAxis": {
+            "type": "category", "data": names,
+            "axisLabel": {"color": _CHART_TEXT, "fontSize": 10},
+        },
+        "series": [
+            {"name": "Entities", "type": "bar", "stack": "tot",
+             "itemStyle": {"color": "#3b82f6"},
+             "label": {"show": True, "color": "#fff", "fontSize": 10},
+             "data": ents},
+            {"name": "Objects", "type": "bar", "stack": "tot",
+             "itemStyle": {"color": "#a855f7"},
+             "label": {"show": True, "color": "#fff", "fontSize": 10},
+             "data": objs},
+        ],
+    }).classes("w-full").style(f"height:{height}")
+    if on_click:
+        chart.on("click", on_click)
+    return chart
+
+
+def render_world_trait_bars(
+    ws: WorldStateV1,
+    *,
+    on_click: OnClick = None,
+    height: str = "320px",
+) -> ui.echart:
+    """Grouped horizontal bars per global trait: magnitude vs inertia."""
+    if not ws.world_traits:
+        return ui.label("No world traits.").classes("text-grey q-pa-md")
+    traits = sorted(
+        ws.world_traits.values(),
+        key=lambda wt: -wt.magnitude.value,
+    )
+    names = [wt.name for wt in traits][::-1]
+    mags = [round(wt.magnitude.value, 3) for wt in traits][::-1]
+    inertias = [round(wt.magnitude.inertia, 3) for wt in traits][::-1]
+    chart = ui.echart({
+        "backgroundColor": _CHART_BG,
+        "tooltip": {**_CHART_TOOLTIP, "trigger": "axis",
+                    "axisPointer": {"type": "shadow"}},
+        "legend": {"top": 0, "right": 10,
+                    "textStyle": {"color": _CHART_TEXT, "fontSize": 10}},
+        "grid": {"left": 130, "right": 30, "top": 30, "bottom": 24},
+        "xAxis": {"type": "value", "max": 1.0,
+                   "axisLabel": {"color": _CHART_TEXT, "fontSize": 10}},
+        "yAxis": {"type": "category", "data": names,
+                   "axisLabel": {"color": _CHART_TEXT, "fontSize": 10}},
+        "series": [
+            {"name": "Magnitude", "type": "bar",
+             "itemStyle": {"color": "#f59e0b"},
+             "label": {"show": True, "position": "right",
+                        "color": _CHART_TEXT, "fontSize": 9},
+             "data": mags},
+            {"name": "Inertia", "type": "bar",
+             "itemStyle": {"color": "#64748b"},
+             "label": {"show": True, "position": "right",
+                        "color": _CHART_TEXT, "fontSize": 9},
+             "data": inertias},
+        ],
+    }).classes("w-full").style(f"height:{height}")
+    if on_click:
+        chart.on("click", on_click)
+    return chart
+
+
+def render_event_type_bar(
+    ws: WorldStateV1,
+    *,
+    on_click: OnClick = None,
+    height: str = "220px",
+) -> ui.echart:
+    """Vertical bar of event-type counts (choice / outcome / revelation / utterance)."""
+    counts: dict[str, int] = {}
+    for ev in ws.events:
+        counts[ev.event_type] = counts.get(ev.event_type, 0) + 1
+    if not counts:
+        return ui.label("No events.").classes("text-grey q-pa-md")
+    palette = {
+        "choice": "#3b82f6",
+        "outcome": "#10b981",
+        "revelation": "#a855f7",
+        "utterance": "#ec4899",
+    }
+    types = sorted(counts.keys(), key=lambda t: -counts[t])
+    data = [
+        {"value": counts[t],
+          "itemStyle": {"color": palette.get(t, "#64748b")}}
+        for t in types
+    ]
+    chart = ui.echart({
+        "backgroundColor": _CHART_BG,
+        "tooltip": {**_CHART_TOOLTIP, "trigger": "axis",
+                    "axisPointer": {"type": "shadow"}},
+        "grid": {"left": 40, "right": 20, "top": 24, "bottom": 30},
+        "xAxis": {"type": "category", "data": types,
+                   "axisLabel": {"color": _CHART_TEXT, "fontSize": 10}},
+        "yAxis": {"type": "value",
+                   "axisLabel": {"color": _CHART_TEXT, "fontSize": 10}},
+        "series": [{
+            "type": "bar", "data": data,
+            "label": {"show": True, "position": "top",
+                       "color": _CHART_TEXT, "fontSize": 10},
+        }],
+    }).classes("w-full").style(f"height:{height}")
+    if on_click:
+        chart.on("click", on_click)
+    return chart
+
+
+def render_object_ownership_bar(
+    ws: WorldStateV1,
+    *,
+    on_click: OnClick = None,
+    height: str = "260px",
+    top_n: int = 10,
+) -> ui.echart:
+    """Horizontal bar of objects per owner; unowned bucketed as 'Unowned'."""
+    if not ws.objects:
+        return ui.label("No objects.").classes("text-grey q-pa-md")
+    counts: dict[str, int] = {}
+    for obj in ws.objects.values():
+        if obj.owner_id and obj.owner_id in ws.entities:
+            key = ws.entities[obj.owner_id].name
+        elif obj.owner_id:
+            key = obj.owner_id
+        else:
+            key = "Unowned"
+        counts[key] = counts.get(key, 0) + 1
+    items = sorted(counts.items(), key=lambda kv: -kv[1])[:top_n][::-1]
+    names = [k for k, _ in items]
+    values = [v for _, v in items]
+    chart = ui.echart({
+        "backgroundColor": _CHART_BG,
+        "tooltip": {**_CHART_TOOLTIP, "trigger": "axis",
+                    "axisPointer": {"type": "shadow"}},
+        "grid": {"left": 110, "right": 30, "top": 20, "bottom": 24},
+        "xAxis": {"type": "value",
+                   "axisLabel": {"color": _CHART_TEXT, "fontSize": 10}},
+        "yAxis": {"type": "category", "data": names,
+                   "axisLabel": {"color": _CHART_TEXT, "fontSize": 10}},
+        "series": [{
+            "type": "bar",
+            "itemStyle": {"color": "#a855f7"},
+            "label": {"show": True, "position": "right",
+                       "color": _CHART_TEXT, "fontSize": 10},
+            "data": values,
+        }],
+    }).classes("w-full").style(f"height:{height}")
+    if on_click:
+        chart.on("click", on_click)
+    return chart
+
+
+# ── Legacy world sunburst ────────────────────────────────────────
+# Retained for callers (e.g. example screenshots, tests) that still
+# import it directly. The Composition view in the World tab now
+# prefers the focused render_* charts above.
 
 def render_sunburst(
     ws: WorldStateV1,

@@ -24,7 +24,7 @@ Explorer's inspector and any other subscribers stay in sync.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from nicegui import ui
 

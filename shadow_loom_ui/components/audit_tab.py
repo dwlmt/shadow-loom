@@ -342,7 +342,7 @@ def _loss_tone(loss: float | None) -> tuple[str, str, str]:
     where the loss is genuinely measuring distance from the target.
     """
     if loss is None:
-        return ("grey", "—", "help")
+        return ("grey", "not applicable", "info")
     if loss <= 0.05:
         return ("positive", "strong", "check_circle")
     if loss <= 0.15:
@@ -466,7 +466,11 @@ def _render_hero_verdict(causal, affective) -> None:
                     "- **needs work** 0.05\u20130.20 \u2014 the right "
                     "shape but the intensity is off.\n"
                     "- **weak** \u2265 0.20 \u2014 the prose is reaching "
-                    "for a different emotional beat."
+                    "for a different emotional beat.\n\n"
+                    "**Not applicable** when the brief has no measurable "
+                    "target (e.g. a full-story Quality Report). Use the "
+                    "structural narrative effects in the Affective "
+                    "findings card instead."
                 ),
             )
 
@@ -835,12 +839,24 @@ def _affective_has_charts(affective) -> bool:
 
 
 def _render_affective_text(affective) -> None:
-    """Render the textual half of the Affective Metrics card (loss
-    badge + KL surprise). The trajectory gauges live under charts."""
+    """Render the textual half of the Affective Metrics card.
+
+    Surfaces:
+      * the *target-effect loss* badge (when the brief had a
+        measurable target — directive / counterfactual / intervention
+        / typed-emotion observation);
+      * the KL surprise scalar (when the target was ``surprise``);
+      * a per-effect summary of the four structural narrative
+        scores (mystery / dramatic irony / suspense / surprise) when
+        any are populated. Full-story evaluations (target ==
+        "observation") have no defined target loss but always
+        compute the structural quartet, so this card stays useful.
+    """
     loss = getattr(affective, "affective_loss_mse", None)
     kl = getattr(affective, "kl_divergence_prediction_error", None)
+    trajectory = getattr(affective, "emotional_trajectory_scores", None) or {}
 
-    if loss is None and kl is None:
+    if loss is None and kl is None and not trajectory:
         return
 
     with ui.card().classes(
@@ -868,11 +884,51 @@ def _render_affective_text(affective) -> None:
                     f"{loss:.3f} — {loss_word}",
                     color=loss_color,
                 ).props("dense")
+        else:
+            # Quality-report path: the brief had no measurable
+            # target_effect (e.g. ``observation``), so a single "fit"
+            # number isn't defined. Surface this honestly instead of
+            # leaving the card silent or showing a misleading badge.
+            with ui.row().classes("items-center gap-2"):
+                ui.icon("info", color="grey")
+                ui.label(
+                    "Target-effect fit: not applicable (full-story "
+                    "evaluation has no single target emotion)."
+                ).classes("text-xs text-slate-500 italic")
 
         if kl is not None:
             ui.label(
                 f"KL Divergence (surprise): {kl:.3f}"
             ).classes("text-xs text-slate-500 mt-1")
+
+        # Per-effect structural scores — present in every
+        # AffectiveStateFeedback the engine produces, including the
+        # full-story evaluation path. Render as a compact table so the
+        # quality report has *something* concrete in this card.
+        if trajectory:
+            ui.label(
+                "Structural narrative effects (engine scores, 0\u20131):"
+            ).classes("text-xs font-semibold text-slate-600 mt-2")
+            for effect_name in (
+                "mystery", "dramatic_irony", "suspense", "surprise",
+            ):
+                val = trajectory.get(effect_name)
+                if val is None:
+                    continue
+                if val >= 0.66:
+                    tone = "positive"
+                elif val >= 0.33:
+                    tone = "primary"
+                elif val > 0.0:
+                    tone = "warning"
+                else:
+                    tone = "grey"
+                pretty = effect_name.replace("_", " ").title()
+                with ui.row().classes("items-center gap-2"):
+                    ui.label(pretty).classes(
+                        "text-xs text-slate-600 w-32"
+                    )
+                    ui.badge(f"{val:.2f}", color=tone).props("dense")
 
 
 def _render_affective_charts(affective) -> None:
@@ -882,14 +938,17 @@ def _render_affective_charts(affective) -> None:
     ) or {}
     if not trajectory:
         return
-    ui.label("Emotional trajectory").classes(
+    ui.label("Structural narrative effects").classes(
         "text-xs font-semibold text-slate-600 mt-2"
     )
     with_expand(
         lambda h, s=dict(trajectory): render_emotional_gauges(
             s, height=h
         ),
-        title="Emotional trajectory (achieved intensity)",
+        title=(
+            "Structural narrative effects "
+            "(mystery / dramatic irony / suspense / surprise, 0\u20131)"
+        ),
         height="150px",
     )
 

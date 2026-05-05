@@ -14,9 +14,7 @@ Takes a free-form user request and an optional ``WorldStateV1``, then:
 
 from __future__ import annotations
 
-import json
 import logging
-import os
 import re
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Literal, Optional, Tuple
@@ -1278,7 +1276,12 @@ def _validate_parsed_query(
                 message="Directive query requires a target_effect.",
             ))
         if parsed.target_vector_id:
-            _check_id(parsed.target_vector_id, "target_vector_id")
+            # ``target_vector_id`` is built dynamically as a dotted path
+            # like 'ENT_X.traits.guilt' (see _items_to_dotted_dict in
+            # the directive path); validate the base ID only, not the
+            # full dotted string.
+            tv_base = parsed.target_vector_id.split(".", 1)[0]
+            _check_id(tv_base, "target_vector_id")
         if parsed.intensity is not None and not (0.0 <= parsed.intensity <= 1.0):
             errors.append(ValidationError(
                 field="intensity",

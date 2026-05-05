@@ -23,11 +23,11 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from nicegui import app, ui
+from nicegui import ui
 
 from shadow_loom.models import WorldStateV1
 from shadow_loom_ui import db
-from shadow_loom_ui.state import AppState, StateEvent
+from shadow_loom_ui.state import AppState
 
 if TYPE_CHECKING:
     pass

@@ -33,6 +33,29 @@ logger = logging.getLogger(__name__)
 _token_user_cache: dict[str, dict] = {}
 
 
+def invalidate_token_cache(*, key_id: int | None = None, user_id: int | None = None) -> int:
+    """Drop cached token entries matching *key_id* or *user_id*.
+
+    Without this, ``revoke_api_key`` only marks the DB row inactive but
+    in-process bearer-token validation keeps returning the cached user,
+    so a revoked token remains usable for the lifetime of the server.
+    Pass no arguments to clear the entire cache. Returns the number of
+    entries removed.
+    """
+    if key_id is None and user_id is None:
+        n = len(_token_user_cache)
+        _token_user_cache.clear()
+        return n
+    to_drop = [
+        tok for tok, info in _token_user_cache.items()
+        if (key_id is not None and info.get("key_id") == key_id)
+        or (user_id is not None and info.get("user_id") == user_id)
+    ]
+    for tok in to_drop:
+        _token_user_cache.pop(tok, None)
+    return len(to_drop)
+
+
 def _validate_bearer_token(token: str) -> bool:
     """Validate an API key against the DB and cache the resolved user."""
     key_row = validate_api_key(token)

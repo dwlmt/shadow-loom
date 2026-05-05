@@ -591,6 +591,8 @@ def extract_topology_from_prose(
     config: "ExtractionConfig | None" = None,
     *,
     spawns: Optional[Dict[str, Dict[str, Any]]] = None,
+    fabula_time_base: Optional[int] = None,
+    fabula_time_spacing: Optional[int] = None,
 ) -> "ChunkTopology":
     """Extract graph topology from generated prose using the existing physics + social agents.
 
@@ -605,6 +607,14 @@ def extract_topology_from_prose(
     spawn IDs instead of inventing duplicates, and the resulting
     :class:`ChunkTopology` carries them on its ``new_*`` fields so
     ``VersionedWorldModel.merge`` records the genesis in the changeset.
+
+    ``fabula_time_base`` and ``fabula_time_spacing`` are passed to the
+    physics agent so the new events land at the correct timeline
+    position relative to the existing world. When ``fabula_time_base``
+    is ``None`` it auto-resolves to ``max(world_state.events.fabula_time)
+    + spacing`` so re-extractions of *continuation* prose append rather
+    than clobber existing chronology. Pass an explicit value to insert
+    a manual edit at a specific anchor in the timeline.
 
     Returns a :class:`ChunkTopology` containing new events, edges, and
     entity state updates found in the prose.
@@ -642,6 +652,39 @@ def extract_topology_from_prose(
 
     empty_scaffold = SocraticScaffold(qa_pairs=[])
 
+    # ── Resolve fabula timing context for the physics agent ──────────
+    # Without this the LLM has no idea where in chronological time the
+    # new prose sits and tends to assign fabula_times starting at 0,
+    # which collides with existing events.
+    spacing = (
+        fabula_time_spacing
+        if fabula_time_spacing is not None
+        else config.fabula_time_spacing
+    )
+    if fabula_time_base is None:
+        existing_max = max(
+            (e.fabula_time for e in world_state.events),
+            default=-spacing,
+        )
+        resolved_base = existing_max + spacing
+    else:
+        resolved_base = fabula_time_base
+    prev_max_fabula = max(
+        (e.fabula_time for e in world_state.events), default=0,
+    )
+    physics_msg = (
+        f"Re-extraction of generated/edited prose "
+        f"(fabula_time_base: {resolved_base}, "
+        f"fabula_time_spacing: {spacing}, "
+        f"max fabula_time so far: {prev_max_fabula}).\n\n"
+        f"Use ABSOLUTE story-world chronology for fabula_time. Place "
+        f"new chronological beats at or after fabula_time_base; "
+        f"flashbacks may use SMALLER values, flash-forwards LARGER. "
+        f"Existing event ids in the world model must keep their "
+        f"original fabula_time if you reference them.\n\n"
+        f"{prose}"
+    )
+
     # --- Physics extraction (events + causal + spatial + entity_updates) ---
     physics_agent = _build_physics_agent(config)
     physics_deps = _PhysicsDeps(
@@ -650,7 +693,7 @@ def extract_topology_from_prose(
         previous_event_ids=[evt.id for evt in world_state.events],
     )
     physics_result: PhysicsExtraction = physics_agent.run_sync(
-        prose, deps=physics_deps,
+        physics_msg, deps=physics_deps,
     ).output
     log_agent_output(logger, "PhysicsExtraction", physics_result)
 
@@ -752,6 +795,123 @@ class WorldSnapshot(BaseModel):
     """A full deep-copy of a WorldStateV1 at a specific version."""
     version: int = Field(description="Version number this snapshot corresponds to.")
     world_state: WorldStateV1
+
+
+# ==========================================
+# Genesis-node attribute backfill helpers
+# ==========================================
+# When a later chunk re-extracts a node that already exists in the
+# merged world, we keep the original identity (id, location_id,
+# status, owner_id, magnitude) but fill in any *missing* attributes
+# from the incoming record. These helpers are intentionally
+# additive-only — never overwrite a populated field — so the
+# canonical first observation wins on every conflict.
+
+def _prefer_longer(existing: str, incoming: str) -> str:
+    """Return the longer non-empty string, preferring ``existing`` on ties."""
+    if not incoming:
+        return existing
+    if not existing:
+        return incoming
+    return incoming if len(incoming) > len(existing) else existing
+
+
+def _backfill_entity(existing, incoming):
+    """Non-destructive merge of two ``Entity`` records sharing an id."""
+    update: Dict[str, Any] = {}
+    new_name = _prefer_longer(getattr(existing, "name", ""), getattr(incoming, "name", ""))
+    if new_name != existing.name:
+        update["name"] = new_name
+    # Traits: existing wins on key conflict; add any new keys.
+    new_traits = dict(existing.traits)
+    for k, v in incoming.traits.items():
+        if k not in new_traits:
+            new_traits[k] = v
+    if len(new_traits) != len(existing.traits):
+        update["traits"] = new_traits
+    # Beliefs: dedup by target_id, existing wins on conflict.
+    existing_belief_targets = {b.target_id for b in existing.beliefs}
+    new_beliefs = list(existing.beliefs) + [
+        b for b in incoming.beliefs if b.target_id not in existing_belief_targets
+    ]
+    if len(new_beliefs) != len(existing.beliefs):
+        update["beliefs"] = new_beliefs
+    # Constants: set-union, preserve order.
+    existing_constants = list(existing.constants)
+    seen = set(existing_constants)
+    for c in incoming.constants:
+        if c not in seen:
+            existing_constants.append(c)
+            seen.add(c)
+    if len(existing_constants) != len(existing.constants):
+        update["constants"] = existing_constants
+    return existing.model_copy(update=update) if update else existing
+
+
+def _backfill_object(existing, incoming):
+    """Non-destructive merge of two ``NarrativeObject`` records sharing an id."""
+    update: Dict[str, Any] = {}
+    new_name = _prefer_longer(existing.name, incoming.name)
+    if new_name != existing.name:
+        update["name"] = new_name
+    # Properties: existing wins on key conflict.
+    new_props = dict(existing.properties)
+    for k, v in incoming.properties.items():
+        if k not in new_props:
+            new_props[k] = v
+    if len(new_props) != len(existing.properties):
+        update["properties"] = new_props
+    # Affordances: dedup by (action, target_type), preserve order.
+    seen_aff = {(a.action, a.target_type) for a in existing.affordances}
+    new_affordances = list(existing.affordances)
+    for a in incoming.affordances:
+        key = (a.action, a.target_type)
+        if key not in seen_aff:
+            new_affordances.append(a)
+            seen_aff.add(key)
+    if len(new_affordances) != len(existing.affordances):
+        update["affordances"] = new_affordances
+    return existing.model_copy(update=update) if update else existing
+
+
+def _backfill_location(existing, incoming):
+    """Non-destructive merge of two ``Location`` records sharing an id."""
+    update: Dict[str, Any] = {}
+    new_name = _prefer_longer(existing.name, incoming.name)
+    if new_name != existing.name:
+        update["name"] = new_name
+    new_desc = _prefer_longer(existing.description, incoming.description)
+    if new_desc != existing.description:
+        update["description"] = new_desc
+    # Ambient state: existing wins on key conflict.
+    new_ambient = dict(existing.ambient_state)
+    for k, v in incoming.ambient_state.items():
+        if k not in new_ambient:
+            new_ambient[k] = v
+    if len(new_ambient) != len(existing.ambient_state):
+        update["ambient_state"] = new_ambient
+    return existing.model_copy(update=update) if update else existing
+
+
+def _backfill_world_trait(existing, incoming):
+    """Non-destructive merge of two ``GlobalTrait`` records sharing an id."""
+    update: Dict[str, Any] = {}
+    new_name = _prefer_longer(existing.name, incoming.name)
+    if new_name != existing.name:
+        update["name"] = new_name
+    new_desc = _prefer_longer(existing.description, incoming.description)
+    if new_desc != existing.description:
+        update["description"] = new_desc
+    # Affected domains: set-union, preserve order.
+    existing_domains = list(existing.affected_domains)
+    seen_dom = set(existing_domains)
+    for d in incoming.affected_domains:
+        if d not in seen_dom:
+            existing_domains.append(d)
+            seen_dom.add(d)
+    if len(existing_domains) != len(existing.affected_domains):
+        update["affected_domains"] = existing_domains
+    return existing.model_copy(update=update) if update else existing
 
 
 class VersionedWorldModel(BaseModel):
@@ -907,8 +1067,6 @@ class VersionedWorldModel(BaseModel):
         only set on the first version of a shadow fork).
         """
         from shadow_loom.ingestion import (
-            ChunkTopology,
-            EntityUpdate,
             _apply_channel_forwarding,
             _deduplicate_channels_with_map,
             deduplicate_causal,
@@ -943,29 +1101,53 @@ class VersionedWorldModel(BaseModel):
 
         # --- Genesis-promoted nodes (entities / objects / locations /
         # world_traits) — written first so subsequent edge / event /
-        # entity_update merges can reference them. Existing IDs are
-        # left untouched; only brand-new ones are added.
+        # entity_update merges can reference them. Existing IDs keep
+        # their identity; non-destructive attribute backfill fills in
+        # missing fields (longer description, additional traits /
+        # affordances / domains, set-union of constants) from the
+        # incoming record so re-extractions enrich rather than
+        # silently drop data.
         for eid, ent in topology.new_entities.items():
-            if eid in merged.entities:
+            existing = merged.entities.get(eid)
+            if existing is not None:
+                merged.entities[eid] = _backfill_entity(existing, ent)
                 logger.debug(
-                    "[VersionedWorldModel·merge] Spawn entity %s already exists — kept existing.",
+                    "[VersionedWorldModel·merge] Spawn entity %s already exists — backfilled.",
                     eid,
                 )
                 continue
             merged.entities[eid] = ent
             changeset.entities_added += 1
         for oid, obj in topology.new_objects.items():
-            if oid in merged.objects:
+            existing_obj = merged.objects.get(oid)
+            if existing_obj is not None:
+                merged.objects[oid] = _backfill_object(existing_obj, obj)
+                logger.debug(
+                    "[VersionedWorldModel·merge] Spawn object %s already exists — backfilled.",
+                    oid,
+                )
                 continue
             merged.objects[oid] = obj
             changeset.objects_added += 1
         for lid, loc in topology.new_locations.items():
-            if lid in merged.locations:
+            existing_loc = merged.locations.get(lid)
+            if existing_loc is not None:
+                merged.locations[lid] = _backfill_location(existing_loc, loc)
+                logger.debug(
+                    "[VersionedWorldModel·merge] Spawn location %s already exists — backfilled.",
+                    lid,
+                )
                 continue
             merged.locations[lid] = loc
             changeset.locations_added += 1
         for wid, wt in topology.new_world_traits.items():
-            if wid in merged.world_traits:
+            existing_wt = merged.world_traits.get(wid)
+            if existing_wt is not None:
+                merged.world_traits[wid] = _backfill_world_trait(existing_wt, wt)
+                logger.debug(
+                    "[VersionedWorldModel·merge] World trait %s already exists — backfilled.",
+                    wid,
+                )
                 continue
             merged.world_traits[wid] = wt
             changeset.world_traits_added += 1
@@ -996,6 +1178,7 @@ class VersionedWorldModel(BaseModel):
         pre_spatial = len(merged.spatial_topology)
         merged.spatial_topology.extend(topology.spatial_topology)
         merged.spatial_topology = deduplicate_spatial(merged.spatial_topology)
+        merged.spatial_topology.sort(key=lambda s: s.established_at_fabula)
         changeset.spatial_edges_added = len(merged.spatial_topology) - pre_spatial
 
         # --- Channels (with forwarding map for via_channel_id rewrites) ---
@@ -1021,6 +1204,7 @@ class VersionedWorldModel(BaseModel):
         pre_social = len(merged.social_topology)
         merged.social_topology.extend(topology.social_topology)
         merged.social_topology = deduplicate_social(merged.social_topology)
+        merged.social_topology.sort(key=lambda r: r.last_updated_fabula)
         changeset.social_edges_added = len(merged.social_topology) - pre_social
 
         # --- Entity state updates ---
@@ -1033,6 +1217,7 @@ class VersionedWorldModel(BaseModel):
                 changeset.entity_updates_skipped.append(eu.entity_id)
                 continue
             snap = EntityStateSnapshot(
+                world_id=world_id,
                 fabula_time=eu.fabula_time,
                 triggered_by=eu.triggered_by,
                 traits=eu.trait_updates,

@@ -38,6 +38,7 @@ Run:  python -m shadow_loom_mcp
 
 from __future__ import annotations
 
+import asyncio
 import json
 import functools
 import inspect as _inspect
@@ -57,8 +58,6 @@ from shadow_loom.db import (
     fork_project,
     get_active_version as db_get_active_version,
     get_all_prose,
-    get_cached_research as db_get_cached_research,
-    get_latest_version,
     get_project,
     get_project_activity,
     get_project_settings as db_get_project_settings,
@@ -74,16 +73,13 @@ from shadow_loom.db import (
     promote_branch as db_promote_branch,
     ProjectDeleteError,
     reparent_version as db_reparent_version,
-    save_cached_research as db_save_cached_research,
     save_version,
     search_users,
     set_active_version as db_set_active_version,
     set_project_settings as db_set_project_settings,
     update_project,
-    upsert_world_fact as db_upsert_world_fact,
     VersionMutationError,
 )
-from shadow_loom.extract_graph import VersionedWorldModel
 from shadow_loom.ingestion import ExtractionConfig, run_extraction
 from shadow_loom.models import (
     WorldStateV1,
@@ -91,7 +87,6 @@ from shadow_loom.models import (
     reconstruct_world_trait_at,
 )
 from shadow_loom.narrative_physics import calculate_narrative_physics
-from shadow_loom.pipeline import PipelineConfig, PipelineResult, run_pipeline
 from shadow_loom.projections import (
     filter_world_state_for_pov,
     project_channel,
@@ -99,14 +94,9 @@ from shadow_loom.projections import (
     trace_information_flow,
 )
 from shadow_loom.query_models import (
-    CounterfactualQuery,
     DirectiveQuery,
-    EvaluationQuery,
-    GeneralQuery,
     InterrogationQuery,
-    InterventionQuery,
     ManualEditQuery,
-    ObservationQuery,
 )
 from shadow_loom.query_parsing import QueryParsingConfig, parse_query
 
@@ -1044,6 +1034,17 @@ def promote_branch(
     pid, err = resolve_project(project_id, project_name, ctx)
     if err:
         return {"error": err}
+    # IDOR guard: promote_branch takes a row id but db_promote_branch
+    # writes against the row's own project_id. Without this check a
+    # caller could promote a shadow row from a project they have no
+    # access to into that project's factual mainline.
+    src_row = get_version_by_id(version_row_id)
+    if src_row is None:
+        return {"error": f"Version row {version_row_id} not found."}
+    if src_row.project_id != pid:
+        return {"error": (
+            f"Version row {version_row_id} does not belong to project {pid}."
+        )}
     user_row_id = get_user_id(ctx)
     try:
         promoted = db_promote_branch(
@@ -1716,7 +1717,11 @@ async def narrate(
     # Stage 2–4: Pipeline
     await ctx.report_progress(2, 4, "Running physics simulation...")
 
-    response = run_and_save(
+    # ``run_and_save`` is synchronous and runs an LLM + physics pass
+    # that can take several seconds; offload it so the MCP event loop
+    # stays responsive to other concurrent requests.
+    response = await asyncio.to_thread(
+        run_and_save,
         query=parse_result.query,
         project_id=pid,
         world_state=ws,
@@ -1795,7 +1800,10 @@ async def direct(
 
     await ctx.report_progress(1, 3, f"Assembling {target_effect} directive...")
 
-    response = run_and_save(
+    # Offload synchronous pipeline work so the event loop can keep
+    # serving other requests during the multi-second LLM + physics run.
+    response = await asyncio.to_thread(
+        run_and_save,
         query=query,
         project_id=pid,
         world_state=ws,
@@ -1818,12 +1826,35 @@ def write(
     project_name: Optional[str] = None,
     description: str = "",
     version: Optional[int] = None,
+    insert_after_event_id: Optional[str] = None,
+    insert_at_fabula_time: Optional[int] = None,
+    replace_event_ids: Optional[List[str]] = None,
+    focus_entity_ids: Optional[List[str]] = None,
 ) -> dict:
     """Apply user-written prose as a manual edit to the world model.
 
     The prose is re-extracted into topology and merged into the world
     model. Creates a new version. Use this when you want to write
     narrative directly rather than having the engine generate it.
+
+    Timeline anchoring (optional — choose at most one of the first two):
+
+    - ``insert_at_fabula_time``: explicit fabula_time anchor. New events
+      extracted from ``prose`` are placed at this time and onwards.
+      Use for backfilling history or inserting between known beats.
+    - ``insert_after_event_id``: the new events anchor at
+      ``event.fabula_time + extraction.fabula_time_spacing``. Convenient
+      when you know which existing event the edit should follow.
+    - When both are omitted, the edit appends after the current
+      chronological end (``max(events.fabula_time) + spacing``).
+
+    ``replace_event_ids`` removes the listed events (and their dependent
+    causal/social/spatial edges) before re-extracting, giving true
+    *replace* semantics. Leave empty for purely additive edits.
+
+    ``focus_entity_ids`` records the entities most affected by the edit
+    so downstream views (ego-graph scoping, version diffs) can highlight
+    them; it does not change the merge itself.
     """
     err = require_scope(ctx, "write")
     if err:
@@ -1841,10 +1872,36 @@ def write(
     if ws is None:
         return {"error": "No world model found."}
 
+    # Validate timeline anchoring inputs against the loaded world so
+    # the caller gets an actionable error instead of a silent fallback
+    # to "append at chronological end".
+    if insert_after_event_id is not None:
+        if not any(e.id == insert_after_event_id for e in ws.events):
+            return {
+                "error": (
+                    f"insert_after_event_id '{insert_after_event_id}' "
+                    f"not found in world model v{version if version is not None else 'latest'}."
+                )
+            }
+    if replace_event_ids:
+        known_ids = {e.id for e in ws.events}
+        missing = [eid for eid in replace_event_ids if eid not in known_ids]
+        if missing:
+            return {
+                "error": (
+                    f"replace_event_ids not found in world model: "
+                    f"{', '.join(missing)}"
+                )
+            }
+
     user_row_id = get_user_id(ctx)
     query = ManualEditQuery(
         edited_prose=prose,
         description=description,
+        focus_entity_ids=focus_entity_ids or [],
+        insert_after_event_id=insert_after_event_id,
+        insert_at_fabula_time=insert_at_fabula_time,
+        replace_event_ids=replace_event_ids or [],
         original_query=description or prose,
     )
 
@@ -1906,14 +1963,27 @@ async def ingest(
         name=project_name, owner_id=user_row_id, label=label, raw_text=text,
     )
 
-    save_version(
-        project_id=proj.id,
-        world_state_json=ws.model_dump_json(),
-        version=0,
-        source="ingestion",
-        description="Initial ingestion",
-        user_id=user_row_id,
-    )
+    try:
+        save_version(
+            project_id=proj.id,
+            world_state_json=ws.model_dump_json(),
+            version=0,
+            source="ingestion",
+            description="Initial ingestion",
+            user_id=user_row_id,
+        )
+    except Exception as e:
+        # Don't leave an orphan project with zero versions if the
+        # initial save fails — the row would be permanently broken.
+        logger.exception(
+            "Initial save_version failed for project %s; rolling back project row",
+            proj.id,
+        )
+        try:
+            db_delete_project(proj.id)
+        except Exception:
+            logger.exception("Failed to roll back orphan project %s", proj.id)
+        return {"error": f"Ingestion save failed: {e}"}
 
     await ctx.report_progress(3, 3, "Complete")
 
@@ -2154,7 +2224,11 @@ def list_world_facts(
     for r in rows:
         try:
             related = _json.loads(r.related_node_ids_json) if r.related_node_ids_json else []
-        except Exception:
+        except (ValueError, TypeError) as e:
+            logger.warning(
+                "Corrupt related_node_ids_json on world fact %s: %s",
+                r.fact_id, e,
+            )
             related = []
         facts.append({
             "fact_id": r.fact_id,
@@ -2350,10 +2424,22 @@ def share(
             return {"error": "Only project owners and admins can share."}
 
     targets = search_users(username)
-    if not targets:
+    # search_users uses substring match on username/email, so the first
+    # hit may be a different user whose name *contains* the requested
+    # one (e.g. 'malice' for 'alice'). Require an exact-username match
+    # before sharing.
+    exact = [t for t in targets if t.get("username") == username]
+    if not exact:
         return {"error": f"User '{username}' not found."}
 
-    target = targets[0]
+    # Validate role against the documented enum so unknown values are
+    # rejected before reaching the DB layer.
+    if role not in {"viewer", "editor", "admin"}:
+        return {"error": (
+            f"Invalid role '{role}'. Must be one of viewer, editor, admin."
+        )}
+
+    target = exact[0]
     add_project_member(project_id, target["id"], role)
 
     return {
@@ -2950,6 +3036,8 @@ def manage(
         vrid, err = _coerce_int(p("version_row_id"), field="version_row_id")
         if err:
             return err
+        if vrid is None:
+            return {"error": "manage(action='promote_branch') requires payload.version_row_id"}
         return promote_branch(
             ctx=ctx,
             version_row_id=vrid,
@@ -2984,10 +3072,19 @@ def manage(
         vrid, err = _coerce_int(p("version_row_id"), field="version_row_id")
         if err:
             return err
+        if vrid is None:
+            return {"error": "manage(action='reparent_version') requires payload.version_row_id"}
+        raw_anc = p("new_ancestor_id")
+        if raw_anc is None:
+            new_anc: Optional[int] = None
+        else:
+            new_anc, err = _coerce_int(raw_anc, field="new_ancestor_id")
+            if err:
+                return err
         return reparent_version(
             ctx=ctx,
             version_row_id=vrid,
-            new_ancestor_id=p("new_ancestor_id"),
+            new_ancestor_id=new_anc,
         )
     if action == "set_active_version":
         if project_id is None:

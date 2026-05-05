@@ -5,9 +5,8 @@
 
 from __future__ import annotations
 
-import json
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from fastmcp import Context
 
@@ -15,7 +14,6 @@ from shadow_loom.db import (
     find_project_by_name,
     get_active_version,
     get_latest_version,
-    get_project,
     get_version,
     save_version,
     set_active_version,

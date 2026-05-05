@@ -24,7 +24,6 @@ The pipeline is flexible:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
@@ -42,7 +41,6 @@ from shadow_loom.auditor import (
 from shadow_loom.directive_assembly import CreativeBrief, DirectiveAssembler
 from shadow_loom.extract_graph import (
     VersionedWorldModel,
-    WorldModelVersion,
     extract_topology_from_prose,
     promote_sandbox_spawns,
 )
@@ -51,10 +49,10 @@ from shadow_loom.generation import (
     GenerationConfig,
     render_from_query,
 )
-from shadow_loom.ingestion import ExtractionConfig, ValidationReport, run_extraction, run_extraction_async
+from shadow_loom.ingestion import ExtractionConfig, run_extraction, run_extraction_async
 from shadow_loom.models import WorldStateV1
 from shadow_loom.narrative_physics import calculate_narrative_physics
-from shadow_loom.query_models import UserRequest, EvaluationQuery, EvaluationResult
+from shadow_loom.query_models import UserRequest, EvaluationQuery, EvaluationResult, ManualEditQuery
 
 logger = logging.getLogger(__name__)
 
@@ -528,6 +526,192 @@ def _stamp_brief_branch(
     return brief
 
 
+# Default budget for the STORY SO FAR section of the renderer prompt.
+# Sized to fit comfortably alongside the rest of the brief in a 32k
+# context window without dominating it; raise via the helper's
+# ``max_chars`` kwarg when running against larger models.
+_PRECEDING_PROSE_BUDGET_CHARS = 8000
+
+
+def _gather_preceding_prose(
+    vwm: Optional[VersionedWorldModel],
+    *,
+    branch_world_id: Literal["factual", "shadow"],
+    branch_label: Optional[str] = None,
+    max_chars: int = _PRECEDING_PROSE_BUDGET_CHARS,
+) -> Optional[str]:
+    """Collect prior-version prose from ``vwm.history`` for narrative continuity.
+
+    Walks the linear in-memory history newest \u2192 oldest, picking
+    versions whose ``prose`` is non-empty and whose branch is
+    compatible with the current query:
+
+    * ``branch_world_id == "factual"`` \u2014 include only factual-tagged
+      prose (canonical mainline only; shadow forks must not bleed into
+      factual continuity).
+    * ``branch_world_id == "shadow"`` \u2014 include the *most recent
+      contiguous tail* of shadow-tagged prose first (the active fork's
+      own narrative), then any factual ancestors that came before any
+      shadow appears in the walk (the canon the fork branched from).
+
+    Entries are then re-ordered oldest \u2192 newest, joined with version
+    markers, and truncated from the *front* to ``max_chars`` so the
+    most recent prose always survives. Returns ``None`` when nothing
+    is available so callers can splat unconditionally.
+    """
+    if vwm is None or not getattr(vwm, "history", None):
+        return None
+
+    picked: list[tuple[int, str, str, Optional[str]]] = []
+    if branch_world_id == "factual":
+        for v in vwm.history:
+            if v.prose and getattr(v, "world_id", "factual") == "factual":
+                picked.append((v.version, v.prose, "factual", v.branch_label))
+    else:
+        # Shadow: take the contiguous tail of shadow versions newest
+        # \u2192 oldest, stop on the first non-shadow we encounter, then
+        # include all factual prose that came before that point so the
+        # shadow rendering still sees the canon it branched from.
+        history_rev = list(reversed(vwm.history))
+        idx = 0
+        while idx < len(history_rev):
+            v = history_rev[idx]
+            if getattr(v, "world_id", "factual") != "shadow":
+                break
+            if v.prose:
+                # Optional branch_label filter \u2014 if the caller
+                # specified a label, only include shadow prose that
+                # matches it (different forks shouldn't cross-pollinate).
+                if branch_label is None or v.branch_label == branch_label:
+                    picked.append((v.version, v.prose, "shadow", v.branch_label))
+            idx += 1
+        # Now collect factual ancestors from the rest of history
+        for v in history_rev[idx:]:
+            if v.prose and getattr(v, "world_id", "factual") == "factual":
+                picked.append((v.version, v.prose, "factual", v.branch_label))
+
+    if not picked:
+        return None
+
+    # Sort oldest \u2192 newest so the joined block reads in narrative order.
+    picked.sort(key=lambda t: t[0])
+
+    # Truncate from the front (drop oldest) until the joined block
+    # fits the budget. Each block is wrapped with a small marker so
+    # the LLM can tell continuity from the active scene's task.
+    blocks: list[str] = []
+    for version, prose, wid, label in picked:
+        marker = f"--- v{version} ({wid}"
+        if label:
+            marker += f": {label}"
+        marker += ") ---"
+        blocks.append(f"{marker}\n{prose.strip()}")
+
+    joined = "\n\n".join(blocks)
+    if len(joined) <= max_chars:
+        return joined
+
+    # Drop oldest blocks one at a time until under budget; if even the
+    # newest block exceeds the budget, hard-truncate it from the front.
+    while len(blocks) > 1 and len(joined) > max_chars:
+        blocks.pop(0)
+        joined = "\n\n".join(blocks)
+    if len(joined) > max_chars:
+        joined = "\u2026" + joined[-(max_chars - 1):]
+    return joined
+
+
+def _stamp_brief_continuity(
+    brief: Optional["CreativeBrief"],
+    vwm: Optional[VersionedWorldModel],
+    *,
+    branch_world_id: Literal["factual", "shadow"],
+    branch_label: Optional[str] = None,
+) -> Optional["CreativeBrief"]:
+    """Stamp ``preceding_prose`` onto a brief from the lineage in ``vwm``.
+
+    No-op when ``brief`` is ``None`` or when no prose is available.
+    Called immediately after :func:`_stamp_brief_branch` at every
+    brief-construction site in the pipeline so a chain of queries
+    (counterfactual \u2192 intervention \u2192 observation, etc.) renders
+    prose that is narratively continuous with everything that came
+    before, not just the accumulated world state.
+    """
+    if brief is None:
+        return None
+    preceding = _gather_preceding_prose(
+        vwm,
+        branch_world_id=branch_world_id,
+        branch_label=branch_label,
+    )
+    if preceding:
+        brief.preceding_prose = preceding
+    return brief
+
+
+def _resolve_manual_edit_anchor(
+    query: "ManualEditQuery",
+    ws: WorldStateV1,
+    cfg: PipelineConfig,
+) -> int:
+    """Return the ``fabula_time_base`` for a manual-edit re-extraction.
+
+    Precedence:
+    1. Explicit ``query.insert_at_fabula_time``.
+    2. ``query.insert_after_event_id`` → that event's
+       ``fabula_time + extraction.fabula_time_spacing``.
+    3. ``max(events.fabula_time) + spacing`` (continuation).
+    """
+    spacing = cfg.extraction_config.fabula_time_spacing
+    if query.insert_at_fabula_time is not None:
+        return query.insert_at_fabula_time
+    if query.insert_after_event_id:
+        for evt in ws.events:
+            if evt.id == query.insert_after_event_id:
+                return evt.fabula_time + spacing
+        logger.warning(
+            "[Pipeline] Manual edit anchor event %s not found in world; "
+            "falling back to chronological end.",
+            query.insert_after_event_id,
+        )
+    existing_max = max(
+        (e.fabula_time for e in ws.events), default=-spacing,
+    )
+    return existing_max + spacing
+
+
+def _apply_manual_edit_replacements(
+    ws: WorldStateV1, replace_event_ids: List[str],
+) -> WorldStateV1:
+    """Return a deep-copy of ``ws`` with the given events (and their
+    dependent edges) removed, for *replace* manual-edit semantics.
+
+    This runs **before** the new prose is re-extracted so the LLM
+    doesn't see the events it's about to replace as "previous events"
+    and try to keep them stitched in.
+    """
+    if not replace_event_ids:
+        return ws
+    drop = set(replace_event_ids)
+    new_ws = ws.model_copy(deep=True)
+    new_ws.events = [e for e in new_ws.events if e.id not in drop]
+    new_ws.causal_topology = [
+        ce for ce in new_ws.causal_topology
+        if ce.source_id not in drop and ce.target_id not in drop
+    ]
+    new_ws.social_topology = [
+        re for re in new_ws.social_topology
+        if not getattr(re, "evidence_event_ids", None)
+        or not (set(re.evidence_event_ids) & drop)
+    ]
+    new_ws.spatial_topology = [
+        se for se in new_ws.spatial_topology
+        if not getattr(se, "established_by_event_id", None)
+        or se.established_by_event_id not in drop
+    ]
+    return new_ws
+
+
 # =====================================================================
 # The pipeline
 # =====================================================================
@@ -728,10 +912,15 @@ def run_pipeline(
         # Always run re-extraction for manual edits (the whole point)
         logger.info("[Pipeline] Extracting topology from manually edited prose.")
         try:
+            anchor_base = _resolve_manual_edit_anchor(query, ws, cfg)
+            ws_for_extract = _apply_manual_edit_replacements(
+                ws, query.replace_event_ids,
+            )
             topology = extract_topology_from_prose(
                 prose=result.prose,
-                world_state=ws,
+                world_state=ws_for_extract,
                 config=cfg.extraction_config,
+                fabula_time_base=anchor_base,
             )
             description = (
                 f"Manual edit: {query.description}"
@@ -739,7 +928,15 @@ def run_pipeline(
                 else "Manual edit"
             )
             _world_id, _branch_label = _resolve_branch_policy(query, cfg)
-            vwm_next = vwm.merge(
+            # If the user asked for replace semantics, start the merge
+            # from the *trimmed* world so the dropped events don't
+            # come back via deep-copy of ``vwm.current``.
+            vwm_for_merge = (
+                vwm.model_copy(update={"current": ws_for_extract})
+                if query.replace_event_ids
+                else vwm
+            )
+            vwm_next = vwm_for_merge.merge(
                 topology,
                 source="manual_edit",
                 description=description,
@@ -777,18 +974,35 @@ def run_pipeline(
     # can stamp the active branch onto the CreativeBrief.
     _branch_world_id, _branch_label = _resolve_branch_policy(query, cfg)
 
+    # Compute the story-so-far excerpt once for this query so every
+    # brief-construction site below can thread it onto the brief and
+    # every render_from_query call can pass it to the brief builders.
+    # Filtered by the query's branch (factual queries see only factual
+    # prose; shadow queries see the active fork's tail + factual
+    # ancestors). See ``_gather_preceding_prose`` for the policy.
+    _preceding_prose = _gather_preceding_prose(
+        vwm,
+        branch_world_id=_branch_world_id,
+        branch_label=_branch_label,
+    )
+
     # For directive queries with causal engine, the brief is already built
     brief: CreativeBrief | None = None
     if query.query_type == "directive" and "creative_brief" in physics_result:
         brief_data = physics_result["creative_brief"]
         brief = CreativeBrief(**brief_data) if isinstance(brief_data, dict) else brief_data
         _stamp_brief_branch(brief, _branch_world_id, _branch_label)
+        if _preceding_prose and not brief.preceding_prose:
+            brief.preceding_prose = _preceding_prose
 
     if cfg.skip_audit:
         # Generate once, no audit loop
         logger.info("[Pipeline] Steps 3–4: Generating prose (audit skipped).")
         gen_cfg = cfg.generation_config or GenerationConfig()
-        scene = render_from_query(query, physics_result, ws, gen_cfg)
+        scene = render_from_query(
+            query, physics_result, ws, gen_cfg,
+            preceding_prose=_preceding_prose,
+        )
 
         history.record("generation", GenerationStepRecord(
             scene=scene,
@@ -840,11 +1054,16 @@ def run_pipeline(
         else:
             # Non-directive: render first, then audit
             gen_cfg = cfg.generation_config or GenerationConfig()
-            initial_scene = render_from_query(query, physics_result, ws, gen_cfg)
+            initial_scene = render_from_query(
+                query, physics_result, ws, gen_cfg,
+                preceding_prose=_preceding_prose,
+            )
 
             # Build a brief for the auditor from the query
             brief = _build_brief_for_query(query, physics_result, ws, syuzhet_anchor=eff_syuzhet)
             _stamp_brief_branch(brief, _branch_world_id, _branch_label)
+            if _preceding_prose and not brief.preceding_prose:
+                brief.preceding_prose = _preceding_prose
 
             from shadow_loom.auditor import run_feedback_loop
             feedback = run_feedback_loop(
@@ -1082,12 +1301,23 @@ async def run_pipeline_async(
         )
         history.record("generation", GenerationStepRecord(scene=result.scene, brief=None))
         try:
+            anchor_base = _resolve_manual_edit_anchor(query, ws, cfg)
+            ws_for_extract = _apply_manual_edit_replacements(
+                ws, query.replace_event_ids,
+            )
             topology = extract_topology_from_prose(
-                prose=result.prose, world_state=ws, config=cfg.extraction_config,
+                prose=result.prose, world_state=ws_for_extract,
+                config=cfg.extraction_config,
+                fabula_time_base=anchor_base,
             )
             description = f"Manual edit: {query.description}" if query.description else "Manual edit"
             _world_id, _branch_label = _resolve_branch_policy(query, cfg)
-            vwm_next = vwm.merge(
+            vwm_for_merge = (
+                vwm.model_copy(update={"current": ws_for_extract})
+                if query.replace_event_ids
+                else vwm
+            )
+            vwm_next = vwm_for_merge.merge(
                 topology, source="manual_edit", description=description, prose=result.prose,
                 world_id=_world_id, branch_label=_branch_label,
             )
@@ -1110,15 +1340,25 @@ async def run_pipeline_async(
     # Steps 3–4: Brief + Generation (same as sync)
     physics_state = physics_result.get("physics_state", {})
     _branch_world_id, _branch_label = _resolve_branch_policy(query, cfg)
+    _preceding_prose = _gather_preceding_prose(
+        vwm,
+        branch_world_id=_branch_world_id,
+        branch_label=_branch_label,
+    )
     brief: CreativeBrief | None = None
     if query.query_type == "directive" and "creative_brief" in physics_result:
         brief_data = physics_result["creative_brief"]
         brief = CreativeBrief(**brief_data) if isinstance(brief_data, dict) else brief_data
         _stamp_brief_branch(brief, _branch_world_id, _branch_label)
+        if _preceding_prose and not brief.preceding_prose:
+            brief.preceding_prose = _preceding_prose
 
     if cfg.skip_audit:
         gen_cfg = cfg.generation_config or GenerationConfig()
-        scene = render_from_query(query, physics_result, ws, gen_cfg)
+        scene = render_from_query(
+            query, physics_result, ws, gen_cfg,
+            preceding_prose=_preceding_prose,
+        )
         history.record("generation", GenerationStepRecord(scene=scene, brief=brief))
         result.scene = scene
         result.prose = scene.prose
@@ -1156,9 +1396,14 @@ async def run_pipeline_async(
             )
         else:
             gen_cfg = cfg.generation_config or GenerationConfig()
-            initial_scene = render_from_query(query, physics_result, ws, gen_cfg)
+            initial_scene = render_from_query(
+                query, physics_result, ws, gen_cfg,
+                preceding_prose=_preceding_prose,
+            )
             brief = _build_brief_for_query(query, physics_result, ws, syuzhet_anchor=eff_syuzhet)
             _stamp_brief_branch(brief, _branch_world_id, _branch_label)
+            if _preceding_prose and not brief.preceding_prose:
+                brief.preceding_prose = _preceding_prose
             from shadow_loom.auditor import run_feedback_loop
             feedback = run_feedback_loop(
                 initial_scene=initial_scene, brief=brief, world_state=ws,

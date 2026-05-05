@@ -483,9 +483,20 @@ the world model as tools and resources. Highlights:
 * Channel-aware reads: `list_channels`, `get_channel_history`, `who_can_hear`.
 * Branch lifecycle: `list_branches`, `promote_branch`, `export_prose`
   (which can walk a specific lineage through the AMWN DAG).
+  `promote_branch` rejects cross-project promotions: the source row's
+  `project_id` must match the resolved project id from the caller's
+  context, otherwise the tool returns an `error` without touching the DB.
 * `get_entity`, `get_event`, `get_world_trait`, etc. — typed read tools.
 * `helpers.load_world_state(pid, version, *, ctx=None)` resolves the active
   version per-user when `ctx` is provided; resources skip auth.
+* The `async` tools `narrate` and `direct` dispatch the synchronous
+  `run_and_save` call through `asyncio.to_thread` so other tools (and
+  progress polling) keep being serviced while a multi-second pipeline
+  run is in flight.
+* `auth._token_user_cache` is a process-local cache mapping bearer
+  tokens to `{user_id, scopes, key_id}`. `db.revoke_api_key` calls
+  `auth.invalidate_token_cache(key_id=...)` so revocations take effect
+  immediately rather than at process restart.
 
 ---
 

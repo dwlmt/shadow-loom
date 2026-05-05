@@ -1432,6 +1432,13 @@ def ws_to_causal_rows(ws: WorldStateV1) -> list[dict]:
             "force": round(ce.causal_force, 2),
             "evidence": ce.evidence_strength,
             "delay": ce.propagation_delay,
+            "fabula_time": ce.fabula_time,
+            "trait_target": ce.trait_target or "",
+            "trait_delta": (
+                round(ce.trait_delta, 2) if ce.trait_delta is not None else None
+            ),
+            "rel_counterpart": ce.rel_counterpart_id or "",
+            "world_id": ce.world_id,
         }
         for ce in ws.causal_topology
     ]
@@ -1445,24 +1452,44 @@ def ws_to_spatial_rows(ws: WorldStateV1) -> list[dict]:
             "target": se.target_id,
             "locked": se.is_locked,
             "barrier": se.barrier_item_id or "",
+            "established_at_fabula": se.established_at_fabula,
+            "destroyed_at_fabula": (
+                se.destroyed_at_fabula
+                if se.destroyed_at_fabula is not None
+                else "—"
+            ),
+            "world_id": se.world_id,
         }
         for se in ws.spatial_topology
     ]
 
 
 def ws_to_social_rows(ws: WorldStateV1) -> list[dict]:
-    """Social topology as table rows."""
-    return [
-        {
+    """Social topology as table rows.
+
+    Per-axis ``observed`` markers come from the new metric-keyed
+    ``RelationshipEdge.metrics`` dict so callers can distinguish a
+    deliberately-zero metric (the entities were measured to be
+    indifferent) from an unobserved one (no data).
+    """
+    rows: list[dict] = []
+    for rel in ws.social_topology:
+        m_aff = rel.metrics.get("affinity")  # type: ignore[arg-type]
+        m_fear = rel.metrics.get("fear")  # type: ignore[arg-type]
+        m_pow = rel.metrics.get("power_dynamic")  # type: ignore[arg-type]
+        rows.append({
             "source": rel.source_entity_id,
             "target": rel.target_entity_id,
-            "affinity": round(rel.affinity, 2),
-            "fear": round(rel.fear, 2),
-            "power": round(rel.power_dynamic, 2),
+            "affinity": round(m_aff.value, 2) if m_aff else "—",
+            "fear": round(m_fear.value, 2) if m_fear else "—",
+            "power": round(m_pow.value, 2) if m_pow else "—",
             "inertia": round(rel.inertia, 2),
-        }
-        for rel in ws.social_topology
-    ]
+            "evidence": rel.evidence_strength,
+            "axes_observed": len(rel.metrics),
+            "last_updated_fabula": rel.last_updated_fabula,
+            "world_id": rel.world_id,
+        })
+    return rows
 
 
 def ws_to_info_rows(ws: WorldStateV1) -> list[dict]:
@@ -1534,6 +1561,7 @@ def ws_to_channel_rows(ws: WorldStateV1) -> list[dict]:
                 if ch.intelligibility else 1.0
             ),
             "established_at_fabula": ch.established_at_fabula,
+            "world_id": ch.world_id,
         }
         for ch in ws.channels.values()
     ]
@@ -1554,6 +1582,7 @@ def ws_to_utterance_rows(ws: WorldStateV1) -> list[dict]:
             "via_channel_id": evt.via_channel_id or "",
             "truth_value": evt.truth_value or "",
             "content": (evt.content or "")[:120],
+            "world_id": evt.world_id,
         })
     rows.sort(key=lambda r: (r["fabula_time"], r["syuzhet_index"]))
     return rows
@@ -3070,7 +3099,9 @@ def ws_to_entity_rows(ws: WorldStateV1) -> list[dict]:
             "location": loc.name if loc else (ent.location_id or ""),
             "traits": len(ent.traits),
             "beliefs": len(ent.beliefs),
+            "snapshots": len(ent.state_timeline),
             "constants": ", ".join(ent.constants) if ent.constants else "",
+            "world_id": ent.world_id,
         })
     return rows
 
@@ -3097,6 +3128,7 @@ def ws_to_event_rows(ws: WorldStateV1) -> list[dict]:
             "actors": ", ".join(_name_of(a) for a in evt.actor_ids) or "—",
             "targets": ", ".join(_name_of(t) for t in evt.target_ids) or "—",
             "description": evt.description,
+            "world_id": evt.world_id,
         })
     return rows
 
@@ -3116,6 +3148,7 @@ def ws_to_object_rows(ws: WorldStateV1) -> list[dict]:
             "properties": ", ".join(
                 f"{k}={v}" for k, v in obj.properties.items()
             ) or "—",
+            "world_id": obj.world_id,
         })
     return rows
 
@@ -3127,9 +3160,13 @@ def ws_to_world_trait_rows(ws: WorldStateV1) -> list[dict]:
         rows.append({
             "id": wid,
             "name": wt.name,
+            "category": getattr(wt, "category", "") or "",
             "magnitude": round(wt.magnitude.value, 3),
             "inertia": round(wt.magnitude.inertia, 3),
+            "affected_domains": ", ".join(wt.affected_domains) or "—",
+            "snapshots": len(wt.state_timeline),
             "description": getattr(wt, "description", "") or "",
+            "world_id": wt.world_id,
         })
     return rows
 

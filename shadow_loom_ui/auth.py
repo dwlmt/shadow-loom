@@ -11,7 +11,6 @@ When no OAuth credentials are configured, the app runs without auth.
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from authlib.integrations.starlette_client import OAuth
 from starlette.middleware.base import BaseHTTPMiddleware

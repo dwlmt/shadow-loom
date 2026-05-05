@@ -23,7 +23,6 @@ encoded in the ``RenderingDirective`` attached to the ``CreativeBrief``.
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Literal, Optional
 
@@ -44,7 +43,6 @@ from shadow_loom.directive_assembly import (
 from shadow_loom.models import WorldStateV1
 from shadow_loom.query_models import (
     CounterfactualQuery,
-    DirectiveQuery,
     InterventionQuery,
     ObservationQuery,
     UserRequest,
@@ -436,6 +434,26 @@ def assemble_rendering_prompt(
         ))
         sections.append("")
 
+    # === Story so far (narrative continuity) ===
+    # Concatenated prose from prior versions in the current session's
+    # lineage so a chain of queries (counterfactual \u2192 intervention
+    # \u2192 observation, etc.) renders prose that is continuous with
+    # everything that came before, not just the accumulated world
+    # state. Background context only \u2014 hard constraints and the
+    # SCENE CONTEXT below remain authoritative on conflict.
+    if brief.preceding_prose:
+        sections.append("=== STORY SO FAR (prior prose for continuity) ===")
+        sections.append(brief.preceding_prose.strip())
+        sections.append(
+            "Treat the prose above as established narrative this scene "
+            "must continue from. Honour its tone, point-of-view drift, "
+            "established facts about characters, and any unresolved "
+            "threads. Do NOT contradict events that have already been "
+            "narrated. The SCENE CONTEXT and CONSTRAINTS below take "
+            "precedence on any conflict with the world state."
+        )
+        sections.append("")
+
     # === Header ===
     sections.append(f"=== GENERATION TASK: {brief.target_effect.upper()} ===")
     sections.append(f"Target entities: {', '.join(brief.target_entities)}")
@@ -682,6 +700,8 @@ def build_observation_brief(
     query: ObservationQuery,
     physics_state: Dict[str, Any],
     world_state: WorldStateV1,
+    *,
+    preceding_prose: Optional[str] = None,
 ) -> CreativeBrief:
     """Build a lightweight CreativeBrief for observation queries."""
     pov = query.focus_entity_ids[0] if query.focus_entity_ids else None
@@ -692,6 +712,7 @@ def build_observation_brief(
         original_query=query.original_query,
         constraints=constraints,
         narrative_style=getattr(world_state, "narrative_style", None),
+        preceding_prose=preceding_prose,
         rendering=RenderingDirective(
             rendering_mode="observation",
             pov_lock=pov,
@@ -718,6 +739,8 @@ def build_intervention_brief(
     rule3_pruned_interventions: Optional[List[str]] = None,
     rule2_redundant_evidence: Optional[List[str]] = None,
     rule3_pruning_mode: Literal["advisory", "prune"] = "advisory",
+    *,
+    preceding_prose: Optional[str] = None,
 ) -> CreativeBrief:
     """Build a CreativeBrief for intervention (do-calculus) queries."""
     pruned_set = set(rule3_pruned_interventions or [])
@@ -881,6 +904,7 @@ def build_intervention_brief(
         original_query=query.original_query,
         constraints=constraints,
         narrative_style=getattr(world_state, "narrative_style", None),
+        preceding_prose=preceding_prose,
         rendering=RenderingDirective(
             rendering_mode="intervention",
             pov_lock=(_entities_from_intervention_keys(
@@ -910,6 +934,8 @@ def build_counterfactual_brief(
     rule3_pruned_interventions: Optional[List[str]] = None,
     rule2_redundant_evidence: Optional[List[str]] = None,
     rule3_pruning_mode: Literal["advisory", "prune"] = "advisory",
+    *,
+    preceding_prose: Optional[str] = None,
 ) -> CreativeBrief:
     """Build a CreativeBrief for counterfactual (Rung 3) queries."""
     # Build AbductionTruth entries from hidden_deltas
@@ -1064,6 +1090,7 @@ def build_counterfactual_brief(
         original_query=query.original_query,
         constraints=constraints,
         narrative_style=getattr(world_state, "narrative_style", None),
+        preceding_prose=preceding_prose,
         rendering=RenderingDirective(
             rendering_mode="counterfactual",
             pov_lock=target_entities[0] if target_entities else None,
@@ -1212,6 +1239,8 @@ def render_from_query(
     physics_result: Dict[str, Any],
     world_state: WorldStateV1,
     config: GenerationConfig | None = None,
+    *,
+    preceding_prose: Optional[str] = None,
 ) -> GeneratedScene:
     """High-level convenience: build a brief from any query type and render.
 
@@ -1228,6 +1257,13 @@ def render_from_query(
         The global world state for context.
     config : GenerationConfig or None
         Generation configuration.
+    preceding_prose : str or None
+        Story-so-far excerpt threaded onto the brief by ``run_pipeline``
+        so a chain of queries renders prose that is narratively
+        continuous with everything that came before. Forwarded into
+        every brief builder; ignored for ``directive`` queries that
+        already carry a pre-built brief from the assembler (those are
+        stamped at the pipeline call-site instead).
 
     Returns
     -------
@@ -1237,7 +1273,10 @@ def render_from_query(
     physics_state = physics_result.get("physics_state", {})
 
     if request.query_type == "observation":
-        brief = build_observation_brief(request, physics_state, world_state)
+        brief = build_observation_brief(
+            request, physics_state, world_state,
+            preceding_prose=preceding_prose,
+        )
         return render_scene(brief, config, "observation", physics_state)
 
     elif request.query_type == "intervention":
@@ -1250,6 +1289,7 @@ def render_from_query(
             rule3_pruned_interventions=physics_result.get("rule3_pruned_interventions"),
             rule2_redundant_evidence=physics_result.get("rule2_redundant_evidence"),
             rule3_pruning_mode=physics_result.get("rule3_pruning_mode", "advisory"),
+            preceding_prose=preceding_prose,
         )
         return render_scene(brief, config, "intervention", physics_state)
 
@@ -1262,6 +1302,7 @@ def render_from_query(
             rule3_pruned_interventions=physics_result.get("rule3_pruned_interventions"),
             rule2_redundant_evidence=physics_result.get("rule2_redundant_evidence"),
             rule3_pruning_mode=physics_result.get("rule3_pruning_mode", "advisory"),
+            preceding_prose=preceding_prose,
         )
         return render_scene(brief, config, "counterfactual", physics_state)
 
@@ -1278,6 +1319,8 @@ def render_from_query(
                 scene_context=physics_state,
                 narrative_style=getattr(world_state, "narrative_style", None),
             )
+        if preceding_prose and not brief.preceding_prose:
+            brief.preceding_prose = preceding_prose
         return render_scene(brief, config, "directive", physics_state)
 
     elif request.query_type == "interrogate":

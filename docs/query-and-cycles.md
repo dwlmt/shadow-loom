@@ -141,6 +141,13 @@ specific psychological / epistemic effect. Builds a `CreativeBrief` in
 Step 2 by enumerating candidate interventions, scoring each with the
 affective calculus, and wrapping the winner in typed `ConstraintBlock`s.
 
+`target_vector_id` accepts a dotted path (e.g. `ENT_MACBETH.traits.guilt`)
+so the directive can target a specific sub-axis on a node, not just the
+node itself. The validator only checks the **base node id** before the
+first dot \u2014 the engine resolves the rest of the path at execution time
+because `traits` / `beliefs` / `properties` are arbitrary keyed maps and
+the legal sub-keys are content-defined per project.
+
 ### 5. `InterrogationQuery` — graph RAG with proof
 
 ```python

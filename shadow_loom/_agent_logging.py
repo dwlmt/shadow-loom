@@ -419,16 +419,22 @@ def configure_agent_instrumentation() -> None:
                     if get_session:
                         session = get_session()
                         try:
-                            log_entry.prompt_tokens = usage.get('prompt_tokens')
-                            log_entry.completion_tokens = usage.get('completion_tokens') 
-                            log_entry.total_tokens = usage.get('total_tokens')
+                            # log_entry was created in track_agent_call's
+                            # (now-closed) session, so it is detached.
+                            # ``merge`` re-attaches it to the new session
+                            # so subsequent attribute writes are tracked
+                            # and the commit actually persists them.
+                            tracked = session.merge(log_entry)
+                            tracked.prompt_tokens = usage.get('prompt_tokens')
+                            tracked.completion_tokens = usage.get('completion_tokens') 
+                            tracked.total_tokens = usage.get('total_tokens')
                             session.commit()
                             
                             # Trigger immediate cost calculation for this entry
                             try:
                                 from shadow_loom.cost_calculation import CostCalculator
                                 calculator = CostCalculator(session)
-                                log_entry.estimated_cost_usd = calculator.calculate_agent_call_cost(log_entry)
+                                tracked.estimated_cost_usd = calculator.calculate_agent_call_cost(tracked)
                                 session.commit()
                             except Exception as cost_err:
                                 # Don't fail the agent call if cost calculation fails
@@ -485,16 +491,19 @@ def configure_agent_instrumentation() -> None:
                     if get_session:
                         session = get_session()
                         try:
-                            log_entry.prompt_tokens = usage.get('prompt_tokens')
-                            log_entry.completion_tokens = usage.get('completion_tokens') 
-                            log_entry.total_tokens = usage.get('total_tokens')
+                            # See instrumented_run_sync above for why
+                            # the merge is required.
+                            tracked = session.merge(log_entry)
+                            tracked.prompt_tokens = usage.get('prompt_tokens')
+                            tracked.completion_tokens = usage.get('completion_tokens') 
+                            tracked.total_tokens = usage.get('total_tokens')
                             session.commit()
                             
                             # Trigger immediate cost calculation for this entry
                             try:
                                 from shadow_loom.cost_calculation import CostCalculator
                                 calculator = CostCalculator(session)
-                                log_entry.estimated_cost_usd = calculator.calculate_agent_call_cost(log_entry)
+                                tracked.estimated_cost_usd = calculator.calculate_agent_call_cost(tracked)
                                 session.commit()
                             except Exception as cost_err:
                                 # Don't fail the agent call if cost calculation fails

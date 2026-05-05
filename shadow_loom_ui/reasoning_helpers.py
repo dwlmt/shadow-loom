@@ -15,7 +15,7 @@ be unit-tested without a UI runtime. The companion module
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from shadow_loom.models import (
     CausalEdge,

@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import copy
 import logging
-import os
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
@@ -35,6 +34,7 @@ from shadow_loom.directive_assembly import (
     ConstraintBlock,
     DirectiveAssembler,
     InterventionMechanism,
+    _EFFECT_TRAITS,
 )
 from shadow_loom.generation import (
     GeneratedScene,
@@ -743,12 +743,31 @@ def compute_affective_feedback(
             affective_loss_mse=affective_loss,
         )
 
-    # Compute the primary target effect score
+    # Compute the primary target effect score — but only when the
+    # brief actually targets a measurable effect. Generic full-story
+    # evaluations (target_effect == "observation") and unknown labels
+    # have no defined "distance to target", and ``compute_affective_score``
+    # falls into its no-contributions branch and returns ``+1.0`` —
+    # the *worst possible* loss — which the UI then renders as a
+    # spurious "poor fit" verdict on every quality report. Leave
+    # ``affective_loss`` as ``None`` in that case so the hero tile
+    # and findings card render "not measured" honestly.
+    _MEASURABLE_TARGETS = (
+        {"mystery", "dramatic_irony", "suspense", "surprise"}
+        | set(_EFFECT_TRAITS.keys())
+    )
     target = brief.target_effect
-    try:
-        affective_loss = assembler.compute_affective_score(target, eids)
-    except Exception:
-        logger.debug("[AffectiveFeedback] compute_affective_score failed for %s", target)
+    if target in _MEASURABLE_TARGETS:
+        try:
+            affective_loss = assembler.compute_affective_score(target, eids)
+        except Exception:
+            logger.debug("[AffectiveFeedback] compute_affective_score failed for %s", target)
+    else:
+        logger.debug(
+            "[AffectiveFeedback] target_effect=%r is not measurable; "
+            "leaving affective_loss_mse=None (trajectory scores still computed).",
+            target,
+        )
 
     # Compute trajectory scores for all structural effects
     score_map = {

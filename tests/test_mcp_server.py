@@ -546,13 +546,24 @@ class TestShare:
     def test_share_project(self):
         uid, pid, _ = _seed_project()
         target = upsert_user("local", "other-1", "otheruser", email="other@example.com")
-        result = share(_ctx(), project_id=pid, username="other", role="viewer")
+        # share() now requires an exact username match (substring match
+        # was an IDOR risk: 'alice' could resolve to 'malice').
+        result = share(_ctx(), project_id=pid, username="otheruser", role="viewer")
         assert result["status"] == "shared"
         assert result["target_user"] == "otheruser"
 
     def test_user_not_found(self):
         uid, pid, _ = _seed_project()
         result = share(_ctx(), project_id=pid, username="nonexistent_user_xyz")
+        assert "error" in result
+
+    def test_substring_username_rejected(self):
+        # Regression: ``share`` must not accept a substring of an
+        # existing username (would let a caller share with the wrong
+        # user when usernames overlap, e.g. 'alice' vs 'malice').
+        uid, pid, _ = _seed_project()
+        upsert_user("local", "other-2", "otheruser2", email="o2@example.com")
+        result = share(_ctx(), project_id=pid, username="other")
         assert "error" in result
 
 

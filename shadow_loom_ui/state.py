@@ -14,7 +14,6 @@ to state changes without overwriting each other's callbacks.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 import uuid
@@ -39,7 +38,6 @@ from shadow_loom.query_parsing import (
 )
 from shadow_loom.db import (
     save_version,
-    get_latest_version,
     get_version_by_id,
     log_activity,
     set_active_version,
@@ -653,12 +651,19 @@ class AppState:
         edited_prose: str,
         description: str = "",
         focus_entity_ids: list[str] | None = None,
+        *,
+        insert_after_event_id: str | None = None,
+        insert_at_fabula_time: int | None = None,
+        replace_event_ids: list[str] | None = None,
     ) -> NLQueryResult:
         """Submit user-authored prose as a ManualEditQuery through the pipeline."""
         query = ManualEditQuery(
             edited_prose=edited_prose,
             description=description,
             focus_entity_ids=focus_entity_ids or [],
+            insert_after_event_id=insert_after_event_id,
+            insert_at_fabula_time=insert_at_fabula_time,
+            replace_event_ids=replace_event_ids or [],
         )
         return self.run_structured_query(query)
 

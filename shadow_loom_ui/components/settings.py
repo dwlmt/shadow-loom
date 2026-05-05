@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from nicegui import app, ui
 
-from shadow_loom_ui import config, db
+from shadow_loom_ui import db
 from shadow_loom_ui.state import AppState
 from shadow_loom_ui.theme import (
     CARD_CLS,

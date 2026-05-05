@@ -211,6 +211,36 @@ class ManualEditQuery(_QueryBase):
         default_factory=list,
         description="Entities most affected by the edit (for ego-graph scoping).",
     )
+    insert_after_event_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Event id whose ``fabula_time`` anchors this edit. New "
+            "events extracted from ``edited_prose`` are placed at "
+            "``anchor.fabula_time + extraction.fabula_time_spacing`` "
+            "and onwards, so the edit lands at the right point in "
+            "chronology rather than colliding with existing events. "
+            "When unset (and ``insert_at_fabula_time`` is also unset) "
+            "the edit appends after the current chronological end."
+        ),
+    )
+    insert_at_fabula_time: Optional[int] = Field(
+        default=None,
+        description=(
+            "Explicit fabula_time anchor for the edit. Overrides "
+            "``insert_after_event_id`` when both are set. Use this "
+            "for inserting between known beats or backfilling "
+            "history."
+        ),
+    )
+    replace_event_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Existing event ids to remove before merging the "
+            "re-extracted topology, for true *replace* semantics. "
+            "Their dependent causal/social/spatial/info edges are "
+            "removed transitively. Leave empty for additive edits."
+        ),
+    )
 
 # ==========================================
 # 8. EVALUATION (Full-story quality audit)

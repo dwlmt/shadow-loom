@@ -15,7 +15,6 @@ Usage:
     python shadow_loom/cost_cli.py rules list
 """
 
-import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -31,7 +30,7 @@ if str(project_root) not in sys.path:
 
 from shadow_loom.db import (
     init_db, get_session, AgentCallLogRow, ApiCallLogRow, CostRuleRow,
-    UserUsageSummaryRow, ProjectUsageSummaryRow, UserRow, ProjectRow
+    UserRow
 )
 from shadow_loom.settings import get_settings
 

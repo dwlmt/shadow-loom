@@ -14,14 +14,13 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
-from sqlmodel import Session, select, func, text
-from sqlalchemy.exc import IntegrityError
+from sqlmodel import Session, select, text
 
 from shadow_loom.db import (
     get_session, AgentCallLogRow, ApiCallLogRow, CostRuleRow,
-    UserUsageSummaryRow, ProjectUsageSummaryRow, UserRow, ProjectRow
+    UserUsageSummaryRow, ProjectUsageSummaryRow
 )
 
 logger = logging.getLogger(__name__)

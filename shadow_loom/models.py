@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 from pydantic import BaseModel, Field, model_validator, field_validator
-from typing import Any, List, Dict, Optional, Literal, Union
+from typing import Any, List, Dict, Optional, Literal
 
 # =====================================================================
 # PART 1: THE GRAPH DATABASE (The Reality Engine)
@@ -186,6 +186,14 @@ class EntityStateSnapshot(BaseModel):
     Only *changed* fields need be populated — reconstruction merges
     each snapshot atop the previous accumulated state.
     """
+    world_id: Literal["factual", "shadow"] = Field(
+        default="factual",
+        description=(
+            "AMWN branch this snapshot belongs to. Snapshots produced by a "
+            "shadow merge are tagged ``shadow`` so consumers walking a live "
+            "entity's ``state_timeline`` can filter out off-branch entries."
+        ),
+    )
     fabula_time: int = Field(description="fabula_time this snapshot is valid from.")
     triggered_by: Optional[str] = Field(default=None, description="EVT_ ID that caused this state change.")
     traits: Dict[str, "TraitVector"] = Field(
@@ -215,6 +223,14 @@ class WorldTraitSnapshot(BaseModel):
     Only *changed* fields need be populated — reconstruction merges
     each snapshot atop the previous accumulated state.
     """
+    world_id: Literal["factual", "shadow"] = Field(
+        default="factual",
+        description=(
+            "AMWN branch this snapshot belongs to. Snapshots produced by a "
+            "shadow merge are tagged ``shadow`` so consumers walking a live "
+            "trait's ``state_timeline`` can filter out off-branch entries."
+        ),
+    )
     fabula_time: int = Field(description="fabula_time this snapshot is valid from.")
     triggered_by: Optional[str] = Field(default=None, description="EVT_ ID that caused this world change.")
     magnitude: Optional["TraitVector"] = Field(

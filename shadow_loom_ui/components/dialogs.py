@@ -17,7 +17,6 @@ from shadow_loom_ui import db
 from shadow_loom_ui.config import MAX_INGEST_WORDS, count_words
 from shadow_loom_ui.state import StateEvent
 from shadow_loom_ui.task_helpers import capture_logs_to_task, notify_task_complete
-from shadow_loom_ui.theme import feather
 
 if TYPE_CHECKING:
     from shadow_loom_ui.state import AppState

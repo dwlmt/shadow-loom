@@ -50,7 +50,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, FrozenSet, Iterable, List, Mapping, Optional, Set, Tuple
+from typing import Any, FrozenSet, Iterable, List, Mapping, Optional, Set, Tuple
 
 import networkx as nx
 

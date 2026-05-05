@@ -10,7 +10,6 @@ into live progress messages on the task, and provides a uniform
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from contextlib import contextmanager
 from typing import Any, Awaitable, Callable, Iterator, Optional

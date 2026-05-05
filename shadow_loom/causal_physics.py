@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Literal, Optional
 import networkx as nx
 from pydantic import BaseModel, Field
 
-from shadow_loom.amwn import CtfCalculusReport, apply_ctf_calculus, build_causal_diagram
+from shadow_loom.amwn import CtfCalculusReport, apply_ctf_calculus
 from shadow_loom.instantiator import AMWNInstantiator
 from shadow_loom.models import (
     WorldStateV1,

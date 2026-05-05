@@ -393,6 +393,23 @@ class CreativeBrief(BaseModel):
             "canon rather than re-narrating identical events."
         ),
     )
+    preceding_prose: Optional[str] = Field(
+        default=None,
+        description=(
+            "Concatenated story-so-far prose from prior versions in the "
+            "current session's lineage, oldest \u2192 newest, truncated to a "
+            "character budget. Threaded onto the brief by ``run_pipeline`` "
+            "so a sequence of queries (e.g. counterfactual \u2192 counterfactual "
+            "\u2192 intervention \u2192 observation) renders prose that is "
+            "narratively continuous with everything that has come before, "
+            "not just the accumulated world state. Filtered by branch: "
+            "factual queries see only factual prose; shadow queries see "
+            "the shadow lineage's contiguous tail plus factual ancestors. "
+            "Surfaced verbatim into the renderer prompt's STORY SO FAR "
+            "section but never authoritative \u2014 hard constraints and "
+            "world-state still take precedence on conflict."
+        ),
+    )
     narrative_style: Optional[NarrativeStyle] = Field(
         default=None,
         description=(

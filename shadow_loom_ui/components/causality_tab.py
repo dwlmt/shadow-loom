@@ -21,7 +21,6 @@ from nicegui import ui
 from shadow_loom_ui.state import AppState, NLQueryResult, StateEvent
 from shadow_loom_ui.task_helpers import run_query_as_task
 from shadow_loom_ui.viz import (
-    render_affective_timeseries,
     render_causal_force_graph,
     render_causal_sankey,
     render_chart_skeleton,
@@ -29,11 +28,9 @@ from shadow_loom_ui.viz import (
     render_emotional_gauges_graded,
     render_empty_state,
     render_entity_state_timeline,
-    render_event_timeline,
     render_physics_trajectory,
     render_propagation_graph,
     render_propagation_waterfall,
-    render_trait_radar_compare,
     render_relationship_timeline,
     render_world_trait_timeline,
     open_explain_dialog,
@@ -41,8 +38,8 @@ from shadow_loom_ui.viz import (
 )
 from shadow_loom_ui.viz_helpers import (
     mutations_to_propagation_rows,
-    entity_radar_compare_rows,
 )
+from shadow_loom_ui.components._subtab_help import subtab_help
 
 import json as _json
 
@@ -205,18 +202,23 @@ def build_causality_tab(state: AppState) -> None:
             "w-full flex-grow bg-slate-50"
         ):
             with ui.tab_panel("topology").classes("p-4"):
+                subtab_help("causality.topology")
                 _build_causal_topology(state)
 
             with ui.tab_panel("evolution").classes("p-4"):
+                subtab_help("causality.evolution")
                 _build_evolution_panel(state)
 
             with ui.tab_panel("whatif").classes("p-4"):
+                subtab_help("causality.whatif")
                 _build_whatif_workbench(state)
 
             with ui.tab_panel("directive").classes("p-4"):
+                subtab_help("causality.directive")
                 _build_directive_builder(state)
 
             with ui.tab_panel("affective").classes("p-4"):
+                subtab_help("causality.affective")
                 _build_affective_dashboard(state)
 
 
@@ -662,6 +664,7 @@ def _build_evolution_panel(state: AppState) -> None:
 
             # ── World trait ──────────────────────────────────────
             with ui.tab_panel("world").classes("p-3"):
+                subtab_help("causality.evolution.world")
                 with ui.row().classes("w-full items-center gap-3"):
                     ui.icon("public", color="primary")
                     ui.label("Trait:").classes("text-sm text-slate-600")
@@ -714,6 +717,7 @@ def _build_evolution_panel(state: AppState) -> None:
 
             # ── Causal graph snapshot ────────────────────────────
             with ui.tab_panel("causal").classes("p-3"):
+                subtab_help("causality.evolution.causal")
                 ui.label(
                     "Snapshot of the causal topology at a given fabula time. "
                     "Edges with fabula_time \u2264 t are included; scrub to "
@@ -867,6 +871,7 @@ def _build_evolution_panel(state: AppState) -> None:
 
             # ── Physics trajectory ──────────────────────────────
             with ui.tab_panel("physics").classes("p-3"):
+                subtab_help("causality.evolution.physics")
                 ui.label(
                     "Structural physics scalars sampled at evenly-spaced "
                     "fabula anchors. Pure graph math \u2014 no LLM calls "
@@ -1135,7 +1140,9 @@ def _render_whatif_result(container, result: NLQueryResult) -> None:
                             _t_graph = ui.tab("Graph", icon="hub")
                             _t_table = ui.tab("Table", icon="table_view")
                         with ui.tab_panels(_prop_tabs, value=_t_water).classes("w-full"):
+                            _sth = subtab_help
                             with ui.tab_panel(_t_water):
+                                _sth("causality.whatif.waterfall")
                                 with_expand(
                                     lambda h, m=mutations, b=blocked: (
                                         render_propagation_waterfall(
@@ -1146,6 +1153,7 @@ def _render_whatif_result(container, result: NLQueryResult) -> None:
                                     height="250px",
                                 )
                             with ui.tab_panel(_t_graph):
+                                _sth("causality.whatif.graph")
                                 with_expand(
                                     lambda h, m=mutations, b=blocked: (
                                         render_propagation_graph(
@@ -1156,6 +1164,7 @@ def _render_whatif_result(container, result: NLQueryResult) -> None:
                                     height="320px",
                                 )
                             with ui.tab_panel(_t_table):
+                                _sth("causality.whatif.table")
                                 rows = mutations_to_propagation_rows(
                                     mutations, blocked
                                 )
@@ -1610,7 +1619,9 @@ def _build_affective_dashboard(state: AppState) -> None:
 
             _tprops = "dense flat bordered"
             with ui.tab_panels(data_tabs, value="events").classes("w-full"):
+                _sth_aff = subtab_help
                 with ui.tab_panel("events"):
+                    _sth_aff("causality.affective.events")
                     event_table = ui.table(
                         columns=[
                             {"name": "id", "label": "ID", "field": "id", "sortable": True},
@@ -1625,6 +1636,7 @@ def _build_affective_dashboard(state: AppState) -> None:
                         pagination={"rowsPerPage": 10},
                     ).props(_tprops).classes("w-full")
                 with ui.tab_panel("affect"):
+                    _sth_aff("causality.affective.affect")
                     affect_table = ui.table(
                         columns=[
                             {"name": "metric", "label": "Metric", "field": "metric", "sortable": True},

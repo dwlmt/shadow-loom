@@ -72,6 +72,14 @@ private project.
 The fail-closed default means a tool returns `{"error": "missing scope: write"}`
 rather than executing if the bearer token is unknown or under-scoped.
 
+**Key rotation.** `db.revoke_api_key(...)` flips `is_active=False` *and*
+calls `auth.invalidate_token_cache(key_id=...)` so the in-process token
+cache stops resolving the revoked key on the next request — without
+that call a revoked key would remain usable for the lifetime of the
+server process. Programmatic callers that mark keys inactive directly
+(bypassing `revoke_api_key`) should call `invalidate_token_cache`
+themselves.
+
 ---
 
 ## 3. The 41 tools, by cognitive task
@@ -147,8 +155,8 @@ author(action="forget_fact",   project_id=42, payload={"fact_id": "FACT_003"})
 |---|---|---|
 | `"branch"` | write | `from_version` *(req)* |
 | `"fork"` | write | `new_name` *(req)* |
-| `"share"` | admin | `username` *(req)*, `role ∈ {viewer, editor, admin}` |
-| `"promote_branch"` | write | `version_row_id` *(req)*, `description` |
+| `"share"` | admin | `username` *(req — exact match)*, `role ∈ {viewer, editor, admin}` |
+| `"promote_branch"` | write | `version_row_id` *(req)*, `description` — source row must belong to `project_id` (cross-project promote denied) |
 | `"update_project"` | admin | any of `name`, `description`, `is_public` |
 | `"delete_project"` | write | — |
 | `"delete_version"` | write | `version_row_id` *(req)*, `cascade` |
@@ -215,10 +223,20 @@ integrations can migrate one call at a time.
 | `narrate(instruction, mode=None, skip_audit, force_implausible, speaker_id=None, addressee_ids=None, via_channel_id=None)` | write | The main creation entry point. NL → `parse_query` → `run_pipeline` → version write → active pointer advance. `mode` can pin the query type to `observe` / `intervene` / `counterfactual`. The `speaker_id` / `addressee_ids` / `via_channel_id` hints constrain the parser to emit a properly-typed `utterance` event with channel provenance. The parser also extracts optional **story-point anchors** (`temporal_anchor` / `syuzhet_anchor` / `anchor_after_event_id`) from the user's NL request so phrases like "after EVT_BANQUO_DEATH" or "in act 3" pin the query to the right slice without the caller looking the time up. |
 | `direct(target_effect, entity_ids=…, intensity=0.8, temporal_anchor=None, syuzhet_anchor=None, anchor_after_event_id=None, …)` | write | Builds a `DirectiveQuery` directly (no NL parse) and runs the affective optimisation pipeline. The optional anchor arguments override `PipelineConfig.temporal_anchor` / `syuzhet_anchor` for a single call. |
 | `write(prose, description="")` | write | Manual edit — supplies user prose, runs prose → topology re-extraction, merges into a new version (skips physics + LLM rendering). |
-| `ingest(text, project_name, label=None)` | write | Creates a brand new project and runs the 5-step ingestion to produce v0. |
+| `ingest(text, project_name, label=None)` | write | Creates a brand new project and runs the 5-step ingestion to produce v0. If the v0 save fails the freshly-created project row is rolled back so failed ingests do not leave orphan projects with zero versions. |
 
 `narrate`, `direct`, and `ingest` emit FastMCP `progress_notifications` so an
 MCP client can show a progress bar.
+
+**Concurrency.** `narrate` and `direct` are `async` tools, but the
+underlying pipeline (`run_and_save`) is synchronous and CPU-/LLM-bound
+for several seconds per call. Both tools dispatch the pipeline through
+`asyncio.to_thread(...)` so the FastMCP event loop continues serving
+other tools (e.g. `discover`, `trace`, progress polling) while a
+generation is in flight. If you implement an additional async tool
+that wraps a synchronous pipeline call, follow the same pattern \u2014
+calling `run_and_save` directly from an `async def` blocks every
+concurrent request.
 
 ### JUDGE — "How good is this story?"
 

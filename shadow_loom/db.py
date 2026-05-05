@@ -1325,7 +1325,15 @@ def revoke_api_key(key_id: int, user_id: int) -> bool:
             return False
         row.is_active = False
         s.commit()
-        return True
+    # Drop the in-process MCP bearer-token cache so the revoked key
+    # stops resolving to a user immediately. Imported lazily to avoid a
+    # cycle when shadow_loom is imported without the MCP package.
+    try:
+        from shadow_loom_mcp.auth import invalidate_token_cache
+        invalidate_token_cache(key_id=key_id)
+    except ImportError:
+        pass
+    return True
 
 
 # =====================================================================

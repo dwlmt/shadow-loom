@@ -25,13 +25,18 @@ from shadow_loom_ui.viz import (
     render_entity_state_timeline,
     render_epistemic_grid,
     render_event_gantt,
-    render_event_timeline,
+    render_event_type_bar,
+    render_location_occupancy_bar,
+    render_object_ownership_bar,
+    render_population_summary,
     render_relationship_heatmap,
     render_social_graph,
     render_spatial_map,
+    render_status_donut,
     render_sunburst,
     render_theme_river,
     render_world_graph,
+    render_world_trait_bars,
     render_world_treemap,
     with_expand,
 )
@@ -52,7 +57,7 @@ from shadow_loom_ui.viz_helpers import (
 )
 
 if TYPE_CHECKING:
-    from shadow_loom.models import WorldStateV1
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -509,21 +514,97 @@ def build_world_tab(state: AppState) -> None:
                             height="250px",
                         )
                     elif mode == "composition":
-                        with ui.row().classes("w-full gap-2 h-full"):
-                            with ui.column().classes("flex-grow h-full"):
-                                with_expand(
-                                    lambda h: render_sunburst(
-                                        ws, on_click=_on_graph_click, height=h
-                                    ),
-                                    title="World composition sunburst",
+                        # Six focused mini-charts beat the old sunburst+
+                        # treemap pair, which crammed 4 hierarchy levels
+                        # into illegible rim labels and overflowing tiles.
+                        # Each chart now answers ONE composition
+                        # question ("who's where?", "what's the status
+                        # mix?", "how strong are world traits?" …).
+                        with ui.column().classes("w-full gap-3"):
+                            # Row 0 — headline counts
+                            render_population_summary(ws)
+                            # Row 1 — status donut + location occupancy
+                            with ui.row().classes("w-full gap-3 items-stretch"):
+                                with ui.column().classes(
+                                    "flex-grow basis-0 min-w-72 bg-white "
+                                    "border border-slate-200 rounded-xl "
+                                    "shadow-sm p-3 gap-1"
+                                ):
+                                    ui.label("Entity status mix").classes(
+                                        "text-xs uppercase tracking-wide "
+                                        "text-slate-500"
+                                    )
+                                    render_status_donut(ws)
+                                with ui.column().classes(
+                                    "flex-grow basis-0 min-w-96 bg-white "
+                                    "border border-slate-200 rounded-xl "
+                                    "shadow-sm p-3 gap-1"
+                                ):
+                                    ui.label("Location occupancy").classes(
+                                        "text-xs uppercase tracking-wide "
+                                        "text-slate-500"
+                                    )
+                                    render_location_occupancy_bar(
+                                        ws, on_click=_on_graph_click,
+                                    )
+                            # Row 2 — event types + object ownership
+                            with ui.row().classes("w-full gap-3 items-stretch"):
+                                with ui.column().classes(
+                                    "flex-grow basis-0 min-w-72 bg-white "
+                                    "border border-slate-200 rounded-xl "
+                                    "shadow-sm p-3 gap-1"
+                                ):
+                                    ui.label("Event types").classes(
+                                        "text-xs uppercase tracking-wide "
+                                        "text-slate-500"
+                                    )
+                                    render_event_type_bar(ws)
+                                with ui.column().classes(
+                                    "flex-grow basis-0 min-w-72 bg-white "
+                                    "border border-slate-200 rounded-xl "
+                                    "shadow-sm p-3 gap-1"
+                                ):
+                                    ui.label("Object ownership").classes(
+                                        "text-xs uppercase tracking-wide "
+                                        "text-slate-500"
+                                    )
+                                    render_object_ownership_bar(
+                                        ws, on_click=_on_graph_click,
+                                    )
+                            # Row 3 — world-trait magnitude vs inertia
+                            with ui.column().classes(
+                                "w-full bg-white border border-slate-200 "
+                                "rounded-xl shadow-sm p-3 gap-1"
+                            ):
+                                ui.label(
+                                    "Global (world) traits — magnitude vs inertia"
+                                ).classes(
+                                    "text-xs uppercase tracking-wide "
+                                    "text-slate-500"
                                 )
-                            with ui.column().classes("w-1/2 h-full"):
-                                with_expand(
-                                    lambda h: render_world_treemap(
-                                        ws, on_click=_on_graph_click, height=h
-                                    ),
-                                    title="World treemap",
-                                )
+                                render_world_trait_bars(ws)
+                            # Row 4 — legacy hierarchy view (collapsed)
+                            with ui.expansion(
+                                "Hierarchy view (location → contents)",
+                                icon="account_tree",
+                            ).classes("w-full").props("dense"):
+                                with ui.row().classes("w-full gap-2"):
+                                    with ui.column().classes("flex-grow basis-0"):
+                                        with_expand(
+                                            lambda h: render_sunburst(
+                                                ws, on_click=_on_graph_click,
+                                                height=h,
+                                            ),
+                                            title="World composition sunburst",
+                                        )
+                                    with ui.column().classes("flex-grow basis-0"):
+                                        with_expand(
+                                            lambda h: render_world_treemap(
+                                                ws, on_click=_on_graph_click,
+                                                height=h,
+                                            ),
+                                            title="World treemap",
+                                        )
                     elif mode == "epistemic":
                         # Per-character belief panels (one tile per
                         # believer) — reads more naturally than the old
@@ -607,7 +688,9 @@ def _build_data_tables(state: AppState) -> None:
     _table_props = "dense flat bordered"
 
     with ui.tab_panels(data_tabs, value="entities").classes("w-full"):
+        from shadow_loom_ui.components._subtab_help import subtab_help
         with ui.tab_panel("entities"):
+            subtab_help("world.entities")
             entity_table = ui.table(
                 columns=[
                     {"name": "id", "label": "ID", "field": "id", "sortable": True},
@@ -616,13 +699,16 @@ def _build_data_tables(state: AppState) -> None:
                     {"name": "location", "label": "Location", "field": "location", "sortable": True},
                     {"name": "traits", "label": "#Traits", "field": "traits", "sortable": True},
                     {"name": "beliefs", "label": "#Beliefs", "field": "beliefs", "sortable": True},
+                    {"name": "snapshots", "label": "#Snaps", "field": "snapshots", "sortable": True},
                     {"name": "constants", "label": "Constants", "field": "constants"},
+                    {"name": "world_id", "label": "Branch", "field": "world_id", "sortable": True},
                 ],
                 rows=[],
                 pagination={"rowsPerPage": 10},
             ).props(_table_props).classes("w-full")
 
         with ui.tab_panel("events"):
+            subtab_help("world.events")
             event_table = ui.table(
                 columns=[
                     {"name": "id", "label": "ID", "field": "id", "sortable": True},
@@ -632,12 +718,14 @@ def _build_data_tables(state: AppState) -> None:
                     {"name": "actors", "label": "Actors", "field": "actors"},
                     {"name": "targets", "label": "Targets", "field": "targets"},
                     {"name": "description", "label": "Description", "field": "description"},
+                    {"name": "world_id", "label": "Branch", "field": "world_id", "sortable": True},
                 ],
                 rows=[],
                 pagination={"rowsPerPage": 10},
             ).props(_table_props).classes("w-full")
 
         with ui.tab_panel("objects"):
+            subtab_help("world.objects")
             object_table = ui.table(
                 columns=[
                     {"name": "id", "label": "ID", "field": "id", "sortable": True},
@@ -646,25 +734,32 @@ def _build_data_tables(state: AppState) -> None:
                     {"name": "owner", "label": "Owner", "field": "owner", "sortable": True},
                     {"name": "affordances", "label": "Affordances", "field": "affordances"},
                     {"name": "properties", "label": "Properties", "field": "properties"},
+                    {"name": "world_id", "label": "Branch", "field": "world_id", "sortable": True},
                 ],
                 rows=[],
                 pagination={"rowsPerPage": 10},
             ).props(_table_props).classes("w-full")
 
         with ui.tab_panel("world_traits"):
+            subtab_help("world.world_traits")
             world_trait_table = ui.table(
                 columns=[
                     {"name": "id", "label": "ID", "field": "id", "sortable": True},
                     {"name": "name", "label": "Name", "field": "name", "sortable": True},
+                    {"name": "category", "label": "Category", "field": "category", "sortable": True},
                     {"name": "magnitude", "label": "Magnitude", "field": "magnitude", "sortable": True},
                     {"name": "inertia", "label": "Inertia", "field": "inertia", "sortable": True},
+                    {"name": "affected_domains", "label": "Domains", "field": "affected_domains"},
+                    {"name": "snapshots", "label": "#Snaps", "field": "snapshots", "sortable": True},
                     {"name": "description", "label": "Description", "field": "description"},
+                    {"name": "world_id", "label": "Branch", "field": "world_id", "sortable": True},
                 ],
                 rows=[],
                 pagination={"rowsPerPage": 10},
             ).props(_table_props).classes("w-full")
 
         with ui.tab_panel("trait_stats"):
+            subtab_help("world.trait_stats")
             trait_stats_table = ui.table(
                 columns=[
                     {"name": "trait", "label": "Trait", "field": "trait", "sortable": True},
@@ -680,6 +775,7 @@ def _build_data_tables(state: AppState) -> None:
             ).props(_table_props).classes("w-full")
 
         with ui.tab_panel("causal"):
+            subtab_help("world.causal")
             causal_table = ui.table(
                 columns=[
                     {"name": "source", "label": "Source", "field": "source", "sortable": True},
@@ -688,24 +784,35 @@ def _build_data_tables(state: AppState) -> None:
                     {"name": "mechanism", "label": "Mechanism", "field": "mechanism"},
                     {"name": "force", "label": "Force", "field": "force", "sortable": True},
                     {"name": "evidence", "label": "Evidence", "field": "evidence", "sortable": True},
+                    {"name": "delay", "label": "Delay", "field": "delay", "sortable": True},
+                    {"name": "fabula_time", "label": "Fabula t", "field": "fabula_time", "sortable": True},
+                    {"name": "trait_target", "label": "Trait", "field": "trait_target", "sortable": True},
+                    {"name": "trait_delta", "label": "Δ", "field": "trait_delta", "sortable": True},
+                    {"name": "rel_counterpart", "label": "Counterpart", "field": "rel_counterpart"},
+                    {"name": "world_id", "label": "Branch", "field": "world_id", "sortable": True},
                 ],
                 rows=[],
                 pagination={"rowsPerPage": 10},
             ).props(_table_props).classes("w-full")
 
         with ui.tab_panel("spatial"):
+            subtab_help("world.spatial")
             spatial_table = ui.table(
                 columns=[
                     {"name": "source", "label": "From", "field": "source", "sortable": True},
                     {"name": "target", "label": "To", "field": "target", "sortable": True},
                     {"name": "locked", "label": "Locked", "field": "locked", "sortable": True},
                     {"name": "barrier", "label": "Barrier", "field": "barrier"},
+                    {"name": "established_at_fabula", "label": "Established", "field": "established_at_fabula", "sortable": True},
+                    {"name": "destroyed_at_fabula", "label": "Destroyed", "field": "destroyed_at_fabula", "sortable": True},
+                    {"name": "world_id", "label": "Branch", "field": "world_id", "sortable": True},
                 ],
                 rows=[],
                 pagination={"rowsPerPage": 10},
             ).props(_table_props).classes("w-full")
 
         with ui.tab_panel("social"):
+            subtab_help("world.social")
             social_table = ui.table(
                 columns=[
                     {"name": "source", "label": "From", "field": "source", "sortable": True},
@@ -714,12 +821,17 @@ def _build_data_tables(state: AppState) -> None:
                     {"name": "fear", "label": "Fear", "field": "fear", "sortable": True},
                     {"name": "power", "label": "Power", "field": "power", "sortable": True},
                     {"name": "inertia", "label": "Inertia", "field": "inertia", "sortable": True},
+                    {"name": "evidence", "label": "Evidence", "field": "evidence", "sortable": True},
+                    {"name": "axes_observed", "label": "#Axes", "field": "axes_observed", "sortable": True},
+                    {"name": "last_updated_fabula", "label": "Updated t", "field": "last_updated_fabula", "sortable": True},
+                    {"name": "world_id", "label": "Branch", "field": "world_id", "sortable": True},
                 ],
                 rows=[],
                 pagination={"rowsPerPage": 10},
             ).props(_table_props).classes("w-full")
 
         with ui.tab_panel("info"):
+            subtab_help("world.info")
             ui.label("Channels (standing capabilities)").classes(
                 "text-xs uppercase tracking-wide text-slate-500 mt-1"
             )
@@ -732,6 +844,7 @@ def _build_data_tables(state: AppState) -> None:
                     {"name": "participants", "label": "Participants", "field": "participants"},
                     {"name": "min_intelligibility", "label": "Min intel.", "field": "min_intelligibility", "sortable": True},
                     {"name": "established_at_fabula", "label": "Established", "field": "established_at_fabula", "sortable": True},
+                    {"name": "world_id", "label": "Branch", "field": "world_id", "sortable": True},
                 ],
                 rows=[],
                 pagination={"rowsPerPage": 10},
@@ -750,6 +863,7 @@ def _build_data_tables(state: AppState) -> None:
                     {"name": "via_channel_id", "label": "Channel", "field": "via_channel_id", "sortable": True},
                     {"name": "truth_value", "label": "Truth", "field": "truth_value", "sortable": True},
                     {"name": "content", "label": "Content", "field": "content"},
+                    {"name": "world_id", "label": "Branch", "field": "world_id", "sortable": True},
                 ],
                 rows=[],
                 pagination={"rowsPerPage": 10},

@@ -124,19 +124,27 @@ def build_reasoning_tab(state: AppState) -> None:
         with ui.tab_panels(sub_tabs, value="events").classes(
             "w-full flex-grow bg-slate-50"
         ):
+            from shadow_loom_ui.components._subtab_help import subtab_help
             with ui.tab_panel("events").classes("q-pa-none h-full"):
+                subtab_help("reasoning.events")
                 build_event_navigator(state)
             with ui.tab_panel("trace").classes("p-4"):
+                subtab_help("reasoning.trace")
                 _build_trace_panel(state)
             with ui.tab_panel("belief").classes("p-4"):
+                subtab_help("reasoning.belief")
                 _build_belief_panel(state)
             with ui.tab_panel("channels").classes("p-4"):
+                subtab_help("reasoning.channels")
                 _build_channels_panel(state)
             with ui.tab_panel("attribution").classes("p-4"):
+                subtab_help("reasoning.attribution")
                 _build_attribution_panel(state)
             with ui.tab_panel("foreshadow").classes("p-4"):
+                subtab_help("reasoning.foreshadow")
                 _build_foreshadow_panel(state)
             with ui.tab_panel("convergence").classes("p-4"):
+                subtab_help("reasoning.convergence")
                 _build_convergence_panel(state)
 
 

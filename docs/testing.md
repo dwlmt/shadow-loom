@@ -82,7 +82,7 @@ tests are added).
 
 | File | Tests | What it covers |
 |---|---:|---|
-| [test_mcp_server.py](../tests/test_mcp_server.py) | 63 | FastMCP server tool routing and resource serving against an in-memory SQLite DB seeded with the Macbeth fixture. LLM-calling paths mocked; computational paths run un-mocked. Auth tested in open mode (no bearer token). |
+| [test_mcp_server.py](../tests/test_mcp_server.py) | 78 | FastMCP server tool routing and resource serving against an in-memory SQLite DB seeded with the Macbeth fixture. LLM-calling paths mocked; computational paths run un-mocked. Auth tested in open mode (no bearer token). Includes a regression test that `share` rejects substring username matches (was an IDOR risk). |
 | [test_mcp_consolidated.py](../tests/test_mcp_consolidated.py) | 35 | The four consolidated MCP tools (`discover` / `manage` / `author` / `trace`) that wrap the underlying scope-specific tools — payload validation, error envelopes, and routing. |
 | [test_research_extraction.py](../tests/test_research_extraction.py) | — | Background research pipeline: provider stubs, snippet → `WorldFact` extraction, dedup, JSON serialisation of `datetime` fields via `model_dump(mode="json")`. |
 | [test_research_tab_e2e.py](../tests/test_research_tab_e2e.py) | 14 | Research tab end-to-end with stubbed provider + agent: topic persistence, fact CRUD, and `lookup_and_persist_topic` happy-path. Pinned during the May 2026 audit that surfaced four field-name and serialisation regressions in the research tab. |

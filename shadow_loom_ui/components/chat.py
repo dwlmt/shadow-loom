@@ -18,7 +18,7 @@ from nicegui import ui
 
 from shadow_loom_ui.state import AppState, NLQueryResult, StateEvent
 from shadow_loom_ui.task_helpers import capture_logs_to_task, notify_task_complete
-from shadow_loom_ui.theme import feather
+from shadow_loom_ui.components.help_popover import help_popover
 
 if TYPE_CHECKING:
     pass
@@ -34,6 +34,72 @@ _QUERY_TYPES = [
     ("interrogate", "Interrogation", "psychology"),
     ("evaluate", "Evaluate", "fact_check"),
 ]
+
+# One-line hover hints, keyed by query type. Used both in the Mode
+# selector tooltip and in the help-popover markdown table so the two
+# surfaces stay in sync.
+_QUERY_TYPE_HINTS: dict[str, str] = {
+    "": (
+        "Auto-detect — let the parser pick the right mode from your "
+        "wording. Safe default."
+    ),
+    "general": (
+        "Ask — read-only Q&A over the world graph. Returns an answer; "
+        "does not advance the timeline or write prose."
+    ),
+    "observation": (
+        "Continue — generate the next scene in chronological order. "
+        "Advances time, writes prose, creates a new factual version."
+    ),
+    "intervention": (
+        "Intervene — surgically force a state change "
+        "(\"kill X\", \"move Y to Z\") and let the physics propagate "
+        "the consequences forward. Writes a new factual version."
+    ),
+    "counterfactual": (
+        "What-If — re-run history under a changed past event "
+        "(\"what if Banquo had survived?\"). Forks a SHADOW branch so "
+        "the factual mainline is preserved."
+    ),
+    "directive": (
+        "Direct — optimise the next scene for a specific emotional "
+        "effect (suspense, dread, dramatic irony, …). Searches over "
+        "candidate beats and picks the highest-scoring one."
+    ),
+    "interrogate": (
+        "Interrogate — graph pathfinding with proof "
+        "(\"Who knows X?\", \"Is there a path from A to B?\"). "
+        "Read-only; returns Causal Bridges as evidence."
+    ),
+    "evaluate": (
+        "Evaluate — score the whole story so far against the "
+        "narrative-quality scorecard (causal plausibility, affective "
+        "trajectory, coherence). Read-only."
+    ),
+    "manual_edit": (
+        "Write prose — bypass the engine and paste your own prose. "
+        "Re-extracts topology and merges as a new factual version."
+    ),
+}
+
+_MODE_HELP_BODY = (
+    "Pick how the engine should interpret your input. "
+    "**Auto-detect** is usually correct \u2014 these explicit modes are "
+    "for cases where you want to override the parser.\n\n"
+    "| Mode | What it does |\n"
+    "|---|---|\n"
+    "| **Auto-detect** | Let the parser pick the right mode from your wording. |\n"
+    "| **Ask** | Read-only Q&A over the world graph. No prose, no version. |\n"
+    "| **Continue** | Generate the next scene in chronological order. New factual version. |\n"
+    "| **Intervene** | Force a state change and propagate consequences. New factual version. |\n"
+    "| **What-If** | Re-run history under a changed past event. Forks a *shadow* branch. |\n"
+    "| **Direct** | Optimise the next scene for a target emotional effect. |\n"
+    "| **Interrogation** | Graph pathfinding with Causal-Bridge proof. Read-only. |\n"
+    "| **Evaluate** | Score the whole story against the narrative-quality scorecard. |\n"
+    "| **\u270f Write prose** | Bypass the engine and paste your own prose as canon. |\n\n"
+    "Shadow branches stay browsable in the version sidebar and can be "
+    "promoted onto the factual mainline later."
+)
 
 # Writer-friendly prompt starters mapped to query types.
 # Every starter must be runnable as written — no unbound
@@ -111,6 +177,20 @@ def _build_command_bar(state: AppState) -> None:
                 "dense outlined options-dense stack-label "
                 "bg-color=white behavior=menu"
             ).style("min-width: 156px; height: 48px;")
+            # Hover tooltip on the field itself — updates as the user
+            # changes mode so the hint always matches the current pick.
+            with type_select:
+                _mode_tip = ui.tooltip(_QUERY_TYPE_HINTS[""]).classes(
+                    "text-xs max-w-xs leading-snug whitespace-normal"
+                )
+
+            # Click-to-open help card listing every mode side-by-side
+            # for users who want to compare before choosing.
+            help_popover(
+                "Query modes",
+                _MODE_HELP_BODY,
+                tooltip="What does each mode do?",
+            )
 
             def _on_type_change():
                 val = type_select.value
@@ -120,9 +200,71 @@ def _build_command_bar(state: AppState) -> None:
                 else:
                     manual_mode["active"] = False
                     selected_type["value"] = val
+                # Keep the hover hint in sync with the active mode.
+                _mode_tip.text = _QUERY_TYPE_HINTS.get(
+                    val or "", _QUERY_TYPE_HINTS[""],
+                )
+                _mode_tip.update()
                 _update_placeholder()
+                _refresh_anchor_visibility()
 
             type_select.on("update:model-value", _on_type_change)
+
+            # ── Manual-edit anchor selector (visible only in Write-prose mode)
+            # Lets the user say *where* in the timeline the new prose
+            # belongs ("End of story" by default; or after a specific
+            # event). The selected event's fabula_time anchors the
+            # re-extraction so events land in the right slot rather
+            # than colliding with existing chronology.
+            anchor_options: dict[str, str] = {"": "Append at end"}
+            anchor_state = {"event_id": None}
+
+            def _refresh_anchor_options() -> None:
+                ws = state.world_state
+                opts = {"": "Append at end"}
+                if ws is not None:
+                    sorted_evts = sorted(
+                        ws.events, key=lambda e: e.fabula_time,
+                    )[-50:]  # last 50 by fabula time keeps the list sane
+                    for e in sorted_evts:
+                        desc = (e.description or e.id)[:40]
+                        opts[e.id] = f"After t={e.fabula_time}: {desc}"
+                anchor_select.options = opts
+                if anchor_select.value not in opts:
+                    anchor_select.value = ""
+                anchor_select.update()
+
+            anchor_select = ui.select(
+                options=anchor_options,
+                value="",
+                label="Insert",
+            ).props(
+                "dense outlined options-dense stack-label "
+                "bg-color=white behavior=menu"
+            ).style("min-width: 180px; height: 48px;")
+            anchor_select.tooltip(
+                "Where in the timeline the new prose lands. "
+                "'Append at end' continues the story; pick an event "
+                "to insert immediately after it."
+            )
+
+            def _on_anchor_change():
+                anchor_state["event_id"] = anchor_select.value or None
+
+            anchor_select.on("update:model-value", _on_anchor_change)
+
+            def _refresh_anchor_visibility() -> None:
+                if manual_mode["active"]:
+                    _refresh_anchor_options()
+                    anchor_select.set_visibility(True)
+                else:
+                    anchor_select.set_visibility(False)
+
+            anchor_select.set_visibility(False)
+            state.on(
+                StateEvent.WORLD_STATE_CHANGED,
+                lambda **_kw: _refresh_anchor_options() if manual_mode["active"] else None,
+            )
 
             # Main text input — fixed two visible lines.
             text_input = ui.textarea(
@@ -151,7 +293,6 @@ def _build_command_bar(state: AppState) -> None:
             ).classes("shadow-sm").style("height: 40px; width: 40px;")
 
             # Help icon — click for full mode reference.
-            from shadow_loom_ui.components.help_popover import help_popover
             help_popover(
                 title="Channel — the natural-language command bar",
                 body_md=(
@@ -171,6 +312,17 @@ def _build_command_bar(state: AppState) -> None:
                     "| **Interrogation** | Diagnostic causal Q&A; can require explicit proof. | no | Answer panel |\n"
                     "| **Evaluate** | Audit the whole story for quality / plausibility. | no | Audit tab |\n"
                     "| **✏ Write prose** | Paste your own canon prose; re-extracted into the model. | yes (factual) | Story tab |\n\n"
+                    "### Insert anchor (Write-prose only)\n"
+                    "When you pick **✏ Write prose**, an *Insert*"
+                    " selector appears beside the mode picker.\n"
+                    "- **Append at end** *(default)* — the new prose"
+                    " continues from the chronological end of the"
+                    " story.\n"
+                    "- **After t=… : <event>** — the new prose is"
+                    " anchored immediately after that event, so its"
+                    " re-extracted events get a `fabula_time` that"
+                    " slots into the right place rather than"
+                    " colliding with existing chronology.\n\n"
                     "### Implausibility gate\n"
                     "If the engine cannot resolve your request against the"
                     " current world state (unknown character, dead"
@@ -292,6 +444,7 @@ def _build_command_bar(state: AppState) -> None:
                     if use_manual:
                         result = await asyncio.to_thread(
                             state.run_manual_edit, text,
+                            insert_after_event_id=anchor_state["event_id"],
                         )
                     else:
                         result = await state.run_nl_query_async(

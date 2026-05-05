@@ -12,7 +12,7 @@ from shadow_loom.models import (
     reconstruct_entity_at,
 )
 from shadow_loom.query_models import UserRequest
-from shadow_loom.extract_graph import EgoGraphPayload, extract_ego_graph_from_memory, extract_full_world_state
+from shadow_loom.extract_graph import extract_ego_graph_from_memory, extract_full_world_state
 from shadow_loom.instantiator import AMWNInstantiator
 from shadow_loom.causal_physics import CausalPhysicsEngine, CausalPhysicsResult
 from shadow_loom.directive_assembly import DirectiveAssembler
