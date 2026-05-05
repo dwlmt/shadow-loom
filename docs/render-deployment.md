@@ -54,6 +54,7 @@ defaults for everything else (model strings, token caps,
 | `OAUTH_REDIRECT_BASE` | Public URL of the deploy *without trailing slash* — e.g. `https://shadow-loom.onrender.com` or your custom domain. Used to build OAuth callback URLs. |
 | `OPENROUTER_API_KEY` | Get from <https://openrouter.ai/keys>. Required for the default `openrouter:` model strings. |
 | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | Or any other provider — at least one OAuth provider must be configured. |
+| `APPLE_CLIENT_ID` (+ JWT trio) | *Optional.* Sign in with Apple. Set `APPLE_CLIENT_ID` to your Services ID and either supply a pre-minted ES256 JWT in `APPLE_CLIENT_SECRET`, or supply `APPLE_TEAM_ID`, `APPLE_KEY_ID`, and `APPLE_PRIVATE_KEY` (the .p8 contents) and Shadow-Loom will mint and refresh the JWT for you. |
 | `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` | *Optional.* Trace LLM calls through [Langfuse](https://langfuse.com). |
 
 Already set automatically by the blueprint:
@@ -82,6 +83,7 @@ Every provider's redirect URI follows the same pattern:
 | Google | <https://console.cloud.google.com/apis/credentials> | `${OAUTH_REDIRECT_BASE}/auth/google/callback` |
 | Discord | <https://discord.com/developers/applications> | `${OAUTH_REDIRECT_BASE}/auth/discord/callback` |
 | Microsoft | <https://portal.azure.com> → App registrations | `${OAUTH_REDIRECT_BASE}/auth/microsoft/callback` |
+| Apple | <https://developer.apple.com/account/resources/identifiers/list/serviceId> | `${OAUTH_REDIRECT_BASE}/auth/apple/callback` (must be `https://` — Apple rejects `http://`, even on `localhost`) |
 
 Add the exact URL above to each provider's **Authorized redirect
 URIs** field. Only providers with both `_CLIENT_ID` and
@@ -113,8 +115,12 @@ fork into your own account.
 
 ## 6. Picking models for production
 
-The blueprint defaults to OpenRouter Claude 3.5 across every pipeline
-stage. Override per-stage via env vars:
+The blueprint defaults every pipeline stage to OpenRouter
+[`qwen/qwen3.6-35b-a3b`](https://openrouter.ai/qwen/qwen3.6-35b-a3b) —
+the sparse-MoE 35B/3B-active model that local development also targets,
+so the prompts are tuned for it. It accepts a 262K-token context,
+streams structured output, costs ~$0.15/M in / $1/M out, and ships
+under Apache 2.0. Override per-stage via env vars:
 
 ```
 DEFAULT_MODEL=openrouter:google/gemini-2.5-flash
@@ -124,7 +130,11 @@ EXTRACTION_MODEL=openrouter:google/gemini-2.5-pro
 QUERY_PARSING_MODEL=openrouter:anthropic/claude-3.5-haiku
 ```
 
-See [settings.md § 3](settings.md#3-generation-step-10--prose-rendering)
+If you swap to a short-output model (Claude 3.5 Sonnet caps at ~8K
+output, GPT-4o at ~16K) **also lower the `*_MAX_TOKENS` env vars** —
+the blueprint defaults (64000 / 16000 / 64000 / 16000) assume
+Qwen3.6's full 262K window. See
+[settings.md § 3](settings.md#3-generation-step-10--prose-rendering)
 for the full per-stage knob reference. Any model on
 <https://openrouter.ai/models> is accepted; the prefix `openrouter:`
 is parsed by PydanticAI and the rest is the model id verbatim.
@@ -134,6 +144,8 @@ You can also point at OpenAI directly:
 ```
 OPENAI_API_KEY=sk-...
 DEFAULT_MODEL=openai:gpt-4o
+AUDITOR_MAX_TOKENS=8000
+GENERATION_MAX_TOKENS=16000
 ```
 
 Local Ollama is **not** reachable from a Render web service — there's
@@ -196,7 +208,7 @@ docker run --rm -p 7860:7860 \
     -e OAUTH_REDIRECT_BASE='http://localhost:7860' \
     -e OPENROUTER_API_KEY=sk-or-... \
     -e GITHUB_CLIENT_ID=... -e GITHUB_CLIENT_SECRET=... \
-    -e DEFAULT_MODEL='openrouter:anthropic/claude-3.5-sonnet' \
+    -e DEFAULT_MODEL='openrouter:qwen/qwen3.6-35b-a3b' \
     shadow-loom
 ```
 

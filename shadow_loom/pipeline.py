@@ -24,7 +24,7 @@ The pipeline is flexible:
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, TYPE_CHECKING
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -50,6 +50,9 @@ from shadow_loom.generation import (
     render_from_query,
 )
 from shadow_loom.ingestion import ExtractionConfig, run_extraction, run_extraction_async
+
+if TYPE_CHECKING:
+    from shadow_loom.ingestion import ChunkTopology
 from shadow_loom.models import WorldStateV1
 from shadow_loom.narrative_physics import calculate_narrative_physics
 from shadow_loom.query_models import UserRequest, EvaluationQuery, EvaluationResult, ManualEditQuery
@@ -472,19 +475,25 @@ def _friendly_threshold(failure: str) -> str:
 def _resolve_branch_policy(
     query: "UserRequest",
     cfg: "PipelineConfig",
+    vwm: Optional[VersionedWorldModel] = None,
 ) -> tuple[Literal["factual", "shadow"], Optional[str]]:
     """Map ``cfg.branch_policy`` + ``query.query_type`` onto the AMWN
     ``world_id`` and ``branch_label`` to attach to the merged version.
 
     Policy table (Story-integration plan, Step 1):
-      * ``"auto"`` (default): counterfactual queries route to a shadow
-        fork; every other generative query (observation, intervention,
-        directive, manual_edit) lands on the factual mainline.
+      * ``"auto"`` (default): counterfactual queries fork to shadow;
+        every other query type *inherits* the active branch from
+        ``vwm.history[-1]`` so manual edits / observations made while
+        exploring a shadow fork stay on that fork rather than
+        silently landing back on factual canon. Falls back to
+        factual when ``vwm`` is None or has no history.
       * ``"mainline"``: force factual mainline regardless of query type.
       * ``"shadow"``: force a shadow fork regardless of query type.
 
-    ``branch_label`` is derived from ``query.description`` when forking
-    onto a shadow branch, otherwise ``None``.
+    ``branch_label`` is derived from ``query.description`` /
+    ``original_query`` when forking onto a new shadow branch, or
+    inherited from the active version's label when continuing an
+    existing fork under auto policy.
     """
     policy = cfg.branch_policy
     if policy == "shadow":
@@ -492,7 +501,18 @@ def _resolve_branch_policy(
     elif policy == "mainline":
         world_id = "factual"
     else:  # auto
-        world_id = "shadow" if query.query_type == "counterfactual" else "factual"
+        if query.query_type == "counterfactual":
+            world_id = "shadow"
+        elif vwm is not None and vwm.history:
+            # Inherit the active branch so manual_edit / interrogate /
+            # general / observation / intervention / directive queries
+            # land on whichever branch the user is currently on. Without
+            # this a manual edit made while exploring a shadow fork
+            # would be silently re-tagged onto the factual mainline.
+            latest = vwm.history[-1]
+            world_id = getattr(latest, "world_id", "factual") or "factual"
+        else:
+            world_id = "factual"
 
     label: Optional[str] = None
     if world_id == "shadow":
@@ -501,6 +521,20 @@ def _resolve_branch_policy(
         # ManualEditQuery-only ``description`` field when present.
         candidate = getattr(query, "original_query", None) or getattr(query, "description", None)
         label = (candidate or "").strip() or None
+        # When *continuing* on an active shadow branch under auto,
+        # inherit its existing label so successive edits don't fragment
+        # continuity into per-query mini-branches. A counterfactual
+        # query is a deliberate NEW fork even when launched from a
+        # shadow head, so it keeps its own query-derived label.
+        if (
+            policy == "auto"
+            and query.query_type != "counterfactual"
+            and vwm is not None
+            and vwm.history
+        ):
+            inherited = getattr(vwm.history[-1], "branch_label", None)
+            if inherited:
+                label = inherited
     return world_id, label
 
 
@@ -647,6 +681,274 @@ def _stamp_brief_continuity(
     if preceding:
         brief.preceding_prose = preceding
     return brief
+
+
+# Default budget for the FACTUAL CONTRAST summary on shadow briefs.
+# Smaller than the STORY SO FAR budget because contrast is meant as a
+# concise reference point, not a full re-narration of canon.
+_FACTUAL_CONTRAST_BUDGET_CHARS = 2000
+
+
+def _compute_factual_contrast(
+    vwm: Optional[VersionedWorldModel],
+    *,
+    branch_world_id: Literal["factual", "shadow"],
+    max_chars: int = _FACTUAL_CONTRAST_BUDGET_CHARS,
+) -> Optional[str]:
+    """Return a brief excerpt of the most recent factual prose for shadow briefs.
+
+    Returns ``None`` for factual queries (no contrast needed) and when
+    no factual prose exists in ``vwm.history``. The latest factual
+    version's prose is preferred so the contrast tracks the most
+    recent canon at the moment the shadow forked. Truncated from the
+    front so the most recent canon survives the budget cap.
+    """
+    if branch_world_id != "shadow":
+        return None
+    if vwm is None or not getattr(vwm, "history", None):
+        return None
+    for v in reversed(vwm.history):
+        if v.prose and getattr(v, "world_id", "factual") == "factual":
+            text = v.prose.strip()
+            if len(text) > max_chars:
+                text = "\u2026" + text[-(max_chars - 1):]
+            return text
+    return None
+
+
+def _stamp_brief_full(
+    brief: Optional["CreativeBrief"],
+    vwm: Optional[VersionedWorldModel],
+    *,
+    branch_world_id: Literal["factual", "shadow"],
+    branch_label: Optional[str],
+    factual_contrast: Optional[str] = None,
+) -> Optional["CreativeBrief"]:
+    """One-shot stamping: branch ids + preceding_prose + factual_contrast.
+
+    Replaces the earlier pattern of three separate stampings at every
+    brief-construction site so a missed call can no longer drop branch
+    framing on a shadow render. ``factual_contrast`` is set only when
+    non-empty and the brief does not already carry one.
+    """
+    if brief is None:
+        return None
+    _stamp_brief_branch(brief, branch_world_id, branch_label)
+    _stamp_brief_continuity(
+        brief, vwm,
+        branch_world_id=branch_world_id, branch_label=branch_label,
+    )
+    if factual_contrast and not brief.factual_contrast_summary:
+        brief.factual_contrast_summary = factual_contrast
+    return brief
+
+
+def _augment_topology_with_sandbox_deltas(
+    topology: "ChunkTopology",
+    *,
+    world_state: WorldStateV1,
+    physics_result: Dict[str, Any],
+    fabula_time_now: int,
+    fabula_time_historical: Optional[int] = None,
+    world_id: Literal["factual", "shadow"] = "factual",
+) -> "ChunkTopology":
+    """Inject sandbox-derived state changes directly into the topology so
+    the merge step persists physics deltas even if the LLM-generated
+    prose did not verbalise them clearly enough for the extractor to
+    re-discover.
+
+    Bridged channels:
+      * ``physics_result["mutations"]`` (list of TraitMutation dicts) \u2014
+        ENT_* nodes become :class:`EntityUpdate` records anchored at
+        ``fabula_time_now``; WORLD_* nodes append a
+        :class:`WorldTraitSnapshot` to a re-injected
+        ``new_world_traits[wid]`` so the existing backfill path picks
+        them up.
+      * ``physics_result["hidden_deltas"]`` (Rung-3 abduction output) \u2014
+        Same shape as ``mutations`` but anchored at
+        ``fabula_time_historical`` (the inferred backstory point), or
+        ``fabula_time_now`` when no historical anchor is available.
+        Trait deltas are converted into absolute trait values by
+        adding to the entity's current trait.value.
+      * ``physics_result["social_mutations"]`` (list of SocialMutation
+        dicts) \u2014 appended to ``topology.social_topology`` as full
+        :class:`RelationshipEdge` records so the dedup path keeps the
+        most-recent metric value.
+
+    All injected records carry ``world_id`` so shadow merges keep
+    branch isolation when the calling pipeline already knows it is
+    forking. (The merge itself also re-tags everything, but tagging
+    here keeps the topology self-consistent for any inspector that
+    reads it before merge runs.)
+    """
+    from shadow_loom.models import (
+        EntityStateSnapshot,
+        RelationshipEdge,
+        RelationshipMetric,
+        TraitVector,
+        WorldTraitSnapshot,
+    )
+    from shadow_loom.ingestion import EntityUpdate
+
+    mutations = physics_result.get("mutations") or []
+    hidden = physics_result.get("hidden_deltas") or {}
+    social_muts = physics_result.get("social_mutations") or []
+
+    # ------------------------------------------------------------------
+    # Helper: merge an EntityUpdate-style trait write into the topology.
+    # If an EntityUpdate for (entity_id, fabula_time) already exists,
+    # extend its ``trait_updates``; otherwise append a fresh record.
+    # ------------------------------------------------------------------
+    def _upsert_entity_trait(
+        entity_id: str, trait: str, new_value: float, ft: int,
+    ) -> None:
+        ent = world_state.entities.get(entity_id)
+        if ent is None:
+            return
+        existing_tv = ent.traits.get(trait)
+        inertia = existing_tv.inertia if existing_tv else 0.3
+        tv = TraitVector(value=float(max(-1.0, min(1.0, new_value))), inertia=inertia)
+        for eu in topology.entity_updates:
+            if eu.entity_id == entity_id and eu.fabula_time == ft:
+                if trait not in eu.trait_updates:
+                    eu.trait_updates[trait] = tv
+                return
+        topology.entity_updates.append(EntityUpdate(
+            entity_id=entity_id,
+            fabula_time=ft,
+            triggered_by=None,
+            trait_updates={trait: tv},
+        ))
+
+    # ------------------------------------------------------------------
+    # Helper: append a WorldTraitSnapshot to a working copy of an
+    # existing GlobalTrait, then route that copy through
+    # ``new_world_traits`` so ``_backfill_world_trait`` merges the
+    # new timeline entry into the canonical record.
+    # ------------------------------------------------------------------
+    def _upsert_world_trait_snapshot(
+        wid: str, trait: str, new_value: float, ft: int,
+    ) -> None:
+        # Prefer an entry already accumulated in this topology so
+        # multiple deltas for the same WORLD_ trait stack rather than
+        # overwriting each other; fall back to the canonical record
+        # in world_state when this is the first delta for ``wid``.
+        base_wt = topology.new_world_traits.get(wid) or world_state.world_traits.get(wid)
+        if base_wt is None:
+            return
+        inertia = base_wt.magnitude.inertia if base_wt.magnitude else 0.3
+        snap = WorldTraitSnapshot(
+            world_id=world_id,
+            fabula_time=ft,
+            triggered_by=None,
+            magnitude=TraitVector(
+                value=float(max(0.0, min(1.0, new_value))),
+                inertia=inertia,
+            ),
+        )
+        # Skip duplicate snapshots at the same (fabula_time, world_id)
+        # so re-runs don't pile up identical entries.
+        existing_keys = {
+            (s.fabula_time, getattr(s, "world_id", "factual"))
+            for s in base_wt.state_timeline
+        }
+        if (snap.fabula_time, snap.world_id) in existing_keys:
+            return
+        wt_copy = base_wt.model_copy(update={
+            "state_timeline": list(base_wt.state_timeline) + [snap],
+            "world_id": world_id,
+        })
+        topology.new_world_traits[wid] = wt_copy
+
+    # --- Trait mutations (Rung 2 + propagation) ------------------------
+    for m in mutations:
+        node_id = m.get("node_id") if isinstance(m, dict) else getattr(m, "node_id", None)
+        trait = m.get("trait") if isinstance(m, dict) else getattr(m, "trait", None)
+        new_val = m.get("new_value") if isinstance(m, dict) else getattr(m, "new_value", None)
+        if not node_id or not trait or new_val is None:
+            continue
+        if node_id.startswith("WORLD_"):
+            _upsert_world_trait_snapshot(node_id, trait, float(new_val), fabula_time_now)
+        else:
+            _upsert_entity_trait(node_id, trait, float(new_val), fabula_time_now)
+
+    # --- Hidden deltas (Rung 3 abduction) ------------------------------
+    historical_anchor = (
+        fabula_time_historical if fabula_time_historical is not None else fabula_time_now
+    )
+    for entity_id, deltas in hidden.items():
+        ent = world_state.entities.get(entity_id)
+        if ent is None and not entity_id.startswith("WORLD_"):
+            continue
+        for trait, delta in (deltas or {}).items():
+            try:
+                delta_f = float(delta)
+            except (TypeError, ValueError):
+                continue
+            if entity_id.startswith("WORLD_"):
+                # Use the most-recent stacked snapshot for this trait
+                # (if any) as the abduction baseline so multiple hidden
+                # deltas + mutations compose, rather than always
+                # rebasing off the canonical magnitude.
+                stacked = topology.new_world_traits.get(entity_id)
+                wt = stacked or world_state.world_traits.get(entity_id)
+                if wt is None or wt.magnitude is None:
+                    continue
+                base = (
+                    stacked.state_timeline[-1].magnitude.value
+                    if stacked and stacked.state_timeline
+                    and stacked.state_timeline[-1].magnitude is not None
+                    else wt.magnitude.value
+                )
+                _upsert_world_trait_snapshot(
+                    entity_id, trait, base + delta_f, historical_anchor,
+                )
+            else:
+                tv = ent.traits.get(trait)
+                base = tv.value if tv else 0.0
+                _upsert_entity_trait(
+                    entity_id, trait, base + delta_f, historical_anchor,
+                )
+
+    # --- Social mutations (relationship axes) --------------------------
+    for sm in social_muts:
+        if isinstance(sm, dict):
+            src = sm.get("source_entity_id")
+            tgt = sm.get("target_entity_id")
+            metric = sm.get("metric")
+            new_val = sm.get("new_value")
+            inertia = sm.get("inertia", 0.3)
+        else:
+            src = getattr(sm, "source_entity_id", None)
+            tgt = getattr(sm, "target_entity_id", None)
+            metric = getattr(sm, "metric", None)
+            new_val = getattr(sm, "new_value", None)
+            inertia = getattr(sm, "inertia", 0.3)
+        if not src or not tgt or not metric or new_val is None:
+            continue
+        if metric not in ("affinity", "fear", "power_dynamic"):
+            continue
+        rm = RelationshipMetric(
+            value=float(new_val),
+            inertia=float(inertia),
+            evidence_strength="moderate",
+            # Anchor at the current fabula horizon. The dedup pass
+            # (``_deduplicate_social``) uses ``>=`` on ties so this
+            # bridged sandbox value wins against any same-tick metric
+            # the prose extractor emitted for the same dyad/axis,
+            # because the bridge runs *after* extraction and is
+            # therefore appended later in ``social_topology``.
+            last_updated_fabula=fabula_time_now,
+            observed=True,
+        )
+        topology.social_topology.append(RelationshipEdge(
+            source_entity_id=src,
+            target_entity_id=tgt,
+            metrics={metric: rm},
+            world_id=world_id,
+        ))
+
+    return topology
 
 
 def _resolve_manual_edit_anchor(
@@ -876,7 +1178,7 @@ def run_pipeline(
             "[Pipeline] Query type '%s' — answering question over physics state.",
             query.query_type,
         )
-        _run_answer_step(query=query, physics_result=physics_result, cfg=cfg, history=history)
+        _run_answer_step(query=query, physics_result=physics_result, cfg=cfg, history=history, vwm=vwm)
         return result
 
     # =================================================================
@@ -916,18 +1218,26 @@ def run_pipeline(
             ws_for_extract = _apply_manual_edit_replacements(
                 ws, query.replace_event_ids,
             )
+            _world_id, _branch_label = _resolve_branch_policy(query, cfg, vwm)
+            _preceding_prose = _gather_preceding_prose(
+                vwm,
+                branch_world_id=_world_id,
+                branch_label=_branch_label,
+            )
             topology = extract_topology_from_prose(
                 prose=result.prose,
                 world_state=ws_for_extract,
                 config=cfg.extraction_config,
                 fabula_time_base=anchor_base,
+                branch_world_id=_world_id,
+                branch_label=_branch_label,
+                preceding_prose=_preceding_prose,
             )
             description = (
                 f"Manual edit: {query.description}"
                 if query.description
                 else "Manual edit"
             )
-            _world_id, _branch_label = _resolve_branch_policy(query, cfg)
             # If the user asked for replace semantics, start the merge
             # from the *trimmed* world so the dropped events don't
             # come back via deep-copy of ``vwm.current``.
@@ -972,7 +1282,7 @@ def run_pipeline(
 
     # Resolve branch policy once so every brief-construction site below
     # can stamp the active branch onto the CreativeBrief.
-    _branch_world_id, _branch_label = _resolve_branch_policy(query, cfg)
+    _branch_world_id, _branch_label = _resolve_branch_policy(query, cfg, vwm)
 
     # Compute the story-so-far excerpt once for this query so every
     # brief-construction site below can thread it onto the brief and
@@ -985,15 +1295,24 @@ def run_pipeline(
         branch_world_id=_branch_world_id,
         branch_label=_branch_label,
     )
+    # Compute the factual contrast summary for shadow queries so the
+    # renderer (and the auditor) can see what *did* happen on canon
+    # at the same horizon. None for factual queries.
+    _factual_contrast = _compute_factual_contrast(
+        vwm, branch_world_id=_branch_world_id,
+    )
 
     # For directive queries with causal engine, the brief is already built
     brief: CreativeBrief | None = None
     if query.query_type == "directive" and "creative_brief" in physics_result:
         brief_data = physics_result["creative_brief"]
         brief = CreativeBrief(**brief_data) if isinstance(brief_data, dict) else brief_data
-        _stamp_brief_branch(brief, _branch_world_id, _branch_label)
-        if _preceding_prose and not brief.preceding_prose:
-            brief.preceding_prose = _preceding_prose
+        _stamp_brief_full(
+            brief, vwm,
+            branch_world_id=_branch_world_id,
+            branch_label=_branch_label,
+            factual_contrast=_factual_contrast,
+        )
 
     if cfg.skip_audit:
         # Generate once, no audit loop
@@ -1002,6 +1321,9 @@ def run_pipeline(
         scene = render_from_query(
             query, physics_result, ws, gen_cfg,
             preceding_prose=_preceding_prose,
+            branch_world_id=_branch_world_id,
+            branch_label=_branch_label,
+            factual_contrast_summary=_factual_contrast,
         )
 
         history.record("generation", GenerationStepRecord(
@@ -1057,13 +1379,19 @@ def run_pipeline(
             initial_scene = render_from_query(
                 query, physics_result, ws, gen_cfg,
                 preceding_prose=_preceding_prose,
+                branch_world_id=_branch_world_id,
+                branch_label=_branch_label,
+                factual_contrast_summary=_factual_contrast,
             )
 
             # Build a brief for the auditor from the query
             brief = _build_brief_for_query(query, physics_result, ws, syuzhet_anchor=eff_syuzhet)
-            _stamp_brief_branch(brief, _branch_world_id, _branch_label)
-            if _preceding_prose and not brief.preceding_prose:
-                brief.preceding_prose = _preceding_prose
+            _stamp_brief_full(
+                brief, vwm,
+                branch_world_id=_branch_world_id,
+                branch_label=_branch_label,
+                factual_contrast=_factual_contrast,
+            )
 
             from shadow_loom.auditor import run_feedback_loop
             feedback = run_feedback_loop(
@@ -1119,17 +1447,45 @@ def run_pipeline(
         logger.info("[Pipeline] Steps 6–7: Extracting topology from prose and merging.")
         try:
             spawns = promote_sandbox_spawns(ws, physics_state)
+            _world_id, _branch_label = _resolve_branch_policy(query, cfg, vwm)
             topology = extract_topology_from_prose(
                 prose=result.prose,
                 world_state=ws,
                 config=cfg.extraction_config,
                 spawns=spawns,
+                branch_world_id=_world_id,
+                branch_label=_branch_label,
+                preceding_prose=_preceding_prose,
             )
             description = (
                 f"Pipeline merge after {query.query_type} query"
                 f" (audit={'converged' if result.converged else 'skipped/failed'})"
             )
-            _world_id, _branch_label = _resolve_branch_policy(query, cfg)
+            # Bridge sandbox-only physics deltas (do-surgery mutations,
+            # social_mutations, abduction hidden_deltas) directly into
+            # the topology so the merge persists them even if the
+            # generated prose did not verbalise them clearly enough
+            # for the extractor to re-discover.
+            _spacing = (
+                cfg.extraction_config.fabula_time_spacing
+                if cfg.extraction_config is not None else 100
+            )
+            _ft_now = max(
+                (e.fabula_time for e in ws.events),
+                default=-_spacing,
+            ) + _spacing
+            _ft_hist = min(
+                (e.fabula_time for e in ws.events),
+                default=0,
+            )
+            _augment_topology_with_sandbox_deltas(
+                topology,
+                world_state=ws,
+                physics_result=physics_result,
+                fabula_time_now=_ft_now,
+                fabula_time_historical=_ft_hist,
+                world_id=_world_id,
+            )
             vwm_next = vwm.merge(
                 topology,
                 source="pipeline",
@@ -1279,7 +1635,7 @@ async def run_pipeline_async(
             "[Pipeline\u00b7Async] Query type '%s' \u2014 answering question over physics state.",
             query.query_type,
         )
-        _run_answer_step(query=query, physics_result=physics_result, cfg=cfg, history=history)
+        _run_answer_step(query=query, physics_result=physics_result, cfg=cfg, history=history, vwm=vwm)
         return result
 
     # Evaluation: full-story quality audit (delegates to shared sync helper)
@@ -1305,13 +1661,21 @@ async def run_pipeline_async(
             ws_for_extract = _apply_manual_edit_replacements(
                 ws, query.replace_event_ids,
             )
+            _world_id, _branch_label = _resolve_branch_policy(query, cfg, vwm)
+            _preceding_prose = _gather_preceding_prose(
+                vwm,
+                branch_world_id=_world_id,
+                branch_label=_branch_label,
+            )
             topology = extract_topology_from_prose(
                 prose=result.prose, world_state=ws_for_extract,
                 config=cfg.extraction_config,
                 fabula_time_base=anchor_base,
+                branch_world_id=_world_id,
+                branch_label=_branch_label,
+                preceding_prose=_preceding_prose,
             )
             description = f"Manual edit: {query.description}" if query.description else "Manual edit"
-            _world_id, _branch_label = _resolve_branch_policy(query, cfg)
             vwm_for_merge = (
                 vwm.model_copy(update={"current": ws_for_extract})
                 if query.replace_event_ids
@@ -1339,25 +1703,34 @@ async def run_pipeline_async(
 
     # Steps 3–4: Brief + Generation (same as sync)
     physics_state = physics_result.get("physics_state", {})
-    _branch_world_id, _branch_label = _resolve_branch_policy(query, cfg)
+    _branch_world_id, _branch_label = _resolve_branch_policy(query, cfg, vwm)
     _preceding_prose = _gather_preceding_prose(
         vwm,
         branch_world_id=_branch_world_id,
         branch_label=_branch_label,
     )
+    _factual_contrast = _compute_factual_contrast(
+        vwm, branch_world_id=_branch_world_id,
+    )
     brief: CreativeBrief | None = None
     if query.query_type == "directive" and "creative_brief" in physics_result:
         brief_data = physics_result["creative_brief"]
         brief = CreativeBrief(**brief_data) if isinstance(brief_data, dict) else brief_data
-        _stamp_brief_branch(brief, _branch_world_id, _branch_label)
-        if _preceding_prose and not brief.preceding_prose:
-            brief.preceding_prose = _preceding_prose
+        _stamp_brief_full(
+            brief, vwm,
+            branch_world_id=_branch_world_id,
+            branch_label=_branch_label,
+            factual_contrast=_factual_contrast,
+        )
 
     if cfg.skip_audit:
         gen_cfg = cfg.generation_config or GenerationConfig()
         scene = render_from_query(
             query, physics_result, ws, gen_cfg,
             preceding_prose=_preceding_prose,
+            branch_world_id=_branch_world_id,
+            branch_label=_branch_label,
+            factual_contrast_summary=_factual_contrast,
         )
         history.record("generation", GenerationStepRecord(scene=scene, brief=brief))
         result.scene = scene
@@ -1399,11 +1772,17 @@ async def run_pipeline_async(
             initial_scene = render_from_query(
                 query, physics_result, ws, gen_cfg,
                 preceding_prose=_preceding_prose,
+                branch_world_id=_branch_world_id,
+                branch_label=_branch_label,
+                factual_contrast_summary=_factual_contrast,
             )
             brief = _build_brief_for_query(query, physics_result, ws, syuzhet_anchor=eff_syuzhet)
-            _stamp_brief_branch(brief, _branch_world_id, _branch_label)
-            if _preceding_prose and not brief.preceding_prose:
-                brief.preceding_prose = _preceding_prose
+            _stamp_brief_full(
+                brief, vwm,
+                branch_world_id=_branch_world_id,
+                branch_label=_branch_label,
+                factual_contrast=_factual_contrast,
+            )
             from shadow_loom.auditor import run_feedback_loop
             feedback = run_feedback_loop(
                 initial_scene=initial_scene, brief=brief, world_state=ws,
@@ -1444,15 +1823,38 @@ async def run_pipeline_async(
         logger.info("[Pipeline·Async] Steps 6–7: Extracting topology from prose and merging.")
         try:
             spawns = promote_sandbox_spawns(ws, physics_state)
+            _world_id, _branch_label = _resolve_branch_policy(query, cfg, vwm)
             topology = extract_topology_from_prose(
                 prose=result.prose, world_state=ws, config=cfg.extraction_config,
                 spawns=spawns,
+                branch_world_id=_world_id,
+                branch_label=_branch_label,
+                preceding_prose=_preceding_prose,
             )
             description = (
                 f"Pipeline merge after {query.query_type} query"
                 f" (audit={'converged' if result.converged else 'skipped/failed'})"
             )
-            _world_id, _branch_label = _resolve_branch_policy(query, cfg)
+            _spacing = (
+                cfg.extraction_config.fabula_time_spacing
+                if cfg.extraction_config is not None else 100
+            )
+            _ft_now = max(
+                (e.fabula_time for e in ws.events),
+                default=-_spacing,
+            ) + _spacing
+            _ft_hist = min(
+                (e.fabula_time for e in ws.events),
+                default=0,
+            )
+            _augment_topology_with_sandbox_deltas(
+                topology,
+                world_state=ws,
+                physics_result=physics_result,
+                fabula_time_now=_ft_now,
+                fabula_time_historical=_ft_hist,
+                world_id=_world_id,
+            )
             vwm_next = vwm.merge(
                 topology, source="pipeline", description=description, prose=result.prose,
                 world_id=_world_id, branch_label=_branch_label,
@@ -1487,6 +1889,7 @@ def _run_answer_step(
     physics_result: Dict[str, Any],
     cfg: "PipelineConfig",
     history: "PipelineHistory",
+    vwm: Optional[VersionedWorldModel] = None,
 ) -> None:
     """Call the LLM Q&A agent and stash the result on ``physics_result``.
 
@@ -1504,12 +1907,30 @@ def _run_answer_step(
     require_proof = bool(getattr(query, "require_proof", False))
     qtype = getattr(query, "query_type", "general")
 
+    # Resolve the active branch so the answer agent sees the same
+    # branch framing the rest of the pipeline would have used. Without
+    # this, general/interrogate questions asked while on a shadow
+    # fork were answered against a branch-agnostic world slice.
+    _branch_world_id, _branch_label = _resolve_branch_policy(query, cfg, vwm)
+    _preceding_prose = _gather_preceding_prose(
+        vwm,
+        branch_world_id=_branch_world_id,
+        branch_label=_branch_label,
+    )
+    _factual_contrast = _compute_factual_contrast(
+        vwm, branch_world_id=_branch_world_id,
+    )
+
     card = answer_question(
         question=question,
         physics_state=physics_result.get("physics_state"),
         query_type=qtype,
         require_proof=require_proof,
         config=cfg.generation_config,
+        branch_world_id=_branch_world_id,
+        branch_label=_branch_label,
+        factual_contrast_summary=_factual_contrast,
+        preceding_prose=_preceding_prose,
     )
 
     physics_result["answer"] = card.answer

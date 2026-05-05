@@ -619,7 +619,28 @@ def _build_world_traits_agent(config: ExtractionConfig) -> Agent[None, WorldTrai
 # --- Legacy single-pass agent (kept for backward compatibility) ---
 
 def _build_ontology_agent(config: ExtractionConfig) -> Agent[None, GlobalRegister]:
-    """Construct the legacy single-pass Step 1 PydanticAI agent."""
+    """Construct the legacy single-pass Step 1 PydanticAI agent.
+
+    .. deprecated::
+        The active pipeline uses the four-pass split
+        (`_build_location_agent`, `_build_object_agent`,
+        `_build_entity_agent`, `_build_world_traits_agent`). This
+        single-pass builder is retained only for backward-compat
+        callers and emits a `DeprecationWarning` when invoked.
+    """
+    import warnings
+    warnings.warn(
+        "ontology_extraction.md / _build_ontology_agent is deprecated; "
+        "use the split ontology_locations / ontology_objects / "
+        "ontology_entities / ontology_world_traits agents instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    logger.warning(
+        "[ingestion] Legacy _build_ontology_agent invoked \u2014 the "
+        "active pipeline uses the four-pass split; this prompt is "
+        "stale relative to the current channel/world-trait schema."
+    )
     return Agent(
         _resolve_model(config.model),
         output_type=NativeOutput(GlobalRegister),
@@ -3339,7 +3360,14 @@ def _deduplicate_social(edges: List[RelationshipEdge]) -> List[RelationshipEdge]
         merged_metrics = dict(best[key].metrics)
         for name, m in e.metrics.items():
             existing = merged_metrics.get(name)
-            if existing is None or m.last_updated_fabula > existing.last_updated_fabula:
+            # ``>=`` (rather than ``>``) so a later-appended metric at
+            # the same fabula tick wins. Pipeline appends the sandbox
+            # bridge's ``RelationshipEdge``s *after* the prose
+            # extractor's edges, so this lets the deterministic
+            # physics value override the LLM extractor's reading on
+            # ties without needing to fudge ``last_updated_fabula``
+            # into the future (which would break time-slicing).
+            if existing is None or m.last_updated_fabula >= existing.last_updated_fabula:
                 merged_metrics[name] = m
         best[key] = best[key].model_copy(update={"metrics": merged_metrics})
     return list(best.values())

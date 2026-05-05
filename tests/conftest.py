@@ -86,3 +86,21 @@ def _stub_answer_question(monkeypatch):
     except Exception:
         pass
     yield
+
+
+def make_empty_world_state():
+    """Build a minimal valid ``WorldStateV1`` for unit tests.
+
+    Centralised here so per-file ``_empty_world_state`` helpers can
+    import a single canonical version instead of duplicating the
+    required-field list.
+    """
+    from shadow_loom.models import WorldStateV1
+
+    return WorldStateV1(
+        locations={},
+        objects={},
+        entities={},
+        events=[],
+        causal_topology=[],
+    )

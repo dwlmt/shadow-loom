@@ -77,6 +77,7 @@ provider whose client id is empty.
 | Google | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | `${OAUTH_REDIRECT_BASE}/auth/google/callback` |
 | Discord | `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET` | `${OAUTH_REDIRECT_BASE}/auth/discord/callback` |
 | Microsoft | `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET` | `${OAUTH_REDIRECT_BASE}/auth/microsoft/callback` |
+| Apple | `APPLE_CLIENT_ID` *plus* either `APPLE_CLIENT_SECRET` (pre-minted JWT) or the trio `APPLE_TEAM_ID` + `APPLE_KEY_ID` + `APPLE_PRIVATE_KEY` | `${OAUTH_REDIRECT_BASE}/auth/apple/callback` (must be HTTPS — Apple rejects `http://`) |
 
 For GitHub specifically:
 
@@ -85,26 +86,48 @@ For GitHub specifically:
 3. Authorization callback URL: `https://YOUR-DOMAIN/auth/github/callback`
 4. Generate a client secret, paste both into Railway
 
+For Apple specifically:
+
+1. Create an **App ID** with Sign in with Apple enabled at
+   <https://developer.apple.com/account/resources/identifiers/list>.
+2. Create a **Services ID** under the same identifier, add your
+   Railway domain to *Domains and Subdomains*, and add the full
+   callback URL above to *Return URLs*. Put the Services ID in
+   `APPLE_CLIENT_ID` (e.g. `com.example.shadow-loom.web`).
+3. Create a **Key** with Sign in with Apple enabled, download the
+   `.p8` file, and copy its full PEM contents (including the
+   BEGIN/END lines) into `APPLE_PRIVATE_KEY`. Set `APPLE_KEY_ID` to
+   the 10-character key id and `APPLE_TEAM_ID` to your developer
+   team id (top-right of the Apple Developer portal). Shadow-Loom
+   will mint and refresh the ES256 client_secret JWT for you.
+
 ### Recommended LLM routing
 
 ```
-DEFAULT_MODEL=openrouter:anthropic/claude-3.5-sonnet
-GENERATION_MODEL=openrouter:anthropic/claude-3.5-sonnet
-QUERY_PARSING_MODEL=openrouter:anthropic/claude-3.5-haiku
-AUDITOR_MODEL=openrouter:anthropic/claude-3.5-sonnet
-AUDITOR_GENERATION_MODEL=openrouter:anthropic/claude-3.5-sonnet
-EXTRACTION_MODEL=openrouter:anthropic/claude-3.5-sonnet
+DEFAULT_MODEL=openrouter:qwen/qwen3.6-35b-a3b
+GENERATION_MODEL=openrouter:qwen/qwen3.6-35b-a3b
+QUERY_PARSING_MODEL=openrouter:qwen/qwen3.6-35b-a3b
+AUDITOR_MODEL=openrouter:qwen/qwen3.6-35b-a3b
+AUDITOR_GENERATION_MODEL=openrouter:qwen/qwen3.6-35b-a3b
+EXTRACTION_MODEL=openrouter:qwen/qwen3.6-35b-a3b
 
-# Output-token caps tuned for Claude / GPT-4o-class models
-GENERATION_MAX_TOKENS=8000
-QUERY_PARSING_MAX_TOKENS=4000
-AUDITOR_MAX_TOKENS=4000
-AUDITOR_MAX_TOKENS_GENERATION=8000
+# Output-token caps tuned for Qwen3.6-35B-A3B (262K native context).
+GENERATION_MAX_TOKENS=64000
+QUERY_PARSING_MAX_TOKENS=16000
+AUDITOR_MAX_TOKENS=16000
+AUDITOR_MAX_TOKENS_GENERATION=64000
 ```
 
-Pick any model from <https://openrouter.ai/models>. The `openrouter:`
-prefix is parsed by PydanticAI; everything after the colon is the
-OpenRouter model id verbatim. See
+The defaults match local development against
+`ollama:qwen3.6:35b`, so prompts are tuned for it. See
+[`qwen/qwen3.6-35b-a3b` on OpenRouter](https://openrouter.ai/qwen/qwen3.6-35b-a3b)
+for live pricing (~$0.15/M in, $1/M out at the time of writing) and
+provider routing. Pick any other model from
+<https://openrouter.ai/models>; the `openrouter:` prefix is parsed
+by PydanticAI and everything after the colon is the OpenRouter model
+id verbatim. **If you swap to a short-output model** (Claude 3.5
+Sonnet caps at ~8K, GPT-4o at ~16K) drop the `*_MAX_TOKENS` knobs to
+match — the defaults assume Qwen3.6's full 262K window. See
 [settings.md §3](settings.md#3-generation-step-10--prose-rendering)
 for the full list of stage-specific model knobs.
 
@@ -238,7 +261,7 @@ docker run --rm -p 8080:8080 \
     -e OAUTH_REDIRECT_BASE='http://localhost:8080' \
     -e OPENROUTER_API_KEY=sk-or-... \
     -e GITHUB_CLIENT_ID=... -e GITHUB_CLIENT_SECRET=... \
-    -e DEFAULT_MODEL='openrouter:anthropic/claude-3.5-sonnet' \
+    -e DEFAULT_MODEL='openrouter:qwen/qwen3.6-35b-a3b' \
     shadow-loom
 ```
 

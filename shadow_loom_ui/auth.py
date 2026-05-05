@@ -3,14 +3,16 @@
 
 """OAuth authentication middleware and routes for Shadow-Loom UI.
 
-Supports GitHub, Google, Discord, and Microsoft OAuth providers via Authlib.
-Also supports bearer-token API key authentication for MCP/API access.
-When no OAuth credentials are configured, the app runs without auth.
+Supports GitHub, Google, Discord, Microsoft, and Apple OAuth providers
+via Authlib. Also supports bearer-token API key authentication for
+MCP/API access. When no OAuth credentials are configured, the app runs
+without auth.
 """
 
 from __future__ import annotations
 
 import logging
+import time
 
 from authlib.integrations.starlette_client import OAuth
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -21,6 +23,60 @@ from shadow_loom_ui import config
 from shadow_loom_ui.db import upsert_user, validate_api_key
 
 logger = logging.getLogger(__name__)
+
+
+# =====================================================================
+# Apple Sign In — ES256 client_secret JWT (auto-minted, cached, refreshed)
+# =====================================================================
+# Apple requires the OAuth `client_secret` to be a JWT signed with the
+# .p8 private key issued in the Apple Developer console. Spec:
+# https://developer.apple.com/documentation/sign_in_with_apple/generate_and_validate_tokens
+# Max expiry is 6 months; we mint a fresh 1-hour JWT on demand.
+
+_APPLE_AUDIENCE = "https://appleid.apple.com"
+_apple_jwt_cache: dict[str, object] = {"token": "", "expires_at": 0.0}
+
+
+def _mint_apple_client_secret() -> str:
+    """Return a cached or freshly-minted Apple client_secret JWT."""
+    if config.APPLE_CLIENT_SECRET:
+        # Operator supplied a pre-minted JWT; trust them to rotate it.
+        return config.APPLE_CLIENT_SECRET
+    if not (
+        config.APPLE_TEAM_ID
+        and config.APPLE_KEY_ID
+        and config.APPLE_PRIVATE_KEY
+        and config.APPLE_CLIENT_ID
+    ):
+        return ""
+
+    now = time.time()
+    cached = _apple_jwt_cache
+    if cached["token"] and float(cached["expires_at"]) - now > 60:
+        return str(cached["token"])
+
+    # authlib.jose is deprecated in favour of joserfc but still ships
+    # with authlib<2.0; using it avoids pulling in another dependency.
+    import warnings as _warnings
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("ignore")
+        from authlib.jose import jwt as _jwt
+
+    expires_at = now + 3600  # 1 hour
+    header = {"alg": "ES256", "kid": config.APPLE_KEY_ID}
+    payload = {
+        "iss": config.APPLE_TEAM_ID,
+        "iat": int(now),
+        "exp": int(expires_at),
+        "aud": _APPLE_AUDIENCE,
+        "sub": config.APPLE_CLIENT_ID,
+    }
+    private_key = config.APPLE_PRIVATE_KEY.replace("\\n", "\n")
+    token = _jwt.encode(header, payload, private_key).decode("ascii")
+    cached["token"] = token
+    cached["expires_at"] = expires_at
+    return token
+
 
 oauth = OAuth()
 
@@ -65,6 +121,22 @@ if config.MICROSOFT_CLIENT_ID:
             "https://login.microsoftonline.com/common/v2.0/.well-known/openid-configuration"
         ),
         client_kwargs={"scope": "openid email profile"},
+    )
+
+if config.APPLE_CLIENT_ID and _mint_apple_client_secret():
+    # Apple POSTs back to the redirect_uri with `response_mode=form_post`
+    # whenever scopes other than `openid` are requested.
+    oauth.register(
+        name="apple",
+        client_id=config.APPLE_CLIENT_ID,
+        client_secret=_mint_apple_client_secret,  # callable so JWTs auto-refresh
+        server_metadata_url=(
+            "https://appleid.apple.com/.well-known/openid-configuration"
+        ),
+        client_kwargs={
+            "scope": "name email",
+            "response_mode": "form_post",
+        },
     )
 
 
@@ -182,6 +254,38 @@ async def auth_callback(request: Request):
         display_name = userinfo.get("name")
         email = userinfo.get("email") or userinfo.get("preferred_username")
         avatar = None  # Microsoft Graph photo requires separate API call
+    elif provider_name == "apple":
+        # Apple's identity is delivered entirely in the id_token; the
+        # `user` form field (sent only on first auth) carries the name.
+        userinfo = token.get("userinfo") or {}
+        if not userinfo:
+            try:
+                userinfo = await client.parse_id_token(request, token)
+            except Exception:  # noqa: BLE001 — fall back to raw token
+                userinfo = {}
+        user_id = userinfo.get("sub", "")
+        email = userinfo.get("email")
+        # First-time consent: Apple sends `user={"name":{...},"email":...}`
+        # in the form body; subsequent logins omit it.
+        try:
+            form = await request.form()
+            user_blob = form.get("user")
+            if user_blob:
+                import json as _json
+                user_payload = _json.loads(user_blob)
+                name = user_payload.get("name") or {}
+                display_name = (
+                    " ".join(
+                        part for part in (name.get("firstName"), name.get("lastName")) if part
+                    ).strip()
+                    or None
+                )
+            else:
+                display_name = None
+        except Exception:  # noqa: BLE001
+            display_name = None
+        username = (email.split("@")[0] if email else f"apple-{user_id[:8]}") or "apple-user"
+        avatar = None  # Apple does not expose a profile picture endpoint
     else:
         return JSONResponse({"error": "Unsupported provider"}, status_code=400)
 

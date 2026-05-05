@@ -74,7 +74,7 @@ app.add_middleware(AuthMiddleware)
 
 # Auth routes
 app.add_route("/auth/{provider}", auth_login, methods=["GET"])
-app.add_route("/auth/{provider}/callback", auth_callback, methods=["GET"])
+app.add_route("/auth/{provider}/callback", auth_callback, methods=["GET", "POST"])
 app.add_route("/auth/logout", auth_logout, methods=["GET"])
 
 

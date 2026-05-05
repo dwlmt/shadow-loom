@@ -51,11 +51,10 @@ Universal causal links between **any** AMWN nodes — events, entities, objects,
    - **`power_dynamic`** — institutional / interpersonal authority gradient (range −1..+1, signed from the perspective entity's view). Mutate when one party gains formal authority over the other (promotion, succession, capture, hostage-taking), loses it (deposed, surrendered, escaped), or when a private leverage shifts the balance (blackmail material acquired, debt forgiven, secret learned).
 
    Worked examples — one per axis:
-   - **affinity** (Romeo and Juliet): the balcony scene → `mutation_social`, target=`ENT_JULIET`, rel_counterpart=`ENT_ROMEO`, trait_target=`affinity`, delta=+0.6 (love is sealed). Counter-edge when Romeo kills Tybalt → `mutation_social`, target=`ENT_JULIET`, rel_counterpart=`ENT_ROMEO`, trait_target=`affinity`, delta=−0.2 (the bond is shaken though not broken). *Without these the affinity axis reads as a flat baseline and the romance arc looks emotionally inert on the conflict gauge.*
-   - **fear** (Macbeth):
-     - Macbeth murders Duncan → `mutation_social`, target=`ENT_MACBETH`, rel_counterpart=`ENT_BANQUO`, trait_target=`fear`, delta=+0.3 (Banquo suspects).
-     - Banquo murdered → `mutation_social`, target=`ENT_MACBETH`, rel_counterpart=`ENT_BANQUO`, trait_target=`fear`, delta=−0.5 (the threat is removed; fear relaxes).
-   - **power_dynamic** (Macbeth): Macbeth crowned king → `mutation_social`, target=`ENT_MACDUFF`, rel_counterpart=`ENT_MACBETH`, trait_target=`power_dynamic`, delta=−0.4 (Macduff is now subordinate). Counter-edge when Malcolm raises an army and is acclaimed → `mutation_social`, target=`ENT_MACDUFF`, rel_counterpart=`ENT_MACBETH`, trait_target=`power_dynamic`, delta=+0.5 (Macbeth's authority collapses).
+   - **affinity** (Romeo & Juliet): balcony scene → `mutation_social`, target=`ENT_JULIET`, rel_counterpart=`ENT_ROMEO`, trait_target=`affinity`, delta=+0.6. Counter-edge when Romeo kills Tybalt → same dyad, delta=−0.2 (bond shaken).
+   - **fear** (Macbeth): Macbeth murders Duncan → target=`ENT_MACBETH`, rel_counterpart=`ENT_BANQUO`, trait_target=`fear`, delta=+0.3. Counter-edge when Banquo is killed → same dyad, delta=−0.5 (threat removed).
+   - **power_dynamic** (Macbeth): Macbeth crowned king → target=`ENT_MACDUFF`, rel_counterpart=`ENT_MACBETH`, trait_target=`power_dynamic`, delta=−0.4 (Macduff subordinate). Counter-edge when Malcolm is acclaimed → same dyad, delta=+0.5 (Macbeth's authority collapses).
+   *Without the counter-edges the axis ratchets monotonically and the corresponding affective gauge flatlines.*
 4. **affordance_gate** (State → Event): A state enables or prevents an event. E.g. the door is locked → prevents the detective from entering. States act as prerequisites (affordances) for events.
 5. **ambient_propagation** (State → State): Background physics without a specific event trigger. E.g. the location is freezing → the character's health deteriorates.
 

@@ -725,6 +725,9 @@ def build_observation_brief(
     world_state: WorldStateV1,
     *,
     preceding_prose: Optional[str] = None,
+    branch_world_id: Literal["factual", "shadow"] = "factual",
+    branch_label: Optional[str] = None,
+    factual_contrast_summary: Optional[str] = None,
 ) -> CreativeBrief:
     """Build a lightweight CreativeBrief for observation queries."""
     pov = query.focus_entity_ids[0] if query.focus_entity_ids else None
@@ -736,6 +739,9 @@ def build_observation_brief(
         constraints=constraints,
         narrative_style=getattr(world_state, "narrative_style", None),
         preceding_prose=preceding_prose,
+        branch_world_id=branch_world_id,
+        branch_label=branch_label,
+        factual_contrast_summary=factual_contrast_summary,
         rendering=RenderingDirective(
             rendering_mode="observation",
             pov_lock=pov,
@@ -764,6 +770,9 @@ def build_intervention_brief(
     rule3_pruning_mode: Literal["advisory", "prune"] = "advisory",
     *,
     preceding_prose: Optional[str] = None,
+    branch_world_id: Literal["factual", "shadow"] = "factual",
+    branch_label: Optional[str] = None,
+    factual_contrast_summary: Optional[str] = None,
 ) -> CreativeBrief:
     """Build a CreativeBrief for intervention (do-calculus) queries."""
     pruned_set = set(rule3_pruned_interventions or [])
@@ -928,6 +937,9 @@ def build_intervention_brief(
         constraints=constraints,
         narrative_style=getattr(world_state, "narrative_style", None),
         preceding_prose=preceding_prose,
+        branch_world_id=branch_world_id,
+        branch_label=branch_label,
+        factual_contrast_summary=factual_contrast_summary,
         rendering=RenderingDirective(
             rendering_mode="intervention",
             pov_lock=(_entities_from_intervention_keys(
@@ -959,6 +971,9 @@ def build_counterfactual_brief(
     rule3_pruning_mode: Literal["advisory", "prune"] = "advisory",
     *,
     preceding_prose: Optional[str] = None,
+    branch_world_id: Literal["factual", "shadow"] = "factual",
+    branch_label: Optional[str] = None,
+    factual_contrast_summary: Optional[str] = None,
 ) -> CreativeBrief:
     """Build a CreativeBrief for counterfactual (Rung 3) queries."""
     # Build AbductionTruth entries from hidden_deltas
@@ -1114,6 +1129,9 @@ def build_counterfactual_brief(
         constraints=constraints,
         narrative_style=getattr(world_state, "narrative_style", None),
         preceding_prose=preceding_prose,
+        branch_world_id=branch_world_id,
+        branch_label=branch_label,
+        factual_contrast_summary=factual_contrast_summary,
         rendering=RenderingDirective(
             rendering_mode="counterfactual",
             pov_lock=target_entities[0] if target_entities else None,
@@ -1264,6 +1282,9 @@ def render_from_query(
     config: GenerationConfig | None = None,
     *,
     preceding_prose: Optional[str] = None,
+    branch_world_id: Literal["factual", "shadow"] = "factual",
+    branch_label: Optional[str] = None,
+    factual_contrast_summary: Optional[str] = None,
 ) -> GeneratedScene:
     """High-level convenience: build a brief from any query type and render.
 
@@ -1299,6 +1320,9 @@ def render_from_query(
         brief = build_observation_brief(
             request, physics_state, world_state,
             preceding_prose=preceding_prose,
+            branch_world_id=branch_world_id,
+            branch_label=branch_label,
+            factual_contrast_summary=factual_contrast_summary,
         )
         return render_scene(brief, config, "observation", physics_state)
 
@@ -1313,6 +1337,9 @@ def render_from_query(
             rule2_redundant_evidence=physics_result.get("rule2_redundant_evidence"),
             rule3_pruning_mode=physics_result.get("rule3_pruning_mode", "advisory"),
             preceding_prose=preceding_prose,
+            branch_world_id=branch_world_id,
+            branch_label=branch_label,
+            factual_contrast_summary=factual_contrast_summary,
         )
         return render_scene(brief, config, "intervention", physics_state)
 
@@ -1326,6 +1353,9 @@ def render_from_query(
             rule2_redundant_evidence=physics_result.get("rule2_redundant_evidence"),
             rule3_pruning_mode=physics_result.get("rule3_pruning_mode", "advisory"),
             preceding_prose=preceding_prose,
+            branch_world_id=branch_world_id,
+            branch_label=branch_label,
+            factual_contrast_summary=factual_contrast_summary,
         )
         return render_scene(brief, config, "counterfactual", physics_state)
 
@@ -1344,6 +1374,14 @@ def render_from_query(
             )
         if preceding_prose and not brief.preceding_prose:
             brief.preceding_prose = preceding_prose
+        # Stamp branch context onto the brief — directive paths that
+        # bypass the pipeline-level stamping (e.g. skip_audit) would
+        # otherwise lose the shadow-branch framing.
+        brief.branch_world_id = branch_world_id
+        if branch_label is not None:
+            brief.branch_label = branch_label
+        if factual_contrast_summary is not None and not brief.factual_contrast_summary:
+            brief.factual_contrast_summary = factual_contrast_summary
         return render_scene(brief, config, "directive", physics_state)
 
     elif request.query_type == "interrogate":

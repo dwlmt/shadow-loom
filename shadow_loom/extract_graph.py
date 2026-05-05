@@ -593,6 +593,9 @@ def extract_topology_from_prose(
     spawns: Optional[Dict[str, Dict[str, Any]]] = None,
     fabula_time_base: Optional[int] = None,
     fabula_time_spacing: Optional[int] = None,
+    branch_world_id: Literal["factual", "shadow"] = "factual",
+    branch_label: Optional[str] = None,
+    preceding_prose: Optional[str] = None,
 ) -> "ChunkTopology":
     """Extract graph topology from generated prose using the existing physics + social agents.
 
@@ -682,8 +685,35 @@ def extract_topology_from_prose(
         f"flashbacks may use SMALLER values, flash-forwards LARGER. "
         f"Existing event ids in the world model must keep their "
         f"original fabula_time if you reference them.\n\n"
-        f"{prose}"
     )
+    # Branch framing — when re-extracting on a shadow fork, surface
+    # the branch identity so the physics agent knows the new events
+    # belong to a counterfactual world. The merge step will re-tag
+    # everything anyway, but telling the agent up-front keeps it from
+    # silently reconciling shadow events against factual canon.
+    if branch_world_id == "shadow":
+        physics_msg += (
+            f"AMWN BRANCH CONTEXT: this prose lives on a SHADOW fork "
+            f"(label: {branch_label or 'unspecified'}). Treat it as "
+            f"the actual lived world on this branch — do NOT try to "
+            f"reconcile contradictions with factual canon by dropping "
+            f"events. Every new event you extract will be tagged "
+            f"world_id=\"shadow\" by the merge step.\n\n"
+        )
+    if preceding_prose:
+        # Surface prior on-branch prose as background continuity so
+        # the agent can keep newly-extracted events / channels /
+        # snapshots consistent with what came before instead of
+        # re-extracting them as duplicates.
+        snippet = preceding_prose.strip()
+        if len(snippet) > 4000:
+            snippet = "\u2026" + snippet[-3999:]
+        physics_msg += (
+            f"=== STORY SO FAR (prior prose for continuity \u2014 do NOT "
+            f"re-extract events from this block) ===\n{snippet}\n\n"
+            f"=== NEW PROSE TO EXTRACT FROM ===\n"
+        )
+    physics_msg += prose
 
     # --- Physics extraction (events + causal + spatial + entity_updates) ---
     physics_agent = _build_physics_agent(config)
@@ -705,8 +735,43 @@ def extract_topology_from_prose(
         chunk_event_ids=[evt.id for evt in physics_result.events],
         previous_event_ids=[evt.id for evt in world_state.events],
     )
+    # Mirror the ingestion social-pass user message: feed the agent the
+    # event summary the physics pass just produced + branch / story-so-far
+    # framing so utterances and relationship metrics align with the
+    # already-extracted events instead of being re-derived from prose
+    # alone (which routinely missed cross-references and produced
+    # branch-blind social topology on shadow forks).
+    event_summary_lines = [
+        f"  - {e.id} (fabula={e.fabula_time}, syuzhet={e.syuzhet_index}, "
+        f"type={e.event_type}, actors={e.actor_ids}, targets={e.target_ids}): "
+        f"{e.description}"
+        for e in physics_result.events
+    ]
+    event_summary = "\n".join(event_summary_lines) or "  (no events extracted from this prose)"
+    social_msg_parts: List[str] = [
+        "Re-extraction of generated/edited prose.",
+        f"\nEVENTS EXTRACTED FROM THIS PROSE:\n{event_summary}",
+    ]
+    if branch_world_id == "shadow":
+        social_msg_parts.append(
+            f"\nAMWN BRANCH CONTEXT: this prose lives on a SHADOW fork "
+            f"(label: {branch_label or 'unspecified'}). Channels, "
+            f"utterances, and relationship metrics you emit will be "
+            f"tagged world_id=\"shadow\" by the merge step. Do not "
+            f"reconcile against factual canon."
+        )
+    if preceding_prose:
+        snippet = preceding_prose.strip()
+        if len(snippet) > 4000:
+            snippet = "\u2026" + snippet[-3999:]
+        social_msg_parts.append(
+            f"\n=== STORY SO FAR (prior prose for continuity \u2014 do NOT "
+            f"re-extract channels/utterances/edges from this block) ===\n{snippet}"
+        )
+    social_msg_parts.append(f"\nORIGINAL TEXT:\n{prose}")
+    social_msg = "\n".join(social_msg_parts)
     social_result: SocialExtraction = social_agent.run_sync(
-        prose, deps=social_deps,
+        social_msg, deps=social_deps,
     ).output
     log_agent_output(logger, "SocialExtraction", social_result)
 
@@ -911,6 +976,24 @@ def _backfill_world_trait(existing, incoming):
             seen_dom.add(d)
     if len(existing_domains) != len(existing.affected_domains):
         update["affected_domains"] = existing_domains
+    # Timeline: union by (fabula_time, world_id), preserve order.
+    # Without this, sandbox-derived WorldTraitSnapshot entries routed
+    # through ``new_world_traits`` for an already-existing trait would
+    # be silently dropped because the merge path falls through to the
+    # backfill branch instead of appending the trait fresh.
+    existing_seen = {
+        (s.fabula_time, getattr(s, "world_id", "factual"))
+        for s in existing.state_timeline
+    }
+    appended_timeline = list(existing.state_timeline)
+    for snap in incoming.state_timeline:
+        key = (snap.fabula_time, getattr(snap, "world_id", "factual"))
+        if key not in existing_seen:
+            appended_timeline.append(snap)
+            existing_seen.add(key)
+    if len(appended_timeline) != len(existing.state_timeline):
+        appended_timeline.sort(key=lambda s: s.fabula_time)
+        update["state_timeline"] = appended_timeline
     return existing.model_copy(update=update) if update else existing
 
 

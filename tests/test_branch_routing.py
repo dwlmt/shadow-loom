@@ -36,6 +36,13 @@ from shadow_loom.query_models import (
 )
 
 
+def _empty_world_state():
+    """Build a minimal valid ``WorldStateV1`` for resolver tests."""
+    from tests.conftest import make_empty_world_state
+
+    return make_empty_world_state()
+
+
 # =====================================================================
 # Pipeline branch-policy resolution
 # =====================================================================
@@ -95,6 +102,76 @@ class TestResolveBranchPolicy:
         world_id, label = _resolve_branch_policy(q, cfg)
         assert world_id == "shadow"
         assert label  # non-empty
+
+    def test_auto_inherits_active_shadow_branch(self):
+        """Non-counterfactual queries on an active shadow branch stay on that
+        branch under auto policy and inherit its label."""
+        from shadow_loom.extract_graph import (
+            VersionedWorldModel,
+            WorldModelVersion,
+        )
+
+        vwm = VersionedWorldModel.from_world_state(_empty_world_state())
+        # Append a shadow head onto the DAG.
+        vwm.history.append(WorldModelVersion(
+            version=1,
+            timestamp="2026-05-05T00:00:00Z",
+            source="pipeline",
+            description="shadow fork",
+            world_id="shadow",
+            branch_label="What if Macbeth refused",
+        ))
+
+        q = InterventionQuery(
+            original_query="Have Banquo confess.",
+            interventions={"banquo.confessed": True},
+        )
+        cfg = PipelineConfig()  # auto
+        world_id, label = _resolve_branch_policy(q, cfg, vwm)
+        assert world_id == "shadow"
+        assert label == "What if Macbeth refused"
+
+    def test_auto_counterfactual_forks_off_shadow_with_new_label(self):
+        """A counterfactual launched from an active shadow branch creates a
+        new fork — its label derives from the new query, NOT the parent."""
+        from shadow_loom.extract_graph import (
+            VersionedWorldModel,
+            WorldModelVersion,
+        )
+
+        vwm = VersionedWorldModel.from_world_state(_empty_world_state())
+        vwm.history.append(WorldModelVersion(
+            version=1,
+            timestamp="2026-05-05T00:00:00Z",
+            source="pipeline",
+            description="parent shadow fork",
+            world_id="shadow",
+            branch_label="Parent fork label",
+        ))
+
+        q = CounterfactualQuery(
+            original_query="What if Banquo had escaped earlier?",
+            historical_interventions={"EVT_BANQUO_DEATH": "escaped"},
+            evidence_node_ids=["banquo"],
+        )
+        cfg = PipelineConfig()
+        world_id, label = _resolve_branch_policy(q, cfg, vwm)
+        assert world_id == "shadow"
+        assert label and "Banquo" in label
+        assert label != "Parent fork label"
+
+    def test_auto_inherits_factual_when_active_branch_is_factual(self):
+        from shadow_loom.extract_graph import VersionedWorldModel
+
+        vwm = VersionedWorldModel.from_world_state(_empty_world_state())
+        # default v0 entry is factual
+        q = InterventionQuery(
+            original_query="x",
+            interventions={"a.b": 1},
+        )
+        cfg = PipelineConfig()
+        world_id, _ = _resolve_branch_policy(q, cfg, vwm)
+        assert world_id == "factual"
 
 
 # =====================================================================

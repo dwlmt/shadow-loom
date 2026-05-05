@@ -1011,6 +1011,44 @@ def assemble_audit_prompt(
     sections.append(prose)
     sections.append("")
 
+    # === Story so far (continuity context the generator saw) ===
+    # Without this the auditor can raise false-positive continuity /
+    # voice / thread judgments on prose the renderer was actually
+    # instructed to continue from earlier versions.
+    if brief.preceding_prose:
+        sections.append("=== STORY SO FAR (background continuity \u2014 do NOT re-audit) ===")
+        sections.append(brief.preceding_prose.strip())
+        sections.append(
+            "The prose above is the established narrative this scene "
+            "continues from. Use it only to judge continuity / tone / "
+            "voice consistency in the PROSE TO AUDIT above. Do NOT "
+            "raise violations against the STORY SO FAR text itself \u2014 "
+            "it is fixed history."
+        )
+        sections.append("")
+
+    # === Branch context (AMWN shadow vs factual) ===
+    # Mirrors the renderer prompt's BRANCH CONTEXT block so the auditor
+    # judges the prose against the same canon-vs-fork framing the
+    # generator was given. Without this the auditor can flag silent
+    # divergences from canon as continuity errors.
+    if brief.branch_world_id == "shadow":
+        sections.append("=== BRANCH CONTEXT (background only) ===")
+        sections.append("branch_world_id: shadow")
+        if brief.branch_label:
+            sections.append(f"branch_label: {brief.branch_label}")
+        if brief.factual_contrast_summary:
+            sections.append("factual_mainline_at_same_horizon:")
+            sections.append(brief.factual_contrast_summary.strip())
+        sections.append(
+            "The prose lives on a shadow fork. It is expected to diverge "
+            "from the factual mainline above; do NOT flag silent "
+            "divergence from canon as a continuity error. Do flag the "
+            "prose if it explicitly names the branch / mainline / "
+            "contrast in the narration (Rule 10 in generation.md)."
+        )
+        sections.append("")
+
     # The user's verbatim request is part of the audit contract: prose
     # that ignores or contradicts what the user asked for is itself a
     # violation, even when all engine-derived constraints pass.

@@ -142,8 +142,7 @@ Regardless of emotional mode, the LLM must simultaneously satisfy underlying phy
 - Render the scene **as the actual lived world** — a concrete scene grounded in physical action, sensory detail, and character behaviour, in plain past-tense narration. The events of this scene are what actually happened in this world.
 - Use a slightly shifted tonal register — the world is recognisable but subtly different.
 - Weave abduction truths into character behaviour naturally.
-- The scene must feel inhabited from the inside — lived, not described from outside.
-- The counterfactual *is* the scene. Do not stand outside it as a narrator pointing at it. Stay inside the world. (See universal Rule 10 below: meta-narration is forbidden in **every** mode, not just counterfactual.)
+- Stay inside the world; do not stand outside it as a narrator pointing at it. (See universal Rule 10: meta-narration is forbidden in **every** mode.)
 
 ---
 

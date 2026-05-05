@@ -19,7 +19,7 @@ caveats).
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, NativeOutput
@@ -84,12 +84,19 @@ def _compress_world_state(
     max_events: int = 80,
     max_locations: int = 30,
     max_channels: int = 20,
+    branch_world_id: Literal["factual", "shadow"] = "factual",
 ) -> str:
     """Render a compact, LLM-friendly summary of the omniscient graph.
 
     ``physics_state`` is the dict returned by
     :func:`shadow_loom.extract_graph.extract_full_world_state` — a
     serialised :class:`WorldStateV1`, optionally time-sliced.
+
+    When ``branch_world_id`` is ``shadow`` the compressor surfaces
+    each event/edge/channel/snapshot's own ``world_id`` tag inline so
+    the answering LLM can disambiguate factual ancestors from active
+    shadow content. For factual queries the tag is omitted (every
+    surviving entry is factual by construction).
     """
     if not physics_state:
         return "(no world state available)"
@@ -155,8 +162,12 @@ def _compress_world_state(
                 if len(c) > 120:
                     c = c[:117] + "…"
                 content_str = f" content=\"{c}\""
+            wid_tag = ""
+            if branch_world_id == "shadow":
+                ewid = evt.get("world_id", "factual")
+                wid_tag = f" [{ewid}]"
             lines.append(
-                f"- T={ft} `{eid}` ({etype}) actors=[{actors}] "
+                f"- T={ft} `{eid}` ({etype}){wid_tag} actors=[{actors}] "
                 f"targets=[{targets}]{content_str} — {desc}"
             )
         if len(events) > max_events:
@@ -179,7 +190,10 @@ def _compress_world_state(
                     tail = f" [{trait}{float(delta):+.2f}]"
                 else:
                     tail = f" [{trait}]"
-            lines.append(f"- {cause} —[{kind}]→ {effect}{tail}")
+            wid_tag = ""
+            if branch_world_id == "shadow":
+                wid_tag = f" [{ce.get('world_id', 'factual')}]"
+            lines.append(f"- {cause} —[{kind}]→ {effect}{wid_tag}{tail}")
 
     social = physics_state.get("social_topology", []) or []
     if social:
@@ -195,7 +209,10 @@ def _compress_world_state(
             metric_str = (
                 f" ({', '.join(metric_parts)})" if metric_parts else ""
             )
-            lines.append(f"- {a} → {b}{metric_str}")
+            wid_tag = ""
+            if branch_world_id == "shadow":
+                wid_tag = f" [{rel.get('world_id', 'factual')}]"
+            lines.append(f"- {a} → {b}{wid_tag}{metric_str}")
 
     spatial = physics_state.get("spatial_topology", []) or []
     if spatial:
@@ -204,7 +221,10 @@ def _compress_world_state(
             a = se.get("source_id") or "?"
             b = se.get("target_id") or "?"
             locked = " [LOCKED]" if se.get("is_locked") else ""
-            lines.append(f"- {a} ↔ {b}{locked}")
+            wid_tag = ""
+            if branch_world_id == "shadow":
+                wid_tag = f" [{se.get('world_id', 'factual')}]"
+            lines.append(f"- {a} ↔ {b}{wid_tag}{locked}")
 
     channels = physics_state.get("channels", {}) or {}
     if channels:
@@ -212,7 +232,10 @@ def _compress_world_state(
         for cid, ch in list(channels.items())[:max_channels]:
             medium = ch.get("medium", "?")
             parts = ",".join(ch.get("participant_ids") or []) or "—"
-            lines.append(f"- `{cid}` {medium} participants=[{parts}]")
+            wid_tag = ""
+            if branch_world_id == "shadow":
+                wid_tag = f" [{ch.get('world_id', 'factual')}]"
+            lines.append(f"- `{cid}` {medium}{wid_tag} participants=[{parts}]")
 
     return "\n".join(lines)
 
@@ -232,12 +255,21 @@ channels.
 
 You will be given:
   1. The user's question.
-  2. The omniscient world-state slice (entities, events, edges, etc.)
-     known at the current temporal anchor.
+  2. The active AMWN branch (factual mainline vs a shadow fork) the
+     question is being asked about. When the active branch is
+     `shadow`, you may also be given a FACTUAL MAINLINE block as
+     background contrast and a STORY SO FAR block of prose written
+     on the active branch — both are background context, not
+     authoritative. The world-state slice IS authoritative.
+  3. The omniscient world-state slice (entities, events, edges, etc.)
+     known at the current temporal anchor on the active branch.
 
 Rules:
   • Answer ONLY from the supplied world state. Do not invent characters,
     events, or relationships that are not present.
+  • The active branch is the source of truth for the answer. When on a
+    shadow fork, do NOT default back to canonical / factual outcomes
+    that the shadow has overwritten — answer from the shadow state.
   • If the answer is not deducible, say so plainly and lower confidence.
   • Reference characters, events, and locations by their human names
     in the prose answer; list the exact node ids in evidence_node_ids.
@@ -259,9 +291,14 @@ diagnostic question (e.g. "why does X happen?", "what does C know?",
 
 You will be given:
   1. The user's question.
-  2. The omniscient world-state slice (entities, events, causal edges,
-     beliefs, channels) known at the current temporal anchor.
-  3. Whether causal proof is required.
+  2. The active AMWN branch (factual mainline vs a shadow fork) the
+     diagnostic is being run against. Causal proofs are valid only
+     within the active branch — do NOT walk through edges tagged for
+     a different branch when reaching for evidence.
+  3. The omniscient world-state slice (entities, events, causal edges,
+     beliefs, channels) known at the current temporal anchor on the
+     active branch.
+  4. Whether causal proof is required.
 
 Rules:
   • When asked "why" or "what caused", trace through the causal_topology
@@ -274,7 +311,8 @@ Rules:
   • When asked about relationships or spatial reachability, walk the
     social_topology / spatial_topology edges.
   • If require_proof is true, only assert claims you can back with at
-    least one explicit edge or event in the supplied data.
+    least one explicit edge or event in the supplied data, and only
+    use edges that belong to the active branch.
   • Return the supporting node ids in evidence_node_ids so the UI can
     highlight them.
   • Length is set by the question. Diagnostic answers can be
@@ -321,12 +359,22 @@ def answer_question(
     require_proof: bool = False,
     world_state: Optional[WorldStateV1] = None,  # noqa: ARG001 — reserved
     config: Optional[GenerationConfig] = None,
+    branch_world_id: Literal["factual", "shadow"] = "factual",
+    branch_label: Optional[str] = None,
+    factual_contrast_summary: Optional[str] = None,
+    preceding_prose: Optional[str] = None,
 ) -> AnswerCard:
     """Answer a Q&A question using the supplied world-state slice.
 
     Returns an :class:`AnswerCard` even on failure (with a low
     confidence and a caveat) so callers never have to deal with
     ``None``.
+
+    ``branch_world_id`` / ``branch_label`` / ``factual_contrast_summary``
+    / ``preceding_prose`` carry the same AMWN branch context that the
+    generation pipeline threads onto a CreativeBrief, so the Q&A
+    answers stay consistent with whichever branch the user is
+    currently exploring.
     """
     config = config or GenerationConfig()
     if not (question or "").strip():
@@ -336,15 +384,34 @@ def answer_question(
             caveats=["Empty question."],
         )
 
-    context_block = _compress_world_state(physics_state)
+    context_block = _compress_world_state(
+        physics_state, branch_world_id=branch_world_id,
+    )
     user_msg_parts: List[str] = [
         f"Question: {question.strip()}",
         f"Query type: {query_type}",
+        f"Active AMWN branch: {branch_world_id}"
+        + (f" (label: {branch_label})" if branch_label else ""),
     ]
     if query_type == "interrogate":
         user_msg_parts.append(
             f"Require causal proof: {'yes' if require_proof else 'no'}"
         )
+    if branch_world_id == "shadow" and factual_contrast_summary:
+        user_msg_parts.extend([
+            "",
+            "=== FACTUAL MAINLINE AT SAME HORIZON (background contrast) ===",
+            factual_contrast_summary.strip(),
+            "(The active branch is a shadow fork — the prose above is "
+            "what happened on canon. Use it only to disambiguate; do "
+            "not assume the shadow branch follows it.)",
+        ])
+    if preceding_prose:
+        user_msg_parts.extend([
+            "",
+            "=== STORY SO FAR (prior prose on this branch) ===",
+            preceding_prose.strip(),
+        ])
     user_msg_parts.extend([
         "",
         "World state at current temporal anchor:",

@@ -27,6 +27,11 @@ DISCORD_CLIENT_ID: str = _settings.oauth.discord_client_id
 DISCORD_CLIENT_SECRET: str = _settings.oauth.discord_client_secret
 MICROSOFT_CLIENT_ID: str = _settings.oauth.microsoft_client_id
 MICROSOFT_CLIENT_SECRET: str = _settings.oauth.microsoft_client_secret
+APPLE_CLIENT_ID: str = _settings.oauth.apple_client_id
+APPLE_CLIENT_SECRET: str = _settings.oauth.apple_client_secret
+APPLE_TEAM_ID: str = _settings.oauth.apple_team_id
+APPLE_KEY_ID: str = _settings.oauth.apple_key_id
+APPLE_PRIVATE_KEY: str = _settings.oauth.apple_private_key
 OAUTH_REDIRECT_BASE: str = _settings.oauth.oauth_redirect_base
 
 AUTH_ENABLED: bool = _settings.oauth.auth_enabled

@@ -22,7 +22,10 @@
 #     as DATABASE_URL via fromDatabase. SQLModel + psycopg accept it
 #     after the `postgres://` → `postgresql+psycopg://` rewrite handled
 #     in shadow_loom/db.py.
-#   • Default models are OpenRouter Claude 3.5 — you only need to set
+#   • Default model across every pipeline stage is OpenRouter
+#     `qwen/qwen3.6-35b-a3b` (sparse-MoE 35B/3B-active, Apache 2.0,
+#     262K native context, $0.15/M in / $1/M out — see
+#     https://openrouter.ai/qwen/qwen3.6-35b-a3b). You only need to set
 #     OPENROUTER_API_KEY in the dashboard. Override per-stage models via
 #     env vars if you want a different mix.
 # =====================================================================
@@ -72,27 +75,29 @@ services:
       - key: OPENROUTER_BASE_URL
         value: https://openrouter.ai/api/v1
       - key: DEFAULT_MODEL
-        value: openrouter:anthropic/claude-3.5-sonnet
+        value: openrouter:qwen/qwen3.6-35b-a3b
       - key: GENERATION_MODEL
-        value: openrouter:anthropic/claude-3.5-sonnet
+        value: openrouter:qwen/qwen3.6-35b-a3b
       - key: AUDITOR_MODEL
-        value: openrouter:anthropic/claude-3.5-sonnet
+        value: openrouter:qwen/qwen3.6-35b-a3b
       - key: AUDITOR_GENERATION_MODEL
-        value: openrouter:anthropic/claude-3.5-sonnet
+        value: openrouter:qwen/qwen3.6-35b-a3b
       - key: EXTRACTION_MODEL
-        value: openrouter:anthropic/claude-3.5-sonnet
+        value: openrouter:qwen/qwen3.6-35b-a3b
       - key: QUERY_PARSING_MODEL
-        value: openrouter:anthropic/claude-3.5-haiku
+        value: openrouter:qwen/qwen3.6-35b-a3b
 
-      # Token caps tuned for Claude 3.5 / GPT-4o-class output limits.
+      # Token caps tuned for Qwen3.6-35B-A3B (262K native context).
+      # Plenty of headroom; trim if you switch to a short-output model
+      # such as Claude 3.5 Sonnet (8K output cap) or GPT-4o (16K).
       - key: GENERATION_MAX_TOKENS
-        value: "8000"
+        value: "64000"
       - key: AUDITOR_MAX_TOKENS
-        value: "4000"
+        value: "16000"
       - key: AUDITOR_MAX_TOKENS_GENERATION
-        value: "8000"
+        value: "64000"
       - key: QUERY_PARSING_MAX_TOKENS
-        value: "4000"
+        value: "16000"
 
       # ─ OAuth providers (set at least one; rest can stay blank) ──
       - key: GITHUB_CLIENT_ID
@@ -110,6 +115,22 @@ services:
       - key: MICROSOFT_CLIENT_ID
         sync: false
       - key: MICROSOFT_CLIENT_SECRET
+        sync: false
+      # Sign in with Apple (OIDC). Either set APPLE_CLIENT_SECRET to a
+      # pre-generated ES256 JWT (rotate every ≤6 months), OR set the
+      # APPLE_TEAM_ID / APPLE_KEY_ID / APPLE_PRIVATE_KEY trio and
+      # Shadow-Loom will mint and refresh the JWT for you. Requires a
+      # paid Apple Developer account + a Services ID configured at
+      # https://developer.apple.com/account/resources/identifiers/list/serviceId
+      - key: APPLE_CLIENT_ID
+        sync: false
+      - key: APPLE_CLIENT_SECRET
+        sync: false
+      - key: APPLE_TEAM_ID
+        sync: false
+      - key: APPLE_KEY_ID
+        sync: false
+      - key: APPLE_PRIVATE_KEY
         sync: false
 
       # ─ AGPL § 13: source URL displayed in the UI footer ─────────

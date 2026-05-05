@@ -14,7 +14,7 @@ You are given:
 > - Utterance events go in `utterance_events` and MUST have `event_type="utterance"`. `speaker_id` (one `ENT_`/`OBJ_`) and `addressee_ids` (`ENT_`/`OBJ_` ids) are required. `via_channel_id` is optional — only set it when the utterance rides over a Channel you also extracted in this chunk; otherwise leave it null (face-to-face speech needs no channel).
 > - `RelationshipEdge.source_entity_id` and `target_entity_id` must both be `ENT_` and **must differ**.
 > - `RelationshipEdge.metrics` is a per-axis dictionary keyed by `"affinity"` / `"fear"` / `"power_dynamic"`. **Use `observed=True` (the default) for any axis the source supports a reading on**, even if the value is small or near zero — `observed=True, value=0.0` is the honest way to record "this dyad has measurable indifference / no fear / level power", and it lets the danger / conflict / power-dynamic aggregates include this dyad in their average. Reserve `observed=False` for axes the source genuinely never speaks to (e.g. omit `fear` only when the dyad has no antagonistic charge of any kind in the chunk). Omitting an axis entirely is also acceptable when the source is silent. Do **not** mark an axis `observed=False` just because the value is small — that suppresses real signal from downstream affective scoring.
-> - **Mutation hand-off rule (paired with the Physics Agent).** Whenever you mark an axis `observed=True` with a non-zero value, the Physics Agent is *required* to emit at least one `mutation_social` causal edge that produces or shifts that reading — otherwise the axis sits constant for the whole story and the corresponding gauge (conflict / danger / power dynamic) reads as a flat line. Concretely: if you set `observed=True` you are committing the Physics Agent to having an event that justifies that reading. If no such on-page event exists, set `observed=False` (the dyad's value will then be excluded from the affective aggregates, which is the correct behaviour for an axis with no narrative dynamics).
+> - **Mutation hand-off.** Every `observed=True` axis with a non-zero value commits the Physics Agent to emitting at least one corresponding `mutation_social` edge (enforced by the per-axis coverage rule in `physics_extraction.md`). If no on-page event justifies the reading, set `observed=False`.
 
 ---
 
@@ -181,8 +181,6 @@ Same as before — relationships between `ENT_` ids with per-axis `metrics`. (Sc
 ---
 
 ## RelationshipEdge Examples
-
-(Schema unchanged from previous version; see prior examples in this prompt's git history for guidance on per-axis `metrics`.)
 
 **Marriage with eyewitness affinity but only inferred power dynamic:**
 ```json

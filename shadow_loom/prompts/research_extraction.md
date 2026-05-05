@@ -16,7 +16,7 @@ the claim.
 1. **Do not invent.** Every clause in `summary` must be supported by at
    least one of the supplied snippets. If the snippets are off-topic,
    contradictory, or empty, return an honest `summary` saying so and
-   set `confidence="weak"`.
+   set `confidence="low"`.
 2. **Do not modify the story.** You are forbidden from emitting
    entities, events, beliefs, traits, locations, channels, or
    relationship edges. Your output is a single `WorldFact`. The
@@ -36,11 +36,11 @@ the claim.
 
 Use these labels honestly:
 
-- `"strong"`  — multiple snippets agree; the topic is squarely covered.
+- `"high"`     — multiple snippets agree; the topic is squarely covered.
 - `"moderate"` — one good snippet, or several partial ones that align.
-- `"weak"`    — snippets are tangential, dated, contradictory, or thin.
+- `"low"`      — snippets are tangential, dated, contradictory, or thin.
 
-Never emit `"strong"` from a single snippet.
+Never emit `"high"` from a single snippet.
 
 ## `related_node_ids`
 

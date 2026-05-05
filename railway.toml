@@ -3,7 +3,21 @@
 #
 # Plug a Postgres service into the same project — Railway will inject
 # DATABASE_URL automatically. All other knobs are set via the
-# "Variables" tab (mirror docs/railway-deployment.md).
+# "Variables" tab (mirror docs/railway-deployment.md and
+# .env.production.example).
+#
+# Recommended production model (matches local dev defaults):
+#   DEFAULT_MODEL = openrouter:qwen/qwen3.6-35b-a3b
+#   (sparse-MoE 35B/3B-active, Apache 2.0, 262K context,
+#    $0.15/M in / $1/M out — https://openrouter.ai/qwen/qwen3.6-35b-a3b)
+# Token caps: GENERATION_MAX_TOKENS=64000, AUDITOR_MAX_TOKENS=16000,
+# AUDITOR_MAX_TOKENS_GENERATION=64000, QUERY_PARSING_MAX_TOKENS=16000.
+#
+# OAuth providers: GitHub, Google, Discord, Microsoft, and Apple are
+# all supported — wire any subset via *_CLIENT_ID / *_CLIENT_SECRET in
+# the Variables tab. Apple additionally needs APPLE_TEAM_ID,
+# APPLE_KEY_ID, APPLE_PRIVATE_KEY (or a pre-minted APPLE_CLIENT_SECRET
+# JWT). See docs/railway-deployment.md § 2.
 
 [build]
 builder = "DOCKERFILE"

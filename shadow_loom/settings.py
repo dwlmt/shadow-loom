@@ -160,7 +160,7 @@ class GenerationSettings(BaseSettings):
     )
 
     model: str = Field(default="ollama:qwen3.6:35b")
-    max_tokens: int = Field(default=64000)
+    max_tokens: int = Field(default=128000)
     temperature: float = Field(default=0.7)
     output_retries: int = Field(default=5)
 
@@ -178,7 +178,7 @@ class QueryParsingSettings(BaseSettings):
     )
 
     model: str = Field(default="ollama:qwen3.6:35b")
-    max_tokens: int = Field(default=64000)
+    max_tokens: int = Field(default=32000)
     temperature: float = Field(default=0.1)
     output_retries: int = Field(default=5)
 
@@ -201,8 +201,8 @@ class AuditorSettings(BaseSettings):
     output_retries: int = Field(default=5)
     temperature: float = Field(default=0.2)
     generation_temperature: float = Field(default=0.7)
-    max_tokens: int = Field(default=64000)
-    max_tokens_generation: int = Field(default=64000)
+    max_tokens: int = Field(default=32000)
+    max_tokens_generation: int = Field(default=128000)
     min_foreshadowing_score: float = Field(default=0.6)
     max_affective_loss: float = Field(default=0.3)
     min_cognitive_plausibility: float = Field(default=0.7)
@@ -623,6 +623,15 @@ class OAuthSettings(BaseSettings):
     discord_client_secret: str = Field(default="")
     microsoft_client_id: str = Field(default="")
     microsoft_client_secret: str = Field(default="")
+    # Sign in with Apple (OIDC). Two configuration paths:
+    #   (a) supply a pre-minted ES256 JWT in apple_client_secret, OR
+    #   (b) supply apple_team_id + apple_key_id + apple_private_key and
+    #       Shadow-Loom will mint and refresh the JWT automatically.
+    apple_client_id: str = Field(default="")
+    apple_client_secret: str = Field(default="")
+    apple_team_id: str = Field(default="")
+    apple_key_id: str = Field(default="")
+    apple_private_key: str = Field(default="")
 
     @property
     def resolved_storage_secret(self) -> str:
@@ -636,6 +645,7 @@ class OAuthSettings(BaseSettings):
             or self.google_client_id
             or self.discord_client_id
             or self.microsoft_client_id
+            or self.apple_client_id
         )
 
     @property
@@ -649,6 +659,8 @@ class OAuthSettings(BaseSettings):
             providers.append({"name": "discord", "label": "Discord", "icon": "forum"})
         if self.microsoft_client_id:
             providers.append({"name": "microsoft", "label": "Microsoft", "icon": "window"})
+        if self.apple_client_id:
+            providers.append({"name": "apple", "label": "Apple", "icon": "apple"})
         return providers
 
 

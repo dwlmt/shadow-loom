@@ -8,7 +8,7 @@ Your job is to produce a **corrected WorldStateV1** that resolves every reported
 
 ## Correction Rules
 
-1. **Fix only what is reported.** Do not add, remove, or modify data that is not mentioned in the error list. The exceptions are rules 9 and 10 below, which apply only when the error list explicitly mentions orphan events or low information density.
+1. **Scope of changes is set by the error list.** Touch only the data that the error list names, plus whatever follow-on edits are needed to keep the schema valid (e.g. removing edges that reference an ID you just deleted). Rules 9 and 10 are the only authorisations to add brand-new graph elements, and they fire only when the error list explicitly cites orphan events or low information density. **Never add new entities, locations, objects, or world traits.**
 2. **Broken causal edges**: If a `source_id` or `target_id` references a non-existent ID, either:
    - Replace it with the closest valid ID (if the intent is clear from the description), OR
    - Remove the edge entirely.
@@ -40,7 +40,6 @@ Return a complete, corrected `WorldStateV1` JSON object with the same schema as 
 ## Important
 
 - Do NOT re-report errors. Just fix them.
-- Do NOT add new entities, locations, or objects unless the error specifically requires it. Only fix edges, events, and entity state data.
 - If you cannot determine the correct fix, remove the broken element rather than guessing.
 - Preserve all `fabula_time`, `syuzhet_index`, and other temporal data unless the error specifically requires a temporal fix.
 - **Entity state_timeline**: If an error mentions missing state_timeline entries or mutation coverage, add `EntityStateSnapshot` entries to the affected entity's `state_timeline` array. Each snapshot needs `fabula_time`, `triggered_by` (the EVT_ ID), and the relevant changed field (`traits`, `beliefs_added`, `beliefs_invalidated`, `status`, or `location_id`).
