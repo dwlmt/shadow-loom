@@ -561,7 +561,8 @@ world_state = WorldStateV1(
                   event_type="revelation", actor_ids=["ENT_JIM_PRIDEAUX"], target_ids=["ENT_GEORGE_SMILEY"],
                   description="Prideaux tells Smiley he saw a blonde female prisoner (Irina) shot during his interrogation."),
         EventNode(id="EVT_TINKER_TAILOR_REVEALED", fabula_time=17500, syuzhet_index=31,
-                  event_type="revelation", actor_ids=["ENT_JIM_PRIDEAUX"], target_ids=["ENT_GEORGE_SMILEY"],
+                  event_type="revelation", actor_ids=["ENT_JIM_PRIDEAUX"],
+                  target_ids=["ENT_GEORGE_SMILEY", "ENT_PERCY_ALLELINE", "ENT_BILL_HAYDON", "ENT_ROY_BLAND", "ENT_TOBY_ESTERHASE"],
                   description="The codenames are revealed: Tinker (Alleline), Tailor (Haydon), Soldier (Bland), Poorman (Esterhase), Beggarman (Smiley)."),
         EventNode(id="EVT_SAFE_HOUSE_MEETINGS_DISCOVERED", fabula_time=18000, syuzhet_index=32,
                   event_type="revelation", actor_ids=["ENT_GEORGE_SMILEY"], target_ids=[],
@@ -579,8 +580,8 @@ world_state = WorldStateV1(
                   event_type="outcome", actor_ids=["ENT_BILL_HAYDON"], target_ids=[],
                   description="The mole (Haydon) hears about Tarr and arranges an emergency meeting with Polyakov at the safe house."),
         EventNode(id="EVT_SAFE_HOUSE_AMBUSH", fabula_time=21500, syuzhet_index=38,
-                  event_type="choice", actor_ids=["ENT_GEORGE_SMILEY"], target_ids=[],
-                  description="Smiley waits at the safe house to catch the mole."),
+                  event_type="choice", actor_ids=["ENT_GEORGE_SMILEY"], target_ids=["OBJ_SAFE_HOUSE_LEDGER", "OBJ_TARR_FILE"],
+                  description="Smiley waits at the safe house to catch the mole, the safe-house ledger of past meetings spread before him alongside Tarr's defection file — the cross-referenced bait that drew Haydon in."),
         EventNode(id="EVT_HAYDON_UNMASKED", fabula_time=22000, syuzhet_index=39,
                   event_type="revelation", actor_ids=["ENT_GEORGE_SMILEY"], target_ids=[],
                   description="Haydon arrives at the safe house and is captured by Smiley — the mole is unmasked."),
@@ -588,8 +589,8 @@ world_state = WorldStateV1(
                   event_type="revelation", actor_ids=["ENT_BILL_HAYDON"], target_ids=["ENT_GEORGE_SMILEY"],
                   description="At Sarratt, Haydon confesses he seduced Ann on Karla's orders and that Prideaux confided in him before the Hungary mission."),
         EventNode(id="EVT_PRIDEAUX_KILLS_HAYDON", fabula_time=24000, syuzhet_index=42,
-                  event_type="choice", actor_ids=["ENT_JIM_PRIDEAUX"], target_ids=["ENT_BILL_HAYDON"],
-                  description="Prideaux, learning of Haydon's betrayal, kills Haydon at Sarratt."),
+                  event_type="choice", actor_ids=["ENT_JIM_PRIDEAUX"], target_ids=["ENT_BILL_HAYDON", "OBJ_HAYDON_REVOLVER"],
+                  description="Prideaux, learning of Haydon's betrayal, kills Haydon at Sarratt with Haydon's own service revolver — a final symbolic inversion."),
         EventNode(id="EVT_SMILEY_RESTORED_CHIEF", fabula_time=25000, syuzhet_index=43,
                   event_type="outcome", actor_ids=[], target_ids=["ENT_GEORGE_SMILEY"],
                   description="Smiley is restored as Chief of the Circus."),
@@ -946,6 +947,14 @@ world_state = WorldStateV1(
         CausalEdge(source_id="WORLD_KARLA_ASYMMETRY", target_id="EVT_HAYDON_CONFESSION",
                    causality_type="chain_reaction", mechanism="psychological", evidence_strength="strong",
                    causal_force=6.0, fabula_time=23000),
+        # WORLD_BRITISH_DECLINE shapes the recruiting / tradecraft climate that
+        # made an Establishment-bred mole like Haydon possible. Wired as an
+        # affordance gate on the climactic confession scene so the world trait
+        # is no longer an inert decoration (and so the auto-ambient pressure
+        # actually fires through a real edge).
+        CausalEdge(source_id="WORLD_BRITISH_DECLINE", target_id="EVT_HAYDON_CONFESSION",
+                   causality_type="affordance_gate", mechanism="social", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=23000),
 
         # ── orphan utterance wirings ──
         CausalEdge(source_id="EVT_IRINA_DEFECTION_REQUEST", target_id="EVT_UTT_IRINA_MOLE_CLAIM",

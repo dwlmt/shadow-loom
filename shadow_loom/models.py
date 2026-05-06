@@ -56,6 +56,9 @@ _DOMAIN_ALIASES = {
     "spiritual": "epistemic",
     "supernatural": "psychological",
     "magical": "psychological",
+    "environmental": "physical",
+    "environment": "physical",
+    "ecological": "physical",
 }
 
 

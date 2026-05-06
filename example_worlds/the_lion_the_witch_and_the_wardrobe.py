@@ -199,10 +199,20 @@ world_state = WorldStateV1(
                         "faith": TraitVector(value=0.9, inertia=0.65, evidence_strength="strong"),
                     },
                     location_id="LOC_LANTERN_WASTE"),
+                # Witnesses Aslan's sacrifice at the Stone Table; grief was not
+                # in Lucy's baseline traits, so seed it here so the snapshot
+                # parity invariant matches the EVT_ASLAN_DEATH → ENT_LUCY
+                # mutation edge (trait_target='grief', trait_delta=0.7).
+                EntityStateSnapshot(fabula_time=17000, triggered_by="EVT_ASLAN_DEATH",
+                    traits={
+                        "grief": TraitVector(value=0.7, inertia=0.4, evidence_strength="strong"),
+                    }),
                 EntityStateSnapshot(fabula_time=18000, triggered_by="EVT_ASLAN_RESURRECTION",
                     traits={
                         "faith": TraitVector(value=0.95, inertia=0.7, evidence_strength="strong"),
                         "courage": TraitVector(value=0.85, inertia=0.6, evidence_strength="strong"),
+                        # Joy of resurrection dissolves the grief seeded above.
+                        "grief": TraitVector(value=0.05, inertia=0.3, evidence_strength="moderate"),
                     }),
             ],
         ),
@@ -317,6 +327,14 @@ world_state = WorldStateV1(
             ],
             constants=["magical_power"],
             state_timeline=[
+                # First crack in the Witch's confidence: the Beavers' news that
+                # Aslan is on the move. Anchors the EVT_BEAVERS_EXPLAIN_ASLAN
+                # → ENT_WHITE_WITCH mutation (trait_target='fear', delta=0.5)
+                # so the snapshot parity invariant matches.
+                EntityStateSnapshot(fabula_time=9000, triggered_by="EVT_BEAVERS_EXPLAIN_ASLAN",
+                    traits={
+                        "fear": TraitVector(value=0.5, inertia=0.4, evidence_strength="moderate"),
+                    }),
                 EntityStateSnapshot(fabula_time=10000, triggered_by="EVT_EDMUND_BETRAYS",
                     traits={
                         "fear": TraitVector(value=0.65, inertia=0.45, evidence_strength="strong"),
@@ -477,11 +495,11 @@ world_state = WorldStateV1(
                   event_type="outcome", actor_ids=["ENT_LUCY", "ENT_PETER", "ENT_SUSAN"], target_ids=["ENT_ASLAN"],
                   description="The three children reach Aslan's camp and meet the Great Lion for the first time."),
         EventNode(id="EVT_PETER_KILLS_WOLF", fabula_time=13000, syuzhet_index=22,
-                  event_type="choice", actor_ids=["ENT_PETER"], target_ids=["ENT_MAUGRIM"],
-                  description="Peter kills Maugrim the wolf with his sword, rescuing Susan from attack."),
+                  event_type="choice", actor_ids=["ENT_PETER", "ENT_SUSAN"], target_ids=["ENT_MAUGRIM", "OBJ_SUSAN_BOW"],
+                  description="Peter kills Maugrim the wolf with his sword while Susan, perched in a tree, draws her bow on the second wolf — together they save the camp from Maugrim's pack."),
         EventNode(id="EVT_EDMUND_RESCUED", fabula_time=14000, syuzhet_index=23,
-                  event_type="outcome", actor_ids=["ENT_ASLAN"], target_ids=["ENT_EDMUND"],
-                  description="Aslan's forces rescue Edmund from the Witch just as she prepares to kill him."),
+                  event_type="outcome", actor_ids=["ENT_ASLAN", "ENT_LUCY"], target_ids=["ENT_EDMUND", "OBJ_LUCY_CORDIAL"],
+                  description="Aslan's forces rescue Edmund from the Witch just as she prepares to kill him; Lucy administers a single drop of her healing cordial to bring him back from the brink."),
         EventNode(id="EVT_ASLAN_FREES_STATUES", fabula_time=14500, syuzhet_index=24,
                   event_type="outcome", actor_ids=["ENT_ASLAN"], target_ids=["ENT_TUMNUS"],
                   description="Aslan breathes on the stone statues in the Witch's castle, restoring them to life."),
@@ -492,8 +510,8 @@ world_state = WorldStateV1(
                   event_type="choice", actor_ids=["ENT_ASLAN"], target_ids=["ENT_WHITE_WITCH"],
                   description="Aslan privately agrees to a secret compromise with the Witch; he grows sad and withdrawn."),
         EventNode(id="EVT_ASLAN_DEATH", fabula_time=17000, syuzhet_index=29,
-                  event_type="outcome", actor_ids=["ENT_WHITE_WITCH"], target_ids=["ENT_ASLAN"],
-                  description="The Witch and her followers kill Aslan at the Stone Table; Susan and Lucy witness in hiding."),
+                  event_type="outcome", actor_ids=["ENT_WHITE_WITCH", "ENT_WITCH_DWARF"], target_ids=["ENT_ASLAN"],
+                  description="The Witch and her followers — chief among them her Dwarf, who shaves Aslan's mane and binds him — kill Aslan at the Stone Table; Susan and Lucy witness in hiding."),
         EventNode(id="EVT_ASLAN_RESURRECTION", fabula_time=18000, syuzhet_index=30,
                   event_type="outcome", actor_ids=[], target_ids=["ENT_ASLAN"],
                   description="Aslan rises from death by the Deeper Magic; the Stone Table cracks and he returns triumphant."),

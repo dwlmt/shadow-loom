@@ -130,6 +130,16 @@ world_state = WorldStateV1(
                        established_at_fabula=0, evidence_strength="strong"),
             ],
             state_timeline=[
+                # Documents that Harmonica's baseline vengeance=0.95 is the
+                # *result* of EVT_FLASHBACK_HANGING (fabula_time=0), satisfying
+                # the mutation\u2194snapshot parity invariant. The backstory event
+                # IS the trait's origin; without this anchor the snapshot
+                # auditor (and counterfactual surgery) cannot tell that
+                # rolling back the hanging should also roll back the obsession.
+                EntityStateSnapshot(fabula_time=0, triggered_by="EVT_FLASHBACK_HANGING",
+                    traits={
+                        "vengeance": TraitVector(value=0.95, inertia=0.95, evidence_strength="strong"),
+                    }),
                 EntityStateSnapshot(fabula_time=2000, triggered_by="EVT_HARMONICA_SPIES_MORTON_TRAIN",
                     location_id="LOC_MORTONS_TRAIN",
                     beliefs_added=[

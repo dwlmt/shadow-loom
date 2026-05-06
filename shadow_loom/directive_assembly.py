@@ -1047,7 +1047,9 @@ class DirectiveAssembler:
             # in it (actor or target) AND it has happened by the fabula
             # frontier, (b) a revealed utterance addressed to them (or
             # spoken by them) refers to it, or (c) they hold a Belief
-            # whose target_id matches the event id.
+            # whose target_id matches the event id, where the belief's
+            # provenance (``acquired_via_event_id`` /
+            # ``acquired_via_channel_id``) still resolves in this branch.
             #
             # Channel intelligibility gates (b): a recipient who cannot
             # parse the channel (intelligibility[recipient] below the
@@ -1055,6 +1057,14 @@ class DirectiveAssembler:
             # even if they were nominally addressed. Without this gate,
             # encrypted/coded/foreign-language messages would silently
             # close dramatic-irony surfaces that should remain open.
+            #
+            # Belief provenance gates (c): when a shadow-branch surgery
+            # prunes the utterance or severs the channel that originally
+            # posted a belief, that belief stops counting toward the
+            # character's knowledge. This is what makes shadow-branch
+            # irony deltas track the actual epistemic consequence of
+            # the surgery rather than only the textual disappearance
+            # of the belief node.
             intel_thresh = _get_settings().physics.intelligibility_threshold
             channels = self.world_state.channels
 
@@ -1079,12 +1089,66 @@ class DirectiveAssembler:
                         intel = float(ch.intelligibility.get(eid, 1.0))
                         if intel < intel_thresh:
                             continue
+                # The utterance event itself is part of what the
+                # speaker / addressee witnesses — being on either end
+                # of a (intelligible) message is direct knowledge of
+                # the message having been transmitted, not just of
+                # what it referred to.
+                known.add(utt.id)
                 for tid in utt.target_ids:
                     if tid.startswith("EVT_"):
                         known.add(tid)
+            # Reconstruct beliefs at the fabula frontier so we include
+            # beliefs *acquired during the story* (via utterances,
+            # observations, channel traffic) and not just the entity's
+            # pre-story baseline. ``reconstruct_entity_at`` also filters
+            # by ``established_at_fabula <= fabula_frontier`` so we never
+            # credit a character with knowledge from their own future arc.
+            recon_beliefs = reconstruct_entity_at(
+                ent, fabula_frontier
+            ).get("beliefs", [])
+
+            # Provenance gate: a belief should only count toward the
+            # character's knowledge in *this* branch when its causing
+            # event / channel still exists and remains accessible.
+            # Counterfactual surgery (shadow merges) frequently removes
+            # the utterance or severs the channel that originally posted
+            # the belief; without this gate, the irony scorer credits
+            # the character with knowledge they no longer have any way
+            # of holding, and shadow-branch irony deltas collapse.
+            #
+            # The gate fires when the provenance pointer is *non-null
+            # and dangling*: a None pointer (legacy beliefs, baseline
+            # knowledge, in-person observation) is left untouched so
+            # this enhancement is fully backward-compatible with
+            # fixtures predating the provenance fields.
+            def _provenance_valid(b: dict) -> bool:
+                via_evt = b.get("acquired_via_event_id")
+                if via_evt is not None and via_evt not in events_by_id:
+                    return False  # provenance event pruned in this branch
+                via_ch = b.get("acquired_via_channel_id")
+                if via_ch is not None:
+                    ch = channels.get(via_ch)
+                    if ch is None:
+                        return False  # channel pruned (line cut, bond severed)
+                    intel = float(ch.intelligibility.get(eid, 1.0))
+                    if intel < intel_thresh:
+                        return False  # channel exists but no longer intelligible
+                    # Channel temporal bounds: if the channel was
+                    # severed before the belief's nominal acquisition
+                    # time, the belief is no longer reachable in this
+                    # branch (e.g. shadow surgery brings the
+                    # termination forward).
+                    term = ch.terminated_at_fabula
+                    est = b.get("established_at_fabula", 0)
+                    if term is not None and term < est:
+                        return False
+                return True
+
             known |= {
-                b.target_id for b in ent.beliefs
-                if b.target_id.startswith("EVT_")
+                b["target_id"] for b in recon_beliefs
+                if b["target_id"].startswith("EVT_")
+                and _provenance_valid(b)
             }
 
             # Intensity-weighted mass of revealed events this character

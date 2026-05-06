@@ -276,9 +276,13 @@ def pov_visible_event_ids(
 
     Non-utterance events are visible when the POV is in ``actor_ids`` or
     ``target_ids``. This is intentionally conservative: a richer
-    implementation would also consult ``Belief.acquired_via_event_id`` and
-    spatial co-location, but this minimum primitive unblocks the
-    ``pov_entity_id`` API surface.
+    implementation would also consult spatial co-location, but this
+    minimum primitive unblocks the ``pov_entity_id`` API surface.
+    Belief-provenance reasoning lives downstream in
+    ``DirectiveAssembler.compute_dramatic_irony_score``, where the
+    ``Belief.acquired_via_event_id`` / ``acquired_via_channel_id`` gates
+    govern whether a belief still counts as knowledge in the current
+    branch.
     """
     visible: set[str] = set()
     if not pov_entity_id:

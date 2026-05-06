@@ -255,12 +255,18 @@ world_state = WorldStateV1(
                 EntityStateSnapshot(fabula_time=8500, triggered_by="EVT_MRS_JOE_DIES",
                     traits={
                         "grief": TraitVector(value=0.75, inertia=0.40, evidence_strength="moderate"),
-                    }),EntityStateSnapshot(fabula_time=20000, triggered_by="EVT_JOE_MARRIES_BIDDY",
+                    }),
+                EntityStateSnapshot(fabula_time=18700, triggered_by="EVT_BIDDY_TEACHES_JOE",
+                    traits={
+                        # Joe gains literacy and a sliver of self-respect; humility
+                        # softens by a hair (0.85→0.80) without losing his core diffidence.
+                        "humility": TraitVector(value=0.80, inertia=0.70, evidence_strength="moderate"),
+                    }),
+                EntityStateSnapshot(fabula_time=20000, triggered_by="EVT_JOE_MARRIES_BIDDY",
                     beliefs_added=[
                         Belief(target_id="ENT_BIDDY", perceived_state="Biddy is my wife and partner",
                                confidence=1.0, inertia=0.7, established_at_fabula=20000, evidence_strength="strong"),
                     ]),
-                
             ],
         ),
         "ENT_MRS_JOE": Entity(
@@ -573,8 +579,12 @@ world_state = WorldStateV1(
         EventNode(id="EVT_ORLICK_ROBS_PUMBLECHOOK", fabula_time=17400, syuzhet_index=36,
                   event_type="outcome", actor_ids=["ENT_ORLICK"], target_ids=["ENT_PUMBLECHOOK"],
                   description="At large after the sluice-house failure, Orlick breaks into Pumblechook's premises, robs him, and is taken up by the constables and committed to jail."),
+        # Posthumous execution of Havisham's will — she is the *cause* (via
+        # EVT_HAVISHAM_BURNS chain_reaction) but not an in-scene actor: the
+        # bequest is enacted by lawyers / executors, with Havisham already dead
+        # at 15500. Leaving actor_ids empty avoids the dead_actor invariant.
         EventNode(id="EVT_HAVISHAM_BEQUEST_TO_POCKETS", fabula_time=17600, syuzhet_index=37,
-                  event_type="outcome", actor_ids=["ENT_HAVISHAM"], target_ids=["ENT_HERBERT"],
+                  event_type="outcome", actor_ids=[], target_ids=["ENT_HERBERT"],
                   description="Miss Havisham's will, opened after her death, leaves the bulk of her fortune to the Pocket family — Matthew Pocket and through him Herbert — quietly redirecting her wealth away from Estella's revenge ledger."),
         EventNode(id="EVT_BIDDY_TEACHES_JOE", fabula_time=18700, syuzhet_index=38,
                   event_type="outcome", actor_ids=["ENT_BIDDY"], target_ids=["ENT_JOE"],

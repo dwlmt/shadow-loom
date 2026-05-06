@@ -1056,6 +1056,181 @@ class TestDramaticIronyScore:
         )
         assert score == 0.0
 
+    # ---- Belief provenance gate ---------------------------------------
+    #
+    # When a shadow-branch surgery prunes the utterance or severs the
+    # channel that originally produced a belief, the irony scorer must
+    # stop crediting the character with that knowledge — otherwise
+    # shadow deltas only capture the textual disappearance of the
+    # belief node and miss the epistemic consequence of the surgery.
+
+    def _provenance_world(
+        self,
+        *,
+        include_letter_event: bool = True,
+        include_channel: bool = True,
+        channel_intelligibility: float = 1.0,
+        channel_terminated_at: int | None = None,
+    ):
+        """Build a 2-event, 1-channel, 1-belief fixture where ENT_B's
+        knowledge of EVT_SECRET hangs entirely on a belief acquired via
+        EVT_LETTER over CHN_POST. Surgery toggles isolate the gates."""
+        from shadow_loom.models import Channel
+        events: list[EventNode] = [
+            EventNode(id="EVT_SECRET", fabula_time=1, syuzhet_index=1,
+                      event_type="outcome", actor_ids=["ENT_A"],
+                      target_ids=["ENT_A"],
+                      description="A buries the loot in secret"),
+        ]
+        if include_letter_event:
+            events.append(
+                EventNode(id="EVT_LETTER", fabula_time=2, syuzhet_index=2,
+                          event_type="utterance",
+                          actor_ids=["ENT_A"], target_ids=["EVT_SECRET"],
+                          speaker_id="ENT_A", addressee_ids=["ENT_B"],
+                          via_channel_id="CHN_POST" if include_channel else None,
+                          content="The loot is buried under the oak.",
+                          description="A writes B describing where the loot is buried."),
+            )
+        channels: dict = {}
+        if include_channel:
+            channels["CHN_POST"] = Channel(
+                id="CHN_POST", name="Postal correspondence",
+                medium="mail_correspondence",
+                participant_ids=["ENT_A", "ENT_B"],
+                intelligibility={"ENT_B": channel_intelligibility},
+                established_at_fabula=0,
+                terminated_at_fabula=channel_terminated_at,
+            )
+        return WorldStateV1(
+            locations={"LOC_A": Location(name="A", description="A", ambient_state={})},
+            objects={},
+            entities={
+                "ENT_A": Entity(
+                    id="ENT_A", name="A", location_id="LOC_A", status="healthy",
+                    traits={"cunning": TraitVector(value=0.6, inertia=0.4)},
+                    beliefs=[],
+                ),
+                "ENT_B": Entity(
+                    id="ENT_B", name="B", location_id="LOC_A", status="healthy",
+                    traits={"curiosity": TraitVector(value=0.6, inertia=0.4)},
+                    beliefs=[
+                        # Pre-story baseline empty; the EVT_SECRET belief
+                        # is *acquired* via EVT_LETTER (provenance set).
+                        Belief(target_id="EVT_SECRET",
+                               perceived_state="The loot is under the oak",
+                               confidence=0.85, inertia=0.5,
+                               established_at_fabula=2,
+                               acquired_via_event_id="EVT_LETTER",
+                               acquired_via_channel_id="CHN_POST" if include_channel else None),
+                    ],
+                ),
+            },
+            events=events,
+            world_traits={},
+            causal_topology=[
+                CausalEdge(source_id="EVT_SECRET",
+                           target_id="ENT_A", causality_type="mutation",
+                           causal_force=5.0, mechanism="psychological",
+                           evidence_strength="moderate", fabula_time=1),
+            ],
+            spatial_topology=[],
+            channels=channels,
+            social_topology=[],
+        )
+
+    def test_irony_provenance_factual_branch(self):
+        """Baseline: with letter event + channel both present, B's
+        belief about EVT_SECRET counts and irony for B is 0."""
+        ws = self._provenance_world()
+        ego = _ego_payload(ws, ["ENT_B"])
+        asm = DirectiveAssembler(None, ego, ws)
+        score = asm.compute_dramatic_irony_score(
+            ["ENT_B"], syuzhet_anchor=2,
+        )
+        # ENT_B knows EVT_SECRET (via belief whose provenance still resolves)
+        # and is the addressee of EVT_LETTER. Both revealed events are known.
+        assert score == 0.0
+
+    def test_irony_provenance_event_pruned(self):
+        """Shadow surgery removes EVT_LETTER from this branch. The
+        ``acquired_via_event_id`` pointer dangles, so B's belief no
+        longer counts and irony surfaces against B."""
+        ws = self._provenance_world(include_letter_event=False)
+        ego = _ego_payload(ws, ["ENT_B"])
+        asm = DirectiveAssembler(None, ego, ws)
+        score = asm.compute_dramatic_irony_score(
+            ["ENT_B"], syuzhet_anchor=1,
+        )
+        # Only EVT_SECRET is revealed; B doesn't participate and the
+        # belief is provenance-invalid → reader knows, B doesn't.
+        assert score > 0.0
+
+    def test_irony_provenance_channel_pruned(self):
+        """Shadow surgery severs CHN_POST entirely. The belief's
+        ``acquired_via_channel_id`` dangles, so the belief no longer
+        counts as knowledge in this branch."""
+        ws = self._provenance_world(include_channel=False)
+        ego = _ego_payload(ws, ["ENT_B"])
+        asm = DirectiveAssembler(None, ego, ws)
+        # With no channel, the utterance is direct (in-person), so the
+        # addressee path still admits EVT_SECRET via EVT_LETTER.target_ids.
+        # We therefore force-prune the utterance too in this scenario:
+        ws.events = [e for e in ws.events if e.id != "EVT_LETTER"]
+        ws.entities["ENT_B"].beliefs[0].acquired_via_channel_id = "CHN_POST"
+        score = asm.compute_dramatic_irony_score(
+            ["ENT_B"], syuzhet_anchor=1,
+        )
+        # Belief provenance still references CHN_POST which no longer
+        # exists → belief invalid → ENT_B is ignorant of EVT_SECRET.
+        assert score > 0.0
+
+    def test_irony_provenance_channel_unintelligible(self):
+        """Shadow surgery (cipher broken in reverse, language barrier
+        introduced) drops B's intelligibility on CHN_POST below the
+        threshold. Belief is invalidated even though the channel
+        still exists."""
+        ws = self._provenance_world(channel_intelligibility=0.0)
+        ego = _ego_payload(ws, ["ENT_B"])
+        asm = DirectiveAssembler(None, ego, ws)
+        # Drop the utterance too, so the only path to knowledge is the
+        # belief — which now fails the intelligibility gate.
+        ws.events = [e for e in ws.events if e.id != "EVT_LETTER"]
+        score = asm.compute_dramatic_irony_score(
+            ["ENT_B"], syuzhet_anchor=1,
+        )
+        assert score > 0.0
+
+    def test_irony_provenance_channel_terminated_before_belief(self):
+        """Shadow surgery brings the channel termination forward to
+        before the belief was nominally acquired. Belief invalidated."""
+        ws = self._provenance_world(channel_terminated_at=1)  # belief established at 2
+        ego = _ego_payload(ws, ["ENT_B"])
+        asm = DirectiveAssembler(None, ego, ws)
+        ws.events = [e for e in ws.events if e.id != "EVT_LETTER"]
+        score = asm.compute_dramatic_irony_score(
+            ["ENT_B"], syuzhet_anchor=1,
+        )
+        assert score > 0.0
+
+    def test_irony_provenance_legacy_belief_without_provenance(self):
+        """Backward compatibility: a belief with no provenance pointers
+        (legacy fixtures, baseline pre-story knowledge) is always
+        considered valid. The gate must not reject it."""
+        ws = self._provenance_world(include_letter_event=False)
+        # Strip provenance from B's belief — this is the legacy shape.
+        ws.entities["ENT_B"].beliefs[0].acquired_via_event_id = None
+        ws.entities["ENT_B"].beliefs[0].acquired_via_channel_id = None
+        # Legacy baseline knowledge sits at fabula 0 (pre-story).
+        ws.entities["ENT_B"].beliefs[0].established_at_fabula = 0
+        ego = _ego_payload(ws, ["ENT_B"])
+        asm = DirectiveAssembler(None, ego, ws)
+        score = asm.compute_dramatic_irony_score(
+            ["ENT_B"], syuzhet_anchor=1,
+        )
+        # Belief still counts, B "knows" EVT_SECRET → no irony surface.
+        assert score == 0.0
+
 
 # =====================================================================
 # SUSPENSE SCORE  (P(threat) - P(hope))
