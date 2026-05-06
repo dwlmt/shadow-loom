@@ -1488,6 +1488,102 @@ class TestReconcileChunkTopologies:
         assert eu.new_beliefs[0].established_at_fabula == 500
         assert eu.new_beliefs[1].established_at_fabula == 0
 
+    def test_chunk_restart_pathology_shifted(self):
+        """Chunk N whose LLM ignored the spacing hint and emitted small
+        sequential integers (1, 2, 3) entirely below prior_max, with no
+        causal back-links, must be shifted forward to avoid collision."""
+        topo0 = self._make_topo(events=[
+            EventNode(id="EVT_A1", description="a1", event_type="choice",
+                      fabula_time=1000, syuzhet_index=0, actor_ids=[], target_ids=[]),
+            EventNode(id="EVT_A2", description="a2", event_type="outcome",
+                      fabula_time=2000, syuzhet_index=1, actor_ids=[], target_ids=[]),
+            EventNode(id="EVT_A3", description="a3", event_type="choice",
+                      fabula_time=3000, syuzhet_index=2, actor_ids=[], target_ids=[]),
+        ])
+        topo1 = self._make_topo(events=[
+            EventNode(id="EVT_B1", description="b1", event_type="choice",
+                      fabula_time=1, syuzhet_index=0, actor_ids=[], target_ids=[]),
+            EventNode(id="EVT_B2", description="b2", event_type="outcome",
+                      fabula_time=2, syuzhet_index=1, actor_ids=[], target_ids=[]),
+            EventNode(id="EVT_B3", description="b3", event_type="choice",
+                      fabula_time=3, syuzhet_index=2, actor_ids=[], target_ids=[]),
+        ])
+        config = ExtractionConfig(fabula_time_spacing=1000)
+        result = _reconcile_chunk_topologies([topo0, topo1], config)
+        # Chunk 0 unchanged
+        assert [e.fabula_time for e in result[0].events] == [1000, 2000, 3000]
+        # Chunk 1 shifted so min == prior_max + spacing == 4000;
+        # internal spacing of 1 preserved.
+        assert [e.fabula_time for e in result[1].events] == [4000, 4001, 4002]
+
+    def test_flashback_with_causal_link_preserved(self):
+        """A flashback chunk that links causally back into a prior
+        chunk's event must NOT be shifted, even if its fabula values
+        are small and below prior_max."""
+        topo0 = self._make_topo(events=[
+            EventNode(id="EVT_PAST", description="past", event_type="choice",
+                      fabula_time=100, syuzhet_index=0, actor_ids=[], target_ids=[]),
+            EventNode(id="EVT_NOW", description="now", event_type="outcome",
+                      fabula_time=5000, syuzhet_index=1, actor_ids=[], target_ids=[]),
+        ])
+        # Flashback chunk: small absolute values, but a chain_reaction
+        # edge points back to EVT_PAST — clear deliberate flashback.
+        topo1 = self._make_topo(
+            events=[
+                EventNode(id="EVT_FB1", description="fb1", event_type="revelation",
+                          fabula_time=50, syuzhet_index=0, actor_ids=[], target_ids=[]),
+                EventNode(id="EVT_FB2", description="fb2", event_type="outcome",
+                          fabula_time=60, syuzhet_index=1, actor_ids=[], target_ids=[]),
+            ],
+            causal=[
+                CausalEdge(source_id="EVT_PAST", target_id="EVT_FB1",
+                           causality_type="chain_reaction", mechanism="psychological",
+                           fabula_time=100),
+            ],
+        )
+        config = ExtractionConfig(fabula_time_spacing=1000)
+        result = _reconcile_chunk_topologies([topo0, topo1], config)
+        # Flashback preserved
+        assert [e.fabula_time for e in result[1].events] == [50, 60]
+
+    def test_flash_forward_preserved(self):
+        """A chunk whose events sit above prior_max (flash-forward) is
+        never shifted regardless of internal spacing."""
+        topo0 = self._make_topo(events=[
+            EventNode(id="EVT_A", description="a", event_type="choice",
+                      fabula_time=1000, syuzhet_index=0, actor_ids=[], target_ids=[]),
+        ])
+        topo1 = self._make_topo(events=[
+            EventNode(id="EVT_FF1", description="ff1", event_type="outcome",
+                      fabula_time=9000, syuzhet_index=0, actor_ids=[], target_ids=[]),
+            EventNode(id="EVT_FF2", description="ff2", event_type="choice",
+                      fabula_time=9100, syuzhet_index=1, actor_ids=[], target_ids=[]),
+        ])
+        config = ExtractionConfig(fabula_time_spacing=1000)
+        result = _reconcile_chunk_topologies([topo0, topo1], config)
+        assert [e.fabula_time for e in result[1].events] == [9000, 9100]
+
+    def test_mixed_chunk_with_present_event_preserved(self):
+        """A chunk with at least one event above prior_max (i.e. mixed
+        present + flashback content) is left alone — the heuristic only
+        fires on chunks that are *entirely* below prior_max."""
+        topo0 = self._make_topo(events=[
+            EventNode(id="EVT_A", description="a", event_type="choice",
+                      fabula_time=1000, syuzhet_index=0, actor_ids=[], target_ids=[]),
+            EventNode(id="EVT_B", description="b", event_type="outcome",
+                      fabula_time=2000, syuzhet_index=1, actor_ids=[], target_ids=[]),
+        ])
+        topo1 = self._make_topo(events=[
+            EventNode(id="EVT_C1", description="c1", event_type="revelation",
+                      fabula_time=5, syuzhet_index=0, actor_ids=[], target_ids=[]),
+            EventNode(id="EVT_C2", description="c2", event_type="outcome",
+                      fabula_time=2500, syuzhet_index=1, actor_ids=[], target_ids=[]),
+        ])
+        config = ExtractionConfig(fabula_time_spacing=1000)
+        result = _reconcile_chunk_topologies([topo0, topo1], config)
+        # Mixed chunk untouched — at least one event ≥ prior_max.
+        assert [e.fabula_time for e in result[1].events] == [5, 2500]
+
 
 class TestApplyEventRenames:
     """Tests for _apply_event_renames."""

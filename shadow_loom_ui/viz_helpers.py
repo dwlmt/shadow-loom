@@ -166,39 +166,59 @@ def reconstruct_relationship_with_causal(
 ) -> dict | None:
     """Reconstruct relationship metrics for ``(source, target)`` at ``t``.
 
-    Walks all ``mutation_social`` causal edges that target this dyad
-    (in either direction, since :class:`RelationshipEdge` is logically
-    undirected for affinity / fear / power_dynamic), summing their
-    signed ``trait_delta`` per metric on top of the edge's baseline
-    values.
+    Convention (matches the causal_physics engine, see
+    ``CausalPhysics._seed_active_sources``): each
+    :class:`RelationshipMetric.value` is the **post-canonical** state
+    at exactly ``last_updated_fabula`` — every ``mutation_social``
+    edge with ``fabula_time <= last_updated_fabula`` has *already*
+    contributed to that value. We therefore reconstruct the value at
+    an arbitrary ``t`` by **walking back** from ``last_updated_fabula``,
+    subtracting the cumulative delta of mutations whose
+    ``fabula_time`` lies in ``(t, last_updated_fabula]``.
+
+    Adding mutations on top of ``value`` (the previous behaviour)
+    double-counted every canonical effect and silently drove every
+    timeline trace into clamp saturation — the visual symptom was
+    "the chart is flat at ±1.0 from the moment of last_updated".
+
+    Pair selection prefers the **directed** match
+    (``source→target``) so asymmetric relationships (where the dyad
+    is authored in both directions with different values, e.g. Luke
+    →Obi-Wan affinity=0.9 vs Obi-Wan→Luke affinity=0.7) reconstruct
+    against the correct half.
 
     Returns ``None`` if no :class:`RelationshipEdge` exists for the
     pair, otherwise a dict matching the shape of a serialised edge
-    with reconstructed ``affinity``, ``fear``, ``power_dynamic``.
+    with reconstructed ``affinity``, ``fear``, ``power_dynamic`` AND
+    a ``per_axis`` sub-dict carrying value + evidence + observed +
+    last_updated_fabula for each axis.
 
-    NB: clamping is per-metric — affinity/power_dynamic in [-1, 1],
+    Clamping is per-metric — affinity/power_dynamic in [-1, 1],
     fear in [0, 1] — matching the model documentation.
     """
+    # Prefer the exact directed match. Fall back to the reversed dyad
+    # only when no directed edge exists (legacy fixtures sometimes
+    # record only one half).
     base = next(
         (
             r for r in ws.social_topology
-            if (r.source_entity_id == source_entity_id
-                and r.target_entity_id == target_entity_id)
-            or (r.source_entity_id == target_entity_id
-                and r.target_entity_id == source_entity_id)
+            if r.source_entity_id == source_entity_id
+            and r.target_entity_id == target_entity_id
         ),
         None,
     )
     if base is None:
+        base = next(
+            (
+                r for r in ws.social_topology
+                if r.source_entity_id == target_entity_id
+                and r.target_entity_id == source_entity_id
+            ),
+            None,
+        )
+    if base is None:
         return None
 
-    # Per-axis baselines, cutoffs, and evidence — the per-metric refactor
-    # made each axis independently authoritative, so the cutoff for
-    # replaying mutation_social must also be per-axis (otherwise an
-    # axis updated after ``fabula_time`` smears its high
-    # ``last_updated_fabula`` onto the *aggregate* and discards
-    # mutations that legitimately preceded ``fabula_time`` on the
-    # other axes).
     per_axis: dict[str, dict] = {}
     for axis_name in ("affinity", "fear", "power_dynamic"):
         m = base.metrics.get(axis_name)
@@ -207,9 +227,8 @@ def reconstruct_relationship_with_causal(
                 "value": m.value,
                 "evidence_strength": m.evidence_strength,
                 "observed": m.observed,
-                "last_updated_fabula": m.last_updated_fabula,
+                "last_updated_fabula": m.last_updated_fabula or 0,
                 "inertia": m.inertia,
-                "cutoff": min(fabula_time, m.last_updated_fabula or fabula_time),
             }
         else:
             per_axis[axis_name] = {
@@ -218,7 +237,6 @@ def reconstruct_relationship_with_causal(
                 "observed": False,
                 "last_updated_fabula": 0,
                 "inertia": 0.3,
-                "cutoff": fabula_time,
             }
 
     pair = {source_entity_id, target_entity_id}
@@ -232,28 +250,37 @@ def reconstruct_relationship_with_causal(
         ),
         key=lambda c: c.fabula_time,
     )
-    for ce in mutations:
-        delta = float(ce.trait_delta or 0.0)
-        metric = (ce.trait_target or "").lower()
-        if metric == "power":
-            metric = "power_dynamic"
-        if metric not in per_axis:
-            continue
-        if ce.fabula_time > per_axis[metric]["cutoff"]:
-            continue
-        v = per_axis[metric]["value"] + delta
+    # Walk back from each axis' authored ``value`` (state at
+    # ``last_updated_fabula``) by undoing mutations that occurred in
+    # ``(t, last_updated_fabula]``. For ``t >= last_updated_fabula``
+    # the value is simply the authored one — no extrapolation.
+    def _clamp(metric: str, v: float) -> float:
         if metric == "fear":
-            v = max(0.0, min(1.0, v))
-        else:
-            v = max(-1.0, min(1.0, v))
-        per_axis[metric]["value"] = v
+            return max(0.0, min(1.0, v))
+        return max(-1.0, min(1.0, v))
+
+    for axis_name, info in per_axis.items():
+        last_upd = info["last_updated_fabula"]
+        if fabula_time >= last_upd:
+            continue  # authored value already valid at t
+        rollback = 0.0
+        for ce in mutations:
+            metric = (ce.trait_target or "").lower()
+            if metric == "power":
+                metric = "power_dynamic"
+            if metric != axis_name:
+                continue
+            # Only undo mutations strictly after t and at or before
+            # the axis' last_updated_fabula. Mutations whose
+            # fabula_time exceeds last_updated_fabula are ignored —
+            # they cannot legitimately have contributed to ``value``.
+            if ce.fabula_time > fabula_time and ce.fabula_time <= last_upd:
+                rollback += float(ce.trait_delta or 0.0)
+        info["value"] = _clamp(axis_name, info["value"] - rollback)
 
     out = base.model_dump()
     for axis_name, info in per_axis.items():
         out[axis_name] = info["value"]
-    # Expose the per-axis detail so callers wanting a confidence band
-    # ("affinity 0.2 — strong evidence" vs "0.2 — weakly inferred") can
-    # render it without re-walking the model. Issue #28.
     out["per_axis"] = {
         name: {
             "value": info["value"],
@@ -2566,17 +2593,45 @@ def snapshot_world_at(ws: WorldStateV1, t: int) -> WorldStateV1:
         snap = reconstruct_relationship_with_causal(
             ws, rel.source_entity_id, rel.target_entity_id, t,
         )
-        if snap is not None:
-            # The new RelationshipEdge stores per-axis state under
-            # ``metrics``; mutate in place so existing edge identity is
-            # preserved. Falls back to the current value for any axis
-            # the reconstructor didn't touch.
-            for axis in ("affinity", "fear", "power_dynamic"):
-                if axis in snap and axis in rel.metrics:
-                    rel.metrics[axis].value = snap[axis]
-                elif axis in snap:
-                    from shadow_loom.models import RelationshipMetric
-                    rel.metrics[axis] = RelationshipMetric(value=snap[axis])
+        if snap is None:
+            continue
+        # The new RelationshipEdge stores per-axis state under
+        # ``metrics``; mutate in place so existing edge identity is
+        # preserved. Falls back to the current value for any axis
+        # the reconstructor didn't touch.
+        #
+        # IMPORTANT: ``reconstruct_relationship_with_causal`` always
+        # emits all three axes in ``snap`` (filling unobserved ones
+        # with value=0.0). Naively writing those into ``rel.metrics``
+        # — or worse, creating a fresh ``RelationshipMetric`` (which
+        # defaults ``observed=True``) — silently flips never-observed
+        # axes into "observed" with value 0.0. The affective scorers
+        # (``conflict``, ``danger``, ``narrative_tension``) gate on
+        # ``observed=True``, so the spurious zeros pin those gauges
+        # flat across the entire fabula axis. Honour the per-axis
+        # ``observed`` flag carried in ``snap["per_axis"]`` instead.
+        per_axis = snap.get("per_axis") or {}
+        for axis in ("affinity", "fear", "power_dynamic"):
+            info = per_axis.get(axis)
+            if info is None:
+                continue
+            existed = axis in rel.metrics
+            if not info.get("observed") and not existed:
+                # Never observed and no replay touched it → don't
+                # fabricate a 0.0 metric just to mirror the API shape.
+                continue
+            value = float(snap.get(axis, info.get("value", 0.0)))
+            if existed:
+                rel.metrics[axis].value = value
+            else:
+                # Axis got a real value via mutation_social replay even
+                # though the source edge had no baseline. Preserve the
+                # observed=False flag so it stays out of the affective
+                # aggregates until the LLM actually authors a reading.
+                from shadow_loom.models import RelationshipMetric
+                rel.metrics[axis] = RelationshipMetric(
+                    value=value, observed=bool(info.get("observed", False)),
+                )
     new.spatial_topology = [
         se for se in new.spatial_topology
         if se.established_at_fabula <= t

@@ -2520,6 +2520,75 @@ def _physics_missing_mutation_social(
     return missing
 
 
+def _physics_missing_mutation_social_per_dyad(
+    physics: "PhysicsExtraction",
+    social: "SocialExtraction",
+) -> List[Tuple[str, str, str]]:
+    """Return per-dyad-per-axis gaps in ``mutation_social`` coverage.
+
+    Stronger than :func:`_physics_missing_mutation_social`: instead of
+    only checking that *some* mutation_social edge exists per axis
+    globally, this checks that **each individual dyad with an
+    ``observed=True`` non-zero axis** has at least one mutation_social
+    edge wired to *that exact (dyad, axis)* triple. Without this
+    finer-grained check, a fixture can satisfy the global axis count
+    while leaving individual relationship traces flat — the symptom
+    we observed on the bundled Star Wars project, where six of nine
+    dyads carried observed axes that no mutation_social edge ever
+    touched. The downstream timeline reconstructor cannot move a
+    metric without a mutation, so the affective gauges' sub-curves
+    sit at the authored value across the entire fabula axis.
+
+    Returns a list of ``(target_id, counterpart_id, axis)`` triples
+    in deterministic order, one per missing dyad-axis combination.
+    """
+    if not social.social_topology or not physics.events:
+        return []
+
+    # Build the set of (target, counterpart, axis) triples Physics
+    # actually covered. ``mutation_social`` semantics: target_id is
+    # the perspective entity, rel_counterpart_id is the other half
+    # of the dyad. We index in both directions because the semantic
+    # dyad is undirected for affinity and power_dynamic; matching
+    # only one direction would over-report.
+    covered: set[Tuple[str, str, str]] = set()
+    for ce in physics.causal_topology:
+        if ce.causality_type != "mutation_social":
+            continue
+        if not ce.trait_target or not ce.target_id:
+            continue
+        counterpart = getattr(ce, "rel_counterpart_id", None) or ""
+        axis = str(ce.trait_target).lower()
+        if axis == "power":
+            axis = "power_dynamic"
+        covered.add((ce.target_id, counterpart, axis))
+        covered.add((counterpart, ce.target_id, axis))
+
+    missing: list[Tuple[str, str, str]] = []
+    seen: set[Tuple[str, str, str]] = set()
+    for rel in social.social_topology:
+        src = rel.source_entity_id
+        tgt = rel.target_entity_id
+        for axis_name, m in rel.metrics.items():
+            if not getattr(m, "observed", True):
+                continue
+            if float(m.value) == 0.0:
+                continue
+            key = (src, tgt, axis_name)
+            if key in seen:
+                continue
+            if key in covered:
+                continue
+            seen.add(key)
+            missing.append(key)
+    missing.sort()
+    return missing
+
+
+    missing.sort()
+    return missing
+
+
 def _consequences_mutation_parity_broken(
     physics: "PhysicsExtraction",
     consequences: "ConsequencesExtraction",
@@ -3046,6 +3115,93 @@ def extract_topology(
                     logger.exception(
                         "[Step 3a] Chunk %d axis retry FAILED.", i + 1,
                     )
+
+            # Per-DYAD-per-axis mutation_social coverage — stronger
+            # than the per-axis check above. The per-axis check only
+            # asks "does *some* mutation_social edge cover this axis
+            # *anywhere*?". A fixture can pass that and still leave
+            # individual relationship traces flat (the bundled Star
+            # Wars project: 3 axes covered globally but 6 of 9 dyads
+            # had no mutation_social edge at all). The downstream
+            # timeline reconstructor cannot move a metric without a
+            # mutation, so the affective sub-curves for those dyads
+            # render as flat lines from t=0 to t=∞. Retry once more
+            # with the missing dyad×axis triples spelled out.
+            missing_dyads = _physics_missing_mutation_social_per_dyad(
+                physics, social,
+            )
+            if missing_dyads:
+                # Compact summary cap to avoid prompt bloat on highly
+                # social chunks; the LLM only needs a few examples to
+                # generalise the pattern.
+                summary_lines = [
+                    f"  - dyad ({tgt} ↔ {cp}) is missing axis '{ax}'"
+                    for tgt, cp, ax in missing_dyads[:25]
+                ]
+                more = (
+                    f"\n  …and {len(missing_dyads) - 25} more"
+                    if len(missing_dyads) > 25 else ""
+                )
+                logger.info(
+                    "[Step 3a] Chunk %d: %d dyad×axis pair(s) lack a "
+                    "mutation_social edge — retrying physics with "
+                    "per-dyad emphasis …",
+                    i + 1, len(missing_dyads),
+                )
+                dyad_msg = (
+                    "IMPORTANT: For each of the following observed "
+                    "relationship axes, the Physics Agent emitted no "
+                    "mutation_social edge wired to that *specific* "
+                    "dyad-axis combination. Without one, the timeline "
+                    "reconstructor cannot evolve the metric and the "
+                    "corresponding sub-curve in the affective dashboard "
+                    "renders as a flat line.\n\n"
+                    "Missing dyad×axis triples:\n"
+                    + "\n".join(summary_lines) + more + "\n\n"
+                    "For each missing triple, find (or invent if the "
+                    "narrative implies one) the on-page event that "
+                    "produced or shifted the reading, and emit a "
+                    "mutation_social CausalEdge:\n"
+                    "  source_id=<EVT_ id>, "
+                    "causality_type='mutation_social', "
+                    "target_id=<perspective entity>, "
+                    "rel_counterpart_id=<other entity in the dyad>, "
+                    "trait_target=<axis>, "
+                    "trait_delta=<signed magnitude>.\n"
+                    "Keep all events and causal edges from your "
+                    "previous extraction.\n\n" + physics_msg
+                )
+                try:
+                    dyad_result = physics_agent.run_sync(
+                        dyad_msg, deps=physics_deps, **_user_kwargs(),
+                    )
+                    dyad_physics = dyad_result.output
+                    log_agent_output(
+                        logger,
+                        f"PhysicsExtraction[chunk={i + 1},dyad_retry]",
+                        dyad_physics,
+                    )
+                    new_missing_dyads = (
+                        _physics_missing_mutation_social_per_dyad(
+                            dyad_physics, social,
+                        )
+                    )
+                    if (
+                        len(dyad_physics.events) >= len(physics.events)
+                        and len(new_missing_dyads) < len(missing_dyads)
+                    ):
+                        physics = dyad_physics
+                        logger.info(
+                            "[Step 3a] Chunk %d: dyad retry covered "
+                            "%d/%d missing dyad×axis triples.",
+                            i + 1,
+                            len(missing_dyads) - len(new_missing_dyads),
+                            len(missing_dyads),
+                        )
+                except Exception:
+                    logger.exception(
+                        "[Step 3a] Chunk %d dyad retry FAILED.", i + 1,
+                    )
         else:
             logger.info("[Step 3b] Chunk %d: skipping social pass (no events, no speech cues).", i + 1)
 
@@ -3193,6 +3349,18 @@ def extract_topology(
         )
 
     _check_chunk_failure_threshold(failure_counts, len(chunks))
+
+    # Post-merge reconciliation: rename duplicate ``EVT_`` IDs across
+    # chunks and renumber ``syuzhet_index`` globally in chunk order.
+    # Without this the sync path silently kept chunk-local syuzhet
+    # numbering — every chunk after the first restarted at 0 (or
+    # whatever the LLM picked), so the syuzhet-axis affective views
+    # showed wraparounds (e.g. Star Wars chunk 2 jumped from 33 back
+    # to 1) and any duplicate ``EVT_FOO`` IDs across chunks silently
+    # collided when the assembler dict-merged them. Mirrors the
+    # existing async-path call at the end of ``extract_topology_async``.
+    topologies = _reconcile_chunk_topologies(topologies, config)
+
     return topologies
 
 
@@ -3750,6 +3918,78 @@ async def _extract_single_chunk_async(
                 "[Step 3a·Async] Chunk %d axis retry FAILED.", i + 1,
             )
 
+    # Per-DYAD-per-axis coverage (async). Mirrors the sync path; see
+    # the longer rationale in ``extract_topology``. The retry is the
+    # last opportunity to anchor a specific dyad-axis combination on
+    # an on-page event before consequences runs.
+    missing_dyads = _physics_missing_mutation_social_per_dyad(
+        physics, social,
+    )
+    if missing_dyads:
+        summary_lines = [
+            f"  - dyad ({tgt} ↔ {cp}) is missing axis '{ax}'"
+            for tgt, cp, ax in missing_dyads[:25]
+        ]
+        more = (
+            f"\n  …and {len(missing_dyads) - 25} more"
+            if len(missing_dyads) > 25 else ""
+        )
+        logger.info(
+            "[Step 3a·Async] Chunk %d: %d dyad×axis pair(s) lack a "
+            "mutation_social edge — retrying physics with "
+            "per-dyad emphasis …",
+            i + 1, len(missing_dyads),
+        )
+        dyad_msg = (
+            "IMPORTANT: For each of the following observed "
+            "relationship axes, the Physics Agent emitted no "
+            "mutation_social edge wired to that *specific* "
+            "dyad-axis combination. Without one, the timeline "
+            "reconstructor cannot evolve the metric and the "
+            "corresponding sub-curve in the affective dashboard "
+            "renders as a flat line.\n\n"
+            "Missing dyad×axis triples:\n"
+            + "\n".join(summary_lines) + more + "\n\n"
+            "For each missing triple, find (or invent if the "
+            "narrative implies one) the on-page event that "
+            "produced or shifted the reading, and emit a "
+            "mutation_social CausalEdge:\n"
+            "  source_id=<EVT_ id>, "
+            "causality_type='mutation_social', "
+            "target_id=<perspective entity>, "
+            "rel_counterpart_id=<other entity in the dyad>, "
+            "trait_target=<axis>, "
+            "trait_delta=<signed magnitude>.\n"
+            "Keep all events and causal edges from your "
+            "previous extraction.\n\n" + physics_msg
+        )
+        try:
+            dyad_result = await physics_agent.run(
+                dyad_msg, deps=physics_deps, **_user_kwargs(),
+            )
+            dyad_physics = dyad_result.output
+            new_missing_dyads = (
+                _physics_missing_mutation_social_per_dyad(
+                    dyad_physics, social,
+                )
+            )
+            if (
+                len(dyad_physics.events) >= len(physics.events)
+                and len(new_missing_dyads) < len(missing_dyads)
+            ):
+                physics = dyad_physics
+                logger.info(
+                    "[Step 3a·Async] Chunk %d: dyad retry covered "
+                    "%d/%d missing dyad×axis triples.",
+                    i + 1,
+                    len(missing_dyads) - len(new_missing_dyads),
+                    len(missing_dyads),
+                )
+        except Exception:
+            logger.exception(
+                "[Step 3a·Async] Chunk %d dyad retry FAILED.", i + 1,
+            )
+
     consequences_out = await _run_consequences(social)
     if consequences_out is not None:
         entity_updates_final = consequences_out.entity_updates
@@ -3841,9 +4081,93 @@ def _reconcile_chunk_topologies(
             evt.syuzhet_index = syuzhet_counter
             syuzhet_counter += 1
 
-    # No Pass 3: fabula_time order is intentionally free across chunks so
-    # flashbacks remain expressible. Cross-chunk temporal contradictions
-    # are surfaced by ``_validate_time_ordering`` downstream.
+    # --- Pass 3: Heal "LLM restarted fabula numbering" pathology ---
+    #
+    # Fabula order is intentionally free across chunks so that flashbacks
+    # (chunk reaches into the past) and flash-forwards (chunk jumps to
+    # the future) remain expressible. We MUST NOT blindly stack chunk N
+    # after chunk N-1 — that would erase those structures.
+    #
+    # However, when a chunk's per-chunk extractor ignores the
+    # "continue from prev_max" hint and emits small sequential integers
+    # (1, 2, 3 …) instead of values aligned to ``fabula_time_spacing``,
+    # those values silently collide with prior chunks once they reach
+    # ``_normalize_fabula_times`` — distinct events collapse onto the
+    # same normalised tick. We detect that pathology *only* when every
+    # signal points to it and never when a flashback (deliberate use of
+    # an earlier absolute fabula_time) is plausible:
+    #
+    #   1. The chunk has at least two events and its full positive
+    #      fabula_time range fits inside a single ``fabula_time_spacing``
+    #      slot (i.e. ``chunk_max < spacing``). A deliberate flashback
+    #      uses *absolute* story-time values aligned to the global
+    #      spacing — even a tightly-clustered flashback scene at
+    #      fabula 100, 200, 300 with spacing 1000 keeps each event in
+    #      its own slot when it eventually normalises, so this gate
+    #      stays closed.
+    #   2. The chunk's events are clustered as small consecutive
+    #      integers (max ≤ events × 4) — the canonical "LLM gave up on
+    #      the spacing hint and just counted" signature.
+    #   3. Every positive fabula_time in chunk N is strictly below
+    #      ``prev_max``. A flash-forward (chunk N already past
+    #      prior chunks) trips this and is left alone, as is any
+    #      mixed chunk with even a single event ≥ prev_max.
+    #   4. The chunk has zero causal_topology edges referencing any
+    #      event in a prior chunk. A deliberate flashback that
+    #      revisits or causally connects to an earlier event almost
+    #      always carries a ``chain_reaction`` / ``mutation`` edge
+    #      linking back to the event being remembered — its absence
+    #      reinforces the diagnosis of structural disconnection.
+    #
+    # When all four signals fire the chunk is shifted forward by
+    # ``prior_max + spacing - chunk_min`` — preserving the chunk's
+    # *internal* spacing (and therefore any intra-chunk ordering)
+    # while placing the whole block after prior content with a
+    # one-spacing gap.
+    if config.fabula_time_spacing > 0 and len(reconciled) > 1:
+        prior_max = 0
+        prior_event_ids: set[str] = set()
+        spacing = config.fabula_time_spacing
+        for ci, topo in enumerate(reconciled):
+            chunk_event_ids = {e.id for e in topo.events}
+            chunk_fabs = [e.fabula_time for e in topo.events if e.fabula_time > 0]
+            if ci == 0 or not chunk_fabs:
+                if chunk_fabs:
+                    prior_max = max(prior_max, max(chunk_fabs))
+                prior_event_ids |= chunk_event_ids
+                continue
+            chunk_max = max(chunk_fabs)
+            chunk_min = min(chunk_fabs)
+            cross_chunk_edges = any(
+                (ce.source_id in prior_event_ids) or (ce.target_id in prior_event_ids)
+                for ce in topo.causal_topology
+            )
+            looks_restarted = (
+                len(chunk_fabs) >= 2
+                and chunk_max < spacing
+                and chunk_max <= len(chunk_fabs) * 4
+            )
+            if (
+                looks_restarted
+                and chunk_max < prior_max
+                and not cross_chunk_edges
+            ):
+                # Shift so chunk N starts at prior_max + spacing —
+                # leaving a one-spacing gap to keep events distinguishable
+                # without overstating a temporal jump.
+                shift = prior_max + spacing - chunk_min
+                _shift_fabula_times(topo, shift)
+                logger.warning(
+                    "[Reconcile] Chunk %d looked restarted (range %d-%d, "
+                    "%d events, prev_max=%d, no causal links into prior "
+                    "chunks) — shifted forward by %d to avoid fabula "
+                    "collision.",
+                    ci, chunk_min, chunk_max, len(chunk_fabs), prior_max, shift,
+                )
+                chunk_fabs = [e.fabula_time for e in topo.events if e.fabula_time > 0]
+            if chunk_fabs:
+                prior_max = max(prior_max, max(chunk_fabs))
+            prior_event_ids |= chunk_event_ids
 
     return reconciled
 
@@ -4256,6 +4580,24 @@ def _normalize_fabula_times(ws: WorldStateV1, spacing: int = 1000) -> WorldState
 
     Returns the original world-state unchanged when event times are
     already well-spaced (median gap ≥ spacing / 2).
+
+    KNOWN LIMITATION (cross-chunk fabula collision): the mapping is
+    keyed on raw fabula_time alone. When chunk 2's LLM ignores the
+    "max so far" hint and restarts numbering at 1, chunk 1's
+    ``fabula_time=1`` and chunk 2's ``fabula_time=1`` would
+    deduplicate to the same key and collapse onto the same normalised
+    tick. The chunk-restart healer in
+    :func:`_reconcile_chunk_topologies` (Pass 3, added May 2026)
+    detects this pattern *before* normalisation runs and shifts the
+    affected chunk forward — preserving its internal spacing and
+    leaving genuine flashbacks (chunks linked causally to prior
+    events) and flash-forwards (chunks already past prior_max)
+    untouched. A stray restart that slips past the heuristic (e.g.
+    a multi-restart cascade across many chunks, or a chunk that
+    coincidentally meets all flashback signals) can still merge
+    unrelated events; re-ingesting under the strengthened prompts
+    remains the recommended remedy for fixtures predating that
+    healer.
     """
     if not ws.events:
         return ws
