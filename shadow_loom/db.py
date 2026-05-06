@@ -27,6 +27,7 @@ from sqlmodel import (
     or_,
     select,
 )
+from sqlalchemy import Index
 from sqlalchemy.exc import IntegrityError
 
 logger = logging.getLogger(__name__)
@@ -113,6 +114,12 @@ class VersionRow(SQLModel, table=True):
     __tablename__ = "versions"
     __table_args__ = (
         UniqueConstraint("project_id", "version", name="uq_project_version"),
+        # Hot path: load a project's version list newest-first.
+        Index("ix_versions_project_version", "project_id", "version"),
+        # Walking the version DAG (ancestor lookups, branch summaries).
+        Index("ix_versions_ancestor", "ancestor_id"),
+        # Per-user activity / "my recent edits" feed.
+        Index("ix_versions_user_created", "user_id", "created_at"),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -209,9 +216,27 @@ class ApiKeyRow(SQLModel, table=True):
 
 
 class ActivityRow(SQLModel, table=True):
-    """Activity feed entries for a project."""
+    """Activity feed entries for a project.
+
+    On Postgres this table is converted to a RANGE-partitioned table on
+    ``created_at`` (one partition per month) by
+    :func:`ensure_pg_partitions` — either automatically when empty
+    (fresh deploys) or via ``scripts/setup_pg_partitions.py --migrate``
+    when it already contains data. The SQLModel definition itself is
+    kept dialect-portable (single ``id`` PK, nullable ``created_at``)
+    so SQLite remains a first-class backend.
+    """
 
     __tablename__ = "activities"
+    __table_args__ = (
+        # Project feed: most queries are "latest N activities for project X".
+        Index("ix_activities_project_created", "project_id", "created_at"),
+        # Per-user activity feeds (profile pages, audit logs).
+        Index("ix_activities_user_created", "user_id", "created_at"),
+        # Cheap join lookup when surfacing the activity row that owns a
+        # given version (UI: "this version was created by …").
+        Index("ix_activities_version", "version_id"),
+    )
 
     id: Optional[int] = Field(default=None, primary_key=True)
     project_id: int = Field(foreign_key="projects.id")
@@ -271,6 +296,18 @@ class ResearchCacheRow(SQLModel, table=True):
     __tablename__ = "research_cache"
     __table_args__ = (
         UniqueConstraint("user_id", "key", name="uq_research_cache_user_key"),
+        # Lookups by (user, provider, model) when warming the cache page
+        # or invalidating after a provider config change.
+        Index(
+            "ix_research_cache_user_provider",
+            "user_id", "provider", "provider_model",
+        ),
+        # Recency-ordered scans (cleanup, dashboards).
+        Index("ix_research_cache_created_at", "created_at"),
+        # NOTE: ``research_cache`` is intentionally *not* partitioned.
+        # Postgres requires every unique constraint on a partitioned
+        # table to include the partition key, which would weaken the
+        # ``(user_id, key)`` dedup invariant the cache depends on.
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -300,6 +337,8 @@ class WorldFactRow(SQLModel, table=True):
     __tablename__ = "world_facts"
     __table_args__ = (
         UniqueConstraint("project_id", "fact_id", name="uq_world_fact_project_id"),
+        # Recency-ordered listing within a project (UI inspector).
+        Index("ix_world_facts_project_retrieved", "project_id", "retrieved_at"),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -349,9 +388,24 @@ class ProjectSettingsRow(SQLModel, table=True):
 
 
 class AgentCallLogRow(SQLModel, table=True):
-    """Log every agent execution with performance and cost tracking."""
+    """Log every agent execution with performance and cost tracking.
+
+    Postgres-partitioned by month on ``created_at`` — see
+    :class:`ActivityRow` for the partitioning lifecycle.
+    """
     __tablename__ = "agent_call_logs"
-    
+    __table_args__ = (
+        # Per-user dashboards / billing rollups: "show calls for user X
+        # in the last 30 days, newest first".
+        Index("ix_agent_call_logs_user_created", "user_id", "created_at"),
+        # Per-project cost & timing breakdowns.
+        Index("ix_agent_call_logs_project_created", "project_id", "created_at"),
+        # Group-by agent_type queries used by the cost analytics panel.
+        Index("ix_agent_call_logs_agent_type", "agent_type"),
+        # Cross-reference to Langfuse traces.
+        Index("ix_agent_call_logs_langfuse_trace", "langfuse_trace_id"),
+    )
+
     id: Optional[int] = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="users.id")
     project_id: Optional[int] = Field(default=None, foreign_key="projects.id") 
@@ -394,8 +448,23 @@ class AgentCallLogRow(SQLModel, table=True):
 
 
 class ApiCallLogRow(SQLModel, table=True):
-    """Track external API calls (Tavily, etc.) for cost analysis."""
+    """Track external API calls (Tavily, etc.) for cost analysis.
+
+    Postgres-partitioned by month on ``created_at`` — see
+    :class:`ActivityRow` for the partitioning lifecycle.
+    """
     __tablename__ = "api_call_logs"
+    __table_args__ = (
+        Index("ix_api_call_logs_user_created", "user_id", "created_at"),
+        Index("ix_api_call_logs_project_created", "project_id", "created_at"),
+        # Cost rollups by provider/service.
+        Index(
+            "ix_api_call_logs_provider_created",
+            "provider", "service_type", "created_at",
+        ),
+        # Join back to the agent call that triggered this API call.
+        Index("ix_api_call_logs_agent_call", "agent_call_log_id"),
+    )
     
     id: Optional[int] = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="users.id") 
@@ -424,8 +493,11 @@ class ApiCallLogRow(SQLModel, table=True):
     # Cost calculation
     estimated_cost_usd: Optional[float] = Field(default=None)
     
-    # Context & metadata
-    agent_call_log_id: Optional[int] = Field(default=None, foreign_key="agent_call_logs.id") 
+    # Context & metadata. ``agent_call_log_id`` is intentionally *not* a
+    # foreign key: Postgres forbids FKs into partitioned tables unless
+    # the partition key is included on both sides, and the analytics
+    # join is cheap enough with the index alone.
+    agent_call_log_id: Optional[int] = Field(default=None) 
     metadata_json: Optional[str] = Field(default=None, sa_column=Column(Text))
     
     created_at: Optional[datetime] = Field(
@@ -437,7 +509,6 @@ class ApiCallLogRow(SQLModel, table=True):
     user: UserRow = Relationship()
     project: Optional[ProjectRow] = Relationship() 
     version: Optional[VersionRow] = Relationship()
-    agent_call: Optional[AgentCallLogRow] = Relationship()
 
 
 class CostRuleRow(SQLModel, table=True):
@@ -574,15 +645,18 @@ class SchemaVersionRow(SQLModel, table=True):
 
 
 # Bump when adding a new entry to ``_SCHEMA_MIGRATIONS`` below.
-SCHEMA_VERSION_CURRENT: int = 2
+SCHEMA_VERSION_CURRENT: int = 3
 
 # Ordered ledger of applied migrations: (version, name).
 # Version 1 is the historical baseline (everything before this ledger
 # existed); version 2 added world_id + branch_label columns to
-# ``versions`` (handled by ``_run_lightweight_migrations``).
+# ``versions`` (handled by ``_run_lightweight_migrations``); version 3
+# introduced Postgres RANGE partitioning + composite indexes on the
+# high-volume log tables (activities, agent_call_logs, api_call_logs).
 _SCHEMA_MIGRATIONS: list[tuple[int, str]] = [
     (1, "baseline"),
     (2, "versions.world_id+branch_label"),
+    (3, "log-tables.partitioning+indexes"),
 ]
 
 
@@ -644,6 +718,8 @@ def init_db(database_url: str = "sqlite:///shadow_loom.db") -> None:
 
     SQLModel.metadata.create_all(_engine)
     _run_lightweight_migrations(_engine)
+    if database_url.startswith("postgresql"):
+        ensure_pg_partitions(_engine)
     _record_schema_versions(_engine)
     ensure_example_user()
     logger.info("[DB] Tables initialised on %s", database_url)
@@ -733,6 +809,256 @@ def _run_lightweight_migrations(engine) -> None:  # noqa: ANN001
     logger.info(
         "[DB·migrate] Applied %d additive column migration(s) to 'versions'.",
         len(statements),
+    )
+
+
+# =====================================================================
+# Postgres declarative partitioning
+# =====================================================================
+
+# High-volume log tables that are RANGE-partitioned by month on
+# ``created_at`` on Postgres. The SQLModel definitions for these tables
+# stay dialect-portable (single ``id`` PK, nullable ``created_at``) so
+# SQLite remains usable; the partitioning is applied at the DDL level
+# by :func:`ensure_pg_partitions` after ``create_all`` has run.
+#
+# Postgres requires the partition key to be part of every UNIQUE / PK
+# constraint, so the partitioned tables created here use a composite
+# ``(id, created_at)`` primary key with ``id`` as a SERIAL/IDENTITY.
+_PARTITIONED_TABLES: tuple[str, ...] = (
+    "activities",
+    "agent_call_logs",
+    "api_call_logs",
+)
+
+
+def _month_bounds(year: int, month: int) -> tuple[str, str]:
+    """Return ``(start, end)`` ISO timestamps for a given month."""
+    if month == 12:
+        nxt_year, nxt_month = year + 1, 1
+    else:
+        nxt_year, nxt_month = year, month + 1
+    return (
+        f"{year:04d}-{month:02d}-01 00:00:00",
+        f"{nxt_year:04d}-{nxt_month:02d}-01 00:00:00",
+    )
+
+
+def _months_window(months_back: int, months_forward: int) -> list[tuple[int, int]]:
+    """Return inclusive (year, month) list around the current month."""
+    now = datetime.now(timezone.utc)
+    months: list[tuple[int, int]] = []
+    yy, mm = now.year, now.month
+    for _ in range(months_back):
+        mm -= 1
+        if mm == 0:
+            mm = 12
+            yy -= 1
+        months.append((yy, mm))
+    months.reverse()
+    months.append((now.year, now.month))
+    yy, mm = now.year, now.month
+    for _ in range(months_forward):
+        mm += 1
+        if mm == 13:
+            mm = 1
+            yy += 1
+        months.append((yy, mm))
+    return months
+
+
+def _table_relkind(conn, table: str) -> Optional[str]:  # noqa: ANN001
+    """Return ``relkind`` for ``table`` in the current schema, or None."""
+    from sqlalchemy import text
+
+    row = conn.execute(
+        text(
+            "SELECT relkind FROM pg_class WHERE relname = :name AND "
+            "relnamespace = (SELECT oid FROM pg_namespace "
+            "WHERE nspname = current_schema())"
+        ),
+        {"name": table},
+    ).first()
+    return row[0] if row else None
+
+
+def _convert_table_to_partitioned(
+    conn,  # noqa: ANN001
+    table: str,
+    *,
+    partition_key: str = "created_at",
+) -> None:
+    """Drop a regular Postgres table and recreate it as partitioned.
+
+    Caller must have verified the table is empty. The replacement
+    table inherits the column shape of the original via SQLModel
+    metadata, but with:
+
+    - composite PK ``(id, <partition_key>)`` (Postgres requirement);
+    - ``id`` as a ``GENERATED BY DEFAULT AS IDENTITY`` column;
+    - ``<partition_key>`` declared ``NOT NULL`` with a server-side
+      ``now()`` default so application code that omits the column
+      keeps working.
+
+    Foreign keys and indexes are then re-created from the SQLModel
+    table object so partitions inherit them automatically.
+    """
+    from sqlalchemy import text
+
+    sqla_table = SQLModel.metadata.tables.get(table)
+    if sqla_table is None:
+        raise RuntimeError(f"{table!r} not registered in SQLModel.metadata")
+
+    # Build column DDL fragments preserving order.
+    col_fragments: list[str] = []
+    for col in sqla_table.columns:
+        name = col.name
+        if name == "id":
+            frag = f'"id" BIGINT GENERATED BY DEFAULT AS IDENTITY'
+        elif name == partition_key:
+            frag = f'"{name}" TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now()'
+        else:
+            type_sql = col.type.compile(dialect=conn.dialect)
+            null_sql = "" if col.nullable else " NOT NULL"
+            frag = f'"{name}" {type_sql}{null_sql}'
+        col_fragments.append(frag)
+
+    # Composite PK including the partition key.
+    col_fragments.append(f'PRIMARY KEY ("id", "{partition_key}")')
+
+    # Inline FK definitions (Postgres allows them on partitioned tables
+    # *from* the partitioned table; FKs *into* a partitioned table are
+    # what's forbidden, which is why we already dropped the
+    # api_call_logs.agent_call_log_id FK above).
+    for fk in sqla_table.foreign_key_constraints:
+        local_cols = ", ".join(f'"{c.name}"' for c in fk.columns)
+        ref_table = fk.referred_table.name
+        ref_cols = ", ".join(f'"{e.column.name}"' for e in fk.elements)
+        col_fragments.append(
+            f'FOREIGN KEY ({local_cols}) REFERENCES "{ref_table}" ({ref_cols})'
+        )
+
+    body = ",\n    ".join(col_fragments)
+    create_sql = (
+        f'CREATE TABLE "{table}" (\n    {body}\n) '
+        f'PARTITION BY RANGE ("{partition_key}")'
+    )
+
+    conn.execute(text(f'DROP TABLE IF EXISTS "{table}" CASCADE'))
+    conn.execute(text(create_sql))
+
+    # Re-create indexes declared on the SQLModel table (Index objects
+    # propagate to every partition automatically once attached to the
+    # parent partitioned table).
+    for idx in sqla_table.indexes:
+        idx.create(bind=conn)
+
+
+def ensure_pg_partitions(
+    engine,  # noqa: ANN001
+    *,
+    months_back: int = 3,
+    months_forward: int = 3,
+) -> None:
+    """Ensure log tables are partitioned and have monthly child tables.
+
+    For each table in :data:`_PARTITIONED_TABLES` this:
+
+    1. If the table doesn't exist as partitioned yet AND is empty,
+       silently converts it in place via
+       :func:`_convert_table_to_partitioned`. This is the fresh-deploy
+       path — ``SQLModel.metadata.create_all`` ran first and built a
+       regular table; we replace it with a partitioned one before any
+       data is written.
+    2. If the table exists but is non-partitioned AND non-empty,
+       logs a warning and skips. Operators must run
+       ``scripts/setup_pg_partitions.py --migrate`` (which copies data
+       through a ``_legacy`` table) during a maintenance window.
+    3. Once the table is partitioned, creates a ``DEFAULT`` partition
+       (catches rows outside declared ranges) and monthly RANGE
+       partitions for the window ``[now - months_back, now + months_forward]``.
+
+    Idempotent and safe to call on every startup.
+    """
+    from sqlalchemy import text
+
+    months = _months_window(months_back, months_forward)
+
+    with engine.begin() as conn:
+        for table in _PARTITIONED_TABLES:
+            relkind = _table_relkind(conn, table)
+            if relkind is None:
+                # Table not created yet — nothing to do.
+                continue
+
+            if relkind != "p":
+                # Try to auto-convert if empty (fresh-deploy path).
+                count_row = conn.execute(
+                    text(f'SELECT count(*) FROM "{table}"')
+                ).scalar_one()
+                if count_row == 0:
+                    try:
+                        _convert_table_to_partitioned(conn, table)
+                        logger.info(
+                            "[DB·partitions] Converted empty table %r to "
+                            "RANGE-partitioned (by created_at).",
+                            table,
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.exception(
+                            "[DB·partitions] Failed to auto-convert %r; "
+                            "leaving as-is.",
+                            table,
+                        )
+                        continue
+                else:
+                    logger.warning(
+                        "[DB·partitions] Table %r has %d row(s) and is "
+                        "NOT partitioned. Run "
+                        "scripts/setup_pg_partitions.py --migrate to "
+                        "convert (requires a maintenance window).",
+                        table, count_row,
+                    )
+                    continue
+
+            # 1. Default partition catches anything outside the declared ranges.
+            default_name = f"{table}_default"
+            try:
+                conn.execute(
+                    text(
+                        f'CREATE TABLE IF NOT EXISTS "{default_name}" '
+                        f'PARTITION OF "{table}" DEFAULT'
+                    )
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "[DB·partitions] Failed to create default partition for %s",
+                    table,
+                )
+
+            # 2. Monthly partitions.
+            for yy, mm in months:
+                part_name = f"{table}_y{yy:04d}m{mm:02d}"
+                start, end = _month_bounds(yy, mm)
+                try:
+                    conn.execute(
+                        text(
+                            f'CREATE TABLE IF NOT EXISTS "{part_name}" '
+                            f'PARTITION OF "{table}" '
+                            f"FOR VALUES FROM ('{start}') TO ('{end}')"
+                        )
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "[DB·partitions] Failed to create partition %s "
+                        "for range [%s, %s)",
+                        part_name, start, end,
+                    )
+
+    logger.info(
+        "[DB·partitions] Ensured monthly partitions for %d table(s) "
+        "(window: -%d / +%d months).",
+        len(_PARTITIONED_TABLES), months_back, months_forward,
     )
 
 
