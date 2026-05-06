@@ -138,11 +138,13 @@ def with_expand(
 
 
 def _open_expand_dialog(render_fn: Callable[[str], Any], title: str) -> None:
-    """Show ``render_fn`` in a resizable dialog with Esc-to-close + PNG export.
+    """Show ``render_fn`` in a resizable dialog with Esc-to-close + PNG/SVG export.
 
-    Supports a "Half-screen" toggle for side-by-side workflows and a
-    "Save PNG" button that calls ECharts' ``getDataURL`` on the first
-    chart inside the dialog.
+    Supports a "Half-screen" toggle for side-by-side workflows and
+    "Save PNG" / "Save SVG" buttons. PNG goes via the chart canvas;
+    SVG is sourced from the ECharts instance (``renderToSVGString``
+    when available) or from any inline ``<svg>`` element inside the
+    dialog as a fallback for non-ECharts diagrams.
     """
     state = {"maximized": True}
     chart_holder = ui.column()  # placeholder, replaced inside dialog
@@ -203,6 +205,78 @@ def _open_expand_dialog(render_fn: Callable[[str], Any], title: str) -> None:
                         "flat dense round color=grey-8"
                     )
                     png_btn.tooltip("Save as PNG")
+
+                    def _save_svg():
+                        # Prefer the ECharts instance API
+                        # (``renderToSVGString``); fall back to any
+                        # inline ``<svg>`` element so non-ECharts
+                        # diagrams (e.g. Mermaid) also export.
+                        ui.run_javascript(
+                            """
+                            (() => {
+                                const root = document.querySelector('.q-dialog__inner');
+                                if (!root) return;
+                                let svgStr = null;
+                                // 1) ECharts instance lookup. ``echarts``
+                                //    is exposed globally by NiceGUI's
+                                //    bundled echarts integration.
+                                if (window.echarts && window.echarts.getInstanceByDom) {
+                                    const candidates = root.querySelectorAll('div');
+                                    for (const d of candidates) {
+                                        const inst = window.echarts.getInstanceByDom(d);
+                                        if (!inst) continue;
+                                        try {
+                                            if (typeof inst.renderToSVGString === 'function') {
+                                                svgStr = inst.renderToSVGString();
+                                                break;
+                                            }
+                                            // SVG-renderer charts
+                                            // expose getDataURL with
+                                            // type 'svg' as a data URI
+                                            // we can decode.
+                                            const url = inst.getDataURL && inst.getDataURL({type: 'svg'});
+                                            if (url && url.startsWith('data:image/svg+xml')) {
+                                                const i = url.indexOf(',');
+                                                const payload = url.slice(i + 1);
+                                                svgStr = url.includes(';base64,')
+                                                    ? atob(payload)
+                                                    : decodeURIComponent(payload);
+                                                break;
+                                            }
+                                        } catch (e) { /* try next */ }
+                                    }
+                                }
+                                // 2) Inline <svg> fallback (Mermaid,
+                                //    custom diagrams, ECharts in SVG
+                                //    renderer mode).
+                                if (!svgStr) {
+                                    const svgEl = root.querySelector('svg');
+                                    if (svgEl) {
+                                        svgStr = new XMLSerializer().serializeToString(svgEl);
+                                    }
+                                }
+                                if (!svgStr) {
+                                    return 'NOSVG';
+                                }
+                                if (!svgStr.includes('xmlns=')) {
+                                    svgStr = svgStr.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
+                                }
+                                const blob = new Blob([svgStr], {type: 'image/svg+xml;charset=utf-8'});
+                                const url = URL.createObjectURL(blob);
+                                const a = document.createElement('a');
+                                a.href = url;
+                                a.download = 'shadow-loom-chart.svg';
+                                a.click();
+                                setTimeout(() => URL.revokeObjectURL(url), 1000);
+                                return 'OK';
+                            })();
+                            """
+                        )
+
+                    svg_btn = ui.button(
+                        icon="image", on_click=_save_svg,
+                    ).props("flat dense round color=grey-8")
+                    svg_btn.tooltip("Save as SVG (vector)")
 
                     close_btn = ui.button(icon="close", on_click=dlg.close).props(
                         "flat dense round color=grey-8"
