@@ -25,7 +25,7 @@
 \usepackage{url}
 \usepackage{hyperref}
 
-\title{Shadow-Loom: Causal Reasoning over Graphical World Model of Narratives}
+\title{Shadow-Loom: Causal Reasoning over Graphical World Models of Narratives}
 
 \author{David Wilmot \\
         david.wilmot@gmail.com \\
@@ -69,7 +69,9 @@ model. Recent work shows that such models are competent at
 \emph{reading} causal relations from text
 \citep{kiciman2024causal} but markedly weaker at \emph{acting}
 on the implicit beliefs of characters they have just inferred
-\citep{gu2026simpletom,kim2023fantom,cross2024hyp}; in
+\citep{gu2026simpletom,kim2023fantom}, and similarly weak when
+asked to reason hypothetically about other agents' strategies
+without external scaffolding \citep{cross2024hyp}; in
 unconditioned generation they tend to collapse onto a small set
 of shared plot tropes \citep{xu2025echoes,tian2024human}. The
 complementary direction explored here keeps an explicit, typed
@@ -338,8 +340,9 @@ explicitly in storage.
 
 \paragraph{Theory of mind
 \citep{premack1978tom,wimmer1983false,baroncohen1985autism,
-zunshine2006theory,baker2009inverseplanning} and its modern LLM
-benchmarks \citep{kim2023fantom,gu2026simpletom,cross2024hyp}.}
+zunshine2006theory,baker2009inverseplanning,chandra2024inverse}, its modern LLM
+benchmarks \citep{kim2023fantom,gu2026simpletom}, and ToM-scaffolded
+LLM agents \citep{cross2024hyp}.}
 \texttt{Belief\{value, confidence, inertia,
 established\_at\_fabula, acquired\_via\_event\_id,
 acquired\_via\_channel\_id\}} is a discrete approximation of
@@ -348,7 +351,7 @@ auditor's separate behaviour-given-belief consistency check.
 
 \paragraph{Sternberg's curiosity / suspense / surprise triad
 \citep{sternberg1978expositional,sternberg1992telling,
-brewer1982stories} and its computational realisations
+brewer1982stories,baroni2007tension} and its computational realisations
 \citep{cheong2015suspenser,baeyoung2008surprise,
 elyfrankel2015suspense,wilmot2020suspense,wilmot2021emnlp,
 wilmot2022phd}.} The four structural scorers (\textsc{Mys},
@@ -357,7 +360,7 @@ dramatic irony \citep{booth1974irony,gerrig1993narrative}. The
 suspense scorer follows the hope/fear anticipation pair of the
 structural-affect and appraisal traditions
 \citep{brewer1982stories,comisky1982suspense,ortony1988occ,
-zillmann1996suspense} as operationalised in narrative planning by
+zillmann1996suspense,gerrig1989suspense} as operationalised in narrative planning by
 \citet{cheong2015suspenser}, combining the two sides as a
 \emph{balance$\,\times\,$stakes} product that peaks under genuine
 outcome uncertainty rather than under one-sided dominance. This is
@@ -414,7 +417,10 @@ plan-then-render pattern. The brief enumerates per-effect typed
 revise step \citep{goldfarbtarrant2020aristotelian,yang2022re3}
 specialised to narrative-causal rather than stylistic criteria,
 in the LLM-as-judge tradition \citep{zheng2023judge,
-bai2022constitutional,madaan2023selfrefine,gu2024judge}.
+bai2022constitutional,madaan2023selfrefine,gu2024judge,
+qi2023socratic}, with structured prompting and self-improvement
+techniques \citep{wei2022cot,zelikman2022star} used inside the
+renderer when free-form reasoning is required.
 
 \paragraph{Reading as simulation
 \citep{maroatley2008fiction,oatley2016fiction,oatley1995taxonomy,
@@ -513,6 +519,9 @@ knowledge, also new.
 Recent stress tests show that LLMs can answer ``what does X
 believe?'' but fail to behave consistently with that belief in
 downstream action prediction \citep{gu2026simpletom,kim2023fantom}.
+Long-context reading itself is unreliable in the same regime
+\citep{liu2024lost}, which compounds the problem when the
+``world'' has to be reconstructed from a growing prose buffer.
 Belief and causal structure that are recoverable from prose are
 not, on present evidence, reliably \emph{operated on} inside the
 prose-only loop. A typed graph makes belief, channel
@@ -560,7 +569,8 @@ physics + constrained-renderer architecture is one concrete
 instantiation of the neuro-symbolic stance for controllable
 generation; the audit pass produces a falsifiable record of
 where the LLM departed from the brief. Recent ToM benchmarks
-\citep{gu2026simpletom,kim2023fantom,cross2024hyp} ask exactly
+\citep{gu2026simpletom,kim2023fantom} and ToM-scaffolded LLM
+agents \citep{cross2024hyp} ask exactly
 the kind of behaviour-given-belief questions that an explicit
 \texttt{Belief} field with provenance is designed to support.
 

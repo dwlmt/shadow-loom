@@ -1,4 +1,4 @@
-\begin{thebibliography}{117}
+\begin{thebibliography}{124}
 \providecommand{\natexlab}[1]{#1}
 
 \bibitem[{Akoury et~al.(2020)Akoury, Wang, Whiting, Hood, Peng, and Iyyer}]{akoury2020storium}
@@ -46,6 +46,11 @@ Simon Baron-Cohen, Alan~M. Leslie, and Uta Frith. 1985.
 \newblock Does the autistic child have a 'theory of mind'?
 \newblock \emph{Cognition}, 21(1):37--46.
 
+\bibitem[{Baroni(2007)}]{baroni2007tension}
+Rapha{\"e}l Baroni. 2007.
+\newblock \emph{La tension narrative: suspense, curiosit{\'e}, surprise}.
+\newblock {\'E}ditions du Seuil, Paris.
+
 \bibitem[{Bissell et~al.(2025)Bissell, Paulin, and Piper}]{bissell2025surprise}
 Annaliese Bissell, Emma Paulin, and Andrew Piper. 2025.
 \newblock A theoretical framework for evaluating narrative surprise in large language models.
@@ -80,6 +85,11 @@ Selmer Bringsjord and David Ferrucci. 2000.
 Nathanael Chambers and Dan Jurafsky. 2008.
 \newblock Unsupervised learning of narrative event chains.
 \newblock In \emph{Proceedings of the 46th Annual Meeting of the Association for Computational Linguistics (ACL)}.
+
+\bibitem[{Chandra et~al.(2024)Chandra, Li, Tenenbaum, and Ragan-Kelley}]{chandra2024inverse}
+Kartik Chandra, Tzu-Mao Li, Joshua~B. Tenenbaum, and Jonathan Ragan-Kelley. 2024.
+\newblock \href {https://doi.org/10.1111/tops.12710} {Storytelling as inverse inverse planning}.
+\newblock \emph{Topics in Cognitive Science}, 16:54--76.
 
 \bibitem[{Cheong and Young(2015)}]{cheong2015suspenser}
 Yun-Gyung Cheong and R.~Michael Young. 2015.
@@ -142,6 +152,11 @@ Monika Fludernik. 1996.
 G{\'e}rard Genette. 1980.
 \newblock \emph{Narrative Discourse: An Essay in Method}.
 \newblock Cornell University Press.
+
+\bibitem[{Gerrig(1989)}]{gerrig1989suspense}
+Richard~J. Gerrig. 1989.
+\newblock \href {https://doi.org/10.1016/0749-596X(89)90001-6} {Suspense in the absence of uncertainty}.
+\newblock \emph{Journal of Memory and Language}, 28(6):633--648.
 
 \bibitem[{Gerrig(1993)}]{gerrig1993narrative}
 Richard~J. Gerrig. 1993.
@@ -286,6 +301,11 @@ David Lewis. 1973.
 \newblock \href {https://doi.org/10.2307/2025310} {Causation}.
 \newblock \emph{Journal of Philosophy}, 70(17):556--567.
 
+\bibitem[{Liu et~al.(2024)Liu, Lin, Hewitt, Paranjape, Bevilacqua, Petroni, and Liang}]{liu2024lost}
+Nelson~F. Liu, Kevin Lin, John Hewitt, Ashwin Paranjape, Michele Bevilacqua, Fabio Petroni, and Percy Liang. 2024.
+\newblock \href {https://doi.org/10.1162/tacl_a_00638} {Lost in the middle: How language models use long contexts}.
+\newblock \emph{Transactions of the Association for Computational Linguistics}, 12:157--173.
+
 \bibitem[{Lu and Dosher(2013)}]{lu2013visual}
 Zhong-Lin Lu and Barbara~A. Dosher. 2013.
 \newblock \emph{Visual Psychophysics: From Laboratory to Theory}.
@@ -391,6 +411,11 @@ David Premack and Guy Woodruff. 1978.
 Vladimir Propp. 1968.
 \newblock \emph{Morphology of the Folktale}, 2nd english edition.
 \newblock University of Texas Press.
+
+\bibitem[{Qi et~al.(2023)Qi, Xu, Shen, Liu, Jin, Wang, and Huang}]{qi2023socratic}
+Jingyuan Qi, Zhiyang Xu, Ying Shen, Minqian Liu, Di~Jin, Qifan Wang, and Lifu Huang. 2023.
+\newblock The art of {SOCRATIC} questioning: Recursive thinking with large language models.
+\newblock In \emph{Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing (EMNLP)}.
 
 \bibitem[{Rashkin et~al.(2020)Rashkin, Celikyilmaz, Choi, and Gao}]{rashkin2020plotmachines}
 Hannah Rashkin, Asli Celikyilmaz, Yejin Choi, and Jianfeng Gao. 2020.
@@ -530,6 +555,11 @@ Stephen~G. Ware and R.~Michael Young. 2014.
 \newblock \href {https://doi.org/10.1609/aiide.v10i1.12712} {Glaive: A state-space narrative planner supporting intentionality and conflict}.
 \newblock In \emph{Proceedings of the Tenth AAAI Conference on Artificial Intelligence and Interactive Digital Entertainment (AIIDE)}, pages 80--86.
 
+\bibitem[{Wei et~al.(2022)Wei, Wang, Schuurmans, Bosma, Ichter, Xia, Chi, Le, and Zhou}]{wei2022cot}
+Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Brian Ichter, Fei Xia, Ed~H. Chi, Quoc~V. Le, and Denny Zhou. 2022.
+\newblock Chain-of-thought prompting elicits reasoning in large language models.
+\newblock In \emph{Advances in Neural Information Processing Systems (NeurIPS)}.
+
 \bibitem[{Wilmot(2022)}]{wilmot2022phd}
 David Wilmot. 2022.
 \newblock \emph{{Great Expectations}: Unsupervised Inference of Suspense, Surprise and Salience in Storytelling}.
@@ -582,6 +612,11 @@ Kevin Yang, Yuandong Tian, Nanyun Peng, and Dan Klein. 2022.
 Lili Yao, Nanyun Peng, Ralph Weischedel, Kevin Knight, Dongyan Zhao, and Rui Yan. 2019.
 \newblock Plan-and-write: Towards better automatic storytelling.
 \newblock In \emph{Proceedings of the 33rd AAAI Conference on Artificial Intelligence}.
+
+\bibitem[{Zelikman et~al.(2022)Zelikman, Wu, Mu, and Goodman}]{zelikman2022star}
+Eric Zelikman, Yuhuai Wu, Jesse Mu, and Noah~D. Goodman. 2022.
+\newblock {STaR}: Bootstrapping reasoning with reasoning.
+\newblock In \emph{Advances in Neural Information Processing Systems (NeurIPS)}.
 
 \bibitem[{Zheng et~al.(2023)Zheng, Chiang, Sheng, Zhuang, Wu, Zhuang, Lin, Li, Li, Xing, Zhang, Gonzalez, and Stoica}]{zheng2023judge}
 Lianmin Zheng, Wei-Lin Chiang, Ying Sheng, Siyuan Zhuang, Zhanghao Wu, Yonghao Zhuang, Zi~Lin, Zhuohan Li, Dacheng Li, Eric~P. Xing, Hao Zhang, Joseph~E. Gonzalez, and Ion Stoica. 2023.

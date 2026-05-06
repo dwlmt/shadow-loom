@@ -19,7 +19,8 @@ verified directly. Recent (2023–2026) LLM-era references added to §1.5,
 Kim et al. 2023 (FANToM, EMNLP, arXiv:2310.15421), Cross et al. 2024
 (Hypothetical Minds, arXiv:2407.07086), Gu et al. 2024 (LLM-as-a-Judge
 survey, arXiv:2411.15594), Gu et al. 2024/2026 (SimpleToM, ICLR 2026,
-arXiv:2410.13648), Yang et al. 2023 (DOC, ACL, arXiv:2212.10077), and
+arXiv:2410.13648), Yang et al. 2023 (DOC, ACL, arXiv:2212.10077),
+Liu et al. 2024 (Lost in the Middle, TACL, arXiv:2307.03172), and
 Xu et al. 2025 (Echoes in AI, PNAS 122(35) e2504966122, arXiv:2501.00273)
 — were each verified directly against their arXiv records and journal
 pages. Where a citation could not be verified online (older monographs,
@@ -201,6 +202,7 @@ the rationale and the closed-world caveat.
 Recent (2023–2026) — LLMs as causal reasoners, complementary to (not a replacement for) the structural machinery above:
 
 * Kıcıman, E., Ness, R., Sharma, A., Tan, C. (2024). "Causal Reasoning and Large Language Models: Opening a New Frontier for Causality". *Transactions on Machine Learning Research*. arXiv:2305.00050. — benchmarks LLMs on pairwise causal discovery, counterfactual reasoning, and necessary/sufficient cause attribution; supports our hybrid stance of using LLMs to *propose* edges (`extract_graph.py`) while keeping identification logic in typed code (`causal_physics.py`).
+* Liu, N. F. *et al.* (2024). "Lost in the Middle: How Language Models Use Long Contexts". *TACL* 12: 157–173. arXiv:2307.03172. — empirical evidence that LLMs degrade sharply when relevant facts sit in the middle of a long context window; one of the strongest motivations for keeping the storyworld in a typed graph rather than relying on a growing prose buffer + RAG.
 
 ### 2.3 Abduction (`CausalPhysicsEngine.abduction_update`)
 
