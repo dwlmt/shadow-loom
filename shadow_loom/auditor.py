@@ -1114,6 +1114,84 @@ def assemble_audit_prompt(
     sections.append(_format_constraints_for_audit(brief.constraints))
     sections.append("")
 
+    # === Rendering directive (the same stylistic control the renderer
+    # was given). Without this the auditor cannot validate POV-lock
+    # breaches, pacing drift, or sensory-focus violations — it only
+    # ever saw the constraints and reverse-engineered intent from
+    # them. The directive is reference data: do NOT raise a violation
+    # for the directive itself, only for prose that fails to honour it.
+    if brief.rendering:
+        r = brief.rendering
+        sections.append(
+            "=== RENDERING DIRECTIVE (the stylistic control the "
+            "renderer was given \u2014 prose must honour it) ==="
+        )
+        sections.append(f"  rendering_mode: {r.rendering_mode}")
+        sections.append(f"  pacing: {r.pacing}")
+        sections.append(f"  sensory_focus: {r.sensory_focus}")
+        if r.pov_lock:
+            sections.append(
+                f"  pov_lock: {r.pov_lock} \u2014 the prose MUST stay "
+                f"inside this entity's perception. Flag head-hopping "
+                f"or omniscient narration as a violation under the "
+                f"`physics` category (rationale prefix `pov_lock:`)."
+            )
+        if r.tone_arc:
+            sections.append(f"  tone_arc: {r.tone_arc}")
+        if r.stylistic_instructions:
+            sections.append("  stylistic_instructions:")
+            for j, si in enumerate(r.stylistic_instructions, 1):
+                sections.append(f"    {j}. {si}")
+        sections.append("")
+
+    # === Physics override (engine-authored hard text the renderer was
+    # told to honour verbatim). Mirrors the PHYSICS OVERRIDE block in
+    # the rendering prompt so the auditor can flag prose that ignored
+    # or contradicted it.
+    if brief.physics_override:
+        sections.append("=== PHYSICS OVERRIDE (HARD \u2014 prose must honour) ===")
+        sections.append(brief.physics_override.strip())
+        sections.append(
+            "Flag the prose under the `physics` category if it ignores "
+            "or contradicts the override above."
+        )
+        sections.append("")
+
+    # === Utterance & channel fidelity (HARD)
+    # The renderer received a HARD `UTTERANCE & CHANNEL FIDELITY` block
+    # listing every withheld channel and every withheld utterance with
+    # its `discovered_at_syuzhet`. Mirror it here so the auditor judges
+    # against the same brief-level withheld set rather than only the
+    # world-state-derived view further down.
+    if brief.hidden_channels:
+        sections.append(
+            "=== HIDDEN CHANNELS / UTTERANCES (HARD \u2014 must NOT "
+            "surface in the prose) ==="
+        )
+        for hc in brief.hidden_channels:
+            if hc.kind == "channel":
+                sections.append(
+                    f"  - HIDDEN CHANNEL {hc.channel_id} ({hc.medium}, "
+                    f"participants={hc.participant_ids}): exists in the "
+                    f"world but the reader has not seen any utterance "
+                    f"on it. Flag prose that names it, quotes from it, "
+                    f"or implies its presence."
+                )
+            else:
+                sections.append(
+                    f"  - HIDDEN UTTERANCE {hc.utterance_event_id} "
+                    f"({hc.medium} from {hc.speaker_id} to "
+                    f"{hc.addressee_ids} at syuzhet="
+                    f"{hc.discovered_at_syuzhet}): the message itself "
+                    f"comes later in narration order. Flag prose that "
+                    f"reveals its content (verbatim or paraphrased)."
+                )
+        sections.append(
+            "  Violation type: `withheld_utterance_leak` for utterance "
+            "leaks, `epistemic_leakage` for channel leaks."
+        )
+        sections.append("")
+
     sections.append(f"=== AUDIT CATEGORIES TO CHECK: {', '.join(audit_categories)} ===")
     sections.append(
         "Run ONLY the audit categories listed above. Do not surface "

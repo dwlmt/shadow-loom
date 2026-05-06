@@ -359,6 +359,7 @@ def extract_ego_graph_from_memory(
 def extract_full_world_state(
     world_state: WorldStateV1,
     temporal_anchor: Optional[int] = None,
+    syuzhet_anchor: Optional[int] = None,
 ) -> dict:
     """
     Serialises the entire WorldStateV1 as a dictionary, optionally
@@ -368,7 +369,10 @@ def extract_full_world_state(
     The slicing rules mirror those in :func:`extract_ego_graph_from_memory`
     so omniscient and ego views remain consistent at the same anchor:
 
-      * ``events``: ``fabula_time <= t``
+      * ``events``: ``fabula_time <= t`` AND, when ``syuzhet_anchor`` is
+        provided, ``syuzhet_index <= s`` (events not yet narrated must
+        not leak into the omniscient prompt — without this gate the
+        renderer and auditor see future utterances and revelations).
       * ``causal_topology``: ``fabula_time <= t``
       * ``social_topology``: ``last_updated_fabula <= t``
       * ``spatial_topology``: established by ``t`` and not yet destroyed at ``t``
@@ -376,6 +380,11 @@ def extract_full_world_state(
 
     Without an anchor, only dead/terminated information edges are pruned;
     every other list comes through untouched.
+
+    The returned dict carries ``syuzhet_anchor`` at the top level when
+    provided so downstream consumers (the deterministic withheld-utterance
+    leak check) can locate the brief on the timeline without re-deriving
+    it from event indices.
     """
     dump = world_state.model_dump()
 
@@ -430,6 +439,20 @@ def extract_full_world_state(
         }
         logger.info("Omniscient Graph extracted — %d entities, %d locations, %d events (no anchor)",
                      len(dump["entities"]), len(dump["locations"]), len(dump["events"]))
+
+    if syuzhet_anchor is not None:
+        s = syuzhet_anchor
+        pre_evt = len(dump["events"])
+        dump["events"] = [
+            evt for evt in dump["events"]
+            if evt.get("syuzhet_index", 0) <= s
+        ]
+        dump["syuzhet_anchor"] = s
+        logger.info(
+            "Omniscient Graph syuzhet-pruned: %d/%d events kept "
+            "(syuzhet_anchor=%d)",
+            len(dump["events"]), pre_evt, s,
+        )
 
     return dump
 

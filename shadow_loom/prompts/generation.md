@@ -124,6 +124,7 @@ Regardless of emotional mode, the LLM must simultaneously satisfy underlying phy
 - When a mandatory state change is injected, describe the **exact physical mechanism** that caused the Impact to overcome the Inertia.
 - Do NOT just say "the door opened" — render the **physical struggle** or action that forced the state change.
 - The reader must feel the force required: kinetic energy, chemical reaction, social pressure, psychological breaking point.
+- **Honour the exclusions.** When the brief carries an `=== ERASED UTTERANCES ===` or `=== DISABLED CHANNELS ===` block, those lines and channels existed in canon but the do-surgery has removed them in this intervened world (e.g. intervening on a speaker's status removes the lines they would have spoken; severing a channel removes the messages it would have carried). Do NOT have any character say, paraphrase, remember, or react to the erased lines, and do NOT route any new dialogue through the disabled channels — even if `STORY SO FAR` quotes them. Write NEW behaviour consistent with the changed conditions instead.
 
 **ABDUCTION (Rung 3 background truths):**
 - If the physics engine inferred hidden background variables, the prompt will command you to include these "Background Truths."
@@ -143,6 +144,7 @@ Regardless of emotional mode, the LLM must simultaneously satisfy underlying phy
 - Use a slightly shifted tonal register — the world is recognisable but subtly different.
 - Weave abduction truths into character behaviour naturally.
 - Stay inside the world; do not stand outside it as a narrator pointing at it. (See universal Rule 10: meta-narration is forbidden in **every** mode.)
+- **Honour the exclusions.** When the brief carries an `=== ERASED UTTERANCES ===` or `=== DISABLED CHANNELS ===` block, those lines and channels existed in canon but the historical intervention has removed them in this counterfactual world. Do NOT have any character say, paraphrase, remember, or react to the erased lines, and do NOT route any new dialogue through the disabled channels — even if `STORY SO FAR` or the `factual_contrast_summary` quotes them. If the same speaker would naturally still talk to the same addressee in this scene, write a NEW line consistent with the changed conditions; do not echo the canonical wording.
 
 ---
 

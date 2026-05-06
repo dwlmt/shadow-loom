@@ -652,7 +652,7 @@ def format_scene_context_for_prompt(ctx: Dict[str, Any]) -> str:
             name = ent.get("name", eid)
             loc = ent.get("location_id", "unknown")
             status = ent.get("status", "unknown")
-            sections.append(f"  - {name} ({eid}) — {status}, at {loc}")
+            sections.append(f"  - {name} ({eid}) — {status}, present at {loc}")
             sections.append(f"      traits: {_fmt_traits(ent.get('traits') or {})}")
             sections.extend(_fmt_beliefs(ent.get("beliefs") or []))
 
@@ -668,7 +668,7 @@ def format_scene_context_for_prompt(ctx: Dict[str, Any]) -> str:
             name = ent.get("name", eid)
             loc = ent.get("location_id", "unknown")
             status = ent.get("status", "unknown")
-            sections.append(f"  - {name} ({eid}) — {status}, at {loc}")
+            sections.append(f"  - {name} ({eid}) — {status}, present at {loc}")
             traits_str = _fmt_traits(ent.get("traits") or {})
             if traits_str != "baseline":
                 sections.append(f"      traits: {traits_str}")
@@ -1261,10 +1261,14 @@ def build_observation_brief(
     branch_world_id: Literal["factual", "shadow"] = "factual",
     branch_label: Optional[str] = None,
     factual_contrast_summary: Optional[str] = None,
+    syuzhet_anchor: Optional[int] = None,
 ) -> CreativeBrief:
     """Build a lightweight CreativeBrief for observation queries."""
     pov = query.focus_entity_ids[0] if query.focus_entity_ids else None
     constraints: List[ConstraintBlock] = _user_intent_constraints(query.original_query)
+    scene_context = dict(physics_state) if isinstance(physics_state, dict) else {}
+    if syuzhet_anchor is not None and isinstance(scene_context, dict):
+        scene_context.setdefault("syuzhet_anchor", syuzhet_anchor)
     return CreativeBrief(
         target_effect="observation",
         target_entities=query.focus_entity_ids,
@@ -1288,8 +1292,96 @@ def build_observation_brief(
                 "Do NOT reveal information the focal character cannot perceive.",
             ],
         ),
-        scene_context=physics_state,
+        scene_context=scene_context,
     )
+
+
+def _build_exclusion_constraints(
+    pruned_utterance_event_ids: Optional[List[str]],
+    disabled_channel_ids: Optional[List[str]],
+    world_state: WorldStateV1,
+    *,
+    world_label: str,
+) -> List[ConstraintBlock]:
+    """Build HARD ConstraintBlocks for utterances/channels the engine
+    severed via do-surgery (Rung-2 intervention or Rung-3 counterfactual).
+
+    ``world_label`` is interpolated into the instruction text so the
+    renderer sees branch-appropriate wording (e.g. ``"counterfactual"``
+    vs ``"intervened"``). The auditor's deterministic withheld-utterance
+    check is keyed on ``syuzhet_index`` and does not cover engine-side
+    deletion, so without these blocks the renderer reliably re-introduces
+    canonical lines that are still present in ``preceding_prose`` /
+    ``factual_contrast_summary``.
+    """
+    blocks: List[ConstraintBlock] = []
+    pruned_utts = [u for u in (pruned_utterance_event_ids or []) if u]
+    disabled_chs = [c for c in (disabled_channel_ids or []) if c]
+    if pruned_utts:
+        events_by_id = {e.id: e for e in getattr(world_state, "events", []) or []}
+        lines: List[str] = []
+        for uid in pruned_utts[:20]:
+            evt = events_by_id.get(uid)
+            if evt is None:
+                lines.append(f"  - {uid}")
+                continue
+            speaker = getattr(evt, "speaker_id", None) or "unknown"
+            addressees = list(getattr(evt, "addressee_ids", []) or [])
+            content = (getattr(evt, "content", None) or "").strip()
+            if len(content) > 120:
+                content = content[:117] + "..."
+            snippet = f' \u2014 was: "{content}"' if content else ""
+            lines.append(
+                f"  - {uid}: {speaker} \u2192 {addressees}{snippet}"
+            )
+        if len(pruned_utts) > 20:
+            lines.append(f"  - ...and {len(pruned_utts) - 20} more.")
+        blocks.append(ConstraintBlock(
+            constraint_type="narrative",
+            priority="hard",
+            instruction=(
+                f"ERASED UTTERANCES (HARD \u2014 these lines were SPOKEN "
+                f"in canon but the do-surgery severed their provenance "
+                f"and they DO NOT exist in this {world_label} world). "
+                "Do NOT have any character say, paraphrase, remember, "
+                "or react to them. If the same speaker would naturally "
+                "still talk to the same addressee in this scene, write "
+                "a NEW line consistent with the changed conditions \u2014 "
+                "do not echo the canonical wording.\n"
+                + "\n".join(lines)
+            ),
+            evidence={"pruned_utterance_event_ids": pruned_utts},
+        ))
+    if disabled_chs:
+        chs_by_id = getattr(world_state, "channels", {}) or {}
+        ch_lines: List[str] = []
+        for cid in disabled_chs[:20]:
+            ch = chs_by_id.get(cid)
+            if ch is None:
+                ch_lines.append(f"  - {cid}")
+                continue
+            medium = getattr(ch, "medium", "?")
+            participants = list(getattr(ch, "participant_ids", []) or [])
+            ch_lines.append(
+                f"  - {cid} ({medium}, participants={participants})"
+            )
+        if len(disabled_chs) > 20:
+            ch_lines.append(f"  - ...and {len(disabled_chs) - 20} more.")
+        blocks.append(ConstraintBlock(
+            constraint_type="narrative",
+            priority="hard",
+            instruction=(
+                f"DISABLED CHANNELS (HARD \u2014 these communication "
+                f"links existed in canon but the do-surgery removed "
+                f"their carrier; they DO NOT exist in this {world_label} "
+                "world). Do NOT route any new dialogue or signal "
+                "through them, do not refer to them by name, and do "
+                "not show characters expecting messages on them.\n"
+                + "\n".join(ch_lines)
+            ),
+            evidence={"disabled_channel_ids": disabled_chs},
+        ))
+    return blocks
 
 
 def build_intervention_brief(
@@ -1301,11 +1393,14 @@ def build_intervention_brief(
     rule3_pruned_interventions: Optional[List[str]] = None,
     rule2_redundant_evidence: Optional[List[str]] = None,
     rule3_pruning_mode: Literal["advisory", "prune"] = "advisory",
+    pruned_utterance_event_ids: Optional[List[str]] = None,
+    disabled_channel_ids: Optional[List[str]] = None,
     *,
     preceding_prose: Optional[str] = None,
     branch_world_id: Literal["factual", "shadow"] = "factual",
     branch_label: Optional[str] = None,
     factual_contrast_summary: Optional[str] = None,
+    syuzhet_anchor: Optional[int] = None,
 ) -> CreativeBrief:
     """Build a CreativeBrief for intervention (do-calculus) queries."""
     pruned_set = set(rule3_pruned_interventions or [])
@@ -1461,6 +1556,19 @@ def build_intervention_brief(
         evidence={},
     ))
 
+    # Channels & beliefs subsystem: the Rung-2 do-surgery can sever
+    # downstream utterances and channels (e.g. intervening on a
+    # speaker's status removes the lines they would have spoken). The
+    # renderer needs to know which canonical lines / links no longer
+    # exist in this intervened world; without this block they bleed
+    # back in via ``preceding_prose`` / ``factual_contrast_summary``.
+    constraints.extend(_build_exclusion_constraints(
+        pruned_utterance_event_ids,
+        disabled_channel_ids,
+        world_state,
+        world_label="intervened",
+    ))
+
     return CreativeBrief(
         target_effect="intervention",
         target_entities=_entities_from_intervention_keys(
@@ -1490,7 +1598,13 @@ def build_intervention_brief(
             ],
         ),
         intervention_mechanisms=mechanisms,
-        scene_context=physics_state,
+        scene_context=(
+            {**physics_state, "syuzhet_anchor": syuzhet_anchor}
+            if syuzhet_anchor is not None
+            and isinstance(physics_state, dict)
+            and "syuzhet_anchor" not in physics_state
+            else physics_state
+        ),
     )
 
 
@@ -1502,11 +1616,14 @@ def build_counterfactual_brief(
     rule3_pruned_interventions: Optional[List[str]] = None,
     rule2_redundant_evidence: Optional[List[str]] = None,
     rule3_pruning_mode: Literal["advisory", "prune"] = "advisory",
+    pruned_utterance_event_ids: Optional[List[str]] = None,
+    disabled_channel_ids: Optional[List[str]] = None,
     *,
     preceding_prose: Optional[str] = None,
     branch_world_id: Literal["factual", "shadow"] = "factual",
     branch_label: Optional[str] = None,
     factual_contrast_summary: Optional[str] = None,
+    syuzhet_anchor: Optional[int] = None,
 ) -> CreativeBrief:
     """Build a CreativeBrief for counterfactual (Rung 3) queries."""
     # Build AbductionTruth entries from hidden_deltas
@@ -1642,6 +1759,25 @@ def build_counterfactual_brief(
             evidence={"evidence_node_ids": evidence_ids},
         ))
 
+    # ERASED-BY-DIVERGENCE EXCLUSIONS.
+    # The Rung-3 surgery removes utterances and channels whose
+    # provenance was severed by the historical intervention. Telling
+    # the renderer *what no longer exists* in this counterfactual
+    # world is as important as telling it what does — without this
+    # block the renderer reliably re-introduces canonical lines
+    # ("she said the things she had always said") because they are
+    # still present in ``preceding_prose`` / ``factual_contrast``
+    # even though the engine deleted them. The auditor's
+    # withheld-utterance leak check (which is keyed off
+    # ``syuzhet_index``) does not cover deletion, so leaks here
+    # appear as silent canon-bleed instead of typed violations.
+    constraints.extend(_build_exclusion_constraints(
+        pruned_utterance_event_ids,
+        disabled_channel_ids,
+        world_state,
+        world_label="counterfactual",
+    ))
+
     # Resolve target entities from the historical intervention keys
     # (entity props OR event participants) and union with any explicit
     # downstream target nodes the user named.
@@ -1689,7 +1825,13 @@ def build_counterfactual_brief(
         ),
         counterfactual_branch=cf_branch,
         abduction_truths=abduction,
-        scene_context=physics_state,
+        scene_context=(
+            {**physics_state, "syuzhet_anchor": syuzhet_anchor}
+            if syuzhet_anchor is not None
+            and isinstance(physics_state, dict)
+            and "syuzhet_anchor" not in physics_state
+            else physics_state
+        ),
     )
 
 
@@ -1818,6 +1960,7 @@ def render_from_query(
     branch_world_id: Literal["factual", "shadow"] = "factual",
     branch_label: Optional[str] = None,
     factual_contrast_summary: Optional[str] = None,
+    syuzhet_anchor: Optional[int] = None,
 ) -> GeneratedScene:
     """High-level convenience: build a brief from any query type and render.
 
@@ -1856,6 +1999,7 @@ def render_from_query(
             branch_world_id=branch_world_id,
             branch_label=branch_label,
             factual_contrast_summary=factual_contrast_summary,
+            syuzhet_anchor=syuzhet_anchor,
         )
         return render_scene(brief, config, "observation", physics_state)
 
@@ -1869,10 +2013,13 @@ def render_from_query(
             rule3_pruned_interventions=physics_result.get("rule3_pruned_interventions"),
             rule2_redundant_evidence=physics_result.get("rule2_redundant_evidence"),
             rule3_pruning_mode=physics_result.get("rule3_pruning_mode", "advisory"),
+            pruned_utterance_event_ids=physics_result.get("pruned_utterance_event_ids"),
+            disabled_channel_ids=physics_result.get("disabled_channel_ids"),
             preceding_prose=preceding_prose,
             branch_world_id=branch_world_id,
             branch_label=branch_label,
             factual_contrast_summary=factual_contrast_summary,
+            syuzhet_anchor=syuzhet_anchor,
         )
         return render_scene(brief, config, "intervention", physics_state)
 
@@ -1885,10 +2032,13 @@ def render_from_query(
             rule3_pruned_interventions=physics_result.get("rule3_pruned_interventions"),
             rule2_redundant_evidence=physics_result.get("rule2_redundant_evidence"),
             rule3_pruning_mode=physics_result.get("rule3_pruning_mode", "advisory"),
+            pruned_utterance_event_ids=physics_result.get("pruned_utterance_event_ids"),
+            disabled_channel_ids=physics_result.get("disabled_channel_ids"),
             preceding_prose=preceding_prose,
             branch_world_id=branch_world_id,
             branch_label=branch_label,
             factual_contrast_summary=factual_contrast_summary,
+            syuzhet_anchor=syuzhet_anchor,
         )
         return render_scene(brief, config, "counterfactual", physics_state)
 

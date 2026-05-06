@@ -147,6 +147,17 @@ Return a JSON object with this exact structure:
 
 ---
 
+## Reference Blocks (read-only context the prompt may carry)
+
+The audit prompt may include the following reference blocks. They describe the renderer's brief — they are **not** themselves things to flag. Use them to judge whether the **prose** honours the brief.
+
+- **`=== RENDERING DIRECTIVE ===`** — the stylistic control layer the renderer was given (`rendering_mode`, `pacing`, `sensory_focus`, `pov_lock`, `tone_arc`, `stylistic_instructions`). When `pov_lock` is set, the prose MUST stay inside that entity's perception; head-hopping or omniscient narration is a `physics`-category violation with rationale prefix `pov_lock:`.
+- **`=== PHYSICS OVERRIDE (HARD) ===`** — engine-authored hard text the renderer was told to honour verbatim. Flag prose that ignores or contradicts it under the `physics` category.
+- **`=== HIDDEN CHANNELS / UTTERANCES (HARD) ===`** — channels and utterances that exist in the world but have not yet surfaced for the reader at the current syuzhet position. Verbatim or paraphrased leaks of an utterance's content are `withheld_utterance_leak` (critical). Naming or implying the existence of a hidden channel is `epistemic_leakage` (critical for `mystery` / `dramatic_irony` audits, otherwise `major`).
+- **`=== ERASED UTTERANCES (HARD) ===` / `=== DISABLED CHANNELS (HARD) ===`** — emitted on intervention and counterfactual branches, listing canon utterances and channels the do-surgery severed (Rung-2 forward surgery or Rung-3 historical surgery). The prose MUST NOT have any character say, paraphrase, remember, or react to these lines, and MUST NOT route any new dialogue through these channels — even when `STORY SO FAR` or the factual contrast quotes them, they no longer exist in this branch. Leaks here are `physics`-category violations with rationale prefix `counterfactual_canon_bleed:` (critical when verbatim, major when paraphrased) — they are NOT `withheld_utterance_leak` (which is reserved for *future* lines, not *erased* ones).
+
+---
+
 ## Rules
 
 1. **Be surgical.** Cite the exact passage that fails. Generic feedback is useless.

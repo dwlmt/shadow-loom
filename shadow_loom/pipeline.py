@@ -1324,6 +1324,7 @@ def run_pipeline(
             branch_world_id=_branch_world_id,
             branch_label=_branch_label,
             factual_contrast_summary=_factual_contrast,
+            syuzhet_anchor=eff_syuzhet,
         )
 
         history.record("generation", GenerationStepRecord(
@@ -1382,6 +1383,7 @@ def run_pipeline(
                 branch_world_id=_branch_world_id,
                 branch_label=_branch_label,
                 factual_contrast_summary=_factual_contrast,
+                syuzhet_anchor=eff_syuzhet,
             )
 
             # Build a brief for the auditor from the query
@@ -1731,6 +1733,7 @@ async def run_pipeline_async(
             branch_world_id=_branch_world_id,
             branch_label=_branch_label,
             factual_contrast_summary=_factual_contrast,
+            syuzhet_anchor=eff_syuzhet,
         )
         history.record("generation", GenerationStepRecord(scene=scene, brief=brief))
         result.scene = scene
@@ -1775,6 +1778,7 @@ async def run_pipeline_async(
                 branch_world_id=_branch_world_id,
                 branch_label=_branch_label,
                 factual_contrast_summary=_factual_contrast,
+                syuzhet_anchor=eff_syuzhet,
             )
             brief = _build_brief_for_query(query, physics_result, ws, syuzhet_anchor=eff_syuzhet)
             _stamp_brief_full(
@@ -2059,7 +2063,10 @@ def _build_brief_for_query(
     physics_state = physics_result.get("physics_state", {})
 
     if query.query_type == "observation":
-        return build_observation_brief(query, physics_state, world_state)
+        return build_observation_brief(
+            query, physics_state, world_state,
+            syuzhet_anchor=syuzhet_anchor,
+        )
     elif query.query_type == "intervention":
         return build_intervention_brief(
             query, physics_state, world_state,
@@ -2068,6 +2075,9 @@ def _build_brief_for_query(
             rule3_pruned_interventions=physics_result.get("rule3_pruned_interventions"),
             rule2_redundant_evidence=physics_result.get("rule2_redundant_evidence"),
             rule3_pruning_mode=physics_result.get("rule3_pruning_mode", "advisory"),
+            pruned_utterance_event_ids=physics_result.get("pruned_utterance_event_ids"),
+            disabled_channel_ids=physics_result.get("disabled_channel_ids"),
+            syuzhet_anchor=syuzhet_anchor,
         )
     elif query.query_type == "counterfactual":
         return build_counterfactual_brief(
@@ -2076,6 +2086,9 @@ def _build_brief_for_query(
             rule3_pruned_interventions=physics_result.get("rule3_pruned_interventions"),
             rule2_redundant_evidence=physics_result.get("rule2_redundant_evidence"),
             rule3_pruning_mode=physics_result.get("rule3_pruning_mode", "advisory"),
+            pruned_utterance_event_ids=physics_result.get("pruned_utterance_event_ids"),
+            disabled_channel_ids=physics_result.get("disabled_channel_ids"),
+            syuzhet_anchor=syuzhet_anchor,
         )
     elif query.query_type == "directive":
         # Reached when the causal engine is disabled (or otherwise

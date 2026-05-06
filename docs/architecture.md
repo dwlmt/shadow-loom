@@ -324,6 +324,69 @@ explicitly **not** allowed to invent causal edges or shift entity state — its
 output is constrained to dialogue, description, and pacing within the
 mathematical envelope.
 
+### 5.1 Context flow into the renderer and the auditor
+
+The same `CreativeBrief` is consumed by `assemble_rendering_prompt`
+(generation) and `assemble_audit_prompt` (auditor). To keep the two views
+in lock-step, every brief-construction site stamps the full set of
+context fields, including:
+
+* `original_query` — the user's verbatim NL request, lifted into a HARD
+  constraint by all four brief paths (directive, observation,
+  intervention, counterfactual) so the auditor flags prose that ignores
+  it.
+* `narrative_style` — the source-form profile that drives both the
+  renderer's `STYLE FIDELITY` block and the auditor's `style_mismatch`
+  word-band gate.
+* `preceding_prose` + `branch_world_id` / `branch_label` /
+  `factual_contrast_summary` — the story-so-far excerpt and the
+  shadow-vs-canon framing, surfaced verbatim under matching headers in
+  both prompts.
+* `scene_context` — the ego-graph payload the renderer will see.
+  `format_scene_context_for_prompt` normalises three input shapes
+  (ego-graph dict, full `WorldStateV1.model_dump()`, sandbox
+  `node_link_data`) so the auditor reads the same world the renderer
+  did, including post-`do`-surgery state on Rung-2/3 paths.
+* `scene_context["syuzhet_anchor"]` — the reader's narration position,
+  stamped by every brief builder when an anchor is available. Used by
+  the deterministic `withheld_utterance_leak` check inside `run_audit`
+  so it can identify future utterances without re-deriving the anchor
+  from `recent_memory`.
+* `rendering` (RenderingDirective) and `physics_override` — surfaced
+  to the auditor under `=== RENDERING DIRECTIVE ===` and
+  `=== PHYSICS OVERRIDE (HARD) ===` so it can validate POV-lock
+  breaches, pacing drift, and engine-authored hard text the renderer
+  was told to honour verbatim.
+* `hidden_channels` — the same brief-level withheld set the renderer
+  receives is mirrored under `=== HIDDEN CHANNELS / UTTERANCES (HARD) ===`
+  in the audit prompt so the auditor flags leaks against the
+  syuzhet-aware view, not only the world-state-derived view.
+
+For omniscient flows (POV-less observation, `interrogate`, `general`,
+`manual_edit`, `evaluate`), `extract_full_world_state` accepts
+`syuzhet_anchor` and prunes events whose `syuzhet_index` exceeds it,
+so future-narration content cannot leak into the renderer or auditor
+prompts even on the omniscient path.
+
+### 5.2 Engine-side exclusions (intervention & counterfactual)
+
+For both Rung-2 interventions and Rung-3 counterfactuals the engine
+surfaces `pruned_utterance_event_ids` and `disabled_channel_ids` —
+utterances and channels whose provenance the do-surgery severed (e.g.
+intervening on a speaker's `status` removes the lines they would have
+spoken; severing a channel removes the messages it would have carried).
+`build_intervention_brief` and `build_counterfactual_brief` both lift
+each into a HARD constraint (`=== ERASED UTTERANCES ===` /
+`=== DISABLED CHANNELS ===`) via the shared helper
+`_build_exclusion_constraints`, so the renderer knows what *no longer
+exists* in the intervened/counterfactual world, not just what does.
+Without this, canonical lines kept in `preceding_prose` /
+`factual_contrast_summary` reliably bled back into the prose. The
+auditor reads the same blocks and flags leaks as `physics`-category
+violations with rationale prefix `counterfactual_canon_bleed:`
+(distinct from `withheld_utterance_leak`, which covers *future* lines,
+not *erased* ones).
+
 ---
 
 ## 6. Phase 5 — Audit & Refinement (Steps 11–12)

@@ -256,6 +256,21 @@ For other prose queries the pipeline calls `_build_brief_for_query` to
 synthesise a brief from the physics result (intervention deltas, mutations,
 blocked propagations, hidden deltas).
 
+Every brief-construction site stamps the same context fields so the
+renderer (Step 4) and the auditor (Step 5) read the same world:
+`original_query` (verbatim NL request as a HARD constraint),
+`narrative_style`, `preceding_prose`, branch context
+(`branch_world_id` / `branch_label` / `factual_contrast_summary`),
+`scene_context` (with `syuzhet_anchor` stamped when available),
+`rendering` (RenderingDirective), `physics_override`, and
+`hidden_channels`. For both Rung-2 interventions and Rung-3
+counterfactuals the engine's `pruned_utterance_event_ids` and
+`disabled_channel_ids` are lifted into HARD `=== ERASED UTTERANCES ===`
+and `=== DISABLED CHANNELS ===` constraints so the renderer knows what
+*no longer exists* in the intervened/counterfactual world (canon lines
+kept in `preceding_prose` / `factual_contrast_summary` would otherwise
+bleed back in).
+
 ### Step 4 — Generation
 
 [`shadow_loom/generation.py::render_from_query`](../shadow_loom/generation.py)
@@ -281,6 +296,19 @@ parallel:
   hold up.
 * **Affective audit** — measures the actual epistemic gap / emotional
   intensity in the prose vs the directive's target.
+
+The audit prompt mirrors the renderer's view of the brief: alongside
+constraints, scene context, and prior feedback it surfaces
+`=== RENDERING DIRECTIVE ===`, `=== PHYSICS OVERRIDE (HARD) ===`, and
+`=== HIDDEN CHANNELS / UTTERANCES (HARD) ===` so the auditor can
+validate POV-lock breaches, engine-authored hard text, and
+syuzhet-aware leak rules against the same brief the renderer
+consumed. For counterfactual queries the
+`=== ERASED UTTERANCES ===` / `=== DISABLED CHANNELS ===` blocks are
+also surfaced; leaks against them are `physics`-category violations
+with rationale prefix `counterfactual_canon_bleed:` (distinct from
+`withheld_utterance_leak`, which covers *future* lines, not *erased*
+ones).
 
 The result is a `FeedbackLoopResult` containing:
 

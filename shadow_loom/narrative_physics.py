@@ -178,7 +178,10 @@ def calculate_narrative_physics(
         # If no POV specified, fall back to the Omniscient Graph
         if not request.focus_entity_ids:
             logger.info("[Observation] No POV specified — extracting Omniscient Graph")
-            full_state = extract_full_world_state(global_world_state, temporal_anchor)
+            full_state = extract_full_world_state(
+                global_world_state, temporal_anchor,
+                syuzhet_anchor=syuzhet_anchor,
+            )
             return {
                 "status": "success",
                 "query_type": "observation",
@@ -632,7 +635,10 @@ def calculate_narrative_physics(
     # ==========================================
     elif request.query_type == "interrogate":
         logger.info("[Interrogation] Extracting Omniscient Graph for question: %s", request.question[:80])
-        full_state = extract_full_world_state(global_world_state, temporal_anchor)
+        full_state = extract_full_world_state(
+            global_world_state, temporal_anchor,
+            syuzhet_anchor=syuzhet_anchor,
+        )
 
         return {
             "status": "success",
@@ -647,7 +653,10 @@ def calculate_narrative_physics(
     # ==========================================
     elif request.query_type == "general":
         logger.info("[General] Full-graph Q&A for question: %s", request.question[:80])
-        full_state = extract_full_world_state(global_world_state, temporal_anchor)
+        full_state = extract_full_world_state(
+            global_world_state, temporal_anchor,
+            syuzhet_anchor=syuzhet_anchor,
+        )
 
         return {
             "status": "success",
@@ -662,7 +671,10 @@ def calculate_narrative_physics(
     # ==========================================
     elif request.query_type == "manual_edit":
         logger.info("[ManualEdit] User-authored prose (%d chars)", len(request.edited_prose))
-        full_state = extract_full_world_state(global_world_state, temporal_anchor)
+        full_state = extract_full_world_state(
+            global_world_state, temporal_anchor,
+            syuzhet_anchor=syuzhet_anchor,
+        )
 
         return {
             "status": "manual_edit",
@@ -676,7 +688,10 @@ def calculate_narrative_physics(
     # ==========================================
     elif request.query_type == "evaluate":
         logger.info("[Evaluate] Full-story evaluation requested")
-        full_state = extract_full_world_state(global_world_state, temporal_anchor)
+        full_state = extract_full_world_state(
+            global_world_state, temporal_anchor,
+            syuzhet_anchor=syuzhet_anchor,
+        )
 
         return {
             "status": "success",
