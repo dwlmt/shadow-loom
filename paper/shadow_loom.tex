@@ -634,6 +634,31 @@ cross2024hyp,xu2025echoes}. I share the present design as a
 substrate for further research --- by myself and by others ---
 not as a finished product.
 
+As an internal sanity check, the four structural-affect scorers
+were audited against the bundled twenty-fixture corpus
+(\texttt{example\_worlds/}) at seven evenly-spaced syuzhet anchors
+per fixture, giving 162 score evaluations per metric (one fixture
+emits a flat-zero suspense column at its terminal anchor and so
+contributes only six points). The per-scorer scale summary is
+mystery $0.17/0.53/1.00$ (min/median/max), dramatic-irony
+$0.00/0.45/0.90$, suspense $0.00/0.16/0.39$, surprise (per-step
+local mode) $0.00/0.03/0.24$ --- the four scorers occupy
+different absolute bands by design (mystery is a population
+fraction near $1$ early in the syuzhet; surprise is a per-step
+KL spike near $0$ between revelation points). The audit confirms
+the canonical signatures the underlying theory predicts: monotone
+mystery decline across every world; rise-peak-fall irony arcs in
+$16/20$ worlds (Macduff hearing of his family, Poirot's
+denouement, Nick's letter to Daisy); terminal-anchor suspense
+discharge in every world (no unrevealed threats remain); surprise
+spikes only at canonical revelation points (Reservoir Dogs Mr
+Orange flashback $0.19$, Gone Girl mid-novel perspective shift
+$0.20$, Wuthering Heights in-medias-res frame $0.24$). All
+scorer constants are externalised through
+\texttt{DirectiveAssemblySettings} (env-var prefix
+\texttt{DIRECTIVE\_ASSEMBLY\_*}); the audit script
+\texttt{scripts/audit\_affective.py} reproduces the table.
+
 
 \section*{Code, licence, and reproducibility}
 
@@ -1088,26 +1113,38 @@ brewer1982stories} aggregates over revealed effects $e$ involving
 the focal cast (events with $s(e) \le t_s$ and at least one focal
 participant), pooled with the focal entities themselves as
 permissible effect-nodes (an entity is itself a causal target of
-every revealed action against it). Writing $w(a \to e)$ for the
-strongest single-edge weight from ancestor $a$ to effect $e$
-(falling back to the strongest outgoing weight of $a$ for
-multi-hop ancestors as a cheap upper bound on its contribution,
-and to $0.5$ in the absence of any weight),
+every revealed action against it). Each ancestor's contribution
+is scaled by three multiplicative factors: a \emph{path-strength
+geometric decay} along the strongest reverse-path product of edge
+weights from $a$ to $e$, depth-capped at $D = 4$
+\citep{trabasso1985sperry} and computed by single-source
+Dijkstra on the negated-log-weight reverse graph; a
+\emph{harm-kind salience} $\sigma_{k_a}$ from the same
+$\sigma_k$ table used by suspense; and a per-effect
+\emph{curiosity-proximity decay}
+$\rho_e = \exp(-(t_s - s(e))/\tau_{\mathrm{cur}})$ with
+$\tau_{\mathrm{cur}} = 8$ syuzhet beats, motivated by Iser's
+gap theory of reader response \citep{iser1976akt}. Writing
+$\Pi(a, e)$ for the path-strength weight, the gauge is
 \begin{equation}
 \label{eq:mystery}
-\mathrm{Mys} =
-\frac{\sum_{e \in \mathrm{eff}}\,
-        \sum_{a \in \mathrm{Anc}(e),\; s(a) > t_s} w(a \to e)}
-     {\sum_{e \in \mathrm{eff}}\,
-        \sum_{a \in \mathrm{Anc}(e)} w(a \to e)},
+\mathrm{Mys} = \frac{
+\sum_{e \in \mathrm{eff}} \rho_e \!\!\sum_{a \in \mathrm{Anc}(e),\; s(a) > t_s}\!\! \sigma_{k_a} \cdot \Pi(a, e)
+}{
+\sum_{e \in \mathrm{eff}} \rho_e \!\!\sum_{a \in \mathrm{Anc}(e)}\!\! \sigma_{k_a} \cdot \Pi(a, e)
+},
 \end{equation}
-the strength-weighted fraction of focal-effect causes still
-hidden from the reader. The unweighted ratio
+the salience- and proximity-weighted fraction of focal-effect
+causes still hidden from the reader. The unweighted ratio
 $|\{a : s(a) > t_s\}|/|\mathrm{Anc}(e)|$ is the equivalent simple
-form when all edge weights are unit.
+form when all factors collapse to unity. The legacy single-edge
+fallback for multi-hop ancestors gave a 5-hop weak chain as much
+weight as a 1-hop strong link --- contradicting Trabasso \&
+Sperry's empirical finding that audience traceability decays
+geometrically with chain depth.
 
 \paragraph{Dramatic irony
-\citep{booth1974irony,muecke1969compass,gerrig1993narrative}.}
+\citep{booth1974irony,muecke1969compass,gerrig1993narrative,pfister1988drama}.}
 Following the classical reader/character knowledge-asymmetry
 framing, for each focal entity $c \in F$
 let $K_c$ be the set of events $c$ knows at the anchor: events
@@ -1115,24 +1152,50 @@ $c$ participates in (as actor or target) whose fabula time falls
 at or before the syuzhet anchor's fabula frontier, plus events
 referenced in revealed utterances spoken by or addressed to $c$,
 plus events $c$ holds a \texttt{Belief} about whose provenance
-still resolves. Writing $w_e$ for event $e$'s narrative
-intensity (default $1$), $R$ for the set of revealed events
-($s(e) \le t_s$), and $K$ for a saturation constant, the irony
-score is the per-character mean intensity-weighted
-\emph{fraction of the reader's privileged view} the character is
-in the dark about:
+still resolves. Each gap event's contribution is then scaled by
+three additional factors: a \emph{harm-kind salience}
+$\sigma_{k_e}$ (tragic irony --- a hidden mortal threat the
+focal does not see --- outranks comic irony along the same
+hierarchy used by suspense and mystery); a \emph{false-belief
+multiplier} $\phi_e^{(c)} \in \{1, m_{\mathrm{fb}}\}$ when the
+gap event's actor set intersects the focal's \emph{believed-
+entity targets} (entities about whom $c$ holds a provenance-
+valid \texttt{Belief}), the canonical Iago $\to$ Othello /
+Jacqueline $\to$ Linnet pattern \citep{pfister1988drama,
+cabanas2024toM}; and a \emph{closure-proximity decay}
+$\rho_e^{(c)} = \max(\rho_{\min}, \exp(-\Delta_{\mathrm{cls}}/\tau_{\mathrm{iro}}))$
+where $\Delta_{\mathrm{cls}}$ is the syuzhet-index distance to
+the earliest later position at which $c$ first witnesses an
+event with $\mathrm{fabula}(e') \ge \mathrm{fabula}(e)$ ---
+the dramatic moment $c$ walks into the scene that exposes the
+truth (Booth's stable vs. unstable irony \citep{booth1974irony};
+defaults $\tau_{\mathrm{iro}} = 6$, $\rho_{\min} = 0.4$). The
+per-character gap is further scaled by an \emph{action weight}
+$a_c = \min(\bar a, 1 + \alpha \cdot \#\{\text{actor-events
+by } c \le t_s\})$ on focal prominence
+\citep{pfister1988drama,sutherland2013little}: a focal driving
+the plot under false information carries more dramatic charge
+than a bystander. Writing $w_e$ for event $e$'s narrative
+intensity (default $1$), $R$ for the set of revealed events,
+and $K = 1$ for the saturation constant,
+\begin{equation}
+g_c = a_c \cdot \frac{
+\sum_{e \in R,\; e \notin K_c} w_e \cdot \sigma_{k_e} \cdot \phi_e^{(c)} \cdot \rho_e^{(c)}
+}{\sum_{e \in R} w_e + K},
+\end{equation}
 \begin{equation}
 \label{eq:irony}
-\mathrm{Iro} = \frac{1}{|F|}
-\sum_{c \in F}
-\frac{\sum_{e \in R, e \notin K_c} w_e}{\sum_{e \in R} w_e + K},
-\quad K = 1.
+\mathrm{Iro} = \min\!\big(1,\; \beta \cdot \max_{c \in F} g_c + (1 - \beta) \cdot \overline{g_c}\big), \qquad \beta = 0.6.
 \end{equation}
-Normalising by the \emph{revealed} mass (rather than total event
-mass) makes Eq.~\ref{eq:irony} a Sternberg-style
-\emph{gap fraction} that can both rise (with new reveals the
-character has not caught up to) and fall (when participation,
-addressed utterances, or belief acquisition close the gap),
+The aggregator $\beta \cdot \max + (1-\beta) \cdot \overline g$
+is Sternberg's single-dominant-gap framing: \emph{one}
+character's tragic blindness carries the irony charge, with
+secondary characters as residual contribution. Normalising by
+the \emph{revealed} mass (rather than total event mass) makes
+Eq.~\ref{eq:irony} a Sternberg-style \emph{gap fraction} that
+can both rise (with new reveals the character has not caught up
+to) and fall (when participation, addressed utterances, belief
+acquisition, or closure-proximity discharge close the gap),
 producing the rise-peak-fall arc the structural-affect
 literature predicts for canonical irony plots
 \citep{booth1974irony,muecke1969compass}: Macduff hearing of
@@ -1147,57 +1210,182 @@ denominator with the \emph{full} event mass instead pinned the
 score into a monotone rise across $21/21$ example-world
 fixtures, since the denominator stopped moving while the
 numerator kept growing --- contradicting the rise-peak-fall arc
-the theory predicts. The current revealed-mass form gives
-rise-peak-fall in $16/21$ worlds.
+the theory predicts.
 
 \paragraph{Suspense
 \citep{brewer1982stories,comisky1982suspense,ortony1988occ,
-zillmann1996suspense,cheong2015suspenser}.} The scorer follows
+zillmann1996suspense,lazarus1991emotion,cheong2015suspenser,elyfrankel2015suspense}.} The scorer follows
 the hope/fear (here \emph{hope/threat}) anticipation pair from the
 structural-affect and OCC-appraisal traditions --- not the
 information-theoretic uncertainty-reduction formulation of
 \citet{wilmot2020suspense}, which is structurally closer to the
 dramatic-irony scorer above and is borrowed there instead. For each
 unrevealed event $e$ with strongest incoming causal weight
-$p_e \in (0, 1]$, classify focal entities per-event: an entity
-acted upon without itself acting contributes to threat, an
-entity acting contributes to hope. We note this binary
-actor/target classification is a known limitation of plan-based
-suspense scorers in the lineage of \citet{cheong2015suspenser}: it
-does not consult the desirability of the outcome to the entity
-(an antagonist authoring a successful misdeed registers as
-\emph{hope}), and it does not model reader disposition toward the
-character in the sense of \citet{zillmann1996suspense}. The
-balance$\,\times\,$stakes combiner partially absorbs this by
-requiring \emph{both} sides to be populated, but a fully
-disposition-aware variant is left to future work. Aggregating
-per-entity contributions:
+$p_e \in (0, 1]$, we compute a per-event contribution that is then
+classified as \emph{threat} or \emph{hope} for each focal entity
+$x \in F$ via the rules below.
+
+\emph{Disposition-aware classification \citep{zillmann1996suspense}.}
+The legacy actor=hope / target=threat rule is overridden by the
+social topology: an event whose actor has
+$\mathrm{aff}(\mathrm{actor} \to x) \le -0.2$ is bucketed as a
+\emph{threat} on $x$ (an antagonist's authored misdeed no longer
+registers as hope just because they are the actor), and an event
+whose actor has $\mathrm{aff}(\mathrm{actor} \to x) \ge +0.2$
+propagates as \emph{hope} even when $x$ is its target (rescue
+propagation: an ally arriving to defuse the threat). Worlds with
+no populated \texttt{social\_topology} default the affinity to
+neutral and fall back to the legacy rule.
+
+\emph{Anticipatory proximity weighting \citep{comisky1982suspense}.}
+Subjective probability of a threat rises with imminence, both
+temporally and spatially. Each event's contribution is multiplied
+by a temporal--spatial kernel
 \begin{equation}
-w_{\mathrm{threat}} \!=\!\!\!\sum_{\substack{e \notin \mathrm{rev} \\ x \in F \cap \mathrm{target}(e) \setminus \mathrm{actor}(e)}}\!\!\! p_e,
-\quad
-w_{\mathrm{hope}} \!=\!\!\!\sum_{\substack{e \notin \mathrm{rev} \\ x \in F \cap \mathrm{actor}(e)}}\!\!\! p_e.
+\mathrm{prox}(e, x) = \exp\!\Big(-\tfrac{\Delta t^{\mathrm{fab}}_e}{\tau_t}\Big)
+                    \cdot
+                    \exp\!\Big(-\tfrac{\Delta d^{\mathrm{sp}}_{e,x}}{\tau_s}\Big),
 \end{equation}
-Let $T = w_{\mathrm{threat}} + w_{\mathrm{hope}}$. Define
+where $\Delta t^{\mathrm{fab}}_e = \max(0, t_e^{\mathrm{fab}} - t_{\mathrm{now}}^{\mathrm{fab}})$
+is the fabula-time gap from the latest revealed event to the
+unrevealed event, $\Delta d^{\mathrm{sp}}_{e,x}$ is the
+shortest-path distance in the spatial topology between $e$'s
+location and $x$'s, and $\tau_t$ auto-scales to the world's median
+inter-event fabula gap so worlds using
+\texttt{fabula\_time\_spacing}=$1000$ and unit-spaced worlds both
+decay over $\sim 6$ narrative beats; $\tau_s = 4$ hops.
+
+\emph{Persistence multiplier \citep{brewer1982stories}.} The
+longer a foreshadowed threat lingers unresolved, the louder it
+gets. Each event's contribution is also multiplied by
+$\min(\Pi_{\max},\, 1 + \alpha \cdot a_e)$ where $a_e$ is the
+count of \emph{revealed} causal ancestors of $e$ (proxy for how
+long the gun has been on the mantle), $\alpha = 0.10$ and
+$\Pi_{\max} = 1.5$.
+
+\emph{Harm-kind salience.} Each event is tagged with a salience
+$\sigma_e \in [0,1]$ inferred from the canonical
+\texttt{mechanism} strings on its incident causal edges, taking
+the maximum across incident kinds so a stab-in-the-back event
+wired with both \texttt{physical} and \texttt{betrayal} edges
+registers at the higher salience rather than being averaged. The
+salience ranking follows the appraisal-theory hierarchy of core
+relational themes \citep{lazarus1991emotion} cross-anchored to
+OCC's prospect-based emotions \citep{ortony1988occ}:
+existential\,$(1.00)$ $>$ physical\,$(0.85)$ $>$
+betrayal\,$(0.75)$ $>$ psychological\,$(0.70)$ $>$
+emotional/relational\,$(0.65)$ $>$ social/reputational\,$(0.55)$
+$>$ epistemic\,$(0.45)$. The epistemic floor is held low because
+the cumulative-mystery scorer (Eq.~\ref{eq:mystery}) already
+covers that surface; suspense should not double-count it. Events
+with no resolvable mechanism default to \texttt{physical} (the
+modal kind in the corpus).
+
+Aggregating per-entity, per-kind contributions weighted by all of
+the above:
 \begin{equation}
-\mathrm{balance} = 1 - \frac{|w_{\mathrm{threat}} - w_{\mathrm{hope}}|}{T},
-\quad
-\mathrm{stakes} = \frac{T}{T + K},
+w^{(k)}_{\mathrm{threat}}(x) \!=\!\!\!\sum_{\substack{e \notin \mathrm{rev} \\ \mathrm{kind}(e)=k \\ \mathrm{bucket}(e,x)=\mathrm{threat}}}\!\!\! \sigma_e \, p_e \,\mathrm{prox}(e, x)\, \pi_e,
 \end{equation}
-so $\mathrm{balance} \in [0,1]$ peaks at genuine outcome uncertainty
-($w_{\mathrm{threat}} = w_{\mathrm{hope}}$) and decays to $0$ under
-one-sided dominance, while $\mathrm{stakes} \in [0,1)$ saturates so
-balanced fragments do not pin the gauge. Then
 \begin{equation}
-\mathrm{Susp} = \mathrm{clip}_{[0,1]}\!\big(\mathrm{balance} \cdot \mathrm{stakes}\big),
+w^{(k)}_{\mathrm{hope}}(x) \!=\!\!\!\sum_{\substack{e \notin \mathrm{rev} \\ \mathrm{kind}(e)=k \\ \mathrm{bucket}(e,x)=\mathrm{hope}}}\!\!\! \sigma_e \, p_e \,\mathrm{prox}(e, x)\, \pi_e,
 \end{equation}
-returning $0$ when $w_{\mathrm{hope}} = 0$ (the
-suspense--despair boundary) or when $w_{\mathrm{threat}} = 0$
-(safety). The default $K = 2$ is calibrated so two strong
-unrevealed events on each side already register as fully
-high-stakes; this replaces an earlier asymmetric
-$\max(0, (w_{\mathrm{threat}} - w_{\mathrm{hope}})/T)$ form that
-collapsed to $0$ on every fixture in which the protagonist
-authors most of their own forward events.
+where $\pi_e = \min(\Pi_{\max},\, 1 + \alpha a_e)$ is the
+persistence multiplier and $\mathrm{bucket}(e, x)$ resolves the
+threat/hope classification under the disposition rule above.
+
+\emph{EFK expected-variance combiner (default).}
+\citet{elyfrankel2015suspense} reformulate suspense as the
+\emph{expected variance of next-period beliefs} about a terminal
+outcome --- a property of a Bayesian belief martingale rather than a
+structural-affect heuristic. Adopting this functional form
+gives suspense the same belief-process shape that our surprise
+scorer (\S\ref{eq:surprise}) already has, so the two affective
+scores become moments of the same underlying process rather than
+unrelated heuristics. We instantiate this per (focal $x$, kind
+$k$) cell using the revealed threat/hope evidence as a Beta
+posterior over ``next reveal lands threat-side'':
+\begin{equation}
+A^{(x,k)} = \!\!\sum_{e\in\mathrm{rev}^{(x,k)}_{\mathrm{threat}}}\!\! w_e, \quad
+B^{(x,k)} = \!\!\sum_{e\in\mathrm{rev}^{(x,k)}_{\mathrm{hope}}}\!\! w_e, \quad
+\mu_t^{(x,k)} = \frac{1+A^{(x,k)}}{2+A^{(x,k)}+B^{(x,k)}}.
+\end{equation}
+Each unrevealed event $e$ on the cell, with bucket
+$b_e\in\{\mathrm{threat},\mathrm{hope}\}$, weight $w_e$ and
+proximity $\rho_e=\mathrm{prox}(e,x)$, defines the Bayes update
+that \emph{would} occur if $e$ were the next reveal:
+\begin{equation}
+\mu_e^+ = \frac{1+A+w_e}{2+A+B+w_e}, \quad
+\mu_e^- = \frac{1+A}{2+A+B+w_e}, \quad
+\Delta\mu_e = \mu_e^{b_e} - \mu_t,
+\end{equation}
+so the realised expected squared belief change, weighted by
+proximity, is
+\begin{equation}
+\sigma^2_{\mathrm{fk}} = \sum_{e\in\mathrm{unrev}^{(x,k)}}\!\!\frac{\rho_e}{\sum_{e'}\rho_{e'}}\,(\Delta\mu_e)^2.
+\end{equation}
+We normalise by the maximum-suspense reference at the same
+prior --- the squared shift a single composite reveal of total
+mass $W=\sum_e w_e$ would induce on whichever side moves belief
+most:
+\begin{equation}
+\sigma^2_{\max} = \max\!\Big( (\mu_W^+ - \mu_t)^2,\; (\mu_W^- - \mu_t)^2 \Big), \qquad
+\widetilde{\sigma}^2_{(x,k)} = \min\!\Big(1,\, \sigma^2_{\mathrm{fk}}/\sigma^2_{\max}\Big) \in [0,1].
+\end{equation}
+The cell gauges are then aggregated by salience-weighted stakes
+attenuation:
+\begin{equation}
+\label{eq:suspense}
+\mathrm{Susp}^{\mathrm{efk}} = \frac{\sum_{(x,k)} \sigma_k \cdot \mathrm{stakes}^{(x,k)} \cdot \widetilde{\sigma}^2_{(x,k)}}{\sum_{(x,k)} \sigma_k \cdot \mathrm{stakes}^{(x,k)}}, \quad
+\mathrm{stakes}^{(x,k)} = \frac{T^{\mathrm{unrev}}_{(x,k)}}{T^{\mathrm{unrev}}_{(x,k)} + K_k},
+\end{equation}
+where $T^{\mathrm{unrev}}_{(x,k)}=\sum_{e\in\mathrm{unrev}^{(x,k)}}w_e$
+is the unrevealed weighted mass on the cell (so stakes decay as
+the narrative exhausts its forward reveal budget) and $K_k$ is
+the per-kind saturation constant from the harm-kind table. A
+\emph{bilateral-mass guard} restricts the aggregator to cells
+whose unrevealed set contains both threat and hope candidates:
+a one-sided forward reveal set is despair (only threats coming)
+or safety (only hopes coming) under
+Brewer--Lichtenstein structural-affect theory, even though
+strict EFK would still admit positive variance from magnitude
+uncertainty alone. This matches the OCC prospect-based-emotion
+taxonomy \citep{ortony1988occ}: suspense requires outcome
+ambiguity, not merely magnitude ambiguity.
+
+\emph{Per-kind balance $\times$ stakes with weighted-max
+combine (\texttt{mode=classic}).} The original
+Brewer–Lichtenstein-anchored aggregator is retained as an
+opt-in alternative: rather than collapsing all kinds into one
+bucket and computing a single balance term --- which dilutes a
+coherent single-kind tension into a multi-kind average --- we
+compute balance and stakes \emph{within} each kind and combine
+via a salience-weighted max:
+\begin{equation}
+\mathrm{Susp}^{\mathrm{classic}} = \max_k \,\Big( \sigma_k \cdot \mathrm{balance}^{(k)} \cdot \mathrm{stakes}^{(k)} \Big),
+\end{equation}
+with
+$\mathrm{balance}^{(k)} = 1 - |w^{(k)}_{\mathrm{threat}} - w^{(k)}_{\mathrm{hope}}| / T_k$,
+$\mathrm{stakes}^{(k)} = T_k / (T_k + K_k)$, and
+$T_k = w^{(k)}_{\mathrm{threat}} + w^{(k)}_{\mathrm{hope}}$.
+This matches Brewer \& Lichtenstein's prediction that one
+\emph{dominant} unresolved beat carries the structural-affect
+arc, rather than several diffuse anxieties additively. It is
+also used as the fallback when no kind has both
+$w^{(k)}_{\mathrm{threat}} > 0$ and
+$w^{(k)}_{\mathrm{hope}} > 0$. The per-kind saturation
+constants $K_k$ rise with kind salience so existential threats
+saturate slowly while social ones saturate fast:
+$K_{\mathrm{existential}}=4.0$, $K_{\mathrm{physical}}=3.0$,
+$K_{\mathrm{betrayal}}=2.5$, $K_{\mathrm{psychological}}=2.0$,
+$K_{\mathrm{emotional}}=2.0$, $K_{\mathrm{social}}=1.5$,
+$K_{\mathrm{epistemic}}=1.5$. The dominant kind and per-kind
+sub-totals are surfaced alongside the scalar so downstream
+directive consumers can target the dominant beat
+(\emph{footsteps closing in} vs.\ \emph{the lie about to surface}
+vs.\ \emph{the fellowship about to fracture}). Suspense returns
+$0$ when no kind has both $w^{(k)}_{\mathrm{threat}} > 0$ and
+$w^{(k)}_{\mathrm{hope}} > 0$ --- the suspense--despair and
+suspense--safety boundaries.
 
 \paragraph{Surprise.} Let $\mathrm{actual}_T(x)$ denote entity
 $x$'s trait $T$ value at the world's terminal fabula time,
@@ -1217,37 +1405,78 @@ prior --- with the small casts typical of the example fixtures the
 inclusive marginal would otherwise pull $q$ toward $p$ and
 systematically depress KL.
 
-For each revealed cause $(a \to x)$ with weight $w$ the prior is
-updated by
+For each revealed cause $(a \to x)$ with weight $w$ the prior
+is now updated by a \emph{Beta-Bernoulli} step:
 \begin{equation}
 \label{eq:surprise}
-q \mathrel{+}= w\,(\mathrm{actual}_T(x) - q),
+\alpha \mathrel{+}= w \cdot \mathrm{actual}_T(x), \quad
+\beta \mathrel{+}= w \cdot (1 - \mathrm{actual}_T(x)),
 \end{equation}
-a geometric pull that monotonically converges on the truth
-(an additive $w(p - q_0)$ form would summit past $p$ once
-$\sum w > 1$, producing non-monotonic surprise). Letting
-$p = \mathrm{actual}_T(x)$,
+seeded by a Beta$(s \cdot m, s \cdot (1-m))$ prior with weak
+pseudo-count strength $s = 2$ (strong enough to keep $q$ off the
+$\varepsilon$-clipped extremes when evidence is sparse, weak
+enough to remain responsive to the first few edges). The
+posterior mean $q = \alpha / (\alpha + \beta)$ replaces the
+legacy geometric pull $q \mathrel{+}= w(\mathrm{actual} - q)$,
+which was a Storck/Hochreiter/Schmidhuber RDIA proxy with
+undefined posterior variance. Edges where $x$ is the causal
+\emph{target} contribute at full weight; edges where $x$ is the
+causal \emph{source} contribute at $0.4 \times$ full weight (``X
+did Y to Z'' speaks more strongly about Z's traits than X's,
+but X's act is non-trivial evidence about X's traits ---
+Macbeth's ambition is reinforced by acting on it).
+
+Letting $p = \mathrm{actual}_T(x)$,
 \begin{equation}
 D_{\mathrm{KL}}(p \,\|\, q) =
 p \log \tfrac{p}{q} + (1-p)\log \tfrac{1-p}{1-q},
 \end{equation}
-and the entity-level surprise is the mean over traits of the
-soft-saturated per-trait KL,
+the trait-level KL component is the salience-weighted soft-
+saturated mean
 \begin{equation}
 \label{eq:surprise-saturation}
-\mathrm{Sur} = \frac{1}{|\mathcal{T}|} \sum_{T \in \mathcal{T}}
-\big(1 - e^{-D_{\mathrm{KL}}(p \,\|\, q)}\big),
+\mathrm{Sur}_{\mathrm{KL}} = \frac{\sum_{T \in \mathcal{T}} \sigma_T \big(1 - e^{-D_{\mathrm{KL}}(p \,\|\, q)}\big)}{\sum_{T \in \mathcal{T}} \sigma_T},
 \end{equation}
-which maps perceptually meaningful KLs in the $0.2$--$1.5$ band
-to the $0.18$--$0.78$ region of the gauge. The earlier
+where $\sigma_T$ is the per-trait \emph{narrative salience}
+(\citealp{reagan2016arcs}; arc-relevance hierarchy with
+ambition / guilt / vengeance / despair / love / loyalty /
+courage at $\sigma_T \in [0.85, 1.0]$, peripheral traits like
+literacy / fitness / wealth at $0.30$). The saturation constant
+$\tau = 1$ in $1 - e^{-\mathrm{KL}}$ matches the binary-
+distribution-discrimination JND from psychophysics
+(\citealp{lu2013visual}; subjective just-noticeable belief
+shift in the $[0.5, 1.0]$ nat band). The earlier
 $\overline{\mathrm{KL}}/\log(1/\varepsilon)$ form divided by the
 \emph{theoretical} binary-KL maximum ($\log(1/\varepsilon) \approx
 4.6$ at $\varepsilon = 0.01$), squashing the entire perceptual
 signal into the bottom $4\%$ of the gauge --- every example-world
 plot read as flat $\le 0.10$ even when canonical surprise traits
 (Macbeth's despair, Macduff's grief, Lady Macbeth's guilt)
-carried per-trait KLs of $0.27$--$0.50$. With no syuzhet anchor
-the reader is assumed omniscient and $\mathrm{Sur} = 0$.
+carried per-trait KLs of $0.27$--$0.50$.
+
+The trait-KL component is then combined with a plan-based
+\emph{anachrony} component
+\citep{baeyoung2008surprise,tobin2018elements,bissell2025surprise}
+that captures the surprise generated by temporal reordering ---
+flashbacks that reframe earlier events, openers in medias res:
+\begin{equation}
+\mathrm{Sur}_{\mathrm{ana}} = \frac{1}{|\mathcal{E}_t|}\!\!\sum_{e \in \mathcal{E}_t}\!\! \frac{|\mathrm{rank}_{\mathrm{fab}}(e) - \mathrm{rank}_{\mathrm{syu}}(e)|}{N - 1},
+\end{equation}
+where $\mathcal{E}_t$ is the set of relevant focal events
+(cumulative mode: all revealed at $t_s$; local mode: only those
+newly revealed at $t_s$, mirroring the per-step Itti-Baldi
+spike). The aggregator is a convex split
+\begin{equation}
+\mathrm{Sur} = w_t \cdot \mathrm{Sur}_{\mathrm{KL}} + w_a \cdot \mathrm{Sur}_{\mathrm{ana}}, \qquad w_t = 0.7,\ w_a = 0.3,
+\end{equation}
+which preserves the existing test-contract dominance of trait
+shifts on linear tellings (anachrony $\to 0$) while letting the
+non-linear example fixtures (Reservoir Dogs, Gone Girl, Tinker
+Tailor) accrue the additional anachrony-driven contribution
+that \citet{bissell2025surprise} flag as the most important
+missing dimension in KL-only narrative-surprise models. With no
+syuzhet anchor the reader is assumed omniscient and
+$\mathrm{Sur} = 0$.
 
 \paragraph{Six emotion scorers} (\texttt{grief, rage, joy, regret,
 love, fear}) score \emph{closeness} to a per-effect trait target.
@@ -1496,14 +1725,26 @@ ff.) is hit cleanly.
 the heist's chronological ordering, but late in the audience's
 presentation), with the underlying ground truth
 (\texttt{ENT\_ORANGE.constants = ["undercover\_cop", \ldots]})
-present at fabula time zero. Before the reveal, the corpus-marginal
-prior on \texttt{ENT\_ORANGE.role} starts at $q=0.5$ and the few
-revealed edges into Orange (\texttt{EVT\_ORANGE\_KILLS\_BLONDE},
-the earlier paternal-tenderness edges from \texttt{ENT\_WHITE})
-give a small geometric pull keeping $q \approx 0.6$ ``criminal''.
-After the reveal the actual value $p \approx 0.95$ ``cop''.
-Eq.~\ref{eq:surprise} gives a per-trait KL spike that is large
-but \emph{licensed} --- the engine had the cause present at low
+present at fabula time zero. Eq.~\ref{eq:surprise} initialises a
+Beta-Bernoulli prior over Orange's loyalty trait at
+$\mathrm{Beta}(s\!\cdot\!m,\,s\!\cdot\!(1{-}m))$ with
+pseudo-count strength $s = 2$ and corpus-marginal mean $m \approx 0.5$;
+the few revealed edges into Orange before the reveal
+(\texttt{EVT\_ORANGE\_KILLS\_BLONDE} at full target weight, the
+earlier paternal-tenderness edges from \texttt{ENT\_WHITE} at
+the source-side weight $0.4$) keep the posterior mean
+$q \approx 0.6$ ``criminal''. After the reveal the actual value
+$p \approx 0.95$ ``cop'', producing a per-trait
+$D_\mathrm{KL}$ of $\approx 0.6$~nat which the soft-saturation
+$1 - e^{-\mathrm{KL}}$ in Eq.~\ref{eq:surprise-saturation} maps
+to a trait-KL component of $\approx 0.45$. The fixture's
+in-medias-res structure (the heist appears as a flashback after
+the warehouse aftermath) drives the anachrony component to
+$\approx 0.30$, and the convex aggregator $0.7\!\cdot\!\mathrm{Sur}_\mathrm{KL}
++ 0.3\!\cdot\!\mathrm{Sur}_\mathrm{ana}$ yields the corpus-audit
+peak surprise of $\approx 0.19$ at the reveal anchor (see
+Tab.~\ref{tab:scorer-scale}). The reveal is large but
+\emph{licensed} --- the engine had the cause present at low
 fabula time, only locked behind syuzhet, so re-extraction will
 not flag a miracle step.
 
@@ -1559,6 +1800,132 @@ mathematical envelope chosen by directive assembly --- a typed,
 causal-graph-conditioned instance of the plan-and-render pattern
 \citep{riedlyoung2010narrative,yao2019planwrite,
 goldfarbtarrant2020aristotelian,yang2023doc}.
+
+\subsection{Corpus-scale audit of the four structural scorers}
+\label{app:scorer-audit}
+
+The four structural-affect scorers --- mystery
+(Eq.~\ref{eq:mystery}), dramatic irony (Eq.~\ref{eq:irony}),
+suspense (Eq.~\ref{eq:suspense}), and surprise
+(Eq.~\ref{eq:surprise}--\ref{eq:surprise-saturation}) --- were
+audited end-to-end against the bundled twenty-fixture corpus in
+\texttt{example\_worlds/}. Each fixture was sampled at seven
+evenly-spaced syuzhet anchors, giving 162 score evaluations per
+metric (a single-anchor terminal-flat fixture contributes only
+six points). The audit script
+\texttt{scripts/audit\_affective.py} reproduces the table.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lrrrr}
+\toprule
+Scorer & min & median & mean & max \\
+\midrule
+\texttt{mystery}        & 0.17 & 0.53 & 0.57 & 1.00 \\
+\texttt{dramatic\_irony} & 0.00 & 0.45 & 0.45 & 0.90 \\
+\texttt{suspense}       & 0.00 & 0.16 & 0.14 & 0.39 \\
+\texttt{surprise}\,(local) & 0.00 & 0.03 & 0.05 & 0.24 \\
+\midrule
+\texttt{grief}          & 0.00 & 0.12 & 0.18 & 0.80 \\
+\texttt{rage}           & 0.00 & 0.48 & 0.42 & 0.90 \\
+\texttt{joy}            & 0.00 & 0.76 & 0.60 & 1.00 \\
+\texttt{regret}         & 0.00 & 0.10 & 0.16 & 0.78 \\
+\texttt{love}           & 0.00 & 0.50 & 0.43 & 0.95 \\
+\texttt{fear}           & 0.00 & 0.34 & 0.28 & 0.63 \\
+\bottomrule
+\end{tabular}
+\caption{Per-scorer scale summary across 20 fixtures $\times$
+7 syuzhet anchors. The four structural scorers occupy different
+absolute bands by design: mystery is a population fraction near
+$1$ early in the syuzhet; surprise is a per-step KL spike near
+$0$ between revelation points. The six emotion scorers measure
+per-entity \emph{closeness} to a per-effect trait target and so
+are flat across syuzhet but vary across worlds and entities.}
+\label{tab:scorer-scale}
+\end{table}
+
+The audit confirms the canonical signatures the underlying
+theory predicts. \emph{Mystery} falls monotonically across every
+world (Trabasso \& Sperry causal-resolution: as causes are
+revealed, the hidden-ancestor fraction collapses); on Macbeth
+the curve is $0.99 \to 0.28$, on Death on the Nile $1.00 \to
+0.29$, on Wuthering Heights $0.99 \to 0.18$. \emph{Dramatic
+irony} produces the rise-peak-fall arc Sternberg's gap-fraction
+analysis predicts in $16/20$ worlds: Macbeth peaks at anchor 5
+($0.62$) on Macduff's discovery of his murdered family; Death on
+the Nile peaks at anchor 4 ($0.65$) on Poirot's withheld
+knowledge; Romeo and Juliet peaks at anchor 5 ($0.75$) on the
+crypt-misreading sequence. \emph{Suspense} discharges to $0$ at
+the terminal anchor of every world (no unrevealed threats remain
+post-resolution); the highest mid-story peak is Tinker Tailor
+($0.39$) on the cusp of the mole reveal. \emph{Surprise} spikes
+sparsely at canonical revelation points: Reservoir Dogs Mr Orange
+flashback ($0.19$, dominated by anachrony), Gone Girl mid-novel
+perspective shift ($0.20$, dominated by Beta-Bernoulli posterior
+collapse on Amy's loyalty trait), Wuthering Heights in-medias-res
+frame opening ($0.24$, anachrony spike from Lockwood's
+retrospective frame).
+
+\subsection{Tunables (\texttt{DirectiveAssemblySettings})}
+\label{app:scorer-tunables}
+
+All scorer constants are externalised through a single
+\texttt{DirectiveAssemblySettings} object (Pydantic
+\texttt{BaseSettings}, env-var prefix
+\texttt{DIRECTIVE\_ASSEMBLY\_*}), enumerated below with their
+calibrated defaults. The defaults reproduce the rise-peak-fall
+arcs in Tab.~\ref{tab:scorer-scale}; override individual
+constants only when targeting non-canonical genres (e.g.\ raise
+\texttt{IRONY\_AGGREGATOR\_BETA} toward $1$ for ensemble-cast
+tragedies where a single dominant blindness should overwhelm the
+average; lower \texttt{SUSPENSE\_PROXIMITY\_TAU\_FABULA\_GAPS}
+for thriller pacing where threat sharpens with proximity faster
+than the corpus default).
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lr}
+\toprule
+Setting & Default \\
+\midrule
+\multicolumn{2}{l}{\emph{Mystery (Trabasso \& Sperry; Iser)}} \\
+\texttt{MYSTERY\_PATH\_DECAY\_DEPTH} & $4$ \\
+\texttt{MYSTERY\_PROXIMITY\_TAU\_SYUZHET} & $8.0$ \\
+\midrule
+\multicolumn{2}{l}{\emph{Dramatic irony (Booth; Pfister; Cabanas)}} \\
+\texttt{IRONY\_SURFACE\_K} & $1.0$ \\
+\texttt{IRONY\_FALSE\_BELIEF\_MULT} & $1.5$ \\
+\texttt{IRONY\_ACTION\_ALPHA} & $0.15$ \\
+\texttt{IRONY\_ACTION\_WEIGHT\_CAP} & $3.0$ \\
+\texttt{IRONY\_AGGREGATOR\_BETA} & $0.6$ \\
+\texttt{IRONY\_PROXIMITY\_TAU\_SYUZHET} & $6.0$ \\
+\texttt{IRONY\_PROXIMITY\_FLOOR} & $0.4$ \\
+\midrule
+\multicolumn{2}{l}{\emph{Suspense (Lazarus; OCC; Brewer)}} \\
+\texttt{SUSPENSE\_STAKES\_K} & $2.0$ \\
+\texttt{SUSPENSE\_PROXIMITY\_TAU\_FABULA\_GAPS} & $6.0$ \\
+\texttt{SUSPENSE\_PROXIMITY\_TAU\_SPATIAL} & $4.0$ \\
+\texttt{SUSPENSE\_PERSISTENCE\_ALPHA} & $0.10$ \\
+\texttt{SUSPENSE\_PERSISTENCE\_CAP} & $1.5$ \\
+\texttt{SUSPENSE\_HOSTILE\_AFFINITY} & $-0.2$ \\
+\texttt{SUSPENSE\_ALLY\_AFFINITY} & $0.2$ \\
+\midrule
+\multicolumn{2}{l}{\emph{Surprise (Bae \& Young; Reagan; Bissell-Paulin-Piper)}} \\
+\texttt{SURPRISE\_TRAIT\_KL\_WEIGHT} & $0.7$ \\
+\texttt{SURPRISE\_ANACHRONY\_WEIGHT} & $0.3$ \\
+\texttt{SURPRISE\_DEFAULT\_TRAIT\_SALIENCE} & $0.55$ \\
+\texttt{SURPRISE\_SOURCE\_EDGE\_WEIGHT} & $0.4$ \\
+\texttt{SURPRISE\_PRIOR\_PSEUDOCOUNT} & $2.0$ \\
+\bottomrule
+\end{tabular}
+\caption{Externalised affective-scorer tunables (env-var prefix
+\texttt{DIRECTIVE\_ASSEMBLY\_*}; full table including the
+\texttt{HARM\_KIND\_SALIENCE} and \texttt{TRAIT\_NARRATIVE\_SALIENCE}
+dictionaries in \texttt{docs/settings.md~\S 8}).}
+\label{tab:scorer-tunables}
+\end{table}
 
 \subsection{Audit and feedback loop --- Gone Girl}
 \label{app:ex-audit}

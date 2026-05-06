@@ -1102,6 +1102,16 @@ def render_affective_timeseries(
     dramatic-irony / canonical mystery curves are included.
     Pass ``axis="syuzhet"`` to sample along reading order; the
     ``syuzhet_cursor`` becomes the active needle.
+
+    Note on the ``surprise`` series: the timeseries view passes
+    ``surprise_local=True`` to the scorer, so the line plots the
+    Itti & Baldi (2009) **Bayesian Surprise** form
+    ``D_KL(q_s || q_{s-1})`` — a per-step belief-update magnitude
+    that spikes at revelations and decays in quiet stretches. The
+    standalone surprise *gauge* uses the cumulative form
+    ``D_KL(p || q)`` (remaining gap to truth) which decays
+    monotonically. The two forms are not on the same scale; see
+    ``docs/academic-foundations.md`` §3.3.
     """
     opts = affective_timeseries_options(
         ws,

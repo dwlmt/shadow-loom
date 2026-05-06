@@ -328,22 +328,167 @@ response to genuine outcome ambiguity rather than to one-sided
 causal dominance.
 
 *Known limitations of this design (vs. richer suspense theory):*
-1. **Disposition-blind.** The actor/target classification does not
-   consult whether the focal entity *desires* the outcome
-   (Zillmann's disposition theory). An antagonist authoring a
-   successful misdeed registers as `hope` because they are the
-   *actor*; a fully disposition-aware variant requires a signed
-   valence on each (entity, event) pair and is left to future
-   work.
-2. **Outcome-uncertainty only, not paradox-of-suspense aware.** We
+1. **Outcome-uncertainty only, not paradox-of-suspense aware.** We
    do not attempt to model the residual tension that survives
    re-reading
    ([Gerrig 1989](https://doi.org/10.1016/0749-596X(89)90001-6);
    [Baroni 2007](https://www.seuil.com/ouvrage/la-tension-narrative-suspense-curiosite-surprise-raphael-baroni/9782020897624)).
-3. **Probability proxy is the max incoming edge weight**, not a
+2. **Probability proxy is the max incoming edge weight**, not a
    joint probability over the full causal path; this is a
    deliberate tractability choice consistent with Cheong &
    Young's planning-graph operationalisation.
+
+*Disposition-aware classification* (Zillmann 1996). The legacy
+actor=hope / target=threat rule is overridden when the
+social topology says otherwise: an event whose actor has
+``affinity[actor → focal] ≤ -0.2`` is bucketed as a *threat* on
+the focal entity (an antagonist's authored misdeed no longer
+registers as hope just because they are the actor), and an event
+whose actor has ``affinity[actor → focal] ≥ +0.2`` propagates as
+*hope* even when the focal entity is its target (rescue
+propagation: the ally arriving to defuse the threat). When the
+world has no ``social_topology`` the affinity defaults to neutral
+(0.0) and the legacy rule applies, so worlds without a populated
+topology degrade gracefully.
+
+*Anticipatory proximity weighting* ([Comisky & Bryant
+1982](https://doi.org/10.1111/j.1468-2958.1982.tb00682.x)).
+Subjective probability of a threat rises with imminence. Each
+event's contribution is multiplied by a temporal–spatial kernel:
+
+$$\text{imminence}(e, f) = \exp\!\Big(-\tfrac{\Delta t_{\text{fabula}}}{\tau_t}\Big)
+\,\cdot\,
+\exp\!\Big(-\tfrac{\Delta d_{\text{spatial}}}{\tau_s}\Big),$$
+
+where $\Delta t_{\text{fabula}} = \max(0,\, t_e^{\text{fabula}} - t_{\text{now}}^{\text{fabula}})$
+is the fabula-time gap from the latest revealed event to the
+unrevealed event, $\Delta d_{\text{spatial}}$ is the shortest-path
+distance in the spatial topology between the event's location and
+the focal entity's location, and $\tau_t$ auto-scales to the
+world's median inter-event fabula gap (so worlds with
+``fabula_time_spacing=1000`` and unit-spaced worlds both decay
+over ~6 narrative beats). $\tau_s$ defaults to 4 hops. Distant
+threats weigh less than the same threat closing in, exactly as
+the Comisky–Bryant manipulation predicts.
+
+*Persistence / exposure multiplier* (Brewer & Lichtenstein 1982
+initiating-event arc). Each unrevealed-threat term is multiplied
+by ``min(cap, 1 + α · a)`` where $a$ is the count of *revealed*
+causal ancestors of the threat (proxy for how long the gun has
+been on the mantle). $\alpha = 0.10$, cap $= 1.5$. A threat
+introduced at anchor 0 and still unresolved at anchor 14 weighs
+50% more than a freshly-revealed one of equal probability.
+
+*Per-kind balance $\times$ stakes with weighted-max combine
+(``mode='classic'``).* The original Brewer-Lichtenstein-anchored
+aggregator keeps separate ledgers per kind, computes balance and
+stakes *within* each kind, and combines via a salience-weighted
+**max**:
+
+$$\text{Susp} = \max_k \,\big( \sigma_k \cdot \text{balance}^{(k)} \cdot \text{stakes}^{(k)} \big),$$
+
+where $\sigma_k$ is the kind's salience weight (table below).
+This matches Brewer–Lichtenstein's prediction that one *dominant*
+unresolved beat carries the structural-affect arc, rather than
+several diffuse anxieties additively. The dominant kind is
+surfaced for downstream directive consumers.
+
+*Per-kind saturation constants $K_k$.* Existential threats don't
+saturate quickly — one death threat does not max out the gauge —
+so $K_{\text{existential}} = 4$. Social/epistemic threats *do*
+saturate fast (three slights and the reader is bored), so
+$K_{\text{social}} = K_{\text{epistemic}} = 1.5$. Calibrated
+against the ``example_worlds/`` corpus.
+
+*Harm-kind salience weighting.* The kind is inferred from the canonical `mechanism`
+strings carried on incident causal edges (see
+`causal_physics.MECHANISM_TRAIT_MAP`); each event takes the *max*
+salience across its incident-edge mechanisms, so a stab-in-the-back
+event wired with both `physical` and `betrayal` edges registers at
+the higher of the two rather than being averaged. The salience
+ranking follows the appraisal-theory hierarchy
+([Lazarus 1991](https://psycnet.apa.org/record/1991-97375-000)
+core relational themes; Ortony, Clore & Collins 1988 OCC
+prospect-based emotions; Brewer & Lichtenstein 1982
+structural-affect):
+
+| Kind | Salience $\sigma_k$ | Saturation $K_k$ | Lazarus / OCC anchor |
+|---|---:|---:|---|
+| `existential` (mortal) | 1.00 | 4.0 | OCC "irrevocable loss" — outranks all other prospects |
+| `physical` | 0.85 | 3.0 | Lazarus "physical danger" |
+| `betrayal` | 0.75 | 2.5 | Lazarus "moral transgression"; second only to mortal threat in the example corpus (Gone Girl, Reservoir Dogs, Tinker Tailor) |
+| `psychological` | 0.70 | 2.0 | OCC "distress about a self-relevant prospect" |
+| `emotional` (relational) | 0.65 | 2.0 | Lazarus "relational loss" (Wuthering Heights, Persuasion) |
+| `social` (reputational) | 0.55 | 1.5 | Lazarus "social esteem / shame" |
+| `epistemic` / `informational` | 0.45 | 1.5 | Discovery as a *prospect*; held low because cumulative-mystery (§3.2) already covers the epistemic surface |
+
+Events with no resolvable mechanism default to `physical` (the
+modal kind in the corpus and the median salience), so the gauge
+degrades gracefully on sparse fixtures. Per-kind sub-totals and
+the dominant threat/hope kinds are surfaced in the debug log so
+downstream directive consumers can target the dominant beat
+(footsteps closing in vs. the lie about to surface vs. the fellowship
+about to fracture) rather than only the aggregate magnitude.
+
+*EFK expected-variance aggregator (default,
+``mode='efk'``)* ([Ely, Frankel & Kamenica
+2015](https://doi.org/10.1086/677350)). The default aggregator
+implements a **belief-martingale variance** per (focal, kind)
+cell rather than the static balance × stakes product. For each
+cell, revealed threat/hope evidence on the syuzhet axis up to
+the anchor seeds a Beta(1+A, 1+B) posterior with mean
+$\mu_t = (1+A)/(2+A+B)$ — the audience's current belief that the
+*next* reveal on this kind will land threat-side. Each
+unrevealed event $e$ with bucket $b_e\in\{\text{threat,
+hope}\}$, weight $w_e = p_e \cdot \sigma_{k_e} \cdot \pi_e$ and
+proximity $\rho_e = \text{prox}(e, x)$ defines the Bayes update
+that *would* occur if $e$ were the next reveal:
+
+$$\mu_e^+ = \frac{1+A+w_e}{2+A+B+w_e}, \quad
+\mu_e^- = \frac{1+A}{2+A+B+w_e}, \quad
+\Delta\mu_e = \mu_e^{b_e} - \mu_t.$$
+
+The realised expected squared belief change, weighted by
+proximity (the audience attends to the next reveal in
+proportion to how soon it is), is:
+
+$$\sigma^2_{\text{fk}} = \sum_e \frac{\rho_e}{\sum_{e'}\rho_{e'}} (\Delta\mu_e)^2,$$
+
+normalised by the maximum-suspense reference at the same prior
+— the squared shift a single composite reveal of the same
+total mass $W = \sum_e w_e$ would induce on whichever side moves
+belief most:
+
+$$\sigma^2_{\max} = \max\!\Big( (\mu^+_W - \mu_t)^2, \; (\mu^-_W - \mu_t)^2\Big), \qquad \widetilde\sigma^2_k = \min\!\Big(1, \sigma^2_{\text{fk}}/\sigma^2_{\max}\Big) \in [0,1].$$
+
+The cell-level gauges are then aggregated by salience-weighted
+stakes attenuation across (focal, kind) cells:
+
+$$\text{Susp}^{\text{efk}} = \frac{\sum_{(x,k)} \sigma_k \cdot \text{stakes}^{(x,k)} \cdot \widetilde\sigma^2_k}{\sum_{(x,k)} \sigma_k \cdot \text{stakes}^{(x,k)}}, \qquad \text{stakes}^{(x,k)} = \frac{T^{\text{unrev}}_{(x,k)}}{T^{\text{unrev}}_{(x,k)} + K_k},$$
+
+where $T^{\text{unrev}}_{(x,k)} = \sum_e w_e$ is the *unrevealed*
+weighted mass on this cell (so stakes decay as the narrative
+exhausts its forward reveal budget) and $K_k$ is the per-kind
+saturation constant from §3.2's harm-kind table. We chose this
+as the default because it gives suspense the **same
+Bayesian-belief shape** that the surprise scorer
+(§3.3, $D_{\mathrm{KL}}$ over trait Bernoullis) already has —
+the two affective scorers become moments of the same belief
+process rather than unrelated heuristics, and the variance
+quantity is the literal Ely-Frankel-Kamenica object rather than
+a static-uncertainty proxy. Pass ``mode='classic'`` to recover
+the Brewer–Lichtenstein balance × stakes aggregator above (used
+as a fallback when no cell has bilateral unrev mass).
+
+A **bilateral-mass guard** restricts the aggregator to (focal,
+kind) cells whose *unrevealed* set contains both threat and hope
+candidates. A purely one-sided forward reveal set is despair
+(only threats coming) or safety (only hopes coming) under
+Brewer–Lichtenstein structural-affect theory, even though strict
+EFK would still admit positive variance from magnitude
+uncertainty alone. This matches the OCC prospect-based-emotion
+taxonomy: suspense requires outcome ambiguity, not merely
+magnitude ambiguity.
 
 * **Wilmot, D. & Keller, F. (2020).** "Modelling Suspense in Short Stories as Uncertainty Reduction over Neural Representation". *Proc. ACL 2020*, pp. 1763–1788. [aclanthology.org/2020.acl-main.161](https://aclanthology.org/2020.acl-main.161/) — the related but distinct neural-LM uncertainty-reduction definition. We take their reader-uncertainty framing as conceptual support for the *dramatic-irony* scorer (§3.4) and for *mystery* (§3.2), not for our hope/threat suspense scorer.
 * Wilmot, D. & Keller, F. (2021a). "A Temporal Variational Model for Story Generation". arXiv:2109.06807 (preprint only).
@@ -352,6 +497,7 @@ causal dominance.
 * **Comisky, P. & Bryant, J. (1982).** "Factors involved in generating suspense". *Human Communication Research* 9(1): 49–58. DOI 10.1111/j.1468-2958.1982.tb00682.x. — high subjective probability of harm to a liked protagonist.
 * **Zillmann, D. (1996).** "The psychology of suspense in dramatic exposition". In Vorderer, Wulff & Friedrichsen (eds.), *Suspense: Conceptualizations, Theoretical Analyses, and Empirical Explorations*, pp. 199–231. Lawrence Erlbaum. — disposition theory; suspense is noxious anticipation about a *liked* character.
 * **Ortony, A., Clore, G. L. & Collins, A. (1988).** *The Cognitive Structure of Emotions*. Cambridge UP. DOI 10.1017/CBO9780511571299. — OCC appraisal model; hope/fear is the canonical pair of *prospect-based* emotions.
+* **Lazarus, R. S. (1991).** *Emotion and Adaptation*. Oxford UP. — *core relational themes* tie distinct emotion families to distinct kinds of harm/benefit (physical danger, irrevocable loss, moral transgression, relational loss, social esteem/shame). The harm-kind salience table for the threat/hope ledger above is anchored to this hierarchy.
 * Ely, J., Frankel, A. & Kamenica, E. (2015). "Suspense and Surprise". *Journal of Political Economy* 123(1): 215–260. DOI 10.1086/677350. — decision-theoretic complement to W&K: suspense as expected variance of next-period beliefs over a terminal outcome.
 * Gerrig, R. J. (1989). "Suspense in the Absence of Uncertainty". *Journal of Memory and Language* 28(6): 633–648. DOI 10.1016/0749-596X(89)90001-6. — the paradox of suspense; surveyed but not implemented.
 * Baroni, R. (2007). *La tension narrative: suspense, curiosité, surprise*. Paris: Éditions du Seuil. — the modern French-language synthesis distinguishing suspense, curiosity, and surprise as *narrative-tension* sub-types.
@@ -364,11 +510,52 @@ Our four named structural effects (mystery, dramatic irony, suspense,
 surprise) extend Meir Sternberg's classical *curiosity / suspense /
 surprise* triad with dramatic irony as a fourth axis.
 
+`compute_mystery_score()` operationalises Sternberg's *curiosity*
+axis as a *fraction-of-hidden-causal-ancestors* gauge, with each
+ancestor's contribution scaled by three multiplicative factors:
+
+1. **Path-strength geometric decay** — the strongest reverse-path
+   product of edge weights from ancestor to effect, depth-capped
+   at $D = 4$ (Trabasso & Sperry 1985 causal-network reading
+   studies put the audience-traceable chain depth at four hops).
+   Computed via single-source Dijkstra on the negated-log-weight
+   reverse graph: a 3-hop weak chain
+   ($0.25 \times 0.25 \times 0.25 \approx 0.016$) contributes far
+   less curiosity weight than a 1-hop strong link ($0.75$),
+   replacing the legacy single-edge fallback that gave a 5-hop
+   ancestor as much weight as a 1-hop link.
+2. **Harm-kind salience** — multiplied by $\sigma_k$ from the
+   `_HARM_KIND_SALIENCE` table (the same Lazarus-anchored
+   existential > physical > betrayal > ... hierarchy used by
+   suspense and dramatic irony). A hidden murder is more
+   mysterious than a hidden gossip exchange even when the path
+   strengths are identical, capturing Sternberg's *expositional
+   gap* weighting by the stake of the missing piece.
+3. **Curiosity-proximity decay** — per-effect decay factor
+   $\exp(-(t - s_e)/\tau_{\text{curiosity}})$ with $\tau = 8$
+   syuzhet-index units. The reader's curiosity sits over the most
+   recently surfaced effects, not the entire revealed cone
+   equally; long-resolved gaps have been mentally filed and no
+   longer drive the gauge (Iser 1976 *Akt des Lesens*; Sternberg
+   1992 curiosity taxonomy). Symmetric mirror of the suspense
+   forward-imminence kernel — *backward* over surfaced unexplained
+   effects rather than *forward* over upcoming threats.
+
+The aggregate is then $\text{mystery} = M_{\text{hidden}} /
+M_{\text{total}}$ where each $M$ sums per-ancestor contributions
+weighted by all three factors. The score declines monotonically
+as ancestors are revealed; for canonical mystery plots
+(*Death on the Nile*, *Tinker Tailor*, *Macbeth*'s prophecy
+chain) it sits in the $0.7–1.0$ band early and falls to $0.2–0.4$
+post-denouement.
+
 * Sternberg, M. (1978). *Expositional Modes and Temporal Ordering in Fiction*. Johns Hopkins UP.
 * Sternberg, M. (1992). "Telling in time (II): Chronology, teleology, narrativity". *Poetics Today* 13(3): 463–541. — formal definitions of curiosity, suspense, surprise as cognitive states with distinct triggers.
 * Brewer, W. F. & Lichtenstein, E. H. (1982). "Stories are to entertain: A structural-affect theory of stories". *J. of Pragmatics* 6(5–6): 473–486. — empirical grounding of the triad.
 * Cheong, Y.-G. & Young, R. M. (2015). "Suspenser: A story generation system for suspense". *IEEE Transactions on Computational Intelligence and AI in Games* 7(1): 39–52. — operationalises Brewer's structural-affect theory in a generation system.
-* Bae, B.-C. & Young, R. M. (2008). "A use of flashback and foreshadowing for surprise arousal in narrative using a plan-based approach". *ICIDS 2008*, LNCS 5334, pp. 156–167. — formal planning model of narrative-level surprise via anachrony.
+* Bae, B.-C. & Young, R. M. (2008). "A use of flashback and foreshadowing for surprise arousal in narrative using a plan-based approach". *ICIDS 2008*, LNCS 5334, pp. 156–167. — formal planning model of narrative-level surprise via anachrony; underwrites our anachrony surprise component (§3.3).
+* Trabasso, T. & Sperry, L. L. (1985). "Causal relatedness and importance of story events". *Journal of Memory and Language* 24(5): 595–611. — causal-network reading studies that calibrate the four-hop traceability cap.
+* Iser, W. (1976). *Der Akt des Lesens*. München: Wilhelm Fink. (English: *The Act of Reading*, 1978, Johns Hopkins UP.) — gap theory of reader response motivating curiosity-proximity decay.
 
 ### 3.3 Surprise as KL divergence
 
@@ -390,17 +577,31 @@ average 6–10 entities) the focal entity carries 10–17% of the
 inclusive marginal, systematically pulling $q$ toward $p$ and
 squashing surprise; the leave-one-out form removes that bias. We
 fall back to the maximum-entropy default $q = 0.5$ when fewer than
-two *other* entities carry the trait. For each revealed causal
-edge whose target is the focal entity we then apply a geometric
-pull toward the truth,
-$q \mathrel{+}= w \cdot (\text{actual} - q)$, weighted by
-`evidence_strength`. The geometric form keeps the prior
-monotonically converging on the truth as evidence accumulates
-rather than overshooting (an additive update of the form
-$q \mathrel{+}= w \cdot (\text{actual} - q_0)$ summed past the
-actual value once $\sum w > 1$, producing a non-monotonic surprise
-curve that contradicted the "more revealed → less surprise"
-semantics).
+two *other* entities carry the trait. Each revealed causal edge
+incident on the focal entity then contributes a **Beta-Bernoulli
+update** (replacing the legacy ad-hoc geometric pull
+$q \mathrel{+}= w \cdot (\text{actual} - q)$):
+
+$$\alpha_0 = s \cdot m, \quad \beta_0 = s \cdot (1 - m), \quad
+\alpha \mathrel{+}= w_e \cdot \text{actual}, \quad
+\beta \mathrel{+}= w_e \cdot (1 - \text{actual}),$$
+
+with pseudo-count strength $s = 2$ (weak Beta anchor — strong
+enough to keep $q$ off the EPS-clipped extremes when evidence
+is sparse, weak enough to remain responsive to the first few
+edges). The posterior mean $q = \alpha / (\alpha + \beta)$ is
+returned. This is the same Bayesian core used by the EFK
+suspense aggregator, so the surprise and suspense scorers now
+share a coherent posterior-update rule rather than two unrelated
+heuristics. Edges where the focal is the *target* contribute at
+full weight; edges where the focal is the *source* contribute at
+$0.4 \times$ full weight ("X did Y to Z" speaks more strongly
+about Z's traits than X's, but X's act itself is non-trivial
+evidence about X's traits — Macbeth's ambition is reinforced by
+acting on it). The geometric form was a Storck/Hochreiter/
+Schmidhuber 1995 RDIA proxy with undefined posterior variance,
+which the per-trait salience and Weber-Fechner extensions below
+require to behave well.
 
 The surprise score has two operating modes — a *cumulative* form
 (directive-optimiser default) and a *local* Bayesian-Surprise form
@@ -444,34 +645,134 @@ trajectories (`state_timeline`) are honoured; reading raw
 `Entity.traits` was a silent bug that compared every protagonist
 against itself and collapsed surprise to zero.
 
+The trait-KL aggregator is then supplemented by two extensions:
+
+**Per-trait narrative salience.** Each trait's contribution is
+weighted by `_TRAIT_NARRATIVE_SALIENCE` (the Reagan-et-al. 2016
+arc-relevance hierarchy: ambition / guilt / vengeance /
+despair / love / loyalty / courage at $\sigma_t \in [0.85,
+1.0]$, mid-tier traits at $0.55–0.65$, peripheral traits like
+literacy / fitness / wealth at $0.30$). Trait names are matched
+case-insensitively as substrings so `moral_courage`,
+`physical_courage` and `courage` all resolve to the `courage`
+weight; unmatched traits get the median $0.55$. Mirrors the
+harm-kind salience hierarchy already used by suspense and
+mystery. Without this weighting, peripheral traits diluted the
+gauge on canonical arc-driven fixtures (Macbeth's ambition arc
+was being averaged with Macbeth's literacy and wealth, which
+do not change).
+
+**Per-trait Weber-Fechner saturation.** The per-trait
+contribution $1 - \exp(-\text{KL})$ keeps each trait in $[0,
+1]$ and maps perceptual KLs to perceptual gauge positions:
+KL=0.27→0.24, KL=0.5→0.39, KL=1.0→0.63, KL=2.0→0.86. The
+decay constant $\tau = 1$ matches the binary-distribution
+discrimination JND from psychophysics (Lu & Dosher 2013), where
+the subjective just-noticeable belief shift sits in the
+$[0.5, 1.0]$ nat band — i.e. each $1.0$ nat of KL evidence
+delivers $\approx 1 - 1/e \approx 63\%$ of the perceptual
+range, which is exactly where this saturation curve places it.
+The legacy form divided raw KL by the *theoretical* maximum
+$\log(1/\epsilon) \approx 4.6$, compressing perceptually
+meaningful KLs (the $0.2–1.5$ band) into a 4 % slice of the
+gauge and producing flat-looking surprise curves.
+
+**Anachrony surprise (Bae & Young 2008; Bissell, Paulin &
+Piper 2025).** Trait-shift KL alone misses the surprise
+generated by *temporal reordering* — flashbacks that reframe
+earlier events, openers that drop the reader in medias res. We
+compute a per-event anachrony score
+$|\text{rank}_{\text{fabula}}(e) - \text{rank}_{\text{syuzhet}}(e)| / N$,
+average over the relevant event set (cumulative mode → all
+revealed events; local mode → events newly revealed at this
+anchor — mirroring the trait-KL split between integrated and
+per-step surprise), and combine with the trait-KL component via
+a convex weighting
+
+$$\text{Surprise} = w_t \cdot \text{Surp}_{\text{trait-KL}} + w_a \cdot \text{Surp}_{\text{anachrony}}$$
+
+with $w_t = 0.7$, $w_a = 0.3$. Worlds with linear tellings
+contribute zero anachrony and degrade exactly to the previous
+trait-KL behaviour; worlds with non-linear tellings (Reservoir
+Dogs flashbacks, Gone Girl diary entries, Tinker Tailor
+recursive intelligence-investigation flashbacks) get an
+additional anachrony-driven contribution that the Bissell-
+Paulin-Piper framework flags as the most important missing
+dimension in KL-only narrative-surprise models.
+
 * Itti, L. & Baldi, P. (2009). "Bayesian surprise attracts human attention". *Vision Research* 49(10): 1295–1306. DOI 10.1016/j.visres.2008.09.007. — the formal basis: surprise = KL between prior and posterior beliefs.
 * Schmidhuber, J. (2010). "Formal theory of creativity, fun, and intrinsic motivation (1990–2010)". *IEEE Trans. Autonomous Mental Development* 2(3): 230–247. DOI 10.1109/TAMD.2010.2056368. — surprise as compression progress.
-* Reagan, A. J., Mitchell, L., Kiley, D., Danforth, C. M., Dodds, P. S. (2016). "The emotional arcs of stories are dominated by six basic shapes". *EPJ Data Science* 5: art. 31. DOI 10.1140/epjds/s13688-016-0093-1. — corpus-scale emotional trajectories that motivate our trait-trajectory analytics in `viz_helpers.py`.
+* Reagan, A. J., Mitchell, L., Kiley, D., Danforth, C. M., Dodds, P. S. (2016). "The emotional arcs of stories are dominated by six basic shapes". *EPJ Data Science* 5: art. 31. DOI 10.1140/epjds/s13688-016-0093-1. — corpus-scale emotional trajectories that motivate our trait-trajectory analytics in `viz_helpers.py` and the per-trait narrative-salience hierarchy.
 * Elsner, M. (2012). "Character-based kernels for novelistic plot structure". *EACL 2012*, pp. 634–644. — structural arc analysis predating Reagan et al., using character co-occurrence.
 * Kim, E., Padó, S., Klinger, R. (2017). "Investigating the relationship between literary genres and emotional plot development". *Workshop on Computational Linguistics for Literature (NAACL)*, pp. 17–26. — direct empirical follow-up to Reagan et al. on genre-conditioned arcs.
+* **Bissell, A., Paulin, E., Piper, A. (2025).** "A theoretical framework for evaluating narrative surprise in large language models". *Proceedings of WNU 2025*. [aclanthology.org/2025.wnu-1.7](https://aclanthology.org/2025.wnu-1.7/) — multi-component narrative-surprise framework (trait shift + anachrony + ToM-model shift) directly motivating the convex split above.
+* **Tobin, V. (2018).** *Elements of Surprise: Our Mental Limits and the Satisfactions of Plot*. Harvard UP. — cognitive-narratology account of plot-twist surprise as a function of audience-model overhaul.
+* Lu, Z.-L. & Dosher, B. A. (2013). *Visual Psychophysics: From Laboratory to Theory*. MIT Press. — binary-distribution discrimination JND ($0.5–1.0$ nat) used to calibrate the Weber-Fechner saturation constant.
 
 ### 3.4 Dramatic irony as epistemic asymmetry
 
-`compute_dramatic_irony_score()` returns the per-character mean
-intensity-weighted *fraction* of revealed events the focal entity
-does **not** know about (by participation, by being addressed in
-a revealed utterance, or by holding an explicit `Belief` whose
-provenance still resolves), normalised by the *revealed* event
-mass plus a saturation constant `K=1`:
+`compute_dramatic_irony_score()` returns a salience- and
+prominence-weighted *fraction* of revealed events the focal
+entity does **not** know about (by participation, by being
+addressed in a revealed utterance, or by holding an explicit
+`Belief` whose provenance still resolves), normalised by the
+*revealed* event mass plus a saturation constant $K = 1$, then
+aggregated across the focal cast by a max-leaning convex blend:
 
-$$\text{irony}(t) = \frac{1}{|F|} \sum_{c \in F}
-   \frac{\sum_{e \in R_t,\, e \notin K_c} w_e}
-        {\sum_{e \in R_t} w_e + K}$$
+$$g_c(t) = a_c \cdot \frac{\sum_{e \in R_t,\, e \notin K_c} w_e \cdot \sigma_{k_e} \cdot \phi_e^{(c)} \cdot \rho_e^{(c)}}{\sum_{e \in R_t} w_e + K},$$
+
+$$\text{irony}(t) = \min\!\Big(1, \beta \cdot \max_{c \in F} g_c(t) + (1-\beta) \cdot \overline{g_c(t)}\Big),$$
 
 where $F$ is the focal cast, $R_t$ is the set of events revealed
 to the reader by syuzhet anchor $t$, $K_c$ is what character $c$
-knows (also bounded by the fabula frontier of $R_t$), and $w_e$
-is event $e$'s intensity (defaults to $1$). Dividing by the
-*revealed* mass — rather than by the full story's event mass —
-makes the score a Sternberg-style **gap fraction** of the
-reader's privileged view, which naturally falls when characters
-catch up via late-story revelations (Macduff hearing of his
-family; Poirot's denouement; Nick's letter to Daisy). An earlier
+knows (also bounded by the fabula frontier of $R_t$), $w_e$ is
+event $e$'s intensity (defaults to $1$), and the per-event
+weights are:
+
+* $\sigma_{k_e}$ — harm-kind salience from the
+  `_HARM_KIND_SALIENCE` table (the Lazarus / OCC hierarchy
+  reused from suspense and mystery). Tragic irony — a hidden
+  mortal threat the focal does not see — outranks comic irony
+  along the same scale that ranks suspense kinds.
+* $\phi_e^{(c)} \in \{1,\, m_{\text{fb}}\}$ — false-belief
+  multiplier. When the gap event's actor set intersects the
+  focal's *believed-entity targets* (entities about whom the
+  focal holds a provenance-valid `Belief`), the focal is acting
+  on an outdated picture of one of the perpetrators — the
+  canonical Iago→Othello / Jacqueline→Linnet / Hero→Claudio
+  pattern. We multiply by $m_{\text{fb}} = 1.5$. We deliberately
+  do not try to semantically compare `Belief.perceived_state`
+  strings to world truth — model entities the focal *has formed
+  an opinion about* are the tractable false-belief surface, and
+  the test is invariant under shadow surgery via the same
+  provenance gate as the event-belief side (Pfister 1977,
+  Cabanas Gonzalez 2024).
+* $\rho_e^{(c)}$ — closure-proximity decay
+  $\max(\rho_{\min}, \exp(-\Delta_{\text{closure}}/\tau_{\text{irony}}))$
+  where $\Delta_{\text{closure}}$ is the syuzhet-index distance
+  to the earliest later position at which the focal first
+  witnesses an event with $\text{fabula}(e') \geq
+  \text{fabula}(e)$ — the dramatic moment the focal walks into
+  the scene that exposes the truth. Defaults: $\tau = 6$ syuzhet
+  beats, $\rho_{\min} = 0.4$ (Booth 1974 stable-vs-unstable
+  irony floor for permanent ironies the focal never resolves).
+* $a_c = \min(\bar a, 1 + \alpha \cdot \#\{\text{actor-events
+  by } c \leq t\})$ — action-weighting on the focal's
+  prominence (Pfister 1977 protagonist-blindness), capped at
+  $\bar a = 3.0$ with $\alpha = 0.15$. Macduff's ignorance
+  matters more than Lennox's because Macduff is acting on a
+  false picture.
+
+The aggregator $\beta \cdot \max + (1-\beta) \cdot \overline g$
+with $\beta = 0.6$ is Sternberg's single-dominant-gap framing:
+*one* character's tragic blindness carries the irony charge
+rather than the cast average, but secondary characters still
+register a residual contribution. Dividing by the *revealed*
+mass — rather than by the full story's event mass — makes the
+score a Sternberg-style **gap fraction** of the reader's
+privileged view, which naturally falls when characters catch up
+via late-story revelations (Macduff hearing of his family;
+Poirot's denouement; Nick's letter to Daisy). An earlier
 implementation that normalised by total event mass produced a
 monotonically rising curve in 21/21 example-world fixtures
 because the numerator's growth with reveals was unopposed by the
@@ -483,6 +784,10 @@ reader/character knowledge gap is classical:
 * Booth, W. (1974). *A Rhetoric of Irony*. Univ. of Chicago Press.
 * Muecke, D. C. (1969). *The Compass of Irony*. Methuen.
 * Stanton, R. (1956). "Dramatic Irony in Hawthorne's Romances". *Modern Language Notes* 71(6): 420–426. DOI 10.2307/3043161. — explicit definition: "audience knows what the character does not".
+* **Pfister, M. (1988).** *The Theory and Analysis of Drama*. Cambridge UP. (German original *Das Drama*, 1977.) — formal taxonomy of dramatic-irony sub-types (tragic vs comic; stable vs unstable) underwriting the harm-salience and closure-proximity weightings; the protagonist-prominence axis underwrites the action-weight $a_c$.
+* **Cabanas Gonzalez, C. C. (2024).** *Investigating the role of spontaneous theory of mind on the processing of dramatic irony in filmed narratives*. PhD thesis, Birkbeck. [eprints.bbk.ac.uk/id/eprint/54770](https://eprints.bbk.ac.uk/id/eprint/54770/) — empirical ToM-grounded support for the false-belief multiplier; readers form a richer ToM model of focal characters with a believed-entity surface, sharpening the felt asymmetry.
+* **Sutherland, J. (2013).** *A Little History of Literature*. Yale UP. — popular-narrative survey of irony as protagonist-blindness, motivating the action-weighting form.
+* **Chandra, K., Li, T.-M., Tenenbaum, J. B. (2024).** "Storytelling as Inverse Inverse Planning". *Topics in Cognitive Science* 16: 54–76. DOI 10.1111/tops.12710. — Bayesian model of plot twists as ToM updates; backs the surface-of-believed-entities formalisation.
 
 For computational treatments and adjacent reader-uncertainty
 formalisms:
@@ -491,7 +796,80 @@ formalisms:
 * **Wilmot, D. & Keller, F. (2020).** "Modelling Suspense in Short Stories as Uncertainty Reduction over Neural Representation". *Proc. ACL 2020*, pp. 1763–1788. — although the W&K paper is titled *suspense*, its operationalisation (the entropy-reduction differential between the reader's distribution over continuations before and after the next sentence) is structurally a **reader-vs-future-state epistemic-asymmetry** measure: it quantifies *what the reader's model of the story does not yet contain*. That shape is closer to the dramatic-irony scorer here (reader vs. character knowledge gap) and to the mystery scorer (reader vs. complete causal-ancestor set, §3.2) than it is to our hope/threat suspense scorer (§3.1). Readers cross-comparing implementations should treat the W&K quantity as a neural-LM analogue of mystery / irony rather than of `compute_suspense_score`.
 * Ely, J., Frankel, A. & Kamenica, E. (2015). "Suspense and Surprise". *J. Political Economy* 123(1): 215–260. DOI 10.1086/677350. — decision-theoretic complement; their *suspense* is the expected variance of next-period beliefs about a terminal outcome, again an epistemic-asymmetry quantity adjacent to dramatic irony rather than to hope/fear anticipation.
 
-### 3.5 Heuristic affects (conflict, danger, narrative-tension, causal-density)
+### 3.5 Corpus scale audit
+
+The four scorers were calibrated and audited against the
+[`example_worlds/`](../example_worlds) corpus (20 hand-curated
+canonical fixtures spanning tragedy, mystery, comedy, romance,
+modernist fragmentation and ensemble heist). Sampling each
+fixture at 7 evenly-spaced syuzhet anchors (140 score evaluations
+per metric) gives the following per-scorer scale summary:
+
+| Scorer            | min  | median | mean | max  | non-zero |
+|-------------------|------|--------|------|------|----------|
+| `mystery`         | 0.17 | 0.53   | 0.57 | 1.00 | 162/162  |
+| `dramatic_irony`  | 0.00 | 0.45   | 0.45 | 0.90 | 161/162  |
+| `suspense`        | 0.00 | 0.16   | 0.14 | 0.39 | 132/162  |
+| `surprise` (local)| 0.00 | 0.03   | 0.05 | 0.24 | 129/162  |
+
+The four scorers occupy different absolute bands by design.
+Mystery is a population fraction (hidden ancestors over total
+ancestors) and naturally lives near 1.0 early in the syuzhet,
+falling monotonically as causes are revealed. Dramatic irony is
+a per-character revealed-mass *gap fraction* (Sternberg) and lives
+in a wide rise-peak-fall band centred on 0.45. Suspense
+discharges to 0 at the terminal anchor of every world (no
+unrevealed threats remain) and lives in the lower 0.0–0.4 band
+because the saturation constant *K* in the stakes denominator
+intentionally damps the gauge. Surprise (in *local* anchor mode,
+the per-step Itti-Baldi spike) only registers at canonical
+revelation points and is otherwise near zero — which is the
+expected sparse-spike behaviour the literature predicts.
+
+Canonical signatures the audit confirms:
+
+* **`macbeth`** — mystery monotone fall 0.99 → 0.28; irony rise-fall
+  0.21 → 0.62 → 0.41 (Macduff hearing of his family); surprise
+  effectively 0 (Shakespeare telegraphs every reveal).
+* **`death_on_the_nile`** — mystery 1.00 → 0.29; irony peaks at
+  anchor 4 (0.65) on Poirot's withheld knowledge; surprise
+  spike 0.19 at the denouement reveal.
+* **`gone_girl`** — mystery 0.96 → 0.32; irony arc 0.19 → 0.50
+  (Amy's diary deception); surprise 0.20 at the mid-novel
+  perspective shift.
+* **`reservoir_dogs`** — mystery 0.91 → 0.37; irony mid-act
+  spike at anchor 5 (0.54) on Mr Orange's identity; surprise
+  spike 0.19 at the in-medias-res flashback structure (the
+  anachrony component dominates the trait-KL component).
+* **`wuthering_heights`** — mystery 0.99 → 0.18; irony
+  rise-peak-fall 0.13 → 0.67 → 0.42; surprise 0.24 spike at the
+  in-medias-res frame opening (Lockwood arrives, Nelly's
+  retrospective floods backward in fabula time).
+* **`tinker_tailor_soldier_spy`** — terminal suspense peak 0.39
+  before the mole reveal collapses the ledger; irony plateau
+  0.39–0.55 across the long investigation.
+
+The six emotion scorers (`grief`, `rage`, `joy`, `regret`,
+`love`, `fear`) score per-entity *closeness* to a per-effect
+trait target rather than a per-syuzhet timeline quantity, so
+they appear flat across anchors but exhibit corpus-wide
+variation: median values (0.10–0.76 across emotions) and
+non-zero rates (62–85 % of (world, anchor) cells) confirm the
+trait-trajectory dispatch resolves real per-character signal on
+every fixture in the corpus. (A regression — the assembler's
+trait-trajectory loop reading only `ego_payload` and silently
+returning `+1.0` worst-loss when the auditor's per-target
+rescore arrived without an ego-payload — was caught and fixed in
+the same audit pass: the loop now falls back to
+`world_state.entities` for any entity not staged in ego.)
+
+All scorer constants are externalised through
+`DirectiveAssemblySettings` (env prefix `DIRECTIVE_ASSEMBLY_*`) —
+see [docs/settings.md §8](settings.md#8-directive-assembly-step-8--affective-scorers)
+for the full env-var table. Reproduce the audit with
+[`scripts/audit_affective.py`](../scripts/audit_affective.py).
+
+### 3.6 Heuristic affects (conflict, danger, narrative-tension, causal-density)
 
 Alongside the four engine-grade structural affects (§§3.1–3.4),
 the UI surfaces four lighter heuristics computed directly from

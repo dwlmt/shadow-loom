@@ -563,6 +563,205 @@ class CausalPhysicsSettings(BaseSettings):
 
 
 # =====================================================================
+# Directive Assembly (affective scorers: mystery, irony, suspense, surprise)
+# =====================================================================
+
+class DirectiveAssemblySettings(BaseSettings):
+    """Tunables for the four structural-affect scorers.
+
+    All defaults match the values used in the published paper
+    (``paper/shadow_loom.tex``) and the academic-foundations doc
+    (``docs/academic-foundations.md``). Override via env vars
+    prefixed ``DIRECTIVE_ASSEMBLY_`` (e.g.
+    ``DIRECTIVE_ASSEMBLY_MYSTERY_PATH_DECAY_DEPTH=6``).
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="DIRECTIVE_ASSEMBLY_",
+        env_file=_ENV_FILE,
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    # ── Mystery (Sternberg curiosity gap) ──────────────────────────
+    mystery_path_decay_depth: int = Field(
+        default=4,
+        description=(
+            "Reverse-causal traversal depth cap (Trabasso & Sperry "
+            "1985 4-hop traceability). Ancestors beyond this depth "
+            "are dropped from the gap aggregation."
+        ),
+    )
+    mystery_proximity_tau_syuzhet: float = Field(
+        default=8.0,
+        description=(
+            "Curiosity-proximity decay constant in syuzhet-index "
+            "units (Iser 1976 reader-gap recency). Recent reveals "
+            "carry more curiosity weight than distant ones."
+        ),
+    )
+
+    # ── Dramatic Irony (knowledge asymmetry) ───────────────────────
+    irony_surface_k: float = Field(
+        default=1.0,
+        description="Saturation constant K in the gap fraction denominator.",
+    )
+    irony_false_belief_mult: float = Field(
+        default=1.5,
+        description=(
+            "Multiplicative boost when the focal holds a provenance-"
+            "valid belief about the gap event's actor (Iago→Othello, "
+            "Jacqueline→Linnet pattern). Pfister 1988 / Cabanas 2024."
+        ),
+    )
+    irony_action_alpha: float = Field(
+        default=0.15,
+        description=(
+            "Per-actor-event linear term in the focal-prominence "
+            "weight a_c = min(cap, 1 + α · #actor-events)."
+        ),
+    )
+    irony_action_weight_cap: float = Field(
+        default=3.0,
+        description="Upper cap on the focal-prominence weight a_c.",
+    )
+    irony_aggregator_beta: float = Field(
+        default=0.6,
+        description=(
+            "Convex aggregator weight: β·max + (1-β)·mean across "
+            "focal characters. β closer to 1 weights the dominant "
+            "character; β closer to 0 weights the ensemble."
+        ),
+    )
+    irony_proximity_tau_syuzhet: float = Field(
+        default=6.0,
+        description=(
+            "Closure-proximity decay constant: how sharply the gap "
+            "discharges as the syuzhet approaches the moment the "
+            "focal walks into the truth-revealing scene."
+        ),
+    )
+    irony_proximity_floor: float = Field(
+        default=0.4,
+        description=(
+            "Minimum closure-proximity weight (events too far from "
+            "any closure event still contribute at least this much)."
+        ),
+    )
+
+    # ── Suspense (hope/threat ledger) ──────────────────────────────
+    suspense_stakes_k: float = Field(
+        default=2.0,
+        description="Saturation constant K in the stakes denominator.",
+    )
+    suspense_proximity_tau_fabula_gaps: float = Field(
+        default=6.0,
+        description="Fabula-gap proximity decay (closer threats feel sharper).",
+    )
+    suspense_proximity_tau_spatial: float = Field(
+        default=4.0,
+        description="Spatial-distance proximity decay (in location hops).",
+    )
+    suspense_persistence_alpha: float = Field(
+        default=0.10,
+        description="Per-revealed-edge persistence amplifier.",
+    )
+    suspense_persistence_cap: float = Field(
+        default=1.5,
+        description="Upper cap on the cumulative persistence multiplier.",
+    )
+    suspense_hostile_affinity: float = Field(
+        default=-0.2,
+        description="Affinity threshold below which a relationship is hostile.",
+    )
+    suspense_ally_affinity: float = Field(
+        default=0.2,
+        description="Affinity threshold above which a relationship is allied.",
+    )
+
+    # ── Surprise (Beta-Bernoulli + anachrony) ──────────────────────
+    surprise_trait_kl_weight: float = Field(
+        default=0.7,
+        description="Convex weight on the trait-KL surprise component.",
+    )
+    surprise_anachrony_weight: float = Field(
+        default=0.3,
+        description=(
+            "Convex weight on the plan-based anachrony component "
+            "(Bae & Young 2008). Must sum to 1.0 with trait-KL weight."
+        ),
+    )
+    surprise_default_trait_salience: float = Field(
+        default=0.55,
+        description=(
+            "Salience for traits not in the per-trait narrative-"
+            "salience table. Median weight over corpus arc traits."
+        ),
+    )
+    surprise_source_edge_weight: float = Field(
+        default=0.4,
+        description=(
+            "Multiplier on causal edges where the focal is the "
+            "source (vs target). Acting on a trait reinforces it but "
+            "less than being on the receiving end."
+        ),
+    )
+    surprise_prior_pseudocount: float = Field(
+        default=2.0,
+        description=(
+            "Beta-Bernoulli prior pseudo-count strength s. The prior "
+            "is Beta(s·m, s·(1-m)) where m is the corpus baseline."
+        ),
+    )
+
+    # ── Harm-kind salience (shared by mystery, irony, suspense) ───
+    harm_kind_salience: dict[str, float] = Field(
+        default_factory=lambda: {
+            "existential": 1.00,
+            "physical": 0.85,
+            "betrayal": 0.75,
+            "psychological": 0.70,
+            "emotional": 0.65,
+            "social": 0.55,
+            "epistemic": 0.45,
+            "informational": 0.45,
+        },
+        description=(
+            "Salience weights per harm-kind (Lazarus 1991 core "
+            "relational themes; OCC 1988 prospect-based emotions). "
+            "Override the whole dict to retune the appraisal hierarchy."
+        ),
+    )
+    default_harm_salience: float = Field(
+        default=0.85,
+        description=(
+            "Fallback salience for events whose mechanism does not "
+            "resolve to any harm-kind. Defaults to physical (modal "
+            "harm kind in the example corpus)."
+        ),
+    )
+
+    # ── Trait narrative salience (used by Surprise) ──────────────
+    trait_narrative_salience: dict[str, float] = Field(
+        default_factory=lambda: {
+            "ambition": 1.00, "guilt": 0.95, "vengeance": 0.95,
+            "despair": 0.95, "love": 0.90, "loyalty": 0.85,
+            "courage": 0.85, "betrayal": 0.85, "honesty": 0.80,
+            "morality": 0.80, "rage": 0.75, "fear": 0.75,
+            "trust": 0.70, "patience": 0.60, "wisdom": 0.60,
+            "pride": 0.60, "compassion": 0.55,
+            "literacy": 0.30, "fitness": 0.30, "wealth": 0.30,
+            "health": 0.40,
+        },
+        description=(
+            "Per-trait narrative-arc salience (Reagan et al. 2016 "
+            "corpus arc analysis). Keys are checked case-insensitively "
+            "as substrings against trait names."
+        ),
+    )
+
+
+# =====================================================================
 # MCP Server
 # =====================================================================
 
@@ -721,6 +920,7 @@ class Settings:
         self.auditor = AuditorSettings()
         self.extraction = ExtractionSettings()
         self.physics = CausalPhysicsSettings()
+        self.directive_assembly = DirectiveAssemblySettings()
         self.mcp = MCPSettings()
         self.pipeline = PipelineSettings()
         self.ui = UISettings()

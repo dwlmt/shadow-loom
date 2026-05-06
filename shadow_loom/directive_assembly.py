@@ -25,7 +25,10 @@ from pydantic import BaseModel, Field
 
 from shadow_loom.models import WorldStateV1, NarrativeStyle, reconstruct_entity_at
 from shadow_loom.query_models import DirectiveQuery
-from shadow_loom.settings import get_settings as _get_settings
+from shadow_loom.settings import (
+    DirectiveAssemblySettings,
+    get_settings as _get_settings,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -528,10 +531,53 @@ class DirectiveAssembler:
         sandbox: nx.MultiDiGraph | None,
         ego_payload: Dict[str, Any],
         world_state: WorldStateV1,
+        settings: Optional["DirectiveAssemblySettings"] = None,
     ) -> None:
         self.sandbox = sandbox
         self.ego = ego_payload
         self.world_state = world_state
+        # Resolve scorer tunables from settings (lazy import to avoid
+        # any circular dependency at module-load time). Every class
+        # attribute that begins with ``_MYSTERY_``, ``_IRONY_``,
+        # ``_SUSPENSE_``, ``_SURPRISE_``, ``_HARM_KIND_SALIENCE``,
+        # ``_DEFAULT_HARM_SALIENCE``, ``_TRAIT_NARRATIVE_SALIENCE`` or
+        # ``_DEFAULT_TRAIT_SALIENCE`` is read here and shadowed onto
+        # the instance, so existing ``self._XXX`` reads in the scorer
+        # methods pick up the configured value transparently.
+        if settings is None:
+            settings = _get_settings().directive_assembly
+        self._settings = settings
+        s = settings
+        # Mystery
+        self._MYSTERY_PATH_DECAY_DEPTH = int(s.mystery_path_decay_depth)
+        self._MYSTERY_PROXIMITY_TAU_SYUZHET = float(s.mystery_proximity_tau_syuzhet)
+        # Irony
+        self._IRONY_SURFACE_K = float(s.irony_surface_k)
+        self._IRONY_FALSE_BELIEF_MULT = float(s.irony_false_belief_mult)
+        self._IRONY_ACTION_ALPHA = float(s.irony_action_alpha)
+        self._IRONY_ACTION_WEIGHT_CAP = float(s.irony_action_weight_cap)
+        self._IRONY_AGGREGATOR_BETA = float(s.irony_aggregator_beta)
+        self._IRONY_PROXIMITY_TAU_SYUZHET = float(s.irony_proximity_tau_syuzhet)
+        self._IRONY_PROXIMITY_FLOOR = float(s.irony_proximity_floor)
+        # Suspense
+        self._SUSPENSE_STAKES_K = float(s.suspense_stakes_k)
+        self._SUSPENSE_PROXIMITY_TAU_FABULA_GAPS = float(s.suspense_proximity_tau_fabula_gaps)
+        self._SUSPENSE_PROXIMITY_TAU_SPATIAL = float(s.suspense_proximity_tau_spatial)
+        self._SUSPENSE_PERSISTENCE_ALPHA = float(s.suspense_persistence_alpha)
+        self._SUSPENSE_PERSISTENCE_CAP = float(s.suspense_persistence_cap)
+        self._SUSPENSE_HOSTILE_AFFINITY = float(s.suspense_hostile_affinity)
+        self._SUSPENSE_ALLY_AFFINITY = float(s.suspense_ally_affinity)
+        # Surprise
+        self._SURPRISE_TRAIT_KL_WEIGHT = float(s.surprise_trait_kl_weight)
+        self._SURPRISE_ANACHRONY_WEIGHT = float(s.surprise_anachrony_weight)
+        self._DEFAULT_TRAIT_SALIENCE = float(s.surprise_default_trait_salience)
+        self._SURPRISE_SOURCE_EDGE_WEIGHT = float(s.surprise_source_edge_weight)
+        self._SURPRISE_PRIOR_PSEUDOCOUNT = float(s.surprise_prior_pseudocount)
+        # Salience tables (override class-level defaults so callers
+        # can tune the appraisal hierarchy without code changes).
+        self._HARM_KIND_SALIENCE = dict(s.harm_kind_salience)
+        self._DEFAULT_HARM_SALIENCE = float(s.default_harm_salience)
+        self._TRAIT_NARRATIVE_SALIENCE = dict(s.trait_narrative_salience)
 
     # ------------------------------------------------------------------
     # Epistemic gap computation
@@ -569,18 +615,40 @@ class DirectiveAssembler:
     # Trait trajectory computation
     # ------------------------------------------------------------------
     def compute_trait_trajectories(self, entity_ids: List[str]) -> List[TraitTrajectory]:
-        """Compute current value + headroom for each trait of given entities."""
+        """Compute current value + headroom for each trait of given entities.
+
+        Looks first in the ego payload (``focus_entities`` /
+        ``present_entities``) where the orchestrator stages
+        per-directive trait dicts; falls back to
+        ``world_state.entities`` when the requested id has no ego
+        entry. The fallback path is essential for any caller that
+        constructs a ``DirectiveAssembler`` with an empty ego (the
+        affective-curve plot, the audit script, the auditor's
+        per-target rescore loop). Without it the emotion scorers
+        silently returned ``+1.0`` (worst possible match) for every
+        entity, since the trajectory list was empty and the
+        no-contributions branch fired.
+        """
         trajectories: List[TraitTrajectory] = []
 
         for eid in entity_ids:
             ent_data = self._find_entity(eid)
-            if not ent_data:
-                continue
-            for trait_name, trait_data in ent_data.get("traits", {}).items():
-                if not isinstance(trait_data, dict):
+            if ent_data:
+                trait_iter = (
+                    (n, t) for n, t in ent_data.get("traits", {}).items()
+                    if isinstance(t, dict)
+                )
+                resolve = lambda t, k, d: t.get(k, d)
+            else:
+                ent = self.world_state.entities.get(eid)
+                if ent is None or not getattr(ent, "traits", None):
                     continue
-                val = trait_data.get("value", 0.5)
-                inertia = trait_data.get("inertia", 0.5)
+                trait_iter = ent.traits.items()
+                resolve = lambda t, k, d: getattr(t, k, d)
+
+            for trait_name, trait_data in trait_iter:
+                val = resolve(trait_data, "value", 0.5)
+                inertia = resolve(trait_data, "inertia", 0.5)
                 trajectories.append(TraitTrajectory(
                     entity_id=eid,
                     trait_name=trait_name,
@@ -871,6 +939,27 @@ class DirectiveAssembler:
     # ------------------------------------------------------------------
     # Mystery  (Epistemic Gap — hidden causal ancestors)
     # ------------------------------------------------------------------
+    # Maximum reverse-walk depth for path-strength geometric decay
+    # (Batch A.1). Truncating at 4 keeps the per-effect dijkstra
+    # bounded on dense fixtures while still admitting the chains
+    # narrative criticism actually attends to (a 4-link chain is
+    # already at the edge of audience traceability per the Trabasso &
+    # Sperry 1985 causal-network reading studies). Falls back to the
+    # legacy single-edge weight beyond this depth.
+    _MYSTERY_PATH_DECAY_DEPTH: int = 4
+
+    # Curiosity proximity decay (Batch A.3 — Iser/Sternberg gap-
+    # theory). The reader's curiosity sits over the *most recently
+    # surfaced* effects, not the entire revealed cone equally. Effects
+    # surfaced long ago are mentally filed as "resolved enough" and
+    # no longer drive the gauge. Expressed in raw syuzhet-index
+    # units — a value of 8 means "an effect 8 syuzhet beats behind
+    # the anchor registers at 1/e ≈ 0.37 of full curiosity weight".
+    # Symmetric mirror of the suspense forward-imminence kernel
+    # (looking *forward* at upcoming threats vs. *backward* at
+    # surfaced unexplained effects).
+    _MYSTERY_PROXIMITY_TAU_SYUZHET: float = 8.0
+
     def compute_mystery_score(
         self,
         entity_ids: List[str],
@@ -880,11 +969,37 @@ class DirectiveAssembler:
 
         Walks backward from each known effect node involving the target
         entities and counts how many of its causal predecessors are NOT
-        yet revealed to the reader.  Returns a ratio in [0, 1].
+        yet revealed to the reader. Each ancestor's contribution is
+        weighted by three multiplicative factors:
+
+        1. **Path strength** — the strongest reverse-path product of
+           edge weights from ancestor to effect, depth-capped at
+           ``_MYSTERY_PATH_DECAY_DEPTH``. A 3-hop weak chain
+           (``0.25 × 0.25 × 0.25 ≈ 0.016``) contributes far less
+           curiosity weight than a 1-hop strong link (``0.75``),
+           matching the Trabasso & Sperry 1985 causal-network reading
+           studies where deep chains decay in audience traceability.
+           Replaces the legacy ``out_edges max`` fallback that gave a
+           5-hop ancestor as much weight as a 1-hop link.
+        2. **Harm-kind salience** — multiplied by
+           ``_HARM_KIND_SALIENCE`` (the Lazarus-anchored existential >
+           physical > betrayal > … hierarchy already used by suspense
+           and dramatic-irony). A hidden murder is more mysterious
+           than a hidden gossip exchange even when the path strengths
+           are identical, capturing Sternberg's "expositional gap"
+           weighting by the stake of the missing piece.
+        3. **Per-effect proximity** to the syuzhet anchor — recently
+           surfaced effects drive the gauge; long-resolved gaps do
+           not (Iser 1976 *Akt des Lesens* / Sternberg 1992 curiosity
+           taxonomy). Skipped for entity-as-effect nodes which carry
+           no syuzhet position.
+
+        Returns a ratio in [0, 1].
         """
         causal_g = self._build_causal_digraph()
         revealed = self._revealed_event_ids(syuzhet_anchor)
         eid_set = set(entity_ids)
+        events_by_id = {e.id: e for e in self.world_state.events}
 
         # Identify "effect" nodes: revealed events involving target entities,
         # plus the entities themselves (which can be causal targets).
@@ -896,33 +1011,67 @@ class DirectiveAssembler:
                 effect_nodes.add(evt.id)
         effect_nodes |= eid_set
 
-        # Strength-weighted mystery: each ancestor contributes its
-        # *path strength* (product of edge weights along the strongest
-        # path) so weak rumours don't count as much as eyewitness
-        # causation. Falls back to 1.0 when no edge weight is available.
+        # Reverse causal graph for backward dijkstra: edge weight =
+        # ``-log(forward_w)`` so the shortest path = the highest
+        # product of forward weights (the strongest causal chain).
+        # Computed once and reused across effect nodes.
+        rev_g = nx.DiGraph()
+        for u, v, d in causal_g.edges(data=True):
+            w = max(float(d.get("weight", 0.5)), 1e-6)
+            rev_g.add_edge(v, u, neglogw=-math.log(w))
+
+        def _curiosity_proximity(eff_id: str) -> float:
+            """Backward-looking decay weight on an effect's contribution."""
+            if syuzhet_anchor is None:
+                return 1.0
+            evt = events_by_id.get(eff_id)
+            if evt is None:
+                return 1.0  # entity-as-effect (no syuzhet position)
+            delta = max(0, syuzhet_anchor - evt.syuzhet_index)
+            return math.exp(-delta / self._MYSTERY_PROXIMITY_TAU_SYUZHET)
+
         total_mass = 0.0
         hidden_mass = 0.0
 
         for eff in effect_nodes:
             if not causal_g.has_node(eff):
                 continue
-            ancestors = nx.ancestors(causal_g, eff)
-            if not ancestors:
+            if not rev_g.has_node(eff):
                 continue
-            for anc in ancestors:
-                # Strength of the strongest single-edge contribution from
-                # this ancestor toward the effect (cheap proxy for path
-                # strength; full path-product would be O(V*E) per query).
-                if causal_g.has_edge(anc, eff):
-                    w = causal_g[anc][eff].get("weight", 0.5)
+            # Bounded reverse dijkstra: per-ancestor min cumulative
+            # ``-log w``, equivalent to max cumulative ``∏ w``. The
+            # depth cutoff is enforced via ``cutoff`` on the
+            # ``neglogw`` axis at ``-log(strongest_edge ** depth)`` =
+            # ``depth · max(-log w)`` per safety; in practice the
+            # per-hop count is bounded directly by switching to a
+            # bounded BFS depth filter.
+            try:
+                # Two-pass: depths via unweighted BFS for the depth
+                # filter, then dijkstra distances for path-product.
+                depths = nx.single_source_shortest_path_length(
+                    rev_g, eff, cutoff=self._MYSTERY_PATH_DECAY_DEPTH,
+                )
+                dists = nx.single_source_dijkstra_path_length(
+                    rev_g, eff, weight="neglogw",
+                )
+            except (nx.NetworkXError, nx.NodeNotFound):
+                continue
+            eff_proximity = _curiosity_proximity(eff)
+            for anc, depth in depths.items():
+                if anc == eff or depth == 0:
+                    continue
+                neglogw = dists.get(anc)
+                if neglogw is None:
+                    continue
+                path_w = math.exp(-neglogw)
+                # Harm-kind salience reuse — Lazarus / OCC / Brewer
+                # hierarchy. Only meaningful for events; entities use
+                # the default mid-tier weight.
+                if anc in events_by_id:
+                    _, salience = self._harm_kind_for_event(anc, causal_g)
                 else:
-                    # Multi-hop ancestor — use the max outgoing weight as
-                    # an upper bound on its causal contribution.
-                    out_ws = [
-                        d.get("weight", 0.5)
-                        for _, _, d in causal_g.out_edges(anc, data=True)
-                    ]
-                    w = max(out_ws) if out_ws else 0.5
+                    salience = self._DEFAULT_HARM_SALIENCE
+                w = path_w * salience * eff_proximity
                 total_mass += w
                 if anc not in revealed:
                     hidden_mass += w
@@ -932,8 +1081,11 @@ class DirectiveAssembler:
 
         score = hidden_mass / total_mass
         logger.debug(
-            "[DirectiveAssembly·Mystery] hidden_mass=%.3f / total_mass=%.3f = %.3f",
+            "[DirectiveAssembly·Mystery] hidden_mass=%.3f / total_mass=%.3f = %.3f "
+            "(path-decay depth=%d, τ_curiosity=%.1f)",
             hidden_mass, total_mass, score,
+            self._MYSTERY_PATH_DECAY_DEPTH,
+            self._MYSTERY_PROXIMITY_TAU_SYUZHET,
         )
         return round(score, 4)
 
@@ -947,6 +1099,61 @@ class DirectiveAssembler:
     # the Nile, Gone Girl, Reservoir Dogs) sit in the 0.3–0.8 band at
     # their reveal-points rather than instantly saturating.
     _IRONY_SURFACE_K: float = 1.0
+
+    # Batch A.1 — false-belief multiplier (Pfister 1977 tragic-irony;
+    # Cabanas Gonzalez 2024 ToM thesis). When the focal character
+    # holds an explicit belief about an actor of a revealed event the
+    # focal does NOT know about, the focal is acting under an outdated
+    # picture of that actor — the canonical Iago→Othello / Jacqueline→
+    # Linnet pattern where the audience watches the focal trust the
+    # very person undermining them. Multiplied into the gap mass for
+    # those events. Set above 1.0 to upweight false-belief gaps over
+    # plain ignorance gaps; calibrated empirically — much above 2.0
+    # the scorer pegs near 1.0 on every Iago-pattern fixture.
+    _IRONY_FALSE_BELIEF_MULT: float = 1.5
+
+    # Batch A.2 — action-weighting per character (Pfister 1977
+    # protagonist-prominence; Sutherland 2013 *A Little History of
+    # Literature* on irony as protagonist's blindness). Weights each
+    # focal character's gap by their causal-out-degree on the syuzhet
+    # axis up to the anchor — a character actively driving the plot
+    # under false information carries more dramatic charge than a
+    # bystander. Macduff's ignorance of the murders matters more than
+    # Lennox's because Macduff is *acting* on a false picture.
+    # Formula: ``c_weight = 1 + α · count(events where c is actor at
+    # syuzhet ≤ anchor)``.
+    _IRONY_ACTION_ALPHA: float = 0.15
+    _IRONY_ACTION_WEIGHT_CAP: float = 3.0
+
+    # Batch B.4 — weighted-max aggregator across the focal cast
+    # (Sternberg's single-dominant-gap framing). The mean across
+    # ``entity_ids`` was diluting a strong protagonist gap into a
+    # cast average; the literature treats *one* character's tragic
+    # blindness as carrying the irony charge, with the secondary
+    # cast as backdrop. We now blend ``β · max(gaps) + (1-β) ·
+    # mean(gaps)`` so the dominant gap drives the gauge while
+    # secondary characters still register a residual contribution.
+    # β = 0.6 calibrated against the example_worlds corpus to keep
+    # ensemble fixtures (Reservoir Dogs cast, Tinker Tailor) within
+    # the same band as solo-protagonist fixtures (Macbeth, Gone
+    # Girl) with the same per-character maximum.
+    _IRONY_AGGREGATOR_BETA: float = 0.6
+
+    # Batch B.5 — proximity-to-closure decay (Booth 1974 stable vs
+    # unstable irony). A gap that is about to be *closed* by a
+    # near-future revelation is more dramatically charged than one
+    # that will linger; conversely, a gap that closed long ago is
+    # already discharged. We weight per-event gap mass by
+    # ``exp(-Δ_to_closure / τ_irony)`` where Δ_to_closure is the
+    # absolute distance in syuzhet-index units between the current
+    # anchor and the syuzhet index at which the focal first comes
+    # to know the event. Events the focal never learns within the
+    # story's syuzhet axis contribute at the ``floor`` rate (0.4)
+    # — they're permanently ironic but not pre-denouement
+    # spike-worthy. Auto-scales: uses raw syuzhet-index units,
+    # already integers, default τ ≈ 6 syuzhet beats.
+    _IRONY_PROXIMITY_TAU_SYUZHET: float = 6.0
+    _IRONY_PROXIMITY_FLOOR: float = 0.4
 
     def compute_dramatic_irony_score(
         self,
@@ -1019,6 +1226,10 @@ class DirectiveAssembler:
         fabula_frontier = max(
             events_by_id[eid].fabula_time for eid in revealed
         )
+
+        # Causal graph for harm-kind salience lookup (Batch A.3).
+        # Built once and reused across focal entities.
+        causal_g = self._build_causal_digraph()
 
         def _evt_w(evt) -> float:
             return float(getattr(evt, "intensity", None) or 1.0)
@@ -1146,33 +1357,143 @@ class DirectiveAssembler:
                 and _provenance_valid(b)
             }
 
-            # Intensity-weighted mass of revealed events this character
-            # does NOT know — the per-character irony surface.
-            gap_mass = sum(
-                _evt_w(events_by_id[reid])
-                for reid in revealed
-                if reid not in known
+            # Batch A.1 — false-belief surface. Build the set of
+            # entity targets the focal holds beliefs about (and whose
+            # provenance still resolves). A revealed event whose
+            # actor set intersects this set triggers the false-belief
+            # multiplier on the gap mass: the focal is operating
+            # under an outdated model of someone whose latest
+            # actions they have not been shown. This is the
+            # mechanical proxy for tragic irony à la Iago→Othello,
+            # Jacqueline→Linnet and Hero→Claudio (Pfister 1977,
+            # Cabanas Gonzalez 2024). We deliberately do not try to
+            # semantically compare ``Belief.perceived_state`` strings
+            # to world truth — model entities the focal *has formed
+            # an opinion about* are the tractable false-belief
+            # surface, and the test is invariant under shadow surgery
+            # via the same provenance gate as the event-belief side.
+            believed_entity_targets: set[str] = {
+                b["target_id"] for b in recon_beliefs
+                if not b["target_id"].startswith("EVT_")
+                and _provenance_valid(b)
+            }
+
+            # Batch A.2 — action weighting. Per-character prominence
+            # weight: a focal who has authored more revealed events
+            # is more dramatically central; their ignorance carries
+            # more irony. Capped to keep ensemble fixtures balanced.
+            action_count = sum(
+                1 for evt in self.world_state.events
+                if evt.id in revealed and eid in evt.actor_ids
             )
+            action_weight = min(
+                self._IRONY_ACTION_WEIGHT_CAP,
+                1.0 + self._IRONY_ACTION_ALPHA * action_count,
+            )
+
+            # Batch B.5 — closure proximity per gap event. For each
+            # revealed event ``e`` not in ``known``, find the
+            # *earliest* later syuzhet position at which the focal
+            # first witnesses an event with ``fabula_time >=
+            # e.fabula_time`` — the dramatic moment the focal walks
+            # into the scene that exposes the truth. A near closure
+            # gives a sharp pre-denouement spike; a distant closure
+            # is fully ironic but contributes at the imminence
+            # floor. Events the focal never learns within the
+            # syuzhet axis fall to the floor too. Cached per focal.
+            participation_syuzhet: list[Tuple[int, int]] = sorted(
+                (evt.syuzhet_index, evt.fabula_time)
+                for evt in self.world_state.events
+                if eid in evt.actor_ids or eid in evt.target_ids
+            )
+
+            def _closure_proximity(evt) -> float:
+                target_fab = evt.fabula_time
+                later = min(
+                    (s for s, f in participation_syuzhet
+                     if s > syuzhet_anchor and f >= target_fab),
+                    default=None,
+                )
+                if later is None:
+                    return self._IRONY_PROXIMITY_FLOOR
+                delta = max(0, later - syuzhet_anchor)
+                imminence = math.exp(
+                    -delta / self._IRONY_PROXIMITY_TAU_SYUZHET
+                )
+                # Blend against the floor so even very-far closures
+                # still carry the standing irony contribution.
+                return max(self._IRONY_PROXIMITY_FLOOR, imminence)
+
+            # Intensity-weighted mass of revealed events this character
+            # does NOT know — the per-character irony surface. Each
+            # gap event's contribution is now scaled by:
+            #   * harm-kind salience (Batch A.3 — Lazarus / OCC
+            #     hierarchy reuse: a hidden mortal threat is more
+            #     dramatically ironic than a hidden small-talk
+            #     exchange);
+            #   * false-belief multiplier (Batch A.1) when the gap
+            #     event's actor set intersects the focal's believed-
+            #     entity targets — the focal is acting on an
+            #     outdated picture of one of the perpetrators;
+            #   * closure-proximity (Batch B.5) — sharper for
+            #     pre-denouement events, floor-rated for permanently
+            #     ironic ones (the focal never learns).
+            gap_mass = 0.0
+            for reid in revealed:
+                if reid in known:
+                    continue
+                evt = events_by_id[reid]
+                w = _evt_w(evt)
+                _, salience = self._harm_kind_for_event(reid, causal_g)
+                w *= salience
+                if believed_entity_targets and (
+                    set(evt.actor_ids) & believed_entity_targets
+                ):
+                    w *= self._IRONY_FALSE_BELIEF_MULT
+                w *= _closure_proximity(evt)
+                gap_mass += w
+
             # Normalise by *revealed* mass (Sternberg gap fraction)
             # rather than total mass: the gauge then expresses "what
             # share of the reader's privileged view the character is
             # blind to", a quantity that naturally falls as the
-            # character catches up via late-story revelations.
+            # character catches up via late-story revelations. The
+            # action-weight scales the per-character contribution
+            # before averaging; characters with higher prominence
+            # pull the score up more (Pfister 1977 protagonist-
+            # blindness).
             per_character_gaps.append(
-                gap_mass / (revealed_mass + self._IRONY_SURFACE_K)
+                action_weight * gap_mass
+                / (revealed_mass + self._IRONY_SURFACE_K)
             )
 
         if not per_character_gaps:
             return 0.0
 
+        # Batch B.4 — weighted-max combine across the focal cast.
+        # Sternberg's structural-affect framing treats *one*
+        # character's tragic blindness as carrying the irony charge
+        # rather than the cast average. β · max + (1-β) · mean keeps
+        # the secondary cast as a residual contribution while the
+        # dominant gap drives the gauge. Final clamp at 1.0 since
+        # action-weight × false-belief multiplier × harm-salience can
+        # push individual gaps above the [0, 1] bound; the clamp is
+        # the well-defined upper limit of the gauge itself, not a
+        # silent truncation of an unbounded quantity.
+        max_gap = max(per_character_gaps)
+        mean_gap = sum(per_character_gaps) / len(per_character_gaps)
         score = min(
-            sum(per_character_gaps) / len(per_character_gaps), 1.0
+            self._IRONY_AGGREGATOR_BETA * max_gap
+            + (1.0 - self._IRONY_AGGREGATOR_BETA) * mean_gap,
+            1.0,
         )
         logger.debug(
             "[DirectiveAssembly·DramaticIrony] revealed_mass=%.3f "
-            "(of total=%.3f, K=%.2f), per-char gaps=%s, score=%.3f",
+            "(of total=%.3f, K=%.2f), per-char gaps=%s, "
+            "max=%.3f mean=%.3f β=%.2f → %.3f",
             revealed_mass, total_mass, self._IRONY_SURFACE_K,
-            [round(g, 3) for g in per_character_gaps], score,
+            [round(g, 3) for g in per_character_gaps],
+            max_gap, mean_gap, self._IRONY_AGGREGATOR_BETA, score,
         )
         return round(score, 4)
 
@@ -1185,43 +1506,384 @@ class DirectiveAssembler:
     # gauge twitchier. Tuned against the example_worlds corpus so a
     # mid-anchor on Macbeth / Gone Girl / Reservoir Dogs reads in the
     # 0.3–0.7 band rather than the previous flat-zero output.
+    #
+    # Aggregate fall-back used when a kind has no per-kind override.
     _SUSPENSE_STAKES_K: float = 2.0
+
+    # Per-kind saturation constants (improvement #6). Existential and
+    # physical threats don't saturate quickly — one death threat does
+    # not max out the gauge — so K_kind is large. Social / epistemic
+    # threats do saturate quickly (three slights and the reader is
+    # bored), so K_kind is small. Calibrated against the example_worlds
+    # corpus so a single mid-anchor mortal threat lands in the 0.3-0.5
+    # stakes band rather than flooring at near-zero or pegging to 1.0.
+    _SUSPENSE_STAKES_K_BY_KIND: Dict[str, float] = {
+        "existential": 4.0,
+        "physical": 3.0,
+        "betrayal": 2.5,
+        "psychological": 2.0,
+        "emotional": 2.0,
+        "social": 1.5,
+        "epistemic": 1.5,
+        "informational": 1.5,
+    }
+
+    # Anticipatory-proximity decay (improvement #2 — Comisky & Bryant
+    # 1982). Subjective probability of a threat rises with imminence.
+    # ``imminence = exp(-Δ_fabula / τ_t) · exp(-Δ_spatial / τ_s)``.
+    #
+    # τ_fabula is expressed in *units of typical inter-event gaps*
+    # (the median gap between consecutive event ``fabula_time``
+    # values in the world), so it auto-scales whether the world uses
+    # unit spacing or the default ``fabula_time_spacing=1000``. A
+    # value of 6 means "an event 6 typical inter-event gaps in the
+    # future registers at 1/e ≈ 0.37 of full weight". τ_spatial is
+    # in raw graph hops (already unitless).
+    _SUSPENSE_PROXIMITY_TAU_FABULA_GAPS: float = 6.0
+    _SUSPENSE_PROXIMITY_TAU_SPATIAL: float = 4.0
+
+    # Persistence multiplier (improvement #4 — Brewer & Lichtenstein
+    # 1982 initiating-event arc). The longer a foreshadowed threat
+    # lingers unresolved, the louder it gets. We measure persistence
+    # as the count of *revealed* causal ancestors (proxy for "how long
+    # the gun has been on the mantle"). Multiplier =
+    # min(cap, 1 + α·persistence).
+    _SUSPENSE_PERSISTENCE_ALPHA: float = 0.10
+    _SUSPENSE_PERSISTENCE_CAP: float = 1.5
+
+    # Disposition thresholds (improvement #1 — Zillmann 1996).
+    # Affinity ≤ HOSTILE → actor counts as a hostile force on the
+    # focal entity (their authored event registers as *threat*, not
+    # hope). Affinity ≥ ALLY → actor counts as a rescuer / ally
+    # (their authored event registers as *hope* even when the focal
+    # entity is its target — improvement #5). The neutral band
+    # (HOSTILE, ALLY) keeps the legacy actor=hope / target=threat
+    # rule, so worlds without a populated social_topology degrade
+    # gracefully to the prior behaviour.
+    _SUSPENSE_HOSTILE_AFFINITY: float = -0.2
+    _SUSPENSE_ALLY_AFFINITY: float = 0.2
+
+    # Harm-kind salience weights for the suspense ledger.
+    #
+    # The threat/hope ledger remains a single scalar, but each
+    # contributing event is now multiplied by a *salience weight* that
+    # depends on the kind of harm (or hope) the event embodies. The
+    # ranking follows the appraisal-theory hierarchy (Lazarus 1991
+    # core relational themes; Ortony, Clore & Collins 1988 OCC
+    # prospect-based emotions; Brewer & Lichtenstein 1982 structural-
+    # affect): mortal/existential threats outweigh physical violence,
+    # which outweighs betrayal-class moral injury, which outweighs
+    # social/reputational shame, which outweighs informational/
+    # epistemic destabilisation. The same ordering is used on the
+    # hope side (rescue from death > physical safety > restored
+    # loyalty > restored standing > restored knowledge), so a
+    # high-stakes mortal threat pairs naturally with a high-stakes
+    # mortal hope rather than being averaged into a flat "stuff
+    # happens" weight.
+    #
+    # The kinds are inferred from the canonical ``mechanism`` strings
+    # carried on incident causal edges (see
+    # ``causal_physics.MECHANISM_TRAIT_MAP``). Each event takes the
+    # MAX salience across its incident-edge mechanisms — the most
+    # salient kind wins, so a "stab in the back" event wired with both
+    # ``physical`` and ``betrayal`` edges registers at the higher of
+    # the two rather than being averaged. Events with no resolvable
+    # mechanism default to ``physical`` (the modal harm kind in the
+    # corpus and the median salience), so the gauge degrades
+    # gracefully on sparse fixtures.
+    _HARM_KIND_SALIENCE: Dict[str, float] = {
+        # Existential / mortal — irrevocable loss outranks all others
+        # in OCC's prospect-based emotion hierarchy.
+        "existential": 1.00,
+        # Physical violence — Lazarus's "physical danger" theme.
+        "physical": 0.85,
+        # Betrayal / moral injury — Lazarus's "moral transgression";
+        # narratively second only to mortal threat in the example
+        # corpus (Gone Girl, Reservoir Dogs, Tinker Tailor).
+        "betrayal": 0.75,
+        # Psychological collapse (despair, breakdown) — OCC's
+        # "distress about a self-relevant prospect" cluster.
+        "psychological": 0.70,
+        # Relational rupture — Lazarus's "relational loss"; the
+        # romance / fellowship axis (Wuthering Heights, Persuasion).
+        "emotional": 0.65,
+        # Social / reputational — Lazarus's "social esteem / shame".
+        "social": 0.55,
+        # Epistemic destabilisation — discovery / exposure as a
+        # *prospect* (the threat that the truth comes out). Lower
+        # default salience because the cumulative-mystery scorer
+        # already covers the epistemic surface; suspense should not
+        # double-count it.
+        "epistemic": 0.45,
+        "informational": 0.45,
+    }
+    _DEFAULT_HARM_SALIENCE: float = _HARM_KIND_SALIENCE["physical"]
+
+    def _harm_kind_for_event(
+        self, evt_id: str, causal_g: nx.DiGraph,
+    ) -> Tuple[str, float]:
+        """Resolve the most-salient harm-kind for an unrevealed event.
+
+        Reads the ``mechanism`` attribute on every incident causal
+        edge (in or out) of ``evt_id`` and returns the
+        ``(kind, salience)`` pair with the highest salience weight.
+        Falls back to ``("physical", _DEFAULT_HARM_SALIENCE)`` when
+        the event has no incident edges or none of the mechanisms
+        resolve to a known kind.
+        """
+        if not causal_g.has_node(evt_id):
+            return "physical", self._DEFAULT_HARM_SALIENCE
+        best_kind = "physical"
+        best_w = self._DEFAULT_HARM_SALIENCE
+        seen_known = False
+        for _, _, d in list(causal_g.in_edges(evt_id, data=True)) + list(
+            causal_g.out_edges(evt_id, data=True)
+        ):
+            mech = (d.get("mechanism") or "").strip().lower()
+            if not mech:
+                continue
+            # Map long-form aliases onto the salience table keys.
+            if mech in ("physical_force",):
+                mech = "physical"
+            elif mech in ("epistemic_revelation",):
+                mech = "epistemic"
+            elif mech in ("social_coercion",):
+                mech = "social"
+            w = self._HARM_KIND_SALIENCE.get(mech)
+            if w is None:
+                continue
+            if not seen_known or w > best_w:
+                best_kind = mech
+                best_w = w
+                seen_known = True
+        return best_kind, best_w
+
+    def _build_affinity_index(self) -> Dict[Tuple[str, str], float]:
+        """Build a directed ``(src,tgt) → affinity`` lookup.
+
+        Used by the disposition-aware classification (improvement #1)
+        and the rescue-propagation rule (improvement #5). Returns an
+        empty dict when the world has no ``social_topology`` — callers
+        treat missing entries as neutral (0.0) so worlds without a
+        populated topology degrade to the legacy actor/target rule.
+        """
+        idx: Dict[Tuple[str, str], float] = {}
+        for rel in self.world_state.social_topology:
+            m = rel.metrics.get("affinity")
+            if m is None:
+                continue
+            try:
+                v = float(m.value)
+            except (TypeError, ValueError):
+                continue
+            idx[(rel.source_entity_id, rel.target_entity_id)] = v
+        return idx
+
+    def _affinity_to(
+        self,
+        affinity_idx: Dict[Tuple[str, str], float],
+        actor_id: str,
+        focal_id: str,
+    ) -> float:
+        """Best-effort affinity from ``actor_id`` toward ``focal_id``.
+
+        Uses directed (actor → focal) when present; falls back to the
+        reverse direction (focal → actor); else 0.0 (neutral). Self-
+        affinity (actor == focal) returns 1.0 so an entity is always
+        treated as an ally of itself for rescue-propagation symmetry.
+        """
+        if actor_id == focal_id:
+            return 1.0
+        v = affinity_idx.get((actor_id, focal_id))
+        if v is not None:
+            return v
+        v = affinity_idx.get((focal_id, actor_id))
+        return v if v is not None else 0.0
+
+    def _event_location_id(self, evt) -> Optional[str]:
+        """Resolve the location an event occurs at.
+
+        Prefers the first actor's current location; falls back to the
+        first target's location. Returns ``None`` when no participant
+        carries a ``location_id`` (e.g. abstract / world-level events).
+        """
+        for eid in list(evt.actor_ids) + list(evt.target_ids):
+            ent = self.world_state.entities.get(eid)
+            if ent is not None and getattr(ent, "location_id", None):
+                return ent.location_id
+        return None
+
+    def _build_spatial_graph(self) -> Optional[nx.Graph]:
+        """Build an undirected, traversable spatial graph for distance."""
+        if not getattr(self.world_state, "spatial_topology", None):
+            return None
+        g = nx.Graph()
+        for edge in self.world_state.spatial_topology:
+            if getattr(edge, "is_locked", False):
+                continue
+            if getattr(edge, "destroyed_at_fabula", None) is not None:
+                continue
+            src = getattr(edge, "source_id", None)
+            tgt = getattr(edge, "target_id", None)
+            if src and tgt:
+                g.add_edge(src, tgt)
+        return g if g.number_of_nodes() > 0 else None
+
+    def _fabula_now(self, revealed: set[str]) -> Optional[int]:
+        """The latest revealed ``fabula_time`` — the reader's "now"."""
+        events_by_id = {e.id: e for e in self.world_state.events}
+        times = [
+            events_by_id[eid].fabula_time
+            for eid in revealed if eid in events_by_id
+        ]
+        return max(times) if times else None
+
+    def _revealed_ancestor_count(
+        self, evt_id: str, causal_g: nx.DiGraph, revealed: set[str],
+    ) -> int:
+        """Count revealed causal ancestors of ``evt_id`` (proxy for
+        how long the threat has been foreshadowed). Used by the
+        persistence multiplier (improvement #4)."""
+        if not causal_g.has_node(evt_id):
+            return 0
+        try:
+            ancestors = nx.ancestors(causal_g, evt_id)
+        except (nx.NetworkXError, nx.NodeNotFound):
+            return 0
+        return sum(1 for a in ancestors if a in revealed)
+
+    def _bucket_event_for_focal(
+        self,
+        evt,
+        focal_id: str,
+        affinity_idx: Dict[Tuple[str, str], float],
+    ) -> Optional[str]:
+        """Resolve the threat/hope bucket for an event w.r.t. one focal entity.
+
+        Encapsulates the disposition-aware classification so it can be
+        reused for both the unrevealed-event ledger (next-period
+        belief perturbations) and the revealed-event ledger (the
+        belief prior used by the EFK martingale aggregator).
+
+        Returns ``"threat"``, ``"hope"``, or ``None``. Rules in
+        priority order:
+
+        1. Focal is target with no co-actor role and an *allied*
+           actor is intervening → HOPE (rescue, #5).
+        2. Focal is target with no co-actor role → THREAT (legacy /
+           hostile-actor reinforced).
+        3. Focal is itself an actor with a hostile co-actor present
+           → THREAT (coerced participation).
+        4. Focal is an actor → HOPE (legacy).
+        5. Focal is neither but a hostile actor strikes an allied
+           target → THREAT (third-party widening, #1).
+        6. Otherwise → ``None``.
+        """
+        actor_set = set(evt.actor_ids)
+        target_set = set(evt.target_ids)
+        is_actor = focal_id in actor_set
+        is_target = focal_id in target_set
+
+        hostile_co_actor = any(
+            self._affinity_to(affinity_idx, a, focal_id)
+            <= self._SUSPENSE_HOSTILE_AFFINITY
+            for a in actor_set if a != focal_id
+        )
+        allied_co_actor = any(
+            self._affinity_to(affinity_idx, a, focal_id)
+            >= self._SUSPENSE_ALLY_AFFINITY
+            for a in actor_set if a != focal_id
+        )
+
+        if is_target and not is_actor:
+            if allied_co_actor and not hostile_co_actor:
+                return "hope"
+            return "threat"
+        if is_actor:
+            return "threat" if hostile_co_actor else "hope"
+        # Third-party widening (#1).
+        if any(
+            self._affinity_to(affinity_idx, a, focal_id)
+            <= self._SUSPENSE_HOSTILE_AFFINITY
+            for a in actor_set
+        ) and any(
+            self._affinity_to(affinity_idx, t, focal_id)
+            >= self._SUSPENSE_ALLY_AFFINITY
+            for t in target_set
+        ):
+            return "threat"
+        return None
+
+    def _event_base_weight(
+        self, evt_id: str, causal_g: nx.DiGraph,
+    ) -> Tuple[float, str, float]:
+        """Return ``(prob, kind, salience)`` for an event.
+
+        Shared by both the unrevealed-perturbation pass and the
+        revealed-prior pass of the EFK aggregator.
+        """
+        prob = 0.5
+        if causal_g.has_node(evt_id):
+            in_edges = list(causal_g.in_edges(evt_id, data=True))
+            out_edges = list(causal_g.out_edges(evt_id, data=True))
+            if in_edges:
+                prob = max(d.get("weight", 0.5) for _, _, d in in_edges)
+            elif out_edges:
+                prob = max(d.get("weight", 0.5) for _, _, d in out_edges)
+        prob = max(0.0, min(1.0, prob))
+        kind, salience = self._harm_kind_for_event(evt_id, causal_g)
+        return prob, kind, salience
 
     def compute_suspense_score(
         self,
         entity_ids: List[str],
         syuzhet_anchor: Optional[int] = None,
+        *,
+        mode: str = "efk",
     ) -> float:
         """Suspense: forward causal momentum between opposed outcomes.
 
-        Examines unrevealed events involving the target entities and
-        classifies them as *threat* (entity is target/victim) or *hope*
-        (entity has agency/is actor).  Uses ``evidence_strength`` as a
-        probability proxy — incoming causal edge weights when available,
-        outgoing edge weights as fallback.
+        Theory layer (improvements #1–#7 over the basic
+        actor/target tally):
 
-        Returns ``balance × stakes`` clamped to ``[0, 1]``:
+        * **#1 Disposition-aware classification** (Zillmann 1996
+          disposition theory). An *actor*'s contribution flips to
+          *threat* for the focal entity when the actor's affinity
+          toward that entity is hostile (≤ ``_SUSPENSE_HOSTILE_AFFINITY``).
+          Conversely, *#5 rescue propagation* — when the focal entity
+          is the *target* and the acting party is an ally
+          (affinity ≥ ``_SUSPENSE_ALLY_AFFINITY``), the event registers
+          as *hope* for the focal entity.
+        * **#2 Anticipatory proximity weighting** (Comisky & Bryant
+          1982). Each event's contribution is multiplied by an
+          imminence kernel ``exp(-Δ_fabula / τ_t) · exp(-Δ_spatial / τ_s)``,
+          so threats that are temporally and spatially close weigh
+          more heavily than equally-probable distant ones.
+        * **#3 Per-kind balance × stakes** with a salience-weighted
+          *max* combine (Brewer & Lichtenstein 1982 dominant-beat),
+          available via ``mode='classic'``. A coherent single-kind
+          tension dominates a diffuse multi-kind one rather than being
+          averaged into it.
+        * **#4 Persistence / exposure** — multiplier ``1 + α·a`` where
+          ``a`` is the count of revealed causal ancestors of the
+          unrevealed threat (proxy for how long it has been
+          foreshadowed), capped at ``_SUSPENSE_PERSISTENCE_CAP``.
+        * **#6 Per-kind saturation** — ``stakes^k = total^k /
+          (total^k + K_k)`` where ``K_k`` rises with kind salience so
+          existential threats saturate slowly while social ones
+          saturate fast.
+        * **#7 EFK expected-variance** (default, ``mode='efk'``) —
+          aggregates per-kind ledgers as a salience-weighted average
+          of Bernoulli outcome variances ``p(1-p)`` (Ely, Frankel &
+          Kamenica 2015), giving suspense the same Bayesian-belief
+          shape that the surprise scorer already has. Pass
+          ``mode='classic'`` to recover the Brewer-Lichtenstein
+          balance × stakes aggregator instead.
 
-        * ``balance = 1 - |threat - hope| / (threat + hope)`` peaks at
-          1.0 when the two sides are equally weighted (genuine
-          uncertainty about the outcome) and decays to 0 when one side
-          dominates the other.
-        * ``stakes = total / (total + K)`` with ``K`` =
-          :attr:`_SUSPENSE_STAKES_K`. Saturates so small unrevealed
-          fragments don't pin the gauge at 1.0 just because they
-          happen to be balanced.
-
-        The previous ``max(0, (threat - hope) / total)`` form
-        collapsed to zero on every real plot in ``example_worlds/``
-        because the protagonist is the actor of most of their own
-        forward events (Macbeth kills Duncan / Banquo / Macduff's
-        family, all bumping ``hope_w`` over ``threat_w``) — leaving
-        suspense pinned at 0.0 across the entire syuzhet axis even
-        for canonical thrillers and tragedies.
-
-        Returns 0 when hope is entirely extinguished (despair) or when
-        no threat is present (safety) — both still degenerate to
-        non-suspense as required by the test contract.
+        Returns a clamped ``[0, 1]`` score. Returns 0 when hope is
+        entirely extinguished (despair) or when no threat is present
+        (safety) — both still degenerate to non-suspense as required
+        by the test contract.
         """
         causal_g = self._build_causal_digraph()
         revealed = self._revealed_event_ids(syuzhet_anchor)
@@ -1229,10 +1891,67 @@ class DirectiveAssembler:
         unrevealed = all_evt_ids - revealed
         eid_set = set(entity_ids)
 
+        affinity_idx = self._build_affinity_index()
+        spatial_g = self._build_spatial_graph()
+        fabula_now = self._fabula_now(revealed)
+        events_by_id = {e.id: e for e in self.world_state.events}
+
+        # Auto-scale the fabula-time decay constant to the world's
+        # actual inter-event spacing (#2). Use the median gap between
+        # consecutive distinct fabula_times so a world using
+        # ``fabula_time_spacing=1000`` and one using unit spacing both
+        # decay over ~6 narrative beats rather than 6 raw ticks.
+        sorted_fts = sorted({e.fabula_time for e in self.world_state.events})
+        if len(sorted_fts) >= 2:
+            gaps = [b - a for a, b in zip(sorted_fts, sorted_fts[1:]) if b > a]
+            typical_gap = float(sorted(gaps)[len(gaps) // 2]) if gaps else 1.0
+        else:
+            typical_gap = 1.0
+        tau_fabula = max(
+            1.0, self._SUSPENSE_PROXIMITY_TAU_FABULA_GAPS * typical_gap,
+        )
+
+        # Per-kind ledgers (improvement #3) replace the single-bucket
+        # threat_weight / hope_weight. Aggregate sums are still tracked
+        # for legacy diagnostics / despair-and-safety degenerate
+        # checks.
+        threat_by_kind: Dict[str, float] = {}
+        hope_by_kind: Dict[str, float] = {}
         threat_weight = 0.0
         hope_weight = 0.0
 
-        events_by_id = {e.id: e for e in self.world_state.events}
+        # EFK belief-martingale ledgers (improvement #7, full form):
+        # per (focal_entity, kind) we track
+        #   * the *unrevealed* events that could perturb belief next,
+        #     each as (bucket, weight, proximity), where ``proximity``
+        #     is the un-normalised next-revelation prior; and
+        #   * the *revealed* threat/hope mass already accumulated
+        #     (A, B), used to form the Beta-posterior belief μ_t.
+        # These are populated in mode='efk' only — they cost an extra
+        # pass over the (much smaller) revealed-event set.
+        unrevealed_by_focal_kind: Dict[
+            Tuple[str, str], List[Tuple[str, float, float]],
+        ] = {}
+        revealed_by_focal_kind: Dict[Tuple[str, str], List[float]] = {}
+
+        # Spatial-distance memo so we don't pay the BFS cost twice for
+        # the same (evt_loc, focal_loc) pair across focal entities.
+        spatial_memo: Dict[Tuple[str, str], Optional[int]] = {}
+
+        def _spatial_dist(evt_loc: Optional[str], focal_loc: Optional[str]) -> Optional[int]:
+            if not (evt_loc and focal_loc) or spatial_g is None:
+                return None
+            if evt_loc == focal_loc:
+                return 0
+            key = (evt_loc, focal_loc)
+            if key in spatial_memo:
+                return spatial_memo[key]
+            try:
+                d = nx.shortest_path_length(spatial_g, evt_loc, focal_loc)
+            except (nx.NetworkXNoPath, nx.NodeNotFound):
+                d = None
+            spatial_memo[key] = d
+            return d
 
         for evt_id in unrevealed:
             evt = events_by_id.get(evt_id)
@@ -1241,11 +1960,33 @@ class DirectiveAssembler:
             actor_set = set(evt.actor_ids)
             target_set = set(evt.target_ids)
             if not (actor_set & eid_set) and not (target_set & eid_set):
-                continue
+                # Disposition-aware classification (#1) widens the net:
+                # an event between two non-focal entities can still be
+                # a *threat* to the focal entity if any actor is
+                # hostile to it AND any target is allied with it
+                # (e.g. the villain striking the hero's lover). For
+                # symmetry with rescue propagation (#5), this only
+                # fires when at least one *target* is allied with a
+                # focal entity — pure off-screen action between
+                # non-participants stays off the ledger to keep the
+                # gauge from flooding on subplots.
+                triggered = False
+                for fid in eid_set:
+                    if any(
+                        self._affinity_to(affinity_idx, a, fid)
+                        <= self._SUSPENSE_HOSTILE_AFFINITY
+                        for a in actor_set
+                    ) and any(
+                        self._affinity_to(affinity_idx, t, fid)
+                        >= self._SUSPENSE_ALLY_AFFINITY
+                        for t in target_set
+                    ):
+                        triggered = True
+                        break
+                if not triggered:
+                    continue
 
-            # Probability proxy: prefer incoming edge weight, fall back to
-            # outgoing edge weight (a strongly causal event is significant),
-            # default to 0.5 (maximum entropy).
+            # ------------- Probability proxy -------------
             prob = 0.5
             if causal_g.has_node(evt_id):
                 in_edges = list(causal_g.in_edges(evt_id, data=True))
@@ -1254,21 +1995,323 @@ class DirectiveAssembler:
                     prob = max(d.get("weight", 0.5) for _, _, d in in_edges)
                 elif out_edges:
                     prob = max(d.get("weight", 0.5) for _, _, d in out_edges)
-
             prob = max(0.0, min(1.0, prob))
 
-            # Per-entity classification: an entity acted upon (without
-            # itself acting) contributes to threat; an entity acting
-            # contributes to hope. A single event between two focused
-            # entities legitimately raises both sides of the ledger.
-            for eid in eid_set:
-                is_actor = eid in actor_set
-                is_target = eid in target_set
-                if is_target and not is_actor:
-                    threat_weight += prob
-                elif is_actor:
-                    hope_weight += prob
+            # ------------- Harm kind & salience (#3) -------------
+            kind, salience = self._harm_kind_for_event(evt_id, causal_g)
 
+            # ------------- Anticipatory proximity (#2) -------------
+            if fabula_now is not None:
+                dt = max(0, evt.fabula_time - fabula_now)
+            else:
+                dt = 0
+            imminence_t = math.exp(-dt / tau_fabula)
+
+            # ------------- Persistence multiplier (#4) -------------
+            ancestors_revealed = self._revealed_ancestor_count(
+                evt_id, causal_g, revealed,
+            )
+            persistence_mult = min(
+                self._SUSPENSE_PERSISTENCE_CAP,
+                1.0 + self._SUSPENSE_PERSISTENCE_ALPHA * ancestors_revealed,
+            )
+
+            evt_loc = self._event_location_id(evt)
+
+            # ------------- Per-focal-entity classification (#1, #5) -------------
+            # Compute an actor-disposition signal once (the most
+            # extreme affinity any actor holds toward each focal
+            # entity), then combine with the legacy actor/target rule
+            # to bucket the contribution.
+            for fid in eid_set:
+                # Spatial proximity for this focal entity (#2).
+                focal_loc = None
+                fent = self.world_state.entities.get(fid)
+                if fent is not None:
+                    focal_loc = getattr(fent, "location_id", None)
+                d_sp = _spatial_dist(evt_loc, focal_loc)
+                if d_sp is None:
+                    imminence_s = 1.0  # unknown → neutral, no penalty
+                else:
+                    imminence_s = math.exp(
+                        -d_sp / self._SUSPENSE_PROXIMITY_TAU_SPATIAL,
+                    )
+
+                weighted_prob = (
+                    prob * salience * imminence_t * imminence_s
+                    * persistence_mult
+                )
+                if weighted_prob <= 0.0:
+                    continue
+
+                is_actor = fid in actor_set
+                is_target = fid in target_set
+
+                # Disposition signal across other actors of this event.
+                hostile_actor = any(
+                    self._affinity_to(affinity_idx, a, fid)
+                    <= self._SUSPENSE_HOSTILE_AFFINITY
+                    for a in actor_set if a != fid
+                )
+                allied_actor = any(
+                    self._affinity_to(affinity_idx, a, fid)
+                    >= self._SUSPENSE_ALLY_AFFINITY
+                    for a in actor_set if a != fid
+                )
+
+                # Resolve bucket. Rules in priority order:
+                # 1. Focal entity is target with no co-actor role and
+                #    an allied actor is intervening → HOPE (rescue, #5).
+                # 2. Focal entity is target with no co-actor role → THREAT
+                #    (legacy; reinforced when hostile_actor is True).
+                # 3. Focal entity is itself an actor with a hostile
+                #    co-actor present → THREAT (coerced participation).
+                # 4. Focal entity is an actor → HOPE (legacy).
+                # 5. Focal entity is neither but disposition-triggered
+                #    above (hostile actor on allied target) → THREAT.
+                bucket: Optional[str] = None
+                if is_target and not is_actor:
+                    if allied_actor and not hostile_actor:
+                        bucket = "hope"
+                    else:
+                        bucket = "threat"
+                elif is_actor:
+                    if hostile_actor:
+                        bucket = "threat"
+                    else:
+                        bucket = "hope"
+                else:
+                    # Disposition-triggered third-party event (the
+                    # widening branch above ensured at least one focal
+                    # entity matches these conditions).
+                    if any(
+                        self._affinity_to(affinity_idx, a, fid)
+                        <= self._SUSPENSE_HOSTILE_AFFINITY
+                        for a in actor_set
+                    ) and any(
+                        self._affinity_to(affinity_idx, t, fid)
+                        >= self._SUSPENSE_ALLY_AFFINITY
+                        for t in target_set
+                    ):
+                        bucket = "threat"
+
+                if bucket == "threat":
+                    threat_weight += weighted_prob
+                    threat_by_kind[kind] = (
+                        threat_by_kind.get(kind, 0.0) + weighted_prob
+                    )
+                elif bucket == "hope":
+                    hope_weight += weighted_prob
+                    hope_by_kind[kind] = (
+                        hope_by_kind.get(kind, 0.0) + weighted_prob
+                    )
+
+                # EFK belief-martingale ledger (#7 full): record the
+                # unrevealed event as a candidate next-period belief
+                # perturbation for this (focal, kind) belief variable.
+                # The proximity term ``imminence_t * imminence_s`` is
+                # the un-normalised prior over which event reveals
+                # next; the Beta-posterior weight is the salience-and-
+                # persistence-scaled per-event mass (no proximity, so
+                # the same revealed-event uses the same weight whether
+                # close or far when it actually fires).
+                if mode == "efk" and bucket in ("threat", "hope"):
+                    proximity = imminence_t * imminence_s
+                    if proximity > 0.0:
+                        belief_weight = prob * salience * persistence_mult
+                        unrevealed_by_focal_kind.setdefault(
+                            (fid, kind), [],
+                        ).append((bucket, belief_weight, proximity))
+
+        # ------------- Revealed-event prior pass (EFK only) -------------
+        # Walk revealed events to build the (A_threat, B_hope) Beta-
+        # posterior evidence per (focal, kind). Revealed events have
+        # already happened, so we do *not* apply proximity (no
+        # anticipation) or persistence (no foreshadowing arc). The
+        # raw ``prob × salience`` is the audience's weight on that
+        # past evidence.
+        if mode == "efk":
+            for evt_id in revealed:
+                evt = events_by_id.get(evt_id)
+                if evt is None:
+                    continue
+                prob_r, kind_r, salience_r = self._event_base_weight(
+                    evt_id, causal_g,
+                )
+                w_r = prob_r * salience_r
+                if w_r <= 0.0:
+                    continue
+                for fid in eid_set:
+                    bucket_r = self._bucket_event_for_focal(
+                        evt, fid, affinity_idx,
+                    )
+                    if bucket_r is None:
+                        continue
+                    revealed_by_focal_kind.setdefault(
+                        (fid, kind_r), [0.0, 0.0],
+                    )[0 if bucket_r == "threat" else 1] += w_r
+
+        # The despair/safety degenerate cases (no hope-side or no
+        # threat-side weight on the *unrevealed* set) only apply to
+        # the classic balance × stakes aggregator, where they encode
+        # the structural-affect prediction that one-sided futures
+        # carry no suspense. EFK runs first because under the
+        # belief-martingale formulation, accumulated *revealed*
+        # evidence on one side combined with an upcoming reveal on
+        # the other still produces non-trivial expected variance,
+        # and the early returns would silence that signal.
+
+        # ------------- EFK belief-martingale aggregator (#7 full) -------------
+        # Per (focal, kind), treat the threat-vs-hope outcome as a
+        # Bernoulli random variable. The audience's belief at the
+        # current anchor is a Beta-posterior mean,
+        #
+        #     μ_t = (1 + A) / (2 + A + B)
+        #
+        # where A and B are the accumulated revealed threat/hope
+        # weight on this (focal, kind). For each unrevealed event e
+        # that could reveal *next*, with revelation prior π_e
+        # (proportional to its proximity), and bucket b_e, the
+        # would-be next-period belief is
+        #
+        #     μ_{t+1} | (e fires as threat) = (1 + A + w_e) / (2 + A + B + w_e),
+        #     μ_{t+1} | (e fires as hope)   = (1 + A)       / (2 + A + B + w_e).
+        #
+        # Suspense for the (focal, kind) belief martingale is
+        # E_t[(μ_{t+1} - μ_t)²] = Σ_e π_e (μ_{t+1}|e − μ_t)²
+        # — the Ely-Frankel-Kamenica 2015 expected squared belief
+        # change. We then aggregate across (focal, kind) by salience
+        # × stakes, and rescale by ×4 since a single Bernoulli step
+        # variance is bounded by 0.25.
+        if mode == "efk":
+            num = 0.0
+            denom = 0.0
+            per_kind_var: Dict[str, float] = {}
+            for (fid, kind), unrev in unrevealed_by_focal_kind.items():
+                if not unrev:
+                    continue
+                A, B = revealed_by_focal_kind.get((fid, kind), [0.0, 0.0])
+                # Bilateral-mass guard (Brewer & Lichtenstein
+                # structural-affect floor): require the *upcoming*
+                # reveal set to contain both threat and hope
+                # candidates on this (focal, kind). A purely one-
+                # sided forward reveal set is despair (only threats
+                # coming) or safety (only hopes coming), even
+                # though strict EFK would still admit positive
+                # variance from the magnitude-uncertainty alone.
+                # This matches the test contract and the OCC
+                # prospect-based-emotion taxonomy: suspense requires
+                # outcome ambiguity, not merely magnitude ambiguity.
+                unrev_threat = sum(w for b, w, _ in unrev if b == "threat")
+                unrev_hope = sum(w for b, w, _ in unrev if b == "hope")
+                if unrev_threat <= 0.0 or unrev_hope <= 0.0:
+                    continue
+                denom_mu = 2.0 + A + B
+                if denom_mu <= 0.0:
+                    continue
+                mu_t = (1.0 + A) / denom_mu
+                total_prox = sum(p for _, _, p in unrev)
+                if total_prox <= 0.0:
+                    continue
+                var_fk = 0.0
+                for bucket_u, w_u, prox_u in unrev:
+                    pi_e = prox_u / total_prox
+                    new_denom = denom_mu + w_u
+                    if bucket_u == "threat":
+                        mu_next = (1.0 + A + w_u) / new_denom
+                    else:
+                        mu_next = (1.0 + A) / new_denom
+                    var_fk += pi_e * (mu_next - mu_t) ** 2
+                # Per-(focal,kind) max-achievable variance at this
+                # information state: collapse all unrevealed mass
+                # into a single composite event landing on whichever
+                # bucket gives the larger squared belief shift. This
+                # is the EFK "maximum suspense" reference at the
+                # current prior, and divides out the prior-strength
+                # scale so the gauge stays in [0, 1] even as A+B
+                # accumulate over the syuzhet axis. Without it,
+                # var_fk shrinks like 1/(A+B)² as evidence builds
+                # up, even when the remaining narrative is
+                # genuinely suspenseful.
+                w_total = sum(w for _, w, _ in unrev)
+                if w_total <= 0.0:
+                    continue
+                composite_denom = denom_mu + w_total
+                mu_if_threat = (1.0 + A + w_total) / composite_denom
+                mu_if_hope = (1.0 + A) / composite_denom
+                var_max = max(
+                    (mu_if_threat - mu_t) ** 2,
+                    (mu_if_hope - mu_t) ** 2,
+                )
+                if var_max <= 0.0:
+                    continue
+                # Normalised per-(focal,kind) suspense in [0, 1]:
+                # the ratio of realised expected squared belief
+                # change to the maximum a single composite reveal
+                # of the same total mass would achieve. Peaks when
+                # all upcoming reveals push belief in the same
+                # direction (a coherent forward thrust toward one
+                # outcome); decays when threat and hope upcoming
+                # reveals cancel each other out. The per-event
+                # alternative (sum of best-case per-event shifts)
+                # was rejected because under our disposition-based
+                # bucketing each event already lands on its own
+                # extremising bucket, which would peg the gauge at
+                # 1.0 for almost every fixture.
+                var_norm = min(1.0, var_fk / var_max)
+                # Stakes here uses the *unrevealed* mass only —
+                # the mass actually still in play. Using total
+                # mass (A + B + unrev) would keep stakes near 1.0
+                # at the end of the story when only a single event
+                # remains, even though that event is the *only*
+                # tension left. With unrev mass alone, late-story
+                # single-event leftovers correctly attenuate.
+                T_fk = sum(w for _, w, _ in unrev)
+                K_k = self._SUSPENSE_STAKES_K_BY_KIND.get(
+                    kind, self._SUSPENSE_STAKES_K,
+                )
+                stakes_k = T_fk / (T_fk + K_k)
+                sigma_k = self._HARM_KIND_SALIENCE.get(
+                    kind, self._DEFAULT_HARM_SALIENCE,
+                )
+                weight_fk = sigma_k * stakes_k
+                num += weight_fk * var_norm
+                denom += weight_fk
+                # Diagnostic per-kind aggregate (max over focal).
+                per_kind_var[kind] = max(
+                    per_kind_var.get(kind, 0.0), var_norm,
+                )
+            if denom <= 0.0:
+                # No (focal, kind) had both a non-trivial belief and
+                # a non-empty unrevealed candidate set — fall through
+                # to the classic safety/despair-and-aggregate path.
+                logger.debug(
+                    "[DirectiveAssembly·Suspense·EFK] no belief variance "
+                    "available — falling back to classic aggregator",
+                )
+            else:
+                # var_norm is already in [0, 1] (per-(focal,kind)
+                # max-normalised); the salience-stakes weighted
+                # average preserves that bound.
+                score_efk = max(0.0, min(1.0, num / denom))
+                dom_kind = max(per_kind_var.items(), key=lambda kv: kv[1])[0] \
+                    if per_kind_var else None
+                logger.debug(
+                    "[DirectiveAssembly·Suspense·EFK·full] suspense=%.3f "
+                    "dominant_kind=%s per_kind_var=%s "
+                    "threat_by_kind=%s hope_by_kind=%s",
+                    score_efk, dom_kind,
+                    {k: round(v, 4) for k, v in per_kind_var.items()},
+                    {k: round(v, 3) for k, v in threat_by_kind.items()},
+                    {k: round(v, 3) for k, v in hope_by_kind.items()},
+                )
+                return round(score_efk, 4)
+
+        # Despair/safety guards: classic-only. (For EFK we already
+        # returned above when the belief-martingale found
+        # non-trivial expected variance; if it didn't, we fall
+        # through here intentionally so the classic combiner can
+        # still emit zero in the structurally-degenerate cases.)
         if hope_weight <= 0.0:
             logger.debug(
                 "[DirectiveAssembly·Suspense] No hope outcome — suspense=0 (despair)",
@@ -1280,20 +2323,136 @@ class DirectiveAssembler:
             )
             return 0.0
 
-        total = threat_weight + hope_weight
-        balance = 1.0 - abs(threat_weight - hope_weight) / total
-        stakes = total / (total + self._SUSPENSE_STAKES_K)
-        score = max(0.0, min(1.0, balance * stakes))
+        # ------------- Per-kind balance × stakes, weighted-max combine (#3, #6) -------------
+        per_kind_scores: Dict[str, float] = {}
+        for kind in set(threat_by_kind) | set(hope_by_kind):
+            t_k = threat_by_kind.get(kind, 0.0)
+            h_k = hope_by_kind.get(kind, 0.0)
+            tot_k = t_k + h_k
+            if tot_k <= 0.0 or t_k <= 0.0 or h_k <= 0.0:
+                # Need both sides for genuine uncertainty.
+                continue
+            balance_k = 1.0 - abs(t_k - h_k) / tot_k
+            K_k = self._SUSPENSE_STAKES_K_BY_KIND.get(
+                kind, self._SUSPENSE_STAKES_K,
+            )
+            stakes_k = tot_k / (tot_k + K_k)
+            w = self._HARM_KIND_SALIENCE.get(
+                kind, self._DEFAULT_HARM_SALIENCE,
+            )
+            # Per-kind suspense, weighted by salience so the *max*
+            # combine prefers narratively-major kinds over noise.
+            per_kind_scores[kind] = w * balance_k * stakes_k
+
+        if per_kind_scores:
+            dominant_kind = max(per_kind_scores.items(), key=lambda kv: kv[1])[0]
+            score = per_kind_scores[dominant_kind]
+        else:
+            # Fallback to legacy aggregate when no kind has both
+            # threat and hope (e.g. each kind is one-sided but the
+            # aggregate is mixed across kinds — rare but possible).
+            total = threat_weight + hope_weight
+            balance = 1.0 - abs(threat_weight - hope_weight) / total
+            stakes = total / (total + self._SUSPENSE_STAKES_K)
+            score = balance * stakes
+            dominant_kind = None
+
+        score = max(0.0, min(1.0, score))
+
+        dom_threat = max(threat_by_kind.items(), key=lambda kv: kv[1])[0] \
+            if threat_by_kind else None
+        dom_hope = max(hope_by_kind.items(), key=lambda kv: kv[1])[0] \
+            if hope_by_kind else None
         logger.debug(
             "[DirectiveAssembly·Suspense] threat_w=%.3f hope_w=%.3f "
-            "balance=%.3f stakes=%.3f suspense=%.3f",
-            threat_weight, hope_weight, balance, stakes, score,
+            "suspense=%.3f dominant_kind=%s "
+            "dominant_threat=%s dominant_hope=%s "
+            "per_kind_scores=%s "
+            "threat_by_kind=%s hope_by_kind=%s",
+            threat_weight, hope_weight, score, dominant_kind,
+            dom_threat, dom_hope,
+            {k: round(v, 3) for k, v in per_kind_scores.items()},
+            {k: round(v, 3) for k, v in threat_by_kind.items()},
+            {k: round(v, 3) for k, v in hope_by_kind.items()},
         )
         return round(score, 4)
 
     # ------------------------------------------------------------------
     # Surprise  (Prediction Error — KL Divergence)
     # ------------------------------------------------------------------
+    # Batch A.1 — anachrony surprise component (Bae & Young 2008
+    # plan-based narrative-surprise; Tobin 2018 *Anachronisms in
+    # Narrative*; Bissell, Paulin & Piper 2025 multi-component
+    # narrative-surprise framework). Trait-shift KL alone misses the
+    # surprise generated by *temporal reordering* — flashbacks that
+    # reframe earlier events, openers that drop the reader in medias
+    # res. We compute a per-event anachrony score
+    # ``|fabula_rank - syuzhet_rank| / N``, average over the relevant
+    # event set, and combine with trait-KL via a convex weighting.
+    # Default split (0.7 trait / 0.3 anachrony) preserves the
+    # existing test contract dominance of trait shifts while letting
+    # anachrony move the gauge where it should (Reservoir Dogs, Gone
+    # Girl, Tinker Tailor) without overwhelming worlds with linear
+    # tellings.
+    _SURPRISE_TRAIT_KL_WEIGHT: float = 0.7
+    _SURPRISE_ANACHRONY_WEIGHT: float = 0.3
+
+    # Batch C.4 — per-trait narrative salience (Reagan et al. 2016
+    # corpus emotional-arc analysis; Kim, Padó & Klinger 2017 genre-
+    # conditioned arcs). Some traits carry more narrative-arc
+    # signal — courage / love / loyalty / ambition / despair / guilt
+    # are the dimensions on which protagonists *change* and which
+    # readers track; literacy / fitness / wealth track too but
+    # rarely dominate the arc. We mirror the harm-kind salience
+    # table's structure: trait names checked case-insensitively as
+    # substrings (so ``moral_courage``, ``physical_courage``,
+    # ``courage`` all match the ``courage`` salience). Unmatched
+    # traits get the median weight, so worlds without any salience-
+    # tagged traits degrade gracefully to the prior unweighted
+    # behaviour. Calibrated against the example_worlds corpus to
+    # let canonical arc traits (Macbeth's ambition, Lady Macbeth's
+    # guilt, Heathcliff's vengeance) drive the surprise gauge while
+    # peripheral traits register a residual contribution.
+    _TRAIT_NARRATIVE_SALIENCE: Dict[str, float] = {
+        # Core arc dimensions — the things protagonists are *about*.
+        "ambition": 1.00,
+        "guilt": 0.95,
+        "vengeance": 0.95,
+        "despair": 0.95,
+        "love": 0.90,
+        "loyalty": 0.85,
+        "courage": 0.85,
+        "betrayal": 0.85,
+        "honesty": 0.80,
+        "morality": 0.80,
+        "rage": 0.75,
+        "fear": 0.75,
+        "trust": 0.70,
+        # Mid-tier — character but not usually the spine.
+        "patience": 0.60,
+        "wisdom": 0.60,
+        "pride": 0.60,
+        "compassion": 0.55,
+        # Peripheral — informational backdrop.
+        "literacy": 0.30,
+        "fitness": 0.30,
+        "wealth": 0.30,
+        "health": 0.40,
+    }
+    _DEFAULT_TRAIT_SALIENCE: float = 0.55
+
+    # Batch C.5 — source-edge contribution. Edges where the focal is
+    # the *source* (Macbeth murders Duncan) update the focal's
+    # traits too (ambition reinforced by acting on it), but at a
+    # reduced weight: the canonical Bayesian update for "X did Y to
+    # Z" speaks more strongly about Z's traits than X's. Multiplier
+    # of 0.4 keeps the asymmetry while no longer ignoring the
+    # source-side signal entirely (the previous target-only design
+    # missed a substantial chunk of the per-character belief
+    # update, especially in agent-centric fixtures like Macbeth and
+    # Reservoir Dogs).
+    _SURPRISE_SOURCE_EDGE_WEIGHT: float = 0.4
+
     def compute_surprise_score(
         self,
         entity_ids: List[str],
@@ -1415,17 +2574,56 @@ class DirectiveAssembler:
 
         def _prior_for(eid: str, trait_name: str, actual_val: float,
                        anchor: int) -> float:
-            """Reader's prior for ``(eid, trait)`` at syuzhet ``anchor``."""
+            """Reader's prior for ``(eid, trait)`` at syuzhet ``anchor``.
+
+            Batch B.3 — proper Beta-Bernoulli update replacing the
+            legacy geometric pull ``p += w·(actual - p)``. The base
+            corpus-marginal ``m`` seeds a Beta(s·m, s·(1-m)) prior
+            (pseudo-count strength ``s = 2`` — weak enough to remain
+            responsive to evidence, strong enough to anchor the
+            posterior away from the EPS-clipped extremes when the
+            evidence stream is empty). Each revealed causal edge
+            targeting the focal entity contributes Bernoulli evidence
+            with weight ``w = STRENGTH_W[evidence_strength]`` and
+            outcome ``actual_val``:
+                α += w · actual,    β += w · (1 - actual)
+            and the posterior mean ``α / (α + β)`` is returned. This
+            is the exact same Bayesian update pattern we now use for
+            EFK suspense (Beta-posterior on threat/hope ledgers), so
+            the surprise and suspense scorers share a coherent
+            Bayesian core rather than relying on separate ad-hoc
+            update rules. The geometric pull was a Storck/Hochreiter/
+            Schmidhuber 1995 RDIA proxy — fine for monotone
+            convergence but undefined posterior variance, which the
+            optional Weber-Fechner / per-trait salience extensions in
+            §3.3 require to behave well.
+            """
             revealed_ids = self._revealed_event_ids(anchor)
             base = _trait_marginal(trait_name, eid)
-            p = base
+            s = self._SURPRISE_PRIOR_PSEUDOCOUNT  # weak Beta pseudo-count anchor
+            alpha = s * base
+            beta = s * (1.0 - base)
             for ce in self.world_state.causal_topology:
-                if ce.target_id != eid:
-                    continue
                 if ce.source_id not in revealed_ids:
                     continue
                 w = _STRENGTH_W.get(ce.evidence_strength, 0.5)
-                p += w * (actual_val - p)
+                if ce.target_id == eid:
+                    # Target-side: full Bernoulli update.
+                    alpha += w * actual_val
+                    beta += w * (1.0 - actual_val)
+                elif ce.source_id == eid:
+                    # Batch C.5 — source-side: reduced-weight
+                    # update. "X did Y to Z" speaks more strongly
+                    # about Z's traits than X's, but X's act
+                    # itself is evidence about X's traits too
+                    # (ambition reinforced by acting on it).
+                    sw = w * self._SURPRISE_SOURCE_EDGE_WEIGHT
+                    alpha += sw * actual_val
+                    beta += sw * (1.0 - actual_val)
+            denom = alpha + beta
+            if denom <= 0.0:
+                return 0.5
+            p = alpha / denom
             return max(EPS, min(1 - EPS, p))
 
         def _binary_kl(p: float, q: float) -> float:
@@ -1497,18 +2695,97 @@ class DirectiveAssembler:
                 # positions: KL=0.27→0.24, KL=0.5→0.39, KL=1.0→0.63,
                 # KL=2.0→0.86. Saturates smoothly so extreme reveals
                 # still asymptote toward 1.0 without throwing away
-                # information at the high end.
-                total_kl += 1.0 - math.exp(-kl)
-                trait_count += 1
+                # information at the high end. The decay constant
+                # ``τ = 1`` matches the Weber-Fechner JND literature
+                # for binary-distribution discrimination (Lu &
+                # Dosher 2013, *Visual Psychophysics*), where the
+                # subjective just-noticeable belief shift sits in
+                # the ``0.5–1.0`` nat band — i.e. each ``1.0`` nat
+                # of KL evidence delivers ``≈ 1 - 1/e ≈ 63%`` of
+                # the perceptual range, which is exactly where this
+                # saturation curve places it.
+                #
+                # Batch C.4 — per-trait narrative salience: weight
+                # the per-trait contribution by Reagan-et-al. 2016
+                # arc-relevance hierarchy. Substring match against
+                # the salience table catches ``moral_courage``,
+                # ``physical_courage`` and ``courage`` under the
+                # same ``courage`` weight; unmatched traits get the
+                # default mid-tier salience.
+                trait_lc = trait_name.lower()
+                trait_sal = self._DEFAULT_TRAIT_SALIENCE
+                for key, weight in self._TRAIT_NARRATIVE_SALIENCE.items():
+                    if key in trait_lc:
+                        trait_sal = weight
+                        break
+                total_kl += trait_sal * (1.0 - math.exp(-kl))
+                trait_count += trait_sal
 
         if trait_count == 0:
             return 0.0
 
-        score = min(total_kl / trait_count, 1.0)
+        trait_kl_score = min(total_kl / trait_count, 1.0)
+
+        # Batch A.1 — anachrony component (Bae & Young 2008; Bissell-
+        # Paulin-Piper 2025). Per-event anachrony score
+        # ``|fabula_rank - syuzhet_rank| / N`` for events relevant to
+        # the focal entities (actor or target), averaged over the
+        # event set the surprise mode considers:
+        #   * cumulative mode → all revealed events at the anchor
+        #     (the integrated anachrony footprint of the unfolding
+        #     telling, mirroring the integrated trait-gap form);
+        #   * local mode → events newly revealed at this anchor
+        #     (the per-step anachrony spike, mirroring the per-step
+        #     Itti-Baldi belief-update spike).
+        # Events sharing a fabula-time / syuzhet-index are ranked
+        # stably by ``(value, id)`` so the two ranks are
+        # well-defined on every fixture without ties biasing the
+        # score. Worlds with a single event or a perfectly linear
+        # telling correctly contribute zero anachrony.
+        anachrony_score = 0.0
+        all_events = list(self.world_state.events)
+        if all_events and len(all_events) >= 2:
+            f_sorted = sorted(all_events, key=lambda e: (e.fabula_time, e.id))
+            s_sorted = sorted(all_events, key=lambda e: (e.syuzhet_index, e.id))
+            f_rank = {e.id: i for i, e in enumerate(f_sorted)}
+            s_rank = {e.id: i for i, e in enumerate(s_sorted)}
+            N = float(len(all_events) - 1)
+            eid_set = set(entity_ids)
+            revealed_ids = self._revealed_event_ids(syuzhet_anchor)
+            if local:
+                consider = {
+                    e.id for e in all_events
+                    if e.syuzhet_index == syuzhet_anchor
+                }
+            else:
+                consider = revealed_ids
+            relevant = [
+                e for e in all_events
+                if e.id in consider and (
+                    set(e.actor_ids) & eid_set or set(e.target_ids) & eid_set
+                )
+            ]
+            if relevant:
+                anachrony_score = sum(
+                    abs(f_rank[e.id] - s_rank[e.id]) / N
+                    for e in relevant
+                ) / len(relevant)
+                anachrony_score = min(1.0, anachrony_score)
+
+        # Convex weighted combine of trait-shift KL (the existing
+        # Itti-Baldi / Storck quantity) and anachrony (Bae-Young
+        # plan-based / Bissell-Paulin-Piper 2025 narrative-level
+        # surprise). Weights sum to 1 so the result stays in [0, 1].
+        score = (
+            self._SURPRISE_TRAIT_KL_WEIGHT * trait_kl_score
+            + self._SURPRISE_ANACHRONY_WEIGHT * anachrony_score
+        )
 
         logger.debug(
-            "[DirectiveAssembly·Surprise%s] mean(1-exp(-kl))=%.4f over %d traits",
-            "·local" if local else "", score, trait_count,
+            "[DirectiveAssembly·Surprise%s] trait_kl=%.4f anachrony=%.4f "
+            "→ %.4f over %d traits",
+            "·local" if local else "",
+            trait_kl_score, anachrony_score, score, trait_count,
         )
         return round(score, 4)
 

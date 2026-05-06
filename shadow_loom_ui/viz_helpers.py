@@ -2804,9 +2804,10 @@ def _compute_affective_scores_uncached(
       * **conflict** — fraction of relationships with affinity < 0.
       * **danger** — mean fear across active relationships.
       * **causal_density** — observed edges per event, mapped through
-        a soft saturation ``d / (d + K)`` with ``K = 3``. Replaces an
-        earlier ``min(1, d / 3)`` clamp that pinned every dense world
-        (ACOTAR runs at ~5 edges/event) flat at 1.0 across the entire
+        a soft saturation ``d / (d + K)`` with ``K = 1.5`` (matches
+        ``docs/academic-foundations.md`` §3.5). Replaces an earlier
+        ``min(1, d / 3)`` clamp that pinned every dense world (ACOTAR
+        runs at ~5 edges/event) flat at 1.0 across the entire
         timeline. The saturation form keeps the metric in ``[0, 1]``
         while preserving variation above the K-threshold.
     """
@@ -2814,15 +2815,27 @@ def _compute_affective_scores_uncached(
     if not ws.events:
         return scores
 
-    utterances = [e for e in ws.events if e.event_type == "utterance"]
-    if utterances:
-        late = sum(
-            1 for e in utterances
-            if e.syuzhet_index and e.syuzhet_index >= 1
+    # Heuristic mystery fallback (Sternberg-style "share of the story
+    # the reader has not yet been shown"). The engine version below
+    # overrides this key when ``entity_ids`` is supplied; this branch
+    # exists so the chart still has a mystery line in cast-less views.
+    #
+    # Previously: ``late_utterances / total_utterances`` where "late"
+    # was ``syuzhet_index >= 1``. That collapsed to ~1.0 on every plot
+    # whose utterances weren't all crammed at anchor 0 and had no
+    # connection to revealed/hidden ancestor structure. The current
+    # form is the share of *events* that sit beyond the reader's
+    # current syuzhet anchor — a cheap proxy for "how much causal
+    # material is still to come" — and degenerates to 0 when the
+    # reader has seen everything (anchor is None or at the maximum).
+    if syuzhet_anchor is not None:
+        unrevealed = sum(
+            1 for e in ws.events
+            if e.syuzhet_index is not None and e.syuzhet_index > syuzhet_anchor
         )
-        scores["mystery"] = min(
-            1.0, late / max(1, len(utterances))
-        )
+        scores["mystery"] = min(1.0, unrevealed / max(1, len(ws.events)))
+    else:
+        scores["mystery"] = 0.0
 
     rels = ws.social_topology
     if rels:
@@ -2962,7 +2975,9 @@ def affective_timeseries(
 
     tmin, tmax = fabula_time_bounds(ws)
     if tmax <= tmin:
-        scores = compute_affective_scores(ws, entity_ids=entity_ids)
+        scores = compute_affective_scores(
+            ws, entity_ids=entity_ids, surprise_local=True,
+        )
         return [tmin], {k: [v] for k, v in scores.items()}
 
     samples = max(2, int(samples))
@@ -3049,6 +3064,7 @@ def affective_timeseries_syuzhet(
     if smax <= smin:
         scores = compute_affective_scores(
             ws, entity_ids=entity_ids, syuzhet_anchor=smin,
+            surprise_local=True,
         )
         return [smin], {k: [v] for k, v in scores.items()}
 

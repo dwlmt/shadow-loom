@@ -19,6 +19,25 @@ into a single end-to-end pipeline that ingests prose, simulates over it,
 generates new prose under provable constraints, and audits its own output —
 all inside a versioned world model.
 
+A central component of the symbolic layer is a suite of **theory-grounded
+affective scorers** that turn the typed graph into an ``[0, 1]`` gauge for
+each of the four canonical structural affects identified by Sternberg
+(*mystery*, *suspense*, *surprise*) and Booth (*dramatic irony*), plus six
+emotion targets (*grief*, *rage*, *joy*, *regret*, *love*, *fear*). The
+scorers are not heuristic sentiment proxies: each is a graph-traversal
+formula calibrated against a 20-fixture canonical-literature corpus, with
+formulae traceable to the cognitive-narratology literature (Trabasso &
+Sperry 1985, Iser 1976, Lazarus 1991, OCC 1988, Reagan et al. 2016,
+Bae & Young 2008, Bissell-Paulin-Piper 2025) and every constant
+externalised through `DirectiveAssemblySettings`. The auditor uses these
+gauges as the loss function the rendered prose is scored against, and the
+NiceGUI workspace surfaces them as live rise-peak-fall curves over the
+syuzhet axis. See
+[docs/academic-foundations.md §3](docs/academic-foundations.md#3-the-four-structural-affects)
+for the full equations and
+[docs/settings.md §8](docs/settings.md#8-directive-assembly-step-8--affective-scorers)
+for the tunables.
+
 
 ```
 prose ──► graph ──► AMWN sandbox ──► causal physics ──► creative brief
@@ -57,6 +76,7 @@ Every doc has a **See also** footer cross-linking its closest neighbours.
 | [docs/railway-deployment.md](docs/railway-deployment.md) | Step-by-step recipe for deploying to Railway with managed Postgres, OAuth, and OpenRouter. |
 | [docs/render-deployment.md](docs/render-deployment.md) | Equivalent Render Blueprint deploy — single-click via [`render.yaml`](render.yaml). |
 | [docs/academic-foundations.md](docs/academic-foundations.md) | The literature behind every named concept — Pearl, Genette, Greimas, Sternberg, Halpern, Wilmot, Correa & Bareinboim, etc. |
+| [paper/shadow_loom.pdf](paper/shadow_loom.pdf) | Companion paper (LaTeX source: [paper/shadow_loom.tex](paper/shadow_loom.tex), bibliography: [paper/references.bib](paper/references.bib)) — the formal write-up of the architecture, narrative-physics scorers, and design rationale. |
 
 ### Reading paths
 
@@ -75,7 +95,7 @@ Pick the path that matches what you're trying to do.
 [architecture.md](docs/architecture.md) → [pipeline-walkthrough.md](docs/pipeline-walkthrough.md) → [testing.md](docs/testing.md) → [design-decisions.md](docs/design-decisions.md) → the module the change touches.
 
 **"I'm writing a paper or comparing to prior work."**
-[academic-foundations.md](docs/academic-foundations.md) → [design-decisions.md](docs/design-decisions.md) → [architecture.md](docs/architecture.md).
+[paper/shadow_loom.pdf](paper/shadow_loom.pdf) → [academic-foundations.md](docs/academic-foundations.md) → [design-decisions.md](docs/design-decisions.md) → [architecture.md](docs/architecture.md).
 
 **"I want to see the engine working on real story plots, feature by feature."**
 [model-examples.md](docs/model-examples.md) → [pipeline-by-example.md](docs/pipeline-by-example.md).

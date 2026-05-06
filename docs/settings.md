@@ -25,6 +25,7 @@ shadow_loom/settings.py          ← single source of truth
     ├─ AuditorSettings           (AUDITOR_*)
     ├─ ExtractionSettings        (EXTRACTION_*)
     ├─ CausalPhysicsSettings     (PHYSICS_*)
+    ├─ DirectiveAssemblySettings (DIRECTIVE_ASSEMBLY_*)
     ├─ MCPSettings               (MCP_*)
     ├─ PipelineSettings          (PIPELINE_*)
     ├─ UISettings                (UI_*)
@@ -232,7 +233,82 @@ and [§5.1 (Trait + inertia model)](academic-foundations.md#51-trait--inertia-mo
 
 ---
 
-## 8. MCP server
+## 8. Directive assembly (Step 8 — affective scorers)
+
+The four structural-affect scorers (`mystery`, `dramatic_irony`,
+`suspense`, `surprise`) are tuned through `DirectiveAssemblySettings`
+(env prefix `DIRECTIVE_ASSEMBLY_`). Defaults match the published
+formulations in
+[academic-foundations.md §§3.1–3.4](academic-foundations.md#3-the-four-structural-affects)
+and `paper/shadow_loom.tex`. All values are also exposed as Python
+attributes on `DirectiveAssembler._settings` for callers that build
+their own settings objects programmatically.
+
+### Mystery (Sternberg curiosity gap)
+
+| Variable | Default | Notes |
+|---|---|---|
+| `DIRECTIVE_ASSEMBLY_MYSTERY_PATH_DECAY_DEPTH` | `4` | Reverse-causal traversal depth cap (Trabasso & Sperry 1985 4-hop traceability). Ancestors beyond this depth drop out of the gap aggregation. |
+| `DIRECTIVE_ASSEMBLY_MYSTERY_PROXIMITY_TAU_SYUZHET` | `8.0` | Curiosity-proximity decay constant in syuzhet-index units (Iser 1976 reader-gap recency). |
+
+### Dramatic irony (knowledge asymmetry)
+
+| Variable | Default | Notes |
+|---|---|---|
+| `DIRECTIVE_ASSEMBLY_IRONY_SURFACE_K` | `1.0` | Saturation constant K in the per-character gap-fraction denominator. |
+| `DIRECTIVE_ASSEMBLY_IRONY_FALSE_BELIEF_MULT` | `1.5` | Boost when the focal holds a provenance-valid belief about the gap event's actor (Iago→Othello / Jacqueline→Linnet pattern). |
+| `DIRECTIVE_ASSEMBLY_IRONY_ACTION_ALPHA` | `0.15` | Per-actor-event linear term in the focal-prominence weight `a_c = min(cap, 1 + α · #actor-events)`. |
+| `DIRECTIVE_ASSEMBLY_IRONY_ACTION_WEIGHT_CAP` | `3.0` | Upper cap on the focal-prominence weight. |
+| `DIRECTIVE_ASSEMBLY_IRONY_AGGREGATOR_BETA` | `0.6` | Convex aggregator: `β·max + (1-β)·mean` across focal characters (β closer to 1 = single-dominant-gap framing). |
+| `DIRECTIVE_ASSEMBLY_IRONY_PROXIMITY_TAU_SYUZHET` | `6.0` | Closure-proximity decay constant: how sharply the gap discharges as the syuzhet approaches the truth-revealing scene. |
+| `DIRECTIVE_ASSEMBLY_IRONY_PROXIMITY_FLOOR` | `0.4` | Minimum closure-proximity weight (prevents distant events from going to zero). |
+
+### Suspense (hope/threat ledger)
+
+| Variable | Default | Notes |
+|---|---|---|
+| `DIRECTIVE_ASSEMBLY_SUSPENSE_STAKES_K` | `2.0` | Saturation constant K in the stakes denominator. |
+| `DIRECTIVE_ASSEMBLY_SUSPENSE_PROXIMITY_TAU_FABULA_GAPS` | `6.0` | Fabula-gap proximity decay (closer threats feel sharper). |
+| `DIRECTIVE_ASSEMBLY_SUSPENSE_PROXIMITY_TAU_SPATIAL` | `4.0` | Spatial-distance proximity decay (in location hops). |
+| `DIRECTIVE_ASSEMBLY_SUSPENSE_PERSISTENCE_ALPHA` | `0.10` | Per-revealed-edge persistence amplifier. |
+| `DIRECTIVE_ASSEMBLY_SUSPENSE_PERSISTENCE_CAP` | `1.5` | Upper cap on the cumulative persistence multiplier. |
+| `DIRECTIVE_ASSEMBLY_SUSPENSE_HOSTILE_AFFINITY` | `-0.2` | Affinity ≤ this value flags a relationship as hostile (threat side). |
+| `DIRECTIVE_ASSEMBLY_SUSPENSE_ALLY_AFFINITY` | `0.2` | Affinity ≥ this value flags a relationship as allied (hope side). |
+
+### Surprise (Beta-Bernoulli + anachrony)
+
+| Variable | Default | Notes |
+|---|---|---|
+| `DIRECTIVE_ASSEMBLY_SURPRISE_TRAIT_KL_WEIGHT` | `0.7` | Convex weight on the trait-KL surprise component. |
+| `DIRECTIVE_ASSEMBLY_SURPRISE_ANACHRONY_WEIGHT` | `0.3` | Convex weight on the plan-based anachrony component (Bae & Young 2008). Should sum to 1.0 with the KL weight. |
+| `DIRECTIVE_ASSEMBLY_SURPRISE_DEFAULT_TRAIT_SALIENCE` | `0.55` | Salience for traits not in the per-trait narrative-salience table. |
+| `DIRECTIVE_ASSEMBLY_SURPRISE_SOURCE_EDGE_WEIGHT` | `0.4` | Multiplier on causal edges where the focal is the source (vs target). Reflects "X did Y to Z" speaks more strongly about Z. |
+| `DIRECTIVE_ASSEMBLY_SURPRISE_PRIOR_PSEUDOCOUNT` | `2.0` | Beta-Bernoulli prior pseudo-count `s`. The prior is `Beta(s·m, s·(1-m))` where `m` is the corpus baseline. |
+
+### Salience tables (shared across scorers)
+
+The harm-kind and trait-narrative salience tables can be replaced
+wholesale via JSON env vars (Pydantic parses dict-typed `Field`s
+from JSON strings):
+
+| Variable | Default | Notes |
+|---|---|---|
+| `DIRECTIVE_ASSEMBLY_HARM_KIND_SALIENCE` | *(see code)* | Lazarus 1991 / OCC 1988 appraisal hierarchy. Defaults: `existential=1.00, physical=0.85, betrayal=0.75, psychological=0.70, emotional=0.65, social=0.55, epistemic=0.45, informational=0.45`. |
+| `DIRECTIVE_ASSEMBLY_DEFAULT_HARM_SALIENCE` | `0.85` | Fallback salience when an event's mechanism does not resolve to any harm-kind. Defaults to `physical` (modal harm in the corpus). |
+| `DIRECTIVE_ASSEMBLY_TRAIT_NARRATIVE_SALIENCE` | *(see code)* | Reagan et al. 2016 corpus arc-relevance hierarchy. Substring match against trait names. Highlights: `ambition=1.00, guilt=0.95, vengeance=0.95, despair=0.95, love=0.90, loyalty=0.85, courage=0.85`. |
+
+> **Calibration note.** These defaults reproduce the canonical
+> rise-peak-fall arcs against the 20-fixture
+> [example_worlds/](../example_worlds) corpus — see
+> [academic-foundations.md §3.5](academic-foundations.md#35-corpus-scale-audit)
+> for the full per-scorer scale summary. Override individual
+> constants only when targeting a non-canonical genre (e.g. raise
+> `IRONY_AGGREGATOR_BETA` toward 1.0 for ensemble-cast tragedies
+> where a single dominant blindness should overwhelm the average).
+
+---
+
+## 9. MCP server
 
 | Variable | Default | Notes |
 |---|---|---|
@@ -246,7 +322,7 @@ Full MCP tool/resource catalogue and auth flow:
 
 ---
 
-## 9. Pipeline
+## 10. Pipeline
 
 | Variable | Default | Notes |
 |---|---|---|
@@ -261,7 +337,7 @@ actually does see [pipeline-walkthrough.md](pipeline-walkthrough.md).
 
 ---
 
-## 10. UI
+## 11. UI
 
 | Variable | Default | Notes |
 |---|---|---|
@@ -275,7 +351,7 @@ For the workspace tour see [ui-guide.md](ui-guide.md).
 
 ---
 
-## 11. OAuth (UI auth)
+## 12. OAuth (UI auth)
 
 Auth is **disabled by default** — the UI runs as a single-user local app.
 To enable an OAuth provider, set its client id + secret pair (and provide
@@ -293,7 +369,7 @@ To enable an OAuth provider, set its client id + secret pair (and provide
 
 ---
 
-## 12. Tuning recipes
+## 13. Tuning recipes
 
 **"I want to use a smaller-context model (e.g. 8K-context Llama)."**
 Drop every `*_MAX_TOKENS` to ~4000, drop `EXTRACTION_MIN_CHUNK_CHARS` to

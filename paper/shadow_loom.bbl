@@ -1,4 +1,4 @@
-\begin{thebibliography}{108}
+\begin{thebibliography}{117}
 \providecommand{\natexlab}[1]{#1}
 
 \bibitem[{Akoury et~al.(2020)Akoury, Wang, Whiting, Hood, Peng, and Iyyer}]{akoury2020storium}
@@ -45,6 +45,11 @@ Elias Bareinboim, Juan~D. Correa, Duligur Ibeling, and Thomas Icard. 2022.
 Simon Baron-Cohen, Alan~M. Leslie, and Uta Frith. 1985.
 \newblock Does the autistic child have a 'theory of mind'?
 \newblock \emph{Cognition}, 21(1):37--46.
+
+\bibitem[{Bissell et~al.(2025)Bissell, Paulin, and Piper}]{bissell2025surprise}
+Annaliese Bissell, Emma Paulin, and Andrew Piper. 2025.
+\newblock A theoretical framework for evaluating narrative surprise in large language models.
+\newblock In \emph{Proceedings of the 7th Workshop on Narrative Understanding (WNU)}.
 
 \bibitem[{Booth(1974)}]{booth1974irony}
 Wayne~C. Booth. 1974.
@@ -148,6 +153,11 @@ Seraphina Goldfarb-Tarrant, Tuhin Chakrabarty, Ralph Weischedel, and Nanyun Peng
 \newblock Content planning for neural story generation with {Aristotelian} rescoring.
 \newblock In \emph{Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing (EMNLP)}, pages 4319--4338.
 
+\bibitem[{Gonzalez(2024)}]{cabanas2024toM}
+Carmen Cristina~Cabanas Gonzalez. 2024.
+\newblock \emph{Investigating the role of spontaneous theory of mind on the processing of dramatic irony in filmed narratives}.
+\newblock Ph.D. thesis, Birkbeck, University of London.
+
 \bibitem[{Graesser et~al.(1994)Graesser, Singer, and Trabasso}]{graesser1994constructing}
 Arthur~C. Graesser, Murray Singer, and Tom Trabasso. 1994.
 \newblock Constructing inferences during narrative text comprehension.
@@ -200,6 +210,12 @@ Patrick~Colm Hogan. 2003.
 \newblock \emph{The Mind and Its Stories: Narrative Universals and Human Emotion}.
 \newblock Cambridge University Press.
 
+\bibitem[{Iser(1976)}]{iser1976akt}
+Wolfgang Iser. 1976.
+\newblock \emph{Der Akt des Lesens: Theorie {\"a}sthetischer Wirkung}.
+\newblock Wilhelm Fink, M{\"u}nchen.
+\newblock English: \emph{The Act of Reading}, Johns Hopkins UP, 1978.
+
 \bibitem[{Itti and Baldi(2009)}]{ittibaldi2009surprise}
 Laurent Itti and Pierre Baldi. 2009.
 \newblock \href {https://doi.org/10.1016/j.visres.2008.09.007} {{Bayesian} surprise attracts human attention}.
@@ -243,6 +259,12 @@ Max Kreminski, Melanie Dickinson, Michael Mateas, and Noah Wardrip-Fruin. 2020.
 \newblock \href {https://doi.org/10.1145/3402942.3402953} {Why are we like this?: The ai architecture of a co-creative storytelling game}.
 \newblock In \emph{Proceedings of the 15th International Conference on the Foundations of Digital Games (FDG)}.
 
+\bibitem[{Lazarus(1991)}]{lazarus1991emotion}
+Richard~S. Lazarus. 1991.
+\newblock \emph{Emotion and Adaptation}.
+\newblock Oxford University Press.
+\newblock Core relational themes link distinct emotion families to distinct kinds of harm/benefit (physical danger, irrevocable loss, moral transgression, relational loss, social esteem/shame).
+
 \bibitem[{Lazer et~al.(2009)Lazer, Pentland, Adamic, Aral, Barab\'asi, Brewer, Christakis, Contractor, Fowler, Gutmann, Jebara, King, Macy, Roy, and Alstyne}]{lazer2009css}
 David Lazer, Alex Pentland, Lada Adamic, Sinan Aral, Albert-L\'aszl\'o Barab\'asi, Devon Brewer, Nicholas Christakis, Noshir Contractor, James Fowler, Myron Gutmann, Tony Jebara, Gary King, Michael Macy, Deb Roy, and Marshall~Van Alstyne. 2009.
 \newblock \href {https://doi.org/10.1126/science.1167742} {Computational social science}.
@@ -263,6 +285,11 @@ Wendy~G. Lehnert. 1981.
 David Lewis. 1973.
 \newblock \href {https://doi.org/10.2307/2025310} {Causation}.
 \newblock \emph{Journal of Philosophy}, 70(17):556--567.
+
+\bibitem[{Lu and Dosher(2013)}]{lu2013visual}
+Zhong-Lin Lu and Barbara~A. Dosher. 2013.
+\newblock \emph{Visual Psychophysics: From Laboratory to Theory}.
+\newblock MIT Press.
 
 \bibitem[{Madaan et~al.(2023)Madaan, Tandon, Gupta, Hallinan, Gao, Wiegreffe, Alon, Dziri, Prabhumoye, Yang, Gupta, Majumder, Hermann, Welleck, Yazdanbakhsh, and Clark}]{madaan2023selfrefine}
 Aman Madaan, Niket Tandon, Prakhar Gupta, Skyler Hallinan, Luyu Gao, Sarah Wiegreffe, Uri Alon, Nouha Dziri, Shrimai Prabhumoye, Yiming Yang, Shashank Gupta, Bodhisattwa~Prasad Majumder, Katherine Hermann, Sean Welleck, Amir Yazdanbakhsh, and Peter Clark. 2023.
@@ -348,6 +375,12 @@ Judea Pearl. 2009.
 Judea Pearl and Dana Mackenzie. 2018.
 \newblock \emph{The Book of Why: The New Science of Cause and Effect}.
 \newblock Basic Books.
+
+\bibitem[{Pfister(1988)}]{pfister1988drama}
+Manfred Pfister. 1988.
+\newblock \emph{The Theory and Analysis of Drama}.
+\newblock Cambridge University Press.
+\newblock German original \emph{Das Drama}, 1977.
 
 \bibitem[{Premack and Woodruff(1978)}]{premack1978tom}
 David Premack and Guy Woodruff. 1978.
@@ -450,16 +483,31 @@ Adam Summerville, Sam Snodgrass, Matthew Guzdial, Christoffer Holmg{\aa}rd, Amy~
 \newblock \href {https://doi.org/10.1109/TG.2018.2846639} {Procedural content generation via machine learning ({PCGML})}.
 \newblock \emph{IEEE Transactions on Games}, 10(3):257--270.
 
+\bibitem[{Sutherland(2013)}]{sutherland2013little}
+John Sutherland. 2013.
+\newblock \emph{A Little History of Literature}.
+\newblock Yale University Press.
+
 \bibitem[{Tian et~al.(2024)Tian, Huang, Liu, Jiang, Spangher, Chen, May, and Peng}]{tian2024human}
 Yufei Tian, Tenghao Huang, Miri Liu, Derek Jiang, Alexander Spangher, Muhao Chen, Jonathan May, and Nanyun Peng. 2024.
 \newblock \href {https://doi.org/10.18653/v1/2024.emnlp-main.978} {Are large language models capable of generating human-level narratives?}
 \newblock In \emph{Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing (EMNLP)}, pages 17659--17681. Association for Computational Linguistics.
 \newblock Outstanding Paper Award.
 
+\bibitem[{Tobin(2018)}]{tobin2018elements}
+Vera Tobin. 2018.
+\newblock \emph{Elements of Surprise: Our Mental Limits and the Satisfactions of Plot}.
+\newblock Harvard University Press.
+
 \bibitem[{Tomashevsky(1965)}]{tomashevsky1965thematics}
 Boris Tomashevsky. 1965.
 \newblock Thematics.
 \newblock In Lee~T. Lemon and Marion~J. Reis, editors, \emph{Russian Formalist Criticism: Four Essays}, pages 61--95. University of Nebraska Press.
+
+\bibitem[{Trabasso and Sperry(1985)}]{trabasso1985sperry}
+Tom Trabasso and Linda~L. Sperry. 1985.
+\newblock \href {https://doi.org/10.1016/0749-596X(85)90048-8} {Causal relatedness and importance of story events}.
+\newblock \emph{Journal of Memory and Language}, 24(5):595--611.
 
 \bibitem[{Trabasso and van~den Broek(1985)}]{trabasso1985causal}
 Tom Trabasso and Paul van~den Broek. 1985.

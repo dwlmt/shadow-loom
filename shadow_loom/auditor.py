@@ -987,6 +987,47 @@ def _format_constraints_for_audit(constraints: List[ConstraintBlock]) -> str:
     return "\n".join(lines)
 
 
+def _format_affective_metrics_block(
+    affective_feedback: Optional[AffectiveStateFeedback],
+) -> List[str]:
+    """Render the engine-grade affective ledger as prompt lines.
+
+    Shared by :func:`assemble_audit_prompt` (refinement loop) and
+    :func:`assemble_evaluation_prompt` (quality report) so both LLM
+    surfaces see the *same* numbers under the *same* labels. Without a
+    single source of truth for this block the two prompts drift out
+    of step — the evaluator could see ``Affective loss MSE: 0.42`` on
+    a scene whose audit cycle never showed the auditor any affective
+    score at all, producing self-contradictory quality verdicts.
+    """
+    if affective_feedback is None:
+        return []
+    lines: List[str] = ["=== ENGINE: AFFECTIVE METRICS (ground truth) ==="]
+    for effect, score in affective_feedback.emotional_trajectory_scores.items():
+        lines.append(f"  {effect}: {score:.4f}")
+    if affective_feedback.kl_divergence_prediction_error is not None:
+        lines.append(
+            f"  KL divergence (surprise): "
+            f"{affective_feedback.kl_divergence_prediction_error:.4f}"
+        )
+    # ``affective_loss_mse`` is ``None`` when the brief had no
+    # measurable target (e.g. observation queries without entities to
+    # score against). Surface as "not measured" rather than 0.0 so the
+    # LLM does not penalise prose against a metric that did not run.
+    if affective_feedback.affective_loss_mse is not None:
+        lines.append(
+            f"  Affective loss MSE: "
+            f"{affective_feedback.affective_loss_mse:.4f}"
+        )
+    else:
+        lines.append(
+            "  Affective loss MSE: not measured "
+            "(no scorable target — ignore in evaluation)"
+        )
+    lines.append("")
+    return lines
+
+
 def assemble_audit_prompt(
     prose: str,
     brief: CreativeBrief,
@@ -995,6 +1036,7 @@ def assemble_audit_prompt(
     causal_feedback: Optional[CausalPhysicsFeedback] = None,
     *,
     world_state: Optional[WorldStateV1] = None,
+    affective_feedback: Optional[AffectiveStateFeedback] = None,
 ) -> str:
     """Build the full prompt for the auditor LLM.
 
@@ -1887,31 +1929,7 @@ def assemble_evaluation_prompt(
                 sections.append(f"    - {ev}")
         sections.append("")
 
-    if affective_feedback is not None:
-        sections.append("=== ENGINE: AFFECTIVE METRICS (ground truth) ===")
-        for effect, score in affective_feedback.emotional_trajectory_scores.items():
-            sections.append(f"  {effect}: {score:.4f}")
-        if affective_feedback.kl_divergence_prediction_error is not None:
-            sections.append(
-                f"  KL divergence (surprise): "
-                f"{affective_feedback.kl_divergence_prediction_error:.4f}"
-            )
-        # ``affective_loss_mse`` is ``None`` when the brief had no
-        # measurable target (e.g. observation queries without entities
-        # to score against). Treat as "not measured" rather than 0.0
-        # — the LLM evaluator must not penalise prose against a metric
-        # that did not actually run.
-        if affective_feedback.affective_loss_mse is not None:
-            sections.append(
-                f"  Affective loss MSE: "
-                f"{affective_feedback.affective_loss_mse:.4f}"
-            )
-        else:
-            sections.append(
-                "  Affective loss MSE: not measured "
-                "(no scorable target — ignore in evaluation)"
-            )
-        sections.append("")
+    sections.extend(_format_affective_metrics_block(affective_feedback))
 
     sections.append(
         "=== TASK ===\n"
@@ -2037,6 +2055,7 @@ def run_audit(
     causal_feedback: Optional[CausalPhysicsFeedback] = None,
     *,
     world_state: Optional[WorldStateV1] = None,
+    affective_feedback: Optional[AffectiveStateFeedback] = None,
 ) -> AuditResult:
     """Execute a single audit pass (Step 11).
 
@@ -2063,6 +2082,7 @@ def run_audit(
     audit_prompt = assemble_audit_prompt(
         prose, brief, categories, prior_feedback, causal_feedback,
         world_state=world_state,
+        affective_feedback=affective_feedback,
     )
 
     logger.info(
@@ -2396,6 +2416,7 @@ def run_feedback_loop(
             prior_feedback=accumulated_feedback if iteration > 0 else None,
             causal_feedback=cycle_causal,
             world_state=world_state,
+            affective_feedback=cycle_affective,
         )
 
         # Snapshot the current state
