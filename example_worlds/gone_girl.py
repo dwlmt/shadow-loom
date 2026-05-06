@@ -1056,20 +1056,20 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=-0.75, inertia=0.7, evidence_strength="strong", last_updated_fabula=5000),
             },
         ),
-        # Boney ↔ Gilpin — partners.
+        # Boney ↔ Gilpin — partners (Boney leads instinctively; Gilpin defers to her case sense).
         RelationshipEdge(
             source_entity_id="ENT_BONEY", target_entity_id="ENT_GILPIN",
             metrics={
-                "affinity": RelationshipMetric(value=0.0, inertia=0.5, evidence_strength="moderate", last_updated_fabula=3000, observed=False),
-                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.65, evidence_strength="moderate", last_updated_fabula=3000, observed=False),
+                "affinity":      RelationshipMetric(value=0.4, inertia=0.5,  evidence_strength="moderate", last_updated_fabula=3000),
+                "power_dynamic": RelationshipMetric(value=0.4, inertia=0.65, evidence_strength="moderate", last_updated_fabula=3000),
             },
         ),
-        # Gilpin → Boney — partner-of-equal-rank: working professional respect that frays as they disagree on Nick's guilt; placeholder symmetric structure.
+        # Gilpin → Boney — partner-of-equal-rank: working professional respect, defers to her on Nick's guilt.
         RelationshipEdge(
             source_entity_id="ENT_GILPIN", target_entity_id="ENT_BONEY",
             metrics={
-                "affinity":      RelationshipMetric(value=0.0, inertia=0.5,  evidence_strength="moderate", last_updated_fabula=3000, observed=False),
-                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.65, evidence_strength="moderate", last_updated_fabula=3000, observed=False),
+                "affinity":      RelationshipMetric(value=0.5,  inertia=0.5,  evidence_strength="moderate", last_updated_fabula=3000),
+                "power_dynamic": RelationshipMetric(value=-0.4, inertia=0.65, evidence_strength="moderate", last_updated_fabula=3000),
             },
         ),
         # Noelle → Amy / Nick.
@@ -1137,16 +1137,17 @@ world_state = WorldStateV1(
         RelationshipEdge(
             source_entity_id="ENT_RAND", target_entity_id="ENT_NICK",
             metrics={
-                "affinity": RelationshipMetric(value=0.0, inertia=0.5, evidence_strength="moderate", last_updated_fabula=3000, observed=False),
-                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.65, evidence_strength="moderate", last_updated_fabula=3000, observed=False),
+                "affinity":      RelationshipMetric(value=-0.5, inertia=0.5,  evidence_strength="moderate", last_updated_fabula=3000),
+                "power_dynamic": RelationshipMetric(value=0.0,  inertia=0.65, evidence_strength="weak",     last_updated_fabula=3000, observed=False),
             },
         ),
-        # Nick → Rand — cordial son-in-law facade; the more passive of Amy's parents recedes into the background of the marriage. Placeholder zero-vector mirror.
+        # Nick → Rand — cordial son-in-law facade strained by Rand's suspicion he harmed Amy.
         RelationshipEdge(
             source_entity_id="ENT_NICK", target_entity_id="ENT_RAND",
             metrics={
-                "affinity":      RelationshipMetric(value=0.0, inertia=0.5,  evidence_strength="moderate", last_updated_fabula=3000, observed=False),
-                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.65, evidence_strength="moderate", last_updated_fabula=3000, observed=False),
+                "affinity":      RelationshipMetric(value=-0.2, inertia=0.5,  evidence_strength="moderate", last_updated_fabula=3000),
+                "fear":          RelationshipMetric(value=0.1,  inertia=0.3,  evidence_strength="weak",     last_updated_fabula=3000),
+                "power_dynamic": RelationshipMetric(value=0.0,  inertia=0.65, evidence_strength="weak",     last_updated_fabula=3000, observed=False),
             },
         ),
     ],

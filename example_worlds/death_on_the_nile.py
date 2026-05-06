@@ -1038,17 +1038,19 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=0.7,   inertia=0.7,  evidence_strength="strong",   last_updated_fabula=9400),
             },
         ),
-        # Poirot ↔ Race — collegial.
+        # Poirot ↔ Race — collegial (Race defers slightly to Poirot's reputation on the case).
         RelationshipEdge(
             source_entity_id="ENT_POIROT", target_entity_id="ENT_RACE",
             metrics={
-                "affinity": RelationshipMetric(value=0.85, inertia=0.7, evidence_strength="strong", last_updated_fabula=7000),
+                "affinity":      RelationshipMetric(value=0.8, inertia=0.7, evidence_strength="strong", last_updated_fabula=7000),
+                "power_dynamic": RelationshipMetric(value=0.2, inertia=0.6, evidence_strength="moderate", last_updated_fabula=7000),
             },
         ),
         RelationshipEdge(
             source_entity_id="ENT_RACE", target_entity_id="ENT_POIROT",
             metrics={
-                "affinity": RelationshipMetric(value=0.85, inertia=0.7, evidence_strength="strong", last_updated_fabula=7000),
+                "affinity":      RelationshipMetric(value=0.85, inertia=0.7, evidence_strength="strong", last_updated_fabula=7000),
+                "power_dynamic": RelationshipMetric(value=-0.2, inertia=0.6, evidence_strength="moderate", last_updated_fabula=7000),
             },
         ),
         # Poirot → Jacqueline — moral interest.
@@ -1085,16 +1087,17 @@ world_state = WorldStateV1(
         RelationshipEdge(
             source_entity_id="ENT_VAN_SCHUYLER", target_entity_id="ENT_CORNELIA",
             metrics={
-                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.75, evidence_strength="strong", last_updated_fabula=4000, observed=False),
-                "affinity": RelationshipMetric(value=0.0, inertia=0.55, evidence_strength="moderate", last_updated_fabula=4000, observed=False),
+                "power_dynamic": RelationshipMetric(value=0.85, inertia=0.75, evidence_strength="strong", last_updated_fabula=4000),
+                "affinity":      RelationshipMetric(value=-0.3, inertia=0.55, evidence_strength="moderate", last_updated_fabula=4000),
             },
         ),
-        # Cornelia → Van Schuyler — the put-upon poor relation; placeholder zero-vector mirror with low evidence so the gauges aren't pinned.
+        # Cornelia → Van Schuyler — the put-upon poor relation: loyal, frightened, and steeply subordinate.
         RelationshipEdge(
             source_entity_id="ENT_CORNELIA", target_entity_id="ENT_VAN_SCHUYLER",
             metrics={
-                "affinity":      RelationshipMetric(value=0.0, inertia=0.55, evidence_strength="moderate", last_updated_fabula=4000, observed=False),
-                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.75, evidence_strength="weak",     last_updated_fabula=4000, observed=False),
+                "affinity":      RelationshipMetric(value=0.4, inertia=0.55, evidence_strength="moderate", last_updated_fabula=4000),
+                "fear":          RelationshipMetric(value=0.6, inertia=0.3, evidence_strength="strong", last_updated_fabula=4000),
+                "power_dynamic": RelationshipMetric(value=-0.85, inertia=0.75, evidence_strength="strong", last_updated_fabula=4000),
             },
         ),
     ],

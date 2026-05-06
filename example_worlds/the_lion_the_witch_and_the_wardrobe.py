@@ -1092,17 +1092,17 @@ world_state = WorldStateV1(
                 "affinity": RelationshipMetric(value=0.8, inertia=0.55, evidence_strength="strong", last_updated_fabula=1000),
             },
         ),
-        # Susan ↔ Lucy: sisterly bond
+        # Susan ↔ Lucy: sisterly bond (Susan older-sister protective + skeptical; Lucy looks up to her).
         RelationshipEdge(
             source_entity_id="ENT_SUSAN", target_entity_id="ENT_LUCY",
             metrics={
-                "affinity": RelationshipMetric(value=0.75, inertia=0.55, evidence_strength="moderate", last_updated_fabula=5500),
+                "affinity": RelationshipMetric(value=0.7, inertia=0.55, evidence_strength="moderate", last_updated_fabula=5500),
             },
         ),
         RelationshipEdge(
             source_entity_id="ENT_LUCY", target_entity_id="ENT_SUSAN",
             metrics={
-                "affinity": RelationshipMetric(value=0.75, inertia=0.5, evidence_strength="moderate", last_updated_fabula=1000),
+                "affinity": RelationshipMetric(value=0.85, inertia=0.5, evidence_strength="moderate", last_updated_fabula=1000),
             },
         ),
         # Peter ↔ Susan: eldest siblings

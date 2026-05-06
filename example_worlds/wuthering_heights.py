@@ -1091,7 +1091,7 @@ world_state = WorldStateV1(
 
     # ── SOCIAL TOPOLOGY ────────────────────────────────────────────────
     social_topology=[
-        # Heathcliff ↔ Catherine — the absolute bond.
+        # Heathcliff ↔ Catherine — the absolute bond (Heathcliff's consuming obsession; Catherine loves him but marries Edgar, fears his intensity).
         RelationshipEdge(
             source_entity_id="ENT_HEATHCLIFF", target_entity_id="ENT_CATHERINE",
             metrics={
@@ -1101,7 +1101,8 @@ world_state = WorldStateV1(
         RelationshipEdge(
             source_entity_id="ENT_CATHERINE", target_entity_id="ENT_HEATHCLIFF",
             metrics={
-                "affinity": RelationshipMetric(value=1.0, inertia=0.6, evidence_strength="strong", last_updated_fabula=11000),
+                "affinity": RelationshipMetric(value=0.85, inertia=0.6, evidence_strength="strong", last_updated_fabula=11000),
+                "fear":     RelationshipMetric(value=0.3,  inertia=0.4, evidence_strength="moderate", last_updated_fabula=11000),
             },
         ),
         # Hindley ↔ Heathcliff — class-rage and counter-vengeance.
@@ -1132,18 +1133,20 @@ world_state = WorldStateV1(
                 "affinity": RelationshipMetric(value=0.95, inertia=0.6, evidence_strength="strong", last_updated_fabula=11000),
             },
         ),
-        # Heathcliff ↔ Edgar — formal hatred.
+        # Heathcliff ↔ Edgar — formal hatred (Heathcliff active revenge; Edgar revulsion + fear, more passive).
         RelationshipEdge(
             source_entity_id="ENT_HEATHCLIFF", target_entity_id="ENT_EDGAR",
             metrics={
-                "affinity": RelationshipMetric(value=-0.95, inertia=0.55, evidence_strength="strong", last_updated_fabula=10000),
+                "affinity":      RelationshipMetric(value=-0.95, inertia=0.55, evidence_strength="strong", last_updated_fabula=10000),
+                "power_dynamic": RelationshipMetric(value=0.4,   inertia=0.6,  evidence_strength="strong", last_updated_fabula=10000),
             },
         ),
         RelationshipEdge(
             source_entity_id="ENT_EDGAR", target_entity_id="ENT_HEATHCLIFF",
             metrics={
-                "affinity": RelationshipMetric(value=-0.95, inertia=0.55, evidence_strength="strong", last_updated_fabula=10000),
-                "fear":     RelationshipMetric(value=0.5, inertia=0.25, evidence_strength="moderate", last_updated_fabula=10000),
+                "affinity":      RelationshipMetric(value=-0.8, inertia=0.55, evidence_strength="strong", last_updated_fabula=10000),
+                "fear":          RelationshipMetric(value=0.5,  inertia=0.25, evidence_strength="moderate", last_updated_fabula=10000),
+                "power_dynamic": RelationshipMetric(value=-0.4, inertia=0.6,  evidence_strength="strong", last_updated_fabula=10000),
             },
         ),
         # Heathcliff → Isabella — instrumental cruelty.

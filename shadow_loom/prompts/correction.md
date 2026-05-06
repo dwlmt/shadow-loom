@@ -64,7 +64,7 @@ Return a single `WorldStatePatch` object with only the fields you need. Every fi
 - non-event → `EVT_`: `"affordance_gate"`
 - non-event → non-event: `"ambient_propagation"`
 
-For `mutation_social` edges, ensure `rel_counterpart_id` is set to a valid `ENT_` ID and `trait_target` is one of `"affinity"`, `"fear"`, or `"power_dynamic"`.
+For `mutation_social` edges, ensure `rel_counterpart_id` is set to a valid `ENT_` ID and `trait_target` is one of `"affinity"`, `"fear"`, or `"power_dynamic"`. **Each `mutation_social` edge moves only the directed dyad `(target_id → rel_counterpart_id)`** — the reverse direction is not auto-updated. When a fix needs both perspectives to move (mutual reactions to a shared event), add **two** edges with `target_id`/`rel_counterpart_id` swapped and **independently chosen `trait_delta` values** (rarely identical). For `power_dynamic`, the two directions must carry **opposite signs** of similar magnitude.
 
 For `chain_reaction` edges with `propagation_delay > 0`, the target event's `fabula_time` must satisfy `target.fabula_time >= source.fabula_time + propagation_delay`.
 

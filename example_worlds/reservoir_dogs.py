@@ -939,18 +939,18 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=-0.65, inertia=0.7, evidence_strength="strong", last_updated_fabula=8000),
             },
         ),
-        # Eddie ↔ Joe — filial loyalty.
+        # Eddie ↔ Joe — filial loyalty (Eddie devoted son; Joe paternal but business first).
         RelationshipEdge(
             source_entity_id="ENT_EDDIE", target_entity_id="ENT_JOE",
             metrics={
-                "affinity":      RelationshipMetric(value=0.6, inertia=0.6, evidence_strength="strong", last_updated_fabula=1000),
+                "affinity":      RelationshipMetric(value=0.85, inertia=0.6, evidence_strength="strong", last_updated_fabula=1000),
                 "power_dynamic": RelationshipMetric(value=-0.65, inertia=0.7, evidence_strength="strong", last_updated_fabula=1000),
             },
         ),
         RelationshipEdge(
             source_entity_id="ENT_JOE", target_entity_id="ENT_EDDIE",
             metrics={
-                "affinity":      RelationshipMetric(value=0.6, inertia=0.6, evidence_strength="strong", last_updated_fabula=1000),
+                "affinity":      RelationshipMetric(value=0.7, inertia=0.6, evidence_strength="strong", last_updated_fabula=1000),
                 "power_dynamic": RelationshipMetric(value=0.65, inertia=0.7, evidence_strength="strong", last_updated_fabula=1000),
             },
         ),

@@ -1001,11 +1001,11 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=-0.55, inertia=0.65, evidence_strength="strong",   last_updated_fabula=1000),
             },
         ),
-        # Walker ↔ Mainwaring — useful rogue.
+        # Walker ↔ Mainwaring — spiv vs fussy bank-manager-officer (asymmetric).
         RelationshipEdge(
             source_entity_id="ENT_WALKER", target_entity_id="ENT_MAINWARING",
             metrics={
-                "affinity": RelationshipMetric(value=0.0, inertia=0.45, evidence_strength="moderate", last_updated_fabula=1000, observed=False),
+                "affinity": RelationshipMetric(value=-0.1, inertia=0.45, evidence_strength="moderate", last_updated_fabula=1000),
                 "fear": RelationshipMetric(value=0.0, inertia=0.2, evidence_strength="weak", last_updated_fabula=1000, observed=False),
                 "power_dynamic": RelationshipMetric(value=-0.55, inertia=0.6, evidence_strength="strong", last_updated_fabula=1000),
             },
@@ -1013,7 +1013,7 @@ world_state = WorldStateV1(
         RelationshipEdge(
             source_entity_id="ENT_MAINWARING", target_entity_id="ENT_WALKER",
             metrics={
-                "affinity": RelationshipMetric(value=0.0, inertia=0.45, evidence_strength="moderate", last_updated_fabula=1000, observed=False),
+                "affinity": RelationshipMetric(value=0.15, inertia=0.45, evidence_strength="moderate", last_updated_fabula=1000),
                 "fear": RelationshipMetric(value=0.0, inertia=0.2, evidence_strength="weak", last_updated_fabula=1000, observed=False),
                 "power_dynamic": RelationshipMetric(value=0.55, inertia=0.6, evidence_strength="strong", last_updated_fabula=1000),
             },

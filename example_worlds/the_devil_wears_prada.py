@@ -820,17 +820,17 @@ world_state = WorldStateV1(
                 "affinity": RelationshipMetric(value=0.6, inertia=0.65, evidence_strength="strong", last_updated_fabula=10000),
             },
         ),
-        # Andrea ↔ Alex — relationship.
+        # Andrea ↔ Alex — relationship (Andrea drifting; Alex still attached, hurt by neglect).
         RelationshipEdge(
             source_entity_id="ENT_ANDREA", target_entity_id="ENT_ALEX",
             metrics={
-                "affinity": RelationshipMetric(value=0.55, inertia=0.55, evidence_strength="strong", last_updated_fabula=9500),
+                "affinity": RelationshipMetric(value=0.45, inertia=0.55, evidence_strength="strong", last_updated_fabula=9500),
             },
         ),
         RelationshipEdge(
             source_entity_id="ENT_ALEX", target_entity_id="ENT_ANDREA",
             metrics={
-                "affinity": RelationshipMetric(value=0.55, inertia=0.55, evidence_strength="strong", last_updated_fabula=9500),
+                "affinity": RelationshipMetric(value=0.6, inertia=0.55, evidence_strength="strong", last_updated_fabula=9500),
             },
         ),
         # Andrea ↔ Christian — temptation.

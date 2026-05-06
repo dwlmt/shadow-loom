@@ -982,17 +982,17 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=0.3, inertia=0.6, evidence_strength="moderate", last_updated_fabula=3500),
             },
         ),
-        # Crew bonds.
+        # Crew bonds (Chef more grounded, more protective of Lance).
         RelationshipEdge(
             source_entity_id="ENT_LANCE", target_entity_id="ENT_CHEF",
             metrics={
-                "affinity": RelationshipMetric(value=0.55, inertia=0.5, evidence_strength="moderate", last_updated_fabula=3500),
+                "affinity": RelationshipMetric(value=0.5, inertia=0.5, evidence_strength="moderate", last_updated_fabula=3500),
             },
         ),
         RelationshipEdge(
             source_entity_id="ENT_CHEF", target_entity_id="ENT_LANCE",
             metrics={
-                "affinity": RelationshipMetric(value=0.55, inertia=0.5, evidence_strength="moderate", last_updated_fabula=3500),
+                "affinity": RelationshipMetric(value=0.6, inertia=0.5, evidence_strength="moderate", last_updated_fabula=3500),
             },
         ),
         RelationshipEdge(
@@ -1086,17 +1086,17 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=0.8, inertia=0.95, evidence_strength="strong", last_updated_fabula=4500),
             },
         ),
-        # Willard ↔ Lance — the surviving pair.
+        # Willard ↔ Lance — the surviving pair (Willard maintains commander distance).
         RelationshipEdge(
             source_entity_id="ENT_WILLARD", target_entity_id="ENT_LANCE",
             metrics={
-                "affinity": RelationshipMetric(value=0.5, inertia=0.5, evidence_strength="moderate", last_updated_fabula=8500),
+                "affinity": RelationshipMetric(value=0.4, inertia=0.5, evidence_strength="moderate", last_updated_fabula=8500),
             },
         ),
         RelationshipEdge(
             source_entity_id="ENT_LANCE", target_entity_id="ENT_WILLARD",
             metrics={
-                "affinity": RelationshipMetric(value=0.5, inertia=0.5, evidence_strength="moderate", last_updated_fabula=8500),
+                "affinity": RelationshipMetric(value=0.55, inertia=0.5, evidence_strength="moderate", last_updated_fabula=8500),
             },
         ),
     ],

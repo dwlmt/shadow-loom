@@ -1101,17 +1101,17 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=0.2, inertia=0.6,  evidence_strength="weak",     last_updated_fabula=4000),
             },
         ),
-        # Henrietta ↔ Charles Hayter — settled love.
+        # Henrietta ↔ Charles Hayter — settled love (Henrietta wavers toward Wentworth; Charles steadfast).
         RelationshipEdge(
             source_entity_id="ENT_HENRIETTA", target_entity_id="ENT_CHARLES_HAYTER",
             metrics={
-                "affinity": RelationshipMetric(value=0.85, inertia=0.55, evidence_strength="strong", last_updated_fabula=5200),
+                "affinity": RelationshipMetric(value=0.7, inertia=0.55, evidence_strength="strong", last_updated_fabula=5200),
             },
         ),
         RelationshipEdge(
             source_entity_id="ENT_CHARLES_HAYTER", target_entity_id="ENT_HENRIETTA",
             metrics={
-                "affinity": RelationshipMetric(value=0.85, inertia=0.6, evidence_strength="strong", last_updated_fabula=5000),
+                "affinity": RelationshipMetric(value=0.9, inertia=0.6, evidence_strength="strong", last_updated_fabula=5000),
             },
         ),
         # Louisa ↔ Wentworth — flirtation.
@@ -1127,17 +1127,17 @@ world_state = WorldStateV1(
                 "affinity": RelationshipMetric(value=0.45, inertia=0.45, evidence_strength="moderate", last_updated_fabula=6000),
             },
         ),
-        # Louisa ↔ Benwick — convalescent love.
+        # Louisa ↔ Benwick — convalescent love (Louisa recovering bond; Benwick rebound from Fanny Harville).
         RelationshipEdge(
             source_entity_id="ENT_LOUISA", target_entity_id="ENT_BENWICK",
             metrics={
-                "affinity": RelationshipMetric(value=0.85, inertia=0.55, evidence_strength="strong", last_updated_fabula=9000),
+                "affinity": RelationshipMetric(value=0.8, inertia=0.55, evidence_strength="strong", last_updated_fabula=9000),
             },
         ),
         RelationshipEdge(
             source_entity_id="ENT_BENWICK", target_entity_id="ENT_LOUISA",
             metrics={
-                "affinity": RelationshipMetric(value=0.85, inertia=0.55, evidence_strength="strong", last_updated_fabula=9000),
+                "affinity": RelationshipMetric(value=0.9, inertia=0.55, evidence_strength="strong", last_updated_fabula=9000),
             },
         ),
         # William → Anne — instrumental courtship.

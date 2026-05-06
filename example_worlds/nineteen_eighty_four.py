@@ -1042,18 +1042,18 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=0.85, inertia=0.85, evidence_strength="strong",   last_updated_fabula=1000),
             },
         ),
-        # Winston ↔ Katharine — frozen marriage.
+        # Winston ↔ Katharine — frozen marriage (Winston revolted; Katharine dutiful & indifferent).
         RelationshipEdge(
             source_entity_id="ENT_WINSTON", target_entity_id="ENT_KATHARINE",
             metrics={
-                "affinity": RelationshipMetric(value=0.0, inertia=0.7, evidence_strength="moderate", last_updated_fabula=1000, observed=False),
+                "affinity": RelationshipMetric(value=-0.6, inertia=0.7, evidence_strength="strong", last_updated_fabula=1000),
             },
         ),
-        # Katharine → Winston — the long-separated wife who treated marital sex as 'our duty to the Party'; emotional vacancy mirrored back to Winston.
+        # Katharine → Winston — the long-separated wife who treated marital sex as 'our duty to the Party'; cold dutiful indifference, no warmth.
         RelationshipEdge(
             source_entity_id="ENT_KATHARINE", target_entity_id="ENT_WINSTON",
             metrics={
-                "affinity": RelationshipMetric(value=0.0, inertia=0.7, evidence_strength="moderate", last_updated_fabula=1000, observed=False),
+                "affinity": RelationshipMetric(value=-0.2, inertia=0.7, evidence_strength="moderate", last_updated_fabula=1000),
             },
         ),
         # O'Brien ↔ Party.

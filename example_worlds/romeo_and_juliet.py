@@ -1111,7 +1111,7 @@ world_state = WorldStateV1(
 
     # ── SOCIAL TOPOLOGY ─────────────────────────────────────────────────
     social_topology=[
-        # Romeo ↔ Juliet — instant, total, mutual love.
+        # Romeo ↔ Juliet — instant mutual love (Romeo's instant obsession; Juliet measured but devoted).
         RelationshipEdge(
             source_entity_id="ENT_ROMEO", target_entity_id="ENT_JULIET",
             metrics={
@@ -1121,7 +1121,7 @@ world_state = WorldStateV1(
         RelationshipEdge(
             source_entity_id="ENT_JULIET", target_entity_id="ENT_ROMEO",
             metrics={
-                "affinity": RelationshipMetric(value=1.0, inertia=0.55, evidence_strength="strong", last_updated_fabula=2000),
+                "affinity": RelationshipMetric(value=0.95, inertia=0.55, evidence_strength="strong", last_updated_fabula=2000),
             },
         ),
         # Romeo ↔ Tybalt — enmity then deadly opposition.
@@ -1215,11 +1215,11 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=-0.5, inertia=0.65, evidence_strength="strong", last_updated_fabula=4000),
             },
         ),
-        # Capulet ↔ Montague — feud that collapses in the final scene.
+        # Capulet ↔ Montague — feud (Capulet instigator of Act 1 brawl; Montague responds in kind).
         RelationshipEdge(
             source_entity_id="ENT_CAPULET", target_entity_id="ENT_MONTAGUE",
             metrics={
-                "affinity": RelationshipMetric(value=-0.4, inertia=0.5, evidence_strength="strong", last_updated_fabula=17500),
+                "affinity": RelationshipMetric(value=-0.5, inertia=0.5, evidence_strength="strong", last_updated_fabula=17500),
             },
         ),
         RelationshipEdge(

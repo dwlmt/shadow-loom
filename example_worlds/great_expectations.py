@@ -1303,17 +1303,19 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=-0.7, inertia=0.7,  evidence_strength="strong",   last_updated_fabula=4000),
             },
         ),
-        # Pip ↔ Herbert — easy friendship.
+        # Pip ↔ Herbert — easy friendship (Pip leans on Herbert's steadiness; Herbert exasperated by Pip's debt).
         RelationshipEdge(
             source_entity_id="ENT_PIP", target_entity_id="ENT_HERBERT",
             metrics={
-                "affinity": RelationshipMetric(value=0.9, inertia=0.55, evidence_strength="strong", last_updated_fabula=7500),
+                "affinity":      RelationshipMetric(value=0.9, inertia=0.55, evidence_strength="strong", last_updated_fabula=7500),
+                "power_dynamic": RelationshipMetric(value=-0.15, inertia=0.5, evidence_strength="moderate", last_updated_fabula=7500),
             },
         ),
         RelationshipEdge(
             source_entity_id="ENT_HERBERT", target_entity_id="ENT_PIP",
             metrics={
-                "affinity": RelationshipMetric(value=0.9, inertia=0.55, evidence_strength="strong", last_updated_fabula=7500),
+                "affinity":      RelationshipMetric(value=0.8, inertia=0.55, evidence_strength="strong", last_updated_fabula=7500),
+                "power_dynamic": RelationshipMetric(value=0.15, inertia=0.5, evidence_strength="moderate", last_updated_fabula=7500),
             },
         ),
         # Orlick → Pip — class envy and murderous resentment.
@@ -1376,7 +1378,7 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=0.7, inertia=0.7, evidence_strength="strong", last_updated_fabula=15000),
             },
         ),
-        # Joe ↔ Biddy — late marriage.
+        # Joe ↔ Biddy — late marriage (Joe devoted; Biddy steady, slightly less effusive).
         RelationshipEdge(
             source_entity_id="ENT_JOE", target_entity_id="ENT_BIDDY",
             metrics={
@@ -1386,7 +1388,7 @@ world_state = WorldStateV1(
         RelationshipEdge(
             source_entity_id="ENT_BIDDY", target_entity_id="ENT_JOE",
             metrics={
-                "affinity": RelationshipMetric(value=0.85, inertia=0.7, evidence_strength="strong", last_updated_fabula=18500),
+                "affinity": RelationshipMetric(value=0.8, inertia=0.7, evidence_strength="strong", last_updated_fabula=18500),
             },
         ),
     ],

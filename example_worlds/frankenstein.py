@@ -1000,17 +1000,17 @@ world_state = WorldStateV1(
                 "affinity": RelationshipMetric(value=0.9, inertia=0.6, evidence_strength="strong", last_updated_fabula=12800),
             },
         ),
-        # Victor ↔ Clerval — devoted friendship.
+        # Victor ↔ Clerval — devoted friendship (Clerval more devoted, unaware of Victor's secret).
         RelationshipEdge(
             source_entity_id="ENT_VICTOR", target_entity_id="ENT_CLERVAL",
             metrics={
-                "affinity": RelationshipMetric(value=0.85, inertia=0.55, evidence_strength="strong", last_updated_fabula=11000),
+                "affinity": RelationshipMetric(value=0.8, inertia=0.55, evidence_strength="strong", last_updated_fabula=11000),
             },
         ),
         RelationshipEdge(
             source_entity_id="ENT_CLERVAL", target_entity_id="ENT_VICTOR",
             metrics={
-                "affinity": RelationshipMetric(value=0.85, inertia=0.55, evidence_strength="strong", last_updated_fabula=11000),
+                "affinity": RelationshipMetric(value=0.9, inertia=0.55, evidence_strength="strong", last_updated_fabula=11000),
             },
         ),
         # Alphonse → Victor — paternal authority and care.

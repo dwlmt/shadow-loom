@@ -4805,6 +4805,66 @@ def _deduplicate_social(edges: List[RelationshipEdge]) -> List[RelationshipEdge]
     return list(best.values())
 
 
+def _warn_suspicious_mirror_dyads(edges: List[RelationshipEdge]) -> None:
+    """Log a warning for dyads whose two directions carry identical
+    metric values across the board.
+
+    A real, observed dyad almost always has asymmetric metrics: A's
+    affinity for B differs from B's for A; subordinate fears superior
+    more than the reverse; ``power_dynamic`` is signed and should
+    flip across the two directions. When the forward and reverse
+    edges report the same numbers on every shared metric (with
+    `power_dynamic` checked sign-aware: forward + reverse should sum
+    to ~0), it almost always means an extractor or fixture author
+    duplicated one perspective rather than reading both sides.
+
+    This is a *warning only* — we do not mutate the data, because
+    fixtures may legitimately encode symmetric dyads in rare cases
+    (twin sisters, mirrored placeholder edges). The warning gives
+    operators a hook to upgrade the extraction prompt or hand-edit
+    the fixture.
+    """
+    by_pair: dict[tuple[str, str], RelationshipEdge] = {
+        (e.source_entity_id, e.target_entity_id): e for e in edges
+    }
+    seen: set[frozenset[str]] = set()
+    suspect: list[tuple[str, str, list[str]]] = []
+    for (src, tgt), fwd in by_pair.items():
+        key = frozenset({src, tgt})
+        if key in seen:
+            continue
+        rev = by_pair.get((tgt, src))
+        if rev is None:
+            continue
+        seen.add(key)
+        shared = set(fwd.metrics.keys()) & set(rev.metrics.keys())
+        if not shared:
+            continue
+        mirrored_axes: list[str] = []
+        for axis in shared:
+            f_val = float(fwd.metrics[axis].value)
+            r_val = float(rev.metrics[axis].value)
+            if axis == "power_dynamic":
+                # Opposite signs expected — flag if values are equal
+                # (same sign, same magnitude).
+                if abs(f_val - r_val) < 1e-6 and abs(f_val) > 1e-6:
+                    mirrored_axes.append(axis)
+            else:
+                if abs(f_val - r_val) < 1e-6 and abs(f_val) > 1e-6:
+                    mirrored_axes.append(axis)
+        if mirrored_axes and len(mirrored_axes) == len(shared):
+            suspect.append((src, tgt, mirrored_axes))
+    if suspect:
+        logger.warning(
+            "[Asymmetry] %d dyad(s) have identical bidirectional "
+            "metrics — likely lazy mirroring rather than real "
+            "two-sided extraction: %s",
+            len(suspect),
+            ", ".join(f"{a}↔{b} ({'/'.join(ax)})" for a, b, ax in suspect[:8])
+            + ("…" if len(suspect) > 8 else ""),
+        )
+
+
 def _mirror_missing_relationship_directions(
     edges: List[RelationshipEdge],
 ) -> List[RelationshipEdge]:
@@ -5332,6 +5392,14 @@ def assemble_world_state(
     # sees the same mirrored shape — no explicit call here.
     social_before = len(social_topology)
     social_topology = _deduplicate_social(social_topology)
+    # Asymmetry sanity check: flag dyads where both directions exist
+    # AND every shared metric carries an *identical* value (sign-aware
+    # for power_dynamic, which should be opposite-signed). Identical
+    # bidirectional values are almost always a lazy mirror of one
+    # extraction rather than two real readings — they suppress the
+    # asymmetric structure the affective dashboard depends on. We log
+    # rather than mutate so authored fixtures stay authoritative.
+    _warn_suspicious_mirror_dyads(social_topology)
     spatial_before = len(spatial_topology)
     spatial_topology = _deduplicate_spatial(spatial_topology)
     causal_before = len(causal_topology)

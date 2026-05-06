@@ -743,17 +743,19 @@ world_state = WorldStateV1(
 
     # ── SOCIAL TOPOLOGY ────────────────────────────────────────────────
     social_topology=[
-        # Laura ↔ Alec — the affair.
+        # Laura ↔ Alec — the affair (asymmetric: Laura falls harder, fears scandal more).
         RelationshipEdge(
             source_entity_id="ENT_LAURA", target_entity_id="ENT_ALEC",
             metrics={
                 "affinity": RelationshipMetric(value=0.95, inertia=0.55, evidence_strength="strong", last_updated_fabula=9000),
+                "fear":     RelationshipMetric(value=0.3, inertia=0.4, evidence_strength="moderate", last_updated_fabula=9000),
             },
         ),
         RelationshipEdge(
             source_entity_id="ENT_ALEC", target_entity_id="ENT_LAURA",
             metrics={
-                "affinity": RelationshipMetric(value=0.95, inertia=0.55, evidence_strength="strong", last_updated_fabula=9000),
+                "affinity": RelationshipMetric(value=0.85, inertia=0.55, evidence_strength="strong", last_updated_fabula=9000),
+                "fear":     RelationshipMetric(value=0.15, inertia=0.4, evidence_strength="weak", last_updated_fabula=9000),
             },
         ),
         # Laura ↔ Fred — settled marriage.
@@ -815,13 +817,13 @@ world_state = WorldStateV1(
         RelationshipEdge(
             source_entity_id="ENT_BERYL", target_entity_id="ENT_STANLEY",
             metrics={
-                "affinity": RelationshipMetric(value=0.7, inertia=0.5, evidence_strength="moderate", last_updated_fabula=6000),
+                "affinity": RelationshipMetric(value=0.75, inertia=0.5, evidence_strength="moderate", last_updated_fabula=6000),
             },
         ),
         RelationshipEdge(
             source_entity_id="ENT_STANLEY", target_entity_id="ENT_BERYL",
             metrics={
-                "affinity": RelationshipMetric(value=0.7, inertia=0.5, evidence_strength="moderate", last_updated_fabula=6000),
+                "affinity": RelationshipMetric(value=0.6, inertia=0.5, evidence_strength="moderate", last_updated_fabula=6000),
             },
         ),
     ],
