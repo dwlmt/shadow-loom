@@ -49,7 +49,7 @@ prose ──► graph ──► AMWN sandbox ──► causal physics ──► 
 [![arXiv](https://img.shields.io/badge/arXiv-2605.02475-b31b1b.svg)](https://arxiv.org/abs/2605.02475)
 
 > **Paper:** Wilmot, D. (2026). *Shadow-Loom: Causal Reasoning over
-> Graphical World Model of Narratives.* arXiv:[2605.02475](https://arxiv.org/abs/2605.02475).
+> Graphical World Models of Narratives.* arXiv:[2605.02475](https://arxiv.org/abs/2605.02475).
 > See [Citation](#citation) below for BibTeX.
 
 
@@ -364,7 +364,7 @@ If you use Shadow-Loom in academic work, please cite:
 
 ```bibtex
 @misc{wilmot2026shadowloomcausalreasoninggraphical,
-      title={Shadow-Loom: Causal Reasoning over Graphical World Model of Narratives}, 
+      title={Shadow-Loom: Causal Reasoning over Graphical World Models of Narratives}, 
       author={David Wilmot},
       year={2026},
       eprint={2605.02475},
