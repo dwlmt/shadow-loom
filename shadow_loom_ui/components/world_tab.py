@@ -726,6 +726,33 @@ def build_world_tab(state: AppState) -> None:
                             "w-full bg-white border border-slate-200 "
                             "rounded-xl mb-2"
                         ):
+                            # Inline metric picker so the affinity /
+                            # fear / power_dynamic switch is
+                            # discoverable right next to the heatmap
+                            # (the toolbar control still works and
+                            # stays in sync).
+                            with ui.row().classes(
+                                "w-full items-center q-px-md q-pt-sm gap-3"
+                            ):
+                                inline_metric = ui.select(
+                                    {
+                                        "affinity": "Affinity  (\u20131 hate \u2194 +1 love)",
+                                        "fear": "Fear  (0 calm \u2192 1 terrified)",
+                                        "power_dynamic": "Power dynamic  (\u20131 subservient \u2194 +1 dominant)",
+                                    },
+                                    value=chosen_metric,
+                                    label="Heatmap metric",
+                                ).classes("w-72").props("dense outlined")
+
+                                def _on_inline_metric(_e=None):
+                                    new_val = inline_metric.value or "affinity"
+                                    if social_metric.value != new_val:
+                                        social_metric.value = new_val
+                                        _refresh()
+
+                                inline_metric.on(
+                                    "update:model-value", _on_inline_metric
+                                )
                             if animate:
                                 with_expand(
                                     lambda h, m=chosen_metric: (
