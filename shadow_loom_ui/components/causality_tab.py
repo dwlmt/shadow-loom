@@ -199,6 +199,21 @@ def build_causality_tab(state: AppState) -> None:
 
         sub_tabs.on("update:model-value", _on_sub_tab)
 
+        # When the user clicks the top-level "Causality" tab, the
+        # workspace handler sets ``active_path`` to bare ``"causality"``
+        # — but our sub-panels gate their refresh on the fully-qualified
+        # ``"causality.<sub>"`` path. Without this promotion, every
+        # panel below treats itself as off-screen and silently drops
+        # slider/combo updates (the user observes "the chart doesn't
+        # always update"). Re-broadcast the qualified path so the
+        # currently visible sub-panel un-gates.
+        def _promote_bare_causality(**kw):
+            if state.active_path == "causality":
+                sub_val = getattr(sub_tabs, "value", None) or "topology"
+                state.set_active_path(f"causality.{sub_val}")
+
+        state.on(StateEvent.ACTIVE_PATH_CHANGED, _promote_bare_causality)
+
         with ui.tab_panels(sub_tabs, value="topology").classes(
             "w-full flex-grow bg-slate-50"
         ):
