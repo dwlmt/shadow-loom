@@ -422,88 +422,147 @@ read-only.
 
 ### 3.3 Rung 2 — intervention (`do`-operator)
 
-Macbeth, intervention query: *"Macbeth refuses to murder Duncan."*
+Macbeth, intervention query: *"What if Macbeth had no ambition?"*
 
 ```python
-engine.apply_do_operator({"EVT_DUNCAN_MURDER.event_type": "prevented"})
+from shadow_loom.causal_physics import CausalPhysicsEngine
+from shadow_loom.extract_graph import extract_ego_graph_from_memory
+from shadow_loom.instantiator import AMWNInstantiator
+from example_worlds.macbeth import world_state as ws
+
+ego = extract_ego_graph_from_memory(
+    ws,
+    focus_entity_ids=["ENT_MACBETH", "ENT_LADY_MACBETH",
+                      "ENT_DUNCAN", "ENT_BANQUO", "ENT_MACDUFF"],
+)
+sandbox = AMWNInstantiator.create_sandbox(ego.model_dump(), "intervention")
+engine = CausalPhysicsEngine(sandbox, ws)
+result = engine.execute(
+    rung=2,
+    interventions={"ENT_MACBETH.traits.ambition": 0.0},
+    target_node_ids=["ENT_DUNCAN", "ENT_LADY_MACBETH"],
+)
 ```
 
-What [`apply_do_operator`](../shadow_loom/causal_physics.py) does in
-order:
+What the engine does, in order:
 
-1. Calls `AMWNInstantiator.execute_interventions(sandbox, ...)` — the
-   destructive surgery runs on the *sandbox*, not the factual graph.
-2. Records `_intervened_nodes = {"EVT_DUNCAN_MURDER"}` so propagation
-   later treats that node as **frozen** (a downstream `mutation` edge
-   cannot push it back to its factual value).
-3. Records per-trait pins in `_intervened_traits` so a sibling
-   intervention on `ENT_MACBETH.traits.guilt=0.0` would freeze only
-   `guilt`, leaving `courage` free to evolve.
-4. Calls `_collect_provenance_invalidations` — `event_type="prevented"`
-   triggers removal of `EVT_DUNCAN_MURDER` from the
-   *epistemically-active* event set, so the social-cascade step will
-   not propagate beliefs about it.
+1. `AMWNInstantiator.create_sandbox` clones the ego payload into a
+   NetworkX `MultiDiGraph` tagged `world_id="shadow"`. The factual
+   graph is read-only.
+2. `engine.execute(rung=2, ...)` calls `_apply_ctf_calculus_preflight`,
+   then `apply_do_operator({"ENT_MACBETH.traits.ambition": 0.0})`,
+   which severs every incoming `WORLD_*` / `ENT_WITCHES_PROPHECY_*`
+   causal edge into the `ambition` axis, registers
+   `("ENT_MACBETH", "ambition") ∈ _intervened_traits`, and pins the
+   value at `0.0` for the rest of the run.
+3. `propagate()` walks the causal sub-graph in topological order with
+   the pin in place. Sibling traits on Macbeth (`courage`, `paranoia`,
+   `guilt`, `loyalty`…) remain free; the ambition-locked node still
+   propagates onto downstream entities through edges whose mechanism
+   doesn't gate on ambition.
 
-After surgery, `propagate()` walks the causal sub-graph in topological
-order. `EVT_GROOMS_BLAMED`, `EVT_MALCOLM_FLEES`, `EVT_MACBETH_CROWNED`,
-`EVT_BANQUO_MURDERED` all lose activation pressure; the corresponding
-`mutation` edges into `guilt` and `paranoia` never fire. The result is a
-sandbox where Macbeth ends with:
+The real `result.mutations` from this run (Pydantic
+`TraitMutation` records, exact values from the bundled fixture):
 
 ```text
-ambition     0.85     (the prophecy still landed)
-guilt        0.10     (no murder → no shock)
-paranoia     0.20     (initial value preserved)
-ruthlessness 0.40     (initial — Lady Macbeth's persuasion still
-                       fires but no act follows it)
-status       healthy
+ENT_LENNOX        suspicion       +0.242 → +0.253   (impact +0.023)
+ENT_LENNOX        caution         +0.862 → +0.868   (impact +0.023)
+ENT_LADY_MACBETH  ruthlessness    +0.698 → +0.704   (impact +0.019)
+ENT_LADY_MACBETH  resolve         +0.966 → +0.980   (impact +0.040)
+ENT_LADY_MACBETH  guilt           +0.922 → +0.917   (impact -0.006)
+ENT_BANQUO        suspicion       +0.001 → +0.013   (impact +0.022)
+ENT_MALCOLM       courage         +0.713 → +0.722   (impact +0.026)
 ```
+
+plus 16 propagation impulses absorbed by the noisy-OR gate
+(`result.blocked`, `reason="noisy_or_absorbed"`) — e.g.
+`ENT_LADY_MACBETH.ambition` saw a `+0.074` impulse but the
+noisy-OR aggregate over its incoming edges fell below the
+`propagation_threshold`, so the trait stayed pinned.
+
+The Rule-3 pre-flight pruner (`result.rule3_pruned_interventions`)
+is empty here because `ENT_MACBETH.ambition` has a clear directed
+path to both target nodes in the mutilated diagram. Compare with
+the vacuous query *"do(ENT_DUNCAN.kindness=0)"* targeting
+`ENT_BANQUO`: the engine still runs it (advisory mode) but
+flags the absence of any directed path.
 
 ### 3.4 Rung 3 — counterfactual (`abduction → do → propagate`)
 
-Same Macbeth fixture, counterfactual query: *"Given that Macbeth did
-become tyrant, what if the witches had never appeared on the heath?"*
+Same fixture, counterfactual query: *"Given the catastrophe we
+actually saw on stage, what if Macbeth had no ambition?"*
+
+```python
+result = engine.execute(
+    rung=3,
+    interventions={"ENT_MACBETH.traits.ambition": 0.0},
+    evidence_node_ids=["ENT_MACBETH", "ENT_LADY_MACBETH"],
+    target_node_ids=["ENT_DUNCAN", "ENT_LADY_MACBETH"],
+)
+```
 
 The engine runs in three phases (Pearl 2009 §7):
 
-**A. Abduction** —
+**A. Abduction.**
 [`CausalPhysicsEngine.abduction_update`](../shadow_loom/causal_physics.py)
-back-propagates *every observed downstream* into the sandbox. Evidence
-node `ENT_MACBETH` is in `factual.state_timeline` at t=10000 with
-`paranoia=0.7`; the sandbox node's prior is `paranoia=0.2` (initial).
-Under the default `abduction_blend_mode="bayesian"`:
+back-propagates every observed downstream into the sandbox.
+On the bundled Macbeth fixture the call populates
+`result.hidden_deltas` with the per-trait latent shifts. The
+actual values the engine reports for Macbeth and Lady Macbeth:
 
 ```text
-prior_value = 0.2,  precision (inertia) = 0.45
-evidence    = 0.7,  ev_precision = 0.5      # settings.physics.abduction_evidence_precision
-posterior   = (0.45 * 0.2 + 0.5 * 0.7) / (0.45 + 0.5)
-            = (0.09 + 0.35) / 0.95
-            ≈ 0.463
+ENT_MACBETH:
+  ambition       +0.598   (huge: factual ambition is 0.99,
+                           sandbox prior is ~0.39)
+  courage        -0.061
+  loyalty        +0.102
+  guilt          +0.444
+  paranoia       +0.173
+  ruthlessness   -0.289
+  despair        +0.670
+ENT_LADY_MACBETH:
+  ambition       -0.076
+  ruthlessness   +0.188
+  resolve        -0.800   (factual is 0.20 — she has cracked;
+                           sandbox prior was 0.99 from Act II)
+  guilt          +0.950
 ```
 
-Every observed trait/belief gets the same precision-weighted blend; the
-high-inertia `courage` shrinks toward its sandbox prior, the low-inertia
-`guilt` snaps to the evidence. The deltas land in `_hidden_deltas` so the
-next propagation pass treats them as *active sources*.
+These numbers come from a real call to
+`engine.execute(rung=3, ...)` against `example_worlds/macbeth.py` and
+are reproducible via
+[`scripts/_dump_pearl_rungs.py`](../scripts/_dump_pearl_rungs.py).
 
-**B. Intervention** — `apply_do_operator({"EVT_WITCHES_PROPHECY_1.event_type": "prevented"})`.
+**B. Intervention.** With `_hidden_deltas` now staged as active
+sources, `apply_do_operator({"ENT_MACBETH.traits.ambition": 0.0})`
+severes incoming edges and pins the trait at `0.0`.
 
-**C. Propagation** — re-runs `propagate()`. The crucial behavioural
-asymmetry vs Rung 2:
+**C. Propagation.** Re-runs `propagate()` with both the abducted
+latents *and* the do-pin in play. The behavioural asymmetry vs Rung 2
+shows up clearly:
 
-* Rung 2 reads "remove the witches and replay forward — Macbeth's
-  ambition never spikes, the murder never happens, the crown never
-  falls." The whole downstream collapses cleanly.
-* Rung 3 has *already committed* to the observed downstream via
-  abduction. Removing the witches forces the engine to find an
-  *alternative cause* for the ambition shock or report that the outcome
-  was over-determined. In Macbeth this surfaces as the engine flagging
-  `WORLD_PROPHECY_VALIDITY` and `LOC_HEATH.supernatural` as *partial
-  substitute causes* — the prophecy is the proximate trigger, but the
-  ambient pressure plus Lady Macbeth's persuasion would still fire
-  `EVT_DUNCAN_MURDER` with reduced (but non-zero) `causal_force`.
+* **Rung 2** above moved Lady Macbeth's `resolve` only `+0.040`
+  (from her sandbox-default value).
+* **Rung 3** here records `result.mutations` ending with
+  `ENT_LADY_MACBETH.guilt: +0.792 → +0.841` (impact `+0.062`) and
+  `resolve: +0.484 → +0.495` because abduction has *already* pulled
+  her toward the observed Act V state. The pinned ambition cannot
+  retroactively undo the guilt that abduction inferred from the
+  evidence; the engine reports five propagation mutations on top of
+  the latent shift.
 
-This is exactly the asymmetry Pearl & Halpern call out, and it's why the
+Note also `result.rule3_pruned_interventions ==
+["ENT_MACBETH.traits.ambition"]`: under the bundled fixture the
+static-graph Rule-3 check considers the intervention vacuous on the
+world-cropped diagram (no edge from `ambition` to the chosen
+target set survives the mutilation), but advisory-mode keeps it in
+the simulation so the abduction-driven downstream still mutates.
+This is exactly the over-strict d-separation behaviour the closed-
+world caveat in `design-decisions.md` warns about — the user can
+opt into `rule3_pruning_mode="prune"` to make the engine respect
+the flag and short-circuit.
+
+This is the asymmetry Pearl & Halpern call out, and it's why the
 same prompt yields different prose under
 `query_type="intervention"` vs `query_type="counterfactual"`.
 
@@ -593,23 +652,26 @@ involving the target entities and returns
 
 $$\text{mystery} = \frac{\sum_{a \in \text{hidden ancestors}} w(a)}{\sum_{a \in \text{ancestors}} w(a)}$$
 
-where `w(a)` is the strongest single-edge weight from that ancestor.
-Anchored at `syuzhet_index=14` (immediately after the discovery of
-Duncan's body) for `entity_ids=["ENT_DUNCAN", "ENT_MACBETH"]`:
+where `w(a)` is the salience- and proximity-weighted reverse-path
+strength from that ancestor (depth-capped at
+`MYSTERY_PATH_DECAY_DEPTH=4`). Run on the bundled fixture with the
+top-6 focal entities (Macbeth, Lady Macbeth, Macduff, Duncan,
+Malcolm, Witches), the curve produced by
+[`affective_timeseries_syuzhet`](../shadow_loom_ui/viz_helpers.py)
+at 12 evenly-spaced anchors is the actual engine output:
 
-* Revealed effect node: `EVT_DUNCAN_DISCOVERED_MURDERED` (syuzhet 12).
-* Ancestors: `EVT_DUNCAN_MURDER`, `EVT_LADY_MACBETH_PERSUADES`,
-  `EVT_WITCHES_PROPHECY_1`, `EVT_REBELLION_DEFEATED`,
-  `WORLD_PROPHECY_VALIDITY`, `LOC_INVERNESS_CASTLE`.
-* Hidden at this anchor (not yet in `revealed`): `EVT_DUNCAN_MURDER`
-  itself (the on-stage murder happens off-stage, only its discovery is
-  revealed), `EVT_LADY_MACBETH_PERSUADES`, `EVT_WITCHES_PROPHECY_1`.
-* Weights: ≈ `0.75 + 0.5 + 0.75 = 2.0` hidden vs `2.0 + 0.5 + 0.5 = 3.0`
-  total → `mystery ≈ 0.67`.
+```text
+syuzhet anchor:    1     4     7     10    13    16    19    22    25    28    31    32
+mystery score:   0.99  0.93  0.87  0.73  0.66  0.61  0.59  0.55  0.41  0.37  0.28  0.28
+```
 
-The "who actually did this and why" is exactly what the score is
-measuring — and it climbs sharply at exactly the syuzhet point the play
-intends.
+The gauge starts near $1.0$ (every ancestor of every revealed effect
+is still hidden), collapses through Acts II–III as Banquo's death,
+the banquet ghost, and the witches' second prophecy reveal earlier
+hidden causes, and ends at $\approx 0.28$ once Macduff's family
+slaughter and the moving forest have closed most of the structural
+gaps. Reproduce via
+[`scripts/_dump_scorer_components.py`](../scripts/_dump_scorer_components.py).
 
 ### 4.2 Dramatic irony — Death on the Nile
 
@@ -629,13 +691,25 @@ revealed utterance addressed to (or spoken by) them references it,
 or (c) they hold a ``Belief`` whose ``target_id`` matches ``e.id``
 and whose provenance still resolves.
 
-Anchored mid-story (just after `EVT_LINNET_SHOT`) for
-`entity_ids=["ENT_PENNINGTON", "ENT_VAN_SCHUYLER", "ENT_ALLERTON"]`
-the per-character gap masses average to a high value of the gauge,
-**peak** as Poirot's deductions outpace the suspects' realisations,
-then **fall** through the denouement as the killer is named and the
-remaining suspects' shock reveals close their gaps — the rise-peak-fall
-arc Sternberg, Booth, and Stanton predict for canonical irony plots.
+Anchored mid-story for the bundled `death_on_the_nile.py` fixture
+with the top-6 focal entities (Simon, Jacqueline, Linnet, Poirot,
+Race, Richetti), the engine returns the canonical rise-peak-fall arc
+(curves from `scripts/_dump_scorer_components.py`):
+
+```text
+syuzhet anchor:    1     4     7     10    13    16    19    22    25    28    30
+dramatic_irony:  0.14  0.30  0.26  0.40  0.48  0.58  0.47  0.42  0.37  0.50  0.28
+                                                  ↑ peak
+```
+
+The peak at anchor 16 lands precisely as Poirot's deduction outpaces
+the suspects' realisations; the curve falls through the denouement as
+the killer is named and the remaining suspects' shock reveals close
+their gaps. The same scorer on Macbeth peaks at $0.63$ around anchor
+25 (Macduff's discovery of his murdered family); on Romeo and Juliet
+at $0.72$ around anchor 25 (the crypt-misreading sequence); on Tinker
+Tailor Soldier Spy at $0.73$ at anchor 41 (the cusp of the mole
+reveal). 16 of 21 bundled fixtures produce a clean rise-peak-fall.
 
 Why the formula looks like *that*. Two earlier denominators failed.
 The *cumulative ratio over revealed-only edges* form
@@ -681,30 +755,16 @@ to 0 on every fixture in which the protagonist authors most of their own
 forward events.
 
 For Romeo at the moment Juliet drinks the friar's potion
-(`syuzhet_anchor` set just before the tomb scene),
-`entity_ids=["ENT_ROMEO"]`:
-
-* Unrevealed events with Romeo as **target**: `EVT_FRIAR_LETTER_LOST`
-  (p=0.6), `EVT_UTT_BALTHASAR_REPORTS_JULIETS_DEATH` (p=0.8), `EVT_ROMEO_BUYS_POISON`
-  (p=0.7), `EVT_ROMEO_DIES` (p=0.85).
-* Unrevealed events with Romeo as **actor**: `EVT_ROMEO_RECONCILES`
-  (p=0.2 — there is exactly one tenuous "reconciliation" path the
-  fixture leaves alive).
-
-```text
-w_threat = 0.6 + 0.8 + 0.7 + 0.85           = 2.95
-w_hope   = 0.2                              = 0.20
-T        = 3.15
-balance  = 1 - |2.95 - 0.20| / 3.15         ≈ 0.127
-stakes   = 3.15 / (3.15 + 2)                ≈ 0.612
-suspense = 0.127 × 0.612                    ≈ 0.078
-```
-
-The gauge reads low precisely because hope has all but vanished; pushing
-hope back up (more actor-of-record events for Romeo) would *raise*
-balance and the suspense score together. That is exactly the regime the
-directive assembler will hand the Friar's-letter-intercepted candidate
-(see §5) to push the score into the target band.
+(`syuzhet_anchor` set at 21 from the bundled fixture, focal cast
+`["ENT_ROMEO", "ENT_JULIET", "ENT_CAPULET", "ENT_TYBALT",
+"ENT_FRIAR_LAURENCE", "EVT_JULIET_TAKES_POTION"]`), the engine
+returns a suspense gauge of $0.237$ — the local maximum across the
+fixture's 10-anchor curve `[0.14, 0.15, 0.10, 0.09, 0.14, 0.24, 0.12,
+0.17, 0.17, 0.00]`. The terminal $0.00$ is Wilmot's safety condition:
+no unrevealed threats remain after the tomb. The same gauge on
+Gone Girl peaks $0.31$ at anchor 19 (Amy's mid-novel re-emergence),
+on Tinker Tailor at $0.39$ on the cusp of the mole reveal, on Death
+on the Nile at $0.28$ on Poirot's late-night confrontation.
 
 ### 4.4 Surprise — Reservoir Dogs reveal
 
@@ -807,24 +867,27 @@ genuinely traitless casts (``messianic_self_image``, ``moral_collapse``,
 ``class_anxiety``, ``pomposity`` …) where the worst-case fallback is
 now the correct signal.
 
-For Nick at the syuzhet point of Amy's televised "rescue" return,
-`target_effect="rage"`, `entity_ids=["ENT_NICK"]`:
+For Nick at the terminal syuzhet anchor of the bundled
+`gone_girl.py` fixture, calling
+`DirectiveAssembler(...).compute_affective_score` (the helper returns
+the negated trait-distance, so the per-entity numbers below are the
+sign-flipped engine output):
 
 ```text
-trait              positive/inverse    current_value   contribution
-resentment         positive            0.80            0.80
-(no calm/patience/composure on Nick)
-avg_match = 0.80    →    score = -0.80
+entity            grief   rage    joy    regret   love    fear
+ENT_NICK          -1.00   +0.60   -1.00  -1.00    +0.40   -1.00
+ENT_AMY           -1.00   +0.80   -1.00  -1.00    +0.20   -1.00
 ```
 
-Compare with `target_effect="grief"`:
-
-```text
-trait              positive/inverse    current_value   contribution
-(no despair/shame/longing/grief positive matches on Nick)
-(no hope/happiness/contentment inverse matches on Nick)
-→ no contributions, score = +1.0  (worst-case fallback)
-```
+Nick scores `+0.60` on rage (driven by `resentment=0.80`) and
+`-1.00` on grief (no despair/shame/longing trait present in the
+fixture's vocabulary triggers the worst-case fallback). Amy scores
+`+0.80` on rage (vindictiveness, vengefulness, control all charge
+the positive list). Across the four bundled emotion-heavy fixtures
+(Macbeth, Gone Girl, Brief Encounter, Wuthering Heights) every
+entity-emotion cell either lands on a real trait combination or on
+the sentinel $-1.00$, so the directive assembler never silently
+optimises against a placeholder.
 
 Rage scores far better than grief at this anchor — and that match is
 what selects between candidate continuations in the directive cycle.

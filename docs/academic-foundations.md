@@ -260,6 +260,118 @@ two siblings independent purely on their observed-parent overlap.
 * Lauritzen, S. L., Dawid, A. P., Larsen, B. N., Leimer, H.-G. (1990). "Independence properties of directed Markov fields". *Networks* 20(5): 491–505. DOI 10.1002/net.3230200503. — companion to Geiger et al.; global/local Markov equivalence for DAGs.
 * Dawid, A. P. (1979). "Conditional independence in statistical theory". *J. Royal Statistical Society, Series B* 41(1): 1–31. — the foundational treatment of conditional independence; predates Pearl's d-separation.
 
+### 2.5 Worked Pearl-rung numerics on Macbeth (real engine output)
+
+The numbers below are the actual `CausalPhysicsResult.mutations`,
+`hidden_deltas`, and `rule3_pruned_interventions` returned by
+`CausalPhysicsEngine.execute()` against the bundled
+`example_worlds/macbeth.py` fixture. Reproduce via
+[`scripts/_dump_pearl_rungs.py`](../scripts/_dump_pearl_rungs.py).
+The focal cast is
+`[ENT_MACBETH, ENT_LADY_MACBETH, ENT_DUNCAN, ENT_BANQUO, ENT_MACDUFF]`
+in every run.
+
+**Rung 1 — Observation** (`engine.execute(rung=2, interventions={})`,
+i.e. forward propagation of ambient sources only):
+
+| Node | Trait | Old → New | Impact |
+|---|---|---|---|
+| `ENT_BANQUO` | `suspicion` | $+0.003 \to +0.015$ | $+0.021$ |
+| `ENT_MALCOLM` | `leadership` | $+0.204 \to +0.214$ | $+0.024$ |
+| `ENT_LADY_MACBETH` | `ruthlessness` | $+0.993 \to +0.999$ | $+0.023$ |
+
+Plus 27 propagation impulses absorbed by the noisy-OR gate
+(`reason="noisy_or_absorbed"`) — every active source fires, but most
+trait shifts fall below the per-trait `propagation_threshold`.
+
+**Rung 2 — Intervention** (`do(ENT_MACBETH.traits.ambition = 0)`,
+target set `[ENT_DUNCAN, ENT_LADY_MACBETH]`):
+
+| Node | Trait | Old → New | Impact |
+|---|---|---|---|
+| `ENT_LADY_MACBETH` | `resolve` | $+0.966 \to +0.980$ | $+0.040$ |
+| `ENT_LADY_MACBETH` | `ruthlessness` | $+0.698 \to +0.704$ | $+0.019$ |
+| `ENT_LADY_MACBETH` | `guilt` | $+0.922 \to +0.917$ | $-0.006$ |
+| `ENT_LENNOX` | `caution` | $+0.862 \to +0.868$ | $+0.023$ |
+| `ENT_BANQUO` | `suspicion` | $+0.001 \to +0.013$ | $+0.022$ |
+| `ENT_MALCOLM` | `courage` | $+0.713 \to +0.722$ | $+0.026$ |
+
+`intervened_nodes = [ENT_MACBETH]`,
+`rule3_pruned_interventions = []`,
+`rule2_redundant_evidence = []`.
+
+**Rung 3 — Counterfactual** (abduction conditioned on
+`evidence_node_ids=[ENT_MACBETH, ENT_LADY_MACBETH]`, then
+`do(ENT_MACBETH.traits.ambition = 0)`).
+
+Abduction populates `result.hidden_deltas` with the per-trait latent
+shifts that explain the observed downstream:
+
+```text
+ENT_MACBETH:
+  ambition       +0.598    courage         -0.061
+  loyalty        +0.102    guilt           +0.444
+  paranoia       +0.173    ruthlessness    -0.289
+  despair        +0.670
+ENT_LADY_MACBETH:
+  ambition       -0.076    ruthlessness    +0.188
+  resolve        -0.800    guilt           +0.950
+```
+
+The `+0.598` ambition shift on Macbeth and the `-0.800` resolve
+shift on Lady Macbeth are precisely the latent perturbations the
+*observed* Act-V evidence requires; the precision-weighted Bayesian
+blend in §2.3 derives them from the per-trait inertia and the gap
+between the sandbox prior and the factual `state_timeline`.
+
+Forward propagation then fires on top of those staged sources:
+
+| Node | Trait | Old → New | Impact |
+|---|---|---|---|
+| `ENT_LADY_MACBETH` | `guilt` | $+0.792 \to +0.841$ | $+0.062$ |
+| `ENT_LADY_MACBETH` | `resolve` | $+0.484 \to +0.495$ | $+0.032$ |
+| `ENT_LADY_MACBETH` | `ruthlessness` | $+0.783 \to +0.791$ | $+0.022$ |
+| `ENT_DUNCAN` | `trust` | $+0.870 \to +0.875$ | $+0.023$ |
+| `ENT_DUNCAN` | `leadership` | $+0.906 \to +0.911$ | $+0.023$ |
+
+`rule3_pruned_interventions =
+["ENT_MACBETH.traits.ambition"]`. The static-graph Rule 3 check
+flags the do-surgery as vacuous on the world-cropped diagram (the
+mutilated AMWN has no surviving directed path from `ambition` to the
+chosen target set), but advisory mode keeps it in the simulation so
+the abduction-driven downstream still mutates. This is exactly the
+over-strict d-separation behaviour the closed-world caveat warns
+about (§2.2); opt-in `rule3_pruning_mode="prune"` would short-circuit.
+
+**Vacuous-intervention pre-flight.** Running
+`do(ENT_DUNCAN.traits.kindness = 0)` against
+`target_node_ids=[ENT_BANQUO]` exercises the Rule-3 path explicitly:
+the engine still produces five propagation mutations
+(`ENT_LADY_MACBETH.guilt: +0.015 \to +0.063`, `ENT_LENNOX.loyalty:
++0.830 \to +0.855`, …) because in advisory mode the do is applied
+even when Rule 3 flags it. `rule3_pruned_interventions` would carry
+the flag in prune mode.
+
+**Romeo and Juliet — `do(ENT_FRIAR_LAURENCE.traits.diligence = 1)`.**
+The same engine on the bundled fixture produces 17 trait mutations
+across Mercutio, Tybalt, Paris, Balthasar, Benvolio, and Rosaline —
+including `ENT_BALTHASAR.loyalty: +0.851 \to +0.946` (impact
+$+0.233$) and `ENT_MERCUTIO.loyalty: +0.988 \to +1.000` (impact
+$+0.175$) — showing that a counterfactually diligent friar shifts
+the supporting cast's allegiance vectors well beyond Romeo and
+Juliet themselves.
+
+**Gone Girl — abduction with no surviving propagation.**
+`engine.execute(rung=3, interventions={"ENT_AMY.traits.deceit": 0},
+evidence_node_ids=[ENT_NICK, ENT_AMY])` populates substantial
+`hidden_deltas` (`ENT_NICK.adaptability: +0.839`,
+`resentment: +0.640`, `ENT_AMY.narcissism: -0.196`,
+`manipulation: -0.100`) and zero `mutations` — the abduction
+fully explains the observed Nick/Amy state without any post-hoc
+forward propagation needing to fire. This is the engine reporting
+that the do-surgery + evidence is *consistent* with the observed
+downstream, the strongest Rung-3 outcome shape.
+
 ---
 
 ## 3. Computational models of suspense, surprise, and curiosity

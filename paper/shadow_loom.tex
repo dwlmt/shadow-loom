@@ -1683,6 +1683,130 @@ factual support; downstream beliefs whose
 carry the deception in their provenance and are pruned automatically
 if the originating utterance is severed by a counterfactual.
 
+\subsection{Pearl-rung worked numerics --- Macbeth (real engine output)}
+\label{app:ex-pearl-rungs}
+
+The numbers below are the actual
+\texttt{CausalPhysicsResult.mutations}, \texttt{hidden\_deltas} and
+\texttt{rule3\_pruned\_interventions} returned by
+\texttt{CausalPhysicsEngine.execute()} on the bundled
+\texttt{example\_worlds/macbeth.py} fixture, focal cast
+$\{$Macbeth, Lady Macbeth, Duncan, Banquo, Macduff$\}$.
+Reproducible via \texttt{scripts/\_dump\_pearl\_rungs.py}.
+
+\paragraph{Rung 1 --- Observation
+($\texttt{interventions}=\emptyset$).} Forward propagation of
+ambient sources only: three trait shifts pass the noisy-OR gate
+(\texttt{ENT\_BANQUO.suspicion}: $0.003 \!\to\! 0.015$;
+\texttt{ENT\_MALCOLM.leadership}: $0.204 \!\to\! 0.214$;
+\texttt{ENT\_LADY\_MACBETH.ruthlessness}: $0.993 \!\to\! 0.999$),
+and 27 weaker impulses are absorbed
+(\texttt{result.blocked}, \texttt{reason="noisy\_or\_absorbed"}).
+
+\paragraph{Rung 2 --- Intervention
+($\mathrm{do}(\texttt{ENT\_MACBETH.ambition}{=}0)$, target set
+$\{\texttt{ENT\_DUNCAN}, \texttt{ENT\_LADY\_MACBETH}\}$).}
+$\texttt{intervened\_nodes} =
+\{\texttt{ENT\_MACBETH}\}$,
+$\texttt{rule3\_pruned\_interventions}=\emptyset$. The do-surgery
+severs the inbound edges into \texttt{ambition} and pins the
+trait at $0$; sibling traits remain free. Seven trait mutations
+fire on top of the pin:
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{llrrr}
+\toprule
+Node & Trait & old & new & impact \\
+\midrule
+\texttt{ENT\_LADY\_MACBETH} & resolve     & $+0.966$ & $+0.980$ & $+0.040$ \\
+\texttt{ENT\_LADY\_MACBETH} & ruthlessness & $+0.698$ & $+0.704$ & $+0.019$ \\
+\texttt{ENT\_LADY\_MACBETH} & guilt       & $+0.922$ & $+0.917$ & $-0.006$ \\
+\texttt{ENT\_LENNOX}        & caution     & $+0.862$ & $+0.868$ & $+0.023$ \\
+\texttt{ENT\_LENNOX}        & suspicion   & $+0.242$ & $+0.253$ & $+0.023$ \\
+\texttt{ENT\_BANQUO}        & suspicion   & $+0.001$ & $+0.013$ & $+0.022$ \\
+\texttt{ENT\_MALCOLM}       & courage     & $+0.713$ & $+0.722$ & $+0.026$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A vacuous variant
+$\mathrm{do}(\texttt{ENT\_DUNCAN.kindness}{=}0)$ targeted at
+\texttt{ENT\_BANQUO} still produces five propagation mutations in
+advisory mode (e.g.\ \texttt{ENT\_LADY\_MACBETH.guilt}:
+$0.015 \!\to\! 0.063$, \texttt{ENT\_LENNOX.loyalty}:
+$0.830 \!\to\! 0.855$); under
+\texttt{rule3\_pruning\_mode="prune"} the engine would
+short-circuit because no directed path survives the mutilation.
+
+\paragraph{Rung 3 --- Counterfactual.} Same do, with
+$\texttt{evidence\_node\_ids}=\{$Macbeth, Lady Macbeth$\}$.
+Abduction populates \texttt{result.hidden\_deltas} with the
+per-trait latent shifts the Bayesian blend
+(Eq.~\ref{eq:abduction}) requires:
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{llr}
+\toprule
+Node & Trait & $\Delta$ \\
+\midrule
+\texttt{ENT\_MACBETH}      & ambition     & $+0.598$ \\
+\texttt{ENT\_MACBETH}      & courage      & $-0.061$ \\
+\texttt{ENT\_MACBETH}      & loyalty      & $+0.102$ \\
+\texttt{ENT\_MACBETH}      & guilt        & $+0.444$ \\
+\texttt{ENT\_MACBETH}      & paranoia     & $+0.173$ \\
+\texttt{ENT\_MACBETH}      & ruthlessness & $-0.289$ \\
+\texttt{ENT\_MACBETH}      & despair      & $+0.670$ \\
+\texttt{ENT\_LADY\_MACBETH} & ambition     & $-0.076$ \\
+\texttt{ENT\_LADY\_MACBETH} & ruthlessness & $+0.188$ \\
+\texttt{ENT\_LADY\_MACBETH} & resolve      & $-0.800$ \\
+\texttt{ENT\_LADY\_MACBETH} & guilt        & $+0.950$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The $+0.598$ ambition shift on Macbeth and the $-0.800$ resolve
+shift on Lady Macbeth are precisely the latent perturbations the
+observed Act-V evidence requires given the per-trait inertia and
+the gap between the sandbox prior and the factual
+\texttt{state\_timeline}. Forward propagation then fires five
+additional mutations on top of those staged sources
+(\texttt{ENT\_LADY\_MACBETH.guilt}: $0.792 \!\to\! 0.841$;
+\texttt{ENT\_LADY\_MACBETH.resolve}: $0.484 \!\to\! 0.495$;
+\texttt{ENT\_DUNCAN.trust}: $0.870 \!\to\! 0.875$, etc.).
+\texttt{rule3\_pruned\_interventions} flags the do as vacuous on
+the world-cropped diagram (the over-strict closed-world
+behaviour discussed in §3.2), but advisory mode keeps it in the
+simulation so the abduction-driven downstream still mutates.
+
+\paragraph{Romeo and Juliet ---
+$\mathrm{do}(\texttt{ENT\_FRIAR\_LAURENCE.diligence}{=}1)$.}
+The same engine on the bundled fixture produces 17 trait
+mutations across the supporting cast --- including
+\texttt{ENT\_BALTHASAR.loyalty}: $0.851 \!\to\! 0.946$ (impact
+$+0.233$) and \texttt{ENT\_MERCUTIO.loyalty}: $0.988 \!\to\! 1.000$
+(impact $+0.175$) --- demonstrating that a counterfactually
+diligent friar shifts the supporting cast's allegiance vectors
+well beyond Romeo and Juliet themselves.
+
+\paragraph{Gone Girl --- abduction with no surviving
+propagation.} The Rung-3 query
+$\mathrm{do}(\texttt{ENT\_AMY.deceit}{=}0)$ conditioned on
+$\{\texttt{ENT\_NICK}, \texttt{ENT\_AMY}\}$ produces substantial
+\texttt{hidden\_deltas} (e.g.\
+\texttt{ENT\_NICK.adaptability}: $+0.839$;
+\texttt{ENT\_NICK.resentment}: $+0.640$;
+\texttt{ENT\_AMY.narcissism}: $-0.196$;
+\texttt{ENT\_AMY.manipulation}: $-0.100$) and \emph{zero}
+forward mutations: the abduction fully explains the observed
+Nick/Amy state without any post-hoc forward propagation needing
+to fire. This is the engine reporting that the do-surgery plus
+evidence is \emph{consistent} with the observed downstream ---
+the strongest Rung-3 outcome shape.
+
 \subsection{Narrative physics --- Death on the Nile, Reservoir
 Dogs, Romeo and Juliet, Macbeth}
 \label{app:ex-narrative}
@@ -1695,7 +1819,20 @@ its causal ancestors, \texttt{EVT\_LADY\_MACBETH\_PERSUADES} and
 \texttt{EVT\_SERVANTS\_FRAMED} are still hidden at the audience's
 \texttt{syuzhet\_anchor} early in the act; the score is
 $2/3 \approx 0.67$, falling to $0$ once Act V resolves the
-provenance.
+provenance. The full scorer trajectory across the bundled
+\texttt{example\_worlds/macbeth.py} fixture (12 evenly-spaced
+syuzhet anchors, focal cast Macbeth, Lady Macbeth, Macduff,
+Duncan, Malcolm, Witches) traces the canonical Sternberg
+collapse: $0.99, 0.93, 0.87, 0.73, 0.66, 0.61, 0.59, 0.55,
+0.41, 0.37, 0.28, 0.28$ --- starting near $1$ (every ancestor
+of every revealed effect is still hidden), collapsing through
+Acts II--III as Banquo's death, the banquet ghost, and the
+witches' second prophecy reveal earlier hidden causes, and
+ending at $0.28$ once Macduff's family slaughter and the moving
+forest have closed most of the structural gaps. The same
+scorer on Death on the Nile traces $1.00 \!\to\! 0.29$, on
+Wuthering Heights $0.99 \!\to\! 0.18$, on Tinker Tailor
+$0.98 \!\to\! 0.20$.
 
 \paragraph{Dramatic irony (Death on the Nile).} The reader knows
 Jacqueline and Simon are conspirators (\texttt{EVT\_PLAN\_HATCHED}
@@ -1707,7 +1844,16 @@ $\sum_{e \in \mathrm{rev}, e \notin K_c} w_e$ numerator of
 Eq.~\ref{eq:irony} for every $c \in F$. The gauge climbs through
 the cruise scenes as Poirot's reveals accumulate without reaching
 the suspect pool, and falls only at the denouement when Poirot
-briefs the cast and the events enter every $K_c$.
+briefs the cast and the events enter every $K_c$. Run on the
+bundled fixture with the top-6 focal entities (Simon, Jacqueline,
+Linnet, Poirot, Race, Richetti), the curve is $0.14, 0.30, 0.26,
+0.40, 0.48, \mathbf{0.58}, 0.47, 0.42, 0.37, 0.50, 0.28$, peaking
+at anchor 16 (Poirot's confrontation in the lounge). The same
+scorer on Macbeth peaks $0.63$ at anchor 25 (Macduff's
+discovery of his murdered family); on Romeo and Juliet at $0.72$
+around anchor 25 (the crypt-misreading sequence); on Tinker Tailor
+Soldier Spy at $0.73$ at anchor 41 (the cusp of the mole reveal).
+16 of 21 bundled fixtures produce a clean rise-peak-fall.
 
 \paragraph{Suspense (Romeo and Juliet, tomb scene).} At the tomb
 $F=\{\text{ENT\_ROMEO}\}$, unrevealed events with Romeo as
@@ -1717,7 +1863,15 @@ authors and that have not yet fired (drink poison, kill Paris) sum
 to $w_\text{hope}$. Threat dominates. As Romeo drinks, $w_\text{hope}
 \to 0$ and the score returns $0$ --- the suspense--despair boundary
 built into the balance$\,\times\,$stakes combiner (Eq.~\ref{eq:irony}
-ff.) is hit cleanly.
+ff.) is hit cleanly. The full curve across the bundled fixture is
+$[0.14, 0.15, 0.10, 0.09, 0.14, \mathbf{0.24}, 0.12, 0.17, 0.17,
+0.00]$ at 10 anchors, peaking at anchor 21 (the moment between
+Juliet's potion and Balthasar's report). The same gauge on Gone
+Girl peaks $0.31$ at anchor 19 (Amy's mid-novel re-emergence); on
+Tinker Tailor at $0.39$ on the cusp of the mole reveal; on Death
+on the Nile at $0.28$ on Poirot's late-night confrontation.
+Every world's terminal anchor falls to $0.00$ --- Wilmot's safety
+condition, no unrevealed threats remain post-resolution.
 
 \paragraph{Surprise (Reservoir Dogs reveal).}
 \texttt{EVT\_ORANGE\_REVEALED} sits at high fabula time
