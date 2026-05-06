@@ -1213,6 +1213,14 @@ world_state = WorldStateV1(
                 "fear":     RelationshipMetric(value=0.5, inertia=0.25, evidence_strength="strong", last_updated_fabula=17000),
             },
         ),
+        # Heathcliff → younger Cathy — vindictive instrument of revenge against Edgar Linton; he sees her as Catherine's hated diminished image. Mild residual fascination, no fear, total domination.
+        RelationshipEdge(
+            source_entity_id="ENT_HEATHCLIFF", target_entity_id="ENT_CATHY",
+            metrics={
+                "affinity": RelationshipMetric(value=-0.4, inertia=0.5, evidence_strength="strong", last_updated_fabula=17000),
+                "power_dynamic": RelationshipMetric(value=0.85, inertia=0.7, evidence_strength="strong", last_updated_fabula=17000),
+            },
+        ),
         # Nelly → narrative subjects — observer's affection.
         RelationshipEdge(
             source_entity_id="ENT_NELLY", target_entity_id="ENT_CATHERINE",
@@ -1220,11 +1228,27 @@ world_state = WorldStateV1(
                 "affinity": RelationshipMetric(value=0.55, inertia=0.5, evidence_strength="strong", last_updated_fabula=11000),
             },
         ),
+        # Catherine → Nelly — the servant-confidante, half-sister figure whom Catherine confides in then later resents for moralising. Mildly positive on balance, with Catherine holding power as mistress of the house.
+        RelationshipEdge(
+            source_entity_id="ENT_CATHERINE", target_entity_id="ENT_NELLY",
+            metrics={
+                "affinity": RelationshipMetric(value=0.3, inertia=0.5, evidence_strength="moderate", last_updated_fabula=11000),
+                "power_dynamic": RelationshipMetric(value=0.4, inertia=0.6, evidence_strength="moderate", last_updated_fabula=11000),
+            },
+        ),
         RelationshipEdge(
             source_entity_id="ENT_NELLY", target_entity_id="ENT_HEATHCLIFF",
             metrics={
                 "affinity": RelationshipMetric(value=-0.2, inertia=0.45, evidence_strength="moderate", last_updated_fabula=19000),
                 "fear":     RelationshipMetric(value=0.45, inertia=0.25, evidence_strength="moderate", last_updated_fabula=9000),
+            },
+        ),
+        # Heathcliff → Nelly — a useful informant he tolerates and uses; mild contempt, no fear, master-of-the-house ascendancy.
+        RelationshipEdge(
+            source_entity_id="ENT_HEATHCLIFF", target_entity_id="ENT_NELLY",
+            metrics={
+                "affinity": RelationshipMetric(value=-0.1, inertia=0.45, evidence_strength="moderate", last_updated_fabula=19000),
+                "power_dynamic": RelationshipMetric(value=0.6, inertia=0.6, evidence_strength="moderate", last_updated_fabula=19000),
             },
         ),
     ],

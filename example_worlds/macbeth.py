@@ -1018,6 +1018,14 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=-0.7, inertia=0.7, evidence_strength="strong", last_updated_fabula=1000),
             },
         ),
+        # Duncan → Macbeth: warm royal favour; the king elevates Macbeth to Thane of Cawdor and quarters at his castle as honoured guest. Affinity is high, power is the inverse of the above (king over thane), fear is absent — Duncan is fatally untroubled.
+        RelationshipEdge(
+            source_entity_id="ENT_DUNCAN", target_entity_id="ENT_MACBETH",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.85, inertia=0.4, evidence_strength="strong", last_updated_fabula=1500),
+                "power_dynamic": RelationshipMetric(value=0.7, inertia=0.7, evidence_strength="strong", last_updated_fabula=1000),
+            },
+        ),
         # Macbeth ↔ Banquo: comradeship souring into murderous fear.
         RelationshipEdge(
             source_entity_id="ENT_MACBETH", target_entity_id="ENT_BANQUO",
@@ -1072,12 +1080,29 @@ world_state = WorldStateV1(
                 "fear":     RelationshipMetric(value=0.6, inertia=0.2, evidence_strength="strong", last_updated_fabula=9000),
             },
         ),
+        # Macbeth → Malcolm: views the named heir as the prophecy's living obstacle — to be eliminated, then feared once Malcolm musters the English army.
+        RelationshipEdge(
+            source_entity_id="ENT_MACBETH", target_entity_id="ENT_MALCOLM",
+            metrics={
+                "affinity": RelationshipMetric(value=-0.7, inertia=0.45, evidence_strength="strong", last_updated_fabula=11000),
+                "fear":     RelationshipMetric(value=0.55, inertia=0.2, evidence_strength="strong", last_updated_fabula=15000),
+                "power_dynamic": RelationshipMetric(value=0.4, inertia=0.6, evidence_strength="moderate", last_updated_fabula=11000),
+            },
+        ),
         # Lady Macbeth → Duncan: cold contempt during the planning.
         RelationshipEdge(
             source_entity_id="ENT_LADY_MACBETH", target_entity_id="ENT_DUNCAN",
             metrics={
                 "affinity": RelationshipMetric(value=-0.9, inertia=0.4, evidence_strength="strong", last_updated_fabula=5000),
                 "power_dynamic": RelationshipMetric(value=-0.6, inertia=0.7, evidence_strength="moderate", last_updated_fabula=5000),
+            },
+        ),
+        # Duncan → Lady Macbeth: gracious royal hospitality ("fair and noble hostess") — entirely unaware of her contempt, no fear, mild positive affinity, royal-over-subject power.
+        RelationshipEdge(
+            source_entity_id="ENT_DUNCAN", target_entity_id="ENT_LADY_MACBETH",
+            metrics={
+                "affinity": RelationshipMetric(value=0.6, inertia=0.4, evidence_strength="moderate", last_updated_fabula=5000),
+                "power_dynamic": RelationshipMetric(value=0.6, inertia=0.7, evidence_strength="moderate", last_updated_fabula=5000),
             },
         ),
         # Macbeth → Witches: drawn to them with mingled fear and need.
@@ -1089,11 +1114,28 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=-0.6, inertia=0.7, evidence_strength="strong", last_updated_fabula=2000),
             },
         ),
+        # Witches → Macbeth: he is their chosen plaything — manipulative attraction, no fear, supernatural ascendancy. Power flips sign relative to the above.
+        RelationshipEdge(
+            source_entity_id="ENT_WITCHES", target_entity_id="ENT_MACBETH",
+            metrics={
+                "affinity": RelationshipMetric(value=0.3, inertia=0.4, evidence_strength="moderate", last_updated_fabula=2000),
+                "power_dynamic": RelationshipMetric(value=0.6, inertia=0.7, evidence_strength="strong", last_updated_fabula=2000),
+            },
+        ),
         # Macbeth → Fleance: only fear is observed (a remaining heir of the prophecy).
         RelationshipEdge(
             source_entity_id="ENT_MACBETH", target_entity_id="ENT_FLEANCE",
             metrics={
                 "fear": RelationshipMetric(value=0.65, inertia=0.2, evidence_strength="strong", last_updated_fabula=11000),
+            },
+        ),
+        # Fleance → Macbeth: a child whose father has just been murdered on Macbeth's order — high fear, hatred, no power.
+        RelationshipEdge(
+            source_entity_id="ENT_FLEANCE", target_entity_id="ENT_MACBETH",
+            metrics={
+                "affinity": RelationshipMetric(value=-0.9, inertia=0.5, evidence_strength="strong", last_updated_fabula=11000),
+                "fear":     RelationshipMetric(value=0.9, inertia=0.2, evidence_strength="strong", last_updated_fabula=11000),
+                "power_dynamic": RelationshipMetric(value=-0.7, inertia=0.7, evidence_strength="strong", last_updated_fabula=11000),
             },
         ),
     ],

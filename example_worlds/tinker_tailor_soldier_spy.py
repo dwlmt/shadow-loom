@@ -1123,6 +1123,14 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=-0.5, inertia=0.7, evidence_strength="strong", last_updated_fabula=0),
             },
         ),
+        # Control → Smiley — the dying chief's deepest professional trust: he runs the secret Operation Testify mole-hunt by Smiley alone. Reciprocal warmth, sign-flipped chief-over-deputy authority.
+        RelationshipEdge(
+            source_entity_id="ENT_CONTROL", target_entity_id="ENT_GEORGE_SMILEY",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.8, inertia=0.6, evidence_strength="strong", last_updated_fabula=2500),
+                "power_dynamic": RelationshipMetric(value=0.5, inertia=0.7, evidence_strength="strong", last_updated_fabula=0),
+            },
+        ),
         # Smiley ↔ Haydon
         RelationshipEdge(
             source_entity_id="ENT_GEORGE_SMILEY", target_entity_id="ENT_BILL_HAYDON",
@@ -1137,6 +1145,14 @@ world_state = WorldStateV1(
             metrics={
                 "affinity":      RelationshipMetric(value=0.4, inertia=0.5, evidence_strength="strong", last_updated_fabula=13000),
                 "power_dynamic": RelationshipMetric(value=-0.3, inertia=0.6, evidence_strength="moderate", last_updated_fabula=13000),
+            },
+        ),
+        # Ann → Smiley — careless, restless affection for the husband she repeatedly betrays (most consequentially with Haydon as Karla's distraction); shallow warmth tempered by emotional ascendancy over the man who keeps forgiving her.
+        RelationshipEdge(
+            source_entity_id="ENT_ANN_SMILEY", target_entity_id="ENT_GEORGE_SMILEY",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.3, inertia=0.5, evidence_strength="moderate", last_updated_fabula=13000),
+                "power_dynamic": RelationshipMetric(value=0.3, inertia=0.6, evidence_strength="moderate", last_updated_fabula=13000),
             },
         ),
         # Smiley ↔ Alleline
@@ -1162,12 +1178,28 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=-0.3, inertia=0.6, evidence_strength="moderate", last_updated_fabula=5000),
             },
         ),
+        # Lacon → Smiley — the Whitehall-establishment functionary recalls Smiley out of retirement to run the mole-hunt; cordial Cabinet-Office trust, sign-flipped ministerial-over-officer authority.
+        RelationshipEdge(
+            source_entity_id="ENT_OLIVER_LACON", target_entity_id="ENT_GEORGE_SMILEY",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.55, inertia=0.5, evidence_strength="moderate", last_updated_fabula=5000),
+                "power_dynamic": RelationshipMetric(value=0.3,  inertia=0.6, evidence_strength="moderate", last_updated_fabula=5000),
+            },
+        ),
         # Prideaux ↔ Haydon
         RelationshipEdge(
             source_entity_id="ENT_JIM_PRIDEAUX", target_entity_id="ENT_BILL_HAYDON",
             metrics={
                 "affinity":      RelationshipMetric(value=-0.9, inertia=0.75, evidence_strength="strong", last_updated_fabula=23000),
                 "fear":          RelationshipMetric(value=0.0, inertia=0.2, evidence_strength="weak", last_updated_fabula=24000, observed=False),
+            },
+        ),
+        # Haydon → Prideaux — the closest living reminder of the Oxford friendship Haydon betrayed when he handed Prideaux to the Czechs at Brno; mingled love and instrumental contempt; no fear; sign-flipped power.
+        RelationshipEdge(
+            source_entity_id="ENT_BILL_HAYDON", target_entity_id="ENT_JIM_PRIDEAUX",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.4, inertia=0.7,  evidence_strength="strong",   last_updated_fabula=23000),
+                "power_dynamic": RelationshipMetric(value=0.5, inertia=0.7,  evidence_strength="strong",   last_updated_fabula=23000),
             },
         ),
         # Tarr ↔ Irina
@@ -1199,6 +1231,14 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=-0.6, inertia=0.6, evidence_strength="strong", last_updated_fabula=19000),
             },
         ),
+        # Smiley → Esterhase — the airfield-interrogation scene: cold professional pressure on the lampshades-trader Hungarian to expose his Witchcraft contacts; mild contempt, no fear, total interrogator's ascendancy (sign-flipped).
+        RelationshipEdge(
+            source_entity_id="ENT_GEORGE_SMILEY", target_entity_id="ENT_TOBY_ESTERHASE",
+            metrics={
+                "affinity":      RelationshipMetric(value=-0.3, inertia=0.5, evidence_strength="strong",   last_updated_fabula=19000),
+                "power_dynamic": RelationshipMetric(value=0.6,  inertia=0.6, evidence_strength="strong",   last_updated_fabula=19000),
+            },
+        ),
         # Haydon ↔ Smiley
         RelationshipEdge(
             source_entity_id="ENT_BILL_HAYDON", target_entity_id="ENT_GEORGE_SMILEY",
@@ -1215,11 +1255,27 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=-0.5, inertia=0.75, evidence_strength="strong", last_updated_fabula=23000),
             },
         ),
+        # Karla → Haydon — the Moscow Centre handler's possessive use of his most prized Cambridge mole; cool professional 'affinity' over the asset whose Ann-affair he engineered as a Circus-distraction; sign-flipped controller-over-agent ascendancy.
+        RelationshipEdge(
+            source_entity_id="ENT_KARLA", target_entity_id="ENT_BILL_HAYDON",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.4, inertia=0.85, evidence_strength="strong", last_updated_fabula=0),
+                "power_dynamic": RelationshipMetric(value=0.5, inertia=0.75, evidence_strength="strong", last_updated_fabula=23000),
+            },
+        ),
         # Prideaux ↔ Karla
         RelationshipEdge(
             source_entity_id="ENT_JIM_PRIDEAUX", target_entity_id="ENT_KARLA",
             metrics={
                 "fear":          RelationshipMetric(value=0.6, inertia=0.4, evidence_strength="strong", last_updated_fabula=1500),
+            },
+        ),
+        # Karla → Prideaux — the Brno interrogation: a captured Western field-officer broken under torture, then released as living evidence of what Moscow does. Cold instrumental contempt, no fear, total dominion over a defeated agent.
+        RelationshipEdge(
+            source_entity_id="ENT_KARLA", target_entity_id="ENT_JIM_PRIDEAUX",
+            metrics={
+                "affinity":      RelationshipMetric(value=-0.5, inertia=0.5,  evidence_strength="strong",   last_updated_fabula=1500),
+                "power_dynamic": RelationshipMetric(value=0.95, inertia=0.75, evidence_strength="strong",   last_updated_fabula=1500),
             },
         ),
         # Haydon ↔ Tarr
@@ -1237,11 +1293,27 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=-0.7, inertia=0.7, evidence_strength="strong", last_updated_fabula=3500),
             },
         ),
+        # Alleline → Connie Sachs — the new chief who personally signed the order pensioning off the Circus's brilliant Soviet-research analyst; institutional dismissiveness, no fear, sign-flipped chief-over-pensioner power.
+        RelationshipEdge(
+            source_entity_id="ENT_PERCY_ALLELINE", target_entity_id="ENT_CONNIE_SACHS",
+            metrics={
+                "affinity":      RelationshipMetric(value=-0.4, inertia=0.6, evidence_strength="strong", last_updated_fabula=3500),
+                "power_dynamic": RelationshipMetric(value=0.7,  inertia=0.7, evidence_strength="strong", last_updated_fabula=3500),
+            },
+        ),
         # Guillam ↔ Smiley
         RelationshipEdge(
             source_entity_id="ENT_PETER_GUILLAM", target_entity_id="ENT_GEORGE_SMILEY",
             metrics={
                 "affinity":      RelationshipMetric(value=0.85, inertia=0.7, evidence_strength="strong", last_updated_fabula=0),
+            },
+        ),
+        # Smiley → Guillam — paternal trust in the Scalp-hunters chief who breaks into the Circus archives at his behest; deep affection plus sign-flipped mentor-over-protege ascendancy.
+        RelationshipEdge(
+            source_entity_id="ENT_GEORGE_SMILEY", target_entity_id="ENT_PETER_GUILLAM",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.8, inertia=0.7,  evidence_strength="strong",   last_updated_fabula=0),
+                "power_dynamic": RelationshipMetric(value=0.4, inertia=0.65, evidence_strength="strong",   last_updated_fabula=0),
             },
         ),
     ],

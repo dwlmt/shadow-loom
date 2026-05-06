@@ -981,6 +981,15 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=0.55, inertia=0.7, evidence_strength="strong", last_updated_fabula=4000),
             },
         ),
+        # Nick → Boney — wary respect for the one detective who senses Amy is lying; cautious cooperation tempered by his terror of being arrested.
+        RelationshipEdge(
+            source_entity_id="ENT_NICK", target_entity_id="ENT_BONEY",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.3,  inertia=0.5,  evidence_strength="moderate", last_updated_fabula=14000),
+                "fear":          RelationshipMetric(value=0.55, inertia=0.2,  evidence_strength="strong",   last_updated_fabula=4000),
+                "power_dynamic": RelationshipMetric(value=-0.55, inertia=0.7, evidence_strength="strong",   last_updated_fabula=4000),
+            },
+        ),
         # Nick → Andie — the affair.
         RelationshipEdge(
             source_entity_id="ENT_NICK", target_entity_id="ENT_ANDIE",
@@ -1004,6 +1013,14 @@ world_state = WorldStateV1(
             metrics={
                 "affinity":      RelationshipMetric(value=0.4, inertia=0.45, evidence_strength="moderate", last_updated_fabula=9000),
                 "power_dynamic": RelationshipMetric(value=-0.3, inertia=0.65, evidence_strength="strong", last_updated_fabula=8000),
+            },
+        ),
+        # Tanner → Nick — the celebrity-defence attorney's professional warmth toward a high-profile client; mild liking, expert ascendancy.
+        RelationshipEdge(
+            source_entity_id="ENT_TANNER", target_entity_id="ENT_NICK",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.45, inertia=0.45, evidence_strength="moderate", last_updated_fabula=9000),
+                "power_dynamic": RelationshipMetric(value=0.3,  inertia=0.65, evidence_strength="strong",   last_updated_fabula=8000),
             },
         ),
         # Margo ↔ Amy — sworn enemies behind the public smile.
@@ -1030,11 +1047,28 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=0.75, inertia=0.7, evidence_strength="strong", last_updated_fabula=5000),
             },
         ),
+        # Nick → Gilpin — dislike for the detective who has decided he's guilty; high fear of the arrest Gilpin is working to engineer.
+        RelationshipEdge(
+            source_entity_id="ENT_NICK", target_entity_id="ENT_GILPIN",
+            metrics={
+                "affinity":      RelationshipMetric(value=-0.7,  inertia=0.5, evidence_strength="strong", last_updated_fabula=5000),
+                "fear":          RelationshipMetric(value=0.7,   inertia=0.2, evidence_strength="strong", last_updated_fabula=5000),
+                "power_dynamic": RelationshipMetric(value=-0.75, inertia=0.7, evidence_strength="strong", last_updated_fabula=5000),
+            },
+        ),
         # Boney ↔ Gilpin — partners.
         RelationshipEdge(
             source_entity_id="ENT_BONEY", target_entity_id="ENT_GILPIN",
             metrics={
                 "affinity": RelationshipMetric(value=0.0, inertia=0.5, evidence_strength="moderate", last_updated_fabula=3000, observed=False),
+                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.65, evidence_strength="moderate", last_updated_fabula=3000, observed=False),
+            },
+        ),
+        # Gilpin → Boney — partner-of-equal-rank: working professional respect that frays as they disagree on Nick's guilt; placeholder symmetric structure.
+        RelationshipEdge(
+            source_entity_id="ENT_GILPIN", target_entity_id="ENT_BONEY",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.0, inertia=0.5,  evidence_strength="moderate", last_updated_fabula=3000, observed=False),
                 "power_dynamic": RelationshipMetric(value=0.0, inertia=0.65, evidence_strength="moderate", last_updated_fabula=3000, observed=False),
             },
         ),
@@ -1046,11 +1080,27 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=0.0, inertia=0.65, evidence_strength="moderate", last_updated_fabula=3000, observed=False),
             },
         ),
+        # Amy → Noelle — contemptuous performance of friendship with the pregnant neighbour Amy uses as a manipulable witness; warmth on the surface, indifference beneath.
+        RelationshipEdge(
+            source_entity_id="ENT_AMY", target_entity_id="ENT_NOELLE",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.1,  inertia=0.5,  evidence_strength="moderate", last_updated_fabula=5000),
+                "power_dynamic": RelationshipMetric(value=0.4,  inertia=0.65, evidence_strength="moderate", last_updated_fabula=5000),
+            },
+        ),
         RelationshipEdge(
             source_entity_id="ENT_NOELLE", target_entity_id="ENT_NICK",
             metrics={
                 "affinity":      RelationshipMetric(value=-0.75, inertia=0.5, evidence_strength="strong", last_updated_fabula=6000),
                 "power_dynamic": RelationshipMetric(value=0.0, inertia=0.6, evidence_strength="moderate", last_updated_fabula=6000),
+            },
+        ),
+        # Nick → Noelle — mild dislike of the gossipy neighbour whose loud public denunciations on television amplify the case against him.
+        RelationshipEdge(
+            source_entity_id="ENT_NICK", target_entity_id="ENT_NOELLE",
+            metrics={
+                "affinity":      RelationshipMetric(value=-0.4, inertia=0.5, evidence_strength="moderate", last_updated_fabula=6000),
+                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.6, evidence_strength="weak",     last_updated_fabula=6000, observed=False),
             },
         ),
         # Marybeth and Rand — the brand.
@@ -1061,6 +1111,14 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=0.0, inertia=0.7, evidence_strength="strong", last_updated_fabula=2000, observed=False),
             },
         ),
+        # Amy → Marybeth — lifelong resentment of the mother who literarily replaced her with the perfect 'Amazing Amy' books, masked behind public daughter-mother decorum.
+        RelationshipEdge(
+            source_entity_id="ENT_AMY", target_entity_id="ENT_MARYBETH",
+            metrics={
+                "affinity":      RelationshipMetric(value=-0.4, inertia=0.55, evidence_strength="strong", last_updated_fabula=14000),
+                "power_dynamic": RelationshipMetric(value=0.0,  inertia=0.7,  evidence_strength="weak",   last_updated_fabula=2000, observed=False),
+            },
+        ),
         RelationshipEdge(
             source_entity_id="ENT_MARYBETH", target_entity_id="ENT_NICK",
             metrics={
@@ -1068,10 +1126,26 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=0.3, inertia=0.65, evidence_strength="moderate", last_updated_fabula=3000),
             },
         ),
+        # Nick → Marybeth — fond son-in-law early on, wary as her trust shifts toward the suspicion he killed Amy.
+        RelationshipEdge(
+            source_entity_id="ENT_NICK", target_entity_id="ENT_MARYBETH",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.3,  inertia=0.5,  evidence_strength="moderate", last_updated_fabula=3000),
+                "power_dynamic": RelationshipMetric(value=-0.3, inertia=0.65, evidence_strength="moderate", last_updated_fabula=3000),
+            },
+        ),
         RelationshipEdge(
             source_entity_id="ENT_RAND", target_entity_id="ENT_NICK",
             metrics={
                 "affinity": RelationshipMetric(value=0.0, inertia=0.5, evidence_strength="moderate", last_updated_fabula=3000, observed=False),
+                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.65, evidence_strength="moderate", last_updated_fabula=3000, observed=False),
+            },
+        ),
+        # Nick → Rand — cordial son-in-law facade; the more passive of Amy's parents recedes into the background of the marriage. Placeholder zero-vector mirror.
+        RelationshipEdge(
+            source_entity_id="ENT_NICK", target_entity_id="ENT_RAND",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.0, inertia=0.5,  evidence_strength="moderate", last_updated_fabula=3000, observed=False),
                 "power_dynamic": RelationshipMetric(value=0.0, inertia=0.65, evidence_strength="moderate", last_updated_fabula=3000, observed=False),
             },
         ),

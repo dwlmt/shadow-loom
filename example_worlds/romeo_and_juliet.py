@@ -1160,6 +1160,14 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=0.2, inertia=0.6, evidence_strength="moderate", last_updated_fabula=1200),
             },
         ),
+        # Romeo → Benvolio — affectionate cousin and confidant who he opens his Rosaline-melancholy to in Act I; reverses the gentle dominance to subordinate kinship.
+        RelationshipEdge(
+            source_entity_id="ENT_ROMEO", target_entity_id="ENT_BENVOLIO",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.8,  inertia=0.5, evidence_strength="strong",   last_updated_fabula=1200),
+                "power_dynamic": RelationshipMetric(value=-0.2, inertia=0.6, evidence_strength="moderate", last_updated_fabula=1200),
+            },
+        ),
         # Capulet → Juliet — paternal love souring into authority and threat.
         RelationshipEdge(
             source_entity_id="ENT_CAPULET", target_entity_id="ENT_JULIET",
@@ -1199,6 +1207,14 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=0.5, inertia=0.65, evidence_strength="strong", last_updated_fabula=4000),
             },
         ),
+        # Romeo → Friar Laurence — trusts the Friar as confessor and accomplice (the secret marriage; the sleeping potion plot); deferential affection toward his mentor.
+        RelationshipEdge(
+            source_entity_id="ENT_ROMEO", target_entity_id="ENT_FRIAR_LAURENCE",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.75, inertia=0.55, evidence_strength="strong", last_updated_fabula=4000),
+                "power_dynamic": RelationshipMetric(value=-0.5, inertia=0.65, evidence_strength="strong", last_updated_fabula=4000),
+            },
+        ),
         # Capulet ↔ Montague — feud that collapses in the final scene.
         RelationshipEdge(
             source_entity_id="ENT_CAPULET", target_entity_id="ENT_MONTAGUE",
@@ -1220,6 +1236,15 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=0.4, inertia=0.65, evidence_strength="moderate", last_updated_fabula=1000),
             },
         ),
+        # Juliet → Paris — cool civility shading into outright rejection at Friar Laurence's cell; her arranged-marriage dread treats him as the symbol of patriarchal entrapment.
+        RelationshipEdge(
+            source_entity_id="ENT_JULIET", target_entity_id="ENT_PARIS",
+            metrics={
+                "affinity":      RelationshipMetric(value=-0.7, inertia=0.45, evidence_strength="strong",   last_updated_fabula=11000),
+                "fear":          RelationshipMetric(value=0.4,  inertia=0.2,  evidence_strength="moderate", last_updated_fabula=11000),
+                "power_dynamic": RelationshipMetric(value=-0.4, inertia=0.65, evidence_strength="moderate", last_updated_fabula=1000),
+            },
+        ),
         # Prince → both houses — civic authority.
         RelationshipEdge(
             source_entity_id="ENT_PRINCE_ESCALUS", target_entity_id="ENT_CAPULET",
@@ -1227,10 +1252,26 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=0.8, inertia=0.75, evidence_strength="strong", last_updated_fabula=800),
             },
         ),
+        # Capulet → Prince Escalus — grudging deference to Verona's sovereign whose threats keep the feud notionally in check; sign-flipped subordinate authority.
+        RelationshipEdge(
+            source_entity_id="ENT_CAPULET", target_entity_id="ENT_PRINCE_ESCALUS",
+            metrics={
+                "affinity":      RelationshipMetric(value=-0.1, inertia=0.5,  evidence_strength="moderate", last_updated_fabula=800),
+                "power_dynamic": RelationshipMetric(value=-0.8, inertia=0.75, evidence_strength="strong",   last_updated_fabula=800),
+            },
+        ),
         RelationshipEdge(
             source_entity_id="ENT_PRINCE_ESCALUS", target_entity_id="ENT_MONTAGUE",
             metrics={
                 "power_dynamic": RelationshipMetric(value=0.8, inertia=0.75, evidence_strength="strong", last_updated_fabula=800),
+            },
+        ),
+        # Montague → Prince Escalus — same grudging civic deference as Capulet.
+        RelationshipEdge(
+            source_entity_id="ENT_MONTAGUE", target_entity_id="ENT_PRINCE_ESCALUS",
+            metrics={
+                "affinity":      RelationshipMetric(value=-0.1, inertia=0.5,  evidence_strength="moderate", last_updated_fabula=800),
+                "power_dynamic": RelationshipMetric(value=-0.8, inertia=0.75, evidence_strength="strong",   last_updated_fabula=800),
             },
         ),
     ],

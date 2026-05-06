@@ -941,6 +941,14 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=-0.25, inertia=0.6, evidence_strength="moderate", last_updated_fabula=1000),
             },
         ),
+        # Mainwaring → Frazer — wary respect for the dour Scotsman who answers back; sees him as a needed but prickly subordinate.
+        RelationshipEdge(
+            source_entity_id="ENT_MAINWARING", target_entity_id="ENT_FRAZER",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.25, inertia=0.45, evidence_strength="moderate", last_updated_fabula=1000),
+                "power_dynamic": RelationshipMetric(value=0.25, inertia=0.6,  evidence_strength="moderate", last_updated_fabula=1000),
+            },
+        ),
         # Godfrey → Mainwaring — gentle deference.
         RelationshipEdge(
             source_entity_id="ENT_GODFREY", target_entity_id="ENT_MAINWARING",
@@ -948,6 +956,14 @@ world_state = WorldStateV1(
                 "affinity":      RelationshipMetric(value=0.55, inertia=0.5, evidence_strength="strong", last_updated_fabula=1000),
                 "fear":          RelationshipMetric(value=0.15, inertia=0.2, evidence_strength="weak", last_updated_fabula=1000),
                 "power_dynamic": RelationshipMetric(value=-0.3, inertia=0.6, evidence_strength="moderate", last_updated_fabula=1000),
+            },
+        ),
+        # Mainwaring → Godfrey — protective, sometimes exasperated affection for the elderly conscientious-objector medical orderly.
+        RelationshipEdge(
+            source_entity_id="ENT_MAINWARING", target_entity_id="ENT_GODFREY",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.45, inertia=0.5,  evidence_strength="strong",   last_updated_fabula=1000),
+                "power_dynamic": RelationshipMetric(value=0.3,  inertia=0.6,  evidence_strength="moderate", last_updated_fabula=1000),
             },
         ),
         # Pike ↔ Wilson — the famous secret-uncle bond.
@@ -974,6 +990,15 @@ world_state = WorldStateV1(
                 "affinity":      RelationshipMetric(value=0.4, inertia=0.45, evidence_strength="moderate", last_updated_fabula=1000),
                 "fear":          RelationshipMetric(value=0.2, inertia=0.2, evidence_strength="weak", last_updated_fabula=1000),
                 "power_dynamic": RelationshipMetric(value=0.55, inertia=0.65, evidence_strength="strong", last_updated_fabula=1000),
+            },
+        ),
+        # Pike → Mainwaring — the 'Mr Mainwaring' axis: the youngest member's mixture of mildly intimidated awe and unselfconscious fondness for the bank manager who is also his troop captain.
+        RelationshipEdge(
+            source_entity_id="ENT_PIKE", target_entity_id="ENT_MAINWARING",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.55, inertia=0.5,  evidence_strength="strong",   last_updated_fabula=1000),
+                "fear":          RelationshipMetric(value=0.35, inertia=0.2,  evidence_strength="moderate", last_updated_fabula=1000),
+                "power_dynamic": RelationshipMetric(value=-0.55, inertia=0.65, evidence_strength="strong",   last_updated_fabula=1000),
             },
         ),
         # Walker ↔ Mainwaring — useful rogue.
@@ -1019,6 +1044,14 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=-0.2, inertia=0.6, evidence_strength="moderate", last_updated_fabula=4000),
             },
         ),
+        # Mainwaring → Vicar — territorial irritation at the man whose church-hall the platoon must keep borrowing; mild contempt for clerical fussiness.
+        RelationshipEdge(
+            source_entity_id="ENT_MAINWARING", target_entity_id="ENT_VICAR",
+            metrics={
+                "affinity":      RelationshipMetric(value=-0.45, inertia=0.5, evidence_strength="moderate", last_updated_fabula=4000),
+                "power_dynamic": RelationshipMetric(value=0.2,   inertia=0.6, evidence_strength="moderate", last_updated_fabula=4000),
+            },
+        ),
         # German Officer ↔ Mainwaring — captor and captive.
         RelationshipEdge(
             source_entity_id="ENT_GERMAN_OFFICER", target_entity_id="ENT_MAINWARING",
@@ -1026,6 +1059,14 @@ world_state = WorldStateV1(
                 "affinity":      RelationshipMetric(value=-0.65, inertia=0.5, evidence_strength="strong", last_updated_fabula=10000),
                 "fear":          RelationshipMetric(value=0.2, inertia=0.2, evidence_strength="moderate", last_updated_fabula=11000),
                 "power_dynamic": RelationshipMetric(value=-0.4, inertia=0.65, evidence_strength="strong", last_updated_fabula=11000),
+            },
+        ),
+        # Mainwaring → German Officer — the famous "don't tell him, Pike!" exchange: nominal ascendancy as captor, contempt for the threatened list-keeping, no fear of his own (sign-flipped power).
+        RelationshipEdge(
+            source_entity_id="ENT_MAINWARING", target_entity_id="ENT_GERMAN_OFFICER",
+            metrics={
+                "affinity":      RelationshipMetric(value=-0.7, inertia=0.5,  evidence_strength="strong",   last_updated_fabula=10000),
+                "power_dynamic": RelationshipMetric(value=0.4,  inertia=0.65, evidence_strength="strong",   last_updated_fabula=11000),
             },
         ),
     ],

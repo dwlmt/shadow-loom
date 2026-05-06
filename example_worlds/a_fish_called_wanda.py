@@ -1146,6 +1146,15 @@ world_state = WorldStateV1(
                     "power_dynamic": RelationshipMetric(value=0.0, inertia=0.58, evidence_strength='weak', observed=False),
                 },
         ),
+        # Ken → Wanda: tongue-tied infatuation cooling into bewildered tolerance — the stuttering animal-lover quietly fancies her but is constantly out-manoeuvred. Mild positive affinity, low fear, slight subordination (sign-flipped from the placeholder zero forward).
+        RelationshipEdge(
+            source_entity_id='ENT_KEN', target_entity_id='ENT_WANDA',
+            metrics={
+                    "affinity":      RelationshipMetric(value=0.4, inertia=0.4,  evidence_strength='moderate', last_updated_fabula=2000),
+                    "fear":          RelationshipMetric(value=0.2, inertia=0.18, evidence_strength='weak',     last_updated_fabula=8000),
+                    "power_dynamic": RelationshipMetric(value=-0.3, inertia=0.58, evidence_strength='moderate', last_updated_fabula=2000),
+                },
+        ),
         RelationshipEdge(
             source_entity_id='ENT_GEORGE', target_entity_id='ENT_WANDA',
             metrics={

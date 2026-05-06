@@ -791,6 +791,13 @@ world_state = WorldStateV1(
                 "affinity": RelationshipMetric(value=-0.55, inertia=0.55, evidence_strength="strong", last_updated_fabula=10000),
             },
         ),
+        # Dolly → Laura — oblivious chatty fondness for the friend whose final tea-room encounter she shatters with her arrival. Strong positive affinity, no fear, no power asymmetry.
+        RelationshipEdge(
+            source_entity_id="ENT_DOLLY", target_entity_id="ENT_LAURA",
+            metrics={
+                "affinity": RelationshipMetric(value=0.7, inertia=0.55, evidence_strength="strong", last_updated_fabula=10000),
+            },
+        ),
         # Refreshment-room flirtation.
         RelationshipEdge(
             source_entity_id="ENT_ALBERT_GODBY", target_entity_id="ENT_MYRTLE_PALMER",

@@ -2547,10 +2547,20 @@ def _physics_missing_mutation_social_per_dyad(
 
     # Build the set of (target, counterpart, axis) triples Physics
     # actually covered. ``mutation_social`` semantics: target_id is
-    # the perspective entity, rel_counterpart_id is the other half
-    # of the dyad. We index in both directions because the semantic
-    # dyad is undirected for affinity and power_dynamic; matching
-    # only one direction would over-report.
+    # the perspective entity (whose view of the relationship mutates),
+    # rel_counterpart_id is the other half of the dyad.
+    #
+    # ``RelationshipEdge`` is *directed* — affinity, fear and
+    # power_dynamic on edge ``A→B`` describe how A feels/stands toward
+    # B, and may differ from the reverse ``B→A`` edge. Indexing both
+    # directions as covered (an earlier version of this function did
+    # so on the assumption that affinity is undirected) silently
+    # accepted single-direction mutation_social coverage as covering
+    # both halves of the dyad — exactly the bug this finer-grained
+    # check is meant to surface. We now key strictly on the directed
+    # (target, counterpart) pair so a missing reverse-direction
+    # mutation is still flagged when only the forward direction was
+    # extracted.
     covered: set[Tuple[str, str, str]] = set()
     for ce in physics.causal_topology:
         if ce.causality_type != "mutation_social":
@@ -2562,7 +2572,6 @@ def _physics_missing_mutation_social_per_dyad(
         if axis == "power":
             axis = "power_dynamic"
         covered.add((ce.target_id, counterpart, axis))
-        covered.add((counterpart, ce.target_id, axis))
 
     missing: list[Tuple[str, str, str]] = []
     seen: set[Tuple[str, str, str]] = set()
@@ -4796,6 +4805,59 @@ def _deduplicate_social(edges: List[RelationshipEdge]) -> List[RelationshipEdge]
     return list(best.values())
 
 
+def _mirror_missing_relationship_directions(
+    edges: List[RelationshipEdge],
+) -> List[RelationshipEdge]:
+    """Deprecated shim — mirroring now happens automatically inside
+    ``WorldStateV1``'s post-init validator
+    (:meth:`WorldStateV1._mirror_missing_relationship_directions`).
+
+    Kept here as a thin wrapper because a handful of internal callers
+    (and possibly downstream tests) imported the function directly.
+    Constructs a transient ``WorldStateV1``-shaped pass through the
+    standalone mirror logic so the behaviour stays identical.
+    """
+    if not edges:
+        return edges
+    indexed: dict[tuple[str, str], RelationshipEdge] = {
+        (e.source_entity_id, e.target_entity_id): e for e in edges
+    }
+    mirrored: list[RelationshipEdge] = []
+    for (src, tgt), edge in list(indexed.items()):
+        if (tgt, src) in indexed:
+            continue
+        new_metrics: dict[str, dict] = {}
+        for name, m in edge.metrics.items():
+            value = float(m.value)
+            if name == "power_dynamic":
+                value = -value
+            new_metrics[name] = {
+                "value": value,
+                "inertia": float(m.inertia),
+                "evidence_strength": "weak",
+                "last_updated_fabula": int(m.last_updated_fabula),
+                "observed": False,
+            }
+        if not new_metrics:
+            continue
+        try:
+            mirror = RelationshipEdge(
+                world_id=edge.world_id,
+                source_entity_id=tgt,
+                target_entity_id=src,
+                metrics=new_metrics,  # type: ignore[arg-type]
+            )
+        except Exception:
+            logger.warning(
+                "Failed to mirror RelationshipEdge %s→%s; leaving "
+                "reverse direction missing.", src, tgt, exc_info=True,
+            )
+            continue
+        mirrored.append(mirror)
+        indexed[(tgt, src)] = mirror
+    return list(edges) + mirrored
+
+
 def _deduplicate_spatial(edges: List[SpatialEdge]) -> List[SpatialEdge]:
     """Merge spatial edges per (source, target), preserving lifecycle state.
 
@@ -5264,6 +5326,10 @@ def assemble_world_state(
 
     # Deduplicate relationship, spatial, causal across chunks (channels
     # were deduped earlier so the forwarding map could rewrite events).
+    # Reverse-direction mirroring of one-sided dyads now happens in
+    # ``WorldStateV1``'s post-init validator so every consumer (ingestion,
+    # example_worlds fixtures, snapshot reconstructions, test fixtures)
+    # sees the same mirrored shape — no explicit call here.
     social_before = len(social_topology)
     social_topology = _deduplicate_social(social_topology)
     spatial_before = len(spatial_topology)

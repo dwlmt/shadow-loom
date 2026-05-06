@@ -1031,6 +1031,14 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=-0.8, inertia=0.7, evidence_strength="strong", last_updated_fabula=4000),
             },
         ),
+        # White Witch → Edmund: predatory grooming — he is a Son of Adam to be lured, used, then sacrificed at the Stone Table. Mild manipulative interest decaying to disposable contempt; no fear; total domination (sign-flipped).
+        RelationshipEdge(
+            source_entity_id="ENT_WHITE_WITCH", target_entity_id="ENT_EDMUND",
+            metrics={
+                "affinity": RelationshipMetric(value=-0.6, inertia=0.5, evidence_strength="strong", last_updated_fabula=10000),
+                "power_dynamic": RelationshipMetric(value=0.8, inertia=0.7, evidence_strength="strong", last_updated_fabula=4000),
+            },
+        ),
         # Edmund ↔ Lucy: sibling tension → reconciliation
         RelationshipEdge(
             source_entity_id="ENT_EDMUND", target_entity_id="ENT_LUCY",
@@ -1062,6 +1070,13 @@ world_state = WorldStateV1(
             source_entity_id="ENT_SUSAN", target_entity_id="ENT_EDMUND",
             metrics={
                 "affinity": RelationshipMetric(value=0.6, inertia=0.45, evidence_strength="moderate", last_updated_fabula=14000),
+            },
+        ),
+        # Edmund → Susan: dismissive teasing of his pragmatic elder sister early on, mellowing to brotherly respect after his redemption — less close than Edmund→Lucy.
+        RelationshipEdge(
+            source_entity_id="ENT_EDMUND", target_entity_id="ENT_SUSAN",
+            metrics={
+                "affinity": RelationshipMetric(value=0.45, inertia=0.45, evidence_strength="moderate", last_updated_fabula=14000),
             },
         ),
         # Peter ↔ Lucy: protective care
@@ -1111,12 +1126,28 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=-0.8, inertia=0.75, evidence_strength="strong", last_updated_fabula=12500),
             },
         ),
+        # Aslan → Lucy: special tenderness for his most faithful child — she was first to believe, first to find Narnia, first to embrace him after the resurrection. Highest affinity of the four; gentle parental authority (sign-flipped).
+        RelationshipEdge(
+            source_entity_id="ENT_ASLAN", target_entity_id="ENT_LUCY",
+            metrics={
+                "affinity": RelationshipMetric(value=1.0, inertia=0.7, evidence_strength="strong", last_updated_fabula=12500),
+                "power_dynamic": RelationshipMetric(value=0.8, inertia=0.75, evidence_strength="strong", last_updated_fabula=12500),
+            },
+        ),
         # Peter ↔ Aslan: loyalty and respect
         RelationshipEdge(
             source_entity_id="ENT_PETER", target_entity_id="ENT_ASLAN",
             metrics={
                 "affinity": RelationshipMetric(value=0.9, inertia=0.6, evidence_strength="strong", last_updated_fabula=12500),
                 "power_dynamic": RelationshipMetric(value=-0.7, inertia=0.7, evidence_strength="strong", last_updated_fabula=12500),
+            },
+        ),
+        # Aslan → Peter: mentor to the chosen High King — grooming him for command at Beruna, presenting him with sword and shield. Strong affinity tinged with formal investiture, royal-over-king authority (sign-flipped).
+        RelationshipEdge(
+            source_entity_id="ENT_ASLAN", target_entity_id="ENT_PETER",
+            metrics={
+                "affinity": RelationshipMetric(value=0.85, inertia=0.6, evidence_strength="strong", last_updated_fabula=12500),
+                "power_dynamic": RelationshipMetric(value=0.7, inertia=0.7, evidence_strength="strong", last_updated_fabula=12500),
             },
         ),
         # Susan ↔ Aslan: cautious reverence
@@ -1127,12 +1158,28 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=-0.7, inertia=0.7, evidence_strength="strong", last_updated_fabula=12500),
             },
         ),
+        # Aslan → Susan: gentle protection — she walks beside him through the night to the Stone Table; he gives her the horn that calls help. Patient affection for his more anxious follower.
+        RelationshipEdge(
+            source_entity_id="ENT_ASLAN", target_entity_id="ENT_SUSAN",
+            metrics={
+                "affinity": RelationshipMetric(value=0.85, inertia=0.6, evidence_strength="strong", last_updated_fabula=12500),
+                "power_dynamic": RelationshipMetric(value=0.7, inertia=0.7, evidence_strength="strong", last_updated_fabula=12500),
+            },
+        ),
         # Edmund ↔ Aslan: gratitude and awe
         RelationshipEdge(
             source_entity_id="ENT_EDMUND", target_entity_id="ENT_ASLAN",
             metrics={
                 "affinity": RelationshipMetric(value=0.9, inertia=0.55, evidence_strength="strong", last_updated_fabula=14000),
                 "power_dynamic": RelationshipMetric(value=-0.8, inertia=0.7, evidence_strength="strong", last_updated_fabula=14000),
+            },
+        ),
+        # Aslan → Edmund: redemptive mercy — the lion who literally dies in his place; the post-redemption private conversation. Deepest affinity of all because of the cost; absolute paternal authority.
+        RelationshipEdge(
+            source_entity_id="ENT_ASLAN", target_entity_id="ENT_EDMUND",
+            metrics={
+                "affinity": RelationshipMetric(value=1.0, inertia=0.7, evidence_strength="strong", last_updated_fabula=12500),
+                "power_dynamic": RelationshipMetric(value=0.8, inertia=0.7, evidence_strength="strong", last_updated_fabula=12500),
             },
         ),
         # White Witch ↔ Aslan: mortal enmity
@@ -1142,6 +1189,14 @@ world_state = WorldStateV1(
                 "affinity": RelationshipMetric(value=-1.0, inertia=0.85, evidence_strength="strong", last_updated_fabula=9000),
                 "fear": RelationshipMetric(value=0.85, inertia=0.35, evidence_strength="strong", last_updated_fabula=18000),
                 "power_dynamic": RelationshipMetric(value=0.5, inertia=0.7, evidence_strength="strong", last_updated_fabula=15000),
+            },
+        ),
+        # Aslan → White Witch: cosmic opposition without fear — he willingly walks to the Stone Table knowing she will kill him, then returns through the Deeper Magic to destroy her at Beruna. Total enmity, zero fear, ultimate authority (sign-flipped from the Witch's pre-resurrection ascendancy).
+        RelationshipEdge(
+            source_entity_id="ENT_ASLAN", target_entity_id="ENT_WHITE_WITCH",
+            metrics={
+                "affinity": RelationshipMetric(value=-1.0, inertia=0.85, evidence_strength="strong", last_updated_fabula=9000),
+                "power_dynamic": RelationshipMetric(value=-0.5, inertia=0.7, evidence_strength="strong", last_updated_fabula=15000),
             },
         ),
     ],

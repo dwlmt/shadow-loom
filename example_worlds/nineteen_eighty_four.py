@@ -985,6 +985,14 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=-0.95, inertia=0.85, evidence_strength="strong", last_updated_fabula=1000),
             },
         ),
+        # Big Brother → Winston — the iconic propaganda gaze: Winston is a thoughtcriminal-shaped target on the Party's surveillance grid; institutional contempt, no fear, total dominion (sign-flipped).
+        RelationshipEdge(
+            source_entity_id="ENT_BIG_BROTHER", target_entity_id="ENT_WINSTON",
+            metrics={
+                "affinity":      RelationshipMetric(value=-0.6, inertia=0.85, evidence_strength="strong", last_updated_fabula=1000),
+                "power_dynamic": RelationshipMetric(value=0.95, inertia=0.85, evidence_strength="strong", last_updated_fabula=1000),
+            },
+        ),
         # Winston ↔ Party.
         RelationshipEdge(
             source_entity_id="ENT_WINSTON", target_entity_id="ENT_PARTY",
@@ -992,6 +1000,14 @@ world_state = WorldStateV1(
                 "affinity":      RelationshipMetric(value=-0.95, inertia=0.45, evidence_strength="strong", last_updated_fabula=3000),
                 "fear":          RelationshipMetric(value=0.9, inertia=0.25, evidence_strength="strong", last_updated_fabula=3000),
                 "power_dynamic": RelationshipMetric(value=-0.95, inertia=0.85, evidence_strength="strong", last_updated_fabula=1000),
+            },
+        ),
+        # Party → Winston — a mid-rank Outer Party member harbouring thoughtcrime; useful exemplary subject for Room-101 rectification. Hostile institutional 'affinity', sign-flipped total power.
+        RelationshipEdge(
+            source_entity_id="ENT_PARTY", target_entity_id="ENT_WINSTON",
+            metrics={
+                "affinity":      RelationshipMetric(value=-0.6, inertia=0.85, evidence_strength="strong", last_updated_fabula=1000),
+                "power_dynamic": RelationshipMetric(value=0.95, inertia=0.85, evidence_strength="strong", last_updated_fabula=1000),
             },
         ),
         # Julia ↔ Party.
@@ -1002,6 +1018,14 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=-0.85, inertia=0.85, evidence_strength="strong", last_updated_fabula=1000),
             },
         ),
+        # Party → Julia — a Junior Anti-Sex League cosmetic loyalist whose private hedonism makes her a thoughtcriminal of a different stripe; same institutional contempt + total dominion as for Winston.
+        RelationshipEdge(
+            source_entity_id="ENT_PARTY", target_entity_id="ENT_JULIA",
+            metrics={
+                "affinity":      RelationshipMetric(value=-0.5, inertia=0.85, evidence_strength="strong", last_updated_fabula=1000),
+                "power_dynamic": RelationshipMetric(value=0.85, inertia=0.85, evidence_strength="strong", last_updated_fabula=1000),
+            },
+        ),
         # Parsons ↔ Party.
         RelationshipEdge(
             source_entity_id="ENT_PARSONS", target_entity_id="ENT_PARTY",
@@ -1010,9 +1034,24 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=-0.85, inertia=0.85, evidence_strength="strong", last_updated_fabula=1000),
             },
         ),
+        # Party → Parsons — a model unconscious orthodoxy member, useful then disposable when his own daughter denounces him for sleep-talking thoughtcrime. Approving institutional 'affinity' that flips to indifference on arrest.
+        RelationshipEdge(
+            source_entity_id="ENT_PARTY", target_entity_id="ENT_PARSONS",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.4,  inertia=0.85, evidence_strength="moderate", last_updated_fabula=1000),
+                "power_dynamic": RelationshipMetric(value=0.85, inertia=0.85, evidence_strength="strong",   last_updated_fabula=1000),
+            },
+        ),
         # Winston ↔ Katharine — frozen marriage.
         RelationshipEdge(
             source_entity_id="ENT_WINSTON", target_entity_id="ENT_KATHARINE",
+            metrics={
+                "affinity": RelationshipMetric(value=0.0, inertia=0.7, evidence_strength="moderate", last_updated_fabula=1000, observed=False),
+            },
+        ),
+        # Katharine → Winston — the long-separated wife who treated marital sex as 'our duty to the Party'; emotional vacancy mirrored back to Winston.
+        RelationshipEdge(
+            source_entity_id="ENT_KATHARINE", target_entity_id="ENT_WINSTON",
             metrics={
                 "affinity": RelationshipMetric(value=0.0, inertia=0.7, evidence_strength="moderate", last_updated_fabula=1000, observed=False),
             },
@@ -1023,6 +1062,14 @@ world_state = WorldStateV1(
             metrics={
                 "affinity":      RelationshipMetric(value=1.0, inertia=0.95, evidence_strength="strong", last_updated_fabula=1000),
                 "power_dynamic": RelationshipMetric(value=0.7, inertia=0.85, evidence_strength="strong", last_updated_fabula=1000),
+            },
+        ),
+        # Party → O'Brien — a trusted Inner Party operative entrusted with the dialectical interrogation of thoughtcriminals at the Ministry of Love; institutional warmth + delegation of authority (sign-flipped).
+        RelationshipEdge(
+            source_entity_id="ENT_PARTY", target_entity_id="ENT_OBRIEN",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.9,  inertia=0.95, evidence_strength="strong", last_updated_fabula=1000),
+                "power_dynamic": RelationshipMetric(value=-0.7, inertia=0.85, evidence_strength="strong", last_updated_fabula=1000),
             },
         ),
     ],

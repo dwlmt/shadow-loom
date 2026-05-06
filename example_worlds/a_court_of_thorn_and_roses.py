@@ -1183,6 +1183,16 @@ world_state = WorldStateV1(
                                                     last_updated_fabula=0),
             },
         ),
+        # Tamlin → Lucien: lord-and-liege loyalty in the reverse direction — Tamlin trusts his emissary deeply but holds command authority. No fear; affinity slightly lower than Lucien's devotion (Tamlin is reserved); power positive (sign-flipped from Lucien's deferent -0.3).
+        RelationshipEdge(
+            source_entity_id="ENT_TAMLIN", target_entity_id="ENT_LUCIEN",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.55, inertia=0.5,  evidence_strength="strong",
+                                                    last_updated_fabula=0),
+                "power_dynamic": RelationshipMetric(value=0.3,  inertia=0.6,  evidence_strength="moderate",
+                                                    last_updated_fabula=0),
+            },
+        ),
         RelationshipEdge(
             source_entity_id="ENT_FEYRE", target_entity_id="ENT_NESTA",
             metrics={
@@ -1216,6 +1226,18 @@ world_state = WorldStateV1(
                                                     last_updated_fabula=12000),
             },
         ),
+        # Feyre → Amarantha: terror and hatred of the Under-the-Mountain captor she's set the impossible trials by. High fear, deep hatred, total subordination (sign-flipped from Amarantha's domination).
+        RelationshipEdge(
+            source_entity_id="ENT_FEYRE", target_entity_id="ENT_AMARANTHA",
+            metrics={
+                "affinity":      RelationshipMetric(value=-0.95, inertia=0.55, evidence_strength="strong",
+                                                     last_updated_fabula=12000),
+                "fear":          RelationshipMetric(value=0.85,  inertia=0.3,  evidence_strength="strong",
+                                                     last_updated_fabula=12000),
+                "power_dynamic": RelationshipMetric(value=-0.8,  inertia=0.7,  evidence_strength="strong",
+                                                     last_updated_fabula=12000),
+            },
+        ),
         RelationshipEdge(
             source_entity_id="ENT_LUCIEN", target_entity_id="ENT_AMARANTHA",
             metrics={
@@ -1227,6 +1249,16 @@ world_state = WorldStateV1(
                                                     last_updated_fabula=10000),
             },
         ),
+        # Amarantha → Lucien: contemptuous tolerance of one of Tamlin's lieutenants — useful as a hostage but disposable. No fear, sign-flipped power.
+        RelationshipEdge(
+            source_entity_id="ENT_AMARANTHA", target_entity_id="ENT_LUCIEN",
+            metrics={
+                "affinity":      RelationshipMetric(value=-0.5, inertia=0.5,  evidence_strength="moderate",
+                                                    last_updated_fabula=10000),
+                "power_dynamic": RelationshipMetric(value=0.6,  inertia=0.65, evidence_strength="moderate",
+                                                    last_updated_fabula=10000),
+            },
+        ),
         RelationshipEdge(
             source_entity_id="ENT_RHYSAND", target_entity_id="ENT_AMARANTHA",
             metrics={
@@ -1235,6 +1267,16 @@ world_state = WorldStateV1(
                 "fear": RelationshipMetric(value=0.0,  inertia=0.2, evidence_strength="weak",
                                                     last_updated_fabula=0, observed=False),
                 "power_dynamic": RelationshipMetric(value=-0.3, inertia=0.6, evidence_strength="moderate",
+                                                    last_updated_fabula=0),
+            },
+        ),
+        # Amarantha → Rhysand: possessive obsession over the Night Court High Lord she keeps coerced as her plaything. Twisted desire, no fear, sign-flipped power.
+        RelationshipEdge(
+            source_entity_id="ENT_AMARANTHA", target_entity_id="ENT_RHYSAND",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.4,  inertia=0.5,  evidence_strength="strong",
+                                                    last_updated_fabula=0),
+                "power_dynamic": RelationshipMetric(value=0.3,  inertia=0.6,  evidence_strength="moderate",
                                                     last_updated_fabula=0),
             },
         ),
@@ -1291,6 +1333,18 @@ world_state = WorldStateV1(
                                                     observed=False),
                 "power_dynamic": RelationshipMetric(value=0.0,  inertia=0.6, evidence_strength="weak",
                                                     last_updated_fabula=0, observed=False),
+            },
+        ),
+        # Elain → Nesta: gentle protective sister. The forward Nesta→Elain edge is a placeholder zero-vector; we mirror the same low-evidence structure in reverse.
+        RelationshipEdge(
+            source_entity_id="ENT_ELAIN", target_entity_id="ENT_NESTA",
+            metrics={
+                "affinity": RelationshipMetric(value=0.0,  inertia=0.5,  evidence_strength="moderate",
+                                                last_updated_fabula=0, observed=False),
+                "fear":     RelationshipMetric(value=0.0,  inertia=0.18, evidence_strength="weak",
+                                                observed=False),
+                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.6, evidence_strength="weak",
+                                                last_updated_fabula=0, observed=False),
             },
         ),
         RelationshipEdge(

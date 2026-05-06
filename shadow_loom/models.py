@@ -1160,6 +1160,88 @@ class WorldStateV1(BaseModel):
             )
         return data
 
+    @model_validator(mode="after")
+    def _mirror_missing_relationship_directions(self) -> "WorldStateV1":
+        """Synthesise the reverse-direction edge for any one-sided dyad.
+
+        ``RelationshipEdge`` is *directed* — the metrics on edge
+        ``A→B`` describe how *A* feels/stands toward *B*, and may
+        differ from the reverse ``B→A`` edge (Heathcliff loves Cathy
+        0.9; Cathy fears Heathcliff 0.7). The Social-extraction prompt
+        asks the LLM for both directions, but in practice extractors
+        and hand-authored fixtures frequently emit only the most
+        salient half — leaving the reverse direction missing entirely
+        and starving every downstream reader (physics social
+        mutations, AMWN snapshots, the affective dashboard, the
+        directive assembler, the renderer's relationship context, the
+        auditor's asymmetry score) of the perspective entity's view.
+
+        Rather than letting that gap propagate as silent zero-affinity
+        / zero-fear, this validator synthesises the missing reverse
+        edge as a *mirror*:
+
+          * **affinity** and **fear** copy the forward value verbatim
+            (default-symmetric prior — sensible when no contradicting
+            signal exists; a real extraction posting a different
+            reverse value will replace the mirror via the standard
+            dedup paths).
+          * **power_dynamic** is **negated** because a positive value
+            on ``A→B`` means *A holds power over B*, so the dyad's
+            other half necessarily reads as *B holds power under A* —
+            same magnitude, flipped sign.
+          * Every mirrored metric is marked ``observed=False`` and
+            ``evidence_strength="weak"`` so the abduction reasoner,
+            audit asymmetry score, and any later extraction treat it
+            as a fallback prior rather than ground truth.
+
+        Idempotent: a world that already has both directions of every
+        dyad is unchanged. Runs at construction time so every
+        consumer (ingestion, example_worlds, tests, snapshots, the UI)
+        sees a consistent post-mirror world without having to call a
+        helper.
+        """
+        edges = list(self.social_topology)
+        if not edges:
+            return self
+        indexed: dict[tuple[str, str], RelationshipEdge] = {
+            (e.source_entity_id, e.target_entity_id): e for e in edges
+        }
+        mirrored: list[RelationshipEdge] = []
+        for (src, tgt), edge in list(indexed.items()):
+            if (tgt, src) in indexed:
+                continue
+            new_metrics: dict[str, dict] = {}
+            for name, m in edge.metrics.items():
+                value = float(m.value)
+                if name == "power_dynamic":
+                    value = -value
+                new_metrics[name] = {
+                    "value": value,
+                    "inertia": float(m.inertia),
+                    "evidence_strength": "weak",
+                    "last_updated_fabula": int(m.last_updated_fabula),
+                    "observed": False,
+                }
+            if not new_metrics:
+                continue
+            try:
+                mirror = RelationshipEdge(
+                    world_id=edge.world_id,
+                    source_entity_id=tgt,
+                    target_entity_id=src,
+                    metrics=new_metrics,  # type: ignore[arg-type]
+                )
+            except Exception:
+                # Validation of the mirror should never fail in
+                # practice — if it does, leave the gap rather than
+                # blocking world construction.
+                continue
+            mirrored.append(mirror)
+            indexed[(tgt, src)] = mirror
+        if mirrored:
+            self.social_topology = edges + mirrored
+        return self
+
 
 # ---------------------------------------------------------------------
 # Forward-reference resolution

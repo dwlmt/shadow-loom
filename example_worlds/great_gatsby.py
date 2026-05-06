@@ -921,6 +921,14 @@ world_state = WorldStateV1(
                 "affinity": RelationshipMetric(value=-0.95, inertia=0.5, evidence_strength="strong", last_updated_fabula=14900),
             },
         ),
+        # Gatsby → George — the man who owns the garage by the ash heaps; barely registers as a person to Gatsby until he becomes the unwitting instrument of his death.
+        RelationshipEdge(
+            source_entity_id="ENT_GATSBY", target_entity_id="ENT_GEORGE",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.0, inertia=0.45, evidence_strength="weak",     last_updated_fabula=10000, observed=False),
+                "power_dynamic": RelationshipMetric(value=0.4, inertia=0.6,  evidence_strength="moderate", last_updated_fabula=10000),
+            },
+        ),
         # Nick ↔ Gatsby — admiration.
         RelationshipEdge(
             source_entity_id="ENT_NICK", target_entity_id="ENT_GATSBY",
@@ -939,6 +947,14 @@ world_state = WorldStateV1(
             source_entity_id="ENT_NICK", target_entity_id="ENT_TOM",
             metrics={
                 "affinity": RelationshipMetric(value=-0.85, inertia=0.55, evidence_strength="strong", last_updated_fabula=17000),
+            },
+        ),
+        # Tom → Nick — condescending, casual cousin-in-law warmth that never registers Nick's growing contempt; class confidence over the modest bonds-clerk.
+        RelationshipEdge(
+            source_entity_id="ENT_TOM", target_entity_id="ENT_NICK",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.2,  inertia=0.55, evidence_strength="moderate", last_updated_fabula=2000),
+                "power_dynamic": RelationshipMetric(value=0.4,  inertia=0.6,  evidence_strength="moderate", last_updated_fabula=2000),
             },
         ),
         # Nick ↔ Jordan — flirtation cooled.
@@ -962,11 +978,27 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=0.7, inertia=0.75, evidence_strength="moderate", last_updated_fabula=7000),
             },
         ),
+        # Gatsby → Wolfshiem — grateful client of the man who 'made him' through bootlegging connections; deference and indebtedness, sign-flipped subordinate power.
+        RelationshipEdge(
+            source_entity_id="ENT_GATSBY", target_entity_id="ENT_MEYER_WOLFSHIEM",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.5,  inertia=0.65, evidence_strength="moderate", last_updated_fabula=7000),
+                "power_dynamic": RelationshipMetric(value=-0.7, inertia=0.75, evidence_strength="moderate", last_updated_fabula=7000),
+            },
+        ),
         # Henry Gatz → Gatsby — paternal pride.
         RelationshipEdge(
             source_entity_id="ENT_HENRY_GATZ", target_entity_id="ENT_GATSBY",
             metrics={
                 "affinity": RelationshipMetric(value=0.95, inertia=0.8, evidence_strength="strong", last_updated_fabula=16000),
+            },
+        ),
+        # Gatsby → Henry Gatz — the discarded Minnesota father whom Gatsby has effectively erased in the act of becoming Jay Gatsby; nominal filial duty without active connection.
+        RelationshipEdge(
+            source_entity_id="ENT_GATSBY", target_entity_id="ENT_HENRY_GATZ",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.2,  inertia=0.5, evidence_strength="weak",     last_updated_fabula=2000),
+                "power_dynamic": RelationshipMetric(value=0.4,  inertia=0.6, evidence_strength="moderate", last_updated_fabula=2000),
             },
         ),
     ],

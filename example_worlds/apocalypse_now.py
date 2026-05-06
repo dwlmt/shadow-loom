@@ -1002,11 +1002,27 @@ world_state = WorldStateV1(
                 "fear":     RelationshipMetric(value=0.45, inertia=0.4, evidence_strength="strong", last_updated_fabula=6000),
             },
         ),
+        # Willard → Chef — the captain views the New Orleans saucier as expendable cargo on a classified mission. Mild contempt for Chef's panicked unraveling, no fear, mission-commander authority.
+        RelationshipEdge(
+            source_entity_id="ENT_WILLARD", target_entity_id="ENT_CHEF",
+            metrics={
+                "affinity":      RelationshipMetric(value=-0.1, inertia=0.5, evidence_strength="moderate", last_updated_fabula=6000),
+                "power_dynamic": RelationshipMetric(value=0.5,  inertia=0.65, evidence_strength="strong",   last_updated_fabula=1000),
+            },
+        ),
         RelationshipEdge(
             source_entity_id="ENT_CLEAN", target_entity_id="ENT_CHIEF",
             metrics={
                 "affinity":      RelationshipMetric(value=0.6, inertia=0.55, evidence_strength="moderate", last_updated_fabula=3500),
                 "power_dynamic": RelationshipMetric(value=-0.65, inertia=0.7, evidence_strength="strong", last_updated_fabula=1000),
+            },
+        ),
+        # Chief → Clean — paternal mentor to the seventeen-year-old gunner from the Bronx; protective affection, command authority (sign-flipped).
+        RelationshipEdge(
+            source_entity_id="ENT_CHIEF", target_entity_id="ENT_CLEAN",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.7, inertia=0.55, evidence_strength="strong", last_updated_fabula=3500),
+                "power_dynamic": RelationshipMetric(value=0.65, inertia=0.7,  evidence_strength="strong", last_updated_fabula=1000),
             },
         ),
         # Kilgore — distant authority over Willard.
@@ -1031,12 +1047,28 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=-0.65, inertia=0.7, evidence_strength="strong", last_updated_fabula=6000),
             },
         ),
+        # Kurtz → Lance — the surfer-acolyte is one more painted face among the Montagnards; mild approval of his pliability, no investment, total dominion (sign-flipped).
+        RelationshipEdge(
+            source_entity_id="ENT_KURTZ", target_entity_id="ENT_LANCE",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.2,  inertia=0.7, evidence_strength="moderate", last_updated_fabula=7000),
+                "power_dynamic": RelationshipMetric(value=0.65, inertia=0.7, evidence_strength="strong",   last_updated_fabula=6000),
+            },
+        ),
         # Photojournalist's discipleship.
         RelationshipEdge(
             source_entity_id="ENT_PHOTOJOURNALIST", target_entity_id="ENT_KURTZ",
             metrics={
                 "affinity":      RelationshipMetric(value=0.95, inertia=0.85, evidence_strength="strong", last_updated_fabula=6000),
                 "power_dynamic": RelationshipMetric(value=-0.65, inertia=0.85, evidence_strength="strong", last_updated_fabula=6000),
+            },
+        ),
+        # Kurtz → Photojournalist — amused tolerance of the manic disciple who quotes him as gospel; uses him as audience but holds him in contempt as a hanger-on.
+        RelationshipEdge(
+            source_entity_id="ENT_KURTZ", target_entity_id="ENT_PHOTOJOURNALIST",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.1,  inertia=0.85, evidence_strength="moderate", last_updated_fabula=6000),
+                "power_dynamic": RelationshipMetric(value=0.65, inertia=0.85, evidence_strength="strong",   last_updated_fabula=6000),
             },
         ),
         # Colby — the predecessor.

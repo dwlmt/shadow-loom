@@ -1294,6 +1294,15 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=0.7, inertia=0.7, evidence_strength="strong", last_updated_fabula=4000),
             },
         ),
+        # Pip → Havisham — mistakenly believes she is his secret benefactor; reverence and dread of the bridal-shrouded recluse at Satis House.
+        RelationshipEdge(
+            source_entity_id="ENT_PIP", target_entity_id="ENT_HAVISHAM",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.5,  inertia=0.45, evidence_strength="strong",   last_updated_fabula=15200),
+                "fear":          RelationshipMetric(value=0.5,  inertia=0.25, evidence_strength="strong",   last_updated_fabula=4000),
+                "power_dynamic": RelationshipMetric(value=-0.7, inertia=0.7,  evidence_strength="strong",   last_updated_fabula=4000),
+            },
+        ),
         # Pip ↔ Herbert — easy friendship.
         RelationshipEdge(
             source_entity_id="ENT_PIP", target_entity_id="ENT_HERBERT",
@@ -1340,6 +1349,15 @@ world_state = WorldStateV1(
             source_entity_id="ENT_JAGGERS", target_entity_id="ENT_PIP",
             metrics={
                 "power_dynamic": RelationshipMetric(value=0.8, inertia=0.75, evidence_strength="strong", last_updated_fabula=7000),
+            },
+        ),
+        # Pip → Jaggers — awe of the formidable Old Bailey lawyer who controls his fortune; mild fear of the man who washes blood off his hands every evening.
+        RelationshipEdge(
+            source_entity_id="ENT_PIP", target_entity_id="ENT_JAGGERS",
+            metrics={
+                "fear":          RelationshipMetric(value=0.55, inertia=0.25, evidence_strength="strong", last_updated_fabula=7000),
+                "affinity":      RelationshipMetric(value=0.0,  inertia=0.45, evidence_strength="weak",   last_updated_fabula=7000, observed=False),
+                "power_dynamic": RelationshipMetric(value=-0.8, inertia=0.75, evidence_strength="strong", last_updated_fabula=7000),
             },
         ),
         # Estella ↔ Drummle — entrapment.

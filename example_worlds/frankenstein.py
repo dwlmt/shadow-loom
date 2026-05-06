@@ -1050,6 +1050,14 @@ world_state = WorldStateV1(
                 "fear":     RelationshipMetric(value=0.9, inertia=0.2, evidence_strength="strong", last_updated_fabula=8000),
             },
         ),
+        # Creature → Felix — the cottage-eviction crushed the Creature's last hope of human kinship; betrayal hardens into hatred toward the De Laceys' chief defender.
+        RelationshipEdge(
+            source_entity_id="ENT_CREATURE", target_entity_id="ENT_FELIX",
+            metrics={
+                "affinity":      RelationshipMetric(value=-0.85, inertia=0.5,  evidence_strength="strong",   last_updated_fabula=8000),
+                "power_dynamic": RelationshipMetric(value=0.6,   inertia=0.7,  evidence_strength="strong",   last_updated_fabula=8000),
+            },
+        ),
         # Creature → Elizabeth/William — instrumental hatred mediated by Victor.
         RelationshipEdge(
             source_entity_id="ENT_CREATURE", target_entity_id="ENT_WILLIAM",
@@ -1057,10 +1065,28 @@ world_state = WorldStateV1(
                 "affinity": RelationshipMetric(value=-0.6, inertia=0.4, evidence_strength="strong", last_updated_fabula=4000),
             },
         ),
+        # William → Creature — the child's terror at the apparition that strangles him in the woods near Geneva.
+        RelationshipEdge(
+            source_entity_id="ENT_WILLIAM", target_entity_id="ENT_CREATURE",
+            metrics={
+                "affinity":      RelationshipMetric(value=-0.7, inertia=0.4,  evidence_strength="strong",   last_updated_fabula=4000),
+                "fear":          RelationshipMetric(value=0.95, inertia=0.2,  evidence_strength="strong",   last_updated_fabula=4000),
+                "power_dynamic": RelationshipMetric(value=-0.95, inertia=0.7, evidence_strength="strong",   last_updated_fabula=4000),
+            },
+        ),
         RelationshipEdge(
             source_entity_id="ENT_CREATURE", target_entity_id="ENT_ELIZABETH",
             metrics={
                 "affinity": RelationshipMetric(value=-0.5, inertia=0.4, evidence_strength="strong", last_updated_fabula=13000),
+            },
+        ),
+        # Elizabeth → Creature — unaware until the wedding-night ambush at Evian; her terror in the final moments before he kills her.
+        RelationshipEdge(
+            source_entity_id="ENT_ELIZABETH", target_entity_id="ENT_CREATURE",
+            metrics={
+                "fear":          RelationshipMetric(value=0.95, inertia=0.2,  evidence_strength="strong",   last_updated_fabula=13000),
+                "affinity":      RelationshipMetric(value=-0.85, inertia=0.4, evidence_strength="strong",   last_updated_fabula=13000),
+                "power_dynamic": RelationshipMetric(value=-0.95, inertia=0.7, evidence_strength="strong",   last_updated_fabula=13000),
             },
         ),
         # Walton ↔ Victor — late-blooming brotherhood / cautionary tale.
@@ -1082,6 +1108,14 @@ world_state = WorldStateV1(
             metrics={
                 "affinity":      RelationshipMetric(value=0.85, inertia=0.6, evidence_strength="strong", last_updated_fabula=4000),
                 "power_dynamic": RelationshipMetric(value=-0.5, inertia=0.7, evidence_strength="strong", last_updated_fabula=4000),
+            },
+        ),
+        # Elizabeth → Justine — fierce, defending advocacy at the trial; sisterly affection for the maid wrongly condemned for William's death.
+        RelationshipEdge(
+            source_entity_id="ENT_ELIZABETH", target_entity_id="ENT_JUSTINE",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.85, inertia=0.6,  evidence_strength="strong",   last_updated_fabula=4000),
+                "power_dynamic": RelationshipMetric(value=0.5,  inertia=0.7,  evidence_strength="strong",   last_updated_fabula=4000),
             },
         ),
     ],

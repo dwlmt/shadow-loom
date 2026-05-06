@@ -1000,6 +1000,14 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=-0.3, inertia=0.7, evidence_strength="moderate", last_updated_fabula=3000),
             },
         ),
+        # Linnet → Pennington — trusting employer mildly suspicious of his recent evasions over the trust deeds; principal's authority over the man embezzling her estate (sign-flipped).
+        RelationshipEdge(
+            source_entity_id="ENT_LINNET", target_entity_id="ENT_PENNINGTON",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.1,  inertia=0.55, evidence_strength="moderate", last_updated_fabula=6000),
+                "power_dynamic": RelationshipMetric(value=0.3,  inertia=0.7,  evidence_strength="moderate", last_updated_fabula=3000),
+            },
+        ),
         # Louise ↔ Linnet — service.
         RelationshipEdge(
             source_entity_id="ENT_LOUISE", target_entity_id="ENT_LINNET",
@@ -1022,6 +1030,14 @@ world_state = WorldStateV1(
                 "affinity": RelationshipMetric(value=-0.5, inertia=0.5, evidence_strength="strong", last_updated_fabula=9400),
             },
         ),
+        # Simon → Louise — the maid is a fatal nuisance who saw too much; he conspires in her murder. Hatred + complete absence of fear, master-of-the-house authority.
+        RelationshipEdge(
+            source_entity_id="ENT_SIMON", target_entity_id="ENT_LOUISE",
+            metrics={
+                "affinity":      RelationshipMetric(value=-0.85, inertia=0.55, evidence_strength="strong",   last_updated_fabula=9400),
+                "power_dynamic": RelationshipMetric(value=0.7,   inertia=0.7,  evidence_strength="strong",   last_updated_fabula=9400),
+            },
+        ),
         # Poirot ↔ Race — collegial.
         RelationshipEdge(
             source_entity_id="ENT_POIROT", target_entity_id="ENT_RACE",
@@ -1042,6 +1058,14 @@ world_state = WorldStateV1(
                 "affinity": RelationshipMetric(value=0.4, inertia=0.55, evidence_strength="strong", last_updated_fabula=2000),
             },
         ),
+        # Jacqueline → Poirot — the warning conversation at Aswan: cool wariness of the detective who reads her too well, edging toward respect by the denouement.
+        RelationshipEdge(
+            source_entity_id="ENT_JACQUELINE", target_entity_id="ENT_POIROT",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.1,  inertia=0.55, evidence_strength="moderate", last_updated_fabula=2000),
+                "fear":          RelationshipMetric(value=0.5,  inertia=0.25, evidence_strength="moderate", last_updated_fabula=12000),
+            },
+        ),
         # Van Schuyler ↔ Bowers ↔ Cornelia — household.
         RelationshipEdge(
             source_entity_id="ENT_VAN_SCHUYLER", target_entity_id="ENT_BOWERS",
@@ -1050,11 +1074,27 @@ world_state = WorldStateV1(
                 "affinity":      RelationshipMetric(value=0.5, inertia=0.55, evidence_strength="moderate", last_updated_fabula=4000),
             },
         ),
+        # Bowers → Van Schuyler — professional companion-nurse: dutiful patience, slight wariness of the kleptomaniac employer, sign-flipped subordinate power.
+        RelationshipEdge(
+            source_entity_id="ENT_BOWERS", target_entity_id="ENT_VAN_SCHUYLER",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.3,  inertia=0.55, evidence_strength="moderate", last_updated_fabula=4000),
+                "power_dynamic": RelationshipMetric(value=-0.7, inertia=0.75, evidence_strength="strong",   last_updated_fabula=4000),
+            },
+        ),
         RelationshipEdge(
             source_entity_id="ENT_VAN_SCHUYLER", target_entity_id="ENT_CORNELIA",
             metrics={
                 "power_dynamic": RelationshipMetric(value=0.0, inertia=0.75, evidence_strength="strong", last_updated_fabula=4000, observed=False),
                 "affinity": RelationshipMetric(value=0.0, inertia=0.55, evidence_strength="moderate", last_updated_fabula=4000, observed=False),
+            },
+        ),
+        # Cornelia → Van Schuyler — the put-upon poor relation; placeholder zero-vector mirror with low evidence so the gauges aren't pinned.
+        RelationshipEdge(
+            source_entity_id="ENT_CORNELIA", target_entity_id="ENT_VAN_SCHUYLER",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.0, inertia=0.55, evidence_strength="moderate", last_updated_fabula=4000, observed=False),
+                "power_dynamic": RelationshipMetric(value=0.0, inertia=0.75, evidence_strength="weak",     last_updated_fabula=4000, observed=False),
             },
         ),
     ],

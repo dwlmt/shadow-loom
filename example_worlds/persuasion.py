@@ -1078,11 +1078,27 @@ world_state = WorldStateV1(
                 "affinity": RelationshipMetric(value=0.0, inertia=0.65, evidence_strength="strong", last_updated_fabula=4000, observed=False),
             },
         ),
+        # Anne → Elizabeth — patient resignation toward the elder sister who treats her as a non-person; muted negative affection, no fear, sister-of-elder-rank subordination.
+        RelationshipEdge(
+            source_entity_id="ENT_ANNE", target_entity_id="ENT_ELIZABETH",
+            metrics={
+                "affinity":      RelationshipMetric(value=-0.2, inertia=0.6,  evidence_strength="moderate", last_updated_fabula=4000),
+                "power_dynamic": RelationshipMetric(value=-0.3, inertia=0.65, evidence_strength="moderate", last_updated_fabula=4000),
+            },
+        ),
         # Mary → Anne — clinging.
         RelationshipEdge(
             source_entity_id="ENT_MARY", target_entity_id="ENT_ANNE",
             metrics={
                 "affinity": RelationshipMetric(value=0.55, inertia=0.55, evidence_strength="moderate", last_updated_fabula=4000),
+            },
+        ),
+        # Anne → Mary — dutiful tolerance of the chronically self-pitying invalid sister at Uppercross; affectionate but exhausted.
+        RelationshipEdge(
+            source_entity_id="ENT_ANNE", target_entity_id="ENT_MARY",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.4, inertia=0.55, evidence_strength="moderate", last_updated_fabula=4000),
+                "power_dynamic": RelationshipMetric(value=0.2, inertia=0.6,  evidence_strength="weak",     last_updated_fabula=4000),
             },
         ),
         # Henrietta ↔ Charles Hayter — settled love.
@@ -1146,6 +1162,14 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=-0.5, inertia=0.7, evidence_strength="moderate", last_updated_fabula=3000),
             },
         ),
+        # Sir Walter → Mrs Clay — vain susceptibility to the flattering young widow he keeps as a household companion in Bath; unaware of her freckled designs on the title (sign-flipped power).
+        RelationshipEdge(
+            source_entity_id="ENT_SIR_WALTER", target_entity_id="ENT_MRS_CLAY",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.5, inertia=0.55, evidence_strength="moderate", last_updated_fabula=3000),
+                "power_dynamic": RelationshipMetric(value=0.5, inertia=0.7,  evidence_strength="moderate", last_updated_fabula=3000),
+            },
+        ),
         # Anne ↔ Mrs Smith — true friendship.
         RelationshipEdge(
             source_entity_id="ENT_ANNE", target_entity_id="ENT_MRS_SMITH",
@@ -1166,10 +1190,24 @@ world_state = WorldStateV1(
                 "affinity": RelationshipMetric(value=0.85, inertia=0.75, evidence_strength="strong", last_updated_fabula=4000),
             },
         ),
+        # Wentworth → Admiral Croft — affectionate fellow-officer respect for his bluff brother-in-law who gives him Kellynch as a base for re-encountering Anne.
+        RelationshipEdge(
+            source_entity_id="ENT_WENTWORTH", target_entity_id="ENT_ADMIRAL_CROFT",
+            metrics={
+                "affinity": RelationshipMetric(value=0.8, inertia=0.75, evidence_strength="strong", last_updated_fabula=4000),
+            },
+        ),
         RelationshipEdge(
             source_entity_id="ENT_SOPHIA_CROFT", target_entity_id="ENT_WENTWORTH",
             metrics={
                 "affinity": RelationshipMetric(value=0.95, inertia=0.8, evidence_strength="strong", last_updated_fabula=4000),
+            },
+        ),
+        # Wentworth → Sophia Croft — deep sibling closeness with the sister who shipboard-sailed with her admiral; she is his moral compass on the question of marrying Louisa.
+        RelationshipEdge(
+            source_entity_id="ENT_WENTWORTH", target_entity_id="ENT_SOPHIA_CROFT",
+            metrics={
+                "affinity": RelationshipMetric(value=0.9, inertia=0.8, evidence_strength="strong", last_updated_fabula=4000),
             },
         ),
     ],

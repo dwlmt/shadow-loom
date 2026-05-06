@@ -835,5 +835,13 @@ world_state = WorldStateV1(
                 "affinity": RelationshipMetric(value=0.65, inertia=0.55, evidence_strength="strong", last_updated_fabula=2200),
             },
         ),
+        # Jill → Cheyenne — initially wary of the wanted outlaw who turns up at Sweetwater, then warms to him as the only honest man around. Mild affection by the end, low residual fear.
+        RelationshipEdge(
+            source_entity_id="ENT_JILL", target_entity_id="ENT_CHEYENNE",
+            metrics={
+                "affinity": RelationshipMetric(value=0.5, inertia=0.55, evidence_strength="strong",   last_updated_fabula=2200),
+                "fear":     RelationshipMetric(value=0.2, inertia=0.2,  evidence_strength="moderate", last_updated_fabula=2200),
+            },
+        ),
     ],
 )

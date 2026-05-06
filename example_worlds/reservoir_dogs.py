@@ -869,6 +869,14 @@ world_state = WorldStateV1(
                 "fear":          RelationshipMetric(value=0.2, inertia=0.2, evidence_strength="moderate", last_updated_fabula=3000),
             },
         ),
+        # Blonde → White — amused contempt for the moralising old-school criminal who shouts about not torturing the cop; no fear, mild dominance through unpredictability.
+        RelationshipEdge(
+            source_entity_id="ENT_BLONDE", target_entity_id="ENT_WHITE",
+            metrics={
+                "affinity":      RelationshipMetric(value=-0.4, inertia=0.5, evidence_strength="strong", last_updated_fabula=3000),
+                "power_dynamic": RelationshipMetric(value=0.3,  inertia=0.6, evidence_strength="moderate", last_updated_fabula=3000),
+            },
+        ),
         # White ↔ Pink — wary professional alliance.
         RelationshipEdge(
             source_entity_id="ENT_WHITE", target_entity_id="ENT_PINK",
@@ -954,6 +962,14 @@ world_state = WorldStateV1(
                 "fear":          RelationshipMetric(value=0.25, inertia=0.2, evidence_strength="strong", last_updated_fabula=6000),
             },
         ),
+        # Blonde → Orange — the bleeding 'rookie' on the warehouse floor barely registers as a person; mild irritation at the noise, no fear, sociopathic indifference.
+        RelationshipEdge(
+            source_entity_id="ENT_BLONDE", target_entity_id="ENT_ORANGE",
+            metrics={
+                "affinity":      RelationshipMetric(value=-0.2, inertia=0.5, evidence_strength="moderate", last_updated_fabula=6000),
+                "power_dynamic": RelationshipMetric(value=0.4,  inertia=0.6, evidence_strength="moderate", last_updated_fabula=6000),
+            },
+        ),
         # Orange ↔ Marvin — buried solidarity.
         RelationshipEdge(
             source_entity_id="ENT_ORANGE", target_entity_id="ENT_MARVIN",
@@ -975,6 +991,14 @@ world_state = WorldStateV1(
                 "fear":     RelationshipMetric(value=1.0, inertia=0.25, evidence_strength="strong", last_updated_fabula=6000),
             },
         ),
+        # Blonde → Marvin — the cop tied to the chair is sport, not a person; the 'Stuck in the Middle With You' ear-cutting expresses pleasure in cruelty plus total dominion.
+        RelationshipEdge(
+            source_entity_id="ENT_BLONDE", target_entity_id="ENT_MARVIN",
+            metrics={
+                "affinity":      RelationshipMetric(value=-0.6, inertia=0.5, evidence_strength="strong", last_updated_fabula=6000),
+                "power_dynamic": RelationshipMetric(value=0.95, inertia=0.7, evidence_strength="strong", last_updated_fabula=6000),
+            },
+        ),
         # Brown / Blue — minor edges to Joe.
         RelationshipEdge(
             source_entity_id="ENT_BROWN", target_entity_id="ENT_JOE",
@@ -983,11 +1007,27 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=-0.6, inertia=0.65, evidence_strength="moderate", last_updated_fabula=1000),
             },
         ),
+        # Joe → Brown — the heister who dies first in the getaway; minor crew member he tolerated. Sign-flipped boss authority.
+        RelationshipEdge(
+            source_entity_id="ENT_JOE", target_entity_id="ENT_BROWN",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.3, inertia=0.45, evidence_strength="moderate", last_updated_fabula=1000),
+                "power_dynamic": RelationshipMetric(value=0.6, inertia=0.65, evidence_strength="moderate", last_updated_fabula=1000),
+            },
+        ),
         RelationshipEdge(
             source_entity_id="ENT_BLUE", target_entity_id="ENT_JOE",
             metrics={
                 "affinity":      RelationshipMetric(value=0.5, inertia=0.5, evidence_strength="moderate", last_updated_fabula=1000),
                 "power_dynamic": RelationshipMetric(value=-0.6, inertia=0.65, evidence_strength="moderate", last_updated_fabula=1000),
+            },
+        ),
+        # Joe → Blue — a quiet veteran heister Joe rates higher than the others; mild approval, sign-flipped boss authority.
+        RelationshipEdge(
+            source_entity_id="ENT_JOE", target_entity_id="ENT_BLUE",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.4, inertia=0.5, evidence_strength="moderate", last_updated_fabula=1000),
+                "power_dynamic": RelationshipMetric(value=0.6, inertia=0.65, evidence_strength="moderate", last_updated_fabula=1000),
             },
         ),
     ],
