@@ -26,6 +26,17 @@ An **utterance event** is a *single discrete message*: a confession, a prophecy,
 
 The two compose: a long-running mind-bond (Channel) carries many telepathic messages (utterance events with `via_channel_id` set to that channel). A spontaneous shout in the throne-room is just an utterance event with `via_channel_id = null`.
 
+### Channel-extraction triggers (extract a Channel whenever ANY apply)
+
+Be **liberal** with channels. Whenever any of the cues below is present, emit a Channel and wire the relevant utterances' `via_channel_id` to it:
+
+- **Repeated communication between the same parties.** Two or more on-page messages from speaker A to recipient B (in this chunk or carried over from prior chunks) almost always implies a standing capability — extract one Channel for that dyad and set `via_channel_id` on each of those utterances.
+- **Mediated medium named in the text.** Letters / telegrams / telephone / radio / wireless / television / telescreen / messenger / pigeon / signal-fire / mind-bond / dream-link / scrying-glass / encrypted-pipeline → Channel.
+- **Asymmetric speaker / addressee location.** When the speaker and addressee are not co-present (Darcy writing to Elizabeth from London; Big Brother addressing Oceania; a courier delivering a sealed dispatch), the message MUST travel over some Channel — extract it.
+- **A standing capability has been ESTABLISHED in prior chunks.** If the "STANDING CHANNELS ALREADY ESTABLISHED IN PRIOR CHUNKS" section above lists a Channel whose participants and medium fit the new utterance, set `via_channel_id` to that existing CHN_ id and DO NOT re-emit the channel.
+
+When in doubt, prefer extracting a Channel over leaving `via_channel_id=null`. The downstream cycle-detection, mediation-tracking, and counterfactual-surgery (severing a line of communication) all silently lose teeth when a real channel is missing. Only leave an utterance unmediated when it is genuinely face-to-face spontaneous speech with no recurring pattern.
+
 ## Utterance vs Revelation — division of labour with the Physics Agent
 
 The Physics Agent handles `event_type ∈ {"choice", "outcome", "revelation"}`. **You** handle `event_type="utterance"` — and only utterance.

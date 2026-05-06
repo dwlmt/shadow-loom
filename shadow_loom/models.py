@@ -384,6 +384,19 @@ class EventNode(AMWNNode):
             "Bayesian abduction layer's confidence on the resulting beliefs."
         ),
     )
+    intensity: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=10.0,
+        description=(
+            "Narrative weight of the event in [0, 10]. Drives mass-weighted "
+            "scoring downstream (dramatic-irony surface, suspense stakes, "
+            "directive selection). 1.0 is the neutral default; 2.0–4.0 marks "
+            "a pivotal beat (a confession, a death, a betrayal); 5.0+ is "
+            "reserved for cataclysmic plot-turns (the murder of Duncan, the "
+            "dropping of the bomb). Scenic / connective beats sit at 0.5–1.0."
+        ),
+    )
 
 class AMWNEdge(BaseModel):
     """Base class for all topology edges. Distinct from AMWNNode."""

@@ -1020,6 +1020,15 @@ class _SocialDeps(BaseModel):
     scaffold: SocraticScaffold
     chunk_event_ids: List[str] = Field(default_factory=list)
     previous_event_ids: List[str] = Field(default_factory=list)
+    # Standing channels already extracted from prior chunks. Threaded
+    # through the sequential ``extract_topology`` loop so the LLM can
+    # reuse a CHN_ id by reference instead of inventing a near-duplicate
+    # for the same standing capability (a long-running letter
+    # correspondence, an ongoing telepathic bond, a spy-master pipeline
+    # that spans the whole novel). Empty in the parallel-async path
+    # where chunks have no causal ordering — dedup at assembly handles
+    # that case via shape-key collapse.
+    previous_chunk_channels: Dict[str, "Channel"] = Field(default_factory=dict)
 
 
 class _ConsequencesDeps(BaseModel):
@@ -1775,6 +1784,7 @@ def _build_physics_agent(config: ExtractionConfig) -> Agent[_PhysicsDeps, Physic
                 fixed_causal.append(sanitised)
 
         # --- Fix spatial edge IDs ---
+        object_ids_set = set(reg.objects.keys())
         fixed_spatial: List[SpatialEdge] = []
         for se in result.spatial_topology:
             updates = {}
@@ -1793,6 +1803,58 @@ def _build_physics_agent(config: ExtractionConfig) -> Agent[_PhysicsDeps, Physic
                     f"[Auto-Fix] Dropped self-loop SpatialEdge '{src}'→'{tgt}'"
                 )
             else:
+                # barrier_item_id must reference a real OBJ_ id when set;
+                # fuzzy-fix typos, drop dangling pointers (the lock fact
+                # survives — the engine treats unowned barriers as
+                # "no key exists in the world", which is structurally
+                # weaker than a barrier whose unlock affordance no
+                # entity carries, but at least it's not pointing at a
+                # non-existent object).
+                if se.barrier_item_id:
+                    bid, _ = _fix_id(
+                        se.barrier_item_id, object_ids_set,
+                        "SpatialEdge.barrier_item_id", fixes,
+                    )
+                    if bid in object_ids_set:
+                        if bid != se.barrier_item_id:
+                            updates["barrier_item_id"] = bid
+                    else:
+                        fixes.append(
+                            f"[Auto-Fix] SpatialEdge {src}→{tgt} "
+                            f"barrier_item_id '{se.barrier_item_id}' is not "
+                            f"a valid OBJ_ id; clearing reference."
+                        )
+                        updates["barrier_item_id"] = None
+                # Coherence: a passage flagged is_locked=True with no
+                # barrier_item_id is structurally inert — nothing in the
+                # world can ever unlock it, so the affordance check
+                # silently falls through. Downgrade to is_locked=False
+                # so the renderer doesn't describe the door as locked
+                # while the simulator treats it as freely traversable.
+                resolved_barrier = updates.get("barrier_item_id", se.barrier_item_id)
+                if se.is_locked and not resolved_barrier:
+                    fixes.append(
+                        f"[Auto-Fix] SpatialEdge {src}→{tgt} is_locked=True "
+                        f"with no barrier_item_id — clearing the lock "
+                        f"(an unblockable barrier breaks affordance gating)."
+                    )
+                    updates["is_locked"] = False
+                # Lifecycle sanity: destroyed_at_fabula must be strictly
+                # after established_at_fabula, otherwise the passage is
+                # destroyed before (or at the same tick as) it was built
+                # — which makes the edge a no-op for the simulator and
+                # is almost certainly an LLM transcription slip. Drop
+                # the destruction tick rather than the whole edge so
+                # the connectivity fact survives.
+                est = se.established_at_fabula or 0
+                dest = se.destroyed_at_fabula
+                if dest is not None and dest <= est:
+                    fixes.append(
+                        f"[Auto-Fix] SpatialEdge {src}→{tgt} destroyed_at_fabula"
+                        f"={dest} <= established_at_fabula={est}; clearing "
+                        f"destruction tick (passage stays traversable)."
+                    )
+                    updates["destroyed_at_fabula"] = None
                 fixed_spatial.append(se.model_copy(update=updates) if updates else se)
 
         # --- Fix entity_update IDs ---
@@ -1902,6 +1964,26 @@ def _build_social_agent(config: ExtractionConfig) -> Agent[_SocialDeps, SocialEx
         entity_names = {eid: reg.entities[eid].name for eid in entity_ids}
         all_evt_ids = ctx.deps.previous_event_ids + ctx.deps.chunk_event_ids
         scaffold_text = _format_scaffold(ctx.deps.scaffold)
+
+        # Prior-chunk channel summary so the LLM can reuse standing
+        # capabilities by id rather than reinventing them under a new
+        # name. Each line carries everything needed to identify the
+        # right channel: id, medium, participants, directionality, and
+        # the fabula tick it was established at.
+        prior_chn_lines: List[str] = []
+        for cid, ch in ctx.deps.previous_chunk_channels.items():
+            prior_chn_lines.append(
+                f"  - {cid} (medium={ch.medium}, "
+                f"participants={ch.participant_ids}, "
+                f"directionality={ch.directionality}, "
+                f"established_at_fabula={ch.established_at_fabula})"
+            )
+        prior_channels_block = (
+            "\n".join(prior_chn_lines)
+            if prior_chn_lines
+            else "  (none — this is the first chunk to extract channels)"
+        )
+
         return (
             "=== VALID ID REGISTER ===\n"
             f"ENTITY IDs: {entity_ids}\n"
@@ -1914,6 +1996,18 @@ def _build_social_agent(config: ExtractionConfig) -> Agent[_SocialDeps, SocialEx
             "\n"
             "You MUST ONLY use IDs from the lists above.\n"
             "Do NOT invent new IDs of any kind.\n"
+            "\n"
+            "=== STANDING CHANNELS ALREADY ESTABLISHED IN PRIOR CHUNKS ===\n"
+            f"{prior_channels_block}\n"
+            "\n"
+            "When an utterance in THIS chunk travels over a standing "
+            "capability that already appears above (e.g. an ongoing "
+            "letter correspondence, a telephone line, a mind-bond, a "
+            "spy pipeline), set the utterance's `via_channel_id` to "
+            "the existing CHN_ id and DO NOT re-emit the channel in "
+            "your `channels` dict. Only add a new entry to `channels` "
+            "for genuinely-new standing capabilities established (or "
+            "first observed) in this chunk.\n"
             "\n"
             "=== SOCRATIC SCAFFOLD (semantic pre-analysis) ===\n"
             f"{scaffold_text}\n"
@@ -1968,7 +2062,9 @@ def _build_social_agent(config: ExtractionConfig) -> Agent[_SocialDeps, SocialEx
             fixed_channels[cid] = ch.model_copy(update=updates) if updates else ch
 
         # --- Fix utterance EventNode ids (speaker, addressees, channel) ---
-        valid_channel_ids = set(fixed_channels.keys())
+        valid_channel_ids = set(fixed_channels.keys()) | set(
+            ctx.deps.previous_chunk_channels.keys()
+        )
         all_evt_ids = set(ctx.deps.previous_event_ids) | set(ctx.deps.chunk_event_ids)
         fixed_utterances: List[EventNode] = []
         seen_utt_ids: set[str] = set()
@@ -2034,6 +2130,31 @@ def _build_social_agent(config: ExtractionConfig) -> Agent[_SocialDeps, SocialEx
                     f"clearing reference."
                 )
                 updates["via_channel_id"] = None
+            elif ev.via_channel_id and ev.via_channel_id in fixed_channels:
+                # Membership check: when an utterance rides a channel
+                # extracted in THIS chunk, every speaker/addressee MUST
+                # appear in that channel's participant_ids — otherwise
+                # the channel mediation is structurally incoherent
+                # (you can't broadcast over a phone line you're not on).
+                # We can only enforce this for in-chunk channels because
+                # prior-chunk channels' participant lists may have been
+                # widened by intervening extractions.
+                ch_pids = set(fixed_channels[ev.via_channel_id].participant_ids)
+                # Resolve the post-fix speaker / addressees so the
+                # check sees the same ids the validator just rewrote.
+                resolved_speaker = updates.get("speaker_id", ev.speaker_id)
+                resolved_addrs = updates.get("addressee_ids", list(ev.addressee_ids))
+                participants_needed = {resolved_speaker} | set(resolved_addrs)
+                participants_needed.discard(None)
+                missing = sorted(participants_needed - ch_pids)
+                if missing:
+                    fixes.append(
+                        f"[Auto-Fix] Utterance '{ev.id}' via_channel_id "
+                        f"'{ev.via_channel_id}' missing participant(s) "
+                        f"{missing}; clearing channel reference (the "
+                        f"utterance survives as unmediated speech)."
+                    )
+                    updates["via_channel_id"] = None
             # actor_ids consistency: if speaker present, ensure it appears in actor_ids
             if ev.speaker_id and ev.speaker_id not in ev.actor_ids:
                 merged_actors = list(ev.actor_ids)
@@ -2423,6 +2544,69 @@ def _consequences_mutation_parity_broken(
     return sorted(targets - covered)
 
 
+def _social_channel_underextracted(
+    social: "SocialExtraction",
+    *,
+    min_repeated_dyad: int = 2,
+) -> bool:
+    """True when the chunk's utterance pattern strongly implies a
+    standing channel that the LLM failed to extract.
+
+    Heuristic: at least one ``(speaker_id, frozenset(addressee_ids))``
+    pair appears in ``min_repeated_dyad`` or more utterance events
+    AND none of those utterances carries a ``via_channel_id`` AND
+    no Channel was emitted that already covers that pair.
+
+    The cue is weakly-but-consistently informative: two letters from
+    the same hand to the same recipient, two telephone calls between
+    the same two people, two wireless broadcasts to the same
+    audience — each is much more naturally modelled as a single
+    persistent capability than as N independent unmediated
+    speech-acts. Without a Channel, downstream cycle-detection,
+    mediation tracking, and counterfactual surgery (severing a line
+    of communication) all silently lose teeth.
+
+    Returns True only when ALL three conditions hold simultaneously,
+    so a chunk legitimately full of face-to-face conversation
+    (different participants each time, or already-mediated
+    correspondence) does not trigger a false-positive retry.
+    """
+    if not social.utterance_events:
+        return False
+    # Skip if every relevant utterance is already wired to some channel
+    # (either this chunk's channels or a prior chunk's channel that
+    # the validator preserved on ``via_channel_id``).
+    pair_counts: Dict[Tuple[str, frozenset], int] = {}
+    pair_unmediated: Dict[Tuple[str, frozenset], int] = {}
+    for u in social.utterance_events:
+        if not u.speaker_id or not u.addressee_ids:
+            continue
+        key = (u.speaker_id, frozenset(u.addressee_ids))
+        pair_counts[key] = pair_counts.get(key, 0) + 1
+        if not u.via_channel_id:
+            pair_unmediated[key] = pair_unmediated.get(key, 0) + 1
+    if not pair_counts:
+        return False
+    # A pair is already 'covered' if any channel in this chunk has a
+    # superset of its participants — in that case we don't need to
+    # retry just because via_channel_id wasn't filled in.
+    covered_pairs: set[Tuple[str, frozenset]] = set()
+    for ch in social.channels.values():
+        ch_pids = set(ch.participant_ids)
+        for key in pair_counts:
+            speaker, addrs = key
+            if {speaker} <= ch_pids and set(addrs) <= ch_pids:
+                covered_pairs.add(key)
+    for key, count in pair_counts.items():
+        if (
+            count >= min_repeated_dyad
+            and pair_unmediated.get(key, 0) >= min_repeated_dyad
+            and key not in covered_pairs
+        ):
+            return True
+    return False
+
+
 def extract_topology(
     chunks: List[str],
     register: GlobalRegister,
@@ -2468,6 +2652,10 @@ def extract_topology(
     # events. (Syuzhet position ≠ fabula position by design.)
     prev_max_fabula = 0
     all_event_ids: List[str] = []
+    # Standing channels accumulated across chunks. Threaded into the
+    # Social Agent so chunk N can reuse a CHN_ id established in chunk
+    # N-k instead of inventing a near-duplicate.
+    accumulated_channels: Dict[str, "Channel"] = {}
     prev_chunk_tail = ""  # trailing context for coreference continuity
     # Per-chunk sub-stage failure tracking (item #8). When any single
     # sub-stage fails on >50% of chunks we escalate to RuntimeError
@@ -2645,6 +2833,7 @@ def extract_topology(
                 scaffold=scaffold,
                 chunk_event_ids=chunk_evt_ids,
                 previous_event_ids=all_event_ids.copy(),
+                previous_chunk_channels=dict(accumulated_channels),
             )
             try:
                 social_result = social_agent.run_sync(social_msg, deps=social_deps, **_user_kwargs())
@@ -2697,6 +2886,67 @@ def extract_topology(
                         )
                 except Exception:
                     logger.exception("[Step 3b] Chunk %d info retry FAILED.", i + 1)
+
+            # Channel under-extraction quality gate — when utterances
+            # repeatedly traverse the same speaker→addressee dyad with
+            # no via_channel_id and no Channel covers the pair, ask
+            # the LLM to look again. This catches epistolary
+            # exchanges, repeated phone calls, and standing
+            # broadcasts that the agent rendered as N independent
+            # speech-acts instead of a single persistent capability.
+            if _social_channel_underextracted(social):
+                logger.info(
+                    "[Step 3b] Chunk %d: utterances cluster on a "
+                    "speaker→addressee dyad with no Channel — "
+                    "retrying with channel-inference emphasis …",
+                    i + 1,
+                )
+                chn_retry_msg = (
+                    "IMPORTANT: Your previous extraction emitted "
+                    "MULTIPLE utterance events between the SAME speaker "
+                    "and addressee(s) but no Channel that covers them, "
+                    "and none of those utterances had a `via_channel_id`. "
+                    "Repeated communication between the same parties is "
+                    "almost always carried by a STANDING capability "
+                    "(letter correspondence, telephone line, telepathic "
+                    "bond, courier route, broadcast frequency). Re-emit "
+                    "the extraction with: (a) at least one Channel for "
+                    "each repeated dyad whose medium the text supports, "
+                    "and (b) `via_channel_id` set on every utterance "
+                    "that rides over one of those channels. Keep all "
+                    "previously-extracted utterances and relationship "
+                    "edges.\n\n" + social_msg
+                )
+                try:
+                    chn_retry_result = social_agent.run_sync(
+                        chn_retry_msg, deps=social_deps, **_user_kwargs()
+                    )
+                    chn_retry = chn_retry_result.output
+                    log_agent_output(
+                        logger,
+                        f"SocialExtraction[chunk={i + 1},chn_retry]",
+                        chn_retry,
+                    )
+                    # Only adopt if the retry strictly improves the
+                    # gap: it must add at least one channel AND no
+                    # longer trip the underextracted detector.
+                    if (
+                        len(chn_retry.channels) > len(social.channels)
+                        and not _social_channel_underextracted(chn_retry)
+                    ):
+                        social = chn_retry
+                        logger.info(
+                            "[Step 3b] Chunk %d: channel-inference "
+                            "retry recovered %d channels (was %d).",
+                            i + 1,
+                            len(social.channels),
+                            len(social.channels) - 1,
+                        )
+                except Exception:
+                    logger.exception(
+                        "[Step 3b] Chunk %d channel-inference retry FAILED.",
+                        i + 1,
+                    )
 
             # Symmetric retry on empty social_topology when the chunk's
             # events involve multiple distinct entities — the per-axis
@@ -2921,6 +3171,11 @@ def extract_topology(
             if chunk_max > prev_max_fabula:
                 prev_max_fabula = chunk_max
         all_event_ids.extend([e.id for e in merged_events])
+        # Accumulate channels so subsequent chunks can reuse a CHN_ id
+        # rather than reinventing the same standing capability. Newer
+        # extractions overwrite older ones on id collision (the
+        # cross-chunk dedup at assembly handles deeper merging).
+        accumulated_channels.update(social.channels)
 
         # Save trailing context for next chunk's coreference overlap
         if config.chunk_overlap_chars > 0:
@@ -3273,6 +3528,54 @@ async def _extract_single_chunk_async(
                     )
             except Exception:
                 logger.exception("[Step 3b·Async] Chunk %d info retry FAILED.", i + 1)
+
+        # Channel under-extraction quality gate (async port of the
+        # sync pipeline's check). Triggers when ≥2 utterances share a
+        # speaker→addressee dyad with no `via_channel_id` and no
+        # Channel covers the pair.
+        if _social_channel_underextracted(local_social):
+            logger.info(
+                "[Step 3b·Async] Chunk %d: utterances cluster on a "
+                "speaker→addressee dyad with no Channel — retrying "
+                "with channel-inference emphasis …",
+                i + 1,
+            )
+            chn_retry_msg = (
+                "IMPORTANT: Your previous extraction emitted "
+                "MULTIPLE utterance events between the SAME speaker "
+                "and addressee(s) but no Channel that covers them, "
+                "and none of those utterances had a `via_channel_id`. "
+                "Repeated communication between the same parties is "
+                "almost always carried by a STANDING capability "
+                "(letter correspondence, telephone line, telepathic "
+                "bond, courier route, broadcast frequency). Re-emit "
+                "the extraction with: (a) at least one Channel for "
+                "each repeated dyad whose medium the text supports, "
+                "and (b) `via_channel_id` set on every utterance "
+                "that rides over one of those channels. Keep all "
+                "previously-extracted utterances and relationship "
+                "edges.\n\n" + social_msg
+            )
+            try:
+                chn_retry_result = await social_agent.run(
+                    chn_retry_msg, deps=social_deps, **_user_kwargs(),
+                )
+                chn_retry = chn_retry_result.output
+                if (
+                    len(chn_retry.channels) > len(local_social.channels)
+                    and not _social_channel_underextracted(chn_retry)
+                ):
+                    local_social = chn_retry
+                    logger.info(
+                        "[Step 3b·Async] Chunk %d: channel-inference "
+                        "retry recovered %d channels.",
+                        i + 1, len(local_social.channels),
+                    )
+            except Exception:
+                logger.exception(
+                    "[Step 3b·Async] Chunk %d channel-inference retry FAILED.",
+                    i + 1,
+                )
 
         # Symmetric retry on empty social_topology when the chunk's
         # events involve multiple distinct entities — ports the sync

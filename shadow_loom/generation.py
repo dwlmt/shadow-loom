@@ -617,7 +617,29 @@ def format_scene_context_for_prompt(ctx: Dict[str, Any]) -> str:
             tgt = se.get("target_id", "?")
             kind = se.get("connection_type") or se.get("type") or "path"
             arrow = "↔" if se.get("bidirectional", True) else "→"
-            sections.append(f"  - {src} {arrow} {tgt} ({kind})")
+            # Lock + barrier (so the renderer doesn't write characters
+            # walking through a locked door, and the auditor can flag
+            # such breaches).
+            lock_blob = ""
+            if se.get("is_locked"):
+                barrier = se.get("barrier_item_id")
+                lock_blob = (
+                    f" [LOCKED, barrier={barrier}]" if barrier else " [LOCKED]"
+                )
+            # Lifecycle (only surfaced when non-default — most passages
+            # are pre-existing and never destroyed, and the prompt
+            # stays compact when those facts are implicit).
+            est = se.get("established_at_fabula")
+            dest = se.get("destroyed_at_fabula")
+            life_bits: list = []
+            if isinstance(est, int) and est > 0:
+                life_bits.append(f"established@t={est}")
+            if isinstance(dest, int):
+                life_bits.append(f"destroyed@t={dest}")
+            life_blob = f" [{', '.join(life_bits)}]" if life_bits else ""
+            sections.append(
+                f"  - {src} {arrow} {tgt} ({kind}){lock_blob}{life_blob}"
+            )
 
     # ------------------------------------------------------------
     # Focus entities — full traits, beliefs, status
@@ -667,6 +689,30 @@ def format_scene_context_for_prompt(ctx: Dict[str, Any]) -> str:
             desc = (obj.get("description") or "").strip()
             if desc:
                 sections.append(f"      {desc[:200]}")
+            # Affordances — what this object lets characters DO. Without
+            # surfacing these the renderer can't reason about a key
+            # unlocking a door, a weapon enabling a kill, a vehicle
+            # enabling travel, etc., and the auditor can't flag prose
+            # that uses an object outside its declared affordances.
+            affs = obj.get("affordances") or []
+            if affs:
+                aff_lines: list = []
+                for aff in affs:
+                    if not isinstance(aff, dict):
+                        continue
+                    action = aff.get("action") or "?"
+                    target_type = aff.get("target_type") or aff.get("target") or ""
+                    requires = aff.get("requires") or aff.get("prerequisites") or []
+                    bits = [action]
+                    if target_type:
+                        bits.append(f"→{target_type}")
+                    if requires:
+                        bits.append(f"req={requires}")
+                    aff_lines.append(" ".join(bits))
+                if aff_lines:
+                    sections.append(
+                        f"      affordances: {'; '.join(aff_lines)}"
+                    )
 
     # ------------------------------------------------------------
     # Social relationships in the scene
@@ -698,17 +744,38 @@ def format_scene_context_for_prompt(ctx: Dict[str, Any]) -> str:
     # Standing comms channels involving the focus entities
     # ------------------------------------------------------------
     chans = ctx.get("relevant_channels") or []
+    # Build lookup so the dialogue block below can flag low-intelligibility
+    # addressees and surface the channel medium next to each utterance.
+    chans_by_id: Dict[str, Dict[str, Any]] = {
+        ch.get("id"): ch for ch in chans if ch.get("id")
+    }
     if chans:
-        sections.append("Standing channels:")
+        sections.append(
+            "Available communication channels (use these for new dialogue "
+            "that crosses distance, mediation, or encryption):"
+        )
         for ch in chans:
             cid = ch.get("id", "?")
             cname = ch.get("name", cid)
             medium = ch.get("medium", "?")
             parts = ch.get("participant_ids") or []
             direction = ch.get("directionality", "duplex")
+            intel_map = ch.get("intelligibility") or {}
+            # Render only the participants whose intelligibility is
+            # explicitly degraded — fully comprehensible defaults stay
+            # implicit so the prompt stays compact.
+            low_intel = [
+                f"{pid}={float(v):.2f}"
+                for pid, v in intel_map.items()
+                if isinstance(v, (int, float)) and float(v) < 1.0
+            ]
+            intel_blob = (
+                f", intelligibility={{{', '.join(low_intel)}}}"
+                if low_intel else ""
+            )
             sections.append(
                 f"  - {cname} ({cid}) — {medium}, {direction}, "
-                f"participants={parts}"
+                f"participants={parts}{intel_blob}"
             )
 
     # ------------------------------------------------------------
@@ -759,8 +826,31 @@ def format_scene_context_for_prompt(ctx: Dict[str, Any]) -> str:
             ft = u.get("fabula_time")
             time_blob = f"[t={ft}] " if ft is not None else ""
             tv = f" (truth={truth})" if truth else ""
+            # Show via_channel_id and (when the channel is known) the
+            # medium plus any addressees who can't fully decode it. This
+            # is what tells the renderer "Darcy's letter to Elizabeth"
+            # vs "Darcy says aloud to Elizabeth", and what tells the
+            # auditor an addressee on a low-intelligibility channel
+            # should not be portrayed as fully understanding.
+            via = u.get("via_channel_id")
+            via_blob = ""
+            if via:
+                ch = chans_by_id.get(via)
+                if ch is not None:
+                    medium = ch.get("medium", "?")
+                    intel_map = ch.get("intelligibility") or {}
+                    low = [
+                        f"{aid}({float(intel_map[aid]):.2f})"
+                        for aid in addressees
+                        if isinstance(intel_map.get(aid), (int, float))
+                        and float(intel_map[aid]) < 1.0
+                    ]
+                    low_blob = f", low-intel-for=[{', '.join(low)}]" if low else ""
+                    via_blob = f" via {via} [{medium}{low_blob}]"
+                else:
+                    via_blob = f" via {via}"
             sections.append(
-                f"  - {time_blob}{uid} — {speaker} → {addressees}{tv}"
+                f"  - {time_blob}{uid} — {speaker} → {addressees}{via_blob}{tv}"
             )
             if desc:
                 sections.append(f"      {desc[:200]}")
@@ -776,10 +866,36 @@ def format_scene_context_for_prompt(ctx: Dict[str, Any]) -> str:
         for ce in causal:
             src = ce.get("source_id", "?")
             tgt = ce.get("target_id", "?")
-            kind = ce.get("relationship_type") or ce.get("type") or "causes"
+            ctype = ce.get("causality_type") or ce.get("relationship_type") or ce.get("type") or "causes"
+            mechanism = ce.get("mechanism")
+            evidence = ce.get("evidence_strength")
             strength = ce.get("strength")
-            s_str = f" [strength={strength:.2f}]" if isinstance(strength, (int, float)) else ""
-            sections.append(f"  - {src} --{kind}→ {tgt}{s_str}")
+            force = ce.get("causal_force")
+            # For mutation / mutation_social edges the trait_target +
+            # trait_delta carry the actual semantic payload (which trait
+            # moves, by how much, and toward whom). Without these the
+            # renderer can't tell a guilt-mutation from a fear-mutation.
+            trait_target = ce.get("trait_target")
+            trait_delta = ce.get("trait_delta")
+            counterpart = ce.get("rel_counterpart_id")
+            extras: list = []
+            if mechanism:
+                extras.append(f"mech={mechanism}")
+            if evidence:
+                extras.append(f"ev={evidence}")
+            if isinstance(strength, (int, float)):
+                extras.append(f"strength={strength:.2f}")
+            elif isinstance(force, (int, float)):
+                extras.append(f"force={force:.2f}")
+            if trait_target:
+                if trait_delta is not None:
+                    extras.append(f"{trait_target}{float(trait_delta):+.2f}")
+                else:
+                    extras.append(f"trait={trait_target}")
+            if counterpart:
+                extras.append(f"vs {counterpart}")
+            extras_blob = f" [{', '.join(extras)}]" if extras else ""
+            sections.append(f"  - {src} --{ctype}→ {tgt}{extras_blob}")
 
     # ------------------------------------------------------------
     # World traits (global structural constraints)

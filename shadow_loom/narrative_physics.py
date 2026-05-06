@@ -298,6 +298,33 @@ def calculate_narrative_physics(
             }
         else:
             AMWNInstantiator.execute_interventions(shadow_graph, request.interventions)
+            # Provenance-prune parity with the engine path: drop beliefs
+            # whose acquired_via_* points at events/channels the surgery
+            # epistemically invalidated, and tag the affected utterance
+            # nodes ``pruned=True`` so the legacy cascades skip their
+            # downstream causal contributions.
+            _legacy_evt_pruned, _legacy_chn_pruned = (
+                _collect_legacy_provenance_invalidations(request.interventions)
+            )
+            if _legacy_evt_pruned or _legacy_chn_pruned:
+                AMWNInstantiator._prune_beliefs_by_provenance(
+                    shadow_graph,
+                    removed_event_ids=_legacy_evt_pruned,
+                    removed_channel_ids=_legacy_chn_pruned,
+                )
+                for _nid, _ndata in shadow_graph.nodes(data=True):
+                    if _nid in _legacy_evt_pruned:
+                        _ndata["pruned"] = True
+                    elif (
+                        _ndata.get("event_type") == "utterance"
+                        and _ndata.get("via_channel_id") in _legacy_chn_pruned
+                    ):
+                        _ndata["pruned"] = True
+                logger.info(
+                    "[Intervention·Legacy] Provenance prune: %d event(s), "
+                    "%d channel(s) invalidated.",
+                    len(_legacy_evt_pruned), len(_legacy_chn_pruned),
+                )
             logger.info("[Intervention] Surgeries complete — %d nodes, %d edges.",
                          shadow_graph.number_of_nodes(), shadow_graph.number_of_edges())
             result = {
@@ -454,6 +481,31 @@ def calculate_narrative_physics(
             _apply_abduction(shadow_graph, request.evidence_node_ids, global_world_state)
 
             AMWNInstantiator.execute_interventions(shadow_graph, request.historical_interventions)
+
+            # Provenance-prune parity with the engine path — see the
+            # intervention branch comment above for rationale.
+            _ctf_evt_pruned, _ctf_chn_pruned = (
+                _collect_legacy_provenance_invalidations(request.historical_interventions)
+            )
+            if _ctf_evt_pruned or _ctf_chn_pruned:
+                AMWNInstantiator._prune_beliefs_by_provenance(
+                    shadow_graph,
+                    removed_event_ids=_ctf_evt_pruned,
+                    removed_channel_ids=_ctf_chn_pruned,
+                )
+                for _nid, _ndata in shadow_graph.nodes(data=True):
+                    if _nid in _ctf_evt_pruned:
+                        _ndata["pruned"] = True
+                    elif (
+                        _ndata.get("event_type") == "utterance"
+                        and _ndata.get("via_channel_id") in _ctf_chn_pruned
+                    ):
+                        _ndata["pruned"] = True
+                logger.info(
+                    "[Counterfactual·Legacy] Provenance prune: %d event(s), "
+                    "%d channel(s) invalidated.",
+                    len(_ctf_evt_pruned), len(_ctf_chn_pruned),
+                )
 
             # --- PREDICTION STEP: Forward cascade through causal topology ---
             _apply_forward_cascade(shadow_graph, global_world_state)
@@ -889,6 +941,47 @@ _MECHANISM_TRAIT_MAP: Dict[str, List[str]] = {
 _MECHANISM_FALLBACK_FACTOR = 0.2
 
 
+# ==========================================
+# Legacy provenance-prune parity with CausalPhysicsEngine
+# ==========================================
+# Mirrors ``CausalPhysicsEngine._collect_provenance_invalidations``
+# so the legacy (use_causal_engine=False) intervention and
+# counterfactual paths drop beliefs whose ``acquired_via_*``
+# provenance has been epistemically invalidated by the surgery.
+# Without this parity the legacy path could leave stale beliefs in
+# the sandbox while the engine path correctly pruned them.
+_LEGACY_DESTRUCTIVE_EVENT_TYPES = {"prevented", "never_happened", "removed"}
+_LEGACY_DESTRUCTIVE_TRUTH = {"false", "performative"}
+_LEGACY_DESTRUCTIVE_STATUS = {"severed", "disabled", "down"}
+
+
+def _collect_legacy_provenance_invalidations(
+    interventions: Dict[str, Any] | None,
+) -> tuple[set[str], set[str]]:
+    """Return (removed_event_ids, removed_channel_ids) for legacy paths.
+
+    Kept conservative — only unambiguously destructive surgeries
+    invalidate provenance. See the engine version for full rationale.
+    """
+    removed_events: set[str] = set()
+    removed_channels: set[str] = set()
+    for path, value in (interventions or {}).items():
+        if "." not in path:
+            continue
+        node_id, prop = path.split(".", 1)
+        if node_id.startswith("EVT_"):
+            if prop == "event_type" and isinstance(value, str) and value in _LEGACY_DESTRUCTIVE_EVENT_TYPES:
+                removed_events.add(node_id)
+            elif prop == "truth_value" and isinstance(value, str) and value in _LEGACY_DESTRUCTIVE_TRUTH:
+                removed_events.add(node_id)
+        elif node_id.startswith(("CHN_", "CHAN_")):
+            if prop == "status" and isinstance(value, str) and value in _LEGACY_DESTRUCTIVE_STATUS:
+                removed_channels.add(node_id)
+            elif prop == "participant_ids" and isinstance(value, list) and len(value) == 0:
+                removed_channels.add(node_id)
+    return removed_events, removed_channels
+
+
 def _apply_abduction(
     sandbox: nx.MultiDiGraph,
     evidence_node_ids: List[str],
@@ -1012,6 +1105,18 @@ def _apply_forward_cascade(
     """
     strength_mult = {"weak": 0.25, "moderate": 0.5, "strong": 0.75}
 
+    # Event ids that the AMWN surgery marked as ``pruned`` — either an
+    # utterance whose bridging channel was severed, or an event that
+    # provenance invalidation flagged (event_type='prevented',
+    # truth_value='false', etc.). Causal edges originating from any of
+    # these must NOT propagate forward — the legacy cascade previously
+    # ignored the prune flag, so a counterfactual that severed a channel
+    # or prevented an event still saw its downstream traits drift.
+    pruned_event_ids: set[str] = {
+        nid for nid, ndata in sandbox.nodes(data=True)
+        if ndata.get("pruned") is True
+    }
+
     # 1. Build a causal DiGraph from the global causal_topology,
     #    restricted to nodes present in the sandbox.
     causal_graph = nx.DiGraph()
@@ -1020,6 +1125,8 @@ def _apply_forward_cascade(
     for ce in global_world_state.causal_topology:
         src = ce.source_id
         tgt = ce.target_id
+        if src in pruned_event_ids or tgt in pruned_event_ids:
+            continue
         if not sandbox.has_node(src) and src not in {
             nid for nid, _ in sandbox.nodes(data=True)
         }:
@@ -1189,8 +1296,18 @@ def _apply_social_cascade(
     """
     strength_mult = {"weak": 0.25, "moderate": 0.5, "strong": 0.75}
 
+    # Same prune gate as the forward cascade — a mutation_social edge
+    # whose source is a pruned event (severed-channel utterance or
+    # provenance-invalidated event) must not propagate.
+    pruned_event_ids: set[str] = {
+        nid for nid, ndata in sandbox.nodes(data=True)
+        if ndata.get("pruned") is True
+    }
+
     for ce in global_world_state.causal_topology:
         if ce.causality_type != "mutation_social":
+            continue
+        if ce.source_id in pruned_event_ids:
             continue
 
         target_id = ce.target_id          # perspective entity

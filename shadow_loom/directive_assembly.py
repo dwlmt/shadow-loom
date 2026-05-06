@@ -1025,6 +1025,16 @@ class DirectiveAssembler:
             # frontier, (b) a revealed utterance addressed to them (or
             # spoken by them) refers to it, or (c) they hold a Belief
             # whose target_id matches the event id.
+            #
+            # Channel intelligibility gates (b): a recipient who cannot
+            # parse the channel (intelligibility[recipient] below the
+            # configured threshold) does NOT learn from the utterance
+            # even if they were nominally addressed. Without this gate,
+            # encrypted/coded/foreign-language messages would silently
+            # close dramatic-irony surfaces that should remain open.
+            intel_thresh = _get_settings().physics.intelligibility_threshold
+            channels = self.world_state.channels
+
             known: set[str] = {
                 evt.id for evt in self.world_state.events
                 if (eid in evt.actor_ids or eid in evt.target_ids)
@@ -1037,6 +1047,15 @@ class DirectiveAssembler:
                     continue
                 if eid not in utt.addressee_ids and eid != utt.speaker_id:
                     continue
+                # Speaker always understands what they themselves uttered.
+                # Addressees only understand if the channel (when one
+                # mediates the utterance) is intelligible to them.
+                if eid != utt.speaker_id and utt.via_channel_id:
+                    ch = channels.get(utt.via_channel_id)
+                    if ch is not None:
+                        intel = float(ch.intelligibility.get(eid, 1.0))
+                        if intel < intel_thresh:
+                            continue
                 for tid in utt.target_ids:
                     if tid.startswith("EVT_"):
                         known.add(tid)

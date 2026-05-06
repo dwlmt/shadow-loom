@@ -1146,6 +1146,40 @@ def assemble_audit_prompt(
         sections.append(format_scene_context_for_prompt(brief.scene_context))
         sections.append("")
 
+    # === External research (WorldFact) fidelity ===
+    # Mirrors the renderer's EXTERNAL RESEARCH block so the auditor
+    # judges the prose against the *same* background facts. Two
+    # failure modes need flagging:
+    #   * the prose contradicts a high-confidence WorldFact
+    #     (e.g. invents a different aircraft, gets a date wrong);
+    #   * the prose promotes a WorldFact into canonical story
+    #     content (treats background as on-stage event / trait /
+    #     belief), which the research layer explicitly forbids.
+    # Both are reported under the existing `physics` category as
+    # `world_fact_fidelity`-tagged violations — no new category is
+    # added (the loop discards out-of-scope categories).
+    research = getattr(brief, "external_research", None) or []
+    if research:
+        sections.append(
+            "=== EXTERNAL RESEARCH (WorldFact background — NOT "
+            "authoritative for plot) ==="
+        )
+        sections.append(
+            "Use these only as fidelity checks for period / place / "
+            "vocabulary detail. Flag the prose under the `physics` "
+            "category (rationale prefix `world_fact_fidelity:`) when "
+            "it (a) contradicts a high-confidence fact below, or "
+            "(b) promotes a WorldFact into a canonical event / "
+            "trait / belief / dialogue claim in the story."
+        )
+        for fact in research:
+            fid = getattr(fact, "fact_id", None) or getattr(fact, "id", "?")
+            conf = getattr(fact, "confidence", "moderate")
+            topic = getattr(fact, "topic", "")
+            summary = getattr(fact, "summary", "")
+            sections.append(f"  - {fid} ({conf}) {topic}: {summary}")
+        sections.append("")
+
     # Epistemic gaps for reference
     if brief.epistemic_gaps:
         sections.append("=== EPISTEMIC STATE (beliefs vs reality) ===")

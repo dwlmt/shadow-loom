@@ -102,6 +102,12 @@ Physical connections between locations. Fields:
 
 Only include spatial connections that are **explicitly mentioned or clearly implied** by character movement in the text.
 
+Extraction rules:
+- **Directionality.** Most physical passages are *bidirectional* (a corridor, a staircase, an open door). Emit ONE edge per pair — the dedup pass keys on `(source_id, target_id)` and the runtime treats the connection symmetrically. Only emit a second `(target_id, source_id)` edge when the text makes the passage *one-way* (a slide, a cliff drop, a one-way valve, a portal that closes after passage).
+- **`is_locked` ⇔ `barrier_item_id`.** If `is_locked=true`, you MUST also supply a `barrier_item_id` pointing at an `OBJ_` id from the register (the door, lock, gate, beast, etc. that does the blocking). A lock with no barrier object is auto-cleared by the validator because nothing in the world can ever unlock it. Conversely, when you point at a barrier object you almost always want `is_locked=true` — leave `is_locked=false` only when the barrier is currently disengaged (door propped open, gate unbarred).
+- **Lifecycle.** `established_at_fabula=0` means "pre-existing — already there when the story starts" (the default for the vast majority of passages). Set it to a non-zero fabula tick ONLY when the path is *built / opened during the story* (a tunnel dug at t=2400, a bridge raised at t=1800, a secret door discovered at t=900). `destroyed_at_fabula` must be strictly greater than `established_at_fabula` and is the tick the path becomes impassable (cave-in, demolition, sealed shut).
+- **Use IDs from the register.** `barrier_item_id` MUST be an `OBJ_` id that already exists. Do NOT invent a new one — if the text describes a barrier you haven't extracted as an object yet, leave `barrier_item_id=null` and `is_locked=false` rather than fabricating an id.
+
 ### `entity_updates` — List[EntityUpdate]
 
 Per-entity state changes caused by events in this chunk. The ontology register captures each entity's **initial** (pre-story) state. This list tracks how events **mutate** that state over time.

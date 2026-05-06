@@ -210,17 +210,52 @@ class AMWNInstantiator:
                 sandbox.add_edge(src, tgt, **edge_attrs)
 
         # E. Spatial Navigation Edges (SpatialEdge — ALL edges wired, locked flagged)
+        # Honors temporal lifecycle: an edge that was destroyed before the
+        # ego-graph's frontier (max event fabula_time) is omitted entirely
+        # — the passage no longer exists, so reachability must not see it.
+        # An edge whose ``established_at_fabula`` is in the future is also
+        # skipped: the passage hasn't been built yet at the slice we're
+        # simulating. Counterfactual surgery that calls
+        # ``spawn`` / ``destroy`` on a SpatialEdge can then take effect.
+        # Compute the slice frontier here so spatial wiring can use it.
+        _spatial_max_ft = 0
+        for _evt in ego_payload.get("recent_memory", []):
+            _ft = _evt.get("fabula_time", 0)
+            if _ft > _spatial_max_ft:
+                _spatial_max_ft = _ft
+
         for se in ego_payload.get("relevant_spatial_edges", []):
             src_loc = se.get("source_id")
             tgt_loc = se.get("target_id")
             is_locked = se.get("is_locked", False)
             barrier_item_id = se.get("barrier_item_id")
+            established_at = se.get("established_at_fabula", 0) or 0
+            destroyed_at = se.get("destroyed_at_fabula")
+            # Lifecycle gating: skip edges outside the active window.
+            if destroyed_at is not None and destroyed_at <= _spatial_max_ft:
+                logger.debug(
+                    "[Instantiator·Spatial] dropping %s↔%s — destroyed at "
+                    "t=%s (frontier=%s)",
+                    src_loc, tgt_loc, destroyed_at, _spatial_max_ft,
+                )
+                continue
+            if established_at > _spatial_max_ft:
+                logger.debug(
+                    "[Instantiator·Spatial] dropping %s↔%s — not yet "
+                    "established (t=%s, frontier=%s)",
+                    src_loc, tgt_loc, established_at, _spatial_max_ft,
+                )
+                continue
             if src_loc and tgt_loc and sandbox.has_node(src_loc) and sandbox.has_node(tgt_loc):
                 sandbox.add_edge(src_loc, tgt_loc, edge_type="connected_to",
                                  is_locked=is_locked, barrier_item_id=barrier_item_id,
+                                 established_at_fabula=established_at,
+                                 destroyed_at_fabula=destroyed_at,
                                  world_id=target_world_id)
                 sandbox.add_edge(tgt_loc, src_loc, edge_type="connected_to",
                                  is_locked=is_locked, barrier_item_id=barrier_item_id,
+                                 established_at_fabula=established_at,
+                                 destroyed_at_fabula=destroyed_at,
                                  world_id=target_world_id)
 
         # F. Channels (standing comms capabilities) and on-page utterances.
@@ -291,11 +326,7 @@ class AMWNInstantiator:
         # H. Auto-generated Ambient Propagation Edges (WORLD_ → Entity)
         # Weak baseline pressure from world-level facts to all entities in the scene.
         # These are runtime-only (not persisted in causal_topology).
-        max_ft = 0
-        for evt in ego_payload.get("recent_memory", []):
-            ft = evt.get("fabula_time", 0)
-            if ft > max_ft:
-                max_ft = ft
+        max_ft = _spatial_max_ft
 
         for wt_id in world_trait_ids:
             wt_node = sandbox.nodes.get(wt_id, {})
@@ -700,6 +731,43 @@ class AMWNInstantiator:
                     severed_channel_ids.add(cid)
                 severed_pairs.add((u, v))
         sandbox.remove_edges_from(edges_to_remove)
+
+        # When a channel is torn down at one endpoint, the *standing
+        # capability* itself is gone — every other ``communicating_with``
+        # edge anywhere in the sandbox that carries the same
+        # ``channel_id`` must also disappear, otherwise downstream
+        # propagation (and the legacy cascades that read the global
+        # causal_topology) would still treat the channel as live.
+        if severed_channel_ids:
+            extra_remove = [
+                (u, v, key)
+                for u, v, key, data in sandbox.edges(keys=True, data=True)
+                if data.get("edge_type") == "communicating_with"
+                and data.get("channel_id") in severed_channel_ids
+            ]
+            if extra_remove:
+                sandbox.remove_edges_from(extra_remove)
+
+            # Mark every utterance node whose ``via_channel_id`` rode on
+            # a severed channel as ``pruned`` so the cascades skip
+            # propagating its causal/social effects. The node itself
+            # stays in the graph (the auditor's leak detector still
+            # needs to see what *was* uttered) but its propagation
+            # bridge is closed.
+            pruned_utts: list[str] = []
+            for nid, ndata in sandbox.nodes(data=True):
+                if ndata.get("event_type") != "utterance":
+                    continue
+                via = ndata.get("via_channel_id")
+                if via and via in severed_channel_ids:
+                    ndata["pruned"] = True
+                    pruned_utts.append(nid)
+            if pruned_utts:
+                logger.info(
+                    "[Surgery] Marked %d utterance(s) pruned via severed "
+                    "channel(s) %s: %s",
+                    len(pruned_utts), sorted(severed_channel_ids), pruned_utts,
+                )
 
         if not target_ids:
             logger.info("[Surgery] Severed all comms from %s", source_id)
