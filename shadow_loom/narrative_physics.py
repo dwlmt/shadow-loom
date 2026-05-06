@@ -306,6 +306,12 @@ def calculate_narrative_physics(
             _legacy_evt_pruned, _legacy_chn_pruned = (
                 _collect_legacy_provenance_invalidations(request.interventions)
             )
+            # Also pick up events that ``_enforce_affordance_gates``
+            # marked ``pruned=True`` during the intervention sweep so
+            # beliefs acquired from gate-blocked events get pruned too.
+            for _nid, _ndata in shadow_graph.nodes(data=True):
+                if _ndata.get("node_type") == "EventNode" and _ndata.get("pruned") is True:
+                    _legacy_evt_pruned.add(_nid)
             if _legacy_evt_pruned or _legacy_chn_pruned:
                 AMWNInstantiator._prune_beliefs_by_provenance(
                     shadow_graph,
@@ -487,6 +493,12 @@ def calculate_narrative_physics(
             _ctf_evt_pruned, _ctf_chn_pruned = (
                 _collect_legacy_provenance_invalidations(request.historical_interventions)
             )
+            # Pick up events ``_enforce_affordance_gates`` blocked
+            # during the historical-intervention sweep so beliefs
+            # acquired from gate-blocked events are pruned too.
+            for _nid, _ndata in shadow_graph.nodes(data=True):
+                if _ndata.get("node_type") == "EventNode" and _ndata.get("pruned") is True:
+                    _ctf_evt_pruned.add(_nid)
             if _ctf_evt_pruned or _ctf_chn_pruned:
                 AMWNInstantiator._prune_beliefs_by_provenance(
                     shadow_graph,
@@ -1170,11 +1182,43 @@ def _apply_forward_cascade(
             ),
         )
 
-    # 3. Build a spatial traversability sub-graph for affordance checks
+    # 3. Build a spatial traversability sub-graph for affordance checks.
+    # Mirrors `CausalPhysicsEngine._build_spatial_traversable`: locked
+    # passages are admitted when ANY entity in the sandbox owns an item
+    # whose ``unlock`` affordance targets the barrier (by node-type or
+    # name). Without this parity the legacy cascade silently dropped
+    # locked-but-unlockable edges that the engine path accepted, making
+    # query outcomes path-dependent on `use_causal_engine`.
     traversable = nx.DiGraph()
     for u, v, d in sandbox.edges(data=True):
-        if d.get("edge_type") == "connected_to" and not d.get("is_locked", False):
+        if d.get("edge_type") != "connected_to":
+            continue
+        if not d.get("is_locked", False):
             traversable.add_edge(u, v)
+            continue
+        barrier_id = d.get("barrier_item_id")
+        if not barrier_id:
+            continue
+        barrier_node = sandbox.nodes.get(barrier_id, {})
+        barrier_name = barrier_node.get("name", "")
+        barrier_node_type = barrier_node.get("node_type", "NarrativeObject")
+        for nid, ndata in sandbox.nodes(data=True):
+            if ndata.get("node_type") != "NarrativeObject":
+                continue
+            if ndata.get("owner_id") is None:
+                continue
+            for aff in ndata.get("affordances", []) or []:
+                if not isinstance(aff, dict):
+                    continue
+                if aff.get("action") != "unlock":
+                    continue
+                aff_target = aff.get("target_type", "")
+                if aff_target == barrier_node_type or aff_target == barrier_name:
+                    traversable.add_edge(u, v)
+                    break
+            else:
+                continue
+            break
 
     # 4. Propagate
     for node_id in execution_order:

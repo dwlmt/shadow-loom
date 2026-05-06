@@ -2430,8 +2430,19 @@ class DirectiveAssembler:
         if not facts:
             return []
         focus = set(focus_entity_ids or [])
-        # Also include any locations / objects that are in scope via ego.
-        for k in ("focus_locations", "focus_objects"):
+        # Also include any locations / objects / co-present entities in
+        # scope via the ego payload. The canonical ego shape uses
+        # ``current_locations`` / ``present_objects`` / ``present_entities``
+        # (see `Step8Engine._build_ego_payload`); the legacy
+        # ``focus_locations`` / ``focus_objects`` keys are accepted for
+        # back-compat with older callers. Without the canonical keys
+        # being checked here, facts whose ``related_node_ids`` named a
+        # scene location or object were silently dropped from the
+        # external_research block of the prompt and audit.
+        for k in (
+            "focus_locations", "focus_objects",
+            "current_locations", "present_objects", "present_entities",
+        ):
             for item in self.ego.get(k, []) or []:
                 if isinstance(item, dict) and "id" in item:
                     focus.add(item["id"])

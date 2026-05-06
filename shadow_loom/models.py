@@ -886,6 +886,28 @@ class SpatialEdge(AMWNEdge):
     source_id: str = Field(description="Must be a LOC_ ID")
     target_id: str = Field(description="Must be a LOC_ ID")
     
+    # --- TOPOLOGY ---
+    connection_type: str = Field(
+        default="passage",
+        description=(
+            "Free-text classifier for the path (e.g. 'doorway', "
+            "'corridor', 'stairs', 'one-way drop', 'window'). "
+            "Used by the renderer/auditor for flavour and to flag "
+            "implausible traversals; not consulted by physics."
+        ),
+    )
+    bidirectional: bool = Field(
+        default=True,
+        description=(
+            "When True the path is traversable A↔B and the "
+            "instantiator emits an opposing connected_to edge. When "
+            "False (e.g. a one-way drop, a magically sealed exit) "
+            "only the declared source→target direction is wired into "
+            "the sandbox so reachability/eavesdropping/spatial "
+            "cascades respect the asymmetry."
+        ),
+    )
+
     # --- PHYSICAL CONSTRAINTS ---
     is_locked: bool = Field(default=False)
     barrier_item_id: Optional[str] = Field(

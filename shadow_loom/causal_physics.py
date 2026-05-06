@@ -1082,6 +1082,17 @@ class CausalPhysicsEngine:
                         logger.debug("[CausalPhysics·Propagate] Skipping inactive source %s→%s.%s",
                                      src, node_id, trait_name)
                         continue
+                    # Affordance-gate / provenance prune honours: a
+                    # source marked ``pruned=True`` (by
+                    # ``_enforce_affordance_gates`` or by surgery's
+                    # provenance sweep) must NOT propagate its
+                    # downstream effects, even when it landed in the
+                    # active set via interventions/abduction.
+                    src_node_data = self.sandbox.nodes.get(src, {})
+                    if src_node_data.get("pruned") is True:
+                        logger.debug("[CausalPhysics·Propagate] Skipping pruned source %s→%s.%s",
+                                     src, node_id, trait_name)
+                        continue
                     w = edata.get("weight", 0.5)
                     mechanism = edata.get("mechanism", "physical")
                     edge_ctype = edata.get("causality_type", "chain_reaction")
@@ -1100,19 +1111,30 @@ class CausalPhysicsEngine:
                             per_edge_contributions.append((src, contrib))
                             continue
 
-                    relevant_traits = MECHANISM_TRAIT_MAP.get(mechanism)
-
                     # Mechanism-targeted gating: reduce weight for non-matching traits.
                     # We track the worst single fallback (mechanism mismatch OR
                     # WORLD_ domain mismatch) and apply it once, instead of
                     # multiplying both penalties — a trait that loses both a
                     # mechanism and a domain match shouldn't be ×fallback².
                     fallback_penalty = 1.0
-                    if relevant_traits is not None and trait_name not in relevant_traits:
+                    # Multi-mechanism awareness: ambient edges from a
+                    # multi-domain WorldTrait carry a ``mechanisms``
+                    # list. A trait counts as mechanism-matched when ANY
+                    # listed mechanism's MECHANISM_TRAIT_MAP entry
+                    # contains it; only when none match do we apply the
+                    # fallback.
+                    edge_mechanisms_for_gate = edata.get("mechanisms") or [mechanism]
+                    matched_any = False
+                    for m in edge_mechanisms_for_gate:
+                        rt = MECHANISM_TRAIT_MAP.get(m)
+                        if rt is None or trait_name in rt:
+                            matched_any = True
+                            break
+                    if not matched_any:
                         fb = _mechanism_fallback_factor()
                         fallback_penalty = min(fallback_penalty, fb)
-                        logger.debug("[CausalPhysics·Propagate] %s→%s trait=%s: mechanism=%s not in target list, fb=%.3f",
-                                         src, node_id, trait_name, mechanism, fb)
+                        logger.debug("[CausalPhysics·Propagate] %s→%s trait=%s: mechanisms=%s not in target lists, fb=%.3f",
+                                         src, node_id, trait_name, edge_mechanisms_for_gate, fb)
 
                     src_data = self.sandbox.nodes.get(src)
                     if not src_data:
@@ -1123,11 +1145,18 @@ class CausalPhysicsEngine:
                     # to the (single) fallback penalty.
                     if src_data.get("node_type") == "WorldTrait":
                         affected = src_data.get("affected_domains", [])
-                        if affected and mechanism not in affected:
+                        # The instantiator carries the full domain list
+                        # on ambient edges under ``mechanisms`` so a
+                        # multi-domain world trait can route into every
+                        # MECHANISM_TRAIT_MAP family. Treat the trait as
+                        # mechanism-matched when ANY declared mechanism
+                        # covers the recipient trait.
+                        edge_mechanisms = edata.get("mechanisms") or [mechanism]
+                        if affected and not any(m in affected for m in edge_mechanisms):
                             fb = _mechanism_fallback_factor()
                             fallback_penalty = min(fallback_penalty, fb)
-                            logger.debug("[CausalPhysics·Propagate] WORLD_ domain filter: %s→%s mechanism=%s not in %s, fb=%.3f",
-                                     src, node_id, mechanism, affected, fb)
+                            logger.debug("[CausalPhysics·Propagate] WORLD_ domain filter: %s→%s mechanisms=%s not in %s, fb=%.3f",
+                                     src, node_id, edge_mechanisms, affected, fb)
 
                     # Apply the (combined) fallback once.
                     if fallback_penalty < 1.0:
@@ -1421,6 +1450,12 @@ class CausalPhysicsEngine:
             # current values.
             if source_id not in self._active_sources:
                 logger.debug("[CausalPhysics·SocialProp] Skipping inactive source %s→%s (%s)",
+                             source_id, target_id, metric)
+                continue
+            # Honour the prune flag for social cascade too — see the
+            # corresponding check in ``propagate()``.
+            if self.sandbox.nodes.get(source_id, {}).get("pruned") is True:
+                logger.debug("[CausalPhysics·SocialProp] Skipping pruned source %s→%s (%s)",
                              source_id, target_id, metric)
                 continue
 
@@ -1837,6 +1872,14 @@ class CausalPhysicsEngine:
         pruned_evt_ids, disabled_ch_ids = (
             self._collect_provenance_invalidations(interventions)
         )
+        # Pick up events that ``_enforce_affordance_gates`` (called
+        # at the end of ``execute_interventions`` in the surgery step
+        # above) marked ``pruned=True`` so beliefs acquired from
+        # gate-blocked events are cleaned alongside provenance-pruned
+        # ones.
+        for _nid, _ndata in self.sandbox.nodes(data=True):
+            if _ndata.get("node_type") == "EventNode" and _ndata.get("pruned") is True:
+                pruned_evt_ids.add(_nid)
         beliefs_pruned = 0
         if pruned_evt_ids or disabled_ch_ids:
             beliefs_pruned = AMWNInstantiator._prune_beliefs_by_provenance(

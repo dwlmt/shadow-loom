@@ -316,3 +316,106 @@ class TestEnginePreflight:
         result = engine.execute(rung=2, interventions={})
         assert result.rule3_pruned_interventions == []
         assert result.rule2_redundant_evidence == []
+
+
+# =====================================================================
+# Affordance-gate enforcement
+# =====================================================================
+class TestAffordanceGateEnforcement:
+    """``AMWNInstantiator._enforce_affordance_gates`` must mark target
+    events ``pruned=True`` when the source state of an
+    ``affordance_gate`` edge is no longer satisfied. The downstream
+    cascades (engine ``propagate``/``propagate_social`` and the legacy
+    ``_apply_forward_cascade``/``_apply_social_cascade`` paths) honour
+    that flag and drop the gate-blocked event's contributions.
+    """
+
+    def _gated_world(self) -> WorldStateV1:
+        return WorldStateV1(
+            locations={
+                "LOC_A": Location(name="A", description="A", ambient_state={}),
+            },
+            objects={},
+            entities={
+                "ENT_KEY": Entity(
+                    id="ENT_KEY", name="Key", location_id="LOC_A",
+                    status="healthy",
+                    traits={"resolve": TraitVector(value=0.5, inertia=0.1)},
+                ),
+                "ENT_TARGET": Entity(
+                    id="ENT_TARGET", name="Target", location_id="LOC_A",
+                    status="healthy",
+                    traits={"fear": TraitVector(value=0.3, inertia=0.1)},
+                ),
+            },
+            events=[
+                EventNode(
+                    id="EVT_GATED", fabula_time=2, syuzhet_index=1,
+                    event_type="outcome", actor_ids=["ENT_KEY"],
+                    target_ids=["ENT_TARGET"],
+                    description="Gated event",
+                ),
+            ],
+            causal_topology=[
+                # State (Entity) → Event affordance_gate
+                CausalEdge(
+                    source_id="ENT_KEY", target_id="EVT_GATED",
+                    causality_type="affordance_gate", causal_force=5.0,
+                    mechanism="physical", evidence_strength="strong",
+                    fabula_time=2,
+                ),
+                # The gated event drives the target's fear
+                CausalEdge(
+                    source_id="EVT_GATED", target_id="ENT_TARGET",
+                    causality_type="mutation", causal_force=5.0,
+                    mechanism="physical", evidence_strength="strong",
+                    fabula_time=2, trait_target="fear", trait_delta=0.5,
+                ),
+            ],
+            spatial_topology=[],
+        )
+
+    def test_gate_blocks_target_when_source_dies(self):
+        ws = self._gated_world()
+        ego = extract_ego_graph_from_memory(ws, ["ENT_TARGET"])
+        sandbox = AMWNInstantiator.create_sandbox(
+            ego.model_dump(), "intervention",
+        )
+
+        # Baseline: gate satisfied — target event is NOT pruned.
+        assert sandbox.nodes["EVT_GATED"].get("pruned") is not True
+
+        # Surgery: kill the source state. This must flip the gate and
+        # mark EVT_GATED pruned.
+        AMWNInstantiator.execute_interventions(
+            sandbox, {"ENT_KEY.status": "dead"},
+        )
+        assert sandbox.nodes["EVT_GATED"].get("pruned") is True
+
+    def test_canonical_pruned_source_blocks_at_create(self):
+        """A source whose canonical state is already 'unsatisfied'
+        (e.g. a WorldTrait with collapsed magnitude) must gate its
+        targets at sandbox creation, before any surgery."""
+        from shadow_loom.models import GlobalTrait
+        ws = self._gated_world()
+        ws.world_traits['WORLD_DEAD_AMBIENT'] = GlobalTrait(
+            id='WORLD_DEAD_AMBIENT',
+            name='Dead ambient',
+            description='Collapsed at canon',
+            category='environment',
+            magnitude=TraitVector(value=0.0, inertia=0.5),
+            affected_domains=['physical'],
+        )
+        ws.causal_topology.append(
+            CausalEdge(
+                source_id='WORLD_DEAD_AMBIENT', target_id='EVT_GATED',
+                causality_type='affordance_gate', causal_force=5.0,
+                mechanism='physical', evidence_strength='strong',
+                fabula_time=2,
+            ),
+        )
+        ego = extract_ego_graph_from_memory(ws, ['ENT_TARGET'])
+        sandbox = AMWNInstantiator.create_sandbox(
+            ego.model_dump(), 'intervention',
+        )
+        assert sandbox.nodes['EVT_GATED'].get('pruned') is True

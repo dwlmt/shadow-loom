@@ -247,16 +247,30 @@ class AMWNInstantiator:
                 )
                 continue
             if src_loc and tgt_loc and sandbox.has_node(src_loc) and sandbox.has_node(tgt_loc):
+                # Default ``bidirectional=True`` preserves the historical
+                # behaviour (every passage walks both ways); declaring
+                # ``bidirectional=False`` (e.g. a one-way drop, a sealed
+                # exit, a cliff) suppresses the reverse edge so
+                # reachability / eavesdropping / spatial cascades respect
+                # the asymmetry. ``connection_type`` is carried as edge
+                # metadata for the renderer/auditor.
+                bidirectional = se.get("bidirectional", True)
+                connection_type = se.get("connection_type", "passage")
                 sandbox.add_edge(src_loc, tgt_loc, edge_type="connected_to",
                                  is_locked=is_locked, barrier_item_id=barrier_item_id,
                                  established_at_fabula=established_at,
                                  destroyed_at_fabula=destroyed_at,
+                                 connection_type=connection_type,
+                                 bidirectional=bidirectional,
                                  world_id=target_world_id)
-                sandbox.add_edge(tgt_loc, src_loc, edge_type="connected_to",
-                                 is_locked=is_locked, barrier_item_id=barrier_item_id,
-                                 established_at_fabula=established_at,
-                                 destroyed_at_fabula=destroyed_at,
-                                 world_id=target_world_id)
+                if bidirectional:
+                    sandbox.add_edge(tgt_loc, src_loc, edge_type="connected_to",
+                                     is_locked=is_locked, barrier_item_id=barrier_item_id,
+                                     established_at_fabula=established_at,
+                                     destroyed_at_fabula=destroyed_at,
+                                     connection_type=connection_type,
+                                     bidirectional=bidirectional,
+                                     world_id=target_world_id)
 
         # F. Channels (standing comms capabilities) and on-page utterances.
         # Channels are nodes in the world model but materialise into the
@@ -273,6 +287,27 @@ class AMWNInstantiator:
             intelligibility = ch.get("intelligibility", {}) or {}
             directionality = ch.get("directionality", "duplex")
             channel_id = ch.get("id")
+            # Persist the channel as a first-class sandbox node so the
+            # post-surgery `_sandbox_to_prompt_payload` normalizer (which
+            # walks NODES, not edges) can reconstitute the channel block
+            # for the renderer prompt and the auditor's channel-fidelity
+            # check after counterfactual surgery. Without this, channels
+            # silently dropped out of the prompt for every shadow-world
+            # query because the normalizer only saw the bare
+            # `communicating_with` edges.
+            if channel_id and not sandbox.has_node(channel_id):
+                sandbox.add_node(
+                    channel_id,
+                    node_type="Channel",
+                    id=channel_id,
+                    medium=medium,
+                    participant_ids=list(participants),
+                    intelligibility=dict(intelligibility),
+                    directionality=directionality,
+                    status=ch.get("status", "active"),
+                    description=ch.get("description", ""),
+                    world_id=target_world_id,
+                )
             for src in participants:
                 if not sandbox.has_node(src):
                     continue
@@ -332,9 +367,19 @@ class AMWNInstantiator:
             wt_node = sandbox.nodes.get(wt_id, {})
             mag = wt_node.get("magnitude", {})
             mag_value = mag.get("value", 0.5) if isinstance(mag, dict) else 0.5
-            domains = wt_node.get("affected_domains", [])
-            mechanism = domains[0] if domains else "psychological"
+            domains = wt_node.get("affected_domains", []) or []
             ambient_force = mag_value * _ambient_force_multiplier()
+
+            # Carry the FULL list of affected_domains on the ambient
+            # edge (under ``mechanisms``) so domain-aware propagation
+            # can route the world trait into multiple downstream trait
+            # families. ``mechanism`` keeps the legacy single-string
+            # contract (set to the first domain) for code paths that
+            # haven't migrated to the list shape yet — collapsing
+            # multi-domain world traits to a single mechanism was
+            # losing routing fidelity.
+            mechanisms = list(domains) if domains else ["psychological"]
+            primary_mechanism = mechanisms[0]
 
             for ent_id in all_entity_ids:
                 if sandbox.has_node(ent_id):
@@ -343,12 +388,21 @@ class AMWNInstantiator:
                         edge_type="causal",
                         causality_type="ambient_propagation",
                         causal_force=ambient_force,
-                        mechanism=mechanism,
+                        mechanism=primary_mechanism,
+                        mechanisms=mechanisms,
                         evidence_strength="moderate",
                         propagation_delay=0,
                         fabula_time=max_ft,
                         world_id=target_world_id,
                     )
+
+        # I. Affordance-gate enforcement (baseline pass).
+        # Honour gates whose source state is already unsatisfied at
+        # canon (e.g. an event whose extracted ``truth_value='false'``
+        # gates a downstream event — the downstream must not fire).
+        # Surgery-driven re-evaluation runs again from
+        # ``execute_interventions``.
+        AMWNInstantiator._enforce_affordance_gates(sandbox)
 
         return sandbox
 
@@ -387,6 +441,14 @@ class AMWNInstantiator:
                 cls._intervene_comms(sandbox, node_id, new_value)
             else:
                 cls._intervene_state(sandbox, node_id, property_path, new_value)
+
+        # After every intervention has been applied, sweep
+        # ``affordance_gate`` edges and prune target events whose
+        # prerequisite state has flipped (entity died, channel severed,
+        # world trait magnitude collapsed, source event marked
+        # false/prevented). The prune-cascade gate then drops every
+        # downstream effect of the blocked event.
+        cls._enforce_affordance_gates(sandbox)
 
     # ==========================================
     # SPATIAL AFFORDANCE CHECK
@@ -748,6 +810,16 @@ class AMWNInstantiator:
             if extra_remove:
                 sandbox.remove_edges_from(extra_remove)
 
+            # Mark the Channel nodes themselves so the post-surgery
+            # prompt normalizer (and the auditor channel-fidelity
+            # check) see status="severed" rather than the pre-surgery
+            # "active" snapshot. The communicating_with edges are
+            # already gone above, but the Channel node — added in step
+            # F — would otherwise still report itself as active.
+            for cid in severed_channel_ids:
+                if sandbox.has_node(cid):
+                    sandbox.nodes[cid]["status"] = "severed"
+
             # Mark every utterance node whose ``via_channel_id`` rode on
             # a severed channel as ``pruned`` so the cascades skip
             # propagating its causal/social effects. The node itself
@@ -796,6 +868,104 @@ class AMWNInstantiator:
     # ==========================================
     # PROVENANCE PRUNE HELPER
     # ==========================================
+    @staticmethod
+    def _enforce_affordance_gates(
+        sandbox: nx.MultiDiGraph,
+    ) -> list[str]:
+        """Block target events whose ``affordance_gate`` prerequisite
+        state is no longer satisfied.
+
+        ``affordance_gate`` edges encode State→Event prerequisites:
+        the source state must hold for the target event to fire. Forward
+        propagation in this engine is trait-impulse based and has no
+        explicit event-firing step, so the gate is enforced by
+        marking unsatisfied target events as ``pruned=True`` — the
+        existing prune-cascade gate (in both
+        ``CausalPhysicsEngine.propagate`` and the legacy
+        ``_apply_forward_cascade`` / ``_apply_social_cascade`` paths)
+        then drops every downstream effect of the blocked event.
+
+        The pre-surgery extracted graph is assumed to ship with all
+        gates satisfied (otherwise the events wouldn't be in canon).
+        The relevant case is *after* a counterfactual surgery flips a
+        gate's source state — for example, severing a channel
+        prunes the utterances that ride it; an entity intervention
+        sets ``status='dead'``; a WorldTrait magnitude is dialled to
+        zero. This helper walks every ``affordance_gate`` edge and
+        marks the target event ``pruned`` whenever the source no
+        longer counts as "live".
+
+        Source-satisfaction rules (conservative — only flip the gate
+        when the source is unambiguously dead/false):
+          * Entity: ``status`` ∈ {``dead``, ``removed``, ``absent``,
+            ``destroyed``} OR ``pruned=True``.
+          * NarrativeObject: ``pruned=True`` OR no longer in the
+            sandbox (already removed by surgery).
+          * Location: ``pruned=True`` (locations rarely carry status).
+          * WorldTrait: ``magnitude.value`` < 0.1 (treated as
+            effectively absent).
+          * EventNode: ``pruned=True``, OR ``truth_value`` ∈
+            {``false``, ``performative``}, OR ``event_type`` ∈
+            {``prevented``, ``never_happened``, ``removed``}.
+          * Channel: ``status`` == ``severed``.
+
+        Returns the list of newly-pruned target event ids so callers
+        (legacy counterfactual path) can chain a belief-provenance
+        prune through ``_prune_beliefs_by_provenance``.
+        """
+        _DEAD_ENTITY_STATUS = {"dead", "removed", "absent", "destroyed"}
+        _FALSE_TRUTH = {"false", "performative"}
+        _BLOCKED_EVENT_TYPE = {"prevented", "never_happened", "removed"}
+
+        def _source_unsatisfied(src_data: dict) -> bool:
+            if not src_data:
+                return False
+            if src_data.get("pruned") is True:
+                return True
+            nt = src_data.get("node_type")
+            if nt == "Entity":
+                return str(src_data.get("status", "")).lower() in _DEAD_ENTITY_STATUS
+            if nt == "WorldTrait":
+                mag = src_data.get("magnitude") or {}
+                val = mag.get("value", 0.5) if isinstance(mag, dict) else 0.5
+                return float(val) < 0.1
+            if nt == "EventNode":
+                if str(src_data.get("truth_value", "")).lower() in _FALSE_TRUTH:
+                    return True
+                if str(src_data.get("event_type", "")).lower() in _BLOCKED_EVENT_TYPE:
+                    return True
+                return False
+            if nt == "Channel":
+                return str(src_data.get("status", "")).lower() == "severed"
+            return False
+
+        newly_pruned: list[str] = []
+        # Iterate a snapshot — we mutate node attrs as we go.
+        edges_snapshot = [
+            (u, v, dict(d)) for u, v, d in sandbox.edges(data=True)
+            if d.get("edge_type") == "causal"
+            and d.get("causality_type") == "affordance_gate"
+        ]
+        for src_id, tgt_id, _edata in edges_snapshot:
+            tgt_data = sandbox.nodes.get(tgt_id, {})
+            if tgt_data.get("node_type") != "EventNode":
+                # affordance_gate is State→Event by schema; skip non-event
+                # targets defensively (older/legacy data may lack the
+                # node_type tag).
+                continue
+            if tgt_data.get("pruned") is True:
+                continue  # already blocked
+            src_data = sandbox.nodes.get(src_id, {})
+            if _source_unsatisfied(src_data):
+                tgt_data["pruned"] = True
+                newly_pruned.append(tgt_id)
+                logger.info(
+                    "[Surgery·AffordanceGate] %s blocks %s — source state "
+                    "no longer satisfies the gate (src_type=%s).",
+                    src_id, tgt_id, src_data.get("node_type"),
+                )
+        return newly_pruned
+
     @staticmethod
     def _prune_beliefs_by_provenance(
         sandbox: nx.MultiDiGraph,
