@@ -1,13 +1,16 @@
 # SPDX-FileCopyrightText: 2026 David Rae Wilmot
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-"""Causality tab — causal topology, what-if workbench, directive builder, affective dashboard.
+"""Causality tab — causal topology, what-if workbench, directive builder.
 
 Four sub-views:
   1. Causal Topology — Sankey + causal force graph
-  2. What-If Workbench — NL-driven intervention/counterfactual with propagation waterfall
-  3. Directive Builder — visual emotional target builder + NL hybrid
-  4. Affective Dashboard — emotional gauges, tension, trait trajectories
+  2. Evolution — how the topology grows over fabula time
+  3. What-If Workbench — NL-driven intervention/counterfactual with propagation waterfall
+  4. Directive Builder — visual emotional target builder + NL hybrid
+
+The Affective Dashboard now lives in its own top-level tab
+(:mod:`shadow_loom_ui.components.affective_tab`).
 """
 
 from __future__ import annotations
@@ -96,6 +99,51 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def _events_at(ws, t: int, *, axis: str = "fabula", limit: int = 3) -> str:
+    """Return a short human-readable summary of events at ``t``.
+
+    Used by the timeline sliders so dragging the cursor reveals
+    *which event* is sitting at the current fabula time / syuzhet
+    index. Picks events whose axis value equals ``t`` exactly; if
+    none match, falls back to the closest event by absolute distance
+    so the label is never empty mid-drag.
+
+    Returns a string like ``"E_005: Mary confronts John (+1 more)"``
+    or ``"\u2014"`` when there are no events at all.
+    """
+    if ws is None or not getattr(ws, "events", None):
+        return "\u2014"
+
+    def _axis_val(e):
+        return e.fabula_time if axis == "fabula" else e.syuzhet_index
+
+    candidates = [e for e in ws.events if _axis_val(e) is not None]
+    if not candidates:
+        return "\u2014"
+
+    exact = [e for e in candidates if int(_axis_val(e)) == int(t)]
+    if exact:
+        # Stable order by id then syuzhet for deterministic display.
+        exact.sort(key=lambda e: (e.syuzhet_index or 0, e.id))
+        chosen = exact[:limit]
+        extra = len(exact) - len(chosen)
+    else:
+        nearest = min(candidates, key=lambda e: abs(int(_axis_val(e)) - int(t)))
+        chosen = [nearest]
+        extra = 0
+
+    parts = []
+    for e in chosen:
+        desc = (e.description or "").strip().replace("\n", " ")
+        if len(desc) > 60:
+            desc = desc[:57] + "\u2026"
+        parts.append(f"{e.id}: {desc}" if desc else e.id)
+    suffix = "" if exact else "  (nearest)"
+    if extra > 0:
+        suffix = f"  (+{extra} more)" + suffix
+    return "  \u2022  ".join(parts) + suffix
+
 _EMOTIONAL_TARGETS = [
     ("mystery", "Mystery"),
     ("dramatic_irony", "Dramatic Irony"),
@@ -124,11 +172,13 @@ def build_causality_tab(state: AppState) -> None:
             ui.space()
             from shadow_loom_ui.components.help_popover import help_popover
             help_popover(
-                title="Causality — typed causal graph & affective dashboard",
+                title="Causality — typed causal graph & what-if workbench",
                 body_md=(
-                    "Five sub-views into the causal/social/spatial/"
-                    "information graph and the engine's affective"
-                    " calculus over the syuzhet (reading order).\n\n"
+                    "Four sub-views into the causal/social/spatial/"
+                    "information graph and the engine's intervention"
+                    " / counterfactual workbench.\n\n"
+                    "_Affective scoring (suspense, surprise, irony, ...)"
+                    " lives in its own top-level **Affective** tab._\n\n"
                     "### Sub-tabs\n"
                     "- **Causal Topology** — the directed graph of"
                     " cause→effect edges between events, plus social"
@@ -152,11 +202,7 @@ def build_causality_tab(state: AppState) -> None:
                     "- **Directive Builder** — craft an emotional"
                     " directive (target effect + target entities +"
                     " intensity) without writing prose. Useful for"
-                    " understanding which levers the engine has.\n"
-                    "- **Affective Dashboard** — heatmaps of"
-                    " *suspense*, *surprise*, *irony*, *love*, and"
-                    " *regret* scored per syuzhet index. Reveals where"
-                    " the story spikes or sags emotionally.\n\n"
+                    " understanding which levers the engine has.\n\n"
                     "### Reading the diagrams\n"
                     "- **Node colour** — event type (choice, outcome,"
                     " revelation, utterance) or aspect category.\n"
@@ -184,7 +230,6 @@ def build_causality_tab(state: AppState) -> None:
             ui.tab("evolution", label="Evolution", icon="timeline")
             ui.tab("whatif", label="What-If Workbench", icon="science")
             ui.tab("directive", label="Directive Builder", icon="theater_comedy")
-            ui.tab("affective", label="Affective Dashboard", icon="favorite")
 
         # Track the active sub-tab so each panel can gate its refresh.
         # Default-load is "topology"; mirror that into AppState so panels
@@ -232,10 +277,6 @@ def build_causality_tab(state: AppState) -> None:
             with ui.tab_panel("directive").classes("p-4"):
                 subtab_help("causality.directive")
                 _build_directive_builder(state)
-
-            with ui.tab_panel("affective").classes("p-4"):
-                subtab_help("causality.affective")
-                _build_affective_dashboard(state)
 
 
 # =====================================================================
@@ -310,6 +351,36 @@ def _build_causal_topology(state: AppState) -> None:
             ui.button("Full span", icon="restart_alt", on_click=_reset_time) \
                 .props("flat dense no-caps color=secondary")
 
+            # Full-width event-context line that mirrors what the
+            # affective-tab slider shows: as the user drags the
+            # ``Up to fabula t`` slider this label updates with the
+            # event description sitting at that fabula time so the
+            # scrub becomes a content-driven jump rather than a
+            # blind number tweak.
+            topo_event_at_cursor = ui.label("\u2014").classes(
+                "text-xs text-slate-500 italic basis-full pl-1 pt-1 "
+                "truncate"
+            )
+            topo_event_at_cursor.tooltip(
+                "Event at the current fabula cursor (or nearest if "
+                "none lands here)"
+            )
+
+        def _update_topo_event_label():
+            ws = state.world_state
+            if ws is None:
+                topo_event_at_cursor.text = "\u2014"
+                return
+            try:
+                t = int(time_slider.value)
+            except (TypeError, ValueError):
+                return
+            topo_event_at_cursor.text = _events_at(ws, t, axis="fabula")
+
+        time_slider.on(
+            "update:model-value", lambda _e: _update_topo_event_label(),
+        )
+
         graph_container = ui.column().classes(
             "w-full flex-grow bg-white border border-slate-200 "
             "rounded-xl shadow-sm p-4"
@@ -349,6 +420,10 @@ def _build_causal_topology(state: AppState) -> None:
                 if cur_w != desired:
                     time_slider.value = desired
             _slider_state["local_origin_t"] = False
+            # Mirror the cursor position into the human-readable
+            # event-context line so it tracks programmatic changes
+            # (e.g. a scrub from another tab).
+            _update_topo_event_label()
 
         def _refresh(**kw):
             if _slider_state["rendering"]:
@@ -1387,7 +1462,7 @@ def _render_directive_result(container, result: NLQueryResult) -> None:
 # 4. Affective Dashboard
 # =====================================================================
 
-def _build_affective_dashboard(state: AppState) -> None:
+def build_affective_dashboard(state: AppState) -> None:
     """Emotional gauges + affective metrics over fabula time.
 
     Pared back from the previous collage of densities, polars, and
@@ -1401,6 +1476,8 @@ def _build_affective_dashboard(state: AppState) -> None:
     """
 
     from shadow_loom_ui.viz_helpers import (
+        affective_timeseries,
+        affective_timeseries_syuzhet,
         compute_affective_scores,
         fabula_time_bounds,
         invalidate_snapshot_cache,
@@ -1472,6 +1549,38 @@ def _build_affective_dashboard(state: AppState) -> None:
                 "or 'All metrics' to compare side-by-side."
             )
             gauge_select.on("update:model-value", lambda _e: _refresh())
+
+            # Full-width event-context line: shows what event sits at
+            # the cursor's current axis position so the slider becomes
+            # navigable by *content* rather than just by t / s number.
+            # Updated on every slider tick (cheap text update only —
+            # no chart rerender) plus inside ``_refresh`` for state
+            # changes from elsewhere.
+            event_at_cursor = ui.label("\u2014").classes(
+                "text-xs text-slate-500 italic basis-full pl-1 pt-1 "
+                "truncate"
+            )
+            event_at_cursor.tooltip(
+                "Event at the current cursor (or nearest if none lands here)"
+            )
+
+        def _update_event_label():
+            ws = state.world_state
+            if ws is None or ws is None:
+                event_at_cursor.text = "\u2014"
+                return
+            try:
+                t = int(time_slider.value)
+            except (TypeError, ValueError):
+                return
+            axis = "syuzhet" if mode_toggle.value == "syuzhet" else "fabula"
+            event_at_cursor.text = _events_at(ws, t, axis=axis)
+
+        # ``input`` fires while the user drags so the label updates
+        # live. ``_update_event_label`` only mutates a label, so it's
+        # safe to wire to the high-frequency event without entering
+        # the snapshot/scoring path.
+        time_slider.on("update:model-value", lambda _e: _update_event_label())
 
         def _on_slider_change():
             if _suppress["slider"]:
@@ -1639,7 +1748,7 @@ def _build_affective_dashboard(state: AppState) -> None:
             with ui.tab_panels(data_tabs, value="events").classes("w-full"):
                 _sth_aff = subtab_help
                 with ui.tab_panel("events"):
-                    _sth_aff("causality.affective.events")
+                    _sth_aff("affective.events")
                     event_table = ui.table(
                         columns=[
                             {"name": "id", "label": "ID", "field": "id", "sortable": True},
@@ -1654,11 +1763,12 @@ def _build_affective_dashboard(state: AppState) -> None:
                         pagination={"rowsPerPage": 10},
                     ).props(_tprops).classes("w-full")
                 with ui.tab_panel("affect"):
-                    _sth_aff("causality.affective.affect")
+                    _sth_aff("affective.affect")
                     affect_table = ui.table(
                         columns=[
                             {"name": "metric", "label": "Metric", "field": "metric", "sortable": True},
-                            {"name": "score", "label": "Score", "field": "score", "sortable": True},
+                            {"name": "score", "label": "Score (raw)", "field": "score", "sortable": True},
+                            {"name": "normalized", "label": "Score (normalized)", "field": "normalized", "sortable": True},
                         ],
                         rows=[],
                     ).props(_tprops).classes("w-full")
@@ -1717,6 +1827,9 @@ def _build_affective_dashboard(state: AppState) -> None:
                         _suppress["slider"] = False
                 if time_label.text != label_text:
                     time_label.text = label_text
+                # Refresh the event-context line to match the
+                # programmatic cursor change (e.g. World tab scrub).
+                _update_event_label()
                 if cursor is not None:
                     try:
                         if is_syuzhet:
@@ -1730,22 +1843,78 @@ def _build_affective_dashboard(state: AppState) -> None:
             else:
                 slider_row.set_visibility(False)
 
+            # The time-series and event-timeline charts must show the
+            # *whole* story regardless of where the scrub cursor sits —
+            # otherwise dragging the slider visually deletes events.
+            # Keep a reference to the full, untrimmed world for those
+            # views; ``ws`` (possibly snapshotted above) is still used
+            # for the gauges and the raw-event table.
+            full_ws = state.world_state
+
             # Engine-grade affects (suspense, surprise, dramatic_irony,
             # canonical mystery) need a focus entity set + syuzhet
-            # anchor. Use the top-N entities by event-degree to bound
-            # cost on large worlds; default the anchor to the snapshot's
-            # max syuzhet so suspense/surprise reflect the unrevealed
-            # tail rather than collapsing to zero.
-            entity_ids = _top_entity_ids_by_event_degree(ws, limit=20)
+            # anchor. Pick entities from the *full* world so the focus
+            # set is stable across cursor scrubs (otherwise early-time
+            # snapshots can drop the protagonist). Default the anchor
+            # to the snapshot's max syuzhet so suspense/surprise reflect
+            # the unrevealed tail rather than collapsing to zero.
+            entity_ids = _top_entity_ids_by_event_degree(
+                full_ws or ws, limit=20,
+            )
             if is_syuzhet and state.syuzhet_cursor is not None:
                 anchor = state.syuzhet_cursor
             else:
                 anchor = max(
                     (e.syuzhet_index for e in ws.events), default=None
                 )
+            # Run the gauge scorer with ``ws_for_engine=full_ws`` so the
+            # structural affects (suspense / mystery / dramatic irony /
+            # surprise) can see the unrevealed tail — matching how the
+            # time-series sampler scores each point.
             scores = compute_affective_scores(
-                ws, entity_ids=entity_ids, syuzhet_anchor=anchor,
+                ws,
+                entity_ids=entity_ids,
+                syuzhet_anchor=anchor,
+                ws_for_engine=full_ws,
+                surprise_local=True,
             )
+
+            # Per-metric normalisation for the gauges. Raw affect scores
+            # all live in [0, 1] in principle, but each metric occupies
+            # a very different empirical band on any given world (e.g.
+            # ``mystery`` and ``causal_density`` routinely sit two
+            # decades apart). That makes the gauges visually
+            # incomparable — a "moderate" tension band looks identical
+            # to a "very high" mystery band even though one occupies the
+            # top of its own range and the other sits mid-range. Rescale
+            # each metric to [0, 1] of *its own* observed range across
+            # the full timeseries so the gauges show position-within-
+            # range and become directly comparable. Cached samples are
+            # cheap thanks to ``_AFFECT_TIMESERIES_CACHE``.
+            try:
+                if is_syuzhet:
+                    _times, _series = affective_timeseries_syuzhet(
+                        full_ws or ws, entity_ids=entity_ids,
+                    )
+                else:
+                    _times, _series = affective_timeseries(
+                        full_ws or ws, entity_ids=entity_ids,
+                    )
+            except Exception:
+                logger.exception("Affective timeseries sampling failed")
+                _series = {}
+            gauge_scores: dict[str, float] = {}
+            for k, v in scores.items():
+                values = _series.get(k) or []
+                if values:
+                    lo = min(values + [v])
+                    hi = max(values + [v])
+                    span = hi - lo
+                    gauge_scores[k] = (
+                        (v - lo) / span if span > 1e-9 else 0.5
+                    )
+                else:
+                    gauge_scores[k] = float(v)
 
             # Refresh gauge-select options so they mirror the currently
             # available metrics; preserve the user's selection if still valid.
@@ -1759,9 +1928,15 @@ def _build_affective_dashboard(state: AppState) -> None:
 
             with gauge_container:
                 if scores:
-                    ui.label("Narrative Affect Scores").classes(
-                        "text-lg font-semibold text-slate-800 mb-2"
+                    ui.label("Narrative Affect Scores (normalized)").classes(
+                        "text-lg font-semibold text-slate-800 mb-1"
                     )
+                    ui.label(
+                        "Each gauge shows the current value rescaled to "
+                        "its own observed range across the timeline so "
+                        "metrics with different intrinsic magnitudes are "
+                        "directly comparable."
+                    ).classes("text-xs text-slate-500 mb-2")
                     sel = gauge_select.value
                     sel = None if sel in (None, "", "__all__") else sel
                     # Per-gauge height — the gauges are now laid out in
@@ -1770,7 +1945,7 @@ def _build_affective_dashboard(state: AppState) -> None:
                     height_px = "200px" if sel else "180px"
                     with ui.element("div").classes("w-full"):
                         with_expand(
-                            lambda h, s=scores, g=graded_gauges.value, sel=sel, hp=height_px: (
+                            lambda h, s=gauge_scores, g=graded_gauges.value, sel=sel, hp=height_px: (
                                 render_emotional_gauges_graded(
                                     s, height=hp, selected=sel
                                 ) if g else render_emotional_gauges(
@@ -1779,7 +1954,7 @@ def _build_affective_dashboard(state: AppState) -> None:
                             ),
                             title=(
                                 f"Affect gauge \u2014 {sel.replace('_', ' ')}"
-                                if sel else "Narrative affect scores"
+                                if sel else "Narrative affect scores (normalized)"
                             ),
                         )
                 else:
@@ -1803,7 +1978,7 @@ def _build_affective_dashboard(state: AppState) -> None:
                 )
 
                 ts_opts = affective_timeseries_options(
-                    ws,
+                    full_ws or ws,
                     fabula_cursor=fc,
                     syuzhet_cursor=sc_for_chart,
                     axis=axis,
@@ -1827,7 +2002,7 @@ def _build_affective_dashboard(state: AppState) -> None:
 
                 sc = state.syuzhet_cursor if is_syuzhet else None
                 et_opts = event_timeline_options(
-                    ws, fabula_cursor=fc, syuzhet_cursor=sc,
+                    full_ws or ws, fabula_cursor=fc, syuzhet_cursor=sc,
                 )
                 _et_snapshot["opts"] = et_opts
                 _et_snapshot["title"] = f"Event Timeline ({axis_label})"
@@ -1839,10 +2014,16 @@ def _build_affective_dashboard(state: AppState) -> None:
                     event_timeline_chart.set_visibility(True)
                     update_chart_options(event_timeline_chart, et_opts)
 
-            # Refresh data tables to mirror the charts above.
-            event_table.rows = ws_to_event_rows(ws)
+            # Refresh data tables to mirror the charts above. The
+            # event table shows the full story (matches the Event
+            # Timeline chart); the affect table mirrors the gauges.
+            event_table.rows = ws_to_event_rows(full_ws or ws)
             affect_table.rows = [
-                {"metric": k, "score": round(v, 3)}
+                {
+                    "metric": k,
+                    "score": round(v, 3),
+                    "normalized": round(gauge_scores.get(k, v), 3),
+                }
                 for k, v in scores.items()
             ]
 
@@ -1884,7 +2065,7 @@ def _build_affective_dashboard(state: AppState) -> None:
         # (snapshot + engine scoring + timeseries resampling). Skip
         # entirely when off-screen, and route refreshes through a
         # named task slot so rapid drags collapse to one render.
-        _PANEL_PATH = "causality.affective"
+        _PANEL_PATH = "affective"
         _PANEL_ID = "affective_dashboard"
         _dirty = {"on": True}
 

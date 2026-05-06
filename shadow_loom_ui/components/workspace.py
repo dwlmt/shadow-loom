@@ -41,6 +41,7 @@ _TABS = [
     ("explorer", "travel_explore", "Explorer"),
     ("world", "hub", "World"),
     ("causality", "account_tree", "Causality"),
+    ("affective", "favorite", "Affective"),
     ("reasoning", "psychology", "Reasoning"),
     ("audit", "fact_check", "Audit"),
     ("research", "menu_book", "Research"),
@@ -67,8 +68,13 @@ _TAB_HELP: dict[str, str] = {
     ),
     "causality": (
         "Causality \u2014 visualise the typed causal/social/spatial/information "
-        "graph and the affective-dashboard heatmaps (suspense, irony, "
-        "surprise) over the syuzhet."
+        "graph, build interventions and counterfactuals in the what-if "
+        "workbench, and assemble emotional directives."
+    ),
+    "affective": (
+        "Affective \u2014 narrative-affect dashboard: suspense, surprise, "
+        "dramatic irony, mystery, and per-emotion gauges over the syuzhet "
+        "or fabula timeline."
     ),
     "reasoning": (
         "Reasoning \u2014 run natural-language queries against the world model "
@@ -312,6 +318,12 @@ def build_workspace(state: AppState, project_id: int) -> None:
                     with ui.tab_panel("causality").classes("q-pa-none h-full"):
                         from shadow_loom_ui.components.causality_tab import build_causality_tab
                         build_causality_tab(state)
+
+                    with ui.tab_panel("affective").classes("q-pa-none h-full"):
+                        from shadow_loom_ui.components.affective_tab import (
+                            build_affective_tab,
+                        )
+                        build_affective_tab(state)
 
                     with ui.tab_panel("reasoning").classes("q-pa-none h-full"):
                         from shadow_loom_ui.components.reasoning_tab import (

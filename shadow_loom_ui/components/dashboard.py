@@ -175,9 +175,17 @@ def _render_project_cards(state: AppState, container: ui.row) -> None:
             ):
                 with ui.row().classes("items-center gap-2 w-full no-wrap"):
                     feather("book-open", color="#F26B5E")
-                    ui.label(p["name"]).classes(
-                        "text-base font-semibold text-slate-800 ellipsis flex-grow"
+                    # ``ellipsis`` (Quasar) is single-line truncation;
+                    # without ``min-w-0`` the label refuses to shrink
+                    # inside its flex parent and pushes the actions
+                    # menu (and sometimes the card border) off-screen
+                    # on long titles. ``flex-grow min-w-0`` is the
+                    # standard fix for "flex child won't truncate".
+                    title_label = ui.label(p["name"]).classes(
+                        "text-base font-semibold text-slate-800 "
+                        "ellipsis flex-grow min-w-0"
                     )
+                    title_label.tooltip(p["name"])
                     # Owner-only project actions menu (delete with confirm)
                     if user_id is not None and p.get("owner_id") == user_id:
                         with ui.button(icon="more_vert").props(
@@ -191,9 +199,19 @@ def _render_project_cards(state: AppState, container: ui.row) -> None:
                                     ),
                                 ).classes("text-negative")
                 if p.get("description"):
-                    ui.label(p["description"][:80]).classes(
-                        "text-xs text-slate-500 ellipsis mt-1"
+                    # Two-line clamp so descriptions wrap but still
+                    # bound the card height. Drop the [:80] slice now
+                    # that the CSS handles overflow.
+                    desc_label = ui.label(p["description"]).classes(
+                        "text-xs text-slate-500 mt-1 w-full"
+                    ).style(
+                        "display: -webkit-box; "
+                        "-webkit-line-clamp: 2; "
+                        "-webkit-box-orient: vertical; "
+                        "overflow: hidden; "
+                        "text-overflow: ellipsis;"
                     )
+                    desc_label.tooltip(p["description"])
                 with ui.row().classes("w-full justify-between mt-3"):
                     ui.label(f"v{p.get('version_count', 0)}").classes(
                         "text-xs text-slate-400"

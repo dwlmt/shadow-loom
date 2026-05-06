@@ -190,7 +190,7 @@ _HELP: Dict[str, Tuple[str, str]] = {
             " what a directive looks like before it hits the LLM."
         ),
     ),
-    "causality.affective": (
+    "affective": (
         "Affective Dashboard — heatmaps over syuzhet",
         (
             "Per-syuzhet-index heatmaps of *suspense*, *surprise*,"
@@ -272,7 +272,7 @@ _HELP: Dict[str, Tuple[str, str]] = {
     ),
 
     # ---------------- Causality > Affective raw-data --------------
-    "causality.affective.events": (
+    "affective.events": (
         "Events — raw rows for the affective view",
         (
             "Tabular dump of every event scored by the affective"
@@ -280,7 +280,7 @@ _HELP: Dict[str, Tuple[str, str]] = {
             " type, actors, targets, description."
         ),
     ),
-    "causality.affective.affect": (
+    "affective.affect": (
         "Affect — per-metric scores",
         (
             "Aggregated affective scores for the current branch:"
