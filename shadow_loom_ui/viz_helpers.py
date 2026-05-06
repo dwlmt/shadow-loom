@@ -2674,12 +2674,20 @@ def _engine_structural_scores(
     ws: WorldStateV1,
     entity_ids: list[str],
     syuzhet_anchor: int | None,
+    *,
+    surprise_local: bool = False,
 ) -> dict[str, float]:
     """Run :class:`DirectiveAssembly`'s four structural affect scorers.
 
     Returns a dict keyed by ``mystery``, ``dramatic_irony``,
     ``suspense``, ``surprise``. Failures are swallowed (logged at
     debug) so a single broken metric never wipes the whole gauge row.
+
+    ``surprise_local=True`` switches the surprise scorer to
+    Itti & Baldi Bayesian Surprise (per-step belief-update
+    magnitude) — used by the timeseries view so the chart shows
+    spike-and-decay around revelations rather than the
+    monotonically declining cumulative form.
     """
     out: dict[str, float] = {}
     if not entity_ids or not ws.events:
@@ -2700,10 +2708,12 @@ def _engine_structural_scores(
         logger.debug("DirectiveAssembler init failed", exc_info=True)
         return out
     metric_calls = (
-        ("mystery", assembler.compute_mystery_score),
-        ("dramatic_irony", assembler.compute_dramatic_irony_score),
-        ("suspense", assembler.compute_suspense_score),
-        ("surprise", assembler.compute_surprise_score),
+        ("mystery", lambda eids, sa: assembler.compute_mystery_score(eids, sa)),
+        ("dramatic_irony", lambda eids, sa: assembler.compute_dramatic_irony_score(eids, sa)),
+        ("suspense", lambda eids, sa: assembler.compute_suspense_score(eids, sa)),
+        ("surprise", lambda eids, sa: assembler.compute_surprise_score(
+            eids, sa, local=surprise_local,
+        )),
     )
     for name, fn in metric_calls:
         try:
@@ -2718,6 +2728,8 @@ def compute_affective_scores(
     *,
     entity_ids: list[str] | None = None,
     syuzhet_anchor: int | None = None,
+    ws_for_engine: WorldStateV1 | None = None,
+    surprise_local: bool = False,
 ) -> dict[str, float]:
     """Cached wrapper around :func:`_compute_affective_scores_uncached`.
 
@@ -2725,14 +2737,28 @@ def compute_affective_scores(
     snapshot; recomputing the engine scorers every time froze the UI.
     Cached on ``(id(ws), revision, entity_ids, syuzhet_anchor)`` so a
     return visit to a previously-seen snapshot is O(1).
+
+    ``ws_for_engine`` is an optional override for the structural-affect
+    scorers (mystery, dramatic_irony, suspense, surprise). The fabula
+    timeseries builder passes a fabula-trimmed snapshot as ``ws`` (so
+    the heuristic ``conflict``/``danger``/``narrative_tension`` layers
+    see the right time-sliced relationship state) but needs the engine
+    layer to operate on the *full* world so "unrevealed", "hidden
+    causal ancestors", and "future trait state" sets stay non-empty.
     """
     eids_key = tuple(entity_ids) if entity_ids else ()
-    cache_key = (id(ws), _SNAPSHOT_REVISION, eids_key, syuzhet_anchor)
+    engine_id = id(ws_for_engine) if ws_for_engine is not None else id(ws)
+    cache_key = (id(ws), engine_id, _SNAPSHOT_REVISION, eids_key,
+                 syuzhet_anchor, surprise_local)
     cached = _AFFECT_SCORE_CACHE.get(cache_key)
     if cached is not None:
         return dict(cached)
     result = _compute_affective_scores_uncached(
-        ws, entity_ids=entity_ids, syuzhet_anchor=syuzhet_anchor,
+        ws,
+        entity_ids=entity_ids,
+        syuzhet_anchor=syuzhet_anchor,
+        ws_for_engine=ws_for_engine,
+        surprise_local=surprise_local,
     )
     if len(_AFFECT_SCORE_CACHE) >= _AFFECT_CACHE_MAX:
         _AFFECT_SCORE_CACHE.pop(next(iter(_AFFECT_SCORE_CACHE)))
@@ -2745,6 +2771,8 @@ def _compute_affective_scores_uncached(
     *,
     entity_ids: list[str] | None = None,
     syuzhet_anchor: int | None = None,
+    ws_for_engine: WorldStateV1 | None = None,
+    surprise_local: bool = False,
 ) -> dict[str, float]:
     """Compute basic affective/narrative scores from a world snapshot.
 
@@ -2775,8 +2803,12 @@ def _compute_affective_scores_uncached(
         events with destructive types.
       * **conflict** — fraction of relationships with affinity < 0.
       * **danger** — mean fear across active relationships.
-      * **causal_density** — observed edges per event vs. an empirical
-        max of ``3``; values above ``3`` clamp to 1.0.
+      * **causal_density** — observed edges per event, mapped through
+        a soft saturation ``d / (d + K)`` with ``K = 3``. Replaces an
+        earlier ``min(1, d / 3)`` clamp that pinned every dense world
+        (ACOTAR runs at ~5 edges/event) flat at 1.0 across the entire
+        timeline. The saturation form keeps the metric in ``[0, 1]``
+        while preserving variation above the K-threshold.
     """
     scores: dict[str, float] = {}
     if not ws.events:
@@ -2847,17 +2879,37 @@ def _compute_affective_scores_uncached(
         )
         scores["narrative_tension"] = min(1.0, max(0.0, tension))
 
-    # Causal density: edges per event, empirical max of 3 edges/event.
+    # Causal density: edges per event, soft-saturating via
+    # ``d / (d + K)`` rather than a hard ``min(1, d/3)`` clamp. The
+    # clamp pinned every dense world (ACOTAR sits at 4-6 edges/event
+    # across all snapshots) flat at 1.0, hiding genuine fabula-time
+    # variation in the chart. ``K = 1.5`` widens the dynamic range
+    # (sparse passages drop to ~0.25, mid worlds sit at 0.55-0.75,
+    # dense ones reach ~0.85+) so the chart shows graded contrast
+    # rather than the previous compressed 0.4-0.9 band that K=3 gave.
     if ws.events:
         density = len(ws.causal_topology) / max(1, len(ws.events))
-        scores["causal_density"] = min(1.0, density / 3.0)
+        scores["causal_density"] = density / (density + 1.5)
 
     # Engine-grade structural affects — only computed when the caller
     # supplies a focus set (typically the world's top-N entities). The
     # ``mystery`` key from DirectiveAssembly takes precedence over the
     # heuristic above because it is the one the directive-assembly
     # optimiser actually targets.
+    #
+    # Theory note: all four structural affects (mystery / dramatic_irony
+    # / suspense / surprise) are defined as set operations between the
+    # *full* event graph and a syuzhet anchor (Sternberg 1978; Brewer &
+    # Lichtenstein 1982; Cheong & Young 2015; Itti & Baldi 2009). When
+    # the caller hands us a fabula-trimmed snapshot (``ws``), the
+    # "unrevealed", "hidden ancestors", and "future trait" sets the
+    # scorers depend on are all empty by construction — collapsing
+    # suspense/surprise to 0 and pinning mystery near 1.0 across the
+    # whole timeline. ``ws_for_engine`` lets the timeseries builder
+    # hand us the full ws for the engine layer while the heuristics
+    # above still see the time-sliced relationship state.
     if entity_ids:
+        engine_ws = ws_for_engine if ws_for_engine is not None else ws
         if syuzhet_anchor is None:
             # Default: anchor *before* the first reveal so the entire
             # event list counts as the unrevealed tail. Anchoring at
@@ -2869,10 +2921,13 @@ def _compute_affective_scores_uncached(
             # ``min - 1`` keeps the reader at the narrative threshold
             # so the structural affects retain their full contrast.
             min_s = min(
-                (e.syuzhet_index for e in ws.events), default=None
+                (e.syuzhet_index for e in engine_ws.events), default=None
             )
             syuzhet_anchor = (min_s - 1) if min_s is not None else None
-        engine = _engine_structural_scores(ws, entity_ids, syuzhet_anchor)
+        engine = _engine_structural_scores(
+            engine_ws, entity_ids, syuzhet_anchor,
+            surprise_local=surprise_local,
+        )
         scores.update(engine)
     return scores
 
@@ -2919,21 +2974,23 @@ def affective_timeseries(
     series: dict[str, list[float]] = {}
     for i, t in enumerate(times):
         snap = snapshot_world_at(ws, t)
-        # Anchor the reader to "everything that has happened in fabula
-        # time so far". Without this the cached default in
-        # ``_compute_affective_scores_uncached`` falls back to
-        # ``min_syuzhet - 1``, which empties the revealed set on a
-        # fabula-trimmed snapshot — pinning ``dramatic_irony`` flat at
-        # 0.0 (early-out on empty revealed set) and ``mystery`` at 1.0
-        # (every causal ancestor counts as hidden). Mapping fabula
-        # progress onto the latest syuzhet index in the trimmed
-        # snapshot keeps the reader's knowledge in step with the
-        # fabula cursor and restores the rising/falling shape.
+        # Reader's syuzhet position at fabula time t = the latest syuzhet
+        # index among events that have already happened in story-time.
+        # The engine layer (suspense / mystery / dramatic_irony /
+        # surprise) is run against the full ``ws`` rather than ``snap``
+        # so its set-theoretic operands (``unrevealed``, ``hidden
+        # ancestors``, ``future trait state``) are non-empty — see the
+        # block in ``_compute_affective_scores_uncached`` that consumes
+        # ``ws_for_engine`` for the theory rationale.
         anchor = max(
             (e.syuzhet_index for e in snap.events), default=None,
         )
         scores = compute_affective_scores(
-            snap, entity_ids=entity_ids, syuzhet_anchor=anchor,
+            snap,
+            entity_ids=entity_ids,
+            syuzhet_anchor=anchor,
+            ws_for_engine=ws,
+            surprise_local=True,
         )
         # Back-pad any newly-discovered metric so its column lines up
         # with previous time samples (missing = 0.0).
@@ -2963,11 +3020,21 @@ def affective_timeseries_syuzhet(
     Mirrors :func:`affective_timeseries` but anchors against
     ``syuzhet_index`` so the resulting curves show how mystery,
     suspense, dramatic irony and surprise rise and fall *as the reader
-    progresses through the text*. Internally each sample uses the full
-    ``ws`` and a per-sample ``syuzhet_anchor`` — the engine scorers
-    walk ``_revealed_event_ids(syuzhet_anchor)`` themselves, so we must
-    not pre-trim with ``snapshot_world_at_syuzhet`` (which would also
-    hide the unrevealed tail that suspense depends on).
+    progresses through the text*.
+
+    Each sample drives two views of the world simultaneously:
+
+    * **Heuristic layer** (``conflict``, ``danger``,
+      ``narrative_tension``, ``causal_density``) sees a
+      syuzhet-revealed snapshot — events with ``syuzhet_index <= s``
+      and the social/causal topology trimmed to the corresponding
+      fabula horizon. Without this trim every heuristic was flat
+      across the entire reader axis (the scorers don't consult
+      ``syuzhet_anchor`` themselves; they read final-frame state).
+    * **Engine layer** (``mystery``, ``dramatic_irony``, ``suspense``,
+      ``surprise``) sees the full ``ws`` via ``ws_for_engine`` and
+      partitions revealed/unrevealed itself through ``syuzhet_anchor``.
+      Pre-trimming would hide the unrevealed tail suspense depends on.
 
     Cached on the same key shape as :func:`affective_timeseries`.
     """
@@ -2993,8 +3060,30 @@ def affective_timeseries_syuzhet(
 
     series: dict[str, list[float]] = {}
     for i, s in enumerate(indices):
+        # Map the syuzhet anchor onto its corresponding fabula horizon:
+        # the latest fabula_time among events the reader has now seen.
+        # Used to time-slice social/causal topology so the heuristic
+        # layer reflects only revealed-by-now state.
+        revealed_events = [
+            e for e in ws.events if e.syuzhet_index <= s
+        ]
+        if revealed_events:
+            fabula_horizon = max(
+                e.fabula_time for e in revealed_events
+                if e.fabula_time is not None
+            ) if any(e.fabula_time is not None for e in revealed_events) else None
+            if fabula_horizon is not None:
+                heuristic_ws = snapshot_world_at(ws, fabula_horizon)
+            else:
+                heuristic_ws = snapshot_world_at_syuzhet(ws, s)
+        else:
+            heuristic_ws = snapshot_world_at_syuzhet(ws, s)
         scores = compute_affective_scores(
-            ws, entity_ids=entity_ids, syuzhet_anchor=s,
+            heuristic_ws,
+            entity_ids=entity_ids,
+            syuzhet_anchor=s,
+            ws_for_engine=ws,
+            surprise_local=True,
         )
         for k in scores:
             if k not in series:

@@ -487,6 +487,185 @@ to the validator.
 
 ---
 
+## D16. Channels and utterances are first-class — beliefs carry provenance
+
+**Decision.** Speech, broadcasts, letters, eavesdropped conversations and
+internal monologue are modelled as `EventNode`s with
+`event_type ∈ {utterance, …}`, `content`, `target_ids`, `truth_value` and
+`via_channel_id`, plus a `Channel` model with
+`(participants, intelligibility, persistence, secrecy, observed_by)`.
+Beliefs that arise from observation record **provenance** as
+`Belief.acquired_via_event_id` and `acquired_via_channel_id`, and the
+`compute_dramatic_irony_score` knows-set treats addressed/spoken-to
+characters and beliefs-with-valid-provenance as having closed the gap.
+
+**Alternative.** Treat dialogue as opaque prose only the renderer sees,
+and infer character knowledge from a flat `participants` list on the
+event.
+
+**Tradeoff.** The schema gains two model classes and the extractor must
+decide *who heard what through which medium*. In return:
+
+* Deception is computable: a low-`truth_value` utterance on a
+  high-`intelligibility` channel still produces a belief — just one
+  whose ground-truth-mismatch the auditor flags.
+* Eavesdropping and miscommunication are graph operations, not narrative
+  hand-waving — `Channel.intelligibility=0.4` formally licenses the
+  *partial* belief uptake that drives Tinker-Tailor-Soldier-Spy-style
+  conspiracies and the Macbeth dagger soliloquy.
+* The dramatic-irony scorer can credit a character with knowing an
+  event the moment a revealed utterance addresses them, producing the
+  rise-peak-fall arc Sternberg's theory predicts (see
+  [academic-foundations.md §3.4](academic-foundations.md#34-dramatic-irony-as-epistemic-asymmetry)).
+
+**Invariant.** Every `Belief` whose `acquired_via_event_id` is set must
+reference an `EventNode` whose `target_ids`/`participants`/channel
+membership actually places the believer in the audience; the validator
+rejects orphan provenance.
+
+---
+
+## D17. Two affect layers: engine-grade vs heuristic
+
+**Decision.** Affective scoring is split across two layers with
+different cost/precision tradeoffs:
+
+* **Engine-grade** (`directive_assembly.py::DirectiveAssembler`):
+  `mystery`, `dramatic_irony`, `suspense`, `surprise`. These walk the
+  full causal graph, consult the syuzhet anchor's revealed/unrevealed
+  partition, and reconstruct entity state via `reconstruct_entity_at`.
+  They are the scorers the directive-optimiser actually targets, and
+  they are the ones with formal definitions in
+  [academic-foundations.md §§3.1–3.4](academic-foundations.md#3-computational-models-of-suspense-surprise-and-curiosity).
+* **Heuristic** (`shadow_loom_ui/viz_helpers.py::compute_affective_scores`):
+  `conflict`, `danger`, `narrative_tension`, `causal_density`. These
+  read snapshot-local relationship state and event ledger statistics,
+  cost ~milliseconds, and feed every gauge / slider / ego-graph the UI
+  shows. They are intentionally cheap and robust on sparse data — at
+  the cost of being *correlates* of the engine quantities rather than
+  drop-in substitutes.
+
+**Alternative.** Single affect layer everywhere — either pay the
+engine cost for every UI tick, or run heuristics only and lose the
+optimiser's ability to target named structural effects.
+
+**Tradeoff.** Two implementations means two code paths to keep aligned;
+the engine layer leaks complexity (focus sets, anchor pairs,
+sandbox-vs-truth) into any caller that wants a "real" score. In
+return the UI stays interactive at 60 fps even on 200-event worlds
+while the optimiser gets the precise, theory-grounded signal it
+needs to choose between candidate interventions.
+
+**Invariant.** The engine scorers are the source of truth for any
+artefact persisted to the DB (briefs, audit reports, exports). The
+heuristic scorers are display-only and never feed back into a
+write.
+
+---
+
+## D18. Surprise has two formally distinct modes
+
+**Decision.** `compute_surprise_score(..., local: bool = False)` exposes
+two surprise quantities corresponding to the two distinct quantities
+[Itti & Baldi (2009)](https://doi.org/10.1016/j.visres.2008.09.007)
+distinguish:
+
+* **Cumulative** (`local=False`, the default consumed by the
+  directive optimiser): $D_{\rm KL}(p \,\|\, q_s)$ between the
+  reader's accumulated prior $q_s$ and the truth $p$. Monotone
+  non-increasing on the syuzhet axis as evidence accumulates — the
+  loss-function semantics the optimiser needs.
+* **Local** (`local=True`, used by the time-series chart and any
+  per-step "what happened *here*" view): $D_{\rm KL}(q_s \,\|\, q_{s-1})$,
+  the canonical Itti-Baldi *Bayesian Surprise* (KL between the
+  reader's belief immediately after and immediately before the
+  current syuzhet anchor's revelations). Formally identical to the
+  Storck/Hochreiter/Schmidhuber 1995 RDIA formulation acknowledged on
+  the iLab page. Quiet stretches contribute ~0; revelations spike.
+
+**Alternative.** Pick one mode and live with it. (Earlier code did
+exactly that — the cumulative form alone, with `surprise →
+catching-up gap` semantics — and the time-series chart consequently
+displayed monotone declines that contradicted the spike-and-decay
+shape the underlying narrative theory predicts.)
+
+**Tradeoff.** Two formulas with different shapes — easy to misread
+which one is "the" surprise score. Mitigated by always plumbing the
+flag through cache keys and by labelling the chart explicitly.
+
+**Invariant.** The directive optimiser never consumes local-mode
+surprise (would invert the gradient direction); time-series builders
+never consume cumulative-mode surprise (would hide the spikes the
+chart exists to surface). See
+[academic-foundations.md §3.3](academic-foundations.md#33-surprise-as-kl-divergence)
+for the full derivation.
+
+---
+
+## D19. Bayesian-style geometric prior pull, not additive
+
+**Decision.** When updating a per-trait Bernoulli prior with a
+revealed causal edge of weight $w$, the surprise scorer applies the
+*geometric* pull
+$q \mathrel{+}= w\,(\mathrm{actual} - q)$
+clipped to $[\varepsilon, 1-\varepsilon]$, rather than the additive
+$q \mathrel{+}= w\,(\mathrm{actual} - q_0)$ that uses the original
+base prior.
+
+**Alternative.** The additive form is what a naive linear interpolation
+suggests; it is also what a "weighted majority" reading of the
+evidence would imply.
+
+**Tradeoff.** The geometric form costs an extra subtraction per edge.
+In return it *asymptotes on* the truth: each new piece of evidence
+moves $q$ a fraction of the remaining gap. The additive form
+**summits past** the actual value once $\sum w > 1$, producing a
+non-monotonic surprise curve that contradicts the
+"more-revealed → less-surprise" semantics the cumulative form (D18)
+is built around. This was a silent bug in an earlier revision; the
+fix is recorded in
+[academic-foundations.md §3.3](academic-foundations.md#33-surprise-as-kl-divergence).
+
+**Invariant.** $q$ is monotone in the direction of the truth across a
+causally-consistent revelation sequence, and never crosses
+$\mathrm{actual}$.
+
+---
+
+## D20. The directive optimiser owns affordance/inertia/propagation pruning, not the renderer
+
+**Decision.** `DirectiveAssembler.evaluate_candidate_events()` forks
+the AMWN sandbox per candidate intervention, runs the causal physics,
+and **prunes** any candidate that violates inertia, affordance, or
+propagation constraints *before* the surviving candidate is wrapped
+in a `CreativeBrief` and handed to the renderer LLM. The renderer
+sees only constraints that have been mathematically guaranteed to
+satisfy the world's physics.
+
+**Alternative.** Let the renderer attempt every candidate as prose
+and rely on the auditor to reject implausible ones.
+
+**Tradeoff.** Forking sandboxes per candidate is the most expensive
+step of the pipeline (D6's AMWN cost multiplied by the candidate
+count). In return:
+
+* The renderer is never asked to dramatise an event the world
+  cannot actually produce — saving the much larger cost of a
+  failed render + audit cycle.
+* The brief is a *closed-form envelope*: every constraint in it
+  has a witness in the sandbox, so the auditor's role narrows to
+  "did the prose stay inside the envelope?" rather than "is the
+  envelope itself valid?".
+* Compositional safety: a candidate that satisfies the surface
+  affordance but propagates to a contradiction three causal hops
+  later is caught here, not in the prose.
+
+**Invariant.** Every `ConstraintBlock` in a `CreativeBrief` has a
+verified witness in at least one branch of the sandbox; the auditor
+never has to re-verify physics, only fidelity.
+
+---
+
 ## What we rejected
 
 | Rejected | Why |

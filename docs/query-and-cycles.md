@@ -422,9 +422,12 @@ Step 2:
             mystery        = hidden_ancestors / total_ancestors
             dramatic_irony = mean over focal entities of
                                  (revealed-but-unknown event mass)
-                                 / (total event mass + K)
+                                 / (revealed event mass + K)
             suspense       = balance × stakes        (Wilmot & Keller 2020)
             surprise       = mean per-trait (1 - exp(-KL(p || q)))
+                             (cumulative form for the optimiser;
+                              Itti-Baldi local form KL(q_s || q_{s-1})
+                              is used by the time-series chart)
             emotions       = mean closeness to per-effect trait targets
                              (positive + inverse indicators, shared
                               `_EFFECT_TRAITS` table)

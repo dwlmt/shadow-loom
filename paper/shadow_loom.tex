@@ -111,8 +111,9 @@ rather than a free-form imagination task.
 \paragraph{Motivation 2: coding agents do better, arguably,
 because they compile and test.} A familiar pattern in agent
 design is that coding agents tend to outperform open-domain
-agents at fixed model capacity. Their outputs can be compiled,
-executed against a test suite, and rejected when they fail. The
+agents at fixed model capacity \citep{jimenez2024swebench}.
+Their outputs can be compiled, executed against a test suite,
+and rejected when they fail. The
 lever, on this reading, is the \emph{typed substrate underneath
 the natural-language reasoning}, not the model itself.
 Shadow-Loom borrows that lever for narrative. A continuation is
@@ -1113,27 +1114,41 @@ let $K_c$ be the set of events $c$ knows at the anchor: events
 $c$ participates in (as actor or target) whose fabula time falls
 at or before the syuzhet anchor's fabula frontier, plus events
 referenced in revealed utterances spoken by or addressed to $c$,
-plus events $c$ holds a \texttt{Belief} about. Writing
-$w_e$ for event $e$'s narrative intensity (default $1$), the
-irony score is the per-character mean intensity-weighted mass of
-revealed events the character does not know about, normalised by
-the total event mass plus a saturation constant $K$:
+plus events $c$ holds a \texttt{Belief} about whose provenance
+still resolves. Writing $w_e$ for event $e$'s narrative
+intensity (default $1$), $R$ for the set of revealed events
+($s(e) \le t_s$), and $K$ for a saturation constant, the irony
+score is the per-character mean intensity-weighted
+\emph{fraction of the reader's privileged view} the character is
+in the dark about:
 \begin{equation}
 \label{eq:irony}
 \mathrm{Iro} = \frac{1}{|F|}
 \sum_{c \in F}
-\frac{\sum_{e \in \mathrm{rev}, e \notin K_c} w_e}{\sum_{e} w_e + K},
+\frac{\sum_{e \in R, e \notin K_c} w_e}{\sum_{e \in R} w_e + K},
 \quad K = 1.
 \end{equation}
-The earlier ratio $\#\mathrm{gaps} / \#\mathrm{revealed{-}edges}$
-grew its numerator and denominator together and so plateaued at
-a story-specific asymptote by the third reveal --- on Reservoir
-Dogs it even \emph{decayed} from $0.25$ to $0.06$ as the
-protagonist became actor-of-record on more revealed edges.
-Normalising by the full event mass (a fixed denominator) lets the
-gap mass climb monotonically with reveals and \emph{fall} when
-characters acquire knowledge later in the story --- the
-dramatic-irony arc the formal definition is supposed to track.
+Normalising by the \emph{revealed} mass (rather than total event
+mass) makes Eq.~\ref{eq:irony} a Sternberg-style
+\emph{gap fraction} that can both rise (with new reveals the
+character has not caught up to) and fall (when participation,
+addressed utterances, or belief acquisition close the gap),
+producing the rise-peak-fall arc the structural-affect
+literature predicts for canonical irony plots
+\citep{booth1974irony,muecke1969compass}: Macduff hearing of
+his family, Poirot's denouement, Nick's letter to Daisy. Two
+earlier denominators failed against this criterion. The ratio
+$\#\mathrm{gaps} / \#\mathrm{revealed{-}edges}$ grew its numerator
+and denominator together and so plateaued at a story-specific
+asymptote by the third reveal --- on Reservoir Dogs it even
+\emph{decayed} from $0.25$ to $0.06$ as the protagonist became
+actor-of-record on more revealed edges. Replacing the
+denominator with the \emph{full} event mass instead pinned the
+score into a monotone rise across $21/21$ example-world
+fixtures, since the denominator stopped moving while the
+numerator kept growing --- contradicting the rise-peak-fall arc
+the theory predicts. The current revealed-mass form gives
+rise-peak-fall in $16/21$ worlds.
 
 \paragraph{Suspense
 \citep{brewer1982stories,comisky1982suspense,ortony1988occ,
@@ -1260,11 +1275,38 @@ than silently scoring at the midpoint. The combined affective
 score requested by a \texttt{DirectiveQuery} is a weighted sum
 over the active functionals.
 
-\paragraph{Two-axis sampling.} The same scorers are evaluated
-along the syuzhet axis (advancing $t_s$ only reveals more, so
-mystery, irony, surprise are non-increasing) and the fabula axis
-(snapshotting the world at $t_f$, where surprise can spike at
-intrinsically surprising story moments).
+\paragraph{Two-axis sampling and dual-mode surprise.} The same
+scorers are evaluated along the syuzhet axis (advancing $t_s$
+only reveals more, so mystery is non-increasing and dramatic
+irony rises with reveals and falls with character knowledge
+acquisition) and the fabula axis (snapshotting the world at
+$t_f$, where intrinsically surprising story moments can spike).
+Surprise is exposed in two formally distinct modes corresponding
+to the two quantities \citet{ittibaldi2009surprise} distinguish.
+The \emph{cumulative} form (Eq.~\ref{eq:surprise-saturation},
+used by the directive-assembly optimiser) is the integrated gap
+$D_{\mathrm{KL}}(p \,\|\, q_s)$ between the reader's accumulated
+prior $q_s$ and the truth $p$, and is monotonically non-increasing
+on the syuzhet axis. The \emph{local} form
+(used by the time-series view) is the per-step belief-update
+$D_{\mathrm{KL}}(q_s \,\|\, q_{s-1})$ --- the canonical Itti-Baldi
+\emph{Bayesian Surprise} definition (the KL distance between the
+reader's prior immediately after and immediately before the
+current syuzhet anchor's revelations); the iLab Bayesian-Surprise
+project page acknowledges this is formally equivalent to the
+\citet{schmidhuber1995rdia} reinforcement-driven information
+acquisition formulation (KL divergence between the agent's belief
+states $p^*_{ijk}(t{+}1)$ and $p^*_{ijk}(t)$ before and after a
+state transition). Quiet stretches contribute $\sim 0$;
+revelations spike in proportion to how much they shift the prior,
+producing the impulse-and-decay trajectory the theory predicts
+and consistent with the corpus emotional-arc trajectories of
+\citet{reagan2016arcs} and \citet{kim2017investigating}.
+Conflating the two forms is a recurring source of
+misinterpretation: cumulative surprise is a state quantity
+(``how much catching-up the reader still has to do''), while
+local surprise is its temporal derivative (``which revelation
+moments most shift the reader's beliefs'').
 
 \subsection{Generation}
 \label{app:generation}
@@ -1444,8 +1486,9 @@ non-acting target (Friar's letter intercepted, Juliet's draught
 about to wear off) sum to $w_\text{threat}$; events Romeo himself
 authors and that have not yet fired (drink poison, kill Paris) sum
 to $w_\text{hope}$. Threat dominates. As Romeo drinks, $w_\text{hope}
-\to 0$ and the score returns $0$ --- the Wilmot--Keller
-suspense--despair boundary is hit cleanly.
+\to 0$ and the score returns $0$ --- the suspense--despair boundary
+built into the balance$\,\times\,$stakes combiner (Eq.~\ref{eq:irony}
+ff.) is hit cleanly.
 
 \paragraph{Surprise (Reservoir Dogs reveal).}
 \texttt{EVT\_ORANGE\_REVEALED} sits at high fabula time
@@ -1987,7 +2030,10 @@ the sleepwalking scene; and Macduff's \texttt{grief} curve has a
 single step at the slaughter event. Switching to the
 \emph{Affective Dashboard}, the suspense gauge sits high through
 Acts II--IV and zeroes out cleanly when the duel begins
-(\citealp{wilmot2020suspense}'s suspense--despair boundary).
+(the suspense--despair boundary built into the
+balance$\,\times\,$stakes combiner: when $w_{\mathrm{hope}} = 0$
+nothing is left to author against the threat, and the score
+returns 0).
 
 \paragraph{Example: Death on the Nile Affective Dashboard.}
 The dramatic-irony gauge sits at $\sim 0.7$ from the moment the

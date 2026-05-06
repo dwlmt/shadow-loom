@@ -957,48 +957,43 @@ class DirectiveAssembler:
 
         For each focal entity, counts *intensity-weighted* revealed
         events the focal entity does NOT know about, divided by the
-        **total** event mass plus a saturation constant ``K``:
+        **revealed** event mass plus a saturation constant ``K``:
 
         .. math::
 
            \\text{irony} =
               \\frac{1}{|F|} \\sum_{c \\in F}
               \\frac{\\sum_{e \\in \\text{revealed}, e \\notin K_c} w_e}
-                   {\\sum_{e \\in \\text{events}} w_e + K}
+                   {\\sum_{e \\in \\text{revealed}} w_e + K}
+
+        Sternberg (1978; 1992) anchors the structural-affect framing
+        in which dramatic irony is one of three reader-information
+        states (alongside curiosity / mystery and surprise); Booth
+        (1974), Muecke (1969) and Gerrig (1993) supply the specific
+        "audience knows what the character does not" definition this
+        scorer operationalises as the *gap* between what the reader
+        has been shown and what the focal character knows.
+        Normalising by ``revealed_mass`` (rather than the full
+        story's event mass) makes the ratio dimensionally a *fraction
+        of revealed material the character is in the dark about*. As
+        the character participates in further events their ``known``
+        set grows and the gap fraction *falls* — producing the
+        canonical rise-then-fall arc theory predicts (peak around the
+        midpoint when reader privilege is greatest, collapse near the
+        climax when characters learn the truth: Macduff hearing of
+        his family, Poirot's denouement, Nick's letter to Daisy).
+        The earlier ``total_mass + K`` denominator was constant in
+        the syuzhet anchor, so the numerator's monotone growth with
+        reveals pinned the curve into a monotone *rise*, contradicting
+        the rise-then-fall arc.
 
         where :math:`F` is the focal cast, :math:`K_c` is what
-        character :math:`c` knows, and :math:`w_e` is event ``e``'s
-        intensity (defaults to ``1.0``).
-
-        Why this shape rather than the previous "cumulative
-        revealed-only ratio":
-
-        * The previous form normalised by the revealed-edge count, so
-          numerator and denominator grew together and the score
-          asymptoted to a story-specific plateau by anchor ~3 (e.g.
-          Macbeth held 0.55–0.67 from anchor 3 onward; Reservoir
-          Dogs *decayed* from 0.25 to 0.06 because the protagonist
-          became actor-of-record on more revealed edges over time).
-          Normalising by the **full event mass** (a fixed denominator)
-          lets the curve rise smoothly with reveals and fall when
-          characters acquire knowledge later, producing the
-          dramatic-irony arc the gauge is supposed to depict.
-        * The previous form scoped irony to causal edges whose target
-          was the focal entity. On every example_world that is
-          structurally degenerate: the focal cast (top-N by event
-          degree) is precisely the cast that participates as actor or
-          target in nearly every cause→focal edge, so the "character
-          doesn't know the cause" condition rarely fires (Death on
-          the Nile collapsed to flat-zero under that scoping). Real
-          irony isn't about the focal entity's own incoming causal
-          arrows — it's about *what the reader has been shown that
-          the focal character has not seen*, regardless of whether
-          that information happens to causally target them.
-        * Character knowledge is bounded by the syuzhet anchor's
-          fabula frontier, so a character isn't credited with
-          knowing their own future arc from anchor 0. This is what
-          allows late catch-ups (Macduff learning about his family,
-          Poirot's denouement) to actually pull the curve down.
+        character :math:`c` knows (participation, addressed
+        utterances, beliefs with valid provenance), and :math:`w_e` is
+        event ``e``'s intensity (defaults to ``1.0``). Character
+        knowledge is bounded by the syuzhet anchor's fabula frontier,
+        so a character isn't credited with knowing their own future
+        arc from anchor 0.
 
         The legacy "addressee-exclusion auto-counts as irony" branch
         is dropped: it added ``1/1`` per excluded utterance regardless
@@ -1158,8 +1153,13 @@ class DirectiveAssembler:
                 for reid in revealed
                 if reid not in known
             )
+            # Normalise by *revealed* mass (Sternberg gap fraction)
+            # rather than total mass: the gauge then expresses "what
+            # share of the reader's privileged view the character is
+            # blind to", a quantity that naturally falls as the
+            # character catches up via late-story revelations.
             per_character_gaps.append(
-                gap_mass / (total_mass + self._IRONY_SURFACE_K)
+                gap_mass / (revealed_mass + self._IRONY_SURFACE_K)
             )
 
         if not per_character_gaps:
@@ -1169,8 +1169,8 @@ class DirectiveAssembler:
             sum(per_character_gaps) / len(per_character_gaps), 1.0
         )
         logger.debug(
-            "[DirectiveAssembly·DramaticIrony] revealed_mass=%.3f / "
-            "(total_mass=%.3f + K=%.2f), per-char gaps=%s, score=%.3f",
+            "[DirectiveAssembly·DramaticIrony] revealed_mass=%.3f "
+            "(of total=%.3f, K=%.2f), per-char gaps=%s, score=%.3f",
             revealed_mass, total_mass, self._IRONY_SURFACE_K,
             [round(g, 3) for g in per_character_gaps], score,
         )
@@ -1298,6 +1298,8 @@ class DirectiveAssembler:
         self,
         entity_ids: List[str],
         syuzhet_anchor: Optional[int] = None,
+        *,
+        local: bool = False,
     ) -> float:
         """Surprise: KL divergence between reader's prior and actual state.
 
@@ -1324,13 +1326,29 @@ class DirectiveAssembler:
           (post-simulation) or world state (truth).
 
         Returns a normalised KL divergence in [0, 1].
+
+        ``local=True`` switches to **Bayesian Surprise** in the sense
+        of Itti & Baldi (2009): the per-step belief update magnitude,
+        ``mean_traits[ D_KL( q_s || q_{s-1} ) ]`` — the KL distance
+        between the reader's prior immediately *after* and immediately
+        *before* the current syuzhet anchor's revelations (posterior
+        over prior, the canonical Itti-Baldi direction). This is
+        formally identical to the Storck/Hochreiter/Schmidhuber (1995)
+        RDIA formulation acknowledged on the iLab Bayesian-Surprise
+        page. It produces the spike-and-decay trajectory the theory
+        predicts (each revelation triggers a peak proportional to how
+        much it shifts the reader's expectation; quiet stretches sit
+        at zero). The timeseries view consumes this mode so the chart
+        depicts moments-of-revelation rather than the integrated
+        cumulative gap (which is what the cumulative form below
+        measures, and which the existing test contract / directive
+        optimiser expect as the default).
         """
         if syuzhet_anchor is None:
             return 0.0  # reader knows everything → no surprise
 
         EPS = 0.01
         _STRENGTH_W = {"weak": 0.25, "moderate": 0.5, "strong": 0.75}
-        revealed = self._revealed_event_ids(syuzhet_anchor)
 
         # Determine the final fabula_time so we can resolve every
         # entity's *final* trait values (the syuzhet-axis posterior).
@@ -1395,6 +1413,29 @@ class DirectiveAssembler:
                 return 0.5
             return total / count
 
+        def _prior_for(eid: str, trait_name: str, actual_val: float,
+                       anchor: int) -> float:
+            """Reader's prior for ``(eid, trait)`` at syuzhet ``anchor``."""
+            revealed_ids = self._revealed_event_ids(anchor)
+            base = _trait_marginal(trait_name, eid)
+            p = base
+            for ce in self.world_state.causal_topology:
+                if ce.target_id != eid:
+                    continue
+                if ce.source_id not in revealed_ids:
+                    continue
+                w = _STRENGTH_W.get(ce.evidence_strength, 0.5)
+                p += w * (actual_val - p)
+            return max(EPS, min(1 - EPS, p))
+
+        def _binary_kl(p: float, q: float) -> float:
+            p = max(EPS, min(1 - EPS, p))
+            q = max(EPS, min(1 - EPS, q))
+            return max(
+                0.0,
+                p * math.log(p / q) + (1 - p) * math.log((1 - p) / (1 - q)),
+            )
+
         total_kl = 0.0
         trait_count = 0
 
@@ -1418,34 +1459,28 @@ class DirectiveAssembler:
 
                 actual_val = actual_data["value"]
 
-                # Prior: start from the leave-one-out corpus marginal
-                # for this trait, then pull toward the actual value
-                # once for each revealed causal edge. Each edge applies
-                # a geometric update ``prior += w · (actual - prior)``
-                # so the prior asymptotes toward the truth as evidence
-                # accumulates but cannot overshoot.
-                base_prior = _trait_marginal(trait_name, eid)
-                prior_val = base_prior
-                for ce in self.world_state.causal_topology:
-                    if ce.target_id != eid:
-                        continue
-                    if ce.source_id not in revealed:
-                        continue
-                    w = _STRENGTH_W.get(ce.evidence_strength, 0.5)
-                    prior_val += w * (actual_val - prior_val)
-                # Explicit clipping so cumulative updates can't push the
-                # prior outside the open unit interval used by the KL.
-                prior_val = max(EPS, min(1 - EPS, prior_val))
+                if local:
+                    # Bayesian Surprise (Itti & Baldi 2009): magnitude
+                    # of the belief update at *this* step. Compare the
+                    # reader's prior immediately before vs immediately
+                    # after the current syuzhet anchor. Quiet stretches
+                    # → ~0; revelations → spikes proportional to how
+                    # much the new information shifts the prior.
+                    q_prev = _prior_for(eid, trait_name, actual_val,
+                                        syuzhet_anchor - 1)
+                    q_now = _prior_for(eid, trait_name, actual_val,
+                                       syuzhet_anchor)
+                    kl = _binary_kl(q_now, q_prev)
+                else:
+                    # Cumulative form: KL between the reader's accumulated
+                    # prior at this anchor and the true posterior. Falls
+                    # monotonically as evidence accumulates — which is
+                    # what the directive optimiser and existing test
+                    # contract expect.
+                    p = max(EPS, min(1 - EPS, actual_val))
+                    q = _prior_for(eid, trait_name, actual_val, syuzhet_anchor)
+                    kl = _binary_kl(p, q)
 
-                p = max(EPS, min(1 - EPS, actual_val))    # posterior
-                q = prior_val                             # prior
-
-                # Binary KL: D_KL(p || q)
-                kl = (
-                    p * math.log(p / q)
-                    + (1 - p) * math.log((1 - p) / (1 - q))
-                )
-                kl = max(0.0, kl)
                 # Per-trait soft saturation. The previous form averaged
                 # raw KL and divided by ``log(1/EPS) ≈ 4.6`` — the
                 # *theoretical* maximum when one side sits at EPS and
@@ -1472,8 +1507,8 @@ class DirectiveAssembler:
         score = min(total_kl / trait_count, 1.0)
 
         logger.debug(
-            "[DirectiveAssembly·Surprise] mean(1-exp(-kl))=%.4f over %d traits",
-            score, trait_count,
+            "[DirectiveAssembly·Surprise%s] mean(1-exp(-kl))=%.4f over %d traits",
+            "·local" if local else "", score, trait_count,
         )
         return round(score, 4)
 

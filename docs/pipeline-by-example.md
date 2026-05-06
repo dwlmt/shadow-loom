@@ -614,38 +614,47 @@ intends.
 ### 4.2 Dramatic irony — Death on the Nile
 
 `compute_dramatic_irony_score` measures, per focal character, the
-*intensity-weighted mass of revealed events the character does not
-yet know about*, normalised by the total event mass plus a saturation
+*fraction* of the reader's privileged view (the revealed-event mass)
+that the character is in the dark about — a Sternberg-style gap
+fraction normalised by the **revealed** event mass plus a saturation
 constant ``K`` (= 1):
 
-$$\text{irony} = \frac{1}{|F|} \sum_{c \in F} \frac{\sum_{e \in \text{revealed}, e \notin K_c} w_e}{\sum_{e \in \text{events}} w_e + K}$$
+$$\text{irony}(t) = \frac{1}{|F|} \sum_{c \in F} \frac{\sum_{e \in R_t,\, e \notin K_c} w_e}{\sum_{e \in R_t} w_e + K}$$
 
+where $R_t$ is the set of events revealed by syuzhet anchor $t$.
 A character is treated as knowing event ``e`` when (a) they
 participate in it as actor or target and ``e``'s ``fabula_time``
 falls at or before the syuzhet anchor's fabula frontier, (b) a
 revealed utterance addressed to (or spoken by) them references it,
-or (c) they hold a ``Belief`` whose ``target_id`` matches ``e.id``.
+or (c) they hold a ``Belief`` whose ``target_id`` matches ``e.id``
+and whose provenance still resolves.
 
-Anchored at `syuzhet_index=N` (just after `EVT_LINNET_SHOT`) for
+Anchored mid-story (just after `EVT_LINNET_SHOT`) for
 `entity_ids=["ENT_PENNINGTON", "ENT_VAN_SCHUYLER", "ENT_ALLERTON"]`
-the per-character gap masses average to ``≈ 0.45`` of the gauge — and
-rise smoothly to ``≈ 0.64`` by the denouement as Poirot's reveals
-accumulate without reaching the suspect pool.
+the per-character gap masses average to a high value of the gauge,
+**peak** as Poirot's deductions outpace the suspects' realisations,
+then **fall** through the denouement as the killer is named and the
+remaining suspects' shock reveals close their gaps — the rise-peak-fall
+arc Sternberg, Booth, and Stanton predict for canonical irony plots.
 
-Why the formula looks like *that*. The earlier *cumulative ratio over
-revealed-only edges* form (``#gaps / #revealed_connections``) had
-numerator and denominator growing together and so plateaued at a
-story-specific asymptote by the third reveal — Reservoir Dogs even
-*decayed* from 0.25 to 0.06 because the protagonist became actor-of-
-record on more revealed edges as the syuzhet advanced. Normalising
-by the **full event mass** (a fixed denominator) lets the gap mass
-climb monotonically with reveals and *fall* when characters acquire
-knowledge later in the story — the dramatic-irony arc the gauge is
-supposed to depict.
+Why the formula looks like *that*. Two earlier denominators failed.
+The *cumulative ratio over revealed-only edges* form
+(``#gaps / #revealed_connections``) plateaued at a story-specific
+asymptote by the third reveal because numerator and denominator grew
+together — Reservoir Dogs *decayed* from 0.25 to 0.06 as the
+protagonist became actor-of-record on more revealed edges. Replacing
+it with the **full event mass** (a fixed denominator) instead pinned
+the curve into a monotone rise across 21/21 example-world fixtures —
+contradicting the rise-peak-fall theory predicts. The current
+**revealed-mass + K** denominator restores the arc: it rises with
+new reveals and falls when participation, addressed utterances, or
+belief acquisition close the gap (Macduff hearing of his family,
+Poirot's denouement, Nick's letter to Daisy), giving rise-peak-fall
+in 16/21 worlds.
 
-That ``≈ 0.45`` is what a directive of "raise dramatic_irony to 0.85
-in Act III without revealing the killer" is optimising against —
-see §5.
+That mid-story value is what a directive of "raise dramatic_irony
+to 0.85 in Act III without revealing the killer" is optimising
+against — see §5.
 
 ### 4.3 Suspense — Romeo & Juliet's tomb
 
@@ -739,6 +748,18 @@ auditor compares the pre-anchor and post-anchor surprise scores and
 returns the delta as the *earned* surprise. It is large because the
 graph already had `EVT_ORANGE_RECRUITED` present at low fabula time but
 locked behind high syuzhet — surprise is not a trick of the LLM.
+
+The pre/post delta described above is exactly the **local** Bayesian-
+Surprise quantity \(D_{\rm KL}(q_s\|q_{s-1})\) that the time-series
+chart now computes per syuzhet step (after Itti & Baldi 2009; formally
+identical to Storck/Hochreiter/Schmidhuber 1995 RDIA). The
+directive-assembly optimiser instead consumes the *cumulative* form
+\(D_{\rm KL}(p\|q_s)\) — the integrated gap between the reader's
+accumulated prior and the truth — because its loss-function semantics
+require a monotone "remaining gap" signal that falls as reveals close
+it. Both are exposed by `compute_surprise_score(..., local=True/False)`;
+see [academic-foundations.md §3.3](academic-foundations.md#33-surprise-as-kl-divergence)
+for the full derivation.
 
 ### 4.5 Emotion targets — Gone Girl, grief and rage
 

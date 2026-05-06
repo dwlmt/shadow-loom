@@ -402,22 +402,47 @@ actual value once $\sum w > 1$, producing a non-monotonic surprise
 curve that contradicted the "more revealed → less surprise"
 semantics).
 
-The surprise score is sampled along two independent time axes by the
-UI's affective time-series builders. **Along the syuzhet axis** (the
-reader's progress through the *told* order) the actual trait values
-are held fixed at the world's final state, so the geometric prior
-update can only ever pull $q$ toward $p$ — surprise is therefore
-monotonically non-increasing on that axis, matching the "more
-revealed → less surprise" intuition. **Along the fabula axis** (the
-*story* order, sampled via per-time `snapshot_world_at(t)`) the
-posterior $p$ itself evolves with the snapshot, so surprise can
-spike: a character whose trait flips dramatically (Macbeth's
-ambition after the prophecy, Jacqueline's cruelty after the
-murder) gives a posterior that suddenly diverges from the prior.
-That is the intended behaviour — the fabula curve answers *which
-moments in the story are intrinsically surprising*, while the
-syuzhet curve answers *how much catching-up the reader still has
-to do*.
+The surprise score has two operating modes — a *cumulative* form
+(directive-optimiser default) and a *local* Bayesian-Surprise form
+(time-series default), corresponding directly to the two
+mathematically distinct quantities Itti & Baldi distinguish.
+
+* **Cumulative form** (`local=False`, the default): KL between the
+  reader's accumulated prior and the true posterior, $D_{\rm KL}(p
+  \| q)$ where $q$ is the geometrically-updated prior described
+  above. As evidence accumulates, $q$ asymptotes toward $p$, so the
+  score declines monotonically — answering *how much catching-up
+  the reader still has to do*. The directive-assembly optimiser
+  consumes this form because its loss-function semantics require a
+  monotone "remaining gap to truth" signal that falls as reveals
+  close it.
+
+* **Local form** (`local=True`, used by the time-series view, after
+  Itti & Baldi 2009): the per-step belief-update magnitude,
+  $D_{\rm KL}(q_s \| q_{s-1})$ — the KL distance between the
+  reader's prior immediately *after* and immediately *before* the
+  current syuzhet anchor's revelations. This is the Itti-Baldi
+  "Bayesian Surprise" definition verbatim: surprise =
+  $D_{\rm KL}({\rm posterior} \| {\rm prior})$, the dissimilarity
+  between belief distributions before and after observing data.
+  Quiet syuzhet stretches contribute $\sim 0$; revelations spike
+  in proportion to how much they shift the prior, producing the
+  impulse-and-decay trajectory the theory predicts and Reagan
+  et al. (2016) observe in corpus emotional arcs.
+
+The two forms are not interchangeable: cumulative surprise is the
+*integrated* gap between expectation and truth (a state quantity);
+local surprise is its *temporal derivative* (an event quantity).
+Conflating them by trying to recover one from the other was a
+recurring source of misinterpreted plots in the time-series view
+before the explicit `local=True` mode was added — the cumulative
+curve looks "wrong" against the Itti-Baldi intuition because the
+expectation operator is doing different work in each case. The
+sandbox/world-state posterior $p$ used by the cumulative form is
+also resolved at the world's *final* fabula-time so authored arc
+trajectories (`state_timeline`) are honoured; reading raw
+`Entity.traits` was a silent bug that compared every protagonist
+against itself and collapsed surprise to zero.
 
 * Itti, L. & Baldi, P. (2009). "Bayesian surprise attracts human attention". *Vision Research* 49(10): 1295–1306. DOI 10.1016/j.visres.2008.09.007. — the formal basis: surprise = KL between prior and posterior beliefs.
 * Schmidhuber, J. (2010). "Formal theory of creativity, fun, and intrinsic motivation (1990–2010)". *IEEE Trans. Autonomous Mental Development* 2(3): 230–247. DOI 10.1109/TAMD.2010.2056368. — surprise as compression progress.
@@ -428,11 +453,31 @@ to do*.
 ### 3.4 Dramatic irony as epistemic asymmetry
 
 `compute_dramatic_irony_score()` returns the per-character mean
-intensity-weighted mass of revealed events the focal entity does
-**not** know about (by participation, by being addressed in a
-revealed utterance, or by holding an explicit `Belief` about
-that event), normalised by the total event mass plus a
-saturation constant `K=1`. The framing of irony as a
+intensity-weighted *fraction* of revealed events the focal entity
+does **not** know about (by participation, by being addressed in
+a revealed utterance, or by holding an explicit `Belief` whose
+provenance still resolves), normalised by the *revealed* event
+mass plus a saturation constant `K=1`:
+
+$$\text{irony}(t) = \frac{1}{|F|} \sum_{c \in F}
+   \frac{\sum_{e \in R_t,\, e \notin K_c} w_e}
+        {\sum_{e \in R_t} w_e + K}$$
+
+where $F$ is the focal cast, $R_t$ is the set of events revealed
+to the reader by syuzhet anchor $t$, $K_c$ is what character $c$
+knows (also bounded by the fabula frontier of $R_t$), and $w_e$
+is event $e$'s intensity (defaults to $1$). Dividing by the
+*revealed* mass — rather than by the full story's event mass —
+makes the score a Sternberg-style **gap fraction** of the
+reader's privileged view, which naturally falls when characters
+catch up via late-story revelations (Macduff hearing of his
+family; Poirot's denouement; Nick's letter to Daisy). An earlier
+implementation that normalised by total event mass produced a
+monotonically rising curve in 21/21 example-world fixtures
+because the numerator's growth with reveals was unopposed by the
+constant denominator — contradicting the rise-then-fall arc that
+Booth, Stanton, and Sternberg's structural-affect theory predicts
+for canonical irony plots. The framing of irony as a
 reader/character knowledge gap is classical:
 
 * Booth, W. (1974). *A Rhetoric of Irony*. Univ. of Chicago Press.
@@ -445,6 +490,50 @@ formalisms:
 * Gerrig, R. J. (1993). *Experiencing Narrative Worlds*. Yale UP. — the cognitive-pragmatic framework we borrow.
 * **Wilmot, D. & Keller, F. (2020).** "Modelling Suspense in Short Stories as Uncertainty Reduction over Neural Representation". *Proc. ACL 2020*, pp. 1763–1788. — although the W&K paper is titled *suspense*, its operationalisation (the entropy-reduction differential between the reader's distribution over continuations before and after the next sentence) is structurally a **reader-vs-future-state epistemic-asymmetry** measure: it quantifies *what the reader's model of the story does not yet contain*. That shape is closer to the dramatic-irony scorer here (reader vs. character knowledge gap) and to the mystery scorer (reader vs. complete causal-ancestor set, §3.2) than it is to our hope/threat suspense scorer (§3.1). Readers cross-comparing implementations should treat the W&K quantity as a neural-LM analogue of mystery / irony rather than of `compute_suspense_score`.
 * Ely, J., Frankel, A. & Kamenica, E. (2015). "Suspense and Surprise". *J. Political Economy* 123(1): 215–260. DOI 10.1086/677350. — decision-theoretic complement; their *suspense* is the expected variance of next-period beliefs about a terminal outcome, again an epistemic-asymmetry quantity adjacent to dramatic irony rather than to hope/fear anticipation.
+
+### 3.5 Heuristic affects (conflict, danger, narrative-tension, causal-density)
+
+Alongside the four engine-grade structural affects (§§3.1–3.4),
+the UI surfaces four lighter heuristics computed directly from
+the snapshot graph in `compute_affective_scores` rather than via
+DirectiveAssembler. They are **snapshot-local** quantities — they
+read the current time-sliced relationship state and event ledger,
+do not consult `syuzhet_anchor`, and therefore vary along both
+fabula and syuzhet axes via the time-slicing performed by
+`snapshot_world_at` / `snapshot_world_at_syuzhet`.
+
+* **conflict** = fraction of *observed* affinity edges with
+  $\text{affinity} < 0$. Per-axis observation gating (only edges
+  whose `affinity.observed=True` count) prevents the LLM never
+  having measured an axis from silently deflating the score.
+* **danger** = mean of *observed* `fear` values across active
+  relationship edges, clipped to $[0, 1]$.
+* **narrative_tension** = $0.40 \cdot \overline{|{-}\text{aff}|}
+  + 0.35 \cdot \overline{\text{fear}}
+  + 0.25 \cdot \text{share}(\text{causal\_force} \geq 7)$. The
+  weights sum to 1 so the result stays in $[0, 1]$ without a
+  separate clamp. Aligns with Brewer & Lichtenstein's compound
+  account of tension as the conjunction of antagonism, fear, and
+  high-stakes causation.
+* **causal_density** = $\frac{d}{d + K}$ where $d$ is edges per
+  event and $K = 1.5$. The soft-saturation form (rather than the
+  earlier hard $\min(1, d/3)$ clamp) preserves dynamic range
+  across the full corpus: dense passages (Reservoir Dogs $\sim
+  0.95$) stay distinguishable from mid-density (Macbeth $\sim
+  0.7$) and sparse ones ($\sim 0.25$), where the clamped form
+  pinned every dense world flat at 1.0 and hid all variation
+  above the threshold. The choice of $K$ is empirical (calibrated
+  against `example_worlds/`) rather than theoretical; the metric
+  itself is a simple **structural complexity proxy** and not
+  meant to track any specific cognitive construct.
+
+These heuristics are intentionally separate from the engine
+layer: they are cheap to compute, robust to sparse data, and
+visible everywhere a snapshot is shown (gauges, slider scrubs,
+ego graphs). The engine-grade affects (§§3.1–3.4) require the
+full event graph and are the ones the directive-assembly
+optimiser actually targets — but the heuristics anchor the
+reader's quick read of the state at any cursor position.
 
 ---
 
@@ -613,10 +702,10 @@ context into all three downstream extraction agents.
 | `causal_physics.py` (do-operator, abduction) | Pearl 2009, Halpern 2016, Halpern & Pearl 2005 |
 | `causal_physics.py` (mechanism/causal_force) | Halpern 2016 (actual causality) |
 | `extract_graph.py` (ego-graph slicing) | Verma & Pearl 1988 (d-separation); Trabasso & van den Broek 1985 (causal-network comprehension) |
-| `directive_assembly.py::compute_suspense_score` | **Wilmot & Keller 2020** |
+| `directive_assembly.py::compute_suspense_score` | Brewer & Lichtenstein 1982; Comisky & Bryant 1982; Ortony, Clore & Collins 1988; Zillmann 1996; Cheong & Young 2015 (the structural-affect / OCC hope–fear lineage we directly implement) |
 | `directive_assembly.py::compute_surprise_score` | Itti & Baldi 2009 |
 | `directive_assembly.py::compute_mystery_score` | Sternberg 1978 |
-| `directive_assembly.py::compute_dramatic_irony_score` | Gerrig 1993, Booth 1974 |
+| `directive_assembly.py::compute_dramatic_irony_score` | Booth 1974; Muecke 1969; Gerrig 1993; Wilmot & Keller 2020 (their reader-uncertainty framing is structurally closer to irony than to hope–fear suspense, see §3.4) |
 | `viz_helpers.py` (affective trajectories) | Reagan et al. 2016 |
 | `pipeline.py` (Step 11/12 audit loop) | Madaan et al. 2023, Bai et al. 2022; Gu et al. 2024 (LLM-as-a-Judge survey) |
 | `generation.py` (brief → constrained render) | Yao et al. 2019, Goldfarb-Tarrant et al. 2020, Yang et al. 2023 (DOC) |
@@ -634,7 +723,7 @@ sits on top of:
 
 1. Pearl & Mackenzie (2018), *The Book of Why* — read first for the causal-inference intuition behind the three rungs.
 2. **Correa & Bareinboim (2025), "Counterfactual Graphical Models: Constraints and Inference"** — read for the AMWN + ctf-calculus framework that the codebase's core abstractions (`AMWNInstantiator`, `world_id`, three-rung query taxonomy) are named after.
-3. Wilmot & Keller (2020) ACL paper — read the introduction and §3 for the suspense framing we directly inherit in `compute_suspense_score`.
+3. Brewer & Lichtenstein (1982), "Stories are to entertain" — read for the structural-affect framing of suspense as hope–fear anticipation that `compute_suspense_score` directly implements; pair with Cheong & Young (2015) for the planning-system operationalisation. Wilmot & Keller (2020) is the closest neural-LM analogue but, as discussed in §3.4, its uncertainty-reduction quantity is structurally a *reader-vs-character/future-state asymmetry* and so is borrowed by the dramatic-irony scorer rather than by the hope–fear suspense scorer.
 4. Sternberg (1992), "Telling in time (II)" — read for the mystery/suspense/surprise distinction we operationalise.
 5. Genette (1980) §1 — read for the fabula/syuzhet distinction made rigorous.
 6. Ryan (1991), *Possible Worlds, Artificial Intelligence, and Narrative Theory* — read for the bridge from modal logic to narrative that motivates our shadow worlds.

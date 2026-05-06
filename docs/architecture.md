@@ -159,8 +159,11 @@ the slice relevant to the focal characters and time anchor:
   do not leak in
 * relevant `Channel`s and `WORLD_*` traits
 
-This both saves LLM context window and prevents temporal contamination of
-counterfactuals.
+This both saves LLM context window — addressing the well-documented
+*lost-in-the-middle* effect in which long-context models
+attend disproportionately to the start and end of the prompt
+([Liu et al. 2024](https://aclanthology.org/2024.tacl-1.9/))
+— and prevents temporal contamination of counterfactuals.
 
 ---
 
@@ -220,7 +223,7 @@ Four structural-effect scorers operate purely on the graph geometry:
 | Effect | Formula |
 |---|---|
 | **Mystery** | $\dfrac{\#\text{hidden ancestors}}{\#\text{total ancestors}}$ for each known effect; walks back through `causal_topology` and filters by ancestor events with `syuzhet_index > syuzhet_anchor`. |
-| **Dramatic Irony** | Per-character mean of $\dfrac{\sum_{e \in \text{revealed}, e \notin K_c} w_e}{\sum_{e \in \text{events}} w_e + K}$, where $K_c$ is what character $c$ knows at `syuzhet_anchor` and $w_e$ is event ``e``'s intensity (default 1.0; saturation constant $K = 1$). For each focal entity, the gap is the intensity-weighted mass of *revealed* events the entity does **not** know about, divided by the total event mass plus $K$. A character is treated as knowing an event when (a) they participate in it as actor or target *and* it has happened by the syuzhet anchor's fabula frontier, (b) a revealed utterance addressed to or spoken by them refers to it, or (c) they hold a Belief whose `target_id` matches the event id. The earlier *cumulative ratio over revealed-only edges* form ($\#\text{gaps}/\#\text{revealed connections}$) had numerator and denominator growing together and so plateaued at a story-specific asymptote by the third reveal — Reservoir Dogs even *decayed* from 0.25 to 0.06 because the protagonist became actor-of-record on more revealed edges as the syuzhet advanced. Normalising by the **full event mass** lets the curve rise smoothly with reveals and fall when characters acquire knowledge later, producing the dramatic-irony arc the gauge is supposed to depict. |
+| **Dramatic Irony** | Per-character mean of $\dfrac{\sum_{e \in R_t,\, e \notin K_c} w_e}{\sum_{e \in R_t} w_e + K}$, where $R_t$ is the set of events revealed to the reader by `syuzhet_anchor` $t$, $K_c$ is what character $c$ knows at that anchor, $w_e$ is event ``e``'s intensity (default 1.0), and $K = 1$ is a saturation constant. The score is therefore the *fraction of the reader's privileged view* the character is in the dark about — a Sternberg-style gap fraction. A character is treated as knowing an event when (a) they participate in it as actor or target *and* it has happened by the syuzhet anchor's fabula frontier, (b) a revealed utterance addressed to or spoken by them refers to it, or (c) they hold a `Belief` whose `target_id` matches the event id and whose provenance still resolves. Two earlier denominators failed: the *cumulative ratio over revealed-only edges* form plateaued by the third reveal because numerator and denominator grew together (Reservoir Dogs *decayed* from 0.25 to 0.06 as the protagonist became actor-of-record on more revealed edges); switching to the **full event mass** instead pinned the curve into a monotone rise across 21/21 example-world fixtures because the denominator stopped moving while the numerator kept growing — contradicting the rise-peak-fall arc Sternberg, Booth and Stanton predict for canonical irony plots (Macduff hearing of his family; Poirot's denouement; Nick's letter to Daisy). The current **revealed-mass + K** form restores the theoretical shape: it rises with new reveals and falls when participation, addressed utterances, or belief acquisition close the gap, producing rise-peak-fall in 16/21 worlds. |
 | **Suspense** | $\text{balance} \times \text{stakes}$ clamped to $[0, 1]$, where $\text{balance} = 1 - \dfrac{|w_\text{threat} - w_\text{hope}|}{w_\text{threat} + w_\text{hope}}$ peaks at genuine outcome uncertainty and decays under one-sided dominance, and $\text{stakes} = \dfrac{w_\text{threat} + w_\text{hope}}{w_\text{threat} + w_\text{hope} + K}$ saturates so balanced fragments don't pin the gauge ($K = 2$ by default). For each focal entity, every unrevealed event in which the entity is a non-acting target contributes its `evidence_strength`-derived probability $p$ to $w_\text{threat}$, and every unrevealed event in which the entity is an actor contributes $p$ to $w_\text{hope}$. The probability proxy is the strongest incoming causal-edge weight on the event (outgoing as fallback, 0.5 default). Returns 0 at the **despair** boundary ($w_\text{hope} = 0$) and the **safety** boundary ($w_\text{threat} = 0$). The earlier asymmetric $\max(0, (w_\text{threat} - w_\text{hope})/(w_\text{threat}+w_\text{hope}))$ form collapsed to 0 on every fixture in which the protagonist authors most of their own forward events; balance × stakes follows Brewer & Lichtenstein's structural-affect framing of suspense as a response to outcome ambiguity. Inspired by Wilmot & Keller (2020); see [academic-foundations.md §3.1](academic-foundations.md#31-suspense-as-hopefear-here-hopethreat-anticipation--structural-affect-lineage). |
 | **Surprise** | Per-trait binary KL divergence $D_\text{KL}(p \| q) = p\log\tfrac{p}{q} + (1-p)\log\tfrac{1-p}{1-q}$. Posterior $p$ is the entity's *final-state* trait value resolved via `reconstruct_entity_at(ent, t_max)` so authored `state_timeline` arcs are honoured (sandbox-preferred when running counterfactuals). Prior $q$ starts at the **leave-one-out** per-trait corpus marginal (mean across every *other* entity, falling back to 0.5 when fewer than two other entities carry the trait) — leave-one-out prevents the focal entity from biasing its own prior, which would otherwise collapse KL on the small casts typical of the example fixtures. The prior is then pulled toward the actual value by a geometric update $q \mathrel{+}= w \cdot (\text{actual} - q)$ for each revealed causal edge whose target is the entity, monotonically converging on the truth as evidence accumulates rather than overshooting. Each per-trait KL is run through a soft-saturation $1 - e^{-\text{KL}}$ (so perceptually meaningful KLs in the 0.2–1.5 band map to 0.18–0.78 of the gauge) and the result is averaged across the focal traits. The earlier $\text{avg}(\text{KL})/\log(1/\varepsilon)$ form divided by the *theoretical* binary-KL maximum ($\approx 4.6$ at $\varepsilon = 0.01$), squashing the entire perceptual signal into the bottom 4% of the gauge — every ``example_world`` plot read as flat ≤ 0.10 even when canonical surprise traits (Macbeth's despair, Macduff's grief) carried per-trait KLs of 0.27–0.50. See [academic-foundations.md §3.3](academic-foundations.md#33-surprise-as-kl-divergence). |
 
@@ -275,26 +278,34 @@ what the character knows, and what is true:
   the leave-one-out corpus marginal + revealed causes and the posterior
   given by the entity's reconstructed final-state trait values.
 
-#### Monotonicity along the two time axes
+#### Behaviour along the two time axes
 
 The four scorers are sampled along two independent axes by
-[`viz_helpers.py`](../shadow_loom_ui/viz_helpers.py):
+[`viz_helpers.py`](../shadow_loom_ui/viz_helpers.py). The *cumulative*
+surprise form (used by the directive optimiser) is monotone in the
+syuzhet anchor; the *local* form (used by the time-series chart) is
+not — see [academic-foundations.md §3.3](academic-foundations.md#33-surprise-as-kl-divergence)
+for the dual-mode rationale.
 
 * **Syuzhet axis** — the reader's progress through the *told* order.
-  Advancing the syuzhet anchor only ever reveals more events, so the
-  prior in `surprise` can only move *toward* the truth (never past it,
-  thanks to the geometric pull). Surprise is therefore monotonically
-  non-increasing on this axis. Mystery and dramatic irony likewise
-  fall as more sources come into view; suspense falls as unrevealed
-  threats / hopes are consumed.
+  Advancing the syuzhet anchor only ever reveals more events.
+  *Cumulative surprise* can therefore only move toward zero (the prior's
+  geometric pull never overshoots the truth); *local surprise*
+  $D_{\rm KL}(q_s\|q_{s-1})$ behaves Itti-Baldi-style instead, $\sim 0$
+  on quiet stretches and spiking proportionally to each anchor's
+  belief-update magnitude. Mystery decays as more causal ancestors come
+  into view. Dramatic irony rises with each new reveal and falls as
+  characters subsequently acquire knowledge — producing the
+  rise-peak-fall shape the structural-affect literature predicts.
+  Suspense falls as unrevealed threats / hopes are consumed.
 * **Fabula axis** — the *story* order, sampled via
   `snapshot_world_at(t)`. Here the posterior trait values themselves
-  change with the snapshot, so surprise *can* spike — that is the
-  intended behaviour. The fabula curve answers *which moments in the
-  story are intrinsically surprising* (Macbeth's ambition flipping
-  after the prophecy, Jacqueline's cruelty post-murder), whereas the
-  syuzhet curve answers *how much catching-up the reader still has to
-  do*.
+  change with the snapshot, so cumulative surprise *can* spike too —
+  the fabula curve answers *which moments in the story are intrinsically
+  surprising* (Macbeth's ambition flipping after the prophecy,
+  Jacqueline's cruelty post-murder), whereas the syuzhet local-mode
+  curve answers *which revelation moments most shift the reader's
+  beliefs* (the Itti-Baldi 2009 reading).
 
 ---
 

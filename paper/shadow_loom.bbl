@@ -1,4 +1,4 @@
-\begin{thebibliography}{105}
+\begin{thebibliography}{108}
 \providecommand{\natexlab}[1]{#1}
 
 \bibitem[{Akoury et~al.(2020)Akoury, Wang, Whiting, Hood, Peng, and Iyyer}]{akoury2020storium}
@@ -13,7 +13,7 @@ Carlos~E. Alchourr{\'o}n, Peter G{\"a}rdenfors, and David Makinson. 1985.
 
 \bibitem[{Bae and Young(2008)}]{baeyoung2008surprise}
 Byung-Chull Bae and R.~Michael Young. 2008.
-\newblock A use of flashback and foreshadowing for surprise arousal in narrative using a plan-based approach.
+\newblock \href {https://doi.org/10.1007/978-3-540-89454-4_22} {A use of flashback and foreshadowing for surprise arousal in narrative using a plan-based approach}.
 \newblock In \emph{Proceedings of the 1st International Conference on Interactive Digital Storytelling (ICIDS)}, volume 5334 of \emph{LNCS}, pages 156--167.
 
 \bibitem[{Bai et~al.(2022)Bai, Kadavath, Kundu, Askell, Kernion, Jones, Chen, Goldie, Mirhoseini, McKinnon et~al.}]{bai2022constitutional}
@@ -63,7 +63,7 @@ Claude Bremond. 1973.
 
 \bibitem[{Brewer and Lichtenstein(1982)}]{brewer1982stories}
 William~F. Brewer and Edward~H. Lichtenstein. 1982.
-\newblock Stories are to entertain: A structural-affect theory of stories.
+\newblock \href {https://doi.org/10.1016/0378-2166(82)90021-2} {Stories are to entertain: A structural-affect theory of stories}.
 \newblock \emph{Journal of Pragmatics}, 6(5--6):473--486.
 
 \bibitem[{Bringsjord and Ferrucci(2000)}]{bringsjord2000brutus}
@@ -78,7 +78,7 @@ Nathanael Chambers and Dan Jurafsky. 2008.
 
 \bibitem[{Cheong and Young(2015)}]{cheong2015suspenser}
 Yun-Gyung Cheong and R.~Michael Young. 2015.
-\newblock {Suspenser}: A story generation system for suspense.
+\newblock \href {https://doi.org/10.1109/TCIAIG.2014.2323894} {{Suspenser}: A story generation system for suspense}.
 \newblock \emph{IEEE Transactions on Computational Intelligence and AI in Games}, 7(1):39--52.
 
 \bibitem[{Comisky and Bryant(1982)}]{comisky1982suspense}
@@ -210,11 +210,22 @@ Arnav Jhala and R.~Michael Young. 2010.
 \newblock Cinematic visual discourse: Representation, generation, and evaluation.
 \newblock \emph{IEEE Transactions on Computational Intelligence and AI in Games}, 2(2):69--81.
 
+\bibitem[{Jimenez et~al.(2024)Jimenez, Yang, Wettig, Yao, Pei, Press, and Narasimhan}]{jimenez2024swebench}
+Carlos~E. Jimenez, John Yang, Alexander Wettig, Shunyu Yao, Kexin Pei, Ofir Press, and Karthik Narasimhan. 2024.
+\newblock {SWE-bench}: Can language models resolve real-world {GitHub} issues?
+\newblock In \emph{Proceedings of the 12th International Conference on Learning Representations (ICLR)}.
+\newblock ArXiv:2310.06770.
+
 \bibitem[{K{\i}c{\i}man et~al.(2024)K{\i}c{\i}man, Ness, Sharma, and Tan}]{kiciman2024causal}
 Emre K{\i}c{\i}man, Robert Ness, Amit Sharma, and Chenhao Tan. 2024.
 \newblock Causal reasoning and large language models: Opening a new frontier for causality.
 \newblock \emph{Transactions on Machine Learning Research}.
 \newblock ArXiv:2305.00050.
+
+\bibitem[{Kim et~al.(2017)Kim, Pad\'o, and Klinger}]{kim2017investigating}
+Evgeny Kim, Sebastian Pad\'o, and Roman Klinger. 2017.
+\newblock \href {https://doi.org/10.18653/v1/W17-2203} {Investigating the relationship between literary genres and emotional plot development}.
+\newblock In \emph{Proceedings of the Joint SIGHUM Workshop on Computational Linguistics for Cultural Heritage, Social Sciences, Humanities and Literature}, pages 17--26.
 
 \bibitem[{Kim et~al.(2023)Kim, Sclar, Zhou, Bras, Kim, Choi, and Sap}]{kim2023fantom}
 Hyunwoo Kim, Melanie Sclar, Xuhui Zhou, Ronan~Le Bras, Gunhee Kim, Yejin Choi, and Maarten Sap. 2023.
@@ -428,6 +439,11 @@ Meir Sternberg. 1978.
 Meir Sternberg. 1992.
 \newblock Telling in time ({II}): Chronology, teleology, narrativity.
 \newblock \emph{Poetics Today}, 13(3):463--541.
+
+\bibitem[{Storck et~al.(1995)Storck, Hochreiter, and Schmidhuber}]{schmidhuber1995rdia}
+Jan Storck, Sepp Hochreiter, and J\"urgen Schmidhuber. 1995.
+\newblock Reinforcement driven information acquisition in non-deterministic environments.
+\newblock In \emph{Proceedings of the International Conference on Artificial Neural Networks (ICANN'95)}, volume~2, pages 159--164, Paris. EC2 \& CIE.
 
 \bibitem[{Summerville et~al.(2018)Summerville, Snodgrass, Guzdial, Holmg{\aa}rd, Hoover, Isaksen, Nealen, and Togelius}]{summerville2018pcgml}
 Adam Summerville, Sam Snodgrass, Matthew Guzdial, Christoffer Holmg{\aa}rd, Amy~K. Hoover, Aaron Isaksen, Andy Nealen, and Julian Togelius. 2018.
