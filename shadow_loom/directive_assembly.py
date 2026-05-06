@@ -182,7 +182,9 @@ class RenderingDirective(BaseModel):
         description=(
             "The rendering strategy: mystery, dramatic_irony, surprise, "
             "suspense, fear, joy, regret, grief, rage, love, "
-            "observation, intervention, counterfactual, interrogation."
+            "observation, intervention, counterfactual, manual_edit, "
+            "fallback, default. (Interrogation queries return graph "
+            "analysis, not prose, and never reach this directive.)"
         ),
     )
     pov_lock: Optional[str] = Field(
@@ -483,6 +485,27 @@ _EFFECT_TRAITS: Dict[str, Tuple[List[str], List[str]]] = {
          "composure"],
     ),
 }
+
+
+def compute_hidden_channels_for(
+    world_state: WorldStateV1,
+    syuzhet_anchor: Optional[int],
+) -> List["HiddenChannel"]:
+    """Module-level shim around :meth:`DirectiveAssembler.compute_hidden_channels`.
+
+    Lets non-directive brief builders (observation / intervention /
+    counterfactual) populate ``CreativeBrief.hidden_channels`` without
+    instantiating a full assembler. The Rung-1/2/3 paths need the same
+    withheld-utterance/channel discipline the directive path enforces;
+    without it the ``=== HIDDEN CHANNELS / UTTERANCES (HARD) ===``
+    block never reaches the renderer/auditor for those queries.
+    """
+    if syuzhet_anchor is None:
+        return []
+    assembler = DirectiveAssembler(
+        sandbox=None, ego_payload={}, world_state=world_state,
+    )
+    return assembler.compute_hidden_channels(syuzhet_anchor)
 
 
 # =====================================================================
@@ -2213,6 +2236,21 @@ class DirectiveAssembler:
         entanglement_pairs: List[EntanglementPair] = []
 
         pov_entity = entity_ids[0] if entity_ids else None
+
+        # mystery / dramatic_irony / surprise collapse without a POV
+        # anchor — the entire effect depends on locking the reader to
+        # one consciousness and withholding what other minds know.
+        # Without ``pov_lock`` set the auditor's POV check at
+        # ``auditor.py::_format_constraints_for_audit`` is silently
+        # skipped, so flag it loudly here so the caller sees the gap.
+        if pov_entity is None and effect in ("mystery", "dramatic_irony", "surprise"):
+            logger.warning(
+                "[DirectiveAssembly] %s directive supplied no "
+                "target_entity_ids; pov_lock will be None and the "
+                "epistemic-control audit will lose its POV anchor. "
+                "Pass at least one focus entity on the DirectiveQuery.",
+                effect,
+            )
 
         if effect == "mystery":
             rendering = RenderingDirective(

@@ -89,7 +89,7 @@ def test_infer_empty_text():
 def test_format_block_includes_targets_and_density():
     ns = infer_narrative_style(PLOT_SUMMARY)
     block = format_narrative_style_block(ns)
-    assert "STYLE FIDELITY (HARD)" in block
+    assert "STYLE FIDELITY (SOFT" in block
     assert f"{ns.target_word_min}" in block
     assert f"{ns.target_word_max}" in block
     assert ns.prose_density in block

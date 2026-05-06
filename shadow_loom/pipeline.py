@@ -917,13 +917,17 @@ def _augment_topology_with_sandbox_deltas(
             tgt = sm.get("target_entity_id")
             metric = sm.get("metric")
             new_val = sm.get("new_value")
+            old_val = sm.get("old_value")
             inertia = sm.get("inertia", 0.3)
+            triggered_by = sm.get("triggered_by")
         else:
             src = getattr(sm, "source_entity_id", None)
             tgt = getattr(sm, "target_entity_id", None)
             metric = getattr(sm, "metric", None)
             new_val = getattr(sm, "new_value", None)
+            old_val = getattr(sm, "old_value", None)
             inertia = getattr(sm, "inertia", 0.3)
+            triggered_by = getattr(sm, "triggered_by", None)
         if not src or not tgt or not metric or new_val is None:
             continue
         if metric not in ("affinity", "fear", "power_dynamic"):
@@ -947,6 +951,119 @@ def _augment_topology_with_sandbox_deltas(
             metrics={metric: rm},
             world_id=world_id,
         ))
+        # --- Causal-explainability twin: emit a mutation_social
+        # CausalEdge alongside the relationship snapshot so the social
+        # delta has the same provenance edge in causal_topology that a
+        # prose-extracted social mutation would. Without this the next
+        # query against the merged world model can see the relationship
+        # value moved but cannot trace *why*, breaking the auditor's
+        # foreshadowing-payoff and miracle-step checks.
+        if triggered_by:
+            try:
+                from shadow_loom.models import CausalEdge
+                delta = (
+                    float(new_val) - float(old_val)
+                    if old_val is not None
+                    else 0.0
+                )
+                topology.causal_topology.append(CausalEdge(
+                    source_id=triggered_by,
+                    target_id=src,
+                    causality_type="mutation_social",
+                    causal_force=abs(delta) * 10.0 if delta else 1.0,
+                    mechanism="social",
+                    evidence_strength="moderate",
+                    fabula_time=fabula_time_now,
+                    trait_target=metric,
+                    trait_delta=delta,
+                    rel_counterpart_id=tgt,
+                    world_id=world_id,
+                ))
+            except Exception:  # noqa: BLE001
+                # Causal-edge construction is best-effort: a malformed
+                # triggered_by id (e.g. not an EVT_) would fail the
+                # mutation_social validator. Don't lose the
+                # relationship snapshot just because we can't stamp
+                # the provenance edge.
+                logger.debug(
+                    "[Bridge] Could not emit mutation_social CausalEdge "
+                    "for %s->%s.%s (triggered_by=%s)",
+                    src, tgt, metric, triggered_by,
+                )
+
+    # --- Channel severance (do-surgery on standing capabilities) -------
+    # Physics emits ``disabled_channel_ids`` whenever an intervention or
+    # counterfactual cuts a communication channel (line tapped & cut,
+    # cipher broken & abandoned, courier killed, bond severed). The
+    # render path already surfaces these via HARD ConstraintBlocks, but
+    # without bridging them into the topology the merge step never
+    # touches the canonical Channel record \u2014 so the *next* query against
+    # the same world model still sees the channel as live and dialogue
+    # can route through it again. Stamp ``terminated_at_fabula`` on a
+    # copy and append it to ``topology.channels``; the channel-dedup
+    # path (``_deduplicate_channels_with_map``) collapses the copy with
+    # the canonical record and picks the earliest non-null termination.
+    disabled_chs = physics_result.get("disabled_channel_ids") or []
+    for cid in disabled_chs:
+        ch = (world_state.channels or {}).get(cid)
+        if ch is None:
+            continue
+        existing_term = ch.terminated_at_fabula
+        # Don't bump a channel that was already severed earlier.
+        if existing_term is not None and existing_term <= fabula_time_now:
+            continue
+        topology.channels[cid] = ch.model_copy(update={
+            "terminated_at_fabula": int(fabula_time_now),
+            "world_id": world_id,
+        })
+
+    # --- Pruned utterances \u2192 belief invalidation cascade --------------
+    # Physics' ``pruned_utterance_event_ids`` enumerates utterances
+    # the do-surgery rendered epistemically inert. The sandbox
+    # surgery already prunes the *sandbox* beliefs via
+    # ``Belief.acquired_via_event_id``, but those changes never reach
+    # the persisted model unless the bridge translates them into
+    # belief-invalidation snapshots. Without this, the next query
+    # against the merged world still sees characters confidently
+    # holding beliefs they only acquired from a now-erased utterance.
+    pruned_utts = set(physics_result.get("pruned_utterance_event_ids") or [])
+    if pruned_utts or disabled_chs:
+        disabled_set = set(disabled_chs)
+        for entity_id, ent in (world_state.entities or {}).items():
+            invalidated_targets: List[str] = []
+            for b in ent.beliefs:
+                via_evt = getattr(b, "acquired_via_event_id", None)
+                via_chn = getattr(b, "acquired_via_channel_id", None)
+                if (via_evt and via_evt in pruned_utts) or (
+                    via_chn and via_chn in disabled_set
+                ):
+                    invalidated_targets.append(b.target_id)
+            if not invalidated_targets:
+                continue
+            # Reuse / extend an EntityUpdate at this fabula tick if
+            # one already exists, so we don't pile up redundant
+            # snapshots when the bridge wires multiple deltas for
+            # the same entity at the same horizon.
+            existing = next(
+                (
+                    eu for eu in topology.entity_updates
+                    if eu.entity_id == entity_id
+                    and eu.fabula_time == fabula_time_now
+                ),
+                None,
+            )
+            if existing is not None:
+                merged_inv = list(dict.fromkeys(
+                    list(existing.invalidated_belief_targets) + invalidated_targets
+                ))
+                existing.invalidated_belief_targets = merged_inv
+            else:
+                topology.entity_updates.append(EntityUpdate(
+                    entity_id=entity_id,
+                    fabula_time=fabula_time_now,
+                    triggered_by=None,
+                    invalidated_belief_targets=invalidated_targets,
+                ))
 
     return topology
 
@@ -1935,6 +2052,9 @@ def _run_answer_step(
         branch_label=_branch_label,
         factual_contrast_summary=_factual_contrast,
         preceding_prose=_preceding_prose,
+        # Pass the source register so the Q&A LLM mirrors the same
+        # tone / diction the renderer/auditor enforce on each chunk.
+        narrative_style=getattr(getattr(vwm, "current", None), "narrative_style", None),
     )
 
     physics_result["answer"] = card.answer
@@ -2003,12 +2123,25 @@ def _run_evaluation_branch(
 
     from shadow_loom.generation import _user_intent_constraints
     _nl = getattr(query, "original_query", None)
+    _eval_branch_id, _eval_branch_label = _resolve_branch_policy(
+        query, cfg, vwm,
+    )
     eval_brief = CreativeBrief(
         target_effect="observation",
         target_entities=focus_ids,
         original_query=_nl,
         constraints=_user_intent_constraints(_nl),
         scene_context=physics_result.get("physics_state", {}),
+        # Carry the source-text register so the evaluator grades the
+        # combined prose against the same fidelity contract the
+        # renderer/auditor enforce on each chunk. Without this the
+        # full-story scorecard is style-blind even when every chunk
+        # was rendered with a STYLE FIDELITY block.
+        narrative_style=getattr(ws, "narrative_style", None),
+        # Tag the branch so a shadow-branch evaluation is not silently
+        # graded as if it were factual canon.
+        branch_world_id=_eval_branch_id,
+        branch_label=_eval_branch_label,
     )
     eval_brief.epistemic_gaps = eval_assembler.compute_epistemic_gaps(focus_ids)
     eval_brief.narrative_tensions = eval_assembler.compute_narrative_tension()

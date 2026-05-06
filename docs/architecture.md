@@ -368,6 +368,21 @@ For omniscient flows (POV-less observation, `interrogate`, `general`,
 so future-narration content cannot leak into the renderer or auditor
 prompts even on the omniscient path.
 
+For Q&A flows (`interrogate` / `general`), `answer.answer_question`
+also threads `narrative_style` through the LLM context under
+`=== SOURCE REGISTER (for tone / diction only) ===`, so the
+`AnswerCard.answer` text mirrors the source's diction (formality,
+character-name register, voice). Word-budget enforcement is
+deliberately omitted: the `AnswerCard` is structured output, not a
+prose chunk.
+
+For the full-story `evaluate` flow, `assemble_evaluation_prompt`
+mirrors the renderer's `=== STYLE FIDELITY ===` block (so the
+combined prose is graded against the same source-register contract
+each chunk was held to) and surfaces the `=== BRANCH CONTEXT ===`
+block on shadow-branch evaluations (so a counterfactual fork is not
+silently graded as if it were factual canon).
+
 ### 5.2 Engine-side exclusions (intervention & counterfactual)
 
 For both Rung-2 interventions and Rung-3 counterfactuals the engine
@@ -451,6 +466,50 @@ regresses on the previous one:
   `None` (no scorable target exists), the evaluation prompt prints
   `Affective loss MSE: not measured (no scorable target — ignore in
   evaluation)` instead of silently formatting a misleading `0.0000`.
+
+### 6.1 Sandbox-delta merge bridge
+
+After audit converges, the pipeline re-extracts a `ChunkTopology`
+from the rendered prose and merges it back into the
+`VersionedWorldModel`. Re-extraction is lossy by design — the LLM
+prose may not verbalise every physics-derived state change. To stop
+those silent drops, `pipeline._augment_topology_with_sandbox_deltas`
+bridges sandbox-only physics outputs directly into the topology
+**before** merge. It currently bridges:
+
+* `mutations` (`TraitMutation`) — entity / world-trait scalar
+  updates anchored at the current fabula horizon; `WORLD_*` writes
+  stack as `WorldTraitSnapshot` entries on the trait timeline.
+* `hidden_deltas` (Rung-3 abduction) — entity / world-trait deltas
+  anchored at the inferred historical past horizon, composed atop
+  any same-tick mutations so multiple deltas accumulate rather
+  than overwrite.
+* `social_mutations` (`SocialMutation`) — per-axis
+  `RelationshipEdge` writes plus, when the originating EVT id is
+  known, a twin `mutation_social` `CausalEdge` so the relationship
+  delta has the same provenance edge in `causal_topology` that a
+  prose-extracted social mutation would.
+* `disabled_channel_ids` — stamps `terminated_at_fabula` on a
+  `Channel` copy so the channel-dedup pass in
+  `_deduplicate_channels_with_map` collapses the canonical record
+  to its severed lifecycle (next-query dialogue cannot route
+  through a dead channel).
+* `pruned_utterance_event_ids` + `disabled_channel_ids` → entity
+  belief-invalidation cascade — for every belief whose
+  `acquired_via_event_id` / `acquired_via_channel_id` references a
+  pruned event or severed channel, an `EntityUpdate` with
+  `invalidated_belief_targets` is emitted so the entity timeline
+  records that the supporting evidence no longer exists in this
+  branch.
+
+`extract_graph.promote_sandbox_spawns` additionally promotes any
+sandbox-spawned `Channel` capabilities (alongside `Entity` /
+`NarrativeObject` / `Location` / `GlobalTrait`) into the merge so
+that intervention queries introducing a new courier route or
+mind-link survive even when the renderer never names the channel
+in prose. Trait-mutation `triggered_by` provenance and Rung-3
+counterfactual past-anchor propagation remain TODO; see the
+audit notes in `/memories/repo/`.
 
 ---
 

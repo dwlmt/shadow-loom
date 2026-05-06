@@ -18,7 +18,7 @@ Return a JSON object with this exact structure:
   "passed": true/false,
   "violations": [
     {
-      "violation_type": "epistemic_leakage | knowledge_contamination | low_kl_divergence | suspense_threshold | tonal_mismatch | magnitude_too_low | reasoning_failure | affective_failure | attribution_failure | empathy_weight | miracle_step | abduction_failure | style_mismatch | meta_narration",
+      "violation_type": "epistemic_leakage | knowledge_contamination | low_kl_divergence | suspense_threshold | tonal_mismatch | magnitude_too_low | reasoning_failure | affective_failure | attribution_failure | empathy_weight | miracle_step | abduction_failure | utterance_truth_contradiction | channel_intelligibility_violation | withheld_utterance_leak | belief_provenance_contradiction | style_mismatch | meta_narration",
       "severity": "critical | major | minor",
       "description": "What went wrong — specific, actionable.",
       "evidence_quote": "The exact passage from the prose that demonstrates the violation.",
@@ -110,6 +110,13 @@ Return a JSON object with this exact structure:
 - Violation type: `abduction_failure`
 - Feedback template: "Abduction Failure. The implicit background event ([hidden variable]) is not structurally supported by the subtext. You cannot explicitly state that it happened, but you must add a subtle behavioural cue to logically justify the current world state."
 
+**Counterfactual audit (Rung 3 query — non-directive):**
+- Run when `target_effect == "counterfactual"`. The brief carries `factual_contrast_summary` describing the canonical mainline at the same syuzhet horizon and `branch_world_id == "shadow"`.
+- The prose MUST render the shadow scene as the lived world (plain past tense, no "in this branch", no "alternate timeline", no subjunctive author voice — see the meta-narration rules below).
+- Cross-check the shadow scene against the factual contrast: any character who is dead / absent / unaware on the shadow branch but alive / present / informed on the factual mainline must NOT appear, speak, or act as if the canon still holds. Equivalent inverses apply.
+- Use the abduction audit above for any implicit Rung-3 events the engine emitted.
+- Violation type: `reasoning_failure` (rationale prefix `counterfactual_canon_bleed:` when canon details leak into the shadow prose).
+
 ### Category 4b: Meta-Narration (universal)
 
 **Meta-narration audit (every rendering mode):**
@@ -128,8 +135,8 @@ Return a JSON object with this exact structure:
 ### Category 5: Source-Style Fidelity
 
 **Style audit (form & length match):**
-- Run only when a `STYLE FIDELITY (HARD)` block is present in the prompt.
-- Count the words in the prose. Compare against the target word range. If the actual count is outside the range by more than ±25%, raise a violation.
+- Run only when a `STYLE FIDELITY (SOFT — large mismatches are `style_mismatch` violations)` block is present in the prompt.
+- Count the words in the prose. Compare against the target word range. If the actual count is outside the range by more than ±50%, raise a violation.
 - Compare prose density against the declared `prose_density`:
   - `sparse` → flag as violation if the prose contains extended sensory passages, inner monologue, or multi-sentence beats where one summary sentence would suffice.
   - `moderate` → flag either extreme (telegraphic summary OR maximalist novelistic interiority).
@@ -151,10 +158,10 @@ Return a JSON object with this exact structure:
 
 The audit prompt may include the following reference blocks. They describe the renderer's brief — they are **not** themselves things to flag. Use them to judge whether the **prose** honours the brief.
 
-- **`=== RENDERING DIRECTIVE ===`** — the stylistic control layer the renderer was given (`rendering_mode`, `pacing`, `sensory_focus`, `pov_lock`, `tone_arc`, `stylistic_instructions`). When `pov_lock` is set, the prose MUST stay inside that entity's perception; head-hopping or omniscient narration is a `physics`-category violation with rationale prefix `pov_lock:`.
-- **`=== PHYSICS OVERRIDE (HARD) ===`** — engine-authored hard text the renderer was told to honour verbatim. Flag prose that ignores or contradicts it under the `physics` category.
+- **`=== RENDERING DIRECTIVE ===`** — the stylistic control layer the renderer was given (`rendering_mode`, `pacing`, `sensory_focus`, `pov_lock`, `tone_arc`, `stylistic_instructions`). When `pov_lock` is set, the prose MUST stay inside that entity's perception; head-hopping or omniscient narration is a `reasoning_failure` violation with rationale prefix `pov_lock:`.
+- **`=== PHYSICS OVERRIDE (HARD — prose must honour) ===`** — engine-authored hard text the renderer was told to honour verbatim. Flag prose that ignores or contradicts it as a `reasoning_failure` violation.
 - **`=== HIDDEN CHANNELS / UTTERANCES (HARD) ===`** — channels and utterances that exist in the world but have not yet surfaced for the reader at the current syuzhet position. Verbatim or paraphrased leaks of an utterance's content are `withheld_utterance_leak` (critical). Naming or implying the existence of a hidden channel is `epistemic_leakage` (critical for `mystery` / `dramatic_irony` audits, otherwise `major`).
-- **`=== ERASED UTTERANCES (HARD) ===` / `=== DISABLED CHANNELS (HARD) ===`** — emitted on intervention and counterfactual branches, listing canon utterances and channels the do-surgery severed (Rung-2 forward surgery or Rung-3 historical surgery). The prose MUST NOT have any character say, paraphrase, remember, or react to these lines, and MUST NOT route any new dialogue through these channels — even when `STORY SO FAR` or the factual contrast quotes them, they no longer exist in this branch. Leaks here are `physics`-category violations with rationale prefix `counterfactual_canon_bleed:` (critical when verbatim, major when paraphrased) — they are NOT `withheld_utterance_leak` (which is reserved for *future* lines, not *erased* ones).
+- **`=== ERASED UTTERANCES (HARD) ===` / `=== DISABLED CHANNELS (HARD) ===`** — emitted on intervention and counterfactual branches, listing canon utterances and channels the do-surgery severed (Rung-2 forward surgery or Rung-3 historical surgery). The prose MUST NOT have any character say, paraphrase, remember, or react to these lines, and MUST NOT route any new dialogue through these channels — even when `STORY SO FAR` or the factual contrast quotes them, they no longer exist in this branch. Leaks here are `reasoning_failure` violations with rationale prefix `counterfactual_canon_bleed:` (critical when verbatim, major when paraphrased) — they are NOT `withheld_utterance_leak` (which is reserved for *future* lines, not *erased* ones).
 
 ---
 

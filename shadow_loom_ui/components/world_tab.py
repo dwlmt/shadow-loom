@@ -280,6 +280,12 @@ def build_world_tab(state: AppState) -> None:
             "local_origin": False,
             "rendering": False,
             "pending": False,
+            # Sorted list of (fabula_time, short_label) used by the
+            # hover-tooltip lookup so the user knows where in the
+            # plot the slider is pointing as they drag. Refreshed
+            # by ``_sync_slider_widget`` whenever the world model
+            # changes.
+            "event_index": [],
         }
 
         slider_row = ui.row().classes(
@@ -295,6 +301,11 @@ def build_world_tab(state: AppState) -> None:
             time_slider = ui.slider(min=0, max=1, value=0, step=1).props(
                 "color=primary label-always dense"
             ).classes("flex-grow")
+            time_slider.tooltip(
+                "Drag to scrub through fabula time. The thumb tooltip "
+                "shows the nearest plot event so you know where you "
+                "are in the story."
+            )
             live_btn = ui.button(
                 "Live", icon="bolt", on_click=lambda: _set_live()
             ).props("flat dense no-caps color=secondary")
@@ -316,6 +327,49 @@ def build_world_tab(state: AppState) -> None:
             # listener doesn't bounce the slider value back at us.
             _slider_state["local_origin"] = True
             state.set_fabula_cursor(t)
+
+        def _nearest_event_label(t: int) -> str:
+            """Return ``"t=N \u2014 nearest event description"`` for the slider tooltip.
+
+            Picks the event whose ``fabula_time`` is closest to ``t``;
+            on ties, prefers the one at-or-before ``t`` so the label
+            tells the user *what has just happened*, which matches how
+            the rest of the world view interprets a cursor (everything
+            up to and including ``t`` is considered current).
+            """
+            idx = _slider_state["event_index"]
+            if not idx:
+                return f"t={t}"
+            # Min by (abs distance, prefer at-or-before via sign tiebreak).
+            best = min(idx, key=lambda et: (abs(et[0] - t), 0 if et[0] <= t else 1))
+            label = best[1]
+            if len(label) > 80:
+                label = label[:77] + "\u2026"
+            return f"t={t} \u2014 {label}"
+
+        def _push_label_value(text: str) -> None:
+            """Update the slider's Quasar ``label-value`` prop in place."""
+            # Escape only the characters Quasar's prop parser would
+            # choke on; keep the visible text human-readable.
+            safe = text.replace('"', "'").replace("\n", " ")
+            time_slider.props(f'label-value="{safe}"')
+
+        def _on_slider_input():
+            """Live-drag handler: refresh the thumb tooltip without
+            firing the heavy ``_refresh`` (which fires on release)."""
+            try:
+                t = int(time_slider.value)
+            except (TypeError, ValueError):
+                return
+            _push_label_value(_nearest_event_label(t))
+            label_text = f"t={t}"
+            if time_label.text != label_text:
+                time_label.text = label_text
+
+        # Live drag: ``update:model-value`` ticks for every pixel of
+        # movement. Cheap (just rewrites the tooltip text) so we don't
+        # need the rendering coalescer here.
+        time_slider.on("update:model-value", lambda _e=None: _on_slider_input())
 
         # Release-only: Quasar's ``change`` event fires once when the
         # user lets go of the thumb.
@@ -356,6 +410,25 @@ def build_world_tab(state: AppState) -> None:
                 return
             slider_row.set_visibility(True)
             _set_slider_bounds(time_slider, tmin, tmax)
+            # Refresh the (fabula_time, label) lookup the live-drag
+            # tooltip uses. Sorted by fabula_time so a future caller
+            # that wants nearest-event-by-position can binary-search.
+            event_index = []
+            for evt in (getattr(ws, "events", None) or []):
+                ft = getattr(evt, "fabula_time", None)
+                if ft is None:
+                    continue
+                desc = (
+                    getattr(evt, "description", None)
+                    or getattr(evt, "content", None)
+                    or getattr(evt, "id", None)
+                    or ""
+                ).strip()
+                if not desc:
+                    continue
+                event_index.append((int(ft), desc))
+            event_index.sort(key=lambda x: x[0])
+            _slider_state["event_index"] = event_index
             if state.fabula_cursor is None:
                 desired = tmax
                 label_text = "live"
@@ -371,6 +444,9 @@ def build_world_tab(state: AppState) -> None:
                     time_slider.value = desired
             if time_label.text != label_text:
                 time_label.text = label_text
+            # Seed the thumb tooltip so the nearest-event hint is
+            # visible the moment the slider appears (label-always).
+            _push_label_value(_nearest_event_label(int(desired)))
             # Reset for next tick — once we've consumed the local-origin
             # flag, subsequent external cursor changes should sync.
             _slider_state["local_origin"] = False

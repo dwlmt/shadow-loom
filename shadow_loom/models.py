@@ -325,9 +325,13 @@ class EventNode(AMWNNode):
     event_type: Literal["choice", "outcome", "revelation", "utterance"] = Field(
         description=(
             "choice = a deliberate decision; outcome = a physical/situational "
-            "happening; revelation = the audience or a character learns a "
-            "hitherto-hidden fact (syuzhet-side); utterance = a discrete "
-            "speech-act / message transmitted between characters (fabula-side). "
+            "happening; revelation = **reader-side narrator disclosure only** \u2014 "
+            "a moment where the *narration* (not a character) lifts the veil "
+            "on a previously-hidden fact (omniscient narrator reveal, "
+            "unmasked-killer beat, chapter-end twist). Character-to-character "
+            "disclosures are NOT revelations \u2014 they are utterances. "
+            "utterance = a discrete speech-act / message transmitted between "
+            "characters (fabula-side, the Social Agent's exclusive output). "
             "Utterance and revelation are distinct: an utterance can occur "
             "long before its content is revealed to the audience."
         ),

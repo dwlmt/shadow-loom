@@ -39,6 +39,7 @@ from shadow_loom.directive_assembly import (
     InterventionMechanism,
     RenderingDirective,
     ThreatProximity,
+    compute_hidden_channels_for,
 )
 from shadow_loom.models import WorldStateV1
 from shadow_loom.query_models import (
@@ -732,8 +733,12 @@ def format_scene_context_for_prompt(ctx: Dict[str, Any]) -> str:
                     elif isinstance(m, (int, float)):
                         metric_parts.append(f"{axis}={float(m):+.2f}")
             else:
-                # Legacy flat dict
-                for axis in ("affinity", "fear", "power_dynamic", "trust"):
+                # Legacy flat dict. ``trust`` is intentionally NOT in this
+                # tuple: it is not a tracked RelationshipMetric axis (the
+                # closed Literal vocabulary is affinity / fear /
+                # power_dynamic). If trust matters in a story it lives as
+                # an entity trait, not as a relationship metric.
+                for axis in ("affinity", "fear", "power_dynamic"):
                     val = r.get(axis)
                     if isinstance(val, (int, float)):
                         metric_parts.append(f"{axis}={float(val):+.2f}")
@@ -1079,7 +1084,10 @@ def assemble_rendering_prompt(
 
     # === Physics Override ===
     if brief.physics_override:
-        sections.append(f"=== PHYSICS OVERRIDE ===\n{brief.physics_override}")
+        sections.append(
+            f"=== PHYSICS OVERRIDE (HARD \u2014 prose must honour) ===\n"
+            f"{brief.physics_override}"
+        )
         sections.append("")
 
     # === Epistemic Gaps (reference data) ===
@@ -1113,7 +1121,7 @@ def assemble_rendering_prompt(
             for r in tense:
                 sections.append(
                     f"  {r.source_id}→{r.target_id}: affinity={r.affinity:.2f}, "
-                    f"fear={r.fear:.2f}, power={r.power_dynamic:.2f} "
+                    f"fear={r.fear:.2f}, power_dynamic={r.power_dynamic:.2f} "
                     f"(asymmetry={r.asymmetry_score:.2f})"
                 )
             sections.append("")
@@ -1279,6 +1287,14 @@ def build_observation_brief(
         branch_world_id=branch_world_id,
         branch_label=branch_label,
         factual_contrast_summary=factual_contrast_summary,
+        # Carry the withheld-information set so the renderer/auditor
+        # see the same ``HIDDEN CHANNELS / UTTERANCES (HARD)`` block
+        # the directive path enforces. Without this an observation at
+        # an early syuzhet_anchor can leak the content of a future
+        # utterance via the Rule-1 prose pathway.
+        hidden_channels=compute_hidden_channels_for(
+            world_state, syuzhet_anchor,
+        ),
         rendering=RenderingDirective(
             rendering_mode="observation",
             pov_lock=pov,
@@ -1340,9 +1356,14 @@ def _build_exclusion_constraints(
             constraint_type="narrative",
             priority="hard",
             instruction=(
-                f"ERASED UTTERANCES (HARD \u2014 these lines were SPOKEN "
+                # Begin with the exact === ERASED UTTERANCES (HARD) ===
+                # marker the renderer/auditor prompt files reference,
+                # so an LLM that pattern-matches on the heading sees
+                # it verbatim, not just the prefix words inside a
+                # generic constraints dump.
+                f"=== ERASED UTTERANCES (HARD) === \u2014 these lines were SPOKEN "
                 f"in canon but the do-surgery severed their provenance "
-                f"and they DO NOT exist in this {world_label} world). "
+                f"and they DO NOT exist in this {world_label} world. "
                 "Do NOT have any character say, paraphrase, remember, "
                 "or react to them. If the same speaker would naturally "
                 "still talk to the same addressee in this scene, write "
@@ -1371,10 +1392,12 @@ def _build_exclusion_constraints(
             constraint_type="narrative",
             priority="hard",
             instruction=(
-                f"DISABLED CHANNELS (HARD \u2014 these communication "
+                # Same marker-fidelity reasoning as the erased-
+                # utterances block above.
+                f"=== DISABLED CHANNELS (HARD) === \u2014 these communication "
                 f"links existed in canon but the do-surgery removed "
                 f"their carrier; they DO NOT exist in this {world_label} "
-                "world). Do NOT route any new dialogue or signal "
+                "world. Do NOT route any new dialogue or signal "
                 "through them, do not refer to them by name, and do "
                 "not show characters expecting messages on them.\n"
                 + "\n".join(ch_lines)
@@ -1581,6 +1604,21 @@ def build_intervention_brief(
         branch_world_id=branch_world_id,
         branch_label=branch_label,
         factual_contrast_summary=factual_contrast_summary,
+        # Surface the engine-authored multi-room split-screen / channel
+        # severance text the Rung-2 physics emits on ``physics_state``.
+        # Without this lift the renderer/auditor never see the
+        # ``=== PHYSICS OVERRIDE (HARD) ===`` block on intervention
+        # queries and the engine's per-location override silently
+        # vanishes between physics and prose.
+        physics_override=(
+            physics_state.get("physics_override")
+            if isinstance(physics_state, dict) else None
+        ),
+        # Withheld-utterance / hidden-channel set (see
+        # ``build_observation_brief`` for rationale).
+        hidden_channels=compute_hidden_channels_for(
+            world_state, syuzhet_anchor,
+        ),
         rendering=RenderingDirective(
             rendering_mode="intervention",
             pov_lock=(_entities_from_intervention_keys(
@@ -1801,6 +1839,19 @@ def build_counterfactual_brief(
         branch_world_id=branch_world_id,
         branch_label=branch_label,
         factual_contrast_summary=factual_contrast_summary,
+        # See build_intervention_brief for rationale: the Rung-3
+        # physics emits a multi-room override on ``physics_state``
+        # that must reach the renderer/auditor brief or it is silently
+        # dropped.
+        physics_override=(
+            physics_state.get("physics_override")
+            if isinstance(physics_state, dict) else None
+        ),
+        # Withheld-utterance / hidden-channel set (see
+        # ``build_observation_brief`` for rationale).
+        hidden_channels=compute_hidden_channels_for(
+            world_state, syuzhet_anchor,
+        ),
         rendering=RenderingDirective(
             rendering_mode="counterfactual",
             pov_lock=target_entities[0] if target_entities else None,

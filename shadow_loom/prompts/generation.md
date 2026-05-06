@@ -24,9 +24,9 @@ Return a JSON object with:
 
 ---
 
-## Source-Style Fidelity (HARD)
+## Source-Style Fidelity (SOFT)
 
-If the prompt contains a `STYLE FIDELITY (HARD)` block, it describes the *form* of the source text the world was ingested from. The rendered prose MUST match that form:
+If the prompt contains a `STYLE FIDELITY (SOFT — large mismatches are `style_mismatch` violations)` block, it describes the *form* of the source text the world was ingested from. The rendered prose SHOULD match that form. The user's request ("in detail", "briefly", "one paragraph", "as a scene") legitimately stretches or compresses the band; the auditor only flags drift that exceeds ±50% of the loosened band:
 
 - **Match the target word range.** Do not inflate a plot summary into a fully written short story, and do not condense a short story into a synopsis. The auditor will count words and flag mismatches.
 - **Match the prose density.** `sparse` = telegraphic summary diction (one sentence per beat, no interior monologue, no extended sensory passages). `moderate` = flowing scene prose with some dialogue and selective sensory detail. `rich` = novelistic interiority, varied sentence rhythm, full sensory texture.

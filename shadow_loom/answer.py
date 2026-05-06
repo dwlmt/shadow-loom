@@ -458,6 +458,7 @@ def answer_question(
     branch_label: Optional[str] = None,
     factual_contrast_summary: Optional[str] = None,
     preceding_prose: Optional[str] = None,
+    narrative_style: Optional[Any] = None,
 ) -> AnswerCard:
     """Answer a Q&A question using the supplied world-state slice.
 
@@ -470,6 +471,14 @@ def answer_question(
     generation pipeline threads onto a CreativeBrief, so the Q&A
     answers stay consistent with whichever branch the user is
     currently exploring.
+
+    ``narrative_style`` (a :class:`shadow_loom.models.NarrativeStyle`
+    when populated) lets the answer agent mirror the source register
+    — primarily so character names, place names, and tonal diction
+    in the ``answer`` field match the world the user is exploring.
+    The ``AnswerCard`` is structured output, so the influence is
+    bounded to the ``answer`` and ``caveats`` strings; we do not
+    enforce a word budget.
     """
     config = config or GenerationConfig()
     if not (question or "").strip():
@@ -507,6 +516,25 @@ def answer_question(
             "=== STORY SO FAR (prior prose on this branch) ===",
             preceding_prose.strip(),
         ])
+    if narrative_style is not None:
+        # Surface the source register so the LLM uses the same
+        # diction / formality the rest of the pipeline mirrors. We
+        # deliberately do NOT enforce target_word_min/max — the
+        # AnswerCard is a structured response, not a prose chunk.
+        ns_lines = ["", "=== SOURCE REGISTER (for tone / diction only) ==="]
+        fmt = getattr(narrative_style, "format", None)
+        voice = getattr(narrative_style, "voice", None)
+        density = getattr(narrative_style, "prose_density", None)
+        exemplar = getattr(narrative_style, "style_exemplar", None)
+        if fmt:
+            ns_lines.append(f"  format: {fmt}")
+        if voice:
+            ns_lines.append(f"  voice: {voice}")
+        if density:
+            ns_lines.append(f"  prose density: {density}")
+        if exemplar:
+            ns_lines.append(f"  exemplar: {str(exemplar)[:600]}")
+        user_msg_parts.extend(ns_lines)
     user_msg_parts.extend([
         "",
         "World state at current temporal anchor:",

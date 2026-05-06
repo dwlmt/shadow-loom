@@ -431,9 +431,9 @@ def adjusted_word_band(
 def format_narrative_style_block(
     style: NarrativeStyle,
     *,
-    header: str = "STYLE FIDELITY (HARD)",
+    header: str = "STYLE FIDELITY (SOFT \u2014 large mismatches are `style_mismatch` violations)",
     original_query: str | None = None,
-    audit_tolerance_pct: int = 25,
+    audit_tolerance_pct: int = 50,
 ) -> str:
     """Render a NarrativeStyle as a prompt section.
 

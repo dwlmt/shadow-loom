@@ -85,7 +85,11 @@ EFFECT_AUDIT_CATEGORIES: Dict[str, List[str]] = {
     "observation": ["physics"],
     "intervention": ["physics"],
     "counterfactual": ["physics"],
-    "general": ["physics"],
+    # Note: ``general`` and ``interrogate`` queries short-circuit before
+    # the auditor in pipeline.py — they answer questions *about* the
+    # world model and never call the renderer, so they have no prose
+    # to audit. ``resolve_audit_categories`` falls back to ["physics"]
+    # for any unmapped effect, preserving safety if that ever changes.
 }
 
 #: Categories that always run, regardless of target_effect. Kept
@@ -1076,9 +1080,7 @@ def assemble_audit_prompt(
         )
         sections.append(format_narrative_style_block(
             brief.narrative_style,
-            header="STYLE FIDELITY (SOFT \u2014 large mismatches are `style_mismatch` violations)",
             original_query=brief.original_query,
-            audit_tolerance_pct=50,
         ))
         sections.append(
             f"  Word-count gate: count the words in the prose above. "
@@ -1152,8 +1154,8 @@ def assemble_audit_prompt(
         sections.append("=== PHYSICS OVERRIDE (HARD \u2014 prose must honour) ===")
         sections.append(brief.physics_override.strip())
         sections.append(
-            "Flag the prose under the `physics` category if it ignores "
-            "or contradicts the override above."
+            "Flag the prose as a `reasoning_failure` violation if it "
+            "ignores or contradicts the override above."
         )
         sections.append("")
 
@@ -1233,9 +1235,9 @@ def assemble_audit_prompt(
     #   * the prose promotes a WorldFact into canonical story
     #     content (treats background as on-stage event / trait /
     #     belief), which the research layer explicitly forbids.
-    # Both are reported under the existing `physics` category as
-    # `world_fact_fidelity`-tagged violations — no new category is
-    # added (the loop discards out-of-scope categories).
+    # Both are reported as `reasoning_failure` violations with a
+    # `world_fact_fidelity:` rationale prefix — no new violation_type
+    # is added (the Literal already covers physics-style failures).
     research = getattr(brief, "external_research", None) or []
     if research:
         sections.append(
@@ -1244,8 +1246,8 @@ def assemble_audit_prompt(
         )
         sections.append(
             "Use these only as fidelity checks for period / place / "
-            "vocabulary detail. Flag the prose under the `physics` "
-            "category (rationale prefix `world_fact_fidelity:`) when "
+            "vocabulary detail. Flag the prose as a `reasoning_failure` "
+            "violation (rationale prefix `world_fact_fidelity:`) when "
             "it (a) contradicts a high-confidence fact below, or "
             "(b) promotes a WorldFact into a canonical event / "
             "trait / belief / dialogue claim in the story."
@@ -1324,7 +1326,7 @@ def assemble_audit_prompt(
                 f"  {rt.source_id}→{rt.target_id}: "
                 f"affinity={rt.affinity:+.2f} "
                 f"fear={rt.fear:.2f} "
-                f"power={rt.power_dynamic:+.2f} "
+                f"power_dynamic={rt.power_dynamic:+.2f} "
                 f"(asymmetry={rt.asymmetry_score:.2f})"
             )
         sections.append("")
@@ -1770,6 +1772,41 @@ def assemble_evaluation_prompt(
     sections.append("=== CONSTRAINTS (from Creative Brief) ===")
     sections.append(_format_constraints_for_audit(brief.constraints))
     sections.append("")
+
+    # Style fidelity — the evaluator must grade the combined prose
+    # against the same source-register contract the renderer/auditor
+    # enforce on each chunk. Without this the full-story scorecard is
+    # style-blind even when the brief carries a populated
+    # ``narrative_style``.
+    if brief.narrative_style is not None:
+        ns = brief.narrative_style
+        sections.append("=== STYLE FIDELITY (source register) ===")
+        sections.append(f"  format: {ns.format}")
+        sections.append(
+            f"  target word count: {ns.target_word_min}\u2013{ns.target_word_max} "
+            f"(per render; full-story prose may exceed this if multiple chunks)"
+        )
+        sections.append(f"  prose density: {ns.prose_density}")
+        if ns.voice:
+            sections.append(f"  voice: {ns.voice}")
+        if ns.style_exemplar:
+            sections.append(f"  exemplar: {ns.style_exemplar[:600]}")
+        sections.append("")
+
+    # Branch context — a shadow-branch evaluation must NOT be graded
+    # as if it were factual canon. Mirror the renderer's
+    # ``=== BRANCH CONTEXT ===`` block so the evaluator knows the
+    # prose is a counterfactual world.
+    if brief.branch_world_id == "shadow":
+        sections.append("=== BRANCH CONTEXT ===")
+        sections.append("branch_world_id: shadow")
+        if getattr(brief, "branch_label", None):
+            sections.append(f"branch_label: {brief.branch_label}")
+        if getattr(brief, "factual_contrast_summary", None):
+            sections.append(
+                f"factual_contrast_summary: {brief.factual_contrast_summary}"
+            )
+        sections.append("")
 
     # Epistemic state
     if brief.epistemic_gaps:

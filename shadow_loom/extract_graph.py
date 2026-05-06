@@ -477,20 +477,26 @@ def promote_sandbox_spawns(
     and will either drop references or invent duplicate IDs.
 
     Returns a dict ``{"entities": {...}, "objects": {...},
-    "locations": {...}, "world_traits": {...}}`` keyed by canonical
-    ID. Caller is expected to attach these to a :class:`ChunkTopology`
-    via its ``new_*`` fields and pre-register them in the
-    extraction-time register.
+    "locations": {...}, "world_traits": {...}, "channels": {...}}``
+    keyed by canonical ID. Caller is expected to attach these to a
+    :class:`ChunkTopology` via its ``new_*`` fields (or
+    ``ChunkTopology.channels`` for spawned :class:`Channel`
+    capabilities) and pre-register them in the extraction-time
+    register.
 
-    Channels (``Channel`` capabilities) are *not* promoted here because
-    the social agent already creates standing :class:`Channel`
-    capabilities from prose; sandbox channel spawns flow through
-    ``ChunkTopology.channels`` in the normal merge path.
+    :class:`Channel` spawns are promoted here too so that intervention
+    queries that introduce a new standing capability (e.g. a witness
+    placed within earshot, a new courier route, a magic mind-link
+    formed mid-story) are persisted even when the renderer never
+    surfaced the channel by name in prose. The social agent's
+    re-extraction path will collapse duplicates if it does mention
+    the channel.
 
     The function never raises — malformed sandbox payloads are skipped
     and logged. Existing canonical IDs are skipped (idempotent).
     """
     from shadow_loom.models import (
+        Channel,
         Entity,
         GlobalTrait,
         Location,
@@ -503,6 +509,7 @@ def promote_sandbox_spawns(
         "objects": {},
         "locations": {},
         "world_traits": {},
+        "channels": {},
     }
     if not physics_state:
         return out
@@ -589,8 +596,46 @@ def promote_sandbox_spawns(
                     state_timeline=node.get("state_timeline", []) or [],
                 )
                 out["world_traits"][node_id] = wt
-            # Channels and EventNodes are handled by the normal social /
-            # physics extraction path; nothing to do here.
+            elif node_type == "Channel":
+                # Spawned standing communication capability. Skip if the
+                # canonical world already knows it (idempotent re-runs)
+                # or if a prior promotion in the same call already
+                # captured it.
+                if node_id in (world_state.channels or {}) or node_id in out["channels"]:
+                    continue
+                participant_ids = (
+                    node.get("participant_ids")
+                    or node.get("participants")
+                    or []
+                )
+                if not participant_ids:
+                    logger.warning(
+                        "[promote_sandbox_spawns] Skipping channel %s \u2014 no participants.",
+                        node_id,
+                    )
+                    continue
+                try:
+                    ch = Channel(
+                        id=node_id,
+                        name=node.get("name") or node_id,
+                        medium=node.get("medium") or "unspecified",
+                        participant_ids=list(participant_ids),
+                        directionality=node.get("directionality", "duplex"),
+                        intelligibility=node.get("intelligibility", {}) or {},
+                        established_at_fabula=int(node.get("established_at_fabula", 0)),
+                        terminated_at_fabula=node.get("terminated_at_fabula"),
+                        evidence_strength=node.get("evidence_strength", "moderate"),
+                        world_id=node.get("world_id", "shadow"),
+                    )
+                except Exception:
+                    logger.exception(
+                        "[promote_sandbox_spawns] Channel %s payload invalid \u2014 skipped.",
+                        node_id,
+                    )
+                    continue
+                out["channels"][node_id] = ch
+            # EventNodes are handled by the normal physics/social
+            # extraction path; nothing to do here.
         except Exception:
             logger.exception(
                 "[promote_sandbox_spawns] Failed to promote sandbox node %r — skipped.",
@@ -803,7 +848,12 @@ def extract_topology_from_prose(
         causal_topology=physics_result.causal_topology,
         spatial_topology=physics_result.spatial_topology,
         entity_updates=physics_result.entity_updates,
-        channels=social_result.channels,
+        # Merge social-agent channels with promoted sandbox channel
+        # spawns; the social agent's view wins on collisions because
+        # it has direct prose evidence, while the sandbox spawn is a
+        # deterministic fallback for cases where the renderer never
+        # surfaced the new channel by name.
+        channels={**spawns.get("channels", {}), **social_result.channels},
         social_topology=social_result.social_topology,
         new_entities=spawns.get("entities", {}),
         new_objects=spawns.get("objects", {}),
