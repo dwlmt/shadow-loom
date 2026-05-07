@@ -30,6 +30,7 @@ from shadow_loom.auditor import (
     assemble_audit_prompt,
 )
 from shadow_loom.ingestion import (
+    run_extraction,
     run_extraction_async,
     extract_ontology_async,
     extract_topology_async,
@@ -101,6 +102,7 @@ __all__ = [
     "build_observation_brief",
     "build_intervention_brief",
     "build_counterfactual_brief",
+    "run_extraction",
     "run_extraction_async",
     "extract_ontology_async",
     "extract_topology_async",

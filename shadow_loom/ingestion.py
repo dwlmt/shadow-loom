@@ -376,6 +376,86 @@ class ExtractionConfig(BaseModel):
         "as context for the next chunk. Helps maintain coreference across "
         "chunk boundaries.",
     )
+    max_chunk_chars: int = Field(
+        default=1200,
+        ge=400,
+        description=(
+            "Hard cap on a single chunk's character length before it is "
+            "subdivided on paragraph boundaries (audit fix #6). The "
+            "previous fixed module-level cap of 1200 is preserved as the "
+            "default, but raising this lets a stronger model digest "
+            "scene-sized blocks in one pass; lowering it forces denser "
+            "subdivision on dialogue-heavy texts where the LLM tends to "
+            "lose participants."
+        ),
+    )
+    enable_chunk_carry_over: bool = Field(
+        default=False,
+        description=(
+            "When true, chunks are extracted **serially** in syuzhet "
+            "order so that each chunk's deps see the prior chunk's "
+            "event ids and standing channels (``previous_event_ids`` / "
+            "``previous_chunk_channels``). Audit fix #2: the parallel "
+            "default leaves both lists empty, which breaks coreference "
+            "across chunk boundaries and lets the same standing "
+            "capability be re-invented as a near-duplicate ``CHN_`` per "
+            "chunk. Off by default because serial dispatch sacrifices "
+            "the ``max_concurrent_chunks`` speedup; enable for "
+            "long-form prose where continuity matters more than wall "
+            "time."
+        ),
+    )
+    scaffold_drift_retry: bool = Field(
+        default=True,
+        description=(
+            "When true (audit fix #8), a chunk whose Physics output "
+            "covers <50% of the entities the Socratic scaffold flagged "
+            "as on-page triggers a single Physics retry that names the "
+            "missed entities explicitly. Off-by-default during the "
+            "scaffold-drift-only diagnostic, this is now active so the "
+            "warning becomes a corrective action."
+        ),
+    )
+    fabula_monotonicity_retry: bool = Field(
+        default=True,
+        description=(
+            "When true (audit fix #8), a chunk with retrograde "
+            "syuzhet/fabula event pairs (events that move *backwards* "
+            "in story-time without any flashback marker) triggers a "
+            "single Physics retry asking the agent to either re-emit "
+            "the events with corrected fabula_time or mark them as "
+            "deliberate flashbacks via negative fabula_time."
+        ),
+    )
+    second_drift_pass: bool = Field(
+        default=False,
+        description=(
+            "When true, after the Social agent has run (and after any "
+            "social re-sync), re-evaluate scaffold drift counting BOTH "
+            "physics event participants and social utterance/channel "
+            "participants. If scaffold-flagged entities are still "
+            "missing AND the first drift retry already executed, fire "
+            "a second targeted Physics retry naming the still-missed "
+            "entities. Off by default \u2014 the first drift pass is "
+            "usually sufficient and a second pass costs an extra LLM "
+            "round-trip per affected chunk."
+        ),
+    )
+    pipeline_checkpoint_dir: Optional[str] = Field(
+        default=None,
+        description=(
+            "If set, the orchestrator additionally persists the "
+            "post-Step-1 ``GlobalRegister`` and the post-Step-2 list "
+            "of ``ChunkTopology`` to "
+            "``<pipeline_checkpoint_dir>/register_<hash>.json`` and "
+            "``<pipeline_checkpoint_dir>/topologies_<hash>.json`` "
+            "respectively (hash = sha256(text) + extraction "
+            "fingerprint). On a subsequent run with the same text + "
+            "config, these are loaded from disk and the matching "
+            "pipeline step is skipped wholesale. Independent of the "
+            "per-chunk ``checkpoint_dir``; both can be set together."
+        ),
+    )
     max_correction_retries: int = Field(
         default=5,
         description="Maximum correction passes after validation. Each pass feeds "
@@ -584,7 +664,12 @@ def _subdivide_chunk(chunk: str, max_chars: int = _MAX_CHUNK_CHARS) -> List[str]
     return pieces
 
 
-def chunk_text(text: str, strategy: str = "act_headings", min_chunk_chars: int = 800) -> List[str]:
+def chunk_text(
+    text: str,
+    strategy: str = "act_headings",
+    min_chunk_chars: int = 800,
+    max_chunk_chars: int = _MAX_CHUNK_CHARS,
+) -> List[str]:
     """
     Split narrative text into chunks for Step 2 extraction.
 
@@ -625,12 +710,12 @@ def chunk_text(text: str, strategy: str = "act_headings", min_chunk_chars: int =
                 # roughly one scene rather than a whole act.
                 subdivided: List[str] = []
                 for c in chunks:
-                    subdivided.extend(_subdivide_chunk(c))
+                    subdivided.extend(_subdivide_chunk(c, max_chars=max_chunk_chars))
                 if len(subdivided) != len(chunks):
                     logger.info(
                         "[Chunking] %d heading chunk(s) subdivided to %d "
                         "scene-sized pieces (max %d chars each).",
-                        len(chunks), len(subdivided), _MAX_CHUNK_CHARS,
+                        len(chunks), len(subdivided), max_chunk_chars,
                     )
                 return subdivided
         # Fallback: no headings found — use paragraph strategy
@@ -655,7 +740,7 @@ def chunk_text(text: str, strategy: str = "act_headings", min_chunk_chars: int =
         # Also enforce the hard cap on this branch.
         capped: List[str] = []
         for c in merged:
-            capped.extend(_subdivide_chunk(c))
+            capped.extend(_subdivide_chunk(c, max_chars=max_chunk_chars))
         return capped
     return raw
 
@@ -3623,6 +3708,39 @@ def _physics_event_entities(physics: "PhysicsExtraction") -> Set[str]:
     return found
 
 
+def _social_participating_entities(social: "SocialExtraction") -> Set[str]:
+    """ENT_ ids referenced anywhere in social output (channels,
+    utterance events, relationship edges).
+
+    Used by the optional second-drift pass: a scaffold-flagged entity
+    that didn't appear in any *physics* event may still be covered by
+    a Channel speaker, an utterance, or a relationship edge that
+    Social produced. Counting that coverage avoids a wasted physics
+    retry for entities the chunk *did* legitimately address through
+    the social topology.
+    """
+    found: Set[str] = set()
+    for ch in getattr(social, "channels", []) or []:
+        sp = getattr(ch, "speaker_id", None)
+        if sp and sp.startswith("ENT_"):
+            found.add(sp)
+        for pid in getattr(ch, "participant_ids", []) or []:
+            if pid.startswith("ENT_"):
+                found.add(pid)
+    for ue in getattr(social, "utterance_events", []) or []:
+        for x in (getattr(ue, "actor_ids", None) or []) + (
+            getattr(ue, "target_ids", None) or []
+        ):
+            if isinstance(x, str) and x.startswith("ENT_"):
+                found.add(x)
+    for re_ in getattr(social, "social_topology", []) or []:
+        for attr in ("source_entity_id", "target_entity_id"):
+            v = getattr(re_, attr, None)
+            if isinstance(v, str) and v.startswith("ENT_"):
+                found.add(v)
+    return found
+
+
 def _scaffold_drift_ratio(
     scaffold: "SocraticScaffold",
     physics: "PhysicsExtraction",
@@ -3678,6 +3796,61 @@ def _physics_fabula_monotonicity_violations(
 
 
 # --- Tier 3 #11: chunk-level checkpointing helpers ---
+#
+# Audit fixes #4 + #5: the on-disk envelope now records
+#   1. a config/prompt fingerprint so a checkpoint produced under one
+#      model / prompt revision / extraction config is never silently
+#      reused by another, and
+#   2. the per-chunk stage_flags so a chunk that previously failed
+#      (physics / social / consequences) is *not* served back as
+#      "clean" on resume — the chunk is re-extracted instead.
+# Older flat-format checkpoints (pre-fix) are detected and ignored.
+_CHECKPOINT_VERSION = 2
+
+
+def _extraction_fingerprint(config: "ExtractionConfig") -> str:
+    """Hash the extraction-config fields that materially affect output.
+
+    Includes the model id, prompt-related flags, chunking parameters,
+    and the SHA of every prompt file in ``_PROMPTS_DIR`` so any prompt
+    edit invalidates prior checkpoints. Cheap to recompute (handful of
+    file reads) and stable across runs.
+    """
+    parts: List[str] = []
+    fields = [
+        "model", "chunk_strategy", "min_chunk_chars",
+        "chunk_overlap_chars", "fabula_time_spacing",
+        "estimated_events_per_chunk", "enable_consequences_agent",
+    ]
+    for f in fields:
+        parts.append(f"{f}={getattr(config, f, None)!r}")
+    # Optional fields added by later fixes — tolerate absence on older
+    # ExtractionConfig instances.
+    for f in ("max_chunk_chars", "enable_chunk_carry_over",
+              "scaffold_drift_retry", "fabula_monotonicity_retry"):
+        if hasattr(config, f):
+            parts.append(f"{f}={getattr(config, f)!r}")
+    try:
+        prompt_files = sorted(_PROMPTS_DIR.glob("*.md"))
+        if not prompt_files:
+            # Empty dir: still record an explicit sentinel so the
+            # fingerprint is intentional rather than silently identical
+            # to "prompts dir missing".
+            parts.append("prompt:_empty_dir")
+        for pf in prompt_files:
+            try:
+                h = hashlib.sha256(pf.read_bytes()).hexdigest()[:8]
+            except Exception:
+                h = "??"
+            parts.append(f"prompt:{pf.name}={h}")
+    except Exception:
+        # Prompts dir missing in some test/install layouts — fall back
+        # to a placeholder so the fingerprint still varies across other
+        # config changes.
+        parts.append("prompt:_unavailable")
+    raw = "|".join(parts)
+    return hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()[:16]
+
 
 def _chunk_checkpoint_path(checkpoint_dir: str, chunk_text: str, idx: int) -> Path:
     h = hashlib.sha256(chunk_text.encode("utf-8", errors="replace")).hexdigest()[:12]
@@ -3686,7 +3859,13 @@ def _chunk_checkpoint_path(checkpoint_dir: str, chunk_text: str, idx: int) -> Pa
 
 def _load_chunk_checkpoint(
     checkpoint_dir: Optional[str], chunk_text: str, idx: int,
-) -> Optional["ChunkTopology"]:
+    fingerprint: str,
+) -> Optional[Tuple["ChunkTopology", Dict[str, int]]]:
+    """Load a chunk checkpoint if it matches the current fingerprint and
+    its stage_flags are all clean. Returns ``None`` to force re-extraction
+    when either guard fails. The topology + stage_flags tuple lets the
+    orchestrator preserve the >50%-failure-threshold accounting on resume.
+    """
     if not checkpoint_dir:
         return None
     p = _chunk_checkpoint_path(checkpoint_dir, chunk_text, idx)
@@ -3694,12 +3873,44 @@ def _load_chunk_checkpoint(
         return None
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-        return ChunkTopology.model_validate(data)
     except Exception:
-        logger.warning(
-            "[Checkpoint] Could not load %s \u2014 ignoring.", p,
+        logger.warning("[Checkpoint] Could not parse %s — ignoring.", p)
+        return None
+    # Reject pre-envelope checkpoints (no version field) outright.
+    if not isinstance(data, dict) or data.get("version") != _CHECKPOINT_VERSION:
+        logger.info(
+            "[Checkpoint] %s is from an older format (no v%d envelope) "
+            "— ignoring and re-extracting.",
+            p, _CHECKPOINT_VERSION,
         )
         return None
+    if data.get("fingerprint") != fingerprint:
+        logger.info(
+            "[Checkpoint] %s fingerprint mismatch "
+            "(disk=%s, current=%s) — ignoring and re-extracting.",
+            p, data.get("fingerprint"), fingerprint,
+        )
+        return None
+    stage_flags = data.get("stage_flags") or {}
+    if any(int(v or 0) for v in stage_flags.values()):
+        logger.info(
+            "[Checkpoint] %s recorded stage failures %s — ignoring "
+            "and re-extracting to give the chunk a clean attempt.",
+            p, {k: v for k, v in stage_flags.items() if v},
+        )
+        return None
+    try:
+        topo = ChunkTopology.model_validate(data["topology"])
+    except Exception:
+        logger.warning(
+            "[Checkpoint] %s topology body invalid — ignoring.", p,
+        )
+        return None
+    return topo, {
+        "physics": int(stage_flags.get("physics", 0)),
+        "social": int(stage_flags.get("social", 0)),
+        "consequences": int(stage_flags.get("consequences", 0)),
+    }
 
 
 def _save_chunk_checkpoint(
@@ -3707,14 +3918,31 @@ def _save_chunk_checkpoint(
     chunk_text: str,
     idx: int,
     topo: "ChunkTopology",
+    fingerprint: str,
+    stage_flags: Dict[str, int],
 ) -> None:
+    """Persist a checkpoint envelope. Chunks with any failed stage are
+    intentionally NOT written so a resume cannot mistake a degraded
+    extraction for a clean one — see audit fix #5."""
     if not checkpoint_dir:
+        return
+    if any(int(v or 0) for v in stage_flags.values()):
+        logger.debug(
+            "[Checkpoint] Skipping save for chunk %d (stage failures: %s).",
+            idx, {k: v for k, v in stage_flags.items() if v},
+        )
         return
     try:
         p = _chunk_checkpoint_path(checkpoint_dir, chunk_text, idx)
         p.parent.mkdir(parents=True, exist_ok=True)
+        envelope = {
+            "version": _CHECKPOINT_VERSION,
+            "fingerprint": fingerprint,
+            "stage_flags": dict(stage_flags),
+            "topology": json.loads(topo.model_dump_json()),
+        }
         p.write_text(
-            topo.model_dump_json(indent=2),
+            json.dumps(envelope, indent=2),
             encoding="utf-8",
         )
         logger.debug("[Checkpoint] Wrote %s", p)
@@ -3725,9 +3953,170 @@ def _save_chunk_checkpoint(
 
 
 
+def _pipeline_checkpoint_path(
+    checkpoint_dir: str, kind: str, text: str, fingerprint: str,
+) -> Path:
+    """Path for a high-level (register / topologies) checkpoint.
+
+    Keyed on ``sha256(text)[:16] + fingerprint`` so any change to the
+    source narrative OR to the extraction config invalidates it.
+    """
+    text_hash = hashlib.sha256(
+        text.encode("utf-8", errors="replace"),
+    ).hexdigest()[:16]
+    return (
+        Path(checkpoint_dir)
+        / f"{kind}_{text_hash}_{fingerprint}.json"
+    )
+
+
+def _load_register_checkpoint(
+    checkpoint_dir: Optional[str], text: str, fingerprint: str,
+) -> Optional["GlobalRegister"]:
+    """Audit fix #3 (final pass): high-level register checkpoint.
+
+    Returns the previously-saved ``GlobalRegister`` for this exact
+    (text, config) pair, or ``None`` if no envelope exists, the
+    envelope is from a different version, or the body fails to
+    validate. The caller falls back to running Step 1 normally on a
+    miss.
+    """
+    if not checkpoint_dir:
+        return None
+    p = _pipeline_checkpoint_path(checkpoint_dir, "register", text, fingerprint)
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        logger.warning("[Checkpoint] Could not parse %s — ignoring.", p)
+        return None
+    if (
+        not isinstance(data, dict)
+        or data.get("version") != _CHECKPOINT_VERSION
+        or data.get("fingerprint") != fingerprint
+    ):
+        logger.info(
+            "[Checkpoint] %s envelope mismatch — ignoring and "
+            "re-extracting Step 1.", p,
+        )
+        return None
+    try:
+        reg = GlobalRegister.model_validate(data["register"])
+    except Exception:
+        logger.warning(
+            "[Checkpoint] %s register body invalid — ignoring.", p,
+        )
+        return None
+    logger.info("[Checkpoint] Loaded register from %s.", p)
+    return reg
+
+
+def _save_register_checkpoint(
+    checkpoint_dir: Optional[str], text: str, fingerprint: str,
+    register: "GlobalRegister",
+) -> None:
+    if not checkpoint_dir:
+        return
+    try:
+        p = _pipeline_checkpoint_path(
+            checkpoint_dir, "register", text, fingerprint,
+        )
+        p.parent.mkdir(parents=True, exist_ok=True)
+        envelope = {
+            "version": _CHECKPOINT_VERSION,
+            "fingerprint": fingerprint,
+            "register": json.loads(register.model_dump_json()),
+        }
+        p.write_text(json.dumps(envelope, indent=2), encoding="utf-8")
+        logger.debug("[Checkpoint] Wrote register checkpoint %s", p)
+    except Exception:
+        logger.exception(
+            "[Checkpoint] Could not write register checkpoint.",
+        )
+
+
+def _load_topologies_checkpoint(
+    checkpoint_dir: Optional[str], text: str, fingerprint: str,
+) -> Optional[List["ChunkTopology"]]:
+    """High-level topology-list checkpoint.
+
+    Returns the previously-saved list of ``ChunkTopology`` for this
+    exact (text, config) pair, or ``None`` if missing / mismatched /
+    invalid. Skips the entire Step 2 (chunking + per-chunk extraction +
+    reconciliation) on a hit.
+    """
+    if not checkpoint_dir:
+        return None
+    p = _pipeline_checkpoint_path(
+        checkpoint_dir, "topologies", text, fingerprint,
+    )
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        logger.warning("[Checkpoint] Could not parse %s — ignoring.", p)
+        return None
+    if (
+        not isinstance(data, dict)
+        or data.get("version") != _CHECKPOINT_VERSION
+        or data.get("fingerprint") != fingerprint
+    ):
+        logger.info(
+            "[Checkpoint] %s envelope mismatch — ignoring and "
+            "re-extracting Step 2.", p,
+        )
+        return None
+    body = data.get("topologies")
+    if not isinstance(body, list):
+        return None
+    try:
+        topos = [ChunkTopology.model_validate(t) for t in body]
+    except Exception:
+        logger.warning(
+            "[Checkpoint] %s topology list invalid — ignoring.", p,
+        )
+        return None
+    logger.info(
+        "[Checkpoint] Loaded %d chunk topologies from %s.", len(topos), p,
+    )
+    return topos
+
+
+def _save_topologies_checkpoint(
+    checkpoint_dir: Optional[str], text: str, fingerprint: str,
+    topologies: List["ChunkTopology"],
+) -> None:
+    if not checkpoint_dir:
+        return
+    try:
+        p = _pipeline_checkpoint_path(
+            checkpoint_dir, "topologies", text, fingerprint,
+        )
+        p.parent.mkdir(parents=True, exist_ok=True)
+        envelope = {
+            "version": _CHECKPOINT_VERSION,
+            "fingerprint": fingerprint,
+            "topologies": [
+                json.loads(t.model_dump_json()) for t in topologies
+            ],
+        }
+        p.write_text(json.dumps(envelope, indent=2), encoding="utf-8")
+        logger.debug(
+            "[Checkpoint] Wrote topologies checkpoint %s (%d chunks).",
+            p, len(topologies),
+        )
+    except Exception:
+        logger.exception(
+            "[Checkpoint] Could not write topologies checkpoint.",
+        )
+
+
 def _check_chunk_failure_threshold(
     failure_counts: Dict[str, int],
     total_chunks: int,
+    sample_errors: Optional[Dict[str, str]] = None,
 ) -> None:
     """Escalate to RuntimeError when any sub-stage failed on >50% of chunks.
 
@@ -3735,7 +4124,29 @@ def _check_chunk_failure_threshold(
     a transient connection drop), but if more than half the chunks failed
     a given sub-stage the resulting graph is unreliable and we'd rather
     raise loudly than silently persist a half-extracted world.
+
+    ``sample_errors`` (audit fix #2, second pass): an optional mapping
+    ``{stage: "<short repr of first captured exception>"}`` that the
+    caller threads through so the raised ``RuntimeError`` can surface
+    the underlying cause (model not found, auth failure, timeout, …)
+    instead of just the aggregate counts. Without this the user sees
+    only "extraction failed sub-stages: physics=1/1" and has to dig
+    through logs to find why.
     """
+    sample_errors = sample_errors or {}
+
+    def _format_with_cause(details: str) -> str:
+        if not sample_errors:
+            return details
+        cause_lines = [
+            f"  - {stage}: {sample_errors[stage]}"
+            for stage in sample_errors
+            if stage in {s.split("=")[0] for s in details.split(", ")}
+        ]
+        if not cause_lines:
+            return details
+        return details + "\nFirst captured per-stage error:\n" + "\n".join(cause_lines)
+
     if total_chunks <= 0:
         return
     if total_chunks == 1:
@@ -3747,7 +4158,8 @@ def _check_chunk_failure_threshold(
             details = ", ".join(f"{s}={c}/1" for s, c in breached.items())
             raise RuntimeError(
                 f"Single-chunk extraction failed sub-stages: {details}. "
-                f"Refusing to return an empty topology."
+                f"Refusing to return an empty topology.\n"
+                + _format_with_cause(details)
             )
         return
     threshold = total_chunks / 2
@@ -3762,7 +4174,8 @@ def _check_chunk_failure_threshold(
         raise RuntimeError(
             f"Chunk extraction failure threshold breached (>50%): {details}. "
             f"Refusing to return a partial topology — inspect upstream "
-            f"agent / model errors."
+            f"agent / model errors.\n"
+            + _format_with_cause(details)
         )
     if any(failure_counts.values()):
         details = ", ".join(
@@ -3787,11 +4200,21 @@ class _ChunkParams(BaseModel):
     chunks must be free to encode flashbacks, prologues, and other
     non-monotone story-world chronologies (see
     `docs/academic-foundations.md` §1.1).
+
+    ``previous_event_ids`` and ``previous_chunk_channels`` carry forward
+    output from the syuzhet-prior chunk(s). These are populated only in
+    serial mode (``ExtractionConfig.enable_chunk_carry_over=True``) — the
+    default parallel dispatch leaves them empty because chunks are
+    extracted concurrently and have no causal ordering at dispatch time
+    (audit fix #2).
     """
+    model_config = {"arbitrary_types_allowed": True}
     chunk_index: int
     total_chunks: int
     syuzhet_offset: int
     prev_chunk_tail: str
+    previous_event_ids: List[str] = Field(default_factory=list)
+    previous_chunk_channels: Dict[str, Channel] = Field(default_factory=dict)
 
 
 def _pre_allocate_chunk_params(
@@ -3832,7 +4255,7 @@ async def _extract_single_chunk_async(
     physics_agent: Agent,
     social_agent: Agent,
     consequences_agent: Optional[Agent] = None,
-) -> Tuple[ChunkTopology, Dict[str, int]]:
+) -> Tuple[ChunkTopology, Dict[str, int], Dict[str, str]]:
     """Process one chunk through the per-chunk agent pipeline (async).
 
     Runs Socratic scaffolding → Physics → Social → Consequences for a
@@ -3843,26 +4266,35 @@ async def _extract_single_chunk_async(
     ``previous_event_ids`` is empty (advisory context only; the
     ``GlobalRegister`` provides structural ID validation).
 
-    Returns ``(topology, failure_flags)`` where ``failure_flags`` is a
-    ``{stage: 0|1}`` dict so the caller can apply the >50%-of-chunks
-    escalation rule (item #8 of the audit).
+    Returns ``(topology, failure_flags, stage_errors)`` where
+    ``failure_flags`` is a ``{stage: 0|1}`` dict (used for the
+    >50%-of-chunks escalation rule) and ``stage_errors`` is a
+    ``{stage: short repr}`` dict carrying the first captured exception
+    per stage (audit fix #2, second pass) so the orchestrator can
+    surface the underlying cause when it raises.
     """
     i = params.chunk_index
     n = params.total_chunks
     failure_flags: Dict[str, int] = {"physics": 0, "social": 0, "consequences": 0}
+    stage_errors: Dict[str, str] = {}
 
-    # Tier 3 #11: try checkpoint before any agent calls.
-    cached = _load_chunk_checkpoint(config.checkpoint_dir, chunk, i)
+    fingerprint = _extraction_fingerprint(config)
+
+    # Tier 3 #11 + audit fix #4/#5: try checkpoint before any agent calls.
+    cached = _load_chunk_checkpoint(
+        config.checkpoint_dir, chunk, i, fingerprint,
+    )
     if cached is not None:
+        cached_topo, cached_flags = cached
         logger.info(
             "[Checkpoint\u00b7Async] Chunk %d/%d loaded from disk \u2014 "
             "skipping extraction (%d events, %d causal, %d social).",
             i + 1, n,
-            len(cached.events),
-            len(cached.causal_topology),
-            len(cached.social_topology),
+            len(cached_topo.events),
+            len(cached_topo.causal_topology),
+            len(cached_topo.social_topology),
         )
-        return cached, failure_flags
+        return cached_topo, cached_flags, stage_errors
 
     # Prepend trailing context from previous chunk for coreference
     overlap_ctx = ""
@@ -3908,16 +4340,21 @@ async def _extract_single_chunk_async(
     physics_deps = _PhysicsDeps(
         global_register=register,
         scaffold=scaffold,
-        previous_event_ids=[],  # no cross-chunk IDs in parallel mode
+        # Audit fix #2: previous_event_ids is populated only when the
+        # caller dispatches chunks serially with carry-over enabled;
+        # parallel mode leaves it empty because chunks have no causal
+        # ordering at dispatch time.
+        previous_event_ids=list(params.previous_event_ids),
         on_page_entity_ids=on_page,
     )
     try:
         physics_result = await physics_agent.run(physics_msg, deps=physics_deps, **_user_kwargs())
         physics = physics_result.output
-    except Exception:
+    except Exception as exc:
         logger.exception("[Step 3a·Async] Chunk %d FAILED — returning empty physics.", i + 1)
         physics = PhysicsExtraction()
         failure_flags["physics"] = 1
+        stage_errors.setdefault("physics", f"{type(exc).__name__}: {exc}")
 
     # Retry once if zero events from a substantive chunk
     if not physics.events and len(chunk) > 500:
@@ -4023,24 +4460,128 @@ async def _extract_single_chunk_async(
     # Collapse duplicate events from multi-pass extraction.
     physics = _dedupe_scene_events(physics)
 
-    # Tier 2 #7: scaffold-drift diagnostic (async).
+    # Tier 2 #7: scaffold-drift diagnostic + retry (audit fix #8).
     drift_ratio, missed = _scaffold_drift_ratio(scaffold, physics, register)
     if drift_ratio < 0.5 and missed:
         logger.warning(
-            "[Scaffold-Drift·Async] Chunk %d: physics produced events "
+            "[Scaffold-Drift\u00b7Async] Chunk %d: physics produced events "
             "for only %.0f%% of scaffold-mentioned entities; missed %s",
             i + 1, 100.0 * drift_ratio, sorted(missed)[:8],
         )
+        if config.scaffold_drift_retry:
+            missed_list = sorted(missed)[:20]
+            drift_msg = (
+                "IMPORTANT: The Socratic scaffold for this chunk "
+                "flagged the following on-page entities, but your "
+                "previous extraction emitted no events involving "
+                f"them: {missed_list}. Re-read the chunk and emit at "
+                "least one event per missed entity (a choice, "
+                "observation, utterance, or state-change), keeping "
+                "ALL previously-extracted events and edges with their "
+                "original ids and fabula_times UNCHANGED.\n\n"
+                + physics_msg
+            )
+            try:
+                drift_result = await physics_agent.run(
+                    drift_msg, deps=physics_deps, **_user_kwargs(),
+                )
+                drift_physics = drift_result.output
+                merged_drift = _merge_physics_retry(physics, drift_physics)
+                new_ratio, new_missed = _scaffold_drift_ratio(
+                    scaffold, merged_drift, register,
+                )
+                if len(new_missed) < len(missed):
+                    physics = merged_drift
+                    logger.info(
+                        "[Scaffold-Drift\u00b7Async] Chunk %d: drift retry "
+                        "covered %d/%d missed entities (merged).",
+                        i + 1,
+                        len(missed) - len(new_missed),
+                        len(missed),
+                    )
+            except Exception:
+                logger.exception(
+                    "[Scaffold-Drift\u00b7Async] Chunk %d drift retry FAILED.",
+                    i + 1,
+                )
 
-    # Tier 2 #9: fabula-time monotonicity check (async).
+    # Tier 2 #9: fabula-time monotonicity check + retry (audit fix #8).
     violations = _physics_fabula_monotonicity_violations(physics)
     if violations:
         logger.warning(
-            "[Fabula-Monotonicity·Async] Chunk %d: %d retrograde event "
+            "[Fabula-Monotonicity\u00b7Async] Chunk %d: %d retrograde event "
             "pair(s) where syuzhet order contradicts fabula order "
             "(non-flashback): %s",
             i + 1, len(violations), violations[:5],
         )
+        if config.fabula_monotonicity_retry:
+            mono_msg = (
+                "IMPORTANT: Your previous extraction has events where "
+                "syuzhet order moves FORWARD but fabula_time moves "
+                f"BACKWARD without being marked as flashbacks: "
+                f"{violations[:10]}. For each pair, choose ONE: "
+                "(a) re-emit the later event with a fabula_time >= "
+                "the earlier one (correct ordering), or (b) re-emit "
+                "the BACKWARDS event with a NEGATIVE fabula_time to "
+                "mark it as a deliberate flashback. Keep all event "
+                "ids unchanged and keep ALL other events and edges "
+                "as-is.\n\n" + physics_msg
+            )
+            try:
+                mono_result = await physics_agent.run(
+                    mono_msg, deps=physics_deps, **_user_kwargs(),
+                )
+                mono_physics = mono_result.output
+                # Replace events that were re-emitted with corrected
+                # fabula_time (same id), keep everything else from base.
+                # Audit fix #3 (second pass): also re-anchor any causal
+                # edge whose own fabula_time mirrored an event we just
+                # shifted, so chain-reaction timing constraints stay
+                # consistent with the corrected event timeline.
+                mono_by_id = {e.id: e for e in mono_physics.events}
+                fixed_events = []
+                shifted_event_times: Dict[str, int] = {}
+                for e in physics.events:
+                    cand = mono_by_id.get(e.id)
+                    if cand is not None and cand.fabula_time != e.fabula_time:
+                        fixed_events.append(cand)
+                        shifted_event_times[e.id] = cand.fabula_time
+                    else:
+                        fixed_events.append(e)
+                fixed_causal: List[CausalEdge] = []
+                for ce in physics.causal_topology:
+                    src_t = shifted_event_times.get(ce.source_id)
+                    # Only re-anchor when the edge's fabula_time matched
+                    # the event's old time exactly — otherwise it was
+                    # set independently and we leave it alone.
+                    if src_t is not None and ce.fabula_time == 0:
+                        fixed_causal.append(ce)
+                    elif src_t is not None:
+                        fixed_causal.append(ce.model_copy(update={
+                            "fabula_time": src_t,
+                        }))
+                    else:
+                        fixed_causal.append(ce)
+                physics = physics.model_copy(update={
+                    "events": fixed_events,
+                    "causal_topology": fixed_causal,
+                })
+                new_violations = _physics_fabula_monotonicity_violations(physics)
+                if len(new_violations) < len(violations):
+                    logger.info(
+                        "[Fabula-Monotonicity\u00b7Async] Chunk %d: retry "
+                        "resolved %d/%d violation(s); shifted %d event(s) "
+                        "and re-anchored matching causal edges.",
+                        i + 1,
+                        len(violations) - len(new_violations),
+                        len(violations),
+                        len(shifted_event_times),
+                    )
+            except Exception:
+                logger.exception(
+                    "[Fabula-Monotonicity\u00b7Async] Chunk %d retry FAILED.",
+                    i + 1,
+                )
 
     logger.info(
         "[Step 3a·Async] Chunk %d: %d events, %d causal, %d spatial edges.",
@@ -4080,7 +4621,8 @@ async def _extract_single_chunk_async(
         chunk_event_ids=chunk_evt_ids,
         chunk_events=list(physics.events),
         chunk_causal=list(physics.causal_topology),
-        previous_event_ids=[],
+        previous_event_ids=list(params.previous_event_ids),
+        previous_chunk_channels=dict(params.previous_chunk_channels),
         on_page_entity_ids=on_page,
     )
 
@@ -4097,11 +4639,12 @@ async def _extract_single_chunk_async(
         try:
             social_result = await social_agent.run(social_msg, deps=social_deps, **_user_kwargs())
             local_social = social_result.output
-        except Exception:
+        except Exception as exc:
             logger.exception(
                 "[Step 3b·Async] Chunk %d FAILED — returning empty social.", i + 1,
             )
             failure_flags["social"] = 1
+            stage_errors.setdefault("social", f"{type(exc).__name__}: {exc}")
             return SocialExtraction()
 
         # Retry if zero channels AND zero utterance events (quality gate)
@@ -4244,7 +4787,7 @@ async def _extract_single_chunk_async(
             chunk_causal=physics.causal_topology,
             chunk_channels=local_social.channels,
             chunk_utterance_events=local_social.utterance_events,
-            previous_event_ids=[],
+            previous_event_ids=list(params.previous_event_ids),
             on_page_entity_ids=on_page,
         )
         try:
@@ -4252,12 +4795,13 @@ async def _extract_single_chunk_async(
                 consequences_msg, deps=consequences_deps, **_user_kwargs(),
             )
             consequences = consequences_result.output
-        except Exception:
+        except Exception as exc:
             logger.exception(
                 "[Step 3c·Async] Chunk %d FAILED — falling back to physics.entity_updates.",
                 i + 1,
             )
             failure_flags["consequences"] = 1
+            stage_errors.setdefault("consequences", f"{type(exc).__name__}: {exc}")
             return None
 
         # Mutation-parity retry — see sync path for rationale.
@@ -4310,6 +4854,15 @@ async def _extract_single_chunk_async(
         return consequences
 
     social = await _run_social()
+
+    # Audit fix #3: capture the event-id set BEFORE the post-Social
+    # Physics retries (axis / dyad / coverage / parity / synthetic-stub
+    # injection) so we can detect whether any added events.
+    # ``_merge_physics_retry`` *does* admit new events (not just causal
+    # edges), and the social pass that already ran was computed against
+    # the pre-retry set — leaving the new events without channels,
+    # utterances, or relationship readings until we re-sync below.
+    pre_retry_event_ids: Set[str] = {e.id for e in physics.events}
 
     # Per-axis mutation_social coverage — async equivalent of the sync
     # path's axis retry. Refines ``physics`` in-place before the
@@ -4591,6 +5144,152 @@ async def _extract_single_chunk_async(
                 "[Step 3a\u00b7Async] Chunk %d coverage retry FAILED.", i + 1,
             )
 
+    # Audit fix #3: re-sync Social on any events the post-Social
+    # Physics retries newly introduced. Without this, Consequences (and
+    # the chunk's final social_topology) would be blind to channels /
+    # utterances / relationship readings the new events should have
+    # produced.
+    post_retry_event_ids: Set[str] = {e.id for e in physics.events}
+    new_event_ids = post_retry_event_ids - pre_retry_event_ids
+    if new_event_ids:
+        new_events_listing = "\n".join(
+            f"  - {e.id} (fabula={e.fabula_time}, type={e.event_type}, "
+            f"actors={e.actor_ids}, targets={e.target_ids}): {e.description}"
+            for e in physics.events if e.id in new_event_ids
+        )
+        logger.info(
+            "[Step 3b\u00b7Async] Chunk %d: %d new event(s) added by "
+            "post-Social Physics retries \u2014 re-syncing Social to "
+            "cover them.",
+            i + 1, len(new_event_ids),
+        )
+        # Rebuild the event summary against the *current* (post-retry)
+        # physics event set so the agent's view of the chunk matches
+        # what's now in the topology.
+        refreshed_event_summary = "\n".join(
+            f"  - {e.id} (fabula={e.fabula_time}, syuzhet={e.syuzhet_index}, "
+            f"type={e.event_type}, actors={e.actor_ids}, targets={e.target_ids}): "
+            f"{e.description}"
+            for e in physics.events
+        )
+        refreshed_social_msg = (
+            f"Chunk {i + 1} of {n}.\n\n"
+            f"EVENTS EXTRACTED FROM THIS CHUNK:\n{refreshed_event_summary}\n\n"
+            f"ORIGINAL TEXT:\n{chunk_with_ctx}"
+        )
+        resync_msg = (
+            # Audit fix #7 (second pass): keep the *full* primary
+            # social-prompt scaffold (event summary + chunk text) and
+            # only PREFIX a re-sync directive. The earlier
+            # implementation built a stripped-down message that omitted
+            # the consolidated event summary, which left the agent
+            # without the structural context it had on the first pass
+            # and produced lower-quality re-sync output.
+            "IMPORTANT: Physics retried after your previous social "
+            f"extraction and added {len(new_event_ids)} NEW event(s) "
+            "not seen on your first pass. Emit any channels, utterance "
+            "events, or relationship_edge updates these new events "
+            "imply. Keep ALL of your previously-extracted social "
+            "material UNCHANGED.\n\n"
+            "NEW events to cover:\n" + new_events_listing + "\n\n"
+            "----- ORIGINAL SOCIAL PROMPT (with the full updated "
+            "event set) -----\n" + refreshed_social_msg
+        )
+        # Refresh deps so the agent sees the updated event/causal set.
+        resync_deps = social_deps.model_copy(update={
+            "chunk_event_ids": [e.id for e in physics.events],
+            "chunk_events": list(physics.events),
+            "chunk_causal": list(physics.causal_topology),
+        })
+        try:
+            resync_result = await social_agent.run(
+                resync_msg, deps=resync_deps, **_user_kwargs(),
+            )
+            resync_social = resync_result.output
+            if (
+                resync_social.channels
+                or resync_social.utterance_events
+                or resync_social.social_topology
+            ):
+                social = _merge_social_retry(social, resync_social)
+                logger.info(
+                    "[Step 3b\u00b7Async] Chunk %d: re-sync added %d ch / "
+                    "%d utt / %d rel (merged).",
+                    i + 1,
+                    len(resync_social.channels),
+                    len(resync_social.utterance_events),
+                    len(resync_social.social_topology),
+                )
+        except Exception:
+            logger.exception(
+                "[Step 3b\u00b7Async] Chunk %d social re-sync FAILED.", i + 1,
+            )
+
+    # Audit fix (final pass) — second drift check, this time crediting
+    # social participants (channel speakers, utterance actors,
+    # relationship-edge endpoints) against scaffold-flagged entities.
+    # Gated on ``config.second_drift_pass`` AND the first drift retry
+    # being enabled (otherwise we'd be doing the *first* retry under a
+    # different name). Off by default; costs one extra Physics
+    # round-trip per affected chunk.
+    if config.second_drift_pass and config.scaffold_drift_retry:
+        scaffold_ents = _scaffold_mentioned_entities(scaffold, register)
+        if scaffold_ents:
+            covered = (
+                _physics_event_entities(physics)
+                | _social_participating_entities(social)
+            )
+            still_missed = scaffold_ents - covered
+            ratio2 = (
+                len(scaffold_ents & covered) / len(scaffold_ents)
+            )
+            if ratio2 < 0.5 and still_missed:
+                missed2_list = sorted(still_missed)[:20]
+                logger.warning(
+                    "[Scaffold-Drift\u00b7Async\u00b72nd] Chunk %d: "
+                    "after social, still %.0f%% scaffold coverage; "
+                    "missed %s",
+                    i + 1, 100.0 * ratio2, missed2_list[:8],
+                )
+                drift2_msg = (
+                    "IMPORTANT (second drift pass): Even after the "
+                    "Social agent ran, the following on-page entities "
+                    "from the scaffold still have NO event, channel, "
+                    "utterance, or relationship-edge mention: "
+                    f"{missed2_list}. Re-read the chunk and emit at "
+                    "least one event per missed entity (a choice, "
+                    "observation, utterance, or state-change), keeping "
+                    "ALL previously-extracted events and edges with "
+                    "their original ids and fabula_times "
+                    "UNCHANGED.\n\n" + physics_msg
+                )
+                try:
+                    drift2_result = await physics_agent.run(
+                        drift2_msg, deps=physics_deps, **_user_kwargs(),
+                    )
+                    drift2_physics = drift2_result.output
+                    merged2 = _merge_physics_retry(physics, drift2_physics)
+                    new_covered2 = (
+                        _physics_event_entities(merged2)
+                        | _social_participating_entities(social)
+                    )
+                    new_missed2 = scaffold_ents - new_covered2
+                    if len(new_missed2) < len(still_missed):
+                        physics = merged2
+                        logger.info(
+                            "[Scaffold-Drift\u00b7Async\u00b72nd] "
+                            "Chunk %d: 2nd drift retry covered %d/%d "
+                            "still-missed entities (merged).",
+                            i + 1,
+                            len(still_missed) - len(new_missed2),
+                            len(still_missed),
+                        )
+                except Exception:
+                    logger.exception(
+                        "[Scaffold-Drift\u00b7Async\u00b72nd] Chunk %d "
+                        "second drift retry FAILED.", i + 1,
+                    )
+
     consequences_out = await _run_consequences(social)
     if consequences_out is not None:
         entity_updates_final = consequences_out.entity_updates
@@ -4619,9 +5318,13 @@ async def _extract_single_chunk_async(
         len(topo.spatial_topology),
         len(topo.channels),
     )
-    # Tier 3 #11: persist topology so a re-run skips the agents.
-    _save_chunk_checkpoint(config.checkpoint_dir, chunk, i, topo)
-    return topo, failure_flags
+    # Tier 3 #11 + audit fix #4/#5: persist topology so a re-run skips
+    # the agents — but only when no stage failed (else resume could
+    # serve a degraded extraction as clean).
+    _save_chunk_checkpoint(
+        config.checkpoint_dir, chunk, i, topo, fingerprint, failure_flags,
+    )
+    return topo, failure_flags, stage_errors
 
 
 def _reconcile_chunk_topologies(
@@ -4675,6 +5378,89 @@ def _reconcile_chunk_topologies(
         if rmap:
             topo = _apply_event_renames(topo, rmap)
         reconciled.append(topo)
+
+    # --- Pass 1b (audit fix #7): cross-chunk semantic dedup ---
+    #
+    # Adjacent chunks frequently re-extract the same boundary event
+    # under different ids (the chunker prepends a prev-chunk overlap
+    # tail; the LLM occasionally re-extracts events from that tail
+    # despite the "do not re-extract" instruction). Within-chunk
+    # ``_dedupe_scene_events`` already handles intra-chunk duplicates;
+    # this pass extends the same key (actor set, target set, event_type,
+    # rounded fabula_time) across chunks. The earliest-syuzhet
+    # occurrence is canonical; later occurrences are dropped and all
+    # of their causal / entity_update / belief / utterance refs are
+    # rewritten to the canonical id.
+    #
+    # SAFETY GUARDS (audit fix #1, second pass): the dedup is restricted
+    # to ADJACENT chunks (|chunk_i - chunk_j| <= 1) and to events whose
+    # description text overlaps significantly. Without these guards,
+    # repeated confrontations between the same characters across the
+    # novel collapse onto a single beat. Utterances are excluded
+    # entirely (each speech act is distinct).
+    fabula_window = 50
+    _DESC_TOKEN_OVERLAP_MIN = 0.45  # Jaccard threshold on lowercased word tokens
+    seen_groups: Dict[tuple, List[Tuple[int, str, str]]] = {}
+    cross_chunk_renames: Dict[str, str] = {}
+    dropped_events: Set[str] = set()
+
+    def _evt_group_key(e) -> Optional[tuple]:
+        if e.event_type == "utterance":
+            return None
+        if not e.actor_ids and not e.target_ids:
+            return None
+        return (
+            frozenset(e.actor_ids or []),
+            frozenset(e.target_ids or []),
+            e.event_type,
+            (e.fabula_time or 0) // fabula_window,
+        )
+
+    def _desc_tokens(d: str) -> Set[str]:
+        return {t for t in re.findall(r"[A-Za-z']+", (d or "").lower()) if len(t) > 2}
+
+    for ci, topo in enumerate(reconciled):
+        for e in topo.events:
+            key = _evt_group_key(e)
+            if key is None:
+                continue
+            entries = seen_groups.setdefault(key, [])
+            tokens = _desc_tokens(e.description)
+            best_match: Optional[Tuple[int, str, str]] = None
+            for prev_ci, prev_id, prev_desc in entries:
+                # Restrict to adjacent (or same) chunks — beats that
+                # repeat across distant chunks are almost always
+                # legitimately separate scene events.
+                if abs(ci - prev_ci) > 1:
+                    continue
+                prev_tokens = _desc_tokens(prev_desc)
+                if not tokens or not prev_tokens:
+                    continue
+                jacc = len(tokens & prev_tokens) / max(1, len(tokens | prev_tokens))
+                if jacc >= _DESC_TOKEN_OVERLAP_MIN:
+                    best_match = (prev_ci, prev_id, prev_desc)
+                    break
+            if best_match is not None and best_match[1] != e.id:
+                cross_chunk_renames[e.id] = best_match[1]
+                dropped_events.add(e.id)
+            else:
+                entries.append((ci, e.id, e.description))
+
+    if cross_chunk_renames:
+        logger.info(
+            "[Reconcile] Cross-chunk dedup: collapsing %d boundary-"
+            "duplicate event(s) onto their first-occurrence id.",
+            len(cross_chunk_renames),
+        )
+        # Rewrite refs first (so dropped ids vanish from edges /
+        # entity_updates / beliefs), then drop the duplicate event
+        # nodes themselves.
+        rewritten: List[ChunkTopology] = []
+        for topo in reconciled:
+            renamed = _apply_event_renames(topo, cross_chunk_renames)
+            kept = [e for e in renamed.events if e.id not in dropped_events]
+            rewritten.append(renamed.model_copy(update={"events": kept}))
+        reconciled = rewritten
 
     # --- Pass 2: Re-number syuzhet_index globally in chunk order ---
     syuzhet_counter = 0
@@ -4889,8 +5675,15 @@ async def extract_topology_async(
     params_list = _pre_allocate_chunk_params(chunks, config)
     semaphore = asyncio.Semaphore(config.max_concurrent_chunks)
     chunk_timeout = getattr(config, "per_chunk_timeout_seconds", 0)
+    # Cap how many consecutive timeouts to tolerate in serial mode
+    # before bailing out — without this, a wedged model would let the
+    # pipeline burn through the whole text producing only empty
+    # topologies (audit fix #5, second pass).
+    _CARRY_TIMEOUT_CONSECUTIVE_LIMIT = 3
 
-    async def _guarded_extract(chunk: str, params: _ChunkParams) -> Tuple[ChunkTopology, Dict[str, int]]:
+    async def _guarded_extract(
+        chunk: str, params: _ChunkParams,
+    ) -> Tuple[ChunkTopology, Dict[str, int], Dict[str, str]]:
         async with semaphore:
             coro = _extract_single_chunk_async(
                 chunk, params, register, config,
@@ -4907,22 +5700,103 @@ async def extract_topology_async(
                         "the rest of the run can proceed.",
                         params.chunk_index + 1, params.total_chunks, chunk_timeout,
                     )
+                    timeout_msg = (
+                        f"asyncio.TimeoutError: per-chunk pipeline did "
+                        f"not complete within {chunk_timeout:.0f}s"
+                    )
                     return (
                         ChunkTopology(),
                         {"physics": 1, "social": 1, "consequences": 1},
+                        {
+                            "physics": timeout_msg,
+                            "social": timeout_msg,
+                            "consequences": timeout_msg,
+                        },
                     )
             return await coro
 
-    chunk_results = await asyncio.gather(*[
-        _guarded_extract(chunk, params)
-        for chunk, params in zip(chunks, params_list)
-    ])
+    if config.enable_chunk_carry_over:
+        # Audit fix #2: serial dispatch with carry-over. Chunk N's deps
+        # see the prior chunk(s)' event ids and accumulated standing
+        # channels so the LLM can re-use existing CHN_ ids and resolve
+        # back-references to prior events instead of inventing fresh
+        # ids that look like duplicates after assembly. Sacrifices the
+        # max_concurrent_chunks speedup; intended for runs where
+        # cross-chunk continuity outweighs wall time.
+        logger.info(
+            "[Pipeline\u00b7Async] Chunk carry-over ENABLED \u2014 "
+            "dispatching %d chunk(s) serially.", len(chunks),
+        )
+        chunk_results: List[Tuple[ChunkTopology, Dict[str, int], Dict[str, str]]] = []
+        accumulated_event_ids: List[str] = []
+        accumulated_channels: Dict[str, Channel] = {}
+        consecutive_timeouts = 0
+        # Cap how many prior event ids we forward so the prompt size
+        # stays bounded on long runs. The most recent ones carry the
+        # most coreference value.
+        _CARRY_EVENT_ID_TAIL = 60
+        for chunk, params in zip(chunks, params_list):
+            params = params.model_copy(update={
+                "previous_event_ids": list(accumulated_event_ids[-_CARRY_EVENT_ID_TAIL:]),
+                "previous_chunk_channels": dict(accumulated_channels),
+            })
+            result = await _guarded_extract(chunk, params)
+            chunk_results.append(result)
+            topo, flags, _errs = result
+            # Detect "all stages failed" as a probable timeout / wedged
+            # model and short-circuit before the whole text is consumed
+            # by empty extractions.
+            if all(flags.values()):
+                consecutive_timeouts += 1
+                if consecutive_timeouts >= _CARRY_TIMEOUT_CONSECUTIVE_LIMIT:
+                    logger.error(
+                        "[Pipeline\u00b7Async] %d consecutive fully-failed "
+                        "chunk(s) in serial carry-over mode \u2014 aborting "
+                        "the chunk loop early; the failure-threshold check "
+                        "below will surface the cause.",
+                        consecutive_timeouts,
+                    )
+                    break
+            else:
+                consecutive_timeouts = 0
+            accumulated_event_ids.extend(e.id for e in topo.events)
+            for cid, ch in topo.channels.items():
+                accumulated_channels.setdefault(cid, ch)
+    else:
+        # Audit fix #4 (second pass): use return_exceptions so an
+        # unexpected un-caught failure in one chunk doesn't take down
+        # the whole gather. Convert any raised exception to the same
+        # "all stages failed" sentinel the timeout path uses so the
+        # threshold check sees a uniform failure signal.
+        gathered = await asyncio.gather(*[
+            _guarded_extract(chunk, params)
+            for chunk, params in zip(chunks, params_list)
+        ], return_exceptions=True)
+        chunk_results = []
+        for r in gathered:
+            if isinstance(r, BaseException):
+                err = f"{type(r).__name__}: {r}"
+                logger.exception(
+                    "[Pipeline\u00b7Async] Chunk task raised: %s", err,
+                )
+                chunk_results.append((
+                    ChunkTopology(),
+                    {"physics": 1, "social": 1, "consequences": 1},
+                    {"physics": err, "social": err, "consequences": err},
+                ))
+            else:
+                chunk_results.append(r)
     topologies_list = [r[0] for r in chunk_results]
     failure_counts: Dict[str, int] = {"physics": 0, "social": 0, "consequences": 0}
-    for _, flags in chunk_results:
+    sample_errors: Dict[str, str] = {}
+    for _, flags, errs in chunk_results:
         for stage, flag in flags.items():
             failure_counts[stage] += flag
-    _check_chunk_failure_threshold(failure_counts, len(chunks))
+        for stage, msg in errs.items():
+            sample_errors.setdefault(stage, msg)
+    _check_chunk_failure_threshold(
+        failure_counts, len(chunks), sample_errors=sample_errors,
+    )
 
     # Post-merge reconciliation
     topologies_list = _reconcile_chunk_topologies(topologies_list, config)
@@ -5802,6 +6676,34 @@ def _coalesce_snapshots(
         merged_world_id = next(iter(group_world_ids))
         # Merge fields:
         merged_traits: dict = {}
+        # Audit fix #9: when two snapshots at the same tick disagree
+        # on the *same* trait key, prefer the snapshot with more
+        # corroborating evidence (longer beliefs_added list, then
+        # longest invalidated list, then richest concrete-state
+        # signal). The legacy "later wins" rule silently lost
+        # whichever value the deterministic chunk-iteration order
+        # happened to put first; we now log every conflict so the
+        # ingestion-warnings panel surfaces them.
+        def _evidence_score(item: Tuple[int, EntityStateSnapshot]) -> tuple:
+            idx, s = item
+            return (
+                len(s.beliefs_added or []),
+                len(s.beliefs_invalidated or []),
+                # Snapshots that name a triggering event / status /
+                # location are richer than bare trait deltas.
+                1 if s.triggered_by else 0,
+                1 if s.status else 0,
+                1 if s.location_id else 0,
+                # Final tie-break: original input position (stable,
+                # semantically meaningful — earlier extraction order
+                # wins ties so output is deterministic across runs).
+                -idx,
+            )
+        ranked_group = [
+            s for _, s in sorted(
+                enumerate(group), key=_evidence_score, reverse=True,
+            )
+        ]
         merged_beliefs_added: List[Belief] = []
         seen_belief_keys: set = set()
         merged_invalidated: List[str] = []
@@ -5809,11 +6711,23 @@ def _coalesce_snapshots(
         first_triggered_by: Optional[str] = None
         first_status: Optional[str] = None
         first_location_id: Optional[str] = None
-        for s in group:
-            # later wins per key — chunks ordered by extraction so
-            # later chunks describe later narration of the same tick
+        # Track which snapshot supplied each trait so conflicts on the
+        # same key can be reported with provenance.
+        trait_provenance: Dict[str, str] = {}
+        for s in ranked_group:
             for k, v in (s.traits or {}).items():
+                if k in merged_traits and merged_traits[k] != v:
+                    logger.warning(
+                        "[Coalesce-Conflict] Tick %d: trait %r set to "
+                        "different values (%r from %s vs %r from %s) \u2014 "
+                        "keeping the higher-evidence snapshot's value.",
+                        tick, k,
+                        merged_traits[k], trait_provenance.get(k, "?"),
+                        v, s.triggered_by or "?",
+                    )
+                    continue  # higher-evidence value already in place
                 merged_traits[k] = v
+                trait_provenance[k] = s.triggered_by or "?"
             for b in s.beliefs_added or []:
                 # Dedup beliefs by (target_id, perceived_state,
                 # acquired_via_event_id, acquired_via_channel_id) so
@@ -8124,7 +9038,7 @@ def _build_world_trait_timeline_agent(
 
 def extract_world_trait_timelines(
     ws: WorldStateV1,
-    config: ExtractionConfig | None = None,
+    config: ExtractionConfig | None = None,ƒhop
 ) -> WorldStateV1:
     """Step 5: Post-assembly world trait timeline extraction.
 
@@ -8474,14 +9388,49 @@ async def run_extraction_async(
     # ``contextvars.copy_context``), so the worker thread sees the same
     # ``_user_context_var`` as the orchestrator task.
     with _user_context_scope(user_context):
+        # Audit fix #3 (final pass): try high-level pipeline checkpoint
+        # before kicking off Step 1. If both register + topologies are
+        # cached for this exact (text, config) pair we skip straight to
+        # assembly, which is the dominant cost saving on a re-run.
+        pipeline_ckpt = config.pipeline_checkpoint_dir
+        fingerprint = _extraction_fingerprint(config)
+
         # Step 1: Global Ontology (parallel 1b + 1c)
         # Step 1: Extract ontology
-        register = await extract_ontology_async(text, config, user_context)
+        register = _load_register_checkpoint(pipeline_ckpt, text, fingerprint)
+        if register is None:
+            register = await extract_ontology_async(text, config, user_context)
+            _save_register_checkpoint(
+                pipeline_ckpt, text, fingerprint, register,
+            )
+        else:
+            logger.info(
+                "[Pipeline\u00b7Async] Step 1 skipped \u2014 register "
+                "loaded from pipeline checkpoint.",
+            )
 
         # Step 2: Chunk Topology (parallel chunks)
-        chunks = chunk_text(text, strategy=config.chunk_strategy, min_chunk_chars=config.min_chunk_chars)
-        logger.info("[Pipeline·Async] Text split into %d chunks.", len(chunks))
-        topologies = await extract_topology_async(chunks, register, config)
+        topologies = _load_topologies_checkpoint(
+            pipeline_ckpt, text, fingerprint,
+        )
+        if topologies is None:
+            chunks = chunk_text(
+                text,
+                strategy=config.chunk_strategy,
+                min_chunk_chars=config.min_chunk_chars,
+                max_chunk_chars=config.max_chunk_chars,
+            )
+            logger.info("[Pipeline\u00b7Async] Text split into %d chunks.", len(chunks))
+            topologies = await extract_topology_async(chunks, register, config)
+            _save_topologies_checkpoint(
+                pipeline_ckpt, text, fingerprint, topologies,
+            )
+        else:
+            logger.info(
+                "[Pipeline\u00b7Async] Step 2 skipped \u2014 %d chunk "
+                "topologies loaded from pipeline checkpoint.",
+                len(topologies),
+            )
 
         # Step 3: Assembly + Normalize + Auto-Repair + Validation (same as sync)
         world_state = assemble_world_state(register, topologies)
@@ -8647,3 +9596,37 @@ async def run_extraction_async(
             report.repairs = list(repairs)
 
         return world_state, report
+
+
+
+def run_extraction(
+    text: str,
+    config: ExtractionConfig | None = None,
+    *,
+    user_id: Optional[int] = None,
+    project_id: Optional[int] = None,
+    version_id: Optional[int] = None,
+) -> Tuple[WorldStateV1, ValidationReport]:
+    """Synchronous wrapper around :func:`run_extraction_async` (audit fix #1).
+
+    The pipeline is async-native; this wrapper exists so callers in
+    sync contexts (CLI scripts, notebooks, blocking integration tests)
+    don't have to manage their own event loop. Raises ``RuntimeError``
+    if invoked from inside an already-running event loop \u2014 in that
+    case use :func:`run_extraction_async` directly.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        loop_running = False
+    else:
+        loop_running = True
+    if loop_running:
+        raise RuntimeError(
+            "run_extraction() called from inside a running event loop. "
+            "Await run_extraction_async(...) instead."
+        )
+    return asyncio.run(run_extraction_async(
+        text, config,
+        user_id=user_id, project_id=project_id, version_id=version_id,
+    ))
