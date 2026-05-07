@@ -497,10 +497,12 @@ def promote_sandbox_spawns(
     """
     from shadow_loom.models import (
         Channel,
+        Concern,
         Entity,
         GlobalTrait,
         Location,
         NarrativeObject,
+        Proposition,
         TraitVector,
     )
 
@@ -510,6 +512,10 @@ def promote_sandbox_spawns(
         "locations": {},
         "world_traits": {},
         "channels": {},
+        "propositions": {},
+        # entity_id → list[Concern] so the merge step can attach each
+        # spawned concern to its holder.
+        "concerns": {},
     }
     if not physics_state:
         return out
@@ -634,6 +640,54 @@ def promote_sandbox_spawns(
                     )
                     continue
                 out["channels"][node_id] = ch
+            elif node_type == "Proposition":
+                if node_id in {p.proposition_id for p in world_state.propositions} \
+                   or node_id in out["propositions"]:
+                    continue
+                try:
+                    prop = Proposition(
+                        world_id=node.get("world_id", "shadow"),
+                        proposition_id=node_id,
+                        kind=node.get("kind", "outcome"),
+                        referent_ids=node.get("referent_ids", []) or [],
+                        description=node.get("description", "") or node_id,
+                        audience_default_prior=float(node.get("audience_default_prior", 0.5)),
+                        stakes=float(node.get("stakes", 0.5)),
+                        truth_at_fabula=node.get("truth_at_fabula", {}) or {},
+                    )
+                except Exception:
+                    logger.exception(
+                        "[promote_sandbox_spawns] Proposition %s payload invalid \u2014 skipped.",
+                        node_id,
+                    )
+                    continue
+                out["propositions"][node_id] = prop
+            elif node_type == "Concern":
+                holder_id = node.get("holder_id") or node.get("entity_id")
+                if not holder_id:
+                    logger.warning(
+                        "[promote_sandbox_spawns] Skipping concern %s \u2014 no holder_id.",
+                        node_id,
+                    )
+                    continue
+                try:
+                    concern = Concern(
+                        world_id=node.get("world_id", "shadow"),
+                        concern_id=node_id,
+                        proposition_id=node.get("proposition_id"),
+                        polarity=node.get("polarity", "desire"),
+                        kind=node.get("kind"),
+                        salience=float(node.get("salience", 0.5)),
+                        activation_fabula_window=node.get("activation_fabula_window"),
+                        counter_concern_ids=node.get("counter_concern_ids", []) or [],
+                    )
+                except Exception:
+                    logger.exception(
+                        "[promote_sandbox_spawns] Concern %s payload invalid \u2014 skipped.",
+                        node_id,
+                    )
+                    continue
+                out["concerns"].setdefault(holder_id, []).append(concern)
             # EventNodes are handled by the normal physics/social
             # extraction path; nothing to do here.
         except Exception:
@@ -859,7 +913,88 @@ def extract_topology_from_prose(
         new_objects=spawns.get("objects", {}),
         new_locations=spawns.get("locations", {}),
         new_world_traits=spawns.get("world_traits", {}),
+        new_propositions=spawns.get("propositions", {}),
+        new_concerns=spawns.get("concerns", {}),
     )
+
+    # --- Optional Affect pass (Phase B4 ported to re-extraction) ----
+    # When the world has a populated proposition catalogue and/or
+    # standing concerns AND the chunk plausibly touches one of them,
+    # run the affect agent so that proposition truth commits / framing
+    # snapshots and concern drift implied by the generated prose are
+    # captured. Without this, a counterfactual that flips a proposition
+    # would never persist the truth-flip onto Proposition.truth_at_fabula.
+    if config.enable_affect_agent and (
+        world_state.propositions
+        or any(e.concerns for e in world_state.entities.values())
+    ):
+        try:
+            from shadow_loom.ingestion import (
+                _AffectDeps,
+                _build_affect_agent,
+                _chunk_has_affect_signal,
+                ChunkAffectExtraction,
+                ConcernSeed,
+            )
+            catalogue_prop_ids = {p.proposition_id for p in world_state.propositions}
+            seeded_entity_ids = {
+                eid for eid, e in world_state.entities.items() if e.concerns
+            }
+            if _chunk_has_affect_signal(
+                physics_result.events,
+                physics_result.entity_updates,
+                catalogue_prop_ids,
+                seeded_entity_ids,
+            ):
+                # Materialise existing concerns as ConcernSeed payloads
+                # so the agent sees the catalogue with full polarity /
+                # baseline / kind detail.
+                seeds: List[ConcernSeed] = []
+                for ent_id, ent in world_state.entities.items():
+                    for c in ent.concerns:
+                        try:
+                            seeds.append(ConcernSeed(
+                                concern_id=c.concern_id,
+                                entity_id=ent_id,
+                                proposition_id=c.proposition_id,
+                                polarity=c.polarity,
+                                kind=c.kind,
+                                baseline_salience=c.salience,
+                            ))
+                        except Exception:
+                            continue
+                affect_agent = _build_affect_agent(config)
+                affect_deps = _AffectDeps(
+                    global_register=register,
+                    chunk_events=physics_result.events,
+                    chunk_entity_updates=physics_result.entity_updates,
+                    propositions=list(world_state.propositions),
+                    concern_seeds=seeds,
+                )
+                affect_msg_parts: List[str] = [
+                    "Re-extraction of generated/edited prose (affect pass).",
+                    f"\nEVENTS EXTRACTED FROM THIS PROSE:\n{event_summary}",
+                ]
+                if branch_world_id == "shadow":
+                    affect_msg_parts.append(
+                        f"\nAMWN BRANCH CONTEXT: this prose lives on a SHADOW fork "
+                        f"(label: {branch_label or 'unspecified'}). All snapshots "
+                        f"and truth commits will be tagged world_id=\"shadow\"."
+                    )
+                affect_msg_parts.append(f"\nORIGINAL TEXT:\n{prose}")
+                affect_msg = "\n".join(affect_msg_parts)
+                affect_result: ChunkAffectExtraction = affect_agent.run_sync(
+                    affect_msg, deps=affect_deps,
+                ).output
+                log_agent_output(logger, "ChunkAffectExtraction", affect_result)
+                topology.proposition_snapshots.extend(affect_result.proposition_snapshots)
+                topology.proposition_truth_commits.extend(affect_result.proposition_truth_commits)
+                topology.concern_snapshots.extend(affect_result.concern_snapshots)
+                topology.new_concern_seeds.extend(affect_result.new_concern_seeds)
+        except Exception:
+            logger.exception(
+                "[extract_topology_from_prose] Affect pass failed \u2014 continuing without affect deltas."
+            )
 
     logger.info(
         "Prose extraction complete — %d events, %d causal, %d spatial, "
@@ -892,6 +1027,26 @@ class MergeChangeset(BaseModel):
     objects_added: int = 0
     locations_added: int = 0
     world_traits_added: int = 0
+    # Affect-layer additions (Phase 2026-05-07: prose-merge completeness).
+    propositions_added: int = 0
+    proposition_truths_committed: int = 0
+    proposition_snapshots_added: int = 0
+    concerns_added: int = 0
+    concern_snapshots_added: int = 0
+    belief_confidence_updates_applied: int = 0
+    # Deletion counters (deletion pass runs before additive sections).
+    events_removed: int = 0
+    causal_edges_removed: int = 0
+    spatial_edges_removed: int = 0
+    social_edges_removed: int = 0
+    channels_removed: int = 0
+    entities_removed: int = 0
+    objects_removed: int = 0
+    locations_removed: int = 0
+    world_traits_removed: int = 0
+    propositions_removed: int = 0
+    concerns_removed: int = 0
+    events_superseded: int = 0
 
 
 class WorldModelVersion(BaseModel):
@@ -1068,6 +1223,387 @@ def _backfill_world_trait(existing, incoming):
         appended_timeline.sort(key=lambda s: s.fabula_time)
         update["state_timeline"] = appended_timeline
     return existing.model_copy(update=update) if update else existing
+
+
+# =====================================================================
+# Affect-layer merge helpers (Phase 2026-05-07)
+# =====================================================================
+
+def _apply_affect_to_world(
+    merged: WorldStateV1,
+    topology: "ChunkTopology",
+    *,
+    world_id: Literal["factual", "shadow"],
+    changeset: "MergeChangeset",
+) -> None:
+    """Fold proposition / concern additions and snapshots into ``merged``.
+
+    Idempotent: re-applying the same topology against the same world
+    introduces no duplicates. Mutates ``merged`` in place and updates
+    ``changeset`` counters.
+    """
+    from shadow_loom.models import Proposition, Concern  # local to keep import-time graph clean
+
+    # Index existing propositions by id for O(1) lookup.
+    prop_index: Dict[str, Proposition] = {p.proposition_id: p for p in merged.propositions}
+
+    # 1. New propositions (genesis) — dedup on proposition_id.
+    for pid, prop in topology.new_propositions.items():
+        if pid in prop_index:
+            continue
+        new_prop = prop.model_copy(update={"world_id": world_id}) if world_id != "factual" else prop
+        merged.propositions.append(new_prop)
+        prop_index[pid] = new_prop
+        changeset.propositions_added += 1
+
+    # 2. Truth commits → Proposition.truth_at_fabula
+    for commit in topology.proposition_truth_commits:
+        prop = prop_index.get(commit.proposition_id)
+        if prop is None:
+            logger.warning(
+                "[merge·affect] Truth commit for unknown PROP %s — skipped.",
+                commit.proposition_id,
+            )
+            continue
+        existing = prop.truth_at_fabula.get(commit.fabula_time)
+        if existing is not None and existing == commit.truth:
+            continue  # idempotent re-apply
+        prop.truth_at_fabula[commit.fabula_time] = commit.truth
+        changeset.proposition_truths_committed += 1
+
+    # 3. Proposition framing snapshots → Proposition.state_timeline
+    for snap in topology.proposition_snapshots:
+        prop = prop_index.get(snap.proposition_id)
+        if prop is None:
+            logger.warning(
+                "[merge·affect] Snapshot for unknown PROP %s — skipped.",
+                snap.proposition_id,
+            )
+            continue
+        from shadow_loom.models import PropositionSnapshot
+        ps = PropositionSnapshot(
+            world_id=world_id,
+            fabula_time=snap.fabula_time,
+            triggered_by=snap.triggered_by,
+            stakes=snap.stakes,
+            audience_default_prior=snap.audience_default_prior,
+            description=snap.description,
+        )
+        # Dedup on (fabula_time, triggered_by, world_id)
+        key = (ps.fabula_time, ps.triggered_by, ps.world_id)
+        existing_keys = {
+            (s.fabula_time, s.triggered_by, getattr(s, "world_id", "factual"))
+            for s in prop.state_timeline
+        }
+        if key in existing_keys:
+            continue
+        prop.state_timeline.append(ps)
+        prop.state_timeline.sort(key=lambda s: s.fabula_time)
+        changeset.proposition_snapshots_added += 1
+
+    # 4. New concerns (direct genesis) under a holder
+    for entity_id, concerns in topology.new_concerns.items():
+        ent = merged.entities.get(entity_id)
+        if ent is None:
+            logger.warning(
+                "[merge·affect] new_concerns for unknown entity %s — skipped.",
+                entity_id,
+            )
+            continue
+        existing_keys = {
+            (c.proposition_id, c.polarity) for c in ent.concerns
+        }
+        for concern in concerns:
+            key = (concern.proposition_id, concern.polarity)
+            if key in existing_keys:
+                continue
+            new_concern = (
+                concern.model_copy(update={"world_id": world_id})
+                if world_id != "factual" else concern
+            )
+            ent.concerns.append(new_concern)
+            existing_keys.add(key)
+            changeset.concerns_added += 1
+
+    # 5. ConcernSeed materialisation (Phase B4 outputs already have a
+    # holder pinned in the seed). Lazy-import the seed type to avoid
+    # widening the import surface.
+    try:
+        from shadow_loom.ingestion import ConcernSeed  # type: ignore
+    except Exception:
+        ConcernSeed = None  # type: ignore
+    if ConcernSeed is not None:
+        for seed in topology.new_concern_seeds:
+            holder_id = getattr(seed, "holder_id", None) or getattr(seed, "entity_id", None)
+            if not holder_id:
+                continue
+            ent = merged.entities.get(holder_id)
+            if ent is None:
+                logger.warning(
+                    "[merge·affect] ConcernSeed for unknown holder %s — skipped.",
+                    holder_id,
+                )
+                continue
+            prop_id = getattr(seed, "proposition_id", None)
+            polarity = getattr(seed, "polarity", None)
+            if not prop_id or not polarity:
+                continue
+            existing_keys = {(c.proposition_id, c.polarity) for c in ent.concerns}
+            if (prop_id, polarity) in existing_keys:
+                continue
+            ccn_id = getattr(seed, "concern_id", None) or f"CCN_{holder_id}_{prop_id}_{polarity}".upper()
+            try:
+                concern = Concern(
+                    world_id=world_id,
+                    concern_id=ccn_id,
+                    proposition_id=prop_id,
+                    polarity=polarity,
+                    kind=getattr(seed, "kind", None),
+                    salience=getattr(seed, "baseline_salience", None) or getattr(seed, "salience", 0.5) or 0.5,
+                    counter_concern_ids=list(getattr(seed, "counter_concern_ids", []) or []),
+                )
+            except Exception:
+                logger.exception(
+                    "[merge·affect] Failed to materialise ConcernSeed for %s.", holder_id,
+                )
+                continue
+            ent.concerns.append(concern)
+            changeset.concerns_added += 1
+
+    # 6. Concern snapshots → Concern.state_timeline
+    if topology.concern_snapshots:
+        from shadow_loom.models import ConcernSnapshot
+        # Build a (entity_id, concern_id) → Concern index (concerns may
+        # be globally unique via concern_id but we still scope per-entity
+        # so we don't accidentally write across holders).
+        concern_index: Dict[str, "Concern"] = {}
+        for ent in merged.entities.values():
+            for c in ent.concerns:
+                concern_index[c.concern_id] = c
+        for snap in topology.concern_snapshots:
+            target = concern_index.get(snap.concern_id)
+            if target is None:
+                logger.warning(
+                    "[merge·affect] Concern snapshot for unknown CCN %s — skipped.",
+                    snap.concern_id,
+                )
+                continue
+            cs = ConcernSnapshot(
+                world_id=world_id,
+                fabula_time=snap.fabula_time,
+                triggered_by=snap.triggered_by,
+                salience=snap.salience,
+                polarity=snap.polarity,
+                activation_fabula_window=snap.activation_fabula_window,
+                counter_concern_ids=snap.counter_concern_ids,
+                kind=snap.kind,
+            )
+            existing_keys = {
+                (s.fabula_time, s.triggered_by, getattr(s, "world_id", "factual"))
+                for s in target.state_timeline
+            }
+            key = (cs.fabula_time, cs.triggered_by, cs.world_id)
+            if key in existing_keys:
+                continue
+            target.state_timeline.append(cs)
+            target.state_timeline.sort(key=lambda s: s.fabula_time)
+            changeset.concern_snapshots_added += 1
+
+
+def _apply_belief_confidence_updates(
+    merged: WorldStateV1,
+    topology: "ChunkTopology",
+    *,
+    changeset: "MergeChangeset",
+) -> None:
+    """Apply each ``EntityUpdate.belief_confidence_updates`` entry by
+    overwriting the matching existing :class:`Belief` on the entity.
+
+    The match is by ``target_id`` (and ``proposition_id`` when set). If
+    no matching belief exists the update is dropped with a warning —
+    creation should go through ``new_beliefs`` on the same EntityUpdate.
+    """
+    for eu in topology.entity_updates:
+        for upd in eu.belief_confidence_updates:
+            ent = merged.entities.get(eu.entity_id)
+            if ent is None:
+                continue
+            matched = False
+            for belief in ent.beliefs:
+                if belief.target_id != upd.target_id:
+                    continue
+                if upd.proposition_id and belief.proposition_id and belief.proposition_id != upd.proposition_id:
+                    continue
+                belief.confidence = float(upd.new_confidence)
+                if upd.new_inertia is not None:
+                    belief.inertia = float(upd.new_inertia)
+                matched = True
+                changeset.belief_confidence_updates_applied += 1
+                break
+            if not matched:
+                logger.debug(
+                    "[merge·belief] No existing belief on %s with target_id=%s; "
+                    "confidence update skipped.",
+                    eu.entity_id, upd.target_id,
+                )
+
+
+def _apply_deletions(
+    merged: WorldStateV1,
+    topology: "ChunkTopology",
+    *,
+    changeset: "MergeChangeset",
+) -> None:
+    """Run the deletion pass before additive merge sections.
+
+    Cascades dependent edges/snapshots when a parent node is removed
+    (e.g. removing an entity also drops its concerns and any social
+    edges or beliefs naming it).
+    """
+    # --- Events
+    if topology.removed_event_ids:
+        drop = set(topology.removed_event_ids)
+        before = len(merged.events)
+        merged.events = [e for e in merged.events if e.id not in drop]
+        removed_n = before - len(merged.events)
+        changeset.events_removed += removed_n
+        # Cascade: drop causal/spatial/social edges referencing dropped events.
+        before_c = len(merged.causal_topology)
+        merged.causal_topology = [
+            c for c in merged.causal_topology
+            if c.source_id not in drop and c.target_id not in drop
+        ]
+        changeset.causal_edges_removed += before_c - len(merged.causal_topology)
+
+    # --- Causal edges (explicit keys)
+    if topology.removed_causal_edge_keys:
+        keys = {tuple(k) for k in topology.removed_causal_edge_keys}
+        before = len(merged.causal_topology)
+        merged.causal_topology = [
+            c for c in merged.causal_topology
+            if (c.source_id, c.target_id, c.causality_type, c.fabula_time) not in keys
+        ]
+        changeset.causal_edges_removed += before - len(merged.causal_topology)
+
+    # --- Social dyads
+    if topology.removed_social_dyad_keys:
+        keys = {tuple(k) for k in topology.removed_social_dyad_keys}
+        before = len(merged.social_topology)
+        merged.social_topology = [
+            r for r in merged.social_topology
+            if (r.source_entity_id, r.target_entity_id) not in keys
+        ]
+        changeset.social_edges_removed += before - len(merged.social_topology)
+
+    # --- Spatial edges
+    if topology.removed_spatial_keys:
+        keys = {tuple(k) for k in topology.removed_spatial_keys}
+        before = len(merged.spatial_topology)
+        merged.spatial_topology = [
+            s for s in merged.spatial_topology
+            if (s.source_id, s.target_id) not in keys
+        ]
+        changeset.spatial_edges_removed += before - len(merged.spatial_topology)
+
+    # --- Channels
+    for cid in topology.removed_channel_ids:
+        if cid in merged.channels:
+            del merged.channels[cid]
+            changeset.channels_removed += 1
+
+    # --- Entities (cascade beliefs/concerns/edges)
+    if topology.removed_entity_ids:
+        drop = set(topology.removed_entity_ids)
+        for eid in drop:
+            if eid in merged.entities:
+                del merged.entities[eid]
+                changeset.entities_removed += 1
+        # Drop social edges naming a dropped entity.
+        before_s = len(merged.social_topology)
+        merged.social_topology = [
+            r for r in merged.social_topology
+            if r.source_entity_id not in drop and r.target_entity_id not in drop
+        ]
+        changeset.social_edges_removed += before_s - len(merged.social_topology)
+        # Drop other entities' beliefs targeting a dropped entity.
+        for ent in merged.entities.values():
+            ent.beliefs = [b for b in ent.beliefs if b.target_id not in drop]
+
+    # --- Objects
+    for oid in topology.removed_object_ids:
+        if oid in merged.objects:
+            del merged.objects[oid]
+            changeset.objects_removed += 1
+
+    # --- Locations
+    for lid in topology.removed_location_ids:
+        if lid in merged.locations:
+            del merged.locations[lid]
+            changeset.locations_removed += 1
+
+    # --- World traits
+    for wid in topology.removed_world_trait_ids:
+        if wid in merged.world_traits:
+            del merged.world_traits[wid]
+            changeset.world_traits_removed += 1
+
+    # --- Propositions (also drop concerns referencing them)
+    if topology.removed_proposition_ids:
+        drop = set(topology.removed_proposition_ids)
+        before = len(merged.propositions)
+        merged.propositions = [p for p in merged.propositions if p.proposition_id not in drop]
+        changeset.propositions_removed += before - len(merged.propositions)
+        for ent in merged.entities.values():
+            before_c = len(ent.concerns)
+            ent.concerns = [c for c in ent.concerns if c.proposition_id not in drop]
+            changeset.concerns_removed += before_c - len(ent.concerns)
+
+    # --- Concerns (entity_id, concern_id)
+    if topology.removed_concern_ids:
+        drop = set((eid, cid) for eid, cid in topology.removed_concern_ids)
+        for eid, cid in drop:
+            ent = merged.entities.get(eid)
+            if ent is None:
+                continue
+            before_c = len(ent.concerns)
+            ent.concerns = [c for c in ent.concerns if c.concern_id != cid]
+            changeset.concerns_removed += before_c - len(ent.concerns)
+
+
+def _apply_supersession(
+    merged: WorldStateV1,
+    topology: "ChunkTopology",
+    *,
+    changeset: "MergeChangeset",
+) -> None:
+    """Stamp ``superseded_by_event_id`` on overridden events and rewrite
+    cross-references on beliefs / concerns / propositions / new events."""
+    if not topology.supersedes_event_ids:
+        return
+    mapping = dict(topology.supersedes_event_ids)
+    event_index = {e.id: e for e in merged.events}
+    for new_id, old_id in mapping.items():
+        old_evt = event_index.get(old_id)
+        if old_evt is None:
+            logger.warning(
+                "[merge·supersede] Old event %s not found — supersession skipped.", old_id,
+            )
+            continue
+        if old_evt.superseded_by_event_id == new_id:
+            continue
+        old_evt.superseded_by_event_id = new_id
+        changeset.events_superseded += 1
+
+    # Rewrite belief provenance.
+    for ent in merged.entities.values():
+        for b in ent.beliefs:
+            if b.acquired_via_event_id in mapping:
+                b.acquired_via_event_id = mapping[b.acquired_via_event_id]
+
+    # Rewrite Proposition.truth_at_fabula? No — those are keyed by time, not event.
+    # But events' resolves_proposition_ids are still valid; we leave the
+    # old event's list intact and rely on the supersede pointer for
+    # downstream readers that prefer the override.
 
 
 class VersionedWorldModel(BaseModel):
@@ -1253,7 +1789,17 @@ class VersionedWorldModel(BaseModel):
                 loc.world_id = world_id
             for wt in topology.new_world_traits.values():
                 wt.world_id = world_id
+            for prop in topology.new_propositions.values():
+                prop.world_id = world_id
+            for concern_list in topology.new_concerns.values():
+                for c in concern_list:
+                    c.world_id = world_id
         changeset = MergeChangeset()
+
+        # --- Deletion pass (P2 of prose-merge completeness) — runs
+        # before additive sections so a single merge can replace-then-
+        # add cleanly. Cascades dependent edges/snapshots.
+        _apply_deletions(merged, topology, changeset=changeset)
 
         # --- Genesis-promoted nodes (entities / objects / locations /
         # world_traits) — written first so subsequent edge / event /
@@ -1385,6 +1931,16 @@ class VersionedWorldModel(BaseModel):
             entity.state_timeline.append(snap)
             entity.state_timeline.sort(key=lambda s: s.fabula_time)
             changeset.entity_updates_applied += 1
+
+        # --- Affect ledger (P2 of prose-merge completeness) ---
+        # Folds new propositions, truth commits, proposition snapshots,
+        # new concerns, ConcernSeed materialisations, and concern
+        # snapshots into the merged world.
+        _apply_affect_to_world(merged, topology, world_id=world_id, changeset=changeset)
+        # Belief confidence overwrites (Pearl Rung-2 BeliefMutation bridge).
+        _apply_belief_confidence_updates(merged, topology, changeset=changeset)
+        # Supersession (mainline-promoted counterfactual override).
+        _apply_supersession(merged, topology, changeset=changeset)
 
         next_version = self.version + 1
         new_history = list(self.history) + [

@@ -326,7 +326,7 @@ def _render_inspector(
         elif node_type == "EventNode":
             evt = next((e for e in ws.events if e.id == node_id), None)
             if evt:
-                _inspect_event(ws, evt)
+                _inspect_event(ws, evt, state=state)
                 _inspector_suggestions(state, node_id, node_type, evt.description[:30])
         elif node_type == "NarrativeObject" and node_id in ws.objects:
             _inspect_object(ws, node_id)
@@ -442,7 +442,7 @@ def _inspect_location(ws: "WorldStateV1", lid: str) -> None:
             )
 
 
-def _inspect_event(ws: "WorldStateV1", evt) -> None:
+def _inspect_event(ws: "WorldStateV1", evt, *, state=None) -> None:
     ui.label(evt.id).classes("text-lg font-semibold text-slate-800")
     with ui.row().classes("gap-1"):
         ui.badge(evt.event_type, color="warning").props("dense")
@@ -450,6 +450,27 @@ def _inspect_event(ws: "WorldStateV1", evt) -> None:
         ui.label(f"s={evt.syuzhet_index}").classes("text-xs text-slate-500")
 
     ui.label(evt.description).classes("text-sm text-slate-700 mt-1")
+
+    # Supersession callout: when this event has been overridden by a
+    # promoted counterfactual, show an amber banner with a clickable
+    # link to the canonical successor (if a state handle is available).
+    successor = getattr(evt, "superseded_by_event_id", None)
+    if successor:
+        with ui.row().classes(
+            "items-center gap-2 mt-2 px-2 py-1 rounded "
+            "bg-amber-50 border border-amber-200"
+        ):
+            ui.icon("auto_awesome_motion", color="amber-9", size="sm")
+            ui.label("Superseded by").classes(
+                "text-xs text-amber-900 font-semibold"
+            )
+            if state is not None:
+                ui.button(
+                    successor,
+                    on_click=lambda eid=successor: state.select_node(eid, "EventNode"),
+                ).props("dense flat color=amber-9 size=sm no-caps")
+            else:
+                ui.label(successor).classes("text-xs font-mono text-amber-900")
 
     if evt.actor_ids:
         names = [

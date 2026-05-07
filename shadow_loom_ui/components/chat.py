@@ -219,6 +219,23 @@ def _build_command_bar(state: AppState) -> None:
             # than colliding with existing chronology.
             anchor_options: dict[str, str] = {"": "Append at end"}
             anchor_state = {"event_id": None}
+            # Per-namespace replace selection for true *replace*
+            # semantics on manual edits (P3b). Each list maps to the
+            # matching ``ManualEditQuery.replace_*`` field; the merge
+            # deletion pass cascades dependent edges/snapshots/concerns.
+            # Concerns are stored as ``"<entity_id>::<concern_id>"``
+            # strings in the multiselect and unpacked into tuples on
+            # send.
+            replace_state: dict[str, list[str]] = {
+                "events": [],
+                "entities": [],
+                "objects": [],
+                "locations": [],
+                "world_traits": [],
+                "channels": [],
+                "propositions": [],
+                "concerns": [],
+            }
 
             def _refresh_anchor_options() -> None:
                 ws = state.world_state
@@ -258,8 +275,164 @@ def _build_command_bar(state: AppState) -> None:
                 if manual_mode["active"]:
                     _refresh_anchor_options()
                     anchor_select.set_visibility(True)
+                    replace_btn.set_visibility(True)
                 else:
                     anchor_select.set_visibility(False)
+                    replace_btn.set_visibility(False)
+
+            def _open_replace_dialog() -> None:
+                """Compact multi-select replace composer.
+
+                Surfaces every ``ManualEditQuery.replace_*`` namespace so a
+                manual prose edit can drop entities/objects/locations/world
+                traits/channels/propositions/concerns/events alongside the
+                re-extraction. Cascading deletes are handled by the merge
+                deletion pass; this dialog is purely the picker.
+                """
+                ws = state.world_state
+                if ws is None:
+                    return
+                with ui.dialog() as dlg, ui.card().classes(
+                    "w-[640px] max-w-[95vw]"
+                ):
+                    ui.label("Replace existing graph nodes").classes(
+                        "text-sm font-semibold text-slate-700"
+                    )
+                    ui.label(
+                        "Selected items are dropped (with cascading edges) "
+                        "before merging the re-extracted topology."
+                    ).classes("text-xs text-slate-500")
+
+                    def _opts(items: list[tuple[str, str]]) -> dict:
+                        return {
+                            i: f"{i} \u2014 {label[:40]}"
+                            for i, label in items
+                        }
+
+                    evt_sel = ui.select(
+                        options=_opts([
+                            (e.id, (e.description or "")[:40])
+                            for e in sorted(ws.events, key=lambda e: e.fabula_time)
+                        ]),
+                        value=list(replace_state["events"]),
+                        multiple=True, label="Events (EVT_)",
+                    ).props("dense outlined use-chips").classes("w-full")
+                    ent_sel = ui.select(
+                        options=_opts([
+                            (eid, ent.name) for eid, ent in ws.entities.items()
+                        ]),
+                        value=list(replace_state["entities"]),
+                        multiple=True, label="Entities (ENT_)",
+                    ).props("dense outlined use-chips").classes("w-full")
+                    obj_sel = ui.select(
+                        options=_opts([
+                            (oid, o.name) for oid, o in ws.objects.items()
+                        ]),
+                        value=list(replace_state["objects"]),
+                        multiple=True, label="Objects (OBJ_)",
+                    ).props("dense outlined use-chips").classes("w-full")
+                    loc_sel = ui.select(
+                        options=_opts([
+                            (lid, lo.name) for lid, lo in ws.locations.items()
+                        ]),
+                        value=list(replace_state["locations"]),
+                        multiple=True, label="Locations (LOC_)",
+                    ).props("dense outlined use-chips").classes("w-full")
+                    wt_sel = ui.select(
+                        options=_opts([
+                            (wid, wt.name) for wid, wt in ws.world_traits.items()
+                        ]),
+                        value=list(replace_state["world_traits"]),
+                        multiple=True, label="World traits (WORLD_)",
+                    ).props("dense outlined use-chips").classes("w-full")
+                    ch_sel = ui.select(
+                        options=_opts([
+                            (cid, c.name) for cid, c in ws.channels.items()
+                        ]),
+                        value=list(replace_state["channels"]),
+                        multiple=True, label="Channels (CHN_)",
+                    ).props("dense outlined use-chips").classes("w-full")
+                    prop_sel = ui.select(
+                        options=_opts([
+                            (p.proposition_id, p.description)
+                            for p in ws.propositions
+                        ]),
+                        value=list(replace_state["propositions"]),
+                        multiple=True, label="Propositions (PROP_)",
+                    ).props("dense outlined use-chips").classes("w-full")
+                    ccn_sel = ui.select(
+                        options={
+                            f"{eid}::{c.concern_id}": (
+                                f"{ent.name} \u2014 {c.concern_id} "
+                                f"({c.polarity})"
+                            )
+                            for eid, ent in ws.entities.items()
+                            for c in ent.concerns
+                        },
+                        value=list(replace_state["concerns"]),
+                        multiple=True,
+                        label="Concerns (entity::CCN_)",
+                    ).props("dense outlined use-chips").classes("w-full")
+
+                    with ui.row().classes("w-full justify-end gap-2 mt-2"):
+                        ui.button(
+                            "Clear all",
+                            on_click=lambda: [
+                                evt_sel.set_value([]),
+                                ent_sel.set_value([]),
+                                obj_sel.set_value([]),
+                                loc_sel.set_value([]),
+                                wt_sel.set_value([]),
+                                ch_sel.set_value([]),
+                                prop_sel.set_value([]),
+                                ccn_sel.set_value([]),
+                            ],
+                        ).props("flat dense color=grey size=sm no-caps")
+                        ui.button("Cancel", on_click=dlg.close).props(
+                            "flat dense size=sm no-caps"
+                        )
+
+                        def _apply():
+                            replace_state["events"] = list(evt_sel.value or [])
+                            replace_state["entities"] = list(ent_sel.value or [])
+                            replace_state["objects"] = list(obj_sel.value or [])
+                            replace_state["locations"] = list(loc_sel.value or [])
+                            replace_state["world_traits"] = list(wt_sel.value or [])
+                            replace_state["channels"] = list(ch_sel.value or [])
+                            replace_state["propositions"] = list(prop_sel.value or [])
+                            replace_state["concerns"] = list(ccn_sel.value or [])
+                            _refresh_replace_btn_label()
+                            dlg.close()
+
+                        ui.button(
+                            "Apply", icon="check", on_click=_apply,
+                        ).props("unelevated dense color=primary size=sm no-caps")
+                dlg.open()
+
+            def _replace_total() -> int:
+                return sum(len(v) for v in replace_state.values())
+
+            def _refresh_replace_btn_label() -> None:
+                n = _replace_total()
+                replace_btn.text = (
+                    f"Replace ({n})" if n else "Replace…"
+                )
+                replace_btn.update()
+
+            replace_btn = ui.button(
+                "Replace…",
+                icon="delete_sweep",
+                on_click=lambda: _open_replace_dialog(),
+            ).props(
+                "outline dense color=warning size=sm no-caps"
+            ).style("height: 48px;")
+            replace_btn.tooltip(
+                "Optionally drop existing graph nodes (entities, "
+                "events, objects, locations, world traits, channels, "
+                "propositions, concerns) before merging your prose. "
+                "Cascading edges/snapshots are removed automatically."
+            )
+            replace_btn.set_visibility(False)
 
             anchor_select.set_visibility(False)
             state.on(
@@ -443,9 +616,25 @@ def _build_command_bar(state: AppState) -> None:
             try:
                 with capture_logs_to_task(state, task):
                     if use_manual:
+                        # Unpack ``"<entity_id>::<concern_id>"`` back
+                        # into the (entity_id, concern_id) tuple shape
+                        # the merge-deletion pass expects.
+                        ccn_pairs = [
+                            tuple(s.split("::", 1))
+                            for s in replace_state["concerns"]
+                            if "::" in s
+                        ]
                         result = await asyncio.to_thread(
                             state.run_manual_edit, text,
                             insert_after_event_id=anchor_state["event_id"],
+                            replace_event_ids=list(replace_state["events"]),
+                            replace_entity_ids=list(replace_state["entities"]),
+                            replace_object_ids=list(replace_state["objects"]),
+                            replace_location_ids=list(replace_state["locations"]),
+                            replace_world_trait_ids=list(replace_state["world_traits"]),
+                            replace_channel_ids=list(replace_state["channels"]),
+                            replace_proposition_ids=list(replace_state["propositions"]),
+                            replace_concern_ids=ccn_pairs,
                         )
                     else:
                         result = await state.run_nl_query_async(

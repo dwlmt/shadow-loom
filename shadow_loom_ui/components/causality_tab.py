@@ -1149,6 +1149,66 @@ def _build_whatif_workbench(state: AppState) -> None:
                 "structured intervention or counterfactual query."
             )
 
+            # ── Structured event-removal selector (P3c) ──────────
+            # Bypasses the NL parser when the user just wants to drop
+            # one or more events from the causal graph: each picked
+            # event becomes a ``DoEvent(occurred=False)`` target on
+            # the underlying ``InterventionQuery`` /
+            # ``CounterfactualQuery`` (chosen by ``whatif_type``).
+            # Optional evidence anchors apply only to the
+            # counterfactual branch (Rung-3 abduction needs evidence).
+            structured_state: dict[str, list[str]] = {
+                "remove_events": [],
+                "evidence_nodes": [],
+            }
+            with ui.expansion(
+                "Structured surgery (skip NL parser)",
+                icon="construction",
+            ).props("dense").classes("w-full q-mt-sm"):
+                ui.label(
+                    "Pick events to clamp to non-occurrence (Pearl "
+                    "Rung-2/3 do-operator). The NL box above is "
+                    "ignored when any event is selected here."
+                ).classes("text-xs text-slate-500")
+
+                def _evt_opts() -> dict:
+                    ws_l = state.world_state
+                    if ws_l is None:
+                        return {}
+                    return {
+                        e.id: (
+                            f"{e.id} (t={e.fabula_time}) — "
+                            f"{(e.description or '')[:50]}"
+                        )
+                        for e in sorted(
+                            ws_l.events, key=lambda x: x.fabula_time,
+                        )
+                    }
+
+                remove_evt_sel = ui.select(
+                    options=_evt_opts(), value=[], multiple=True,
+                    label="Events to remove (DoEvent occurred=False)",
+                ).props("dense outlined use-chips").classes("w-full")
+                evidence_sel = ui.select(
+                    options=_evt_opts(), value=[], multiple=True,
+                    label=(
+                        "Evidence anchors (counterfactual only — "
+                        "facts to condition abduction on)"
+                    ),
+                ).props("dense outlined use-chips").classes("w-full")
+
+                def _refresh_struct_opts(**_kw) -> None:
+                    opts = _evt_opts()
+                    remove_evt_sel.options = opts
+                    evidence_sel.options = opts
+                    remove_evt_sel.update()
+                    evidence_sel.update()
+
+                state.on(
+                    StateEvent.WORLD_STATE_CHANGED,
+                    _refresh_struct_opts,
+                )
+
             # NL suggestion chips
             with ui.row().classes("gap-1 flex-wrap q-mt-xs"):
                 def _fill(text, wtype):
@@ -1168,13 +1228,66 @@ def _build_whatif_workbench(state: AppState) -> None:
 
             async def _run_whatif():
                 text = whatif_input.value.strip()
-                if not text:
-                    return
                 if state.world_state is None:
                     ui.notify("No world model loaded", type="warning")
                     return
 
                 qtype = whatif_type.value
+                structured_state["remove_events"] = list(
+                    remove_evt_sel.value or []
+                )
+                structured_state["evidence_nodes"] = list(
+                    evidence_sel.value or []
+                )
+                drop_ids = structured_state["remove_events"]
+
+                if not drop_ids and not text:
+                    return
+
+                # ── Structured path: build the query directly ─────
+                if drop_ids:
+                    from shadow_loom.query_models import (
+                        DoEvent,
+                        InterventionQuery,
+                        CounterfactualQuery,
+                    )
+                    do_targets = [
+                        DoEvent(event_id=eid, occurred=False)
+                        for eid in drop_ids
+                    ]
+                    summary_label = (
+                        f"{qtype.title()}: drop "
+                        f"{len(drop_ids)} event"
+                        f"{'s' if len(drop_ids) != 1 else ''}"
+                    )
+                    if qtype == "counterfactual":
+                        q = CounterfactualQuery(
+                            original_query=text or summary_label,
+                            historical_do_targets=do_targets,
+                            evidence_node_ids=list(
+                                structured_state["evidence_nodes"]
+                            ),
+                        )
+                    else:
+                        q = InterventionQuery(
+                            original_query=text or summary_label,
+                            do_targets=do_targets,
+                        )
+                    try:
+                        result, _task = await run_query_as_task(
+                            state,
+                            label=summary_label,
+                            kind=qtype,
+                            runner=lambda: asyncio.to_thread(
+                                state.run_structured_query, q,
+                            ),
+                            summary_fn=lambda r: (r.summary if r else "") or "Done",
+                        )
+                        _render_whatif_result(result_container, result)
+                    except Exception:
+                        logger.exception("Structured what-if failed")
+                    return
+
                 try:
                     result, _task = await run_query_as_task(
                         state,

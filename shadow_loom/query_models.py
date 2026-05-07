@@ -2,7 +2,135 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 from pydantic import BaseModel, Field
-from typing import Any, Optional, Literal, Union, Dict, List
+from typing import Any, Optional, Literal, Tuple, Union, Dict, List
+from typing_extensions import Annotated
+
+
+# ---------------------------------------------------------------------
+# DoTarget — typed, discriminated payloads for Pearl Rung-2 / Rung-3
+# interventions. Replaces the legacy free-form ``Dict[str, Any]`` on
+# ``InterventionQuery.interventions`` and
+# ``CounterfactualQuery.historical_interventions``. The legacy dicts
+# remain for backwards compatibility; the migration adapter
+# ``coerce_legacy_interventions`` (in ``narrative_physics``) lifts them
+# into typed ``DoTarget`` lists at dispatch time.
+#
+# Every variant carries a ``target_kind`` literal so Pydantic can
+# discriminate the union without falling back to try-each-type.
+# ---------------------------------------------------------------------
+class DoEvent(BaseModel):
+    """Clamp the occurrence of an ``EventNode``.
+
+    Existing event-level surgery (the only intervention shape supported
+    by the engine prior to this typed surface). ``occurred=False`` is
+    the standard "what if X had not happened" form; ``occurred=True``
+    forces an event that did not occur in the factual world.
+    """
+    target_kind: Literal["event"] = "event"
+    event_id: str = Field(description="EVT_ id whose occurrence is clamped.")
+    occurred: bool = Field(default=False, description="Clamped occurrence value.")
+
+
+class DoProposition(BaseModel):
+    """Clamp a ``Proposition`` truth value at a fabula time.
+
+    Cascades to every ``Belief`` whose ``proposition_id`` matches when
+    ``propagate_to_beliefs`` is True (gated by the belief's
+    ``evidence_strength``). Used for "suppose Banquo's line really
+    inherits", "if it had been the case that O'Brien is genuinely
+    Brotherhood", etc.
+    """
+    target_kind: Literal["proposition"] = "proposition"
+    proposition_id: str = Field(description="PROP_ id whose truth is clamped.")
+    truth: bool = Field(description="The clamped truth value.")
+    fabula_time: Optional[int] = Field(
+        default=None,
+        description="Fabula time of the clamp. Defaults to the query's anchor when unset.",
+    )
+    propagate_to_beliefs: bool = Field(
+        default=True,
+        description=(
+            "If True, cascade the clamp into every Belief whose proposition_id matches "
+            "(adjusting confidence per evidence_strength). If False, only the "
+            "audience-side ``truth_at_fabula`` is altered."
+        ),
+    )
+
+
+class DoBelief(BaseModel):
+    """Clamp a single character's belief — an epistemic intervention.
+
+    Used for "if Macduff had believed Macbeth's grief was sincere", "if
+    Otello believed Desdemona faithful". Distinct from ``DoProposition``
+    because the underlying fact is unchanged — only the holder's
+    epistemic state is forced.
+    """
+    target_kind: Literal["belief"] = "belief"
+    holder_id: str = Field(description="ENT_ id of the believer.")
+    target_id: str = Field(description="ENT_/EVT_/OBJ_/LOC_/WORLD_ id the belief is about.")
+    perceived_state: Optional[str] = Field(
+        default=None,
+        description="Belief content (required when creating a belief that does not exist yet).",
+    )
+    confidence: float = Field(
+        default=1.0, ge=0.0, le=1.0,
+        description="Clamped confidence in the belief.",
+    )
+    proposition_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional PROP_ id this belief joins. Auto-resolved when a unique "
+            "proposition references the (holder, target) pair."
+        ),
+    )
+
+
+class DoConcern(BaseModel):
+    """Clamp a single character's concern — a utility-layer intervention.
+
+    Used for "if Lady Macbeth had no ambition", "without Heathcliff's
+    desire for vengeance", "suppose Victor never feared the Creature".
+    Any unset field is left at its factual value.
+    """
+    target_kind: Literal["concern"] = "concern"
+    holder_id: str = Field(description="ENT_ id of the concern holder.")
+    concern_id: str = Field(description="CCN_ id to clamp.")
+    polarity: Optional[Literal["desire", "fear"]] = Field(
+        default=None, description="Override polarity; None leaves it unchanged.",
+    )
+    salience: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0,
+        description="Override salience; None leaves it unchanged.",
+    )
+    active: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Toggle the concern's activation. False collapses the activation_window "
+            "to a single point past the query horizon (effectively disabling); True "
+            "clears any window (always-active)."
+        ),
+    )
+
+
+class DoTrait(BaseModel):
+    """Clamp a single character trait. Equivalent to existing trait
+    surgery in ``CausalPhysicsEngine.apply_do_operator`` but exposed as
+    a typed payload on the query surface."""
+    target_kind: Literal["trait"] = "trait"
+    holder_id: str = Field(description="ENT_ id of the trait-bearer.")
+    trait_name: str = Field(description="Trait name, e.g. 'ambition' or 'fear'.")
+    value: float = Field(description="Clamped trait value.")
+    inertia: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0,
+        description="Override inertia; None leaves it unchanged.",
+    )
+
+
+# Discriminated union — Pydantic v2 dispatches on ``target_kind``.
+DoTarget = Annotated[
+    Union[DoEvent, DoProposition, DoBelief, DoConcern, DoTrait],
+    Field(discriminator="target_kind"),
+]
 
 
 # ---------------------------------------------------------------------
@@ -86,8 +214,22 @@ class InterventionQuery(_QueryBase):
     cutting incoming edges, and calculates the future from here.
     """
     query_type: Literal["intervention"] = "intervention"
+    do_targets: List[DoTarget] = Field(
+        default_factory=list,
+        description=(
+            "Typed Pearl Rung-2 do-operator targets (events, propositions, "
+            "beliefs, concerns, traits). When non-empty, supersedes the legacy "
+            "``interventions`` dict; the migration adapter lifts the legacy "
+            "shape into typed targets when this list is empty."
+        ),
+    )
     interventions: Dict[str, Any] = Field(
-        description="A dictionary of do-operator targets. Values are strings for state changes, or dicts for genesis spawns."
+        default_factory=dict,
+        description=(
+            "Legacy free-form do-operator dict, kept for backwards compatibility. "
+            "Use ``do_targets`` for new code; this field is auto-coerced when "
+            "``do_targets`` is empty."
+        ),
     )
     target_node_ids: List[str] = Field(
         default_factory=list,
@@ -114,8 +256,21 @@ class CounterfactualQuery(_QueryBase):
     applies multiple interventions, and runs prediction.
     """
     query_type: Literal["counterfactual"] = "counterfactual"
+    historical_do_targets: List[DoTarget] = Field(
+        default_factory=list,
+        description=(
+            "Typed Pearl Rung-3 historical do-operator targets. When non-empty, "
+            "supersedes the legacy ``historical_interventions`` dict; the migration "
+            "adapter lifts the legacy shape into typed targets when this list is "
+            "empty."
+        ),
+    )
     historical_interventions: Dict[str, Any] = Field(
-        description="The PAST events to change. e.g., {'EVT_GUARD_DUTY': 'slept'}"
+        default_factory=dict,
+        description=(
+            "Legacy free-form historical do-operator dict, kept for backwards "
+            "compatibility. Use ``historical_do_targets`` for new code."
+        ),
     )
     evidence_node_ids: List[str] = Field(
         description="The facts from the present we must condition on to calculate latent traits."
@@ -241,6 +396,20 @@ class ManualEditQuery(_QueryBase):
             "removed transitively. Leave empty for additive edits."
         ),
     )
+    # Extended deletion vocabulary (P6 of prose-merge completeness).
+    # Each list flows into the matching ``ChunkTopology.removed_*``
+    # field so the merge step's deletion pass cascades dependent
+    # edges/snapshots/concerns. Leave empty for additive edits.
+    replace_entity_ids: List[str] = Field(default_factory=list)
+    replace_object_ids: List[str] = Field(default_factory=list)
+    replace_location_ids: List[str] = Field(default_factory=list)
+    replace_world_trait_ids: List[str] = Field(default_factory=list)
+    replace_channel_ids: List[str] = Field(default_factory=list)
+    replace_proposition_ids: List[str] = Field(default_factory=list)
+    replace_concern_ids: List[Tuple[str, str]] = Field(
+        default_factory=list,
+        description="(entity_id, concern_id) pairs to drop from the world.",
+    )
 
 # ==========================================
 # 8. EVALUATION (Full-story quality audit)
@@ -294,3 +463,47 @@ UserRequest = Union[
     ManualEditQuery,
     EvaluationQuery,
 ]
+
+
+# ---------------------------------------------------------------------
+# Migration helper — lifts the legacy ``Dict[str, Any]`` intervention
+# shape into typed ``DoTarget`` lists. Idempotent: if ``do_targets`` /
+# ``historical_do_targets`` is already populated it is returned as-is.
+#
+# The legacy dict shape supports only event-level surgery, e.g.
+# ``{"EVT_DUNCAN_MURDER": "averted"}``; values are treated as
+# falsey-string-means-not-occurred.
+# ---------------------------------------------------------------------
+def _coerce_legacy_dict(legacy: Dict[str, Any]) -> List[DoTarget]:
+    """Translate a legacy intervention dict into typed ``DoEvent`` targets."""
+    targets: List[DoTarget] = []
+    if not legacy:
+        return targets
+    for key, value in legacy.items():
+        if not isinstance(key, str):
+            continue
+        if key.startswith("EVT_"):
+            occurred = not (
+                value is False
+                or value is None
+                or (isinstance(value, str) and value.lower() in {"averted", "false", "no", "not_occurred", "absent"})
+            )
+            targets.append(DoEvent(event_id=key, occurred=occurred))
+        # Heuristic legacy support for other prefixes: leave to query parser
+        # to emit typed targets going forward; legacy callers only ever set
+        # event ids so we keep this conservative.
+    return targets
+
+
+def coerce_intervention_query(query: InterventionQuery) -> InterventionQuery:
+    """Populate ``do_targets`` from ``interventions`` when empty."""
+    if not query.do_targets and query.interventions:
+        query.do_targets = _coerce_legacy_dict(query.interventions)
+    return query
+
+
+def coerce_counterfactual_query(query: CounterfactualQuery) -> CounterfactualQuery:
+    """Populate ``historical_do_targets`` from ``historical_interventions`` when empty."""
+    if not query.historical_do_targets and query.historical_interventions:
+        query.historical_do_targets = _coerce_legacy_dict(query.historical_interventions)
+    return query

@@ -18,6 +18,7 @@ from shadow_loom.models import (
     TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
     GlobalTrait,
     NarrativeStyle,
+    Concern, Proposition, ConcernSnapshot, PropositionSnapshot,
 )
 
 world_state = WorldStateV1(
@@ -126,8 +127,28 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_FRANK",
                        perceived_state="the man who hanged my brother — debt outstanding",
+                       proposition_id="PROP_FRANK_HANGED_BROTHER",
                        confidence=0.99, inertia=0.95,
                        established_at_fabula=0, evidence_strength="strong"),
+            ],
+            concerns=[
+                # The single defining standing concern — the entire film is the
+                # discharge of this debt (Frijda action-readiness: revenge as
+                # ritual, not impulse).
+                Concern(concern_id="CCN_HARMONICA_AVENGES_BROTHER", proposition_id="PROP_HARMONICA_AVENGES_BROTHER",
+                        polarity="desire", kind="revenge", salience=1.0,
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=3350, triggered_by="EVT_FRANK_DIES",
+                                            salience=0.05),
+                        ]),
+                Concern(concern_id="CCN_HARMONICA_FRANK_RECOGNISES", proposition_id="PROP_HARMONICA_IDENTITY",
+                        polarity="desire", kind="recognition", salience=0.85,
+                        activation_fabula_window=[1100, 3300]),
+                # Late-developing protective concern for Jill (compassion bumps
+                # 0.0→0.6 at the auction).
+                Concern(concern_id="CCN_HARMONICA_PROTECTS_JILL", proposition_id="PROP_JILL_KEEPS_SWEETWATER",
+                        polarity="desire", kind="safety", salience=0.55,
+                        activation_fabula_window=[2700, 3400]),
             ],
             state_timeline=[
                 # Documents that Harmonica's baseline vengeance=0.95 is the
@@ -145,6 +166,7 @@ world_state = WorldStateV1(
                     beliefs_added=[
                         Belief(target_id="ENT_MORTON",
                                perceived_state="the railway tycoon who hired Frank",
+                               proposition_id="PROP_MORTON_HIRES_FRANK",
                                confidence=0.9, inertia=0.8,
                                established_at_fabula=2000, evidence_strength="strong",
                                acquired_via_event_id="EVT_HARMONICA_SPIES_MORTON_TRAIN"),
@@ -172,8 +194,29 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_MORTON",
                        perceived_state="my paymaster, soon to be obsolete",
+                       proposition_id="PROP_MORTON_HIRES_FRANK",
                        confidence=0.85, inertia=0.7,
                        established_at_fabula=500, evidence_strength="strong"),
+            ],
+            concerns=[
+                # Frank's defining ambition — to own Sweetwater outright,
+                # eclipsing his employer.
+                Concern(concern_id="CCN_FRANK_OWNS_SWEETWATER", proposition_id="PROP_FRANK_BUYS_SWEETWATER",
+                        polarity="desire", kind="power", salience=0.95,
+                        activation_fabula_window=[1000, 3300]),
+                # The unspoken fear that becomes a question — "who are you?" —
+                # the curiosity-as-anxiety that erodes him through the auction.
+                Concern(concern_id="CCN_FRANK_KNOW_HARMONICA", proposition_id="PROP_HARMONICA_IDENTITY",
+                        polarity="desire", kind="discovery", salience=0.65,
+                        activation_fabula_window=[2700, 3300],
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=3300, triggered_by="EVT_SHOWDOWN_FLASHBACK_REVEAL",
+                                            salience=1.0, kind="mortal_threat"),
+                        ]),
+                # Pride / contempt for the dying tycoon who hired him.
+                Concern(concern_id="CCN_FRANK_OUTLIVES_MORTON", proposition_id="PROP_MORTON_REACHES_PACIFIC",
+                        polarity="fear", kind="irrelevance", salience=0.55,
+                        activation_fabula_window=[500, 3100]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_MCBAIN_FAMILY_MURDER",
@@ -189,6 +232,7 @@ world_state = WorldStateV1(
                     beliefs_added=[
                         Belief(target_id="ENT_HARMONICA",
                                perceived_state="the boy from the desert arch — my own crime, returned",
+                               proposition_id="PROP_HARMONICA_IDENTITY",
                                confidence=0.99, inertia=0.95,
                                established_at_fabula=3300, evidence_strength="strong",
                                acquired_via_event_id="EVT_SHOWDOWN_FLASHBACK_REVEAL"),
@@ -209,8 +253,25 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_FRANK",
                        perceived_state="the bastard who framed me",
+                       proposition_id="PROP_FRANK_FRAMED_CHEYENNE",
                        confidence=0.9, inertia=0.85,
                        established_at_fabula=1500, evidence_strength="strong"),
+            ],
+            concerns=[
+                # Cheyenne's outlaw-code injury: being framed for a massacre
+                # he didn't commit (Averill normative_violation).
+                Concern(concern_id="CCN_CHEYENNE_CLEAR_NAME", proposition_id="PROP_FRANK_FRAMED_CHEYENNE",
+                        polarity="fear", kind="betrayal", salience=0.9,
+                        activation_fabula_window=[1300, 3300]),
+                # Loyalty to Harmonica after the rescue — the alliance that
+                # carries Cheyenne to the train gunfight.
+                Concern(concern_id="CCN_CHEYENNE_HELPS_HARMONICA", proposition_id="PROP_HARMONICA_AVENGES_BROTHER",
+                        polarity="desire", kind="loyalty", salience=0.7,
+                        activation_fabula_window=[2200, 3400]),
+                # Background fugitive anxiety — the bounty network is always
+                # closing.
+                Concern(concern_id="CCN_CHEYENNE_AVOIDS_BOUNTY", proposition_id="PROP_CHEYENNE_GUILTY_OF_MASSACRE",
+                        polarity="fear", kind="discovery", salience=0.5),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=2200, triggered_by="EVT_CHEYENNE_RESCUES_HARMONICA",
@@ -233,8 +294,30 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_BRETT_MCBAIN",
                        perceived_state="the husband who promised me a new life",
+                       proposition_id="PROP_MCBAIN_FAMILY_SAFE",
                        confidence=0.95, inertia=0.85,
                        established_at_fabula=900, evidence_strength="strong"),
+            ],
+            concerns=[
+                # The defining concern — keeping Sweetwater is keeping the
+                # promise of a new life.
+                Concern(concern_id="CCN_JILL_KEEPS_SWEETWATER", proposition_id="PROP_JILL_KEEPS_SWEETWATER",
+                        polarity="desire", kind="survival", salience=1.0,
+                        activation_fabula_window=[1200, 3400]),
+                Concern(concern_id="CCN_JILL_FEARS_FRANK", proposition_id="PROP_FRANK_BUYS_SWEETWATER",
+                        polarity="fear", kind="mortal_threat", salience=0.85,
+                        activation_fabula_window=[1200, 2950],
+                        counter_concern_ids=["CCN_JILL_KEEPS_SWEETWATER"],
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=3350, triggered_by="EVT_FRANK_DIES",
+                                            salience=0.0),
+                        ]),
+                Concern(concern_id="CCN_JILL_NEW_LIFE", proposition_id="PROP_RAILROAD_REACHES_SWEETWATER",
+                        polarity="desire", kind="freedom", salience=0.75,
+                        activation_fabula_window=[1200, 3400]),
+                Concern(concern_id="CCN_JILL_GRIEVES_FAMILY", proposition_id="PROP_MCBAIN_FAMILY_SAFE",
+                        polarity="desire", kind="loss_of_loved_one", salience=0.6,
+                        activation_fabula_window=[1200, 1700]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=1200, triggered_by="EVT_JILL_ARRIVES_AT_SWEETWATER",
@@ -245,6 +328,7 @@ world_state = WorldStateV1(
                     beliefs_added=[
                         Belief(target_id="ENT_BRETT_MCBAIN",
                                perceived_state="murdered before I arrived",
+                               proposition_id="PROP_MCBAIN_FAMILY_MURDERED",
                                confidence=0.95, inertia=0.85,
                                established_at_fabula=1200, evidence_strength="strong",
                                acquired_via_event_id="EVT_JILL_ARRIVES_AT_SWEETWATER"),
@@ -270,8 +354,15 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="OBJ_RAILROAD_TRACKS",
                        perceived_state="will reach Sweetwater and make us rich",
+                       proposition_id="PROP_RAILROAD_REACHES_SWEETWATER",
                        confidence=0.9, inertia=0.85,
                        established_at_fabula=400, evidence_strength="strong"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_MCBAIN_FRONTIER_FORTUNE", proposition_id="PROP_RAILROAD_REACHES_SWEETWATER",
+                        polarity="desire", kind="power", salience=0.95),
+                Concern(concern_id="CCN_MCBAIN_FAMILY_SAFE", proposition_id="PROP_MCBAIN_FAMILY_SAFE",
+                        polarity="desire", kind="love", salience=0.95),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_MCBAIN_FAMILY_MURDER",
@@ -289,14 +380,28 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_FRANK",
                        perceived_state="useful tool, dangerous if unleashed too far",
+                       proposition_id="PROP_MORTON_HIRES_FRANK",
                        confidence=0.85, inertia=0.7,
                        established_at_fabula=500, evidence_strength="strong"),
+            ],
+            concerns=[
+                # The film's organising desire — Morton sees the Pacific from
+                # his crutches.
+                Concern(concern_id="CCN_MORTON_REACHES_PACIFIC", proposition_id="PROP_MORTON_REACHES_PACIFIC",
+                        polarity="desire", kind="power", salience=1.0),
+                Concern(concern_id="CCN_MORTON_FRANK_OBEYS", proposition_id="PROP_FRANK_EXCEEDS_BRIEF",
+                        polarity="fear", kind="betrayal", salience=0.85,
+                        activation_fabula_window=[500, 3100]),
+                Concern(concern_id="CCN_MORTON_FEARS_DECLINE", proposition_id="PROP_MORTON_REACHES_PACIFIC",
+                        polarity="fear", kind="death", salience=0.7,
+                        counter_concern_ids=["CCN_MORTON_REACHES_PACIFIC"]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_MCBAIN_FAMILY_MURDER",
                     beliefs_added=[
                         Belief(target_id="ENT_FRANK",
                                perceived_state="my hireling has exceeded the brief",
+                               proposition_id="PROP_FRANK_EXCEEDS_BRIEF",
                                confidence=0.95, inertia=0.8,
                                established_at_fabula=1000, evidence_strength="strong",
                                acquired_via_event_id="EVT_MCBAIN_FAMILY_MURDER",
@@ -843,5 +948,109 @@ world_state = WorldStateV1(
                 "fear":     RelationshipMetric(value=0.2, inertia=0.2,  evidence_strength="moderate", last_updated_fabula=2200),
             },
         ),
+    ],
+
+    # ── PROPOSITIONS (affect-unification substrate) ─────────────────────
+    # Catalogue of first-class propositions characters and the audience
+    # hold beliefs about. Each Belief.proposition_id and each
+    # Concern.proposition_id resolves into one of these. Calibrated for
+    # Leone's operatic suspense (the Pacific railroad as inevitability,
+    # the harmonica's identity as blindsiding final reveal).
+    propositions=[
+        # The opening atrocity that sets the spine in motion.
+        Proposition(proposition_id="PROP_FRANK_HANGED_BROTHER", kind="event_occurs",
+                    referent_ids=["EVT_FLASHBACK_HANGING", "ENT_FRANK", "ENT_HARMONICAS_BROTHER"],
+                    description="Frank ritually hanged Harmonica's older brother in the desert.",
+                    audience_default_prior=0.15, stakes=0.95,
+                    truth_at_fabula={0: True}),
+        # The blindsiding identity twist — held back until the showdown flashback.
+        Proposition(proposition_id="PROP_HARMONICA_IDENTITY", kind="identity_is",
+                    referent_ids=["ENT_HARMONICA", "ENT_FRANK"],
+                    description="Harmonica is the boy from the desert arch — Frank's victim, returned.",
+                    audience_default_prior=0.2, stakes=0.95,
+                    truth_at_fabula={3300: True}),
+        # The film's organising outcome question — does the debt get paid?
+        Proposition(proposition_id="PROP_HARMONICA_AVENGES_BROTHER", kind="outcome",
+                    referent_ids=["ENT_HARMONICA", "ENT_FRANK", "EVT_FRANK_DIES"],
+                    description="Harmonica kills Frank in the showdown and avenges his brother.",
+                    audience_default_prior=0.6, stakes=1.0,
+                    truth_at_fabula={3350: True}),
+        # The McBain massacre — opening catastrophe.
+        Proposition(proposition_id="PROP_MCBAIN_FAMILY_MURDERED", kind="event_occurs",
+                    referent_ids=["EVT_MCBAIN_FAMILY_MURDER", "ENT_BRETT_MCBAIN"],
+                    description="Frank and his gang massacre Brett McBain and his children at Sweetwater.",
+                    audience_default_prior=0.3, stakes=0.9,
+                    truth_at_fabula={1000: True}),
+        Proposition(proposition_id="PROP_MCBAIN_FAMILY_SAFE", kind="outcome",
+                    referent_ids=["ENT_BRETT_MCBAIN", "LOC_SWEETWATER"],
+                    description="Brett McBain and his children survive to enjoy the watering-station fortune.",
+                    audience_default_prior=0.45, stakes=0.85,
+                    truth_at_fabula={1000: False}),
+        # Frank's lie that misdirects the bounty for half the film.
+        Proposition(proposition_id="PROP_FRANK_FRAMED_CHEYENNE", kind="event_occurs",
+                    referent_ids=["EVT_FRANK_FRAMES_CHEYENNE", "ENT_CHEYENNE", "ENT_FRANK"],
+                    description="Frank planted evidence at Sweetwater implicating Cheyenne in the McBain massacre.",
+                    audience_default_prior=0.4, stakes=0.7,
+                    truth_at_fabula={1300: True}),
+        Proposition(proposition_id="PROP_CHEYENNE_GUILTY_OF_MASSACRE", kind="identity_is",
+                    referent_ids=["ENT_CHEYENNE", "EVT_MCBAIN_FAMILY_MURDER"],
+                    description="Cheyenne ordered the McBain massacre.",
+                    audience_default_prior=0.5, stakes=0.5,
+                    truth_at_fabula={1500: False}),
+        # The Morton-Frank commission — the social contract whose violation drives the second act.
+        Proposition(proposition_id="PROP_MORTON_HIRES_FRANK", kind="relation_holds",
+                    referent_ids=["ENT_MORTON", "ENT_FRANK", "CHN_MORTON_FRANK_COMMISSION"],
+                    description="Morton hired Frank to clear Sweetwater for the railroad.",
+                    audience_default_prior=0.3, stakes=0.7,
+                    truth_at_fabula={500: True}),
+        Proposition(proposition_id="PROP_FRANK_EXCEEDS_BRIEF", kind="trait_holds",
+                    referent_ids=["ENT_FRANK", "ENT_MORTON"],
+                    description="Frank has exceeded Morton's instructions and now wants Sweetwater for himself.",
+                    audience_default_prior=0.55, stakes=0.7,
+                    truth_at_fabula={1000: True}),
+        Proposition(proposition_id="PROP_MORTON_BETRAYS_FRANK", kind="event_occurs",
+                    referent_ids=["EVT_MORTON_BRIBES_FRANKS_MEN", "ENT_MORTON", "ENT_FRANK"],
+                    description="Morton bribes Frank's own men to assassinate him.",
+                    audience_default_prior=0.4, stakes=0.7,
+                    truth_at_fabula={2900: True}),
+        # The railroad as cosmology — the question that hangs over the whole film.
+        Proposition(proposition_id="PROP_RAILROAD_REACHES_SWEETWATER", kind="outcome",
+                    referent_ids=["OBJ_RAILROAD_TRACKS", "LOC_SWEETWATER", "WORLD_THE_RAILROAD"],
+                    description="The Pacific Railroad reaches Sweetwater and uses it as the watering station.",
+                    audience_default_prior=0.7, stakes=0.9,
+                    truth_at_fabula={3400: True}),
+        Proposition(proposition_id="PROP_MORTON_REACHES_PACIFIC", kind="outcome",
+                    referent_ids=["ENT_MORTON", "OBJ_RAILROAD_TRACKS"],
+                    description="Morton lives to see his rails touch the Pacific Ocean.",
+                    audience_default_prior=0.45, stakes=0.7,
+                    truth_at_fabula={3100: False}),
+        # The Sweetwater ownership question — Jill's plot engine.
+        Proposition(proposition_id="PROP_JILL_KEEPS_SWEETWATER", kind="outcome",
+                    referent_ids=["ENT_JILL", "LOC_SWEETWATER"],
+                    description="Jill McBain retains ownership of Sweetwater and completes the watering station.",
+                    audience_default_prior=0.4, stakes=0.85,
+                    truth_at_fabula={3400: True}),
+        Proposition(proposition_id="PROP_FRANK_BUYS_SWEETWATER", kind="outcome",
+                    referent_ids=["ENT_FRANK", "LOC_SWEETWATER", "EVT_AUCTION"],
+                    description="Frank successfully buys Sweetwater at auction.",
+                    audience_default_prior=0.55, stakes=0.8,
+                    truth_at_fabula={2700: False}),
+        Proposition(proposition_id="PROP_JILL_AUCTIONED_OUT", kind="event_occurs",
+                    referent_ids=["EVT_FRANK_FORCES_JILL", "ENT_JILL", "ENT_FRANK"],
+                    description="Frank coerces Jill into auctioning Sweetwater.",
+                    audience_default_prior=0.5, stakes=0.7,
+                    truth_at_fabula={2500: True}),
+        # Cheyenne's mortal arc.
+        Proposition(proposition_id="PROP_CHEYENNE_SURVIVES", kind="outcome",
+                    referent_ids=["ENT_CHEYENNE"],
+                    description="Cheyenne survives the train gunfight to ride out at the end.",
+                    audience_default_prior=0.5, stakes=0.65,
+                    truth_at_fabula={3400: False}),
+        # The Old West as dying era — Leone's WORLD_-trait-as-proposition.
+        Proposition(proposition_id="PROP_OLD_WEST_DYING", kind="trait_holds",
+                    referent_ids=["WORLD_OLD_WEST_DYING", "WORLD_THE_RAILROAD"],
+                    description="The age of gunfighters and outlaws ends as the rails arrive.",
+                    audience_default_prior=0.7, stakes=0.6,
+                    truth_at_fabula={3400: True}),
     ],
 )

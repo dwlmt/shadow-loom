@@ -72,6 +72,7 @@ def project_event(ws: WorldStateV1, evt: EventNode) -> Dict[str, Any]:
         "targets": _resolve_names(ws, evt.target_ids),
         "caused_by": causes,
         "causes": effects,
+        "superseded_by_event_id": getattr(evt, "superseded_by_event_id", None),
     }
 
     has_utterance_payload = (

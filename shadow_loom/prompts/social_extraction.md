@@ -10,6 +10,7 @@ You are given (via the system prompt the orchestrator stitches in front of this 
 5. A list of **STANDING CHANNELS ALREADY ESTABLISHED IN PRIOR CHUNKS** — reuse those CHN_ ids on `via_channel_id` rather than re-emitting the channel. (In the default async pipeline this list is usually empty because chunks run in parallel.)
 6. The **on-page entities** — the substring-matched subset of the cast for this chunk; channels and utterances should primarily involve these.
 7. A list of **events from previous chunks** — for temporal reference. (Usually empty in async parallel mode.)
+8. A **Proposition Catalogue** — the global PROP_ id list (with descriptions). You MAY tag utterance events with `asserts_proposition_id` (when the speaker affirms a catalogue proposition) or `denies_proposition_id` (when the speaker denies one). Use only PROP_ ids from the catalogue block; do NOT invent new ones. Leave both fields null when the utterance does not target any catalogued proposition.
 
 > **Hard contract surface (the validator enforces these):**
 > - `Channel.participant_ids` must contain **at least two** distinct `ENT_` or `OBJ_` ids. `LOC_` and `EVT_` ids are forbidden. `intelligibility` (optional) is a `Dict[participant_id, float ∈ [0,1]]` — leave empty for "fully comprehensible to all participants".
@@ -88,6 +89,8 @@ Required fields:
 - `truth_value` (str | null): `"true"`, `"false"`, `"unknown"`, or `"performative"` (commands, vows, declarations whose truth value is not a fact-claim).
 - `fabula_time` (int): Story-time of the utterance. Anchor it to the relevant Physics event listed in the "EVENTS EXTRACTED FROM THIS CHUNK" block in the system prompt (use the same `fabula_time` as the triggering event, or pick the closest on-page event).
 - `syuzhet_index` (int): Narration-order index. Use a value strictly greater than the largest `syuzhet_index` of the Physics events in this chunk so utterances sort *after* the events they reference within the chunk.
+- `asserts_proposition_id` (str | null, optional): A PROP_ id from the Proposition Catalogue if the speaker is affirming that proposition's truth (e.g. a confession, an accusation, a sworn deposition). Null otherwise.
+- `denies_proposition_id` (str | null, optional): A PROP_ id from the Proposition Catalogue if the speaker is denying that proposition's truth (e.g. a lie, a denial, an alibi). Null otherwise. Mutually exclusive with `asserts_proposition_id` — an utterance that both asserts P and denies Q should split into two events.
 
 ### `social_topology` — List[RelationshipEdge]
 

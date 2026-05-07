@@ -950,6 +950,16 @@ def _build_data_tables(state: AppState) -> None:
 
         with ui.tab_panel("events"):
             subtab_help("world.events")
+            # Hide-superseded toggle: when True, the supersession-aware
+            # transformer filters out events with a non-null
+            # ``superseded_by_event_id``. Stored on the closure so the
+            # refresh handler can re-apply it.
+            hide_superseded_state = {"v": False}
+            with ui.row().classes("w-full items-center gap-2 mb-1"):
+                _hide_sw = ui.switch(
+                    "Hide superseded events",
+                    value=False,
+                ).props("dense").classes("text-xs")
             event_table = ui.table(
                 columns=[
                     {"name": "id", "label": "ID", "field": "id", "sortable": True},
@@ -959,6 +969,7 @@ def _build_data_tables(state: AppState) -> None:
                     {"name": "actors", "label": "Actors", "field": "actors"},
                     {"name": "targets", "label": "Targets", "field": "targets"},
                     {"name": "description", "label": "Description", "field": "description"},
+                    {"name": "superseded_by_event_id", "label": "Superseded by", "field": "superseded_by_event_id", "sortable": True},
                     {"name": "world_id", "label": "Branch", "field": "world_id", "sortable": True},
                 ],
                 rows=[],
@@ -1115,7 +1126,10 @@ def _build_data_tables(state: AppState) -> None:
         if ws is None:
             return
         entity_table.rows = ws_to_entity_rows(ws)
-        event_table.rows = ws_to_event_rows(ws)
+        evt_rows = ws_to_event_rows(ws)
+        if hide_superseded_state.get("v"):
+            evt_rows = [r for r in evt_rows if not r.get("superseded")]
+        event_table.rows = evt_rows
         object_table.rows = ws_to_object_rows(ws)
         world_trait_table.rows = ws_to_world_trait_rows(ws)
         trait_stats_table.rows = ws_to_trait_stats_rows(ws)
@@ -1124,6 +1138,12 @@ def _build_data_tables(state: AppState) -> None:
         social_table.rows = ws_to_social_rows(ws)
         channel_table.rows = ws_to_channel_rows(ws)
         utterance_table.rows = ws_to_utterance_rows(ws)
+
+    def _on_hide_superseded(e):
+        hide_superseded_state["v"] = bool(e.value)
+        _refresh_tables()
+
+    _hide_sw.on_value_change(_on_hide_superseded)
 
     _refresh_tables()
     state.on(StateEvent.WORLD_STATE_CHANGED, _refresh_tables)

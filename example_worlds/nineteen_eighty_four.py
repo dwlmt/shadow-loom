@@ -15,6 +15,7 @@ from shadow_loom.models import (
     CausalEdge, SpatialEdge, RelationshipEdge, RelationshipMetric, TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
     GlobalTrait, WorldTraitSnapshot,
     NarrativeStyle,
+    Concern, Proposition, ConcernSnapshot, PropositionSnapshot,
 )
 
 world_state = WorldStateV1(
@@ -35,6 +36,10 @@ world_state = WorldStateV1(
             ambient_state={
                 "surveillance":   AmbientVector(value=0.9, volatility=0.1, evidence_strength="strong"),
                 "drabness":       AmbientVector(value=0.85, volatility=0.1, evidence_strength="strong"),
+                # Frijda action-readiness: Winston can leave the flat — the
+                # streets, the prole quarter and Charrington's room are all
+                # accessible — yet every exit terminates back at the Party.
+                "connected_to": AmbientVector(value=1.0, volatility=0.0, evidence_strength="strong"),
             },
         ),
         "LOC_MINITRUE": Location(
@@ -51,6 +56,9 @@ world_state = WorldStateV1(
             ambient_state={
                 "false_intimacy": AmbientVector(value=0.85, volatility=0.2, evidence_strength="strong"),
                 "hidden_surveillance": AmbientVector(value=0.95, volatility=0.05, evidence_strength="strong"),
+                # Soft cage — a door onto the prole street exists but the
+                # room itself is the trap that springs at EVT_ARREST.
+                "connected_to": AmbientVector(value=0.4, volatility=0.0, evidence_strength="strong"),
             },
         ),
         "LOC_PROLE_DISTRICT": Location(
@@ -83,6 +91,8 @@ world_state = WorldStateV1(
             ambient_state={
                 "white_glare": AmbientVector(value=0.95, volatility=0.05, evidence_strength="strong"),
                 "terror":      AmbientVector(value=0.95, volatility=0.4, evidence_strength="strong"),
+                # Frijda dread: sealed; flight is impossible.
+                "connected_to": AmbientVector(value=0.0, volatility=0.0, evidence_strength="strong"),
             },
         ),
         "LOC_ROOM_101": Location(
@@ -91,6 +101,8 @@ world_state = WorldStateV1(
             ambient_state={
                 "worst_fear":     AmbientVector(value=1.0, volatility=0.3, evidence_strength="strong"),
                 "personalised_terror": AmbientVector(value=1.0, volatility=0.3, evidence_strength="strong"),
+                # Frijda dread: sealed; the rat-cage is the only exit.
+                "connected_to": AmbientVector(value=0.0, volatility=0.0, evidence_strength="strong"),
             },
         ),
         "LOC_CHESTNUT_TREE": Location(
@@ -152,16 +164,57 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_BIG_BROTHER",
-                       perceived_state="hateful symbol of an unbearable regime",
+                       perceived_state="hateful symbol of an unbearable regime", proposition_id="PROP_PARTY_DEFEATED",
                        confidence=0.95, inertia=0.85, established_at_fabula=1000, evidence_strength="strong"),
                 Belief(target_id="ENT_OBRIEN",
                        perceived_state="secretly sympathetic; perhaps a member of the Brotherhood",
+                       proposition_id="PROP_OBRIEN_ALLY",
                        confidence=0.6, inertia=0.4, established_at_fabula=1000, evidence_strength="moderate"),
                 Belief(target_id="ENT_JULIA",
-                       perceived_state="zealous Junior Anti-Sex League spy I cannot trust",
+                       perceived_state="zealous Junior Anti-Sex League spy I cannot trust", proposition_id="PROP_LOVE_FOR_JULIA_ENDURES",
                        confidence=0.85, inertia=0.5, established_at_fabula=2000, evidence_strength="strong"),
             ],
             constants=["estranged_from_wife_katharine", "lost_family_in_50s_civil_war"],
+            concerns=[
+                # Frijda mortal-threat — the founding fear of the diary.
+                Concern(concern_id="CCN_WINSTON_FEARS_THOUGHTPOLICE", proposition_id="PROP_WINSTON_ARRESTED",
+                        polarity="fear", kind="mortal_threat", salience=0.95,
+                        activation_fabula_window=[3000, 13000],
+                        counter_concern_ids=["CCN_WINSTON_DESIRES_BROTHERHOOD"]),
+                # Lazarus appraisal — Goldstein's Brotherhood as the imagined exit.
+                Concern(concern_id="CCN_WINSTON_DESIRES_BROTHERHOOD", proposition_id="PROP_BROTHERHOOD_REAL",
+                        polarity="desire", kind="truth", salience=0.85,
+                        activation_fabula_window=[6000, 15000],
+                        counter_concern_ids=["CCN_WINSTON_FEARS_THOUGHTPOLICE"]),
+                Concern(concern_id="CCN_WINSTON_DESIRES_PARTY_FALL", proposition_id="PROP_PARTY_DEFEATED",
+                        polarity="desire", kind="freedom", salience=0.95,
+                        activation_fabula_window=[1000, 16000]),
+                # Sternberg passionate-bond — the only remaining intimacy.
+                Concern(concern_id="CCN_WINSTON_LOVES_JULIA", proposition_id="PROP_JULIA_SAFE",
+                        polarity="desire", kind="love", salience=0.95,
+                        activation_fabula_window=[6000, 17000]),
+                Concern(concern_id="CCN_WINSTON_DESIRES_LOVE_ENDURES", proposition_id="PROP_LOVE_FOR_JULIA_ENDURES",
+                        polarity="desire", kind="love", salience=0.9,
+                        activation_fabula_window=[6000, 17000]),
+                # Loyalty axis — Winston longs for an ally; the canonical Averill betrayal
+                # for him is his own breaking and betrayal of Julia (PROP_WINSTON_BREAKS).
+                Concern(concern_id="CCN_WINSTON_DESIRES_OBRIEN_LOYAL", proposition_id="PROP_OBRIEN_ALLY",
+                        polarity="desire", kind="loyalty", salience=0.9,
+                        activation_fabula_window=[10000, 16000],
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=14000, triggered_by="EVT_OBRIEN_TORTURE",
+                                            salience=0.95, polarity="fear", kind="betrayal",
+                                            counter_concern_ids=["CCN_WINSTON_DESIRES_PRIVATE_MEMORY"]),
+                        ]),
+                # Frijda dread — the rats themselves.
+                Concern(concern_id="CCN_WINSTON_FEARS_RATS", proposition_id="PROP_RATS_AT_HIM",
+                        polarity="fear", kind="mortal_threat", salience=1.0,
+                        activation_fabula_window=[15500, 16500]),
+                # Existential desire — the inner refusal to call 2+2=5.
+                Concern(concern_id="CCN_WINSTON_DESIRES_PRIVATE_MEMORY", proposition_id="PROP_PRIVATE_MEMORY",
+                        polarity="desire", kind="truth", salience=0.95,
+                        activation_fabula_window=[1000, 16000]),
+            ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=3000, triggered_by="EVT_BUYS_DIARY",
                     traits={
@@ -179,7 +232,7 @@ world_state = WorldStateV1(
                     beliefs_invalidated=["ENT_JULIA"],
                     beliefs_added=[
                         Belief(target_id="ENT_JULIA",
-                               perceived_state="fellow rebel and lover",
+                               perceived_state="fellow rebel and lover", proposition_id="PROP_LOVE_FOR_JULIA_ENDURES",
                                confidence=0.95, inertia=0.6, established_at_fabula=6000, evidence_strength="strong"),
                     ]),
                 EntityStateSnapshot(fabula_time=7000, triggered_by="EVT_GOLDEN_COUNTRY",
@@ -208,7 +261,7 @@ world_state = WorldStateV1(
                     beliefs_invalidated=["ENT_OBRIEN"],
                     beliefs_added=[
                         Belief(target_id="ENT_OBRIEN",
-                               perceived_state="Inner-Party Thought Police; my torturer; my interrogator-priest",
+                               perceived_state="Inner-Party Thought Police; my torturer; my interrogator-priest", proposition_id="PROP_OBRIEN_ALLY",
                                confidence=1.0, inertia=0.85, established_at_fabula=13000, evidence_strength="strong"),
                     ]),
                 EntityStateSnapshot(fabula_time=14000, triggered_by="EVT_OBRIEN_TORTURE",
@@ -236,6 +289,7 @@ world_state = WorldStateV1(
                     beliefs_added=[
                         Belief(target_id="ENT_BIG_BROTHER",
                                perceived_state="he loves me; I love him",
+                               proposition_id="PROP_WINSTON_BREAKS",
                                confidence=1.0, inertia=0.95, established_at_fabula=18000, evidence_strength="strong"),
                     ]),
             ],
@@ -251,6 +305,17 @@ world_state = WorldStateV1(
                 "love_for_winston": TraitVector(value=0.0, inertia=0.4, evidence_strength="weak"),
             },
             beliefs=[],
+            concerns=[
+                Concern(concern_id="CCN_JULIA_LOVES_WINSTON", proposition_id="PROP_LOVE_FOR_JULIA_ENDURES",
+                        polarity="desire", kind="love", salience=0.85,
+                        activation_fabula_window=[6000, 17000]),
+                Concern(concern_id="CCN_JULIA_DESIRES_PRIVATE_HEDONISM", proposition_id="PROP_PRIVATE_PLEASURE",
+                        polarity="desire", kind="freedom", salience=0.9,
+                        activation_fabula_window=[1, 13000]),
+                Concern(concern_id="CCN_JULIA_FEARS_ARREST", proposition_id="PROP_WINSTON_ARRESTED",
+                        polarity="fear", kind="mortal_threat", salience=0.85,
+                        activation_fabula_window=[6000, 13000]),
+            ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=6000, triggered_by="EVT_JULIA_NOTE",
                     traits={
@@ -282,8 +347,13 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_PARTY",
-                       perceived_state="power is the end, not the means",
+                       perceived_state="power is the end, not the means", proposition_id="PROP_WINSTON_BREAKS",
                        confidence=1.0, inertia=0.95, established_at_fabula=1000, evidence_strength="strong"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_OBRIEN_DESIRES_INTERIOR_CONQUEST", proposition_id="PROP_WINSTON_BREAKS",
+                        polarity="desire", kind="power", salience=0.95,
+                        activation_fabula_window=[10000, 18000]),
             ],
         ),
         "ENT_CHARRINGTON": Entity(
@@ -311,6 +381,13 @@ world_state = WorldStateV1(
                 "uncritical_loyalty":     TraitVector(value=0.95, inertia=0.9, evidence_strength="strong"),
             },
             beliefs=[],
+            concerns=[
+                # Parsons takes grim Party-pride in being denounced by his daughter ("I'm proud of her");
+                # modelled as a desire/loyalty drive aligned with Ingsoc.
+                Concern(concern_id="CCN_PARSONS_FEARS_DENUNCIATION", proposition_id="PROP_PARSONS_DENOUNCED",
+                        polarity="desire", kind="loyalty", salience=0.85,
+                        activation_fabula_window=[1, 13500]),
+            ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=13500, triggered_by="EVT_PARSONS_DENOUNCED",
                     location_id="LOC_MINILOVE", status="ill"),
@@ -1072,5 +1149,64 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=-0.7, inertia=0.85, evidence_strength="strong", last_updated_fabula=1000),
             },
         ),
+    ],
+
+    # ── PROPOSITIONS ────────────────────────────────────────────────────
+    propositions=[
+        Proposition(proposition_id="PROP_WINSTON_ARRESTED", kind="event_occurs",
+                    referent_ids=["EVT_ARREST", "ENT_WINSTON"],
+                    description="Winston is taken to the Ministry of Love.",
+                    audience_default_prior=0.85, stakes=0.95,
+                    truth_at_fabula={13000: True}),
+        Proposition(proposition_id="PROP_BROTHERHOOD_REAL", kind="trait_holds",
+                    referent_ids=["ENT_GOLDSTEIN"],
+                    description="Goldstein's Brotherhood actually exists.",
+                    audience_default_prior=0.4, stakes=0.85,
+                    truth_at_fabula={15000: False}),
+        Proposition(proposition_id="PROP_PARTY_DEFEATED", kind="outcome",
+                    referent_ids=["ENT_PARTY"],
+                    description="The Party is overthrown in Winston's lifetime.",
+                    audience_default_prior=0.05, stakes=0.95,
+                    truth_at_fabula={16000: False, 18000: False}),
+        Proposition(proposition_id="PROP_JULIA_SAFE", kind="trait_holds",
+                    referent_ids=["ENT_JULIA"],
+                    description="Julia escapes the Thought Police.",
+                    audience_default_prior=0.5, stakes=0.85,
+                    truth_at_fabula={13000: False, 17000: False}),
+        Proposition(proposition_id="PROP_LOVE_FOR_JULIA_ENDURES", kind="relation_holds",
+                    referent_ids=["ENT_WINSTON", "ENT_JULIA"],
+                    description="Winston and Julia's love survives the Ministry of Love.",
+                    audience_default_prior=0.3, stakes=0.95,
+                    truth_at_fabula={16000: False, 17000: False}),
+        Proposition(proposition_id="PROP_OBRIEN_ALLY", kind="relation_holds",
+                    referent_ids=["ENT_OBRIEN", "ENT_WINSTON"],
+                    description="O'Brien is Winston's ally in the Brotherhood.",
+                    audience_default_prior=0.4, stakes=0.85,
+                    truth_at_fabula={13000: False}),
+        Proposition(proposition_id="PROP_RATS_AT_HIM", kind="event_occurs",
+                    referent_ids=["EVT_ROOM_101", "ENT_WINSTON"],
+                    description="The rat-cage is strapped to Winston's face in Room 101.",
+                    audience_default_prior=0.7, stakes=1.0,
+                    truth_at_fabula={16000: True}),
+        Proposition(proposition_id="PROP_WINSTON_BREAKS", kind="trait_holds",
+                    referent_ids=["ENT_WINSTON"],
+                    description="Winston betrays Julia and submits utterly to the Party.",
+                    audience_default_prior=0.6, stakes=0.95,
+                    truth_at_fabula={16000: True}),
+        Proposition(proposition_id="PROP_PRIVATE_MEMORY", kind="trait_holds",
+                    referent_ids=["ENT_WINSTON"],
+                    description="Winston preserves a private, accurate memory of the past.",
+                    audience_default_prior=0.5, stakes=0.85,
+                    truth_at_fabula={16000: False, 18000: False}),
+        Proposition(proposition_id="PROP_PRIVATE_PLEASURE", kind="trait_holds",
+                    referent_ids=["ENT_JULIA"],
+                    description="Julia's private hedonism continues unchecked by the Party.",
+                    audience_default_prior=0.6, stakes=0.6,
+                    truth_at_fabula={13000: False}),
+        Proposition(proposition_id="PROP_PARSONS_DENOUNCED", kind="event_occurs",
+                    referent_ids=["EVT_PARSONS_DENOUNCED", "ENT_PARSONS"],
+                    description="Parsons is denounced to the Thought Police by his own daughter.",
+                    audience_default_prior=0.5, stakes=0.7,
+                    truth_at_fabula={13500: True}),
     ],
 )

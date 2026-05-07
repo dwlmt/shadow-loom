@@ -8,6 +8,7 @@ You are given (via the system prompt the orchestrator stitches in front of this 
 3. **Entity baselines** — each entity's initial `status`, `location_id`, and trait values, so you can compute new absolute trait values for `entity_updates` rather than guessing the starting point.
 4. A **Socratic Scaffold** — pre-analysed QA pairs that articulate hidden motivations, causal reasoning, and information asymmetries in this chunk. **Use these to inform your extraction.**
 5. A list of **previously extracted event IDs** — you may reference these for cross-chunk causation. **In the default async pipeline chunks are extracted in parallel, so this list will usually be empty**; do NOT fabricate `EVT_` ids for prior chunks you cannot see. Only use IDs that actually appear in the list.
+6. A **Proposition Catalogue** — the global PROP_ id list (with descriptions) extracted by the upstream Proposition-Catalogue Agent. You MAY tag `outcome` events with `resolves_proposition_ids` pointing at the PROP_ ids whose ground-truth value the event commits (e.g. `EVT_DUNCAN_MURDER` resolves `PROP_DUNCAN_DEAD = true`). **You MUST NOT invent new PROP_ ids** — reference only the catalogue. Leave the field empty when no catalogue prop is resolved on-page in this chunk.
 
 > **Hard contract surface (the downstream physics engine assumes these without warning):**
 > - Every `mutation` / `mutation_social` edge **MUST** carry `trait_target` AND `trait_delta`. Without them the engine silently degrades to a generic +1.0 default and routes through a 20% mechanism penalty.
@@ -40,6 +41,7 @@ Each event occurring in this chunk. Fields:
 - `actor_ids` (list[str]): The `ENT_` IDs of who performed or initiated this event. Empty list `[]` if it's a natural or environmental event. For joint actions, include all participants (e.g., `["ENT_MACBETH", "ENT_LADY_MACBETH"]`).
 - `target_ids` (list[str]): The `ENT_` or `OBJ_` IDs of who/what was acted upon. Empty list `[]` if not applicable. For diffuse effects, include all targets.
 - `description` (str): One-sentence description of what happened.
+- `resolves_proposition_ids` (list[str], optional): For `outcome`-class events whose firing commits a catalogue proposition's truth value. Use only PROP_ ids from the Proposition Catalogue block in the system prompt. Empty list when the event does not resolve any catalogued proposition. **Do NOT invent PROP_ ids.**
 
 ### `causal_topology` — List[CausalEdge]
 

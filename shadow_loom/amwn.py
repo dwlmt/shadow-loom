@@ -205,6 +205,30 @@ def _rel_node_id(source_id: str, target_id: str, metric: str) -> str:
     return f"REL::{source_id}::{target_id}::{metric}"
 
 
+def _prop_node_id(proposition_id: str) -> str:
+    """Synthetic AMWN node id for a :class:`Proposition`.
+
+    Propositions are audience-side utility-layer nodes (the things
+    characters hold beliefs *about*). They are not part of the
+    structural causal substrate, but Phase 4 lifts them into the AMWN
+    so Pearl Rung-2 / Rung-3 surgeries via :class:`DoProposition` (and
+    cascades into :class:`DoBelief`) become first-class queryable
+    do-targets in d-separation reasoning.
+    """
+    return f"PROP::{proposition_id}"
+
+
+def _ccn_node_id(concern_id: str) -> str:
+    """Synthetic AMWN node id for a :class:`Concern`.
+
+    Concerns are per-entity utility weights over propositions. Lifting
+    them into the AMWN lets the renderer / directive assembler reason
+    about commission-vs-omission counterfactuals at the utility layer
+    (Roese), and lets ``find_pod`` query their activation windows.
+    """
+    return f"CCN::{concern_id}"
+
+
 def build_causal_diagram(
     world_state: WorldStateV1,
     *,
@@ -344,6 +368,75 @@ def build_causal_diagram(
                 if g.has_node(aid):
                     g.add_edge(evt.id, aid)
 
+    # ------------------------------------------------------------------
+    # Phase-4 utility-layer lift: PROP::, CCN::, and belief→PROP edges.
+    #
+    # Propositions and concerns are audience-side / utility-layer nodes
+    # (they don't directly cause events) but Pearl Rung-2 / Rung-3
+    # surgeries via :class:`DoProposition`, :class:`DoBelief` and
+    # :class:`DoConcern` need them as first-class do-targets. Mirroring
+    # the existing ``REL::`` synthetic-node pattern, we promote each
+    # proposition and concern into a synthetic AMWN node and wire:
+    #
+    #   * ``referent → PROP::<prop_id>``    (the proposition is *about*
+    #     its referents — referent state co-determines proposition truth)
+    #   * ``CCN::<ccn_id> → holder``        (a concern is held *by* an
+    #     entity and shapes its disposition)
+    #   * ``CCN::<ccn_id> ↔ PROP::<prop_id>`` (utility-over edge: the
+    #     concern is a desire/fear *about* this proposition)
+    #   * ``CCN::<a> ↔ CCN::<b>`` for each ``counter_concern_ids`` pair
+    #     (ambivalence: undirected via two directed edges since DiGraph)
+    #   * ``entity → PROP::<prop_id>`` for each :class:`Belief` carrying
+    #     a ``proposition_id`` (epistemic-about edge)
+    #
+    # ``check_ctf_independence`` already filters via ``amwn.has_node`` so
+    # synthetic nodes never absent from a query are safely ignored;
+    # ``apply_ctf_calculus`` filters by ``diagram.has_node(node_id)`` so
+    # legacy event/trait queries are unaffected.
+    for prop in (getattr(world_state, "propositions", []) or []):
+        prop_node = _prop_node_id(prop.proposition_id)
+        if not g.has_node(prop_node):
+            g.add_node(prop_node, node_kind="proposition")
+        for ref in (prop.referent_ids or []):
+            if g.has_node(ref):
+                g.add_edge(ref, prop_node)
+
+    for eid, ent in (world_state.entities or {}).items():
+        for c in (getattr(ent, "concerns", None) or []):
+            ccn_node = _ccn_node_id(c.concern_id)
+            if not g.has_node(ccn_node):
+                g.add_node(ccn_node, node_kind="concern", holder=eid)
+            # Concern shapes the holder's disposition.
+            if g.has_node(eid):
+                g.add_edge(ccn_node, eid)
+            # Utility-over: concern is *about* its proposition. Bidirectional
+            # edges so d-separation reasoning sees the connection from
+            # either end (DoConcern surgery should reach the proposition,
+            # and DoProposition cascades should reach concerns).
+            if c.proposition_id:
+                prop_node = _prop_node_id(c.proposition_id)
+                if not g.has_node(prop_node):
+                    g.add_node(prop_node, node_kind="proposition")
+                g.add_edge(ccn_node, prop_node)
+                g.add_edge(prop_node, ccn_node)
+            # Counter-concern (ambivalence) pairs.
+            for cc_id in (c.counter_concern_ids or []):
+                cc_node = _ccn_node_id(cc_id)
+                if not g.has_node(cc_node):
+                    g.add_node(cc_node, node_kind="concern")
+                g.add_edge(ccn_node, cc_node)
+                g.add_edge(cc_node, ccn_node)
+        # Belief → Proposition (epistemic-about) edges.
+        for b in (getattr(ent, "beliefs", None) or []):
+            pid = getattr(b, "proposition_id", None)
+            if not pid:
+                continue
+            prop_node = _prop_node_id(pid)
+            if not g.has_node(prop_node):
+                g.add_node(prop_node, node_kind="proposition")
+            if g.has_node(eid):
+                g.add_edge(eid, prop_node)
+
     # Optional: inject explicit ``U_*`` latent confounders. For every pair
     # of distinct nodes that share at least one *observed* parent in the
     # current diagram, materialise a single shared latent ``U_<a>__<b>``
@@ -359,7 +452,7 @@ def build_causal_diagram(
         sibling_pairs: Set[Tuple[str, str]] = set()
         for parent in list(g.nodes()):
             children = sorted(c for c in g.successors(parent)
-                              if not str(c).startswith(("U_", "REL::")))
+                              if not str(c).startswith(("U_", "REL::", "PROP::", "CCN::")))
             for i, a in enumerate(children):
                 for b in children[i + 1:]:
                     sibling_pairs.add((a, b))

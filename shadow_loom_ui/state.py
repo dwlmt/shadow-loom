@@ -656,8 +656,21 @@ class AppState:
         insert_after_event_id: str | None = None,
         insert_at_fabula_time: int | None = None,
         replace_event_ids: list[str] | None = None,
+        replace_entity_ids: list[str] | None = None,
+        replace_object_ids: list[str] | None = None,
+        replace_location_ids: list[str] | None = None,
+        replace_world_trait_ids: list[str] | None = None,
+        replace_channel_ids: list[str] | None = None,
+        replace_proposition_ids: list[str] | None = None,
+        replace_concern_ids: list[tuple[str, str]] | None = None,
     ) -> NLQueryResult:
-        """Submit user-authored prose as a ManualEditQuery through the pipeline."""
+        """Submit user-authored prose as a ManualEditQuery through the pipeline.
+
+        ``replace_*`` lists drop the named graph nodes (and their
+        dependent edges/snapshots/concerns) before merging the
+        re-extracted topology, giving true *replace* semantics across
+        every namespace surfaced by the merge deletion pass.
+        """
         query = ManualEditQuery(
             edited_prose=edited_prose,
             description=description,
@@ -665,6 +678,13 @@ class AppState:
             insert_after_event_id=insert_after_event_id,
             insert_at_fabula_time=insert_at_fabula_time,
             replace_event_ids=replace_event_ids or [],
+            replace_entity_ids=replace_entity_ids or [],
+            replace_object_ids=replace_object_ids or [],
+            replace_location_ids=replace_location_ids or [],
+            replace_world_trait_ids=replace_world_trait_ids or [],
+            replace_channel_ids=replace_channel_ids or [],
+            replace_proposition_ids=replace_proposition_ids or [],
+            replace_concern_ids=list(replace_concern_ids or []),
         )
         return self.run_structured_query(query)
 

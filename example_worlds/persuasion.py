@@ -15,6 +15,7 @@ from shadow_loom.models import (
     CausalEdge, SpatialEdge, RelationshipEdge, RelationshipMetric, TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
     GlobalTrait, WorldTraitSnapshot,
     NarrativeStyle,
+    Concern, Proposition, ConcernSnapshot, PropositionSnapshot,
 )
 
 world_state = WorldStateV1(
@@ -35,6 +36,8 @@ world_state = WorldStateV1(
             ambient_state={
                 "rank_consciousness": AmbientVector(value=0.95, volatility=0.1, evidence_strength="strong"),
                 "fiscal_strain": AmbientVector(value=0.7, volatility=0.3, evidence_strength="strong"),
+                # Frijda action-readiness: Anne can be removed to Uppercross or Bath; flight feasible.
+                "connected_to": AmbientVector(value=1.0, volatility=0.0, evidence_strength="strong"),
             },
         ),
         "LOC_UPPERCROSS": Location(
@@ -59,6 +62,10 @@ world_state = WorldStateV1(
             ambient_state={
                 "social_display": AmbientVector(value=0.85, volatility=0.2, evidence_strength="strong"),
                 "marriage_market": AmbientVector(value=0.8, volatility=0.2, evidence_strength="strong"),
+                # Anne is socially constrained — propriety, family duty, and the
+                # marriage market keep her in William Elliot's orbit; physical
+                # exits exist but social flight does not.
+                "connected_to": AmbientVector(value=0.4, volatility=0.3, evidence_strength="moderate"),
             },
         ),
         "LOC_HARVILLE_LODGINGS": Location(
@@ -135,11 +142,41 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_WENTWORTH",
-                       perceived_state="he can never forgive me for the broken engagement",
+                       perceived_state="he can never forgive me for the broken engagement", proposition_id="PROP_WENTWORTH_LOVES_ANNE",
                        confidence=0.85, inertia=0.5, established_at_fabula=3000, evidence_strength="strong"),
                 Belief(target_id="ENT_LADY_RUSSELL",
-                       perceived_state="she gave me bad counsel but she meant it as a mother would",
+                       perceived_state="she gave me bad counsel but she meant it as a mother would", proposition_id="PROP_PERSUASION_WAS_RIGHT",
                        confidence=0.8,  inertia=0.7, established_at_fabula=2000, evidence_strength="strong"),
+            ],
+            concerns=[
+                # Sternberg passionate-bond — the constant, regretted love
+                # that re-ignites when Wentworth returns to Somersetshire.
+                Concern(concern_id="CCN_ANNE_DESIRES_WENTWORTH", proposition_id="PROP_WENTWORTH_LOVES_ANNE",
+                        polarity="desire", kind="love", salience=1.0,
+                        activation_fabula_window=[4000, 12000],
+                        counter_concern_ids=["CCN_ANNE_FEARS_REJECTION"]),
+                Concern(concern_id="CCN_ANNE_FEARS_REJECTION", proposition_id="PROP_WENTWORTH_LOVES_ANNE",
+                        polarity="fear", kind="abandonment", salience=0.95,
+                        activation_fabula_window=[4000, 11900],
+                        counter_concern_ids=["CCN_ANNE_DESIRES_WENTWORTH"]),
+                # Kahneman & Miller closeness-controllability — the foundational
+                # regret that the engagement was broken at Lady Russell's urging.
+                Concern(concern_id="CCN_ANNE_REGRETS_PERSUASION", proposition_id="PROP_PERSUASION_WAS_RIGHT",
+                        polarity="fear", kind="injustice", salience=0.85,
+                        activation_fabula_window=[1000, 11900]),
+                # Lazarus secondary appraisal — anxiety over William Elliot's suit
+                # before Mrs Smith's revelation gives her the truth.
+                Concern(concern_id="CCN_ANNE_FEARS_WILLIAM", proposition_id="PROP_WILLIAM_ELLIOT_HONOURABLE",
+                        polarity="fear", kind="exposure", salience=0.7,
+                        activation_fabula_window=[8500, 10500],
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=10500, triggered_by="EVT_MRS_SMITH_REVEALS_ELLIOT",
+                                            salience=0.15),
+                        ]),
+                # Bowlby attachment — loyalty to Mrs Smith; the moral test of Bath.
+                Concern(concern_id="CCN_ANNE_DESIRES_HELP_SMITH", proposition_id="PROP_MRS_SMITH_RELIEVED",
+                        polarity="desire", kind="loyalty", salience=0.7,
+                        activation_fabula_window=[10000, 14100]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_BROKEN_ENGAGEMENT",
@@ -173,7 +210,7 @@ world_state = WorldStateV1(
                 EntityStateSnapshot(fabula_time=10500, triggered_by="EVT_MRS_SMITH_REVEALS_ELLIOT",
                     beliefs_added=[
                         Belief(target_id="ENT_WILLIAM_ELLIOT",
-                               perceived_state="cold, calculating; courts me only to forestall Mrs Clay",
+                               perceived_state="cold, calculating; courts me only to forestall Mrs Clay", proposition_id="PROP_WILLIAM_ELLIOT_HONOURABLE",
                                confidence=0.95, inertia=0.7, established_at_fabula=10500, evidence_strength="strong"),
                     ]),
                 EntityStateSnapshot(fabula_time=11920, triggered_by="EVT_WENTWORTHS_LETTER",
@@ -187,6 +224,7 @@ world_state = WorldStateV1(
                     beliefs_added=[
                         Belief(target_id="ENT_WENTWORTH",
                                perceived_state="he loves me as constantly as ever",
+                               proposition_id="PROP_WENTWORTH_LOVES_ANNE",
                                confidence=1.0, inertia=0.85, established_at_fabula=12000, evidence_strength="strong"),
                     ]),
                 
@@ -205,8 +243,38 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_ANNE",
-                       perceived_state="weak-charactered; could be persuaded out of love",
+                       perceived_state="weak-charactered; could be persuaded out of love", proposition_id="PROP_PERSUASION_WAS_RIGHT",
                        confidence=0.85, inertia=0.5, established_at_fabula=4000, evidence_strength="strong"),
+            ],
+            concerns=[
+                # Lazarus appraisal — naval ambition / prize-money fortune,
+                # initially the substitute for the love he was refused.
+                Concern(concern_id="CCN_WENTWORTH_DESIRES_FORTUNE", proposition_id="PROP_WENTWORTH_RICH",
+                        polarity="desire", kind="ambition", salience=0.85,
+                        activation_fabula_window=[1000, 4000]),
+                # Averill normative-violation rage — the broken engagement reads
+                # as betrayal until the Lyme conversation softens him.
+                Concern(concern_id="CCN_WENTWORTH_FEARS_REJECTED_AGAIN", proposition_id="PROP_ANNE_LOVES_WENTWORTH",
+                        polarity="fear", kind="betrayal", salience=0.95,
+                        activation_fabula_window=[4000, 11800],
+                        counter_concern_ids=["CCN_WENTWORTH_DESIRES_ANNE"],
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=11800, triggered_by="EVT_HARVILLE_ANNE_CONVERSATION",
+                                            salience=0.35),
+                        ]),
+                # Sternberg passionate-bond — re-emerges through the Lyme arc.
+                Concern(concern_id="CCN_WENTWORTH_DESIRES_ANNE", proposition_id="PROP_ANNE_LOVES_WENTWORTH",
+                        polarity="desire", kind="love", salience=1.0,
+                        activation_fabula_window=[7000, 12000],
+                        counter_concern_ids=["CCN_WENTWORTH_FEARS_REJECTED_AGAIN"],
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=11900, triggered_by="EVT_WENTWORTHS_LETTER",
+                                            salience=1.0),
+                        ]),
+                # Frijda guilt — once Louisa falls, his entanglement becomes a trap.
+                Concern(concern_id="CCN_WENTWORTH_FEARS_LOUISA", proposition_id="PROP_LOUISA_WINS_WENTWORTH",
+                        polarity="fear", kind="abandonment", salience=0.8,
+                        activation_fabula_window=[7000, 9000]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_BROKEN_ENGAGEMENT",
@@ -228,7 +296,7 @@ world_state = WorldStateV1(
                     beliefs_invalidated=["ENT_ANNE"],
                     beliefs_added=[
                         Belief(target_id="ENT_ANNE",
-                               perceived_state="composed and resolute under pressure; my error to encourage Louisa",
+                               perceived_state="composed and resolute under pressure; my error to encourage Louisa", proposition_id="PROP_ANNE_LOVES_WENTWORTH",
                                confidence=0.95, inertia=0.8, established_at_fabula=7200, evidence_strength="strong"),
                     ]),
                 EntityStateSnapshot(fabula_time=9000, triggered_by="EVT_LOUISA_BENWICK_ENGAGED",
@@ -258,11 +326,21 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_WENTWORTH",
-                       perceived_state="a young, undistinguished, rash sailor — quite unsuitable",
+                       perceived_state="a young, undistinguished, rash sailor — quite unsuitable", proposition_id="PROP_WENTWORTH_RICH",
                        confidence=0.9, inertia=0.7, established_at_fabula=1000, evidence_strength="strong"),
                 Belief(target_id="ENT_WILLIAM_ELLIOT",
                        perceived_state="excellent match: rank, fortune, and renewed family connection",
+                       proposition_id="PROP_ANNE_MARRIES_WILLIAM",
                        confidence=0.85, inertia=0.5, established_at_fabula=9000, evidence_strength="moderate"),
+            ],
+            concerns=[
+                # Bowlby maternal-attachment — Anne's well-being filtered through rank.
+                Concern(concern_id="CCN_LADY_RUSSELL_DESIRES_PRUDENT_MATCH", proposition_id="PROP_ANNE_MARRIES_WILLIAM",
+                        polarity="desire", kind="social_status", salience=0.85,
+                        activation_fabula_window=[8500, 11900]),
+                Concern(concern_id="CCN_LADY_RUSSELL_FEARS_WENTWORTH", proposition_id="PROP_WENTWORTH_LOVES_ANNE",
+                        polarity="fear", kind="social_status", salience=0.75,
+                        activation_fabula_window=[1000, 12000]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=12500, triggered_by="EVT_RECONCILIATION",
@@ -270,6 +348,7 @@ world_state = WorldStateV1(
                     beliefs_added=[
                         Belief(target_id="ENT_WENTWORTH",
                                perceived_state="my judgement of him was wrong; he is worthy of Anne",
+                               proposition_id="PROP_PERSUASION_WAS_RIGHT",
                                confidence=0.9, inertia=0.7, established_at_fabula=12500, evidence_strength="strong"),
                     ]),
             ],
@@ -285,6 +364,16 @@ world_state = WorldStateV1(
                 "humiliation":   TraitVector(value=0.0,  inertia=0.5, evidence_strength="weak"),
             },
             beliefs=[],
+            concerns=[
+                # OCC pride — rank above all, with the Mrs Clay menace as the
+                # unspoken status anxiety the family will not name.
+                Concern(concern_id="CCN_SIR_WALTER_DESIRES_RANK", proposition_id="PROP_KELLYNCH_KEPT",
+                        polarity="desire", kind="social_status", salience=0.9,
+                        activation_fabula_window=[1, 3000]),
+                Concern(concern_id="CCN_SIR_WALTER_FEARS_HUMILIATION", proposition_id="PROP_MRS_CLAY_MARRIES_SIR_WALTER",
+                        polarity="fear", kind="humiliation", salience=0.65,
+                        activation_fabula_window=[3000, 13200]),
+            ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=3000, triggered_by="EVT_KELLYNCH_LET",
                     location_id="LOC_BATH"),
@@ -300,7 +389,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_MRS_CLAY",
-                       perceived_state="useful flatterer; no danger to my prospects",
+                       perceived_state="useful flatterer; no danger to my prospects", proposition_id="PROP_MRS_CLAY_MARRIES_SIR_WALTER",
                        confidence=0.85, inertia=0.65, established_at_fabula=3000, evidence_strength="moderate"),
             ],
             state_timeline=[
@@ -341,7 +430,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_CHARLES_HAYTER",
-                       perceived_state="my settled love",
+                       perceived_state="my settled love", proposition_id="PROP_HENRIETTA_MARRIES_HAYTER",
                        confidence=0.85, inertia=0.6, established_at_fabula=4500, evidence_strength="strong"),
             ],
             state_timeline=[
@@ -365,7 +454,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_WENTWORTH",
-                       perceived_state="my decided suitor; I will be persuaded by no one",
+                       perceived_state="my decided suitor; I will be persuaded by no one", proposition_id="PROP_LOUISA_WINS_WENTWORTH",
                        confidence=0.85, inertia=0.5, established_at_fabula=5500, evidence_strength="moderate"),
             ],
             state_timeline=[
@@ -382,7 +471,7 @@ world_state = WorldStateV1(
                     beliefs_invalidated=["ENT_WENTWORTH"],
                     beliefs_added=[
                         Belief(target_id="ENT_BENWICK",
-                               perceived_state="my poetic, grieving suitor",
+                               perceived_state="my poetic, grieving suitor", proposition_id="PROP_LOUISA_WINS_WENTWORTH",
                                confidence=0.85, inertia=0.55, established_at_fabula=9000, evidence_strength="strong"),
                     ]),
             ],
@@ -451,8 +540,22 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="OBJ_BARONETAGE",
-                       perceived_state="the Kellynch entail must come to me intact",
+                       perceived_state="the Kellynch entail must come to me intact", proposition_id="PROP_WILLIAM_INHERITS",
                        confidence=0.95, inertia=0.85, established_at_fabula=8500, evidence_strength="strong"),
+            ],
+            concerns=[
+                # Lazarus instrumental-goal appraisal — the entail is the only stake.
+                Concern(concern_id="CCN_WILLIAM_DESIRES_BARONETAGE", proposition_id="PROP_WILLIAM_INHERITS",
+                        polarity="desire", kind="ambition", salience=0.95,
+                        activation_fabula_window=[8500, 13200]),
+                # Averill normative violation — Mrs Clay would block the inheritance.
+                Concern(concern_id="CCN_WILLIAM_FEARS_MRS_CLAY", proposition_id="PROP_MRS_CLAY_MARRIES_SIR_WALTER",
+                        polarity="fear", kind="injustice", salience=0.9,
+                        activation_fabula_window=[8500, 13200]),
+                # Berscheid game-of-courtship — Anne is instrument and shield.
+                Concern(concern_id="CCN_WILLIAM_DESIRES_ANNE", proposition_id="PROP_ANNE_MARRIES_WILLIAM",
+                        polarity="desire", kind="social_status", salience=0.7,
+                        activation_fabula_window=[8500, 12000]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=9000, triggered_by="EVT_WILLIAM_RETURNS_TO_FAMILY",
@@ -473,6 +576,16 @@ world_state = WorldStateV1(
                 "ambition":     TraitVector(value=0.85, inertia=0.7, evidence_strength="strong"),
             },
             beliefs=[],
+            concerns=[
+                # Lazarus secondary appraisal — climbing via either Sir Walter or
+                # William, whichever route the social arithmetic favours.
+                Concern(concern_id="CCN_MRS_CLAY_DESIRES_SIR_WALTER", proposition_id="PROP_MRS_CLAY_MARRIES_SIR_WALTER",
+                        polarity="desire", kind="ambition", salience=0.85,
+                        activation_fabula_window=[3000, 13200]),
+                Concern(concern_id="CCN_MRS_CLAY_FEARS_EXPOSURE", proposition_id="PROP_MRS_CLAY_EXPOSED",
+                        polarity="fear", kind="exposure", salience=0.7,
+                        activation_fabula_window=[3000, 13200]),
+            ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=3000, triggered_by="EVT_KELLYNCH_LET",
                     location_id="LOC_BATH"),
@@ -490,6 +603,7 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_WILLIAM_ELLIOT",
                        perceived_state="cold opportunist who ruined my husband and refuses to act for me",
+                       proposition_id="PROP_WILLIAM_ELLIOT_HONOURABLE",
                        confidence=0.95, inertia=0.85, established_at_fabula=9500, evidence_strength="strong"),
             ],
             constants=["widowed", "annes_old_school_friend"],
@@ -950,6 +1064,21 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_ANNE_VISITS_MRS_SMITH", target_id="ENT_SIR_WALTER", rel_counterpart_id="ENT_ANNE", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.55, mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=10000, propagation_delay=0),
         CausalEdge(source_id="EVT_WILLIAM_RETURNS_TO_FAMILY", target_id="ENT_WILLIAM_ELLIOT", rel_counterpart_id="ENT_ANNE", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.6, mechanism="social", evidence_strength="moderate", causal_force=7.0, fabula_time=8500, propagation_delay=0),
         CausalEdge(source_id="EVT_KELLYNCH_LET", target_id="ENT_MRS_CLAY", rel_counterpart_id="ENT_SIR_WALTER", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.5, mechanism="social", evidence_strength="moderate", causal_force=5.0, fabula_time=3000, propagation_delay=0),
+
+        # ─── added: negative-trait_delta mutations on Anne so Kahneman/Miller
+        # regret + Berkowitz frustrated-rage scorers can attribute a loss event.
+        CausalEdge(source_id="EVT_BROKEN_ENGAGEMENT", target_id="ENT_ANNE",
+                   causality_type="mutation", mechanism="emotional", evidence_strength="strong",
+                   causal_force=9.0, fabula_time=1000,
+                   trait_target="hope", trait_delta=-0.7),
+        CausalEdge(source_id="EVT_HAYTER_WITHDRAWS", target_id="ENT_ANNE",
+                   causality_type="mutation", mechanism="psychological", evidence_strength="moderate",
+                   causal_force=3.0, fabula_time=5000,
+                   trait_target="hope", trait_delta=-0.15),
+        CausalEdge(source_id="EVT_WILLIAM_RETURNS_TO_FAMILY", target_id="ENT_ANNE",
+                   causality_type="mutation", mechanism="psychological", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=8500,
+                   trait_target="hope", trait_delta=-0.3),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -1210,5 +1339,74 @@ world_state = WorldStateV1(
                 "affinity": RelationshipMetric(value=0.9, inertia=0.8, evidence_strength="strong", last_updated_fabula=4000),
             },
         ),
+    ],
+
+    # ── PROPOSITIONS ────────────────────────────────────────────────────
+    propositions=[
+        Proposition(proposition_id="PROP_WENTWORTH_LOVES_ANNE", kind="trait_holds",
+                    referent_ids=["ENT_WENTWORTH", "ENT_ANNE"],
+                    description="Captain Wentworth still loves Anne Elliot.",
+                    audience_default_prior=0.55, stakes=0.95,
+                    truth_at_fabula={11900: True, 12000: True}),
+        Proposition(proposition_id="PROP_ANNE_LOVES_WENTWORTH", kind="trait_holds",
+                    referent_ids=["ENT_ANNE", "ENT_WENTWORTH"],
+                    description="Anne Elliot has loved Wentworth constantly since the broken engagement.",
+                    audience_default_prior=0.7, stakes=0.9,
+                    truth_at_fabula={1000: True, 12000: True}),
+        Proposition(proposition_id="PROP_PERSUASION_WAS_RIGHT", kind="outcome",
+                    referent_ids=["EVT_BROKEN_ENGAGEMENT"],
+                    description="Lady Russell's counsel to break the engagement was the right judgement.",
+                    audience_default_prior=0.3, stakes=0.85,
+                    truth_at_fabula={12000: False}),
+        Proposition(proposition_id="PROP_WILLIAM_ELLIOT_HONOURABLE", kind="trait_holds",
+                    referent_ids=["ENT_WILLIAM_ELLIOT"],
+                    description="William Elliot is the honourable suitor he presents himself as.",
+                    audience_default_prior=0.45, stakes=0.85,
+                    truth_at_fabula={10500: False}),
+        Proposition(proposition_id="PROP_ANNE_MARRIES_WILLIAM", kind="event_occurs",
+                    referent_ids=["ENT_ANNE", "ENT_WILLIAM_ELLIOT"],
+                    description="Anne Elliot marries her cousin William Elliot.",
+                    audience_default_prior=0.4, stakes=0.85,
+                    truth_at_fabula={12000: False}),
+        Proposition(proposition_id="PROP_LOUISA_WINS_WENTWORTH", kind="event_occurs",
+                    referent_ids=["ENT_LOUISA", "ENT_WENTWORTH"],
+                    description="Louisa Musgrove becomes engaged to Captain Wentworth.",
+                    audience_default_prior=0.55, stakes=0.8,
+                    truth_at_fabula={9000: False}),
+        Proposition(proposition_id="PROP_HENRIETTA_MARRIES_HAYTER", kind="event_occurs",
+                    referent_ids=["ENT_HENRIETTA", "ENT_CHARLES_HAYTER"],
+                    description="Henrietta Musgrove marries her cousin Charles Hayter.",
+                    audience_default_prior=0.65, stakes=0.5,
+                    truth_at_fabula={2000: False}),
+        Proposition(proposition_id="PROP_KELLYNCH_KEPT", kind="event_occurs",
+                    referent_ids=["LOC_KELLYNCH_HALL", "ENT_SIR_WALTER"],
+                    description="Sir Walter retains Kellynch Hall without leasing it.",
+                    audience_default_prior=0.4, stakes=0.7,
+                    truth_at_fabula={3000: False}),
+        Proposition(proposition_id="PROP_MRS_CLAY_MARRIES_SIR_WALTER", kind="event_occurs",
+                    referent_ids=["ENT_MRS_CLAY", "ENT_SIR_WALTER"],
+                    description="Mrs Clay succeeds in marrying Sir Walter.",
+                    audience_default_prior=0.45, stakes=0.85,
+                    truth_at_fabula={13200: False}),
+        Proposition(proposition_id="PROP_MRS_CLAY_EXPOSED", kind="event_occurs",
+                    referent_ids=["ENT_MRS_CLAY"],
+                    description="Mrs Clay's ambition is exposed to the Elliot family.",
+                    audience_default_prior=0.4, stakes=0.6,
+                    truth_at_fabula={13200: True}),
+        Proposition(proposition_id="PROP_WILLIAM_INHERITS", kind="outcome",
+                    referent_ids=["ENT_WILLIAM_ELLIOT", "OBJ_BARONETAGE"],
+                    description="William Elliot inherits the Kellynch baronetcy unobstructed.",
+                    audience_default_prior=0.6, stakes=0.7,
+                    truth_at_fabula={13200: True}),
+        Proposition(proposition_id="PROP_WENTWORTH_RICH", kind="trait_holds",
+                    referent_ids=["ENT_WENTWORTH"],
+                    description="Wentworth has made his fortune in naval prize money.",
+                    audience_default_prior=0.5, stakes=0.6,
+                    truth_at_fabula={4000: True}),
+        Proposition(proposition_id="PROP_MRS_SMITH_RELIEVED", kind="event_occurs",
+                    referent_ids=["ENT_MRS_SMITH"],
+                    description="Mrs Smith's West Indian property is recovered through Wentworth's help.",
+                    audience_default_prior=0.35, stakes=0.55,
+                    truth_at_fabula={14100: True}),
     ],
 )

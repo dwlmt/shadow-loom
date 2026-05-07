@@ -61,6 +61,11 @@ def build_event_navigator(state: AppState) -> None:
     # "fabula" (in-world chronological order). They differ for any
     # story with flashbacks, framing devices, or in medias res.
     order_state = {"mode": "syuzhet"}
+    # Whether to filter out events that have been superseded by a
+    # promoted counterfactual (Tier-6 supersession UX). Default False
+    # so historical context is visible; toggle on to read the canonical
+    # post-merge mainline only.
+    hide_superseded = {"v": False}
 
     with ui.splitter(value=28).classes("w-full").style(
         "height: calc(100vh - 280px); min-height: 480px"
@@ -86,6 +91,14 @@ def build_event_navigator(state: AppState) -> None:
                     "Narrative = syuzhet (order events appear in the text). "
                     "Chronology = fabula (order events happen in the world)."
                 )
+
+                # Hide-superseded switch — filters events with a
+                # non-null ``superseded_by_event_id`` so the rail
+                # shows only the canonical post-merge mainline.
+                hide_sw = ui.switch(
+                    "Hide superseded events",
+                    value=False,
+                ).props("dense").classes("w-full px-2 text-xs")
 
                 # Search box
                 search = ui.input(
@@ -122,6 +135,8 @@ def build_event_navigator(state: AppState) -> None:
                             or ft in r["id"].lower()
                             or ft in r["event_type"].lower()
                         ]
+                    if hide_superseded["v"]:
+                        rows = [r for r in rows if not r.get("superseded")]
 
                     if not rows:
                         with list_container:
@@ -169,8 +184,25 @@ def build_event_navigator(state: AppState) -> None:
                                         ui.label(secondary).classes(
                                             "text-[10px] text-slate-400 font-mono"
                                         )
+                                        if r.get("superseded"):
+                                            ui.badge(
+                                                f"⤳ {r['superseded_by_event_id']}",
+                                                color="amber",
+                                            ).props("outline dense").classes(
+                                                "text-[9px]"
+                                            ).tooltip(
+                                                "Superseded by a promoted "
+                                                "counterfactual; click the "
+                                                "successor in the rail."
+                                            )
+                                    desc_classes = (
+                                        "text-xs leading-tight "
+                                        + ("line-through text-slate-400"
+                                           if r.get("superseded")
+                                           else "text-slate-700")
+                                    )
                                     ui.label(r["description"][:80] or r["id"]).classes(
-                                        "text-xs text-slate-700 leading-tight"
+                                        desc_classes
                                     ).style("overflow-wrap:anywhere")
 
                 def _on_order_change() -> None:
@@ -179,6 +211,15 @@ def build_event_navigator(state: AppState) -> None:
 
                 order_toggle.on("update:model-value", lambda _e: _on_order_change())
                 search.on("update:model-value", lambda _e: _refresh_list())
+
+                def _on_hide_superseded_change(e: Any) -> None:
+                    hide_superseded["v"] = bool(getattr(e, "value", False))
+                    _refresh_list()
+
+                hide_sw.on(
+                    "update:model-value",
+                    lambda e: _on_hide_superseded_change(e),
+                )
 
         # ── Right: detail dossier ─────────────────────────────────
         with split.after:
@@ -267,6 +308,27 @@ def _render_event_dossier(state: AppState, ctx: Dict[str, Any]) -> None:
         ui.label(evt["description"] or "(no description)").classes(
             "text-base text-slate-800 mt-2"
         )
+
+        # Supersession callout: when this event has been overridden
+        # by a promoted counterfactual, surface the successor as a
+        # clickable link so the reader can jump to the canonical
+        # post-merge mainline beat.
+        successor = evt.get("superseded_by_event_id")
+        if successor:
+            with ui.row().classes(
+                "items-center gap-2 mt-2 px-3 py-2 rounded-md "
+                "bg-amber-50 border border-amber-200"
+            ):
+                ui.icon("auto_awesome_motion", color="amber-9", size="sm")
+                ui.label("Superseded by").classes("text-xs text-amber-900 font-semibold")
+                ui.button(
+                    successor,
+                    on_click=lambda eid=successor: state.select_node(eid, "EventNode"),
+                ).props("dense flat color=amber-9 size=sm no-caps")
+                ui.label(
+                    "(this beat has been overridden by a promoted "
+                    "counterfactual; read the successor as canonical)"
+                ).classes("text-[10px] text-amber-800 italic")
 
         # Cross-links bar
         with ui.row().classes("items-center gap-2 mt-3 flex-wrap"):

@@ -24,6 +24,12 @@ Return a single `WorldStatePatch` object with only the fields you need. Every fi
 | `drop_spatial_edges: [{source_id, target_id}, ...]` / `add_spatial_edges` | Spatial edges between locations. |
 | `drop_channel_ids: [channel_id, ...]` / `add_channels: {channel_id: Channel}` | Information-channel adds/drops. |
 | `channel_renames: {old_id: new_id}` | Fix typo / spelling drift in CHN_ IDs (e.g. `CHN_TELEPHONE_LINE` → `CHN_TELEPHONE_LINK`). The pipeline forwards every `via_channel_id` and `acquired_via_channel_id` reference automatically — prefer this over `drop_channel_ids` + `add_channels` when the channel itself is correct and only the id is wrong, otherwise every belief / utterance pointing at the old id silently loses its provenance.|
+| `add_propositions: {prop_id: Proposition}` | Add a catalogued proposition that downstream beliefs / concerns reference but is missing from `propositions`. Every PROP_ id must match `^PROP_[A-Z0-9_]+$`. |
+| `update_proposition_snapshots: {prop_id: [PropositionSnapshot, ...]}` | Append snapshots into a proposition's `state_timeline`. Each snapshot needs `fabula_time` and `triggered_by` (an EVT_ id that exists in the world). Use this when validation reports orphaned framing drift or missing escalation. |
+| `commit_proposition_truth: {prop_id: {fabula_time: bool}}` | Write into `Proposition.truth_at_fabula`. Only use when validation reports that an outcome event lacks its corresponding truth commit. |
+| `add_concerns: {ent_id: [Concern, ...]}` | Append concerns onto an entity. Each `Concern.proposition_id` MUST already exist in `propositions` (or be added in the same patch via `add_propositions`). Each `concern_id` must match `^CCN_[A-Z0-9_]+$`. |
+| `update_concern_snapshots: {ent_id: {concern_id: [ConcernSnapshot, ...]}}` | Append snapshots into a concern's `state_timeline`. Each snapshot needs `fabula_time` and `triggered_by`. |
+| `set_belief_proposition_ids: [{ent_id, target_id, proposition_id}, ...]` | Backfill a `proposition_id` onto an existing belief (matched on `(entity, target_id)`). Use when validation flags a belief whose target maps to a catalogued proposition but `proposition_id` is null. |
 | `notes: str` | Free-text rationale for the maintainer log. NOT applied to the world state. |
 
 ---
@@ -51,6 +57,11 @@ Return a single `WorldStatePatch` object with only the fields you need. Every fi
 | `duplicate` event | `drop_event_ids` for the duplicate copy (keep the first), or `event_renames` to deduplicate. |
 | `missing_state_timeline` / `missing_mutation` | `add_state_timeline_entries` for the affected entities. |
 | `orphan` event / `missing_causal` | `add_causal_edges` connecting the orphan into the existing graph using only IDs that already exist. |
+| `unknown_proposition_id` on Belief / Concern | `add_propositions` to introduce the missing PROP_, OR `set_belief_proposition_ids` to retarget the belief at an existing PROP_. |
+| `belief_missing_proposition_id` (target matches a catalogue prop) | `set_belief_proposition_ids` filling the field. |
+| `orphan_proposition_snapshot` / `orphan_concern_snapshot` (`triggered_by` does not resolve) | Drop via `update_proposition_snapshots` / `update_concern_snapshots` re-emitting the timeline without the orphan, OR add the missing event via `update_event_fields` if it should exist. |
+| `missing_truth_commit` on outcome event | `commit_proposition_truth` writing the resolution. |
+| `missing_concern_for_actor` on `mutation_social` edges | `add_concerns` with the appropriate polarity over the relevant proposition. |
 
 ---
 

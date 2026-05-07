@@ -233,11 +233,47 @@ def _render_versions(state: AppState, container) -> None:
                     tree_data,
                     current_version_id=state.current_version_row_id,
                     on_click=_on_version_click,
-                    height="calc(100vh - 280px)",
+                    height="calc(100vh - 360px)",
                     orient="vertical",
                 )
 
         _draw_tree()
+
+        # Compact changeset card for the currently-selected version.
+        # Surfaces the new MergeChangeset counters (additive, affect,
+        # deletion, supersession) so users can see *what changed* in
+        # the version they just clicked without opening the full
+        # version dialog.
+        from shadow_loom_ui.components._changeset_chips import (
+            render_changeset_chips,
+        )
+        with ui.column().classes(
+            "w-full px-2 pt-2 pb-3 border-t border-slate-200 gap-1"
+        ):
+            current_v = next(
+                (v for v in tree_data
+                 if v["id"] == state.current_version_row_id),
+                None,
+            )
+            if current_v is None:
+                ui.label("Select a version to see its changeset.").classes(
+                    "text-[11px] italic text-slate-400"
+                )
+            else:
+                with ui.row().classes("w-full items-center gap-1"):
+                    ui.label(
+                        f"v{current_v['version']} changeset"
+                    ).classes(
+                        "text-[11px] uppercase tracking-wide text-slate-500"
+                    )
+                    if current_v.get("source"):
+                        ui.label(f"· {current_v['source']}").classes(
+                            "text-[11px] text-slate-400"
+                        )
+                render_changeset_chips(
+                    current_v.get("changeset_summary"),
+                    compact=True,
+                )
 
 
 def _can_mutate_versions(state: AppState) -> bool:

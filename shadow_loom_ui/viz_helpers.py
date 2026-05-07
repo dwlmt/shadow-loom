@@ -416,8 +416,30 @@ def ws_to_graph_data(
 
     # Events
     for evt in ws.events:
-        _node(evt.id, evt.id, "EventNode", description=evt.description[:80],
-              fabula_time=str(evt.fabula_time), _sl_node_type="EventNode")
+        superseded = bool(getattr(evt, "superseded_by_event_id", None))
+        node_extras: dict[str, Any] = {
+            "description": evt.description[:80],
+            "fabula_time": str(evt.fabula_time),
+            "_sl_node_type": "EventNode",
+            "_sl_superseded": superseded,
+        }
+        if superseded:
+            node_extras["superseded_by"] = evt.superseded_by_event_id
+        _node(evt.id, evt.id, "EventNode", **node_extras)
+        if superseded:
+            # Mute the just-appended node so the constraint field
+            # reads at-a-glance: superseded events sit ghost-grey with
+            # a dashed amber border and 0.45 opacity. Downstream
+            # filters can hide entirely via the ``_sl_superseded`` flag.
+            n = nodes[-1]
+            n["itemStyle"] = {
+                **n.get("itemStyle", {}),
+                "color": "#9CA3AF",
+                "opacity": 0.45,
+                "borderColor": "#F59E0B",
+                "borderType": "dashed",
+                "borderWidth": 1.5,
+            }
 
     # Objects
     for oid, obj in ws.objects.items():
@@ -513,13 +535,14 @@ def ws_to_graph_data(
     # for every actor/target pair). Without them the overview can't
     # answer "who is involved in what?" at a glance.
     for evt in ws.events:
+        edge_dash = "dashed" if getattr(evt, "superseded_by_event_id", None) else "solid"
         for aid in evt.actor_ids:
-            _link(aid, evt.id, "actor_of", width=1.5)
+            _link(aid, evt.id, "actor_of", width=1.5, dash=edge_dash)
         for tid in evt.target_ids:
             # Distinguish entity-target vs object/location-target so
             # the legend reads cleanly.
             etype = "target_of" if tid in ws.entities else "used_in"
-            _link(evt.id, tid, etype, width=1.5)
+            _link(evt.id, tid, etype, width=1.5, dash=edge_dash)
 
     # ── World-trait → Event "governs" edges ──
     # If an event has any incoming CausalEdge whose mechanism falls
@@ -981,19 +1004,35 @@ def ws_to_heatmap_data(
 def ws_to_timeline_data(
     ws: WorldStateV1,
 ) -> list[dict]:
-    """Events as scatter data: ``[{name, fabula_time, syuzhet_index, event_type, description}]``."""
-    return [
-        {
+    """Events as scatter data: ``[{name, fabula_time, syuzhet_index, event_type, description}]``.
+
+    Superseded events are tagged with ``superseded=True`` and rendered
+    with a muted grey colour so the supersession-aware UI surfaces can
+    style or hide them.
+    """
+    out: list[dict] = []
+    for evt in sorted(ws.events, key=lambda e: e.fabula_time):
+        superseded = bool(getattr(evt, "superseded_by_event_id", None))
+        color = (
+            "#9CA3AF" if superseded
+            else EVENT_TYPE_COLORS.get(evt.event_type, "#607D8B")
+        )
+        out.append({
             "name": evt.id,
             "value": [evt.fabula_time, evt.syuzhet_index],
             "itemStyle": {
-                "color": EVENT_TYPE_COLORS.get(evt.event_type, "#607D8B"),
+                "color": color,
+                "opacity": 0.45 if superseded else 1.0,
             },
-            "description": evt.description[:80],
+            "description": (
+                ("[superseded] " if superseded else "")
+                + evt.description[:80]
+            ),
             "event_type": evt.event_type,
-        }
-        for evt in sorted(ws.events, key=lambda e: e.fabula_time)
-    ]
+            "superseded": superseded,
+            "superseded_by_event_id": getattr(evt, "superseded_by_event_id", None),
+        })
+    return out
 
 
 def events_at_times(
@@ -3361,6 +3400,8 @@ def ws_to_event_rows(ws: WorldStateV1) -> list[dict]:
             "targets": ", ".join(_name_of(t) for t in evt.target_ids) or "—",
             "description": evt.description,
             "world_id": evt.world_id,
+            "superseded_by_event_id": getattr(evt, "superseded_by_event_id", None),
+            "superseded": bool(getattr(evt, "superseded_by_event_id", None)),
         })
     return rows
 

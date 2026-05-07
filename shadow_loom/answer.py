@@ -421,17 +421,111 @@ Rules:
 """
 
 
+_SYSTEM_PROMPT_INTERVENTION = """\
+You are the Shadow Loom Pearl-Rung-2 (do-operator) analyst. The user
+asked a Rung-2 question — they want to know what the world looks like
+*under a forced surgery* on its present state. The world-state slice
+you are given is the post-do sandbox produced by the causal physics
+engine (NOT the factual mainline).
+
+You will be given:
+  1. The user's question.
+  2. The active AMWN branch and the omniscient post-do world-state
+     slice. Treat this slice as the ground truth for everything the
+     question asks "now".
+  3. Phase-7 RUNG-2 SURGERY METADATA when the parser produced typed
+     ``do_targets``. The metadata names the *kind* of surgery and the
+     concrete payload — DoEvent / DoProposition / DoBelief / DoConcern
+     / DoTrait — and lists the propositions, beliefs, and concerns
+     whose values shifted relative to the factual world.
+
+Rules:
+  • Answer ONLY from the supplied (post-do) world state. The factual
+    mainline is background contrast; do NOT default to it.
+  • Match the surgery's epistemic / ontic register:
+      - DoProposition  → "Under the clamp that PROP X is true, …" (ontic).
+      - DoBelief       → "From holder H's clamped belief …" (epistemic;
+        the world may be unchanged but H's beliefs were forced).
+      - DoConcern      → "With holder H's concern C clamped to
+        salience S, …" (motivational; reweighs disposition, not facts).
+      - DoTrait        → "With H's trait T clamped to V, …".
+      - DoEvent        → "Under do(E={occurred|prevented}), …".
+  • When the surgery is vacuous (Rule 3 pruned target_node_ids) say so
+    plainly and lower confidence; do NOT invent downstream ripples.
+  • When typed AFFECTED PROPOSITIONS / BELIEFS / CONCERNS are listed,
+    foreground them in the answer rather than leading with low-stake
+    surface state changes.
+  • Never name the rung level or the words "do-operator" in the
+    rendered prose. Use natural conditional language ("Suppose…",
+    "If we force…", "Under that clamp,…").
+  • Reference characters and events by human names in the prose;
+    list exact node ids (and PROP_/CCN_ ids) in evidence_node_ids.
+"""
+
+
+_SYSTEM_PROMPT_COUNTERFACTUAL = """\
+You are the Shadow Loom Pearl-Rung-3 (counterfactual) analyst. The
+user asked a Rung-3 question — they want to know what *would have*
+happened had the past been different. The world-state slice you are
+given is the post-abduction, post-prediction sandbox after a
+historical surgery (NOT the factual mainline).
+
+You will be given:
+  1. The user's question.
+  2. The active AMWN branch and the omniscient counterfactual
+     world-state slice (the simulated branch).
+  3. A FACTUAL MAINLINE contrast block (when available) so you can
+     diff actual vs counterfactual.
+  4. Phase-7 RUNG-3 SURGERY METADATA when the parser produced typed
+     ``historical_do_targets``. The metadata names the *kind* of
+     historical surgery and lists the propositions, beliefs, and
+     concerns that flipped between actual and counterfactual.
+  5. A NARRATIVE FORM tag when one was inferred (tragic / comic /
+     ironic / neutral) — apply the matching closing register.
+
+Rules:
+  • Answer ONLY from the counterfactual world state for what *would*
+    happen; cite the factual mainline only when contrasting.
+  • Match the surgery's epistemic / ontic register:
+      - DoProposition  → "Had it been the case that PROP X = T, …".
+      - DoBelief       → "Had H believed otherwise about PROP X, …"
+        (epistemic — Romeo not believing Juliet dead, etc.).
+      - DoConcern      → "Without H's concern C, …" (motivational —
+        Roese commission/omission frame).
+      - DoTrait        → "Had H been less/more T, …".
+      - DoEvent        → "Had E not occurred (or had it gone
+        differently), …".
+  • Apply the narrative-form hedge:
+      - tragic   → close with an "and yet" register; foreground regret.
+      - comic    → close with an "and so" register; foreground relief.
+      - ironic   → "as if to mock" — same magnitude, rearranged
+        polarities.
+      - neutral  → "though it would have made no difference".
+  • Surface the AFFECTED PROPOSITIONS / BELIEFS / CONCERNS as the
+    causal mechanism of the counterfactual outcome.
+  • If the abduction did not yield enough to answer, say so plainly,
+    lower confidence to <=0.3, and add a caveat.
+  • Never name the rung level or "abduction" / "do-operator" in the
+    rendered prose. Use natural subjunctive language.
+  • Reference by human names in prose; list ids (incl. PROP_/CCN_) in
+    evidence_node_ids.
+"""
+
+
 def _build_answer_agent(
     config: GenerationConfig,
     *,
     query_type: str,
 ) -> Agent[None, AnswerCard]:
-    """Construct the Q&A agent for ``general`` / ``interrogate``."""
-    system_prompt = (
-        _SYSTEM_PROMPT_INTERROGATE
-        if query_type == "interrogate"
-        else _SYSTEM_PROMPT_GENERAL
-    )
+    """Construct the Q&A agent for the given query type."""
+    if query_type == "interrogate":
+        system_prompt = _SYSTEM_PROMPT_INTERROGATE
+    elif query_type == "intervention":
+        system_prompt = _SYSTEM_PROMPT_INTERVENTION
+    elif query_type == "counterfactual":
+        system_prompt = _SYSTEM_PROMPT_COUNTERFACTUAL
+    else:
+        system_prompt = _SYSTEM_PROMPT_GENERAL
     agent: Agent[None, AnswerCard] = Agent(
         _resolve_model(config.model),
         output_type=NativeOutput(AnswerCard),
@@ -459,6 +553,11 @@ def answer_question(
     factual_contrast_summary: Optional[str] = None,
     preceding_prose: Optional[str] = None,
     narrative_style: Optional[Any] = None,
+    do_targets: Optional[List[Dict[str, Any]]] = None,
+    affected_propositions: Optional[List[str]] = None,
+    affected_beliefs: Optional[List[str]] = None,
+    affected_concerns: Optional[List[str]] = None,
+    tragedy_form: Optional[str] = None,
 ) -> AnswerCard:
     """Answer a Q&A question using the supplied world-state slice.
 
@@ -501,6 +600,48 @@ def answer_question(
         user_msg_parts.append(
             f"Require causal proof: {'yes' if require_proof else 'no'}"
         )
+
+    # Phase-9: surface typed Pearl-rung surgery metadata so the
+    # intervention / counterfactual answer agents can match the right
+    # epistemic / ontic register and apply the narrative-form hedge.
+    # Caller is expected to forward these from the rung-2 / rung-3
+    # ``calculate_narrative_physics`` result dict (Phase-7 keys).
+    if query_type in ("intervention", "counterfactual"):
+        rung_label = "RUNG-2" if query_type == "intervention" else "RUNG-3"
+        if do_targets:
+            user_msg_parts.extend([
+                "",
+                f"=== {rung_label} SURGERY METADATA (typed do_targets) ===",
+            ])
+            for t in do_targets:
+                kind = t.get("target_kind", "?")
+                # Compact one-line summary per target so the LLM can
+                # see the discriminator + the kind-specific payload.
+                payload_keys = [k for k in t.keys() if k != "target_kind"]
+                fields = ", ".join(
+                    f"{k}={t[k]!r}" for k in payload_keys if t.get(k) is not None
+                )
+                user_msg_parts.append(f"  - {kind}: {fields}")
+        if affected_propositions:
+            user_msg_parts.append(
+                "AFFECTED PROPOSITIONS (truth flipped under the surgery): "
+                + ", ".join(affected_propositions)
+            )
+        if affected_beliefs:
+            user_msg_parts.append(
+                "AFFECTED BELIEFS (confidence shifted under the surgery): "
+                + ", ".join(affected_beliefs)
+            )
+        if affected_concerns:
+            user_msg_parts.append(
+                "AFFECTED CONCERNS (satisfaction or salience shifted): "
+                + ", ".join(affected_concerns)
+            )
+        if tragedy_form:
+            user_msg_parts.append(
+                f"NARRATIVE FORM: {tragedy_form} \u2014 apply the matching "
+                "closing register per the system prompt."
+            )
     if branch_world_id == "shadow" and factual_contrast_summary:
         user_msg_parts.extend([
             "",

@@ -33,6 +33,12 @@ from shadow_loom.query_models import (
     ManualEditQuery,
     ObservationQuery,
     UserRequest,
+    DoTarget,
+    DoEvent,
+    DoTrait,
+    DoBelief,
+    DoConcern,
+    DoProposition,
 )
 
 from shadow_loom.settings import get_settings as _get_settings, resolve_model as _resolve_model
@@ -124,6 +130,21 @@ class ParsedQuery(BaseModel):
     evidence_node_ids: Optional[List[str]] = Field(
         default=None,
         description="For counterfactual: present-tense facts to condition on.",
+    )
+
+    # --- Phase 6: typed Pearl-rung do-targets (intervention/counterfactual) ---
+    do_targets: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        description=(
+            "Phase-6 typed Pearl-rung do-targets. Each item is a flat "
+            "record with a ``target_kind`` discriminator (event, trait, "
+            "belief, concern, proposition) plus the kind-specific fields. "
+            "When set, the pipeline lifts these into a typed "
+            ":class:`DoTarget` union on the resulting "
+            "``InterventionQuery.do_targets`` / "
+            "``CounterfactualQuery.historical_do_targets``. The legacy "
+            "dotted-key dicts above remain accepted as a fallback."
+        ),
     )
 
     # --- Shared by intervention + counterfactual ---
@@ -393,6 +414,16 @@ def _collect_typed_ids(world_state: WorldStateV1) -> Dict[str, list[str]]:
             e.id for e in world_state.events
             if getattr(e, "event_type", None) == "utterance"
         ],
+        # Phase 6 — utility-layer IDs for typed Pearl-rung do-targets.
+        "proposition_ids": [
+            p.proposition_id
+            for p in (getattr(world_state, "propositions", None) or [])
+        ],
+        "concern_ids": [
+            c.concern_id
+            for ent in (world_state.entities or {}).values()
+            for c in (getattr(ent, "concerns", None) or [])
+        ],
     }
 
 
@@ -512,6 +543,83 @@ def _properties_help_block() -> str:
     return "\n".join(lines)
 
 
+def _build_do_target_item_model(world_state: WorldStateV1):
+    """Phase 6 — per-call Pydantic model for a single typed Pearl-rung
+    do-target.
+
+    Five discriminated kinds via ``target_kind``:
+
+      * ``event``       — DoEvent(event_id, occurred)
+      * ``trait``       — DoTrait(entity_id, trait_name, trait_value)
+      * ``belief``      — DoBelief(holder_id, target_id, proposition_id, confidence)
+      * ``concern``     — DoConcern(concern_id, polarity?, salience?, active?)
+      * ``proposition`` — DoProposition(proposition_id, truth, propagate_to_beliefs?)
+
+    Every kind's id field is constrained to a ``Literal`` of valid IDs
+    of the appropriate type. Other fields are Optional so a single
+    item-shape can carry any of the five kinds; the post-parse
+    converter (:func:`_do_target_items_to_typed`) drops items missing
+    their kind's required fields.
+    """
+    typed = _collect_typed_ids(world_state)
+    ent_lit = _make_id_literal(typed["entity_ids"])
+    evt_lit = _make_id_literal(typed["event_ids"])
+    prop_lit = _make_id_literal(typed.get("proposition_ids", []))
+    ccn_lit = _make_id_literal(typed.get("concern_ids", []))
+    any_actor_lit = _make_id_literal(
+        typed["entity_ids"] + typed["object_ids"]
+    )
+
+    return create_model(
+        "DoTargetItem",
+        target_kind=(
+            Literal["event", "trait", "belief", "concern", "proposition"],
+            Field(..., description="Discriminator for the do-target kind."),
+        ),
+        # event
+        event_id=(Optional[evt_lit], Field(default=None,
+            description="For target_kind='event': EVT_ id to clamp.")),
+        occurred=(Optional[bool], Field(default=None,
+            description="For target_kind='event': True forces the event "
+                        "to occur, False prevents it.")),
+        # trait
+        entity_id=(Optional[ent_lit], Field(default=None,
+            description="For target_kind='trait': ENT_ id whose trait is clamped.")),
+        trait_name=(Optional[str], Field(default=None,
+            description="For target_kind='trait': trait name (e.g. 'guilt').")),
+        trait_value=(Optional[float], Field(default=None,
+            description="For target_kind='trait': new trait value (0.0-1.0).")),
+        # belief
+        holder_id=(Optional[ent_lit], Field(default=None,
+            description="For target_kind='belief' or 'concern': ENT_ id of the holder.")),
+        target_id=(Optional[any_actor_lit], Field(default=None,
+            description="For target_kind='belief': ENT_/OBJ_ id the belief is *about*.")),
+        proposition_id=(Optional[prop_lit], Field(default=None,
+            description="For target_kind='belief' or 'proposition': PROP_ id.")),
+        confidence=(Optional[float], Field(default=None,
+            description="For target_kind='belief': clamped confidence (0.0-1.0). "
+                        "1.0 = forced certainty, 0.0 = forced denial.")),
+        # concern
+        concern_id=(Optional[ccn_lit], Field(default=None,
+            description="For target_kind='concern': CCN_ id to clamp.")),
+        polarity=(Optional[Literal["desire", "fear"]], Field(default=None,
+            description="For target_kind='concern': override polarity.")),
+        salience=(Optional[float], Field(default=None,
+            description="For target_kind='concern': override salience (0.0-1.0). "
+                        "0.0 disarms the concern.")),
+        active=(Optional[bool], Field(default=None,
+            description="For target_kind='concern': force concern on/off.")),
+        # proposition
+        truth=(Optional[bool], Field(default=None,
+            description="For target_kind='proposition': clamp truth value.")),
+        propagate_to_beliefs=(Optional[bool], Field(default=None,
+            description="For target_kind='proposition': also push the clamped "
+                        "truth into every belief that references this proposition. "
+                        "Defaults to True.")),
+        __base__=BaseModel,
+    )
+
+
 def _build_intervention_dynamic_model(world_state: WorldStateV1):
     """Create a per-call Pydantic model for the *intervention* query type.
 
@@ -563,6 +671,21 @@ def _build_intervention_dynamic_model(world_state: WorldStateV1):
                 ...,
                 min_length=1,
                 description="One or more constrained intervention items.",
+            ),
+        ),
+        do_targets=(
+            List[_build_do_target_item_model(world_state)],
+            Field(
+                default_factory=list,
+                description=(
+                    "Phase-6 typed Pearl-rung do-targets. Optional — "
+                    "leave empty unless the user explicitly requests a "
+                    "Rung-2 surgery on a Proposition (truth value), "
+                    "Belief (held confidence), Concern (salience / "
+                    "polarity / on-off) or Trait (numeric clamp). "
+                    "Use the legacy ``interventions`` dotted-key list "
+                    "for plain entity/event/object state changes."
+                ),
             ),
         ),
         target_node_ids=(
@@ -650,6 +773,20 @@ def _build_counterfactual_dynamic_model(world_state: WorldStateV1):
                 ...,
                 min_length=1,
                 description="Past events to alter, with constrained event IDs.",
+            ),
+        ),
+        do_targets=(
+            List[_build_do_target_item_model(world_state)],
+            Field(
+                default_factory=list,
+                description=(
+                    "Phase-6 typed Pearl-rung do-targets for the past. "
+                    "Optional — leave empty unless the user explicitly "
+                    "requests a Rung-3 surgery on a historical "
+                    "Proposition truth, Belief, Concern, or Trait. "
+                    "These are lifted onto "
+                    "``CounterfactualQuery.historical_do_targets``."
+                ),
             ),
         ),
         evidence_node_ids=(
@@ -840,6 +977,83 @@ def _items_to_dotted_dict(items: list[Any]) -> Dict[str, Any]:
     return out
 
 
+def _do_target_items_to_typed(items: list[Any]) -> List[DoTarget]:
+    """Phase 6 — convert flat ``do_targets`` records (with ``target_kind``
+    discriminator) into the typed :class:`DoTarget` discriminated union.
+
+    Items missing required kind-specific fields are silently skipped so
+    a partial LLM emission can never crash the pipeline; callers can fall
+    back to the legacy dotted-key path.
+    """
+    out: List[DoTarget] = []
+    for item in items or []:
+        data = item if isinstance(item, dict) else item.model_dump()
+        kind = data.get("target_kind")
+        try:
+            if kind == "event":
+                eid = data.get("event_id") or data.get("target_id")
+                if not eid:
+                    continue
+                out.append(DoEvent(
+                    event_id=eid,
+                    occurred=data.get("occurred", True),
+                ))
+            elif kind == "trait":
+                eid = data.get("entity_id") or data.get("holder_id")
+                tname = data.get("trait_name")
+                tval = data.get("trait_value")
+                if tval is None:
+                    tval = data.get("value")
+                if not eid or not tname or tval is None:
+                    continue
+                out.append(DoTrait(
+                    holder_id=eid,
+                    trait_name=tname,
+                    value=float(tval),
+                ))
+            elif kind == "belief":
+                holder = data.get("holder_id")
+                tgt = data.get("target_id")
+                pid = data.get("proposition_id")
+                conf = data.get("confidence")
+                if not holder or not tgt or pid is None or conf is None:
+                    continue
+                out.append(DoBelief(
+                    holder_id=holder,
+                    target_id=tgt,
+                    proposition_id=pid,
+                    confidence=float(conf),
+                ))
+            elif kind == "concern":
+                cid = data.get("concern_id")
+                holder = data.get("holder_id")
+                if not cid or not holder:
+                    continue
+                out.append(DoConcern(
+                    holder_id=holder,
+                    concern_id=cid,
+                    polarity=data.get("polarity"),
+                    salience=data.get("salience"),
+                    active=data.get("active"),
+                ))
+            elif kind == "proposition":
+                pid = data.get("proposition_id")
+                truth = data.get("truth")
+                if not pid or truth is None:
+                    continue
+                out.append(DoProposition(
+                    proposition_id=pid,
+                    truth=bool(truth),
+                    propagate_to_beliefs=data.get("propagate_to_beliefs", True),
+                ))
+            else:
+                continue
+        except Exception:
+            # Defensive: never let malformed LLM payloads crash parsing.
+            continue
+    return out
+
+
 def _normalise_dynamic_to_parsed(dynamic_output: Any, query_type: str) -> ParsedQuery:
     """Convert a constrained dynamic-model instance into a ``ParsedQuery``."""
     data = dynamic_output.model_dump()
@@ -854,6 +1068,7 @@ def _normalise_dynamic_to_parsed(dynamic_output: Any, query_type: str) -> Parsed
             **base,
             interventions=_items_to_dotted_dict(data.get("interventions") or []),
             target_node_ids=list(data.get("target_node_ids") or []),
+            do_targets=list(data.get("do_targets") or []) or None,
         )
 
     if query_type == "counterfactual":
@@ -864,6 +1079,7 @@ def _normalise_dynamic_to_parsed(dynamic_output: Any, query_type: str) -> Parsed
             ),
             evidence_node_ids=list(data.get("evidence_node_ids") or []),
             target_node_ids=list(data.get("target_node_ids") or []),
+            do_targets=list(data.get("do_targets") or []) or None,
         )
 
     if query_type == "directive":
@@ -1924,6 +2140,7 @@ def _build_query(
                 parsed.interventions or {}, field_name="interventions",
             ),
             target_node_ids=parsed.target_node_ids or [],
+            do_targets=_do_target_items_to_typed(parsed.do_targets or []),
             original_query=nl,
             **anchor_kwargs,
         )
@@ -1936,6 +2153,9 @@ def _build_query(
             ),
             evidence_node_ids=parsed.evidence_node_ids or [],
             target_node_ids=parsed.target_node_ids or [],
+            historical_do_targets=_do_target_items_to_typed(
+                parsed.do_targets or []
+            ),
             original_query=nl,
             **anchor_kwargs,
         )

@@ -41,6 +41,8 @@ class TestPromoteSandboxSpawns:
             "locations": {},
             "world_traits": {},
             "channels": {},
+            "propositions": {},
+            "concerns": {},
         }
 
     def test_none_physics_state_returns_empty_buckets(self):

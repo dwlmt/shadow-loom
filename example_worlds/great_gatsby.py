@@ -16,6 +16,7 @@ from shadow_loom.models import (
     CausalEdge, SpatialEdge, RelationshipEdge, RelationshipMetric, TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
     GlobalTrait, WorldTraitSnapshot,
     NarrativeStyle,
+    Concern, Proposition, ConcernSnapshot, PropositionSnapshot,
 )
 
 world_state = WorldStateV1(
@@ -52,6 +53,11 @@ world_state = WorldStateV1(
             ambient_state={
                 "spectacle": AmbientVector(value=0.95, volatility=0.3, evidence_strength="strong"),
                 "loneliness": AmbientVector(value=0.7, volatility=0.2, evidence_strength="strong"),
+                # Frijda action-readiness: the mansion is physically open
+                # (Gatsby's pool faces the bay; the front gate is unlocked
+                # for whoever wants to wander in) yet psychologically a
+                # soft cage — Gatsby will not flee Daisy's blame.
+                "connected_to": AmbientVector(value=0.4, volatility=0.2, evidence_strength="moderate"),
             },
         ),
         "LOC_VALLEY_OF_ASHES": Location(
@@ -61,6 +67,7 @@ world_state = WorldStateV1(
                 "decay": AmbientVector(value=0.95, volatility=0.1, evidence_strength="strong"),
                 "industrial_blight": AmbientVector(value=0.9, volatility=0.1, evidence_strength="strong"),
                 "moral_emptiness": AmbientVector(value=0.85, volatility=0.2, evidence_strength="moderate"),
+                "connected_to": AmbientVector(value=1.0, volatility=0.0, evidence_strength="strong"),
             },
         ),
         "LOC_WILSON_GARAGE": Location(
@@ -69,6 +76,9 @@ world_state = WorldStateV1(
             ambient_state={
                 "poverty": AmbientVector(value=0.85, volatility=0.1, evidence_strength="strong"),
                 "exhaustion": AmbientVector(value=0.8, volatility=0.2, evidence_strength="strong"),
+                # George locks Myrtle upstairs after suspecting the affair
+                # (12800); for her, the garage is sealed.
+                "connected_to": AmbientVector(value=0.0, volatility=0.0, evidence_strength="strong"),
             },
         ),
         "LOC_NEW_YORK_APT": Location(
@@ -143,8 +153,26 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_GATSBY",
-                       perceived_state="he turned out all right at the end; worth more than the whole damn rotten bunch",
+                       perceived_state="he turned out all right at the end; worth more than the whole damn rotten bunch", proposition_id="PROP_GATSBY_REMEMBERED",
                        confidence=0.9, inertia=0.7, established_at_fabula=15000, evidence_strength="strong"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_NICK_DESIRES_TRUTH_ABOUT_GATSBY", proposition_id="PROP_GATSBY_REDEEMED",
+                        polarity="desire", kind="truth", salience=0.8,
+                        activation_fabula_window=[2000, 17000]),
+                # Sternberg passionate-bond — Nick's quasi-paternal love for
+                # Gatsby anchors the funeral grief.
+                Concern(concern_id="CCN_NICK_LOVES_GATSBY", proposition_id="PROP_GATSBY_REMEMBERED",
+                        polarity="desire", kind="love", salience=0.7,
+                        activation_fabula_window=[7000, 17000]),
+                Concern(concern_id="CCN_NICK_FEARS_EAST_CORRUPTS", proposition_id="PROP_NICK_REMAINS_DECENT",
+                        polarity="fear", kind="exposure", salience=0.7,
+                        activation_fabula_window=[2000, 17000]),
+                # Averill normative-violation rage — Tom's manipulation of
+                # George into killing Gatsby is the moral injury Nick carries home.
+                Concern(concern_id="CCN_NICK_DESIRES_TOM_PUNISHED", proposition_id="PROP_TOM_PUNISHED",
+                        polarity="desire", kind="injustice", salience=0.85,
+                        activation_fabula_window=[14800, 17000]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_NICK_MOVES_EAST",
@@ -172,10 +200,47 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_DAISY",
                        perceived_state="Daisy will leave Tom for me once she sees what I have become",
+                       proposition_id="PROP_DAISY_RETURNS_TO_GATSBY",
                        confidence=0.95, inertia=0.85, established_at_fabula=2000, evidence_strength="strong"),
                 Belief(target_id="OBJ_GREEN_LIGHT",
-                       perceived_state="proof that Daisy is within reach across the bay",
+                       perceived_state="proof that Daisy is within reach across the bay", proposition_id="PROP_GATSBY_DREAM_REALISED",
                        confidence=0.9, inertia=0.85, established_at_fabula=2000, evidence_strength="strong"),
+            ],
+            concerns=[
+                # Sternberg passionate-bond — the spine of every other Gatsby concern.
+                Concern(concern_id="CCN_GATSBY_LOVES_DAISY", proposition_id="PROP_DAISY_RETURNS_TO_GATSBY",
+                        polarity="desire", kind="love", salience=1.0,
+                        activation_fabula_window=[500, 15000],
+                        counter_concern_ids=["CCN_GATSBY_FEARS_TOM_DISCOVERS", "CCN_GATSBY_FEARS_GEORGE"],
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=13000, triggered_by="EVT_PLAZA_CONFRONTATION",
+                                            salience=0.55),
+                        ]),
+                # Lazarus appraisal — the founding obsession (the orgastic future,
+                # the dream itself), distinct from the love because the dream is
+                # already a counterfeit by 1922 and is what gets him killed.
+                Concern(concern_id="CCN_GATSBY_DESIRES_DREAM", proposition_id="PROP_GATSBY_DREAM_REALISED",
+                        polarity="desire", kind="obsession", salience=0.95,
+                        activation_fabula_window=[500, 15000]),
+                # OCC fear — Tom finding out collapses everything.
+                Concern(concern_id="CCN_GATSBY_FEARS_TOM_DISCOVERS", proposition_id="PROP_TOM_DISCOVERS_AFFAIR",
+                        polarity="fear", kind="exposure", salience=0.85,
+                        activation_fabula_window=[9000, 15000],
+                        counter_concern_ids=["CCN_GATSBY_LOVES_DAISY"]),
+                # Frijda mortal-threat — once Tom sics George on him.
+                Concern(concern_id="CCN_GATSBY_FEARS_GEORGE", proposition_id="PROP_GATSBY_SAFE",
+                        polarity="fear", kind="mortal_threat", salience=0.7,
+                        activation_fabula_window=[14800, 15000],
+                        counter_concern_ids=["CCN_GATSBY_LOVES_DAISY"]),
+                # OCC desire — the Plaza-suite demand that Daisy renounce Tom outright.
+                Concern(concern_id="CCN_GATSBY_DESIRES_DENIAL", proposition_id="PROP_DAISY_DENOUNCES_TOM",
+                        polarity="desire", kind="love", salience=0.9,
+                        activation_fabula_window=[9000, 13500]),
+                # Loyalty axis — Daisy's silence at the Plaza is the moral injury Gatsby cannot
+                # articulate; modelled as blocked loyalty desire rather than Averill betrayal-kind.
+                Concern(concern_id="CCN_GATSBY_DESIRES_DAISY_LOYAL", proposition_id="PROP_DAISY_LOYAL_TO_GATSBY",
+                        polarity="desire", kind="loyalty", salience=0.9,
+                        activation_fabula_window=[13000, 15000]),
             ],
             constants=["origin_north_dakota_farm", "wartime_officer"],
             state_timeline=[
@@ -197,7 +262,7 @@ world_state = WorldStateV1(
                     beliefs_invalidated=["ENT_DAISY"],
                     beliefs_added=[
                         Belief(target_id="ENT_DAISY",
-                               perceived_state="she may stay with Tom, but I will still take her blame",
+                               perceived_state="she may stay with Tom, but I will still take her blame", proposition_id="PROP_GATSBY_REDEEMED",
                                confidence=0.7, inertia=0.85, established_at_fabula=13000, evidence_strength="strong"),
                     ]),
                 EntityStateSnapshot(fabula_time=15000, triggered_by="EVT_GATSBY_KILLED",
@@ -216,6 +281,24 @@ world_state = WorldStateV1(
                 "rekindled_love":   TraitVector(value=0.2,  inertia=0.4, evidence_strength="weak"),
             },
             beliefs=[],
+            concerns=[
+                Concern(concern_id="CCN_DAISY_DESIRES_GATSBY", proposition_id="PROP_DAISY_RETURNS_TO_GATSBY",
+                        polarity="desire", kind="love", salience=0.55,
+                        activation_fabula_window=[9000, 13000],
+                        counter_concern_ids=["CCN_DAISY_DESIRES_SECURITY", "CCN_DAISY_FEARS_TOM"]),
+                Concern(concern_id="CCN_DAISY_DESIRES_SECURITY", proposition_id="PROP_TOM_PROVIDES_SECURITY",
+                        polarity="desire", kind="power", salience=0.85,
+                        activation_fabula_window=[800, 17000],
+                        counter_concern_ids=["CCN_DAISY_DESIRES_GATSBY"],
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=14500, triggered_by="EVT_MYRTLE_KILLED",
+                                            salience=0.95),
+                        ]),
+                Concern(concern_id="CCN_DAISY_FEARS_TOM", proposition_id="PROP_TOM_VIOLENT_TO_DAISY",
+                        polarity="fear", kind="abandonment", salience=0.55,
+                        activation_fabula_window=[800, 17000],
+                        counter_concern_ids=["CCN_DAISY_DESIRES_GATSBY"]),
+            ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=9000, triggered_by="EVT_GATSBY_DAISY_REUNION",
                     traits={
@@ -245,8 +328,21 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_GATSBY",
-                       perceived_state="vulgar Mr Nobody from Nowhere, a bootlegger and a fraud",
+                       perceived_state="vulgar Mr Nobody from Nowhere, a bootlegger and a fraud", proposition_id="PROP_GATSBY_DESTROYED",
                        confidence=0.95, inertia=0.8, established_at_fabula=12000, evidence_strength="strong"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_TOM_OWNS_DAISY", proposition_id="PROP_TOM_PROVIDES_SECURITY",
+                        polarity="desire", kind="power", salience=0.95,
+                        activation_fabula_window=[800, 17000]),
+                # Averill normative-violation rage — class-pride humiliation
+                # at being cuckolded by 'Mr Nobody from Nowhere'.
+                Concern(concern_id="CCN_TOM_DESIRES_GATSBY_DESTROYED", proposition_id="PROP_GATSBY_DESTROYED",
+                        polarity="desire", kind="humiliation", salience=0.95,
+                        activation_fabula_window=[12000, 15000]),
+                Concern(concern_id="CCN_TOM_FEARS_LOSING_DAISY", proposition_id="PROP_DAISY_RETURNS_TO_GATSBY",
+                        polarity="fear", kind="humiliation", salience=0.7,
+                        activation_fabula_window=[12000, 13000]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=12000, triggered_by="EVT_TOM_DISCOVERS_AFFAIR",
@@ -282,7 +378,21 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_TOM",
                        perceived_state="Tom will leave Daisy and rescue me from the ashes",
+                       proposition_id="PROP_TOM_LEAVES_DAISY",
                        confidence=0.7, inertia=0.5, established_at_fabula=4000, evidence_strength="moderate"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_MYRTLE_DESIRES_TOM", proposition_id="PROP_TOM_LEAVES_DAISY",
+                        polarity="desire", kind="love", salience=0.9,
+                        activation_fabula_window=[3500, 14500]),
+                Concern(concern_id="CCN_MYRTLE_DESIRES_ESCAPE_ASHES", proposition_id="PROP_MYRTLE_ESCAPES_VALLEY",
+                        polarity="desire", kind="freedom", salience=0.9,
+                        activation_fabula_window=[1, 14500]),
+                # Status / dignity axis — Myrtle's resentment is being treated as a kept thing,
+                # which manifests as the social_status drive (drives the broken-nose moment + flagging the car).
+                Concern(concern_id="CCN_MYRTLE_RESENTS_TOM", proposition_id="PROP_TOM_TREATS_MYRTLE_RIGHT",
+                        polarity="desire", kind="social_status", salience=0.7,
+                        activation_fabula_window=[5000, 14500]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=5000, triggered_by="EVT_TOM_BREAKS_NOSE",
@@ -304,6 +414,26 @@ world_state = WorldStateV1(
                 "rage":           TraitVector(value=0.1,  inertia=0.4, evidence_strength="weak"),
             },
             beliefs=[],
+            concerns=[
+                Concern(concern_id="CCN_GEORGE_LOVES_MYRTLE", proposition_id="PROP_MYRTLE_FAITHFUL_TO_GEORGE",
+                        polarity="desire", kind="love", salience=0.95,
+                        activation_fabula_window=[1, 14500]),
+                Concern(concern_id="CCN_GEORGE_FEARS_LOSING_MYRTLE", proposition_id="PROP_MYRTLE_FAITHFUL_TO_GEORGE",
+                        polarity="fear", kind="abandonment", salience=0.85,
+                        activation_fabula_window=[12000, 14500]),
+                # Averill normative-violation rage — the yellow car as instrument
+                # of moral retribution under Eckleburg's blank god-eyes.
+                Concern(concern_id="CCN_GEORGE_DESIRES_VENGEANCE", proposition_id="PROP_MYRTLE_AVENGED",
+                        polarity="desire", kind="vengeance", salience=0.95,
+                        activation_fabula_window=[14500, 15000],
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=14800, triggered_by="EVT_TOM_TELLS_GEORGE",
+                                            salience=1.0),
+                        ]),
+                Concern(concern_id="CCN_GEORGE_DESIRES_MYRTLE_SAFE", proposition_id="PROP_MYRTLE_ALIVE",
+                        polarity="desire", kind="survival", salience=0.95,
+                        activation_fabula_window=[1, 14500]),
+            ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=13000, triggered_by="EVT_GEORGE_SUSPECTS_AFFAIR",
                     traits={
@@ -312,7 +442,7 @@ world_state = WorldStateV1(
                     },
                     beliefs_added=[
                         Belief(target_id="ENT_MYRTLE",
-                               perceived_state="my wife has been unfaithful — I shall lock her in",
+                               perceived_state="my wife has been unfaithful — I shall lock her in", proposition_id="PROP_MYRTLE_FAITHFUL_TO_GEORGE",
                                confidence=0.9, inertia=0.7, established_at_fabula=13000, evidence_strength="strong"),
                     ]),
                 EntityStateSnapshot(fabula_time=14500, triggered_by="EVT_MYRTLE_KILLED",
@@ -321,13 +451,14 @@ world_state = WorldStateV1(
                     },
                     beliefs_added=[
                         Belief(target_id="OBJ_ECKLEBURG_BILLBOARD",
-                               perceived_state="God sees everything",
+                               perceived_state="God sees everything", proposition_id="PROP_MYRTLE_AVENGED",
                                confidence=0.95, inertia=0.85, established_at_fabula=14500, evidence_strength="strong"),
                     ]),
                 EntityStateSnapshot(fabula_time=14900, triggered_by="EVT_TOM_TELLS_GEORGE",
                     beliefs_added=[
                         Belief(target_id="ENT_GATSBY",
                                perceived_state="the man who owns the yellow car must be Myrtle's lover and her killer",
+                               proposition_id="PROP_MYRTLE_AVENGED",
                                confidence=0.95, inertia=0.6, established_at_fabula=14900, evidence_strength="strong"),
                     ]),
                 EntityStateSnapshot(fabula_time=15000, triggered_by="EVT_GATSBY_KILLED",
@@ -1001,5 +1132,107 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=0.4,  inertia=0.6, evidence_strength="moderate", last_updated_fabula=2000),
             },
         ),
+    ],
+
+    # ── PROPOSITIONS ────────────────────────────────────────────────────
+    # Each named atom referenced by a Concern.proposition_id above resolves
+    # into one of these. ``synthesise_propositions`` may add further
+    # auto-derived PROP_FROM_<EVT_> entries at runtime; those are additive.
+    propositions=[
+        Proposition(proposition_id="PROP_DAISY_RETURNS_TO_GATSBY", kind="outcome",
+                    referent_ids=["ENT_DAISY", "ENT_GATSBY"],
+                    description="Daisy leaves Tom and returns to Gatsby.",
+                    audience_default_prior=0.3, stakes=0.95,
+                    truth_at_fabula={13000: False}),
+        Proposition(proposition_id="PROP_DAISY_DENOUNCES_TOM", kind="event_occurs",
+                    referent_ids=["EVT_PLAZA_CONFRONTATION", "ENT_DAISY", "ENT_TOM"],
+                    description="At the Plaza, Daisy declares she never loved Tom.",
+                    audience_default_prior=0.4, stakes=0.85,
+                    truth_at_fabula={13000: False}),
+        Proposition(proposition_id="PROP_DAISY_LOYAL_TO_GATSBY", kind="trait_holds",
+                    referent_ids=["ENT_DAISY", "ENT_GATSBY"],
+                    description="Daisy stands by Gatsby publicly after the Plaza confrontation.",
+                    audience_default_prior=0.3, stakes=0.85,
+                    truth_at_fabula={13000: False, 14500: False}),
+        Proposition(proposition_id="PROP_GATSBY_DREAM_REALISED", kind="outcome",
+                    referent_ids=["ENT_GATSBY", "OBJ_GREEN_LIGHT"],
+                    description="Gatsby's invented future — Daisy, the orgastic green light — is realised.",
+                    audience_default_prior=0.2, stakes=0.95,
+                    truth_at_fabula={13000: False, 15000: False}),
+        Proposition(proposition_id="PROP_GATSBY_SAFE", kind="trait_holds",
+                    referent_ids=["ENT_GATSBY"],
+                    description="Gatsby survives the consequences of taking Daisy's blame.",
+                    audience_default_prior=0.6, stakes=0.95,
+                    truth_at_fabula={15000: False}),
+        Proposition(proposition_id="PROP_TOM_DISCOVERS_AFFAIR", kind="event_occurs",
+                    referent_ids=["EVT_TOM_DISCOVERS_AFFAIR", "ENT_TOM"],
+                    description="Tom realises Daisy is having an affair with Gatsby.",
+                    audience_default_prior=0.7, stakes=0.85,
+                    truth_at_fabula={12000: True}),
+        Proposition(proposition_id="PROP_TOM_PROVIDES_SECURITY", kind="trait_holds",
+                    referent_ids=["ENT_TOM", "ENT_DAISY"],
+                    description="Tom's wealth and Buchanan name continue to shelter Daisy.",
+                    audience_default_prior=0.85, stakes=0.7,
+                    truth_at_fabula={17000: True}),
+        Proposition(proposition_id="PROP_TOM_VIOLENT_TO_DAISY", kind="trait_holds",
+                    referent_ids=["ENT_TOM", "ENT_DAISY"],
+                    description="Tom's violence (the broken-nose temperament) turns on Daisy.",
+                    audience_default_prior=0.4, stakes=0.7,
+                    truth_at_fabula={1000: False}),
+        Proposition(proposition_id="PROP_TOM_LEAVES_DAISY", kind="outcome",
+                    referent_ids=["ENT_TOM", "ENT_DAISY"],
+                    description="Tom leaves Daisy and rescues Myrtle from the Valley of Ashes.",
+                    audience_default_prior=0.15, stakes=0.85,
+                    truth_at_fabula={14500: False}),
+        Proposition(proposition_id="PROP_TOM_TREATS_MYRTLE_RIGHT", kind="trait_holds",
+                    referent_ids=["ENT_TOM", "ENT_MYRTLE"],
+                    description="Tom treats Myrtle as an equal rather than a kept thing.",
+                    audience_default_prior=0.2, stakes=0.6,
+                    truth_at_fabula={5000: False}),
+        Proposition(proposition_id="PROP_MYRTLE_ESCAPES_VALLEY", kind="outcome",
+                    referent_ids=["ENT_MYRTLE", "LOC_VALLEY_OF_ASHES"],
+                    description="Myrtle escapes the Valley of Ashes for the life she imagines with Tom.",
+                    audience_default_prior=0.3, stakes=0.8,
+                    truth_at_fabula={14500: False}),
+        Proposition(proposition_id="PROP_MYRTLE_FAITHFUL_TO_GEORGE", kind="trait_holds",
+                    referent_ids=["ENT_MYRTLE", "ENT_GEORGE"],
+                    description="Myrtle is faithful to George.",
+                    audience_default_prior=0.5, stakes=0.7,
+                    truth_at_fabula={4000: False, 12800: False}),
+        Proposition(proposition_id="PROP_MYRTLE_ALIVE", kind="trait_holds",
+                    referent_ids=["ENT_MYRTLE"],
+                    description="Myrtle Wilson remains alive.",
+                    audience_default_prior=0.85, stakes=0.85,
+                    truth_at_fabula={14500: False}),
+        Proposition(proposition_id="PROP_MYRTLE_AVENGED", kind="event_occurs",
+                    referent_ids=["EVT_GATSBY_KILLED", "ENT_GEORGE", "ENT_GATSBY"],
+                    description="George kills the man he believes drove the yellow car that killed Myrtle.",
+                    audience_default_prior=0.5, stakes=0.95,
+                    truth_at_fabula={15000: True}),
+        Proposition(proposition_id="PROP_GATSBY_DESTROYED", kind="outcome",
+                    referent_ids=["ENT_GATSBY", "ENT_TOM"],
+                    description="Gatsby is destroyed and the Buchanans escape consequence.",
+                    audience_default_prior=0.4, stakes=0.85,
+                    truth_at_fabula={15000: True}),
+        Proposition(proposition_id="PROP_GATSBY_REDEEMED", kind="trait_holds",
+                    referent_ids=["ENT_GATSBY"],
+                    description="Gatsby's romantic readiness is morally redeemed by his death.",
+                    audience_default_prior=0.4, stakes=0.7,
+                    truth_at_fabula={15000: True}),
+        Proposition(proposition_id="PROP_GATSBY_REMEMBERED", kind="outcome",
+                    referent_ids=["EVT_FUNERAL", "ENT_GATSBY"],
+                    description="Gatsby is mourned by the world that fed off him.",
+                    audience_default_prior=0.5, stakes=0.7,
+                    truth_at_fabula={16000: False}),
+        Proposition(proposition_id="PROP_NICK_REMAINS_DECENT", kind="trait_holds",
+                    referent_ids=["ENT_NICK"],
+                    description="Nick keeps his Midwestern moral compass intact in the East.",
+                    audience_default_prior=0.55, stakes=0.6,
+                    truth_at_fabula={17000: True}),
+        Proposition(proposition_id="PROP_TOM_PUNISHED", kind="outcome",
+                    referent_ids=["ENT_TOM"],
+                    description="Tom faces consequences for directing George to Gatsby.",
+                    audience_default_prior=0.2, stakes=0.7,
+                    truth_at_fabula={17000: False}),
     ],
 )

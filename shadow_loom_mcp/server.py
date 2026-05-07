@@ -85,6 +85,8 @@ from shadow_loom.models import (
     WorldStateV1,
     reconstruct_entity_at,
     reconstruct_world_trait_at,
+    reconstruct_proposition_at,
+    reconstruct_concern_at,
 )
 from shadow_loom.narrative_physics import calculate_narrative_physics
 from shadow_loom.projections import (
@@ -291,10 +293,12 @@ def inspect(
     Auto-detects the node type from the ID prefix:
       ENT_  \u2192 entity (traits, beliefs, constants, state timeline)
       LOC_  \u2192 location (ambient state, connections, occupants)
-      EVT_  \u2192 event (actors, targets, causal causes/effects)
+      EVT_  \u2192 event (actors, targets, causal causes/effects, supersession)
       OBJ_  \u2192 object (owner, location, affordances, properties)
       CHN_  \u2192 channel (participants, intelligibility, utterances)
       WORLD_ \u2192 world trait (magnitude, domains, timeline)
+      PROP_ \u2192 proposition (kind, referents, truth_at_fabula, framing timeline)
+      CCN_  \u2192 concern (entity, polarity, salience, activation window, timeline)
 
     Optionally provide ``at_time`` (fabula_time) to see the reconstructed
     state at a specific point in the story's timeline.
@@ -334,8 +338,12 @@ def inspect(
         return _inspect_channel(ws, node_id)
     elif node_id.startswith("WORLD_"):
         return _inspect_world_trait(ws, node_id, at_time)
+    elif node_id.startswith("PROP_"):
+        return _inspect_proposition(ws, node_id, at_time)
+    elif node_id.startswith("CCN_"):
+        return _inspect_concern(ws, node_id, at_time)
     else:
-        return {"error": f"Unknown node ID prefix: {node_id}. Expected ENT_, LOC_, EVT_, OBJ_, CHN_, or WORLD_."}
+        return {"error": f"Unknown node ID prefix: {node_id}. Expected ENT_, LOC_, EVT_, OBJ_, CHN_, WORLD_, PROP_, or CCN_."}
 
 
 def _inspect_entity(ws: WorldStateV1, eid: str, at_time: int | None) -> dict:
@@ -457,6 +465,60 @@ def _inspect_world_trait(ws: WorldStateV1, wid: str, at_time: int | None) -> dic
         "affected_domains": wt.affected_domains,
         "state_timeline": [s.model_dump() for s in wt.state_timeline[-10:]],
     }
+
+
+def _inspect_proposition(ws: WorldStateV1, pid: str, at_time: int | None) -> dict:
+    prop = next((p for p in ws.propositions if p.proposition_id == pid), None)
+    if prop is None:
+        return {"error": f"Proposition '{pid}' not found."}
+    out: dict = {
+        "id": pid,
+        "type": "Proposition",
+        "kind": prop.kind,
+        "description": prop.description,
+        "referent_ids": list(prop.referent_ids),
+        "world_id": prop.world_id,
+        "audience_default_prior": prop.audience_default_prior,
+        "stakes": prop.stakes,
+        "truth_at_fabula": dict(prop.truth_at_fabula),
+        "state_timeline": [s.model_dump() for s in prop.state_timeline[-10:]],
+    }
+    if at_time is not None:
+        out["at_time"] = at_time
+        out["snapshot"] = reconstruct_proposition_at(prop, at_time)
+    return out
+
+
+def _inspect_concern(ws: WorldStateV1, cid: str, at_time: int | None) -> dict:
+    holder_id: str | None = None
+    concern = None
+    for ent_id, ent in ws.entities.items():
+        for c in ent.concerns:
+            if c.concern_id == cid:
+                concern = c
+                holder_id = ent_id
+                break
+        if concern is not None:
+            break
+    if concern is None:
+        return {"error": f"Concern '{cid}' not found."}
+    out: dict = {
+        "id": cid,
+        "type": "Concern",
+        "entity_id": holder_id,
+        "proposition_id": concern.proposition_id,
+        "polarity": concern.polarity,
+        "kind": concern.kind,
+        "salience": concern.salience,
+        "activation_fabula_window": concern.activation_fabula_window,
+        "counter_concern_ids": list(concern.counter_concern_ids),
+        "world_id": concern.world_id,
+        "state_timeline": [s.model_dump() for s in concern.state_timeline[-10:]],
+    }
+    if at_time is not None:
+        out["at_time"] = at_time
+        out["snapshot"] = reconstruct_concern_at(concern, at_time)
+    return out
 
 
 @mcp.tool()
@@ -1829,6 +1891,13 @@ def write(
     insert_after_event_id: Optional[str] = None,
     insert_at_fabula_time: Optional[int] = None,
     replace_event_ids: Optional[List[str]] = None,
+    replace_entity_ids: Optional[List[str]] = None,
+    replace_object_ids: Optional[List[str]] = None,
+    replace_location_ids: Optional[List[str]] = None,
+    replace_world_trait_ids: Optional[List[str]] = None,
+    replace_channel_ids: Optional[List[str]] = None,
+    replace_proposition_ids: Optional[List[str]] = None,
+    replace_concern_ids: Optional[List[List[str]]] = None,
     focus_entity_ids: Optional[List[str]] = None,
 ) -> dict:
     """Apply user-written prose as a manual edit to the world model.
@@ -1848,9 +1917,19 @@ def write(
     - When both are omitted, the edit appends after the current
       chronological end (``max(events.fabula_time) + spacing``).
 
-    ``replace_event_ids`` removes the listed events (and their dependent
-    causal/social/spatial edges) before re-extracting, giving true
-    *replace* semantics. Leave empty for purely additive edits.
+    Replace semantics (true replacement of existing graph nodes — every
+    list cascades dependent edges/snapshots/concerns through the merge
+    deletion pass; leave empty for purely additive edits):
+
+    - ``replace_event_ids``: EVT_ ids to drop.
+    - ``replace_entity_ids``: ENT_ ids to drop.
+    - ``replace_object_ids``: OBJ_ ids to drop.
+    - ``replace_location_ids``: LOC_ ids to drop.
+    - ``replace_world_trait_ids``: WORLD_ ids to drop.
+    - ``replace_channel_ids``: CHN_ ids to drop.
+    - ``replace_proposition_ids``: PROP_ ids to drop.
+    - ``replace_concern_ids``: list of ``[entity_id, concern_id]`` pairs
+      to drop (concerns are scoped to a holding entity).
 
     ``focus_entity_ids`` records the entities most affected by the edit
     so downstream views (ego-graph scoping, version diffs) can highlight
@@ -1894,6 +1973,46 @@ def write(
                 )
             }
 
+    # Validate the broader replace_* surfaces against the loaded world
+    # so the caller gets an actionable error rather than silently
+    # noop-ing a typo'd id at merge time.
+    def _check(name: str, ids: list[str] | None, known: set[str]) -> dict | None:
+        if not ids:
+            return None
+        missing = [i for i in ids if i not in known]
+        if missing:
+            return {"error": f"{name} not found in world model: {', '.join(missing)}"}
+        return None
+
+    for name, ids, known in [
+        ("replace_entity_ids", replace_entity_ids, set(ws.entities.keys())),
+        ("replace_object_ids", replace_object_ids, set(ws.objects.keys())),
+        ("replace_location_ids", replace_location_ids, set(ws.locations.keys())),
+        ("replace_world_trait_ids", replace_world_trait_ids, set(ws.world_traits.keys())),
+        ("replace_channel_ids", replace_channel_ids, set(ws.channels.keys())),
+        ("replace_proposition_ids", replace_proposition_ids, {p.proposition_id for p in ws.propositions}),
+    ]:
+        err = _check(name, ids, known)
+        if err:
+            return err
+    if replace_concern_ids:
+        known_concerns = {
+            (eid, c.concern_id)
+            for eid, ent in ws.entities.items()
+            for c in ent.concerns
+        }
+        missing_pairs = [
+            (eid, cid) for eid, cid in (tuple(p) for p in replace_concern_ids)
+            if (eid, cid) not in known_concerns
+        ]
+        if missing_pairs:
+            return {
+                "error": (
+                    "replace_concern_ids pairs not found in world model: "
+                    + ", ".join(f"({eid}, {cid})" for eid, cid in missing_pairs)
+                )
+            }
+
     user_row_id = get_user_id(ctx)
     query = ManualEditQuery(
         edited_prose=prose,
@@ -1902,6 +2021,13 @@ def write(
         insert_after_event_id=insert_after_event_id,
         insert_at_fabula_time=insert_at_fabula_time,
         replace_event_ids=replace_event_ids or [],
+        replace_entity_ids=replace_entity_ids or [],
+        replace_object_ids=replace_object_ids or [],
+        replace_location_ids=replace_location_ids or [],
+        replace_world_trait_ids=replace_world_trait_ids or [],
+        replace_channel_ids=replace_channel_ids or [],
+        replace_proposition_ids=replace_proposition_ids or [],
+        replace_concern_ids=[tuple(p) for p in (replace_concern_ids or [])],
         original_query=description or prose,
     )
 
@@ -2780,9 +2906,21 @@ def discover(
             - ``"branches"`` — list AMWN branches in the project.
             - ``"channels"`` — list standing channels in the project.
             - ``"world_facts"`` — list segregated background facts.
+            - ``"propositions"`` — list shared propositions; pass
+              ``payload={"at_time": <int>}`` to fold each one through
+              :func:`reconstruct_proposition_at` for that fabula tick.
+            - ``"concerns"`` — list per-entity concerns; ``payload`` may
+              contain ``at_time`` (replay each concern), ``entity_id``
+              (filter to one holder), and ``only_active`` (drop concerns
+              whose activation window excludes ``at_time``).
+            - ``"superseded_events"`` — list every event with a
+              ``superseded_by_event_id`` and the chain that supersedes
+              it. Useful after a counterfactual was promoted onto the
+              factual mainline.
         project_id / project_name: Required for every scope except
             ``"projects"``.
-        payload: Reserved for scope-specific filters. Currently unused.
+        payload: Reserved for scope-specific filters. See per-scope
+            descriptions above.
 
     Returns the same envelope as the underlying granular tool.
     """
@@ -2802,9 +2940,89 @@ def discover(
         return list_world_facts(
             ctx, project_id=project_id, project_name=project_name,
         )
+    if scope in ("propositions", "concerns", "superseded_events"):
+        err = require_scope(ctx, "read")
+        if err:
+            return {"error": err}
+        pid, err = resolve_project(project_id, project_name, ctx)
+        if err:
+            return {"error": err}
+        ws, _ = load_world_state(pid, payload.get("version"), ctx=ctx)
+        if ws is None:
+            return {"error": "No world model found."}
+        at_time = payload.get("at_time")
+        if scope == "propositions":
+            items = []
+            for prop in ws.propositions:
+                row = {
+                    "id": prop.proposition_id,
+                    "kind": prop.kind,
+                    "description": prop.description,
+                    "world_id": prop.world_id,
+                    "stakes": prop.stakes,
+                    "audience_default_prior": prop.audience_default_prior,
+                    "truth_at_fabula": dict(prop.truth_at_fabula),
+                }
+                if at_time is not None:
+                    row["snapshot"] = reconstruct_proposition_at(prop, int(at_time))
+                items.append(row)
+            return {"propositions": items, "count": len(items)}
+        if scope == "concerns":
+            entity_filter = payload.get("entity_id")
+            only_active = bool(payload.get("only_active"))
+            items = []
+            for ent_id, ent in ws.entities.items():
+                if entity_filter and ent_id != entity_filter:
+                    continue
+                for c in ent.concerns:
+                    row = {
+                        "id": c.concern_id,
+                        "entity_id": ent_id,
+                        "entity_name": ent.name,
+                        "proposition_id": c.proposition_id,
+                        "polarity": c.polarity,
+                        "salience": c.salience,
+                        "kind": c.kind,
+                        "world_id": c.world_id,
+                    }
+                    if at_time is not None:
+                        snap = reconstruct_concern_at(c, int(at_time))
+                        if only_active and not snap["active"]:
+                            continue
+                        row["snapshot"] = snap
+                    items.append(row)
+            return {"concerns": items, "count": len(items)}
+        # superseded_events
+        chains: list[dict] = []
+        successors_by_id = {e.id: e for e in ws.events}
+        for evt in ws.events:
+            sup = getattr(evt, "superseded_by_event_id", None)
+            if not sup:
+                continue
+            chain = [evt.id]
+            cursor = sup
+            seen = {evt.id}
+            while cursor and cursor not in seen:
+                seen.add(cursor)
+                chain.append(cursor)
+                nxt = successors_by_id.get(cursor)
+                cursor = (
+                    getattr(nxt, "superseded_by_event_id", None)
+                    if nxt is not None else None
+                )
+            chains.append({
+                "event_id": evt.id,
+                "fabula_time": evt.fabula_time,
+                "syuzhet_index": evt.syuzhet_index,
+                "description": evt.description,
+                "superseded_by_event_id": sup,
+                "successor_chain": chain[1:],
+            })
+        return {"superseded_events": chains, "count": len(chains)}
     return {"error": (
         f"Unknown discover scope {scope!r}. Expected one of: "
-        "projects, branches, channels, world_facts."
+        "projects, branches, channels, world_facts, propositions, "
+        "concerns, superseded_events."
     )}
 
 

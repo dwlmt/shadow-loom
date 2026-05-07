@@ -19,6 +19,7 @@ from shadow_loom.models import (
     CausalEdge, SpatialEdge, RelationshipEdge, RelationshipMetric, TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
     GlobalTrait, WorldTraitSnapshot,
     NarrativeStyle,
+    Concern, Proposition, ConcernSnapshot, PropositionSnapshot,
 )
 
 world_state = WorldStateV1(
@@ -40,6 +41,9 @@ world_state = WorldStateV1(
                 "tension":     AmbientVector(value=0.7, volatility=0.4, evidence_strength="strong"),
                 "stagnation":  AmbientVector(value=0.6, volatility=0.3, evidence_strength="strong"),
                 "performance": AmbientVector(value=0.65, volatility=0.3, evidence_strength="moderate"),
+                # Suburb has roads out, but the press cordon and police surveillance
+                # turn it into a soft cage — partial flight only.
+                "connected_to": AmbientVector(value=0.4, volatility=0.3, evidence_strength="moderate"),
             },
         ),
         "LOC_BAR": Location(
@@ -56,6 +60,8 @@ world_state = WorldStateV1(
             ambient_state={
                 "isolation": AmbientVector(value=0.8, volatility=0.2, evidence_strength="strong"),
                 "control":   AmbientVector(value=0.7, volatility=0.3, evidence_strength="strong"),
+                # Anonymous motel with the highway right outside — Amy can leave at will.
+                "connected_to": AmbientVector(value=1.0, volatility=0.0, evidence_strength="strong"),
             },
         ),
         "LOC_DESI_LAKE_HOUSE": Location(
@@ -65,6 +71,8 @@ world_state = WorldStateV1(
                 "luxury":     AmbientVector(value=0.7, volatility=0.2, evidence_strength="strong"),
                 "entrapment": AmbientVector(value=0.6, volatility=0.4, evidence_strength="strong"),
                 "surveillance": AmbientVector(value=0.85, volatility=0.1, evidence_strength="strong"),
+                # Gated, camera-rigged — Amy cannot simply walk out, hence dread.
+                "connected_to": AmbientVector(value=0.0, volatility=0.0, evidence_strength="strong"),
             },
         ),
         "LOC_POLICE_STATION": Location(
@@ -149,15 +157,43 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_AMY",
-                       perceived_state="Amy is controlling and impossible to please",
+                       perceived_state="Amy is controlling and impossible to please", proposition_id="PROP_AMY_LOYAL_WIFE",
                        confidence=0.8, inertia=0.5,
                        established_at_fabula=1000, evidence_strength="moderate"),
                 Belief(target_id="ENT_MARGO",
-                       perceived_state="Margo is the only person who truly knows me",
+                       perceived_state="Margo is the only person who truly knows me", proposition_id="PROP_MARGO_BOND",
                        confidence=0.9, inertia=0.6,
                        established_at_fabula=0, evidence_strength="strong"),
             ],
             constants=["writer", "twin_bond", "missouri_native"],
+            concerns=[
+                # Lazarus survival concern — the death-penalty risk dominates Nick's threat appraisal.
+                Concern(concern_id="CCN_NICK_SAFE_FROM_PRISON", proposition_id="PROP_NICK_FREE",
+                        polarity="desire", kind="survival", salience=0.95,
+                        activation_fabula_window=[3000, 16000]),
+                Concern(concern_id="CCN_NICK_PROVE_INNOCENT", proposition_id="PROP_NICK_VINDICATED",
+                        polarity="desire", kind="injustice", salience=0.85,
+                        activation_fabula_window=[3000, 14000]),
+                # Averill normative-violation: Amy's framing is the canonical betrayal trigger for rage.
+                # Targets PROP_AMY_BETRAYS_NICK (positive form) so polarity=fear + truth=True correctly
+                # blocks the concern when the betrayal commits.
+                Concern(concern_id="CCN_NICK_BETRAYED_BY_AMY", proposition_id="PROP_AMY_BETRAYS_NICK",
+                        polarity="fear", kind="betrayal", salience=0.95,
+                        activation_fabula_window=[3000, 16000],
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=9000, triggered_by="EVT_NICK_TV_CONFESSION",
+                                            salience=1.0, kind="recognized_entrapment"),
+                        ]),
+                Concern(concern_id="CCN_NICK_LOVES_MARGO", proposition_id="PROP_MARGO_BOND",
+                        polarity="desire", kind="loyalty", salience=0.85),
+                Concern(concern_id="CCN_NICK_PROTECT_CHILD", proposition_id="PROP_BABY_FREE",
+                        polarity="fear", kind="abandonment", salience=0.95,
+                        activation_fabula_window=[14500, 16000],
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=15000, triggered_by="EVT_AMY_PREGNANCY_TRAP",
+                                            salience=1.0, kind="coercive_parenthood"),
+                        ]),
+            ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=2000, triggered_by="EVT_AMY_DISAPPEARS",
                     traits={
@@ -170,7 +206,7 @@ world_state = WorldStateV1(
                     },
                     beliefs_added=[
                         Belief(target_id="ENT_ANDIE",
-                               perceived_state="Andie has been a liability I cannot contain",
+                               perceived_state="Andie has been a liability I cannot contain", proposition_id="PROP_NICK_PERFORMS_HUSBAND",
                                confidence=0.9, inertia=0.5,
                                established_at_fabula=6000, evidence_strength="strong"),
                     ]),
@@ -183,6 +219,7 @@ world_state = WorldStateV1(
                     beliefs_added=[
                         Belief(target_id="ENT_AMY",
                                perceived_state="Amy framed me and I must out-perform her on her own stage",
+                               proposition_id="PROP_AMY_BETRAYS_NICK",
                                confidence=0.9, inertia=0.6,
                                established_at_fabula=9000, evidence_strength="strong"),
                     ]),
@@ -197,7 +234,7 @@ world_state = WorldStateV1(
                     },
                     beliefs_added=[
                         Belief(target_id="ENT_AMY",
-                               perceived_state="I will play the perfect husband and write the truth in secret",
+                               perceived_state="I will play the perfect husband and write the truth in secret", proposition_id="PROP_NICK_PERFORMS_HUSBAND",
                                confidence=0.95, inertia=0.7,
                                established_at_fabula=16000, evidence_strength="strong"),
                     ]),
@@ -217,14 +254,40 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_NICK",
                        perceived_state="Nick has betrayed everything I gave him and must be punished publicly",
+                       proposition_id="PROP_NICK_PUNISHED",
                        confidence=0.95, inertia=0.6,
                        established_at_fabula=1500, evidence_strength="strong"),
                 Belief(target_id="ENT_DESI",
-                       perceived_state="Desi is a useful pawn who still believes I belong to him",
+                       perceived_state="Desi is a useful pawn who still believes I belong to him", proposition_id="PROP_AMY_IN_CONTROL",
                        confidence=0.8, inertia=0.4,
                        established_at_fabula=500, evidence_strength="moderate"),
             ],
             constants=["amazing_amy", "trust_fund_heiress", "harvard_psychology"],
+            concerns=[
+                Concern(concern_id="CCN_AMY_PUNISH_NICK", proposition_id="PROP_NICK_PUNISHED",
+                        polarity="desire", kind="vengeance", salience=0.95,
+                        activation_fabula_window=[1500, 14000],
+                        counter_concern_ids=["CCN_AMY_LOVES_NICK"]),
+                Concern(concern_id="CCN_AMY_CONTROL", proposition_id="PROP_AMY_IN_CONTROL",
+                        polarity="desire", kind="power", salience=0.95,
+                        activation_fabula_window=[1000, 16000],
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=10000, triggered_by="EVT_AMY_ROBBED",
+                                            salience=0.7),
+                        ]),
+                Concern(concern_id="CCN_AMY_FEARS_EXPOSURE", proposition_id="PROP_AMY_EXPOSED",
+                        polarity="fear", kind="exposure", salience=0.85,
+                        activation_fabula_window=[10000, 16000]),
+                Concern(concern_id="CCN_AMY_LOVES_NICK", proposition_id="PROP_NICK_PERFORMS_HUSBAND",
+                        polarity="desire", kind="love", salience=0.85,
+                        activation_fabula_window=[14000, 16000],
+                        counter_concern_ids=["CCN_AMY_PUNISH_NICK"]),
+                # Averill: the Ozark grifters' robbery is a humiliation that shifts Amy's plan.
+                # Targets PROP_AMY_EXPOSED because the robbery threatens the staged-disappearance cover.
+                Concern(concern_id="CCN_AMY_HUMILIATED_BY_GRIFTERS", proposition_id="PROP_AMY_EXPOSED",
+                        polarity="fear", kind="humiliation", salience=0.8,
+                        activation_fabula_window=[10000, 11000]),
+            ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=2000, triggered_by="EVT_AMY_DISAPPEARS",
                     location_id="LOC_HIDEOUT_OZARKS",
@@ -238,7 +301,7 @@ world_state = WorldStateV1(
                     },
                     beliefs_added=[
                         Belief(target_id="ENT_DESI",
-                               perceived_state="I need Desi's house and money — and then I need him gone",
+                               perceived_state="I need Desi's house and money — and then I need him gone", proposition_id="PROP_AMY_IN_CONTROL",
                                confidence=0.85, inertia=0.5,
                                established_at_fabula=10000, evidence_strength="moderate"),
                     ]),
@@ -265,11 +328,19 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_NICK",
-                       perceived_state="Nick is flawed but not a killer",
+                       perceived_state="Nick is flawed but not a killer", proposition_id="PROP_NICK_VINDICATED",
                        confidence=0.8, inertia=0.5,
                        established_at_fabula=0, evidence_strength="strong"),
             ],
             constants=["twin_bond", "co_owner_bar"],
+            concerns=[
+                Concern(concern_id="CCN_MARGO_PROTECT_NICK", proposition_id="PROP_NICK_FREE",
+                        polarity="desire", kind="loyalty", salience=0.95,
+                        activation_fabula_window=[3000, 16000]),
+                Concern(concern_id="CCN_MARGO_FEARS_AMY", proposition_id="PROP_AMY_EXPOSED",
+                        polarity="desire", kind="injustice", salience=0.8,
+                        activation_fabula_window=[14000, 16000]),
+            ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=6000, triggered_by="EVT_NICK_AFFAIR_REVEALED",
                     traits={
@@ -279,7 +350,7 @@ world_state = WorldStateV1(
                     beliefs_invalidated=["ENT_NICK"],
                     beliefs_added=[
                         Belief(target_id="ENT_NICK",
-                               perceived_state="Nick lied to me — but he may still be innocent of murder",
+                               perceived_state="Nick lied to me — but he may still be innocent of murder", proposition_id="PROP_NICK_VINDICATED",
                                confidence=0.6, inertia=0.4,
                                established_at_fabula=6000, evidence_strength="moderate"),
                     ]),
@@ -289,7 +360,7 @@ world_state = WorldStateV1(
                     },
                     beliefs_added=[
                         Belief(target_id="ENT_AMY",
-                               perceived_state="Amy is lying and Nick is now her hostage",
+                               perceived_state="Amy is lying and Nick is now her hostage", proposition_id="PROP_AMY_EXPOSED",
                                confidence=0.95, inertia=0.7,
                                established_at_fabula=14000, evidence_strength="strong"),
                     ]),
@@ -304,11 +375,16 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_NICK",
-                       perceived_state="Nick is the prime suspect but the evidence is too clean",
+                       perceived_state="Nick is the prime suspect but the evidence is too clean", proposition_id="PROP_NICK_VINDICATED",
                        confidence=0.7, inertia=0.4,
                        established_at_fabula=3000, evidence_strength="moderate"),
             ],
             constants=["lead_detective"],
+            concerns=[
+                Concern(concern_id="CCN_BONEY_TRUTH", proposition_id="PROP_AMY_EXPOSED",
+                        polarity="desire", kind="injustice", salience=0.9,
+                        activation_fabula_window=[3000, 16000]),
+            ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=14000, triggered_by="EVT_AMY_RETURNS",
                     traits={
@@ -317,7 +393,7 @@ world_state = WorldStateV1(
                     beliefs_invalidated=["ENT_NICK"],
                     beliefs_added=[
                         Belief(target_id="ENT_AMY",
-                               perceived_state="Amy's kidnapping story does not survive a single careful question",
+                               perceived_state="Amy's kidnapping story does not survive a single careful question", proposition_id="PROP_AMY_EXPOSED",
                                confidence=0.85, inertia=0.6,
                                established_at_fabula=14000, evidence_strength="strong"),
                     ]),
@@ -334,10 +410,16 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_AMY",
                        perceived_state="Amy finally needs me as she always should have",
+                       proposition_id="PROP_AMY_BELONGS_DESI",
                        confidence=0.8, inertia=0.4,
                        established_at_fabula=11000, evidence_strength="moderate"),
             ],
             constants=["old_money", "obsessive_ex"],
+            concerns=[
+                Concern(concern_id="CCN_DESI_POSSESSES_AMY", proposition_id="PROP_AMY_BELONGS_DESI",
+                        polarity="desire", kind="love", salience=0.95,
+                        activation_fabula_window=[11000, 13000]),
+            ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=11000, triggered_by="EVT_AMY_GOES_TO_DESI",
                     location_id="LOC_DESI_LAKE_HOUSE",
@@ -357,7 +439,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_NICK",
-                       perceived_state="Nick is innocent but terrible at looking innocent on camera",
+                       perceived_state="Nick is innocent but terrible at looking innocent on camera", proposition_id="PROP_NICK_VINDICATED",
                        confidence=0.7, inertia=0.4,
                        established_at_fabula=8000, evidence_strength="strong"),
             ],
@@ -373,10 +455,22 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_NICK",
                        perceived_state="Nick loves me and will leave Amy",
+                       proposition_id="PROP_NICK_LOVES_ANDIE",
                        confidence=0.7, inertia=0.3,
                        established_at_fabula=4000, evidence_strength="moderate"),
             ],
             constants=["former_student", "mistress"],
+            concerns=[
+                Concern(concern_id="CCN_ANDIE_NICK_LEAVES_AMY", proposition_id="PROP_NICK_LOVES_ANDIE",
+                        polarity="desire", kind="love", salience=0.85,
+                        activation_fabula_window=[4000, 6000],
+                        counter_concern_ids=["CCN_ANDIE_HUMILIATED"]),
+                # Averill humiliation → her revenge press conference is a rage outlet.
+                Concern(concern_id="CCN_ANDIE_HUMILIATED", proposition_id="PROP_NICK_LOVES_ANDIE",
+                        polarity="fear", kind="humiliation", salience=0.9,
+                        activation_fabula_window=[6000, 9000],
+                        counter_concern_ids=["CCN_ANDIE_NICK_LEAVES_AMY"]),
+            ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=6000, triggered_by="EVT_NICK_AFFAIR_REVEALED",
                     traits={
@@ -385,7 +479,7 @@ world_state = WorldStateV1(
                     beliefs_invalidated=["ENT_NICK"],
                     beliefs_added=[
                         Belief(target_id="ENT_NICK",
-                               perceived_state="Nick used me and I will tell the cameras",
+                               perceived_state="Nick used me and I will tell the cameras", proposition_id="PROP_NICK_PUNISHED",
                                confidence=0.9, inertia=0.55,
                                established_at_fabula=6000, evidence_strength="strong"),
                     ]),
@@ -401,7 +495,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_NICK",
-                       perceived_state="Nick is guilty — the husband always is",
+                       perceived_state="Nick is guilty — the husband always is", proposition_id="PROP_NICK_PUNISHED",
                        confidence=0.85, inertia=0.5,
                        established_at_fabula=3000, evidence_strength="strong"),
             ],
@@ -417,13 +511,18 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_AMY",
-                       perceived_state="Amy was my best friend and Nick killed her",
+                       perceived_state="Amy was my best friend and Nick killed her", proposition_id="PROP_NICK_PUNISHED",
                        confidence=0.9, inertia=0.6,
                        established_at_fabula=3000, evidence_strength="strong"),
                 Belief(target_id="ENT_AMY",
-                       perceived_state="Amy confided to me that she was pregnant",
+                       perceived_state="Amy confided to me that she was pregnant", proposition_id="PROP_NICK_PUNISHED",
                        confidence=0.7, inertia=0.5,
                        established_at_fabula=3000, evidence_strength="moderate"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_NOELLE_AMY_AVENGED", proposition_id="PROP_NICK_PUNISHED",
+                        polarity="desire", kind="loyalty", salience=0.85,
+                        activation_fabula_window=[3000, 14000]),
             ],
             constants=["neighbour", "vigil_organiser"],
         ),
@@ -437,7 +536,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_AMY",
-                       perceived_state="Amy is the real Amazing Amy and our public legacy",
+                       perceived_state="Amy is the real Amazing Amy and our public legacy", proposition_id="PROP_AMY_LOYAL_WIFE",
                        confidence=0.9, inertia=0.7,
                        established_at_fabula=0, evidence_strength="strong"),
             ],
@@ -453,7 +552,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_NICK",
-                       perceived_state="Nick is family until proven otherwise",
+                       perceived_state="Nick is family until proven otherwise", proposition_id="PROP_NICK_VINDICATED",
                        confidence=0.6, inertia=0.4,
                        established_at_fabula=0, evidence_strength="moderate"),
             ],
@@ -1150,5 +1249,69 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=0.0,  inertia=0.65, evidence_strength="weak",     last_updated_fabula=3000, observed=False),
             },
         ),
+    ],
+
+    # ── PROPOSITIONS ─────────────────────────────────────────────
+    propositions=[
+        Proposition(proposition_id="PROP_NICK_FREE", kind="outcome",
+                    referent_ids=["ENT_NICK"],
+                    description="Nick avoids prison / death penalty for Amy's disappearance.",
+                    audience_default_prior=0.4, stakes=0.95,
+                    truth_at_fabula={9000: True, 14000: True}),
+        Proposition(proposition_id="PROP_NICK_VINDICATED", kind="trait_holds",
+                    referent_ids=["ENT_NICK"],
+                    description="Nick's name is publicly cleared of murdering Amy.",
+                    audience_default_prior=0.5, stakes=0.85,
+                    truth_at_fabula={14000: True}),
+        Proposition(proposition_id="PROP_AMY_LOYAL_WIFE", kind="relation_holds",
+                    referent_ids=["ENT_AMY", "ENT_NICK"],
+                    description="Amy is the loyal wife she pretends to be.",
+                    audience_default_prior=0.6, stakes=0.85,
+                    truth_at_fabula={1500: False, 9000: False}),
+        Proposition(proposition_id="PROP_AMY_BETRAYS_NICK", kind="event_occurs",
+                    referent_ids=["ENT_AMY", "ENT_NICK"],
+                    description="Amy frames Nick for her staged disappearance / murder.",
+                    audience_default_prior=0.05, stakes=0.95,
+                    truth_at_fabula={2000: True, 9000: True}),
+        Proposition(proposition_id="PROP_MARGO_BOND", kind="relation_holds",
+                    referent_ids=["ENT_NICK", "ENT_MARGO"],
+                    description="The Nick–Margo twin bond is intact.",
+                    audience_default_prior=0.9, stakes=0.6,
+                    truth_at_fabula={1000: True}),
+        Proposition(proposition_id="PROP_BABY_FREE", kind="outcome",
+                    referent_ids=["ENT_NICK", "ENT_AMY"],
+                    description="Nick is free of Amy and her unborn child as a chain.",
+                    audience_default_prior=0.3, stakes=0.95,
+                    truth_at_fabula={16000: False}),
+        Proposition(proposition_id="PROP_NICK_PUNISHED", kind="outcome",
+                    referent_ids=["ENT_NICK", "ENT_AMY"],
+                    description="Nick is destroyed publicly for the affair and his contempt of Amy.",
+                    audience_default_prior=0.5, stakes=0.85,
+                    truth_at_fabula={14000: True, 16000: True}),
+        Proposition(proposition_id="PROP_AMY_IN_CONTROL", kind="trait_holds",
+                    referent_ids=["ENT_AMY"],
+                    description="Amy retains total control of the narrative and of Nick.",
+                    audience_default_prior=0.6, stakes=0.85,
+                    truth_at_fabula={10000: False, 13000: True, 16000: True}),
+        Proposition(proposition_id="PROP_AMY_EXPOSED", kind="event_occurs",
+                    referent_ids=["ENT_AMY"],
+                    description="Amy's framing of Nick is publicly exposed.",
+                    audience_default_prior=0.55, stakes=0.95,
+                    truth_at_fabula={16000: False}),
+        Proposition(proposition_id="PROP_NICK_PERFORMS_HUSBAND", kind="trait_holds",
+                    referent_ids=["ENT_NICK", "ENT_AMY"],
+                    description="Nick maintains the perfect-husband performance Amy requires.",
+                    audience_default_prior=0.5, stakes=0.7,
+                    truth_at_fabula={16000: True}),
+        Proposition(proposition_id="PROP_AMY_BELONGS_DESI", kind="relation_holds",
+                    referent_ids=["ENT_AMY", "ENT_DESI"],
+                    description="Amy belongs to Desi as he has always wished.",
+                    audience_default_prior=0.3, stakes=0.7,
+                    truth_at_fabula={11000: True, 13000: False}),
+        Proposition(proposition_id="PROP_NICK_LOVES_ANDIE", kind="relation_holds",
+                    referent_ids=["ENT_NICK", "ENT_ANDIE"],
+                    description="Nick loves Andie and will leave Amy for her.",
+                    audience_default_prior=0.3, stakes=0.5,
+                    truth_at_fabula={6000: False}),
     ],
 )
