@@ -145,6 +145,18 @@ class CoreSettings(BaseSettings):
             "resolution."
         ),
     )
+    openrouter_provider_sort: str = Field(
+        default="throughput",
+        description=(
+            "Default OpenRouter provider-routing ``sort`` strategy. Sent in "
+            "the request body as ``provider: {sort: <value>}`` for every "
+            "``openrouter:`` model. Accepted values: ``throughput`` (highest "
+            "tokens/sec — best for long ingestion runs), ``price`` (cheapest), "
+            "``latency`` (fastest first token), or empty string to disable "
+            "sorting and let OpenRouter use its default price-based load "
+            "balancer. See https://openrouter.ai/docs/features/provider-routing."
+        ),
+    )
 
 
 # =====================================================================
@@ -257,12 +269,13 @@ class ExtractionSettings(BaseSettings):
     chunk_strategy: Literal["act_headings", "paragraph"] = Field(default="act_headings")
     output_retries: int = Field(default=5)
     fabula_time_spacing: int = Field(default=1000)
-    min_chunk_chars: int = Field(default=1500)
+    min_chunk_chars: int = Field(default=800)
     chunk_overlap_chars: int = Field(default=300)
     max_correction_retries: int = Field(default=5)
     validation_payload_max_chars: int = Field(default=600_000)
     correction_subgraph_threshold_chars: int = Field(default=400_000)
-    max_concurrent_chunks: int = Field(default=8)
+    max_concurrent_chunks: int = Field(default=12)
+    per_chunk_timeout_seconds: float = Field(default=600.0)
     estimated_events_per_chunk: int = Field(default=10)
     enable_consequences_agent: bool = Field(default=True)
 
@@ -272,7 +285,7 @@ class ExtractionSettings(BaseSettings):
     enable_research_agent: bool = Field(
         default=False,
         description=(
-            "If True, ``run_extraction`` will call the configured "
+            "If True, ``run_extraction_async`` will call the configured "
             "``research_provider`` once per topic in ``research_topics`` "
             "and append distilled ``WorldFact`` records to "
             "``WorldStateV1.world_facts``. Off by default — research is an "
@@ -994,6 +1007,7 @@ class Settings:
             "validation_payload_max_chars": self.extraction.validation_payload_max_chars,
             "correction_subgraph_threshold_chars": self.extraction.correction_subgraph_threshold_chars,
             "max_concurrent_chunks": self.extraction.max_concurrent_chunks,
+            "per_chunk_timeout_seconds": self.extraction.per_chunk_timeout_seconds,
             "estimated_events_per_chunk": self.extraction.estimated_events_per_chunk,
             "enable_consequences_agent": self.extraction.enable_consequences_agent,
             "enable_research_agent": self.extraction.enable_research_agent,
@@ -1061,9 +1075,19 @@ def resolve_model(model_str: str):
             ).strip() or providers[prefix_lc]
             from pydantic_ai.models.openai import OpenAIChatModel
             from pydantic_ai.providers.openai import OpenAIProvider
+            # OpenRouter-specific: forward the configured provider-routing
+            # ``sort`` strategy as ``extra_body`` so every request includes
+            # ``{"provider": {"sort": <value>}}`` in its body. See
+            # https://openrouter.ai/docs/features/provider-routing.
+            settings: dict | None = None
+            if prefix_lc == "openrouter":
+                sort = (core.openrouter_provider_sort or "").strip().lower()
+                if sort:
+                    settings = {"extra_body": {"provider": {"sort": sort}}}
             return OpenAIChatModel(
                 model_name,
                 provider=OpenAIProvider(base_url=base_url, api_key=api_key),
+                settings=settings,  # type: ignore[arg-type]
             )
 
     # Fallback: pass through for PydanticAI native model resolution.

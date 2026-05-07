@@ -122,13 +122,19 @@ class TestChunkText:
     def test_min_chunk_chars_no_merge_when_big(self):
         text = ("X" * 2000 + "\n\n") * 3
         chunks = chunk_text(text, strategy="paragraph", min_chunk_chars=1500)
+        # Each 2000-char paragraph stays as one piece (no internal
+        # paragraph boundary to split on, so the max-chunk cap can't
+        # subdivide it further).
         assert len(chunks) == 3
 
     def test_min_chunk_chars_final_tiny_merged(self):
-        # Big chunk + tiny tail → tail merged into previous
-        text = "A" * 2000 + "\n\n" + "B" * 100
+        # Big chunk + tiny tail → tail merged into previous, then the
+        # max-chunk cap re-splits on the paragraph boundary it just
+        # rejoined. Net result: the tail rides the previous chunk only
+        # if it would fit under the cap.
+        text = "A" * 500 + "\n\n" + "B" * 100
         chunks = chunk_text(text, strategy="paragraph", min_chunk_chars=1500)
-        assert len(chunks) == 1  # tiny tail merged back
+        assert len(chunks) == 1  # both fit comfortably under the cap
 
     def test_preamble_before_first_heading(self):
         text = "Preamble text.\n\nAct I\nBody."
@@ -1006,11 +1012,11 @@ class TestExtractionConfig:
     def test_defaults(self):
         c = ExtractionConfig()
         assert c.fabula_time_spacing == 1000
-        assert c.min_chunk_chars == 1500
+        assert c.min_chunk_chars == 800
         assert c.output_retries == 5
         assert c.chunk_overlap_chars == 300
         assert c.max_correction_retries == 5
-        assert c.max_concurrent_chunks == 8
+        assert c.max_concurrent_chunks == 12
         assert c.estimated_events_per_chunk == 10
 
     def test_custom_values(self):
@@ -1707,3 +1713,122 @@ class TestShiftFabulaTimes:
         _shift_fabula_times(topo, 100)
         assert topo.spatial_topology[0].established_at_fabula == 150
         assert topo.spatial_topology[0].destroyed_at_fabula == 250
+
+
+# =====================================================================
+# Asymmetric-relationship mirroring regression (commit 21dfb75 follow-up)
+# =====================================================================
+class TestMirrorAsymmetricRelationships:
+    """Guards the interaction between ``WorldStateV1``'s reverse-direction
+    mirror validator and ``_physics_missing_mutation_social_per_dyad``.
+
+    A one-sided fixture (only A→B emitted) must survive auto-mirroring
+    *and* the per-dyad missing-mutation check: the mirror is
+    ``observed=False``, so it must not demand its own mutation_social
+    coverage. If a future change makes the validator emit
+    ``observed=True`` mirrors, this test fails immediately rather than
+    silently re-introducing the original "single-direction
+    mutation_social over-reports" bug.
+    """
+
+    def _build_world_with_one_sided_dyad(self):
+        from shadow_loom.models import RelationshipMetric
+
+        return WorldStateV1(
+            locations={"LOC_A": Location(
+                name="A", description="a", ambient_state={},
+            )},
+            objects={},
+            entities={
+                "ENT_A": Entity(
+                    id="ENT_A", name="A", location_id="LOC_A",
+                    status="healthy",
+                    traits={"courage": TraitVector(value=0.5, inertia=0.5)},
+                ),
+                "ENT_B": Entity(
+                    id="ENT_B", name="B", location_id="LOC_A",
+                    status="healthy",
+                    traits={"courage": TraitVector(value=0.5, inertia=0.5)},
+                ),
+            },
+            events=[],
+            causal_topology=[],
+            social_topology=[RelationshipEdge(
+                source_entity_id="ENT_A", target_entity_id="ENT_B",
+                metrics={
+                    "affinity": RelationshipMetric(
+                        value=0.6, inertia=0.4,
+                        evidence_strength="strong",
+                        last_updated_fabula=100, observed=True,
+                    ),
+                    "power_dynamic": RelationshipMetric(
+                        value=0.7, inertia=0.6,
+                        evidence_strength="strong",
+                        last_updated_fabula=100, observed=True,
+                    ),
+                },
+            )],
+        )
+
+    def test_mirror_is_unobserved_with_weak_inertia_and_zero_timestamp(self):
+        ws = self._build_world_with_one_sided_dyad()
+        edges = {(e.source_entity_id, e.target_entity_id): e
+                 for e in ws.social_topology}
+        assert ("ENT_B", "ENT_A") in edges, "reverse mirror not synthesised"
+        mirror = edges[("ENT_B", "ENT_A")]
+        forward = edges[("ENT_A", "ENT_B")]
+        # power_dynamic must flip sign; affinity copies value.
+        assert mirror.metrics["power_dynamic"].value == pytest.approx(-0.7)
+        assert mirror.metrics["affinity"].value == pytest.approx(0.6)
+        for name, m in mirror.metrics.items():
+            assert m.observed is False, f"{name} should be unobserved"
+            assert m.evidence_strength == "weak"
+            assert m.last_updated_fabula == 0
+            # Inertia halved relative to the forward edge.
+            assert m.inertia == pytest.approx(
+                forward.metrics[name].inertia * 0.5
+            )
+
+    def test_per_dyad_check_ignores_mirrored_unobserved_edges(self):
+        """Mirroring + per-dyad check must agree: a forward-only fixture
+        with a forward mutation_social should report **zero** missing
+        dyads, not a spurious gap on the unobserved reverse edge."""
+        from shadow_loom.ingestion import (
+            _physics_missing_mutation_social_per_dyad,
+            PhysicsExtraction,
+            SocialExtraction,
+        )
+
+        ws = self._build_world_with_one_sided_dyad()
+
+        physics = PhysicsExtraction(
+            events=[EventNode(
+                id="EVT_1", fabula_time=200, syuzhet_index=0,
+                event_type="utterance", description="A praises B",
+            )],
+            causal_topology=[CausalEdge(
+                source_id="EVT_1", target_id="ENT_A",
+                causality_type="mutation_social",
+                rel_counterpart_id="ENT_B",
+                trait_target="affinity",
+                trait_delta=0.1,
+                mechanism="psychological",
+                fabula_time=200,
+            )],
+        )
+        social = SocialExtraction(social_topology=list(ws.social_topology))
+
+        missing = _physics_missing_mutation_social_per_dyad(physics, social)
+        # Forward affinity is covered; reverse is unobserved (mirror) and
+        # must be skipped. power_dynamic on ENT_A→ENT_B is observed but
+        # uncovered, so that one *should* be flagged.
+        forward_keys = {(s, t, ax) for (s, t, ax) in missing
+                        if (s, t) == ("ENT_A", "ENT_B")}
+        reverse_keys = {(s, t, ax) for (s, t, ax) in missing
+                        if (s, t) == ("ENT_B", "ENT_A")}
+        assert ("ENT_A", "ENT_B", "power_dynamic") in forward_keys
+        assert ("ENT_A", "ENT_B", "affinity") not in forward_keys
+        assert reverse_keys == set(), (
+            f"mirrored reverse edge must not demand mutation_social "
+            f"coverage; got {reverse_keys}"
+        )

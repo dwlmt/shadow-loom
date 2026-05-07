@@ -453,7 +453,7 @@ class TestWrite:
 
 class TestIngest:
     @pytest.mark.asyncio
-    @patch("shadow_loom_mcp.server.run_extraction")
+    @patch("shadow_loom_mcp.server.run_extraction_async", new_callable=AsyncMock)
     async def test_ingests_text(self, mock_extract):
         ws = deepcopy(macbeth_ws)
         mock_report = MagicMock()

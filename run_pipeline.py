@@ -17,7 +17,7 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stderr)],
 )
 
-from shadow_loom.ingestion import ExtractionConfig, run_extraction
+from shadow_loom.ingestion import ExtractionConfig, run_extraction_async
 
 def run_on_file(plot_path: str, output_dir: str = "pipeline_output"):
     """Run the pipeline on a single plot file and dump results."""
@@ -39,7 +39,8 @@ def run_on_file(plot_path: str, output_dir: str = "pipeline_output"):
     print(f"{'='*60}", file=sys.stderr)
 
     t0 = time.time()
-    ws, report = run_extraction(text, config)
+    import asyncio
+    ws, report = asyncio.run(run_extraction_async(text, config))
     elapsed = time.time() - t0
 
     # Dump world state JSON

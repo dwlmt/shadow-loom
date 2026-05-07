@@ -23,6 +23,7 @@ The pipeline is flexible:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Dict, List, Literal, Optional, TYPE_CHECKING
 
@@ -49,7 +50,8 @@ from shadow_loom.generation import (
     GenerationConfig,
     render_from_query,
 )
-from shadow_loom.ingestion import ExtractionConfig, run_extraction, run_extraction_async
+from shadow_loom.ingestion import ExtractionConfig, run_extraction_async
+from shadow_loom.ingestion_diagnostics import capture_ingestion_warnings
 
 if TYPE_CHECKING:
     from shadow_loom.ingestion import ChunkTopology
@@ -1196,13 +1198,15 @@ def run_pipeline(
         # --- Step 1: Ingestion ---
         logger.info("[Pipeline] Step 1: Ingesting raw text (%d chars).", len(raw_text))
         ing_cfg = cfg.ingestion_config or ExtractionConfig()
-        ws, validation_report = run_extraction(
-            raw_text, 
-            config=ing_cfg, 
-            user_id=user_id, 
-            project_id=project_id, 
-            version_id=version_id
-        )
+        # Tier 4 #14: capture validator/auto-fix warnings for this project.
+        with capture_ingestion_warnings(str(project_id) if project_id is not None else "_anon"):
+            ws, validation_report = asyncio.run(run_extraction_async(
+                raw_text,
+                config=ing_cfg,
+                user_id=user_id,
+                project_id=project_id,
+                version_id=version_id,
+            ))
         vwm = VersionedWorldModel.from_world_state(ws, max_snapshots=cfg.max_snapshots)
         history.record("ingestion", IngestionStepRecord(
             is_valid=validation_report.is_valid,
@@ -1672,13 +1676,15 @@ async def run_pipeline_async(
     if raw_text is not None:
         logger.info("[Pipeline·Async] Step 1: Ingesting raw text (%d chars).", len(raw_text))
         ing_cfg = cfg.ingestion_config or ExtractionConfig()
-        ws, validation_report = await run_extraction_async(
-            raw_text, 
-            config=ing_cfg,
-            user_id=user_id,
-            project_id=project_id, 
-            version_id=version_id
-        )
+        # Tier 4 #14: capture validator/auto-fix warnings for this project.
+        with capture_ingestion_warnings(str(project_id) if project_id is not None else "_anon"):
+            ws, validation_report = await run_extraction_async(
+                raw_text,
+                config=ing_cfg,
+                user_id=user_id,
+                project_id=project_id,
+                version_id=version_id,
+            )
         vwm = VersionedWorldModel.from_world_state(ws, max_snapshots=cfg.max_snapshots)
         history.record("ingestion", IngestionStepRecord(
             is_valid=validation_report.is_valid,

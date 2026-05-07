@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 from nicegui import ui
 
-from shadow_loom.ingestion import ExtractionConfig, run_extraction
+from shadow_loom.ingestion import ExtractionConfig, run_extraction_async
 from shadow_loom_ui import db
 from shadow_loom_ui.config import MAX_INGEST_WORDS, count_words
 from shadow_loom_ui.state import StateEvent
@@ -210,8 +210,16 @@ def build_ingest_dialog(state: AppState) -> ui.dialog:
             async def _do_work():
                 try:
                     with capture_logs_to_task(state, task):
-                        ws, report = await asyncio.to_thread(
-                            run_extraction, text, extraction_config,
+                        # Use the async pipeline so chunk extraction runs
+                        # in parallel (gated by
+                        # ``ExtractionConfig.max_concurrent_chunks``).
+                        # ``run_extraction_async`` is itself a coroutine
+                        # that awaits ``extract_topology_async`` — calling
+                        # it directly keeps every chunk's LLM round-trip
+                        # on the running loop instead of being serialised
+                        # behind ``asyncio.to_thread(run_extraction)``.
+                        ws, report = await run_extraction_async(
+                            text, extraction_config,
                         )
 
                     proj = db.create_project(

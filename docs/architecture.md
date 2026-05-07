@@ -91,14 +91,27 @@ for the lineage), then dispatches three specialist agents:
 * `SocialExtraction` — `RelationshipEdge`s, `Channel`s
 * `ConsequencesExtraction` — authoritative `EntityUpdate`s anchored to the Physics events + mutation edges (default-on; overrides the Physics agent's own `entity_updates`). Toggle via `ExtractionConfig.enable_consequences_agent`.
 
-In async mode Physics runs first; Social and Consequences are dispatched
-concurrently via `asyncio.gather` since both depend only on the Physics
-output. Each agent's output validator runs a **sanitiser layer** that
-clamps numeric ranges, drops self-loops, coerces status enum aliases, and
-fuzzy-fixes ID typos before falling back to a `ModelRetry`. Results are
-merged in `assemble_world_state`, normalised (`_normalize_fabula_times`),
-auto-repaired (`_auto_repair`), and validated (`_programmatic_validation`
-→ optional LLM correction loop). Chunk order is treated as syuzhet order
+In async mode Physics runs first; Social runs next (it is fed Physics's
+event list and on-page entity ids); Consequences runs last so it can
+wire belief provenance through Social's utterance / channel ids. Chunks
+are extracted in parallel under an `asyncio.Semaphore` gated by
+`ExtractionConfig.max_concurrent_chunks` (default `12`); each chunk's
+entire Socratic→Physics→Social→Consequences chain is wrapped in
+`asyncio.wait_for(timeout=ExtractionConfig.per_chunk_timeout_seconds)`
+(default `600` s, `0` disables) so a wedged LLM call is cancelled
+rather than holding the slot indefinitely. Each agent's output
+validator runs a **sanitiser layer** that clamps numeric ranges, drops
+self-loops, coerces status enum aliases, and fuzzy-fixes ID typos
+before falling back to a `ModelRetry`. Per-chunk retries (axis, dyad,
+mirror, anonymous-utterance, channel-zero, parity) **merge** their
+outputs into the base via `_merge_physics_retry` /
+`_merge_social_retry` / `_merge_anonymous_retry` /
+`_merge_consequences_retry` rather than replacing them, so a retry that
+targets one missing axis cannot silently drop the previously-extracted
+edges. Results are merged in `assemble_world_state`, normalised
+(`_normalize_fabula_times`), auto-repaired (`_auto_repair`), and
+validated (`_programmatic_validation` → optional LLM correction
+loop). Chunk order is treated as syuzhet order
 only; each chunk's events keep their LLM-extracted `fabula_time`, so
 flashbacks and flashforwards are preserved across chunk boundaries instead
 of being re-sorted into reading order.
@@ -529,7 +542,7 @@ audit notes in `/memories/repo/`.
 | Module | Lines | Role |
 |---|---|---|
 | [`models.py`](../shadow_loom/models.py) | 440 | `WorldStateV1` schema + temporal reconstruction. |
-| [`ingestion.py`](../shadow_loom/ingestion.py) | 2 978 | LLM-driven world extraction, normalisation, programmatic validation, correction loop. |
+| [`ingestion.py`](../shadow_loom/ingestion.py) | 8 649 | LLM-driven world extraction, normalisation, programmatic validation, correction loop with oscillation guard, error-relevant subgraph payloads, and final-pass validation snapshot. |
 | [`extract_graph.py`](../shadow_loom/extract_graph.py) | 724 | Ego-graph slicing with temporal filters. |
 | [`instantiator.py`](../shadow_loom/instantiator.py) | 592 | AMWN sandbox builder. |
 | [`causal_physics.py`](../shadow_loom/causal_physics.py) | — | 3-rung CTF engine. |

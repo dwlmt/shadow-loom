@@ -23,11 +23,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import json
 import logging
 import re
 from contextvars import ContextVar
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Set, Tuple
 
 if TYPE_CHECKING:
     from shadow_loom.research import WorldFact
@@ -326,6 +328,16 @@ class ValidationReport(BaseModel):
         default_factory=list,
         description="Recommended fixes or improvements.",
     )
+    repairs: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Human-readable log of every auto-repair / correction-patch "
+            "change applied during the pipeline (in order). Surfaces "
+            "silent fixes \u2014 e.g. nulled location_id, renamed "
+            "duplicate EVT_ ids, fabula shifts, dropped self-loops \u2014 "
+            "so downstream UIs and tests can audit them."
+        ),
+    )
 
 
 def _ext_defaults() -> dict:
@@ -352,9 +364,11 @@ class ExtractionConfig(BaseModel):
         "Gaps allow flashbacks and interstitial events to be inserted later.",
     )
     min_chunk_chars: int = Field(
-        default=1500,
+        default=800,
         description="Minimum chunk size in characters. Adjacent small paragraphs are "
-        "merged until they reach this threshold.",
+        "merged until they reach this threshold. Lowered from 1500 so each "
+        "physics/social pass sees roughly one scene rather than a whole act, "
+        "which produced anonymous events and missing dyads on dense texts.",
     )
     chunk_overlap_chars: int = Field(
         default=300,
@@ -395,11 +409,23 @@ class ExtractionConfig(BaseModel):
         ),
     )
     max_concurrent_chunks: int = Field(
-        default=4,
+        default=12,
         ge=1,
         description="Maximum number of chunks to extract in parallel during "
         "async topology extraction. Controls LLM request concurrency. Must be >= 1; "
         "a value of 0 would create ``asyncio.Semaphore(0)`` and hang every chunk.",
+    )
+    per_chunk_timeout_seconds: float = Field(
+        default=600.0,
+        ge=0,
+        description="Per-chunk soft timeout (seconds) for the entire "
+        "Socratic\u2192Physics\u2192Social\u2192Consequences pipeline on a "
+        "single chunk. When >0, a wedged LLM call is cancelled and that "
+        "chunk yields an empty ChunkTopology so the rest of the run can "
+        "proceed; the chunk's stage flags are all set to 1 so the "
+        ">50%-of-chunks failure threshold still triggers if many chunks "
+        "time out. Default 600s (10 min) accommodates slow local models "
+        "with multiple retries; set to 0 to disable.",
     )
     estimated_events_per_chunk: int = Field(
         default=10,
@@ -447,6 +473,21 @@ class ExtractionConfig(BaseModel):
         description="Topics to look up at extraction time. May be empty.",
     )
 
+    # ------------------------------------------------------------------
+    # Tier 3 #11 — chunk-level checkpointing (off by default)
+    # ------------------------------------------------------------------
+    checkpoint_dir: Optional[str] = Field(
+        default=None,
+        description=(
+            "If set, after each successfully-extracted chunk the "
+            "pipeline persists ``ChunkTopology`` (plus the chunk text "
+            "hash) to ``<checkpoint_dir>/chunk_<hash>_<index>.json``. "
+            "On a subsequent run with the same chunks, those topologies "
+            "are loaded from disk and the corresponding agent calls "
+            "are skipped. Disabled when null."
+        ),
+    )
+
     @model_validator(mode="before")
     @classmethod
     def _fill_from_settings(cls, data: Any) -> Any:
@@ -460,20 +501,90 @@ class ExtractionConfig(BaseModel):
 # Text Chunking
 # =====================================================================
 
-# Heading patterns that signal a new section (case-insensitive)
+# Heading patterns that signal a new section (case-insensitive).
+# Stave (Dickens — A Christmas Carol), Canto (Dante / Byron), and
+# Scene (theatrical) added so that works which don't use Act/Chapter
+# still get structural chunking instead of the paragraph fallback.
+# Numeric/roman/word forms all accepted: "Chapter 3", "Act IV",
+# "Stave One", "Canto the First" all match.
+_NUMERAL_TOKEN = (
+    r"(?:[IVXLCDM]+|\d+|"
+    r"the\s+(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)|"
+    r"first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|"
+    r"eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|"
+    r"seventeenth|eighteenth|nineteenth|twentieth|"
+    r"one|two|three|four|five|six|seven|eight|nine|ten|"
+    r"eleven|twelve|thirteen|fourteen|fifteen|sixteen|"
+    r"seventeen|eighteen|nineteen|twenty)"
+)
 _HEADING_RE = re.compile(
     r"^\s*(?:"
-    r"Act\s+[IVXLCDM\d]+"            # Act I, Act 2, etc.
-    r"|Part\s+[IVXLCDM\d]+"          # Part I, Part 2
-    r"|Chapter\s+[IVXLCDM\d]+"       # Chapter I, Chapter 2
-    r"|Book\s+[IVXLCDM\d]+"          # Book I, Book 2
-    r"|Section\s+[IVXLCDM\d]+"       # Section I, Section 2
+    r"Act\s+" + _NUMERAL_TOKEN +
+    r"|Scene\s+" + _NUMERAL_TOKEN +
+    r"|Part\s+" + _NUMERAL_TOKEN +
+    r"|Chapter\s+" + _NUMERAL_TOKEN +
+    r"|Book\s+" + _NUMERAL_TOKEN +
+    r"|Section\s+" + _NUMERAL_TOKEN +
+    r"|Stave\s+" + _NUMERAL_TOKEN +
+    r"|Canto\s+" + _NUMERAL_TOKEN +
+    r"|Volume\s+" + _NUMERAL_TOKEN +
+    r"|Episode\s+" + _NUMERAL_TOKEN +
     r")\b",
     re.IGNORECASE | re.MULTILINE,
 )
 
 
-def chunk_text(text: str, strategy: str = "act_headings", min_chunk_chars: int = 1500) -> List[str]:
+# Hard cap for any single chunk. Even when a Stave/Chapter/Act-delimited
+# chunk is found, it can be 5k+ characters and overwhelm a single physics
+# pass — leading to anonymous events, missing dyads, and flashback
+# fabula_time collapse. Subdivide oversized chunks on paragraph
+# boundaries so each LLM call sees roughly one scene.
+_MAX_CHUNK_CHARS = 1200
+
+
+def _subdivide_chunk(chunk: str, max_chars: int = _MAX_CHUNK_CHARS) -> List[str]:
+    """Split a single chunk on paragraph boundaries until each piece is
+    at most ``max_chars`` characters. The first line of the original
+    chunk (typically the heading like 'Stave One') is preserved as a
+    prefix on every sub-chunk so each LLM call retains structural
+    context.
+    """
+    if len(chunk) <= max_chars:
+        return [chunk]
+
+    # Capture an opening heading line (if any) to repeat on each piece.
+    first_nl = chunk.find("\n")
+    heading = ""
+    body = chunk
+    if first_nl != -1 and first_nl <= 80:
+        candidate = chunk[:first_nl].strip()
+        if _HEADING_RE.match(candidate):
+            heading = candidate
+            body = chunk[first_nl + 1:].lstrip()
+
+    paragraphs = re.split(r"\n\s*\n", body)
+    paragraphs = [p.strip() for p in paragraphs if p.strip()]
+
+    pieces: List[str] = []
+    current = ""
+    for para in paragraphs:
+        candidate = para if not current else current + "\n\n" + para
+        if len(candidate) <= max_chars or not current:
+            current = candidate
+        else:
+            pieces.append(current)
+            current = para
+    if current:
+        pieces.append(current)
+
+    if heading:
+        pieces = [f"{heading} (cont. {idx + 1}/{len(pieces)})\n\n{p}"
+                  if idx > 0 else f"{heading}\n\n{p}"
+                  for idx, p in enumerate(pieces)]
+    return pieces
+
+
+def chunk_text(text: str, strategy: str = "act_headings", min_chunk_chars: int = 800) -> List[str]:
     """
     Split narrative text into chunks for Step 2 extraction.
 
@@ -510,7 +621,18 @@ def chunk_text(text: str, strategy: str = "act_headings", min_chunk_chars: int =
                 if chunk:
                     chunks.append(chunk)
             if chunks:
-                return chunks
+                # Subdivide any oversized chunk so each LLM call sees
+                # roughly one scene rather than a whole act.
+                subdivided: List[str] = []
+                for c in chunks:
+                    subdivided.extend(_subdivide_chunk(c))
+                if len(subdivided) != len(chunks):
+                    logger.info(
+                        "[Chunking] %d heading chunk(s) subdivided to %d "
+                        "scene-sized pieces (max %d chars each).",
+                        len(chunks), len(subdivided), _MAX_CHUNK_CHARS,
+                    )
+                return subdivided
         # Fallback: no headings found — use paragraph strategy
         logger.info("[Chunking] No act/section headings found — falling back to paragraph split.")
 
@@ -530,7 +652,11 @@ def chunk_text(text: str, strategy: str = "act_headings", min_chunk_chars: int =
         if len(merged) >= 2 and len(merged[-1]) < min_chunk_chars // 2:
             merged[-2] += "\n\n" + merged[-1]
             merged.pop()
-        return merged
+        # Also enforce the hard cap on this branch.
+        capped: List[str] = []
+        for c in merged:
+            capped.extend(_subdivide_chunk(c))
+        return capped
     return raw
 
 
@@ -581,8 +707,49 @@ def _build_object_agent(config: ExtractionConfig) -> Agent[_ObjectDeps, ObjectRe
             f"LOCATION NAMES: {loc_names}\n"
             "\n"
             "Use ONLY these LOC_ IDs when assigning location_id to objects.\n"
-            "Set location_id to null if the object is held by someone."
+            "Set location_id to null if the object is held by someone.\n"
+            "owner_id should be the holder's CANONICAL NAME exactly as it "
+            "appears in the text (e.g. 'Macbeth', 'Lady Macbeth', "
+            "'Three Witches'), or null if the object is not held. "
+            "Entity IDs do not exist yet at Step 1b \u2014 a post-pass "
+            "resolver maps these names to ENT_ ids once Step 1c completes. "
+            "Use simple, unambiguous names; avoid descriptions like "
+            "'the king' when you know the name is 'Duncan'."
         )
+
+    @agent.output_validator
+    def validate_object_register(
+        ctx: RunContext[_ObjectDeps], output: ObjectRegister,
+    ) -> ObjectRegister:
+        """Sanitise object owner_id and location_id.
+
+        ``owner_id`` is declared as ``Optional[str]`` so the LLM can
+        legally emit free-text names like ``"Marley's ghost"`` or
+        ``"two men"``. Downstream code expects either ``None`` or an
+        ``ENT_`` id, so anything that doesn't match the ENT_ prefix
+        is coerced to ``None`` with a warning. ``location_id`` is
+        cross-checked against the Step 1a register; unknown ids are
+        nulled rather than left dangling.
+        """
+        loc_ids = set(ctx.deps.location_register.locations.keys())
+        notes: List[str] = []
+        for oid, obj in output.objects.items():
+            if obj.location_id and obj.location_id not in loc_ids:
+                notes.append(
+                    f"[Auto-Fix] Object {oid}.location_id "
+                    f"{obj.location_id!r} not in Step 1a register \u2014 "
+                    f"setting to null."
+                )
+                obj.location_id = None
+            # Note: owner_id may legitimately be a free-text name at
+            # Step 1b (entities don't exist yet). ``_resolve_object_owner_ids``
+            # runs after Step 1c and maps these names to canonical ENT_ IDs.
+            # Coercing them to None here would discard the very signal that
+            # resolver depends on, leaving every owned object unowned.
+        if notes:
+            for n in notes:
+                logger.info("[Validator\u00b7Objects] %s", n)
+        return output
 
     return agent
 
@@ -627,10 +794,51 @@ def _build_entity_agent(config: ExtractionConfig) -> Agent[_EntityDeps, EntityRe
             f"OBJECT IDs: {obj_ids}\n"
             f"OBJECT NAMES: {obj_names}\n"
             "\n"
-            "Use ONLY these LOC_ IDs when assigning location_id.\n"
+            "Use ONLY these LOC_ IDs when assigning location_id. If a "
+            "character's home location is missing from the register "
+            "(e.g. you'd like to write 'LOC_FRED_HOUSE' but no such "
+            "LOC_ exists), pick the nearest existing location instead "
+            "of inventing a new one \u2014 the validator will null any "
+            "unknown LOC_ id and the entity will fall back to "
+            "LOC_UNSPECIFIED.\n"
             "You may reference LOC_ and OBJ_ IDs in belief target_id fields.\n"
             "You may also reference ENT_ IDs you are creating in this pass."
         )
+
+    @agent.output_validator
+    def validate_entity_register(
+        ctx: RunContext[_EntityDeps], output: EntityRegister,
+    ) -> EntityRegister:
+        """Cross-validate entity location_ids against the Step 1a register.
+
+        The entity ontology routinely invents locations the location
+        ontology never produced (LOC_FRED_HOUSE, LOC_CHARITY_OFFICE,
+        LOC_GRAVEYARD), creating dangling references that downstream
+        spatial validators flag as orphans. Try fuzzy-matching first,
+        then null with a warning so the entity falls back to its
+        default position handling.
+        """
+        loc_ids = set(ctx.deps.location_register.locations.keys())
+        notes: List[str] = []
+        for eid, ent in output.entities.items():
+            if ent.location_id and ent.location_id not in loc_ids:
+                resolved = _fuzzy_resolve_id(ent.location_id, loc_ids)
+                if resolved:
+                    notes.append(
+                        f"[Auto-Fix] Entity {eid}.location_id "
+                        f"{ent.location_id!r} \u2192 {resolved!r}"
+                    )
+                    ent.location_id = resolved
+                else:
+                    notes.append(
+                        f"[Unknown-ID] Entity {eid}.location_id "
+                        f"{ent.location_id!r} not in Step 1a register \u2014 "
+                        f"keeping as-is (will be flagged at assembly)."
+                    )
+        if notes:
+            for n in notes:
+                logger.info("[Validator\u00b7Entities] %s", n)
+        return output
 
     return agent
 
@@ -736,7 +944,7 @@ def _resolve_object_owner_ids(
 # reach every ``agent.run[_sync]`` call so per-call cost is attributed
 # to the right user / project / version row in the DB. Threading kwargs
 # through every helper would be invasive, so we stash the dict in a
-# ``ContextVar`` for the duration of an ``run_extraction[_async]`` call
+# ``ContextVar`` for the duration of a ``run_extraction_async`` call
 # and read it via ``_user_kwargs()`` immediately before each agent run.
 # ---------------------------------------------------------------------
 
@@ -771,104 +979,13 @@ def _user_context_scope(user_context: Dict[str, Optional[int]]):
         _user_context_var.reset(token)
 
 
-def extract_ontology(text: str, config: ExtractionConfig | None = None, 
-                    user_context: Optional[Dict[str, Optional[int]]] = None) -> GlobalRegister:
-    """
-    Step 1: Extract the global ontology (locations, objects, entities)
-    from the full manuscript text via three separate passes.
-
-    Pass order:
-      1a. Locations — no dependencies, extracts all LOC_ nodes.
-      1b. Objects — receives location register, extracts all OBJ_ nodes.
-      1c. Entities — receives location + object registers, extracts all ENT_ nodes.
-
-    The three passes are then merged into a single GlobalRegister.
-    """
-    config = config or ExtractionConfig()
-    user_context = user_context or {}
-
-    # --- Step 1a: Locations ---
-    location_agent = _build_location_agent(config)
-    logger.info("[Step 1a] Extracting locations with %s …", config.model)
-    try:
-        loc_result = location_agent.run_sync(text, **user_context)
-        loc_register = loc_result.output
-    except Exception:
-        logger.exception("[Step 1a] Location extraction failed — retrying once …")
-        loc_result = location_agent.run_sync(text, **user_context)
-        loc_register = loc_result.output
-    log_agent_output(logger, "LocationOntology", loc_register)
-    logger.info("[Step 1a] Extracted %d locations.", len(loc_register.locations))
-
-    # --- Step 1b: Objects (with location context) ---
-    object_agent = _build_object_agent(config)
-    obj_deps = _ObjectDeps(location_register=loc_register)
-    logger.info("[Step 1b] Extracting objects with %s …", config.model)
-    try:
-        obj_result = object_agent.run_sync(text, deps=obj_deps, **user_context)
-        obj_register = obj_result.output
-    except Exception:
-        logger.exception("[Step 1b] Object extraction failed — retrying once …")
-        obj_result = object_agent.run_sync(text, deps=obj_deps, **user_context)
-        obj_register = obj_result.output
-    log_agent_output(logger, "ObjectOntology", obj_register)
-    logger.info("[Step 1b] Extracted %d objects.", len(obj_register.objects))
-
-    # --- Step 1c: Entities (with location + object context) ---
-    entity_agent = _build_entity_agent(config)
-    ent_deps = _EntityDeps(location_register=loc_register, object_register=obj_register)
-    logger.info("[Step 1c] Extracting entities with %s …", config.model)
-    try:
-        ent_result = entity_agent.run_sync(text, deps=ent_deps, **user_context)
-        ent_register = ent_result.output
-    except Exception:
-        logger.exception("[Step 1c] Entity extraction failed — retrying once …")
-        ent_result = entity_agent.run_sync(text, deps=ent_deps, **user_context)
-        ent_register = ent_result.output
-    log_agent_output(logger, "EntityOntology", ent_register)
-    logger.info("[Step 1c] Extracted %d entities.", len(ent_register.entities))
-
-    # --- Step 1d: World Traits (no dependencies) ---
-    world_traits_agent = _build_world_traits_agent(config)
-    logger.info("[Step 1d] Extracting world traits with %s …", config.model)
-    try:
-        wt_result = world_traits_agent.run_sync(text, **user_context)
-        wt_register = wt_result.output
-    except Exception:
-        logger.exception("[Step 1d] World traits extraction failed — retrying once …")
-        wt_result = world_traits_agent.run_sync(text, **user_context)
-        wt_register = wt_result.output
-    log_agent_output(logger, "WorldTraitsOntology", wt_register)
-    logger.info("[Step 1d] Extracted %d world traits.", len(wt_register.world_traits))
-
-    # --- Resolve object owner_ids to ENT_ IDs ---
-    resolved_objects = _resolve_object_owner_ids(obj_register.objects, ent_register.entities)
-
-    # --- Merge into GlobalRegister ---
-    register = GlobalRegister(
-        locations=loc_register.locations,
-        objects=resolved_objects,
-        entities=ent_register.entities,
-        world_traits=wt_register.world_traits,
-    )
-    sanitisation_notes: List[str] = []
-    register = _sanitize_register(register, sanitisation_notes)
-    for note in sanitisation_notes:
-        logger.info(note)
-    logger.info(
-        "[Step 1] Ontology extracted — %d locations, %d objects, %d entities, %d world traits.",
-        len(register.locations), len(register.objects), len(register.entities),
-        len(register.world_traits),
-    )
-    return register
-
 
 async def extract_ontology_async(
     text: str,
     config: ExtractionConfig | None = None,
     user_context: Optional[Dict[str, Optional[int]]] = None,
 ) -> GlobalRegister:
-    """Async variant of :func:`extract_ontology`.
+    """Step 1: Extract the global ontology (locations, objects, entities).
 
     Runs Step 1a (locations) first, then Steps 1b (objects) and
     1c (entities) in parallel via ``asyncio.gather``.  Entity
@@ -888,11 +1005,22 @@ async def extract_ontology_async(
         loc_register = loc_result.output
     except Exception:
         logger.exception("[Step 1a] Location extraction failed — retrying once …")
-        loc_result = await location_agent.run(text, **user_context)
-        loc_register = loc_result.output
+        try:
+            loc_result = await location_agent.run(text, **user_context)
+            loc_register = loc_result.output
+        except Exception as exc:
+            raise RuntimeError(
+                "Step 1a (location extraction) failed twice — cannot "
+                "proceed without a location register. See logs above for "
+                "the underlying LLM/API error."
+            ) from exc
     logger.info("[Step 1a] Extracted %d locations.", len(loc_register.locations))
 
-    # --- Steps 1b + 1c in parallel ---
+    # --- Steps 1b → 1c (chained) and 1d (parallel) ---
+    # Step 1c (entities) consumes the Object Register in its prompt for
+    # belief target_id grounding, so it must run AFTER Step 1b. The two
+    # are chained inside one coroutine and that coroutine runs in
+    # parallel with Step 1d (world traits, no deps).
     async def _extract_objects() -> ObjectRegister:
         object_agent = _build_object_agent(config)
         obj_deps = _ObjectDeps(location_register=loc_register)
@@ -902,16 +1030,21 @@ async def extract_ontology_async(
             return obj_result.output
         except Exception:
             logger.exception("[Step 1b] Object extraction failed — retrying once …")
-            obj_result = await object_agent.run(text, deps=obj_deps, **user_context)
-            return obj_result.output
+            try:
+                obj_result = await object_agent.run(text, deps=obj_deps, **user_context)
+                return obj_result.output
+            except Exception as exc:
+                raise RuntimeError(
+                    "Step 1b (object extraction) failed twice — cannot "
+                    "proceed without an object register. See logs above for "
+                    "the underlying LLM/API error."
+                ) from exc
 
-    async def _extract_entities() -> EntityRegister:
+    async def _extract_entities(obj_register: ObjectRegister) -> EntityRegister:
         entity_agent = _build_entity_agent(config)
-        # Entity extraction does NOT structurally need object IDs.
-        # We pass an empty ObjectRegister so the agent still gets location context.
         ent_deps = _EntityDeps(
             location_register=loc_register,
-            object_register=ObjectRegister(objects={}),
+            object_register=obj_register,
         )
         logger.info("[Step 1c] Extracting entities with %s …", config.model)
         try:
@@ -919,8 +1052,20 @@ async def extract_ontology_async(
             return ent_result.output
         except Exception:
             logger.exception("[Step 1c] Entity extraction failed — retrying once …")
-            ent_result = await entity_agent.run(text, deps=ent_deps, **user_context)
-            return ent_result.output
+            try:
+                ent_result = await entity_agent.run(text, deps=ent_deps, **user_context)
+                return ent_result.output
+            except Exception as exc:
+                raise RuntimeError(
+                    "Step 1c (entity extraction) failed twice — cannot "
+                    "proceed without an entity register. See logs above "
+                    "for the underlying LLM/API error."
+                ) from exc
+
+    async def _extract_objects_then_entities() -> Tuple[ObjectRegister, EntityRegister]:
+        obj_reg = await _extract_objects()
+        ent_reg = await _extract_entities(obj_reg)
+        return obj_reg, ent_reg
 
     async def _extract_world_traits() -> WorldTraitsRegister:
         world_traits_agent = _build_world_traits_agent(config)
@@ -930,11 +1075,18 @@ async def extract_ontology_async(
             return wt_result.output
         except Exception:
             logger.exception("[Step 1d] World traits extraction failed — retrying once …")
-            wt_result = await world_traits_agent.run(text, **user_context)
-            return wt_result.output
+            try:
+                wt_result = await world_traits_agent.run(text, **user_context)
+                return wt_result.output
+            except Exception as exc:
+                raise RuntimeError(
+                    "Step 1d (world-traits extraction) failed twice — "
+                    "cannot proceed without a world-traits register. See "
+                    "logs above for the underlying LLM/API error."
+                ) from exc
 
-    obj_register, ent_register, wt_register = await asyncio.gather(
-        _extract_objects(), _extract_entities(), _extract_world_traits()
+    (obj_register, ent_register), wt_register = await asyncio.gather(
+        _extract_objects_then_entities(), _extract_world_traits()
     )
     logger.info("[Step 1b] Extracted %d objects.", len(obj_register.objects))
     logger.info("[Step 1c] Extracted %d entities.", len(ent_register.entities))
@@ -988,14 +1140,24 @@ def _build_socratic_agent(config: ExtractionConfig) -> Agent[_SocraticDeps, Socr
         location_ids = sorted(reg.locations.keys())
         object_ids = sorted(reg.objects.keys())
         entity_names = {eid: reg.entities[eid].name for eid in entity_ids}
+        location_names = {lid: reg.locations[lid].name for lid in location_ids}
+        object_names = {oid: reg.objects[oid].name for oid in object_ids}
+        world_trait_ids = sorted(reg.world_traits.keys())
+        world_trait_names = {
+            wid: reg.world_traits[wid].name for wid in world_trait_ids
+        }
         return (
             "=== NARRATIVE REGISTER (from Step 1) ===\n"
             f"CHARACTERS: {entity_names}\n"
-            f"LOCATIONS: {location_ids}\n"
-            f"OBJECTS: {object_ids}\n"
+            f"LOCATIONS: {location_names}\n"
+            f"OBJECTS: {object_names}\n"
+            f"WORLD TRAITS: {world_trait_names}\n"
             "\n"
-            "Reference these characters, locations, and objects by their "
-            "canonical names or IDs in your answers."
+            "Reference these characters, locations, objects, and "
+            "world traits by their canonical names or IDs in your "
+            "answers. Use WORLD trait names when articulating ambient "
+            "pressures (e.g. an oppressive regime, a prophetic curse, "
+            "an offstage war) that motivate on-page behaviour."
         )
 
     return agent
@@ -1011,6 +1173,11 @@ class _PhysicsDeps(BaseModel):
     global_register: GlobalRegister
     scaffold: SocraticScaffold
     previous_event_ids: List[str] = Field(default_factory=list)
+    # Subset of global_register entity IDs whose names actually appear
+    # in the chunk text. Used by the system prompt to nudge the agent
+    # toward extracting events for the on-page cast and away from
+    # hallucinating events for offstage characters.
+    on_page_entity_ids: List[str] = Field(default_factory=list)
 
 
 class _SocialDeps(BaseModel):
@@ -1019,9 +1186,18 @@ class _SocialDeps(BaseModel):
     global_register: GlobalRegister
     scaffold: SocraticScaffold
     chunk_event_ids: List[str] = Field(default_factory=list)
+    # Full event objects from Physics — the Social agent uses these to
+    # ground utterance/channel attribution in the actual on-page action
+    # rather than re-deriving them from the prose.
+    chunk_events: List[EventNode] = Field(default_factory=list)
+    # Physics causal edges (esp. ``mutation_social``) — knowing which
+    # events shift relationships helps Social emit relationship_edges
+    # that match the causal topology rather than contradicting it.
+    chunk_causal: List[CausalEdge] = Field(default_factory=list)
     previous_event_ids: List[str] = Field(default_factory=list)
+    on_page_entity_ids: List[str] = Field(default_factory=list)
     # Standing channels already extracted from prior chunks. Threaded
-    # through the sequential ``extract_topology`` loop so the LLM can
+    # through the per-chunk extraction loop so the LLM can
     # reuse a CHN_ id by reference instead of inventing a near-duplicate
     # for the same standing capability (a long-running letter
     # correspondence, an ongoing telepathic bond, a spy-master pipeline
@@ -1054,6 +1230,7 @@ class _ConsequencesDeps(BaseModel):
     chunk_channels: Dict[str, "Channel"] = Field(default_factory=dict)
     chunk_utterance_events: List[EventNode] = Field(default_factory=list)
     previous_event_ids: List[str] = Field(default_factory=list)
+    on_page_entity_ids: List[str] = Field(default_factory=list)
 
 
 def _format_scaffold(scaffold: SocraticScaffold) -> str:
@@ -1244,6 +1421,13 @@ def _fix_id(candidate: str, valid_ids: set[str], field_label: str, fixes: List[s
     """Try to fuzzy-fix *candidate*. Returns (resolved_id, was_fixed).
 
     Appends a human-readable note to *fixes* when a correction is made.
+    When *candidate* cannot be resolved (typo too far from any registered
+    ID, or genuinely fabricated entity not in the ontology), append an
+    explicit ``[Unknown-ID]`` warning so the caller's downstream logging
+    surfaces fabrications like ``ENT_TINY_TIM`` that aren't in the
+    Step-1 register. The candidate is returned unchanged so structural
+    validators (e.g. the Consequences ``bad`` set) can still raise
+    ModelRetry on it.
     """
     if candidate in valid_ids:
         return candidate, False
@@ -1251,6 +1435,15 @@ def _fix_id(candidate: str, valid_ids: set[str], field_label: str, fixes: List[s
     if resolved:
         fixes.append(f"[Auto-Fix] {field_label} '{candidate}' → '{resolved}'")
         return resolved, True
+    # Only warn for ID-shaped strings (looks like LOC_/OBJ_/ENT_/EVT_/CHN_/WORLD_).
+    # Plain strings or empties go to the caller's existing handling.
+    if candidate and "_" in candidate and candidate.split("_", 1)[0] in {
+        "LOC", "OBJ", "ENT", "EVT", "CHN", "WORLD",
+    }:
+        fixes.append(
+            f"[Unknown-ID] {field_label} '{candidate}' is not in the "
+            f"ontology register and could not be fuzzy-matched."
+        )
     return candidate, False
 
 
@@ -1269,6 +1462,39 @@ def _clamp(value: float, lo: float, hi: float) -> float:
     if value > hi:
         return hi
     return value
+
+
+# Common spelling errors in ambient_state keys produced by extraction
+# agents. Conservative list \u2014 only fix unambiguous typos.
+_AMBIENT_TYPO_FIXES: Dict[str, str] = {
+    "meloncholy": "melancholy",
+    "melancholic": "melancholy",
+    "concious": "conscious",
+    "supernatrual": "supernatural",
+    "atmoshpere": "atmosphere",
+    "tention": "tension",
+    "warmpth": "warmth",
+    "danager": "danger",
+    "vissibility": "visibility",
+    "saftey": "safety",
+    "concelment": "concealment",
+}
+
+
+def _normalise_ambient_key(key: str) -> str:
+    """Normalise an ambient_state key.
+
+    - Lowercases.
+    - Replaces spaces / hyphens with underscores.
+    - Strips leading/trailing whitespace and underscores.
+    - Applies the conservative typo dictionary.
+    """
+    norm = key.strip().lower()
+    norm = norm.replace("-", "_").replace(" ", "_")
+    while "__" in norm:
+        norm = norm.replace("__", "_")
+    norm = norm.strip("_")
+    return _AMBIENT_TYPO_FIXES.get(norm, norm)
 
 
 def _sanitize_causal_edge(
@@ -1524,15 +1750,22 @@ def _sanitize_register(register: "GlobalRegister", notes: List[str]) -> "GlobalR
     for loc in register.locations.values():
         new_ambient = {}
         for aname, av in loc.ambient_state.items():
+            # Normalise key: lowercase, snake_case, fix common typos.
+            norm_name = _normalise_ambient_key(aname)
+            if norm_name != aname:
+                notes.append(
+                    f"[Auto-Fix] Renamed ambient key '{loc.id}.{aname}' "
+                    f"\u2192 '{norm_name}'"
+                )
             new_value = _clamp(av.value, 0.0, 1.0)
             new_volatility = _clamp(av.volatility, 0.0, 1.0)
             if new_value != av.value or new_volatility != av.volatility:
                 notes.append(
-                    f"[Auto-Fix] Clamped ambient '{loc.id}.{aname}' "
+                    f"[Auto-Fix] Clamped ambient '{loc.id}.{norm_name}' "
                     f"value/volatility {av.value:.2f}/{av.volatility:.2f} \u2192 "
                     f"{new_value:.2f}/{new_volatility:.2f}"
                 )
-            new_ambient[aname] = AmbientVector(
+            new_ambient[norm_name] = AmbientVector(
                 value=new_value,
                 volatility=new_volatility,
                 evidence_strength=av.evidence_strength,
@@ -1699,7 +1932,13 @@ def _build_physics_agent(config: ExtractionConfig) -> Agent[_PhysicsDeps, Physic
         entity_ids = sorted(reg.entities.keys())
         location_ids = sorted(reg.locations.keys())
         object_ids = sorted(reg.objects.keys())
+        world_trait_ids = sorted(reg.world_traits.keys())
         entity_names = {eid: reg.entities[eid].name for eid in entity_ids}
+        location_names = {lid: reg.locations[lid].name for lid in location_ids}
+        object_names = {oid: reg.objects[oid].name for oid in object_ids}
+        world_trait_names = {
+            wid: reg.world_traits[wid].name for wid in world_trait_ids
+        }
         scaffold_text = _format_scaffold(ctx.deps.scaffold)
 
         # Build compact entity baseline so the LLM knows starting trait values
@@ -1717,18 +1956,33 @@ def _build_physics_agent(config: ExtractionConfig) -> Agent[_PhysicsDeps, Physic
 
         return (
             "=== VALID ID REGISTER (from Step 1) ===\n"
-            f"ENTITY IDs: {entity_ids}\n"
-            f"ENTITY NAMES: {entity_names}\n"
-            f"LOCATION IDs: {location_ids}\n"
-            f"OBJECT IDs: {object_ids}\n"
-            f"WORLD TRAIT IDs: {list(ctx.deps.global_register.world_traits.keys())}\n"
+            f"ENTITIES: {entity_names}\n"
+            f"LOCATIONS: {location_names}\n"
+            f"OBJECTS: {object_names}\n"
+            f"WORLD TRAITS: {world_trait_names}\n"
             f"PREVIOUSLY EXTRACTED EVENT IDs: {ctx.deps.previous_event_ids}\n"
             "\n"
-            "You MUST ONLY use ENT_, LOC_, OBJ_, WORLD_ IDs from the lists above.\n"
+            "You MUST ONLY use ENT_, LOC_, OBJ_, WORLD_ IDs from the maps above.\n"
             "You MAY create new EVT_ IDs for events discovered in this chunk.\n"
-            "Do NOT invent new ENT_, LOC_, OBJ_, or WORLD_ IDs.\n"
+            "Do NOT invent new ENT_, LOC_, OBJ_, or WORLD_ IDs. "
+            "When the prose names a thing, look up its ID in the maps "
+            "above by matching the name (e.g. 'the dagger' \u2192 "
+            "whichever OBJ_ entry has name 'Bloody Daggers').\n"
             "\n"
-            "=== ENTITY BASELINES (initial trait values — use for entity_updates) ===\n"
+            "=== ON-PAGE ENTITIES (substring-matched in this chunk's text) ===\n"
+            f"{ctx.deps.on_page_entity_ids}\n"
+            "\n"
+            "These ENT_ ids are the *primary* cast for this chunk \u2014 the "
+            "vast majority of events you emit should have at least one of "
+            "these in actor_ids or target_ids. You MAY still reference "
+            "offstage entities for memories, prophecies, gossip, "
+            "absent-character utterances about them, or causal "
+            "antecedents \u2014 the on-page list is advisory, not a hard "
+            "filter \u2014 but if you find yourself emitting an event whose "
+            "actor and target are BOTH offstage, double-check the chunk "
+            "text supports it.\n"
+            "\n"
+            "=== ENTITY BASELINES (initial trait values \u2014 use for entity_updates) ===\n"
             f"{baselines_block}\n"
             "\n"
             "When emitting entity_updates, use these baselines as reference.\n"
@@ -1961,7 +2215,13 @@ def _build_social_agent(config: ExtractionConfig) -> Agent[_SocialDeps, SocialEx
         entity_ids = sorted(reg.entities.keys())
         location_ids = sorted(reg.locations.keys())
         object_ids = sorted(reg.objects.keys())
+        world_trait_ids = sorted(reg.world_traits.keys())
         entity_names = {eid: reg.entities[eid].name for eid in entity_ids}
+        location_names = {lid: reg.locations[lid].name for lid in location_ids}
+        object_names = {oid: reg.objects[oid].name for oid in object_ids}
+        world_trait_names = {
+            wid: reg.world_traits[wid].name for wid in world_trait_ids
+        }
         all_evt_ids = ctx.deps.previous_event_ids + ctx.deps.chunk_event_ids
         scaffold_text = _format_scaffold(ctx.deps.scaffold)
 
@@ -1984,18 +2244,68 @@ def _build_social_agent(config: ExtractionConfig) -> Agent[_SocialDeps, SocialEx
             else "  (none — this is the first chunk to extract channels)"
         )
 
+        # Compact event summary so the agent can attribute utterances /
+        # channels / relationship_edges to specific Physics events
+        # (e.g. setting an utterance's ``triggered_by``) without
+        # re-deriving fabula_time or actors from the prose.
+        evt_lines: List[str] = []
+        for e in ctx.deps.chunk_events:
+            evt_lines.append(
+                f"  - {e.id} (fabula={e.fabula_time}, type={e.event_type}, "
+                f"actors={e.actor_ids}, targets={e.target_ids}): {e.description}"
+            )
+        events_block = (
+            "\n".join(evt_lines) if evt_lines else "  (no events extracted from this chunk)"
+        )
+
+        # Mutation_social hints — every such Physics edge implies a
+        # relationship_edge update on the same axis. Surface them
+        # explicitly so the Social agent's relationship_topology stays
+        # consistent with the causal graph instead of disagreeing.
+        mut_soc_lines: List[str] = []
+        for ce in ctx.deps.chunk_causal:
+            if ce.causality_type == "mutation_social":
+                mut_soc_lines.append(
+                    f"  - {ce.source_id} → {ce.target_id} "
+                    f"(rel_counterpart={ce.rel_counterpart_id}, "
+                    f"axis={ce.trait_target}, delta={ce.trait_delta})"
+                )
+        mut_soc_block = (
+            "\n".join(mut_soc_lines)
+            if mut_soc_lines
+            else "  (none — emit relationship_edges from your own reading of the chunk)"
+        )
+
         return (
             "=== VALID ID REGISTER ===\n"
-            f"ENTITY IDs: {entity_ids}\n"
-            f"ENTITY NAMES: {entity_names}\n"
-            f"LOCATION IDs: {location_ids}\n"
-            f"OBJECT IDs: {object_ids}\n"
+            f"ENTITIES: {entity_names}\n"
+            f"LOCATIONS: {location_names}\n"
+            f"OBJECTS: {object_names}\n"
+            f"WORLD TRAITS: {world_trait_names}\n"
             f"THIS CHUNK'S EVENT IDs: {ctx.deps.chunk_event_ids}\n"
             f"PREVIOUS CHUNKS' EVENT IDs: {ctx.deps.previous_event_ids}\n"
             f"ALL VALID EVENT IDs: {all_evt_ids}\n"
             "\n"
-            "You MUST ONLY use IDs from the lists above.\n"
-            "Do NOT invent new IDs of any kind.\n"
+            "You MUST ONLY use the ENT_/LOC_/OBJ_/WORLD_/EVT_ ids "
+            "listed above. Do NOT invent ENT_/LOC_/OBJ_/WORLD_/EVT_ "
+            "ids. You MUST mint new CHN_* ids for any standing "
+            "channels you extract and new EVT_UTT_* ids for utterance "
+            "events (both are required by the schema and must be "
+            "unique within this chunk).\n"
+            "\n"
+            "=== EVENTS EXTRACTED FROM THIS CHUNK (by Physics Agent) ===\n"
+            f"{events_block}\n"
+            "\n"
+            "Anchor utterance events and channel ``established_at_fabula`` "
+            "to these event IDs / fabula times rather than guessing.\n"
+            "\n"
+            "=== MUTATION_SOCIAL EDGES FROM PHYSICS (relationship hints) ===\n"
+            f"{mut_soc_block}\n"
+            "\n"
+            "Every mutation_social edge above corresponds to a "
+            "relationship_edge on the same (source, target, axis). "
+            "Make sure your `relationship_topology` reflects these "
+            "shifts; do not contradict the causal graph.\n"
             "\n"
             "=== STANDING CHANNELS ALREADY ESTABLISHED IN PRIOR CHUNKS ===\n"
             f"{prior_channels_block}\n"
@@ -2008,6 +2318,15 @@ def _build_social_agent(config: ExtractionConfig) -> Agent[_SocialDeps, SocialEx
             "your `channels` dict. Only add a new entry to `channels` "
             "for genuinely-new standing capabilities established (or "
             "first observed) in this chunk.\n"
+            "\n"
+            "=== ON-PAGE ENTITIES (substring-matched in this chunk's text) ===\n"
+            f"{ctx.deps.on_page_entity_ids}\n"
+            "\n"
+            "Channels and utterances should primarily involve these "
+            "on-page entities. Offstage entities are valid as "
+            "addressees of letters / messages / prophecies, but a "
+            "channel with NO on-page participants is almost always a "
+            "fabrication.\n"
             "\n"
             "=== SOCRATIC SCAFFOLD (semantic pre-analysis) ===\n"
             f"{scaffold_text}\n"
@@ -2208,6 +2527,38 @@ def _build_social_agent(config: ExtractionConfig) -> Agent[_SocialDeps, SocialEx
                 "Fix them using ONLY IDs from the register:\n" + "\n".join(bad)
             )
 
+        # --- Tier 3 #13: prune empty conversational channels -----------
+        # A channel emitted in this chunk whose ``medium`` describes
+        # face-to-face speech and which NO utterance references is
+        # almost always a fabrication \u2014 conversational mediums by
+        # definition need on-page utterances to exist. Standing
+        # infrastructure mediums (telephone, mind_link,
+        # classified_pipeline, mail_correspondence) can legitimately
+        # be established in a chunk that contains only narration
+        # about them, so we leave those alone.
+        _ephemeral_mediums = {
+            "speech", "verbal", "conversation", "face_to_face",
+            "in_person", "talking", "spoken",
+        }
+        used_channel_ids: set[str] = set()
+        for u in fixed_utterances:
+            if u.via_channel_id:
+                used_channel_ids.add(u.via_channel_id)
+        prune_ids: List[str] = []
+        for cid, ch in fixed_channels.items():
+            if cid in used_channel_ids:
+                continue
+            medium_norm = (ch.medium or "").strip().lower().replace("-", "_")
+            if medium_norm in _ephemeral_mediums:
+                prune_ids.append(cid)
+        for cid in prune_ids:
+            logger.info(
+                "[Validator\u00b7Social] Pruned conversational Channel %s "
+                "(medium=%r, no in-chunk utterance references).",
+                cid, fixed_channels[cid].medium,
+            )
+            del fixed_channels[cid]
+
         return SocialExtraction(
             channels=fixed_channels,
             utterance_events=fixed_utterances,
@@ -2242,7 +2593,13 @@ def _build_consequences_agent(
         entity_ids = sorted(reg.entities.keys())
         location_ids = sorted(reg.locations.keys())
         object_ids = sorted(reg.objects.keys())
+        world_trait_ids = sorted(reg.world_traits.keys())
         entity_names = {eid: reg.entities[eid].name for eid in entity_ids}
+        location_names = {lid: reg.locations[lid].name for lid in location_ids}
+        object_names = {oid: reg.objects[oid].name for oid in object_ids}
+        world_trait_names = {
+            wid: reg.world_traits[wid].name for wid in world_trait_ids
+        }
         scaffold_text = _format_scaffold(ctx.deps.scaffold)
 
         # Compact entity baselines so the LLM knows starting trait values.
@@ -2311,11 +2668,10 @@ def _build_consequences_agent(
 
         return (
             "=== VALID ID REGISTER (from Step 1) ===\n"
-            f"ENTITY IDs: {entity_ids}\n"
-            f"ENTITY NAMES: {entity_names}\n"
-            f"LOCATION IDs: {location_ids}\n"
-            f"OBJECT IDs: {object_ids}\n"
-            f"WORLD TRAIT IDs: {list(reg.world_traits.keys())}\n"
+            f"ENTITIES: {entity_names}\n"
+            f"LOCATIONS: {location_names}\n"
+            f"OBJECTS: {object_names}\n"
+            f"WORLD TRAITS: {world_trait_names}\n"
             f"THIS CHUNK'S EVENT IDs: {chunk_evt_ids}\n"
             f"PREVIOUS CHUNKS' EVENT IDs: {ctx.deps.previous_event_ids}\n"
             "\n"
@@ -2345,6 +2701,14 @@ def _build_consequences_agent(
             "set `acquired_via_channel_id` to the channel id. This lets "
             "counterfactual surgery prune downstream beliefs cleanly when "
             "the channel is severed or the utterance is rewritten.\n"
+            "\n"
+            "=== ON-PAGE ENTITIES (substring-matched in this chunk's text) ===\n"
+            f"{ctx.deps.on_page_entity_ids}\n"
+            "\n"
+            "EntityUpdates should overwhelmingly be for these on-page "
+            "entities. An EntityUpdate for an entity that does NOT "
+            "appear in the chunk text and is NOT a target of any "
+            "mutation edge is almost always a hallucination.\n"
             "\n"
             "=== SOCRATIC SCAFFOLD (semantic pre-analysis) ===\n"
             f"{scaffold_text}\n"
@@ -2436,6 +2800,15 @@ def _build_consequences_agent(
         # --- Dead-actor warning ---
         # If an EntityUpdate marks an entity dead, warn when subsequent
         # events in this chunk still list that entity as an actor.
+        # Exception: undead / spectral / ghost entities (anything whose
+        # ontology ``constants`` includes a supernatural marker) are
+        # legitimately permitted to act after their death — Marley,
+        # Banquo's ghost, the witches' apparitions, etc. Don't flag.
+        SPECTRAL_MARKERS = {
+            "undead", "spectral", "ghost", "ghostly", "spirit",
+            "phantom", "revenant", "wraith", "apparition",
+        }
+        registry = ctx.deps.global_register.entities
         deaths: Dict[str, int] = {
             eu.entity_id: eu.fabula_time
             for eu in fixed_updates
@@ -2443,12 +2816,19 @@ def _build_consequences_agent(
         }
         for ev in ctx.deps.chunk_events:
             for actor in ev.actor_ids:
-                if actor in deaths and ev.fabula_time > deaths[actor]:
-                    logger.info(
-                        "[Validator·Consequences] %s is marked dead at "
-                        "fabula=%d but still acts in event %s at fabula=%d.",
-                        actor, deaths[actor], ev.id, ev.fabula_time,
-                    )
+                if actor not in deaths or ev.fabula_time <= deaths[actor]:
+                    continue
+                ent = registry.get(actor)
+                consts = {str(c).lower() for c in (getattr(ent, "constants", None) or [])} if ent else set()
+                name_lower = (ent.name.lower() if ent and ent.name else "")
+                if consts & SPECTRAL_MARKERS or "ghost" in name_lower or "spirit" in name_lower or "phantom" in name_lower:
+                    # Spectral entity acting post-mortem is canonical.
+                    continue
+                logger.info(
+                    "[Validator·Consequences] %s is marked dead at "
+                    "fabula=%d but still acts in event %s at fabula=%d.",
+                    actor, deaths[actor], ev.id, ev.fabula_time,
+                )
 
         if fixes:
             logger.info(
@@ -2487,6 +2867,32 @@ def _physics_causal_density_low(physics: "PhysicsExtraction") -> bool:
     if n_evt < 2:
         return False
     return len(physics.causal_topology) < n_evt
+
+
+def _physics_anonymous_events(physics: "PhysicsExtraction") -> List[str]:
+    """Return the IDs of events that have *both* empty ``actor_ids`` and
+    empty ``target_ids`` and are not utterances.
+
+    Anonymous events are extraction failures: every meaningful narrative
+    event should have at least one named participant on at least one
+    side. Without one, the propagator can't anchor the event to the
+    social/physical graph and the affective scorer treats it as a noop.
+    The Christmas Carol log produced 13 anonymous events out of 30 by
+    extracting whole-vision sequences ("Cratchits mourn Tim", "thieves
+    steal Scrooge") with empty actor/target lists even though the
+    chunk text named the actors explicitly.
+
+    Utterances are excluded because they are extracted by the Social
+    Agent and use ``speaker_id`` / ``addressee_ids`` instead of the
+    physics ``actor_ids`` / ``target_ids`` axes.
+    """
+    bad: List[str] = []
+    for e in physics.events:
+        if e.event_type == "utterance":
+            continue
+        if not (e.actor_ids or []) and not (e.target_ids or []):
+            bad.append(e.id)
+    return bad
 
 
 def _physics_missing_mutation_social(
@@ -2594,8 +3000,358 @@ def _physics_missing_mutation_social_per_dyad(
     return missing
 
 
-    missing.sort()
-    return missing
+def _merge_physics_retry(
+    base: "PhysicsExtraction",
+    retry: "PhysicsExtraction",
+) -> "PhysicsExtraction":
+    """Merge a retry physics output into the base, preserving the base's
+    event/causal/spatial set and *adding* new mutation_social edges and
+    new events from the retry.
+
+    Why merge instead of replace: the previous behaviour overwrote the
+    base output entirely, which silently
+      (a) lost previously-covered mutation_social triples (a retry
+          aimed at adding 2 missing dyads could erase 5 already-good
+          ones), and
+      (b) crushed flashback fabula_times — if the base correctly placed
+          a memory event at fabula=-700 (negative time = before story
+          start) and the retry re-flattened it to fabula=600 (because
+          the retry prompt didn't re-emphasise the chunk's flashback
+          structure), the merged world lost the chronology.
+
+    Strategy:
+      * Keep ALL of the base's events, causal edges, spatial edges, and
+        entity_updates verbatim — including their fabula_times.
+      * From the retry, add only:
+          - events whose ``id`` is not already in the base
+          - causal edges whose ``(source_id, target_id, causality_type,
+            trait_target, rel_counterpart_id)`` key is not already
+            present in the base — this is what allows newly-extracted
+            mutation_social edges to land while preventing duplicates.
+          - spatial edges whose ``(source_id, target_id)`` is new
+          - entity_updates whose ``(entity_id, fabula_time)`` is new
+    """
+    base_event_ids = {e.id for e in base.events}
+    new_events = list(base.events) + [
+        e for e in retry.events if e.id not in base_event_ids
+    ]
+
+    def _ce_key(ce: "CausalEdge") -> tuple:
+        return (
+            ce.source_id, ce.target_id, ce.causality_type,
+            getattr(ce, "trait_target", None) or "",
+            getattr(ce, "rel_counterpart_id", None) or "",
+        )
+
+    base_causal_keys = {_ce_key(c) for c in base.causal_topology}
+    new_causal = list(base.causal_topology) + [
+        c for c in retry.causal_topology if _ce_key(c) not in base_causal_keys
+    ]
+
+    base_spatial_keys = {(s.source_id, s.target_id) for s in base.spatial_topology}
+    new_spatial = list(base.spatial_topology) + [
+        s for s in retry.spatial_topology
+        if (s.source_id, s.target_id) not in base_spatial_keys
+    ]
+
+    base_eu_keys = {(eu.entity_id, eu.fabula_time) for eu in base.entity_updates}
+    new_eus = list(base.entity_updates) + [
+        eu for eu in retry.entity_updates
+        if (eu.entity_id, eu.fabula_time) not in base_eu_keys
+    ]
+
+    return PhysicsExtraction(
+        events=new_events,
+        causal_topology=new_causal,
+        spatial_topology=new_spatial,
+        entity_updates=new_eus,
+    )
+
+
+def _dedupe_scene_events(
+    physics: "PhysicsExtraction",
+    fabula_window: int = 50,
+) -> "PhysicsExtraction":
+    """Collapse multiple events that describe the same on-page beat.
+
+    Multi-pass extraction (first pass + axis_retry + dyad_retry on the
+    same chunk) routinely produces 2\u20133 distinct EVT_ ids that all
+    describe one scene moment \u2014 e.g. EVT_SCROOGE_REFUSES_DINNER /
+    EVT_REFUSE_FRED_INVITATION / EVT_SCROOGE_REFUSES_FRED. Once
+    retries merge instead of replacing, all of them survive and clog
+    the causal graph.
+
+    Strategy: group non-utterance events by
+    ``(frozenset(actor_ids), frozenset(target_ids), event_type,
+    fabula_time // fabula_window)`` and keep the *first* event in
+    each group as the canonical id. All subsequent events in that
+    group are dropped, and any causal edge / entity_update referring
+    to a dropped id is rewritten to the canonical id (then
+    re-deduplicated by key).
+
+    Utterance events are left untouched \u2014 dialogue lines look
+    similar but each one is a distinct speech act.
+    """
+    if not physics.events:
+        return physics
+
+    canonical_of: Dict[str, str] = {}
+    seen_keys: Dict[tuple, str] = {}
+    kept_events: List["EventNode"] = []
+    for e in physics.events:
+        if e.event_type == "utterance":
+            kept_events.append(e)
+            canonical_of[e.id] = e.id
+            continue
+        key = (
+            frozenset(e.actor_ids or []),
+            frozenset(e.target_ids or []),
+            e.event_type,
+            (e.fabula_time or 0) // fabula_window,
+        )
+        # Skip key-based dedup if both actor and target are empty \u2014
+        # those are anonymous events the anon retry will handle.
+        if not key[0] and not key[1]:
+            kept_events.append(e)
+            canonical_of[e.id] = e.id
+            continue
+        if key in seen_keys:
+            canonical_of[e.id] = seen_keys[key]
+        else:
+            seen_keys[key] = e.id
+            kept_events.append(e)
+            canonical_of[e.id] = e.id
+
+    dropped = {
+        eid for eid, canon in canonical_of.items() if canon != eid
+    }
+    if not dropped:
+        return physics
+
+    logger.info(
+        "[Scene-Dedup] Collapsing %d duplicate event(s) onto canonical "
+        "ids: %s",
+        len(dropped),
+        {eid: canonical_of[eid] for eid in list(dropped)[:5]},
+    )
+
+    def _rewrite(eid: str) -> str:
+        return canonical_of.get(eid, eid)
+
+    rewritten_causal: List["CausalEdge"] = []
+    seen_causal: set[tuple] = set()
+    for ce in physics.causal_topology:
+        new_ce = ce.model_copy(update={
+            "source_id": _rewrite(ce.source_id),
+            "target_id": _rewrite(ce.target_id),
+        })
+        # Drop self-loops created by collapsing.
+        if new_ce.source_id == new_ce.target_id:
+            continue
+        key = (
+            new_ce.source_id, new_ce.target_id, new_ce.causality_type,
+            getattr(new_ce, "trait_target", None) or "",
+            getattr(new_ce, "rel_counterpart_id", None) or "",
+        )
+        if key in seen_causal:
+            continue
+        seen_causal.add(key)
+        rewritten_causal.append(new_ce)
+
+    rewritten_eus: List["EntityUpdate"] = []
+    seen_eu: set[tuple] = set()
+    for eu in physics.entity_updates:
+        new_trig = _rewrite(eu.triggered_by) if eu.triggered_by else eu.triggered_by
+        new_eu = eu.model_copy(update={"triggered_by": new_trig})
+        key = (new_eu.entity_id, new_eu.fabula_time)
+        if key in seen_eu:
+            continue
+        seen_eu.add(key)
+        rewritten_eus.append(new_eu)
+
+    return PhysicsExtraction(
+        events=kept_events,
+        causal_topology=rewritten_causal,
+        spatial_topology=physics.spatial_topology,
+        entity_updates=rewritten_eus,
+    )
+
+
+def _merge_scaffold_retry(
+    base: "SocraticScaffold",
+    retry: "SocraticScaffold",
+) -> "SocraticScaffold":
+    """Merge a retry scaffold into the base, deduplicating QA pairs.
+
+    Same rationale as ``_merge_physics_retry``: a retry that aimed to
+    add a missing category (Why / How) shouldn't quietly drop the
+    Who / What / Where / When pairs already produced. Dedup keys on
+    (category, normalised question text).
+    """
+    seen = {(qa.category, qa.question.strip().lower()) for qa in base.qa_pairs}
+    merged = list(base.qa_pairs)
+    for qa in retry.qa_pairs:
+        key = (qa.category, qa.question.strip().lower())
+        if key not in seen:
+            seen.add(key)
+            merged.append(qa)
+    return SocraticScaffold(qa_pairs=merged)
+
+
+def _merge_social_retry(
+    base: "SocialExtraction",
+    retry: "SocialExtraction",
+) -> "SocialExtraction":
+    """Merge a retry social extraction into the base.
+
+    Why merge: the same "lose previously-covered material on retry"
+    pathology that bit the physics retries applies to every social
+    sub-retry — info-recovery (zero channels/utterances), channel
+    inference (under-extracted standing capabilities), and
+    relationship recovery (zero edges across multi-entity events).
+    A naive replace can drop legitimate edges from the first pass.
+
+    Dedup rules:
+      * channels — keyed by ``CHN_`` id; base wins on collision.
+      * utterance_events — keyed by event ``id``; base wins.
+      * social_topology — keyed by
+        (source_entity_id, target_entity_id, frozenset(metrics keys));
+        base wins. Directed pairs are kept independent so an
+        asymmetric A→B / B→A pair survives.
+    """
+    merged_channels = dict(base.channels)
+    for cid, ch in retry.channels.items():
+        if cid not in merged_channels:
+            merged_channels[cid] = ch
+
+    base_utt_ids = {e.id for e in base.utterance_events}
+    merged_utterances = list(base.utterance_events) + [
+        e for e in retry.utterance_events if e.id not in base_utt_ids
+    ]
+
+    def _re_key(re: "RelationshipEdge") -> tuple:
+        # Include the metrics-axis set so a retry that adds a new axis
+        # for an already-seen dyad doesn't silently get dropped.
+        try:
+            metrics_keys = tuple(sorted(re.metrics.keys()))
+        except AttributeError:
+            metrics_keys = ()
+        return (re.source_entity_id, re.target_entity_id, metrics_keys)
+
+    base_re_keys = {_re_key(r) for r in base.social_topology}
+    merged_topology = list(base.social_topology) + [
+        r for r in retry.social_topology if _re_key(r) not in base_re_keys
+    ]
+
+    return SocialExtraction(
+        channels=merged_channels,
+        utterance_events=merged_utterances,
+        social_topology=merged_topology,
+    )
+
+
+def _merge_anonymous_utterance_retry(
+    base: "SocialExtraction",
+    retry: "SocialExtraction",
+) -> "SocialExtraction":
+    """Variant of :func:`_merge_social_retry` for the anonymous-utterance
+    retry. When the retry re-emits a base utterance with the SAME id
+    and now-populated speaker_id / addressee_ids, the retry's version
+    replaces the base one. Channels and social_topology follow the
+    standard merge rules.
+    """
+    retry_by_id = {u.id: u for u in retry.utterance_events}
+    new_utts: List["EventNode"] = []
+    seen_ids: set[str] = set()
+    for u in base.utterance_events:
+        retry_u = retry_by_id.get(u.id)
+        base_anon = not u.speaker_id or not (u.addressee_ids or [])
+        if retry_u is not None and base_anon and (
+            retry_u.speaker_id and (retry_u.addressee_ids or [])
+        ):
+            new_utts.append(
+                u.model_copy(update={
+                    "speaker_id": retry_u.speaker_id,
+                    "addressee_ids": retry_u.addressee_ids,
+                })
+            )
+        else:
+            new_utts.append(u)
+        seen_ids.add(u.id)
+    for r in retry.utterance_events:
+        if r.id not in seen_ids:
+            new_utts.append(r)
+            seen_ids.add(r.id)
+
+    base_with_new = base.model_copy(update={"utterance_events": new_utts})
+    return _merge_social_retry(base_with_new, retry)
+
+
+def _merge_anonymous_retry(
+    base: "PhysicsExtraction",
+    retry: "PhysicsExtraction",
+) -> "PhysicsExtraction":
+    """Variant of :func:`_merge_physics_retry` for the anonymous-events
+    retry. The retry's *purpose* is to replace base events that have
+    empty actor_ids/target_ids with corrected versions, so for events
+    whose ``id`` is shared, the *retry's* actor/target lists win iff
+    the retry actually fills in at least one of the participant lists.
+    Other base properties (causal/spatial/entity_updates) follow
+    standard merge rules.
+    """
+    new_events: List["EventNode"] = []
+    seen_ids: set[str] = set()
+    retry_by_id = {r.id: r for r in retry.events}
+    for e in base.events:
+        retry_e = retry_by_id.get(e.id)
+        base_anon = (
+            e.event_type != "utterance"
+            and not (e.actor_ids or [])
+            and not (e.target_ids or [])
+        )
+        if retry_e is not None and base_anon and (
+            (retry_e.actor_ids or []) or (retry_e.target_ids or [])
+        ):
+            new_events.append(
+                e.model_copy(update={
+                    "actor_ids": retry_e.actor_ids,
+                    "target_ids": retry_e.target_ids,
+                })
+            )
+        else:
+            new_events.append(e)
+        seen_ids.add(e.id)
+    for r in retry.events:
+        if r.id not in seen_ids:
+            new_events.append(r)
+            seen_ids.add(r.id)
+
+    base_with_new_events = base.model_copy(update={"events": new_events})
+    return _merge_physics_retry(base_with_new_events, retry)
+
+
+def _merge_consequences_retry(
+    base: "ConsequencesExtraction",
+    retry: "ConsequencesExtraction",
+) -> "ConsequencesExtraction":
+    """Merge a retry consequences extraction into the base.
+
+    Dedup keys on (entity_id, fabula_time) — at the same fabula_time
+    only one EntityUpdate per entity is meaningful (downstream
+    snapshot reduction collapses them anyway). Base wins on collision
+    so a parity retry that re-emits an EntityUpdate already produced
+    can't blow away the original (which may have richer
+    new_beliefs / new_status / new_location_id fields).
+    """
+    seen = {(eu.entity_id, eu.fabula_time) for eu in base.entity_updates}
+    merged = list(base.entity_updates)
+    for eu in retry.entity_updates:
+        key = (eu.entity_id, eu.fabula_time)
+        if key not in seen:
+            seen.add(key)
+            merged.append(eu)
+    return ConsequencesExtraction(entity_updates=merged)
+
 
 
 def _consequences_mutation_parity_broken(
@@ -2685,692 +3441,288 @@ def _social_channel_underextracted(
     return False
 
 
-def extract_topology(
-    chunks: List[str],
-    register: GlobalRegister,
-    config: ExtractionConfig | None = None,
-) -> List[ChunkTopology]:
+# --- Tier 1: per-chunk social/physics quality helpers (2026-05-06) ---
+
+def _social_mirror_suspicious_dyads(
+    social: "SocialExtraction",
+    *,
+    eps: float = 0.05,
+) -> List[Tuple[str, str, List[str]]]:
+    """Return per-chunk dyad pairs whose forward + reverse RelationshipEdges
+    carry near-identical metric values across all shared axes.
+
+    Mirrors the post-assembly :func:`_warn_suspicious_mirror_dyads`
+    detection but runs at the social-agent stage so we can RETRY
+    rather than just log. ``power_dynamic`` is signed so opposite
+    signs are expected; flagged only when forward + reverse are
+    *equal* (not opposite).
+
+    Tolerance ``eps`` is looser than the assembly check (1e-6) because
+    LLMs round to 1-2 decimal places, so two real readings that
+    happen to converge within 0.05 are statistically indistinguishable
+    from a lazy mirror.
     """
-    Steps 2–4: Per-chunk agent pipeline with Socratic scaffolding.
+    by_pair: Dict[Tuple[str, str], "RelationshipEdge"] = {
+        (e.source_entity_id, e.target_entity_id): e
+        for e in social.social_topology
+    }
+    seen: set[frozenset[str]] = set()
+    suspect: List[Tuple[str, str, List[str]]] = []
+    for (src, tgt), fwd in by_pair.items():
+        key = frozenset({src, tgt})
+        if key in seen:
+            continue
+        rev = by_pair.get((tgt, src))
+        if rev is None:
+            continue
+        seen.add(key)
+        shared = set(fwd.metrics.keys()) & set(rev.metrics.keys())
+        if not shared:
+            continue
+        mirrored: List[str] = []
+        for axis in shared:
+            f_val = float(fwd.metrics[axis].value)
+            r_val = float(rev.metrics[axis].value)
+            if abs(f_val - r_val) < eps and abs(f_val) > eps:
+                mirrored.append(axis)
+        if mirrored and len(mirrored) == len(shared):
+            suspect.append((src, tgt, mirrored))
+    return suspect
 
-    **Step 2** — Socratic QA scaffolding: lightweight agent generates
-    Who/What/Where/When/Why/How pairs to articulate hidden reasoning.
 
-    **Step 3a** — Physics Agent: extracts events + causal + spatial edges,
-    informed by the scaffold. Result validator catches hallucinated IDs.
+def _social_anonymous_utterances(social: "SocialExtraction") -> List[str]:
+    """Return EVT_ ids of utterance events missing speaker_id OR addressee_ids.
 
-    **Step 3b** — Social Agent: extracts information + relationship edges,
-    informed by the scaffold + concrete events from 3a. Result validator
-    catches hallucinated IDs.
-
-    **Step 3c** — Consequences Agent (enabled by default): translates
-    events + mutation edges from 3a into per-entity ``EntityUpdate``
-    records (trait deltas, new/invalidated beliefs, status, location).
-    When enabled, replaces the ``entity_updates`` Physics produced.
-    Toggle via ``ExtractionConfig.enable_consequences_agent``.
-
-    The GlobalRegister (from Step 1) is injected into every agent via
-    dependency injection, preventing hallucination of new entity/location/
-    object IDs.
+    A speech-act with no named speaker or no named addressees can't be
+    routed onto a Channel and breaks the social cycle detector.
     """
-    config = config or ExtractionConfig()
-    socratic_agent = _build_socratic_agent(config)
-    physics_agent = _build_physics_agent(config)
-    social_agent = _build_social_agent(config)
-    consequences_agent = (
-        _build_consequences_agent(config)
-        if config.enable_consequences_agent else None
-    )
-    topologies: List[ChunkTopology] = []
-    syuzhet_counter = 0
-    # Informational only — the LLM is told the highest fabula_time it has
-    # produced so far so it can place continuation events after it. It is
-    # NOT used to shift the LLM's output: chunks are free to use earlier
-    # fabula_time values to encode flashbacks, prologues, or interstitial
-    # events. (Syuzhet position ≠ fabula position by design.)
-    prev_max_fabula = 0
-    all_event_ids: List[str] = []
-    # Standing channels accumulated across chunks. Threaded into the
-    # Social Agent so chunk N can reuse a CHN_ id established in chunk
-    # N-k instead of inventing a near-duplicate.
-    accumulated_channels: Dict[str, "Channel"] = {}
-    prev_chunk_tail = ""  # trailing context for coreference continuity
-    # Per-chunk sub-stage failure tracking (item #8). When any single
-    # sub-stage fails on >50% of chunks we escalate to RuntimeError
-    # rather than silently persisting an empty graph.
-    failure_counts: Dict[str, int] = {"physics": 0, "social": 0, "consequences": 0}
+    bad: List[str] = []
+    for u in social.utterance_events:
+        if not u.speaker_id or not (u.addressee_ids or []):
+            bad.append(u.id)
+    return bad
 
-    for i, chunk in enumerate(chunks):
-        logger.info("[Step 2] Processing chunk %d/%d (%d chars) — scaffolding …", i + 1, len(chunks), len(chunk))
 
-        # Prepend trailing context from previous chunk for coreference
-        overlap_ctx = ""
-        if prev_chunk_tail and config.chunk_overlap_chars > 0:
-            overlap_ctx = (
-                f"[CONTEXT FROM PREVIOUS CHUNK — do NOT re-extract events from this]\n"
-                f"{prev_chunk_tail}\n"
-                f"[END CONTEXT]\n\n"
-            )
+def _utterance_parity_orphans(
+    physics: "PhysicsExtraction",
+    social: "SocialExtraction",
+) -> Tuple[List[str], List[str]]:
+    """Return (social_only_ids, physics_only_ids) for utterance events.
 
-        chunk_with_ctx = f"{overlap_ctx}{chunk}"
+    The Social Agent owns ``utterance_events``; Physics also collects
+    its own utterance EventNodes from raw event extraction. After
+    Step 3b they should agree by id. Orphans in either direction
+    indicate one side missed the speech-act.
+    """
+    physics_utt_ids = {
+        e.id for e in physics.events if e.event_type == "utterance"
+    }
+    social_utt_ids = {u.id for u in social.utterance_events}
+    social_only = sorted(social_utt_ids - physics_utt_ids)
+    physics_only = sorted(physics_utt_ids - social_utt_ids)
+    return social_only, physics_only
 
-        # --- Step 2: Socratic QA Scaffolding ---
-        socratic_msg = (
-            f"Chunk {i + 1} of {len(chunks)}:\n\n"
-            f"{chunk_with_ctx}"
-        )
-        socratic_deps = _SocraticDeps(global_register=register)
-        try:
-            scaffold_result = socratic_agent.run_sync(socratic_msg, deps=socratic_deps, **_user_kwargs())
-            scaffold = scaffold_result.output
-            log_agent_output(logger, f"Socratic[chunk={i + 1}]", scaffold)
-        except Exception:
-            logger.exception("[Step 2] Chunk %d scaffolding FAILED — using empty scaffold.", i + 1)
-            scaffold = SocraticScaffold()
 
-        logger.info("[Step 2] Chunk %d: %d QA pairs generated.", i + 1, len(scaffold.qa_pairs))
+def _social_mutation_coverage(
+    physics: "PhysicsExtraction",
+    social: "SocialExtraction",
+) -> Tuple[int, int]:
+    """Return (covered, total) per-(dyad, axis) mutation_social coverage.
 
-        # --- Step 3a: Physics Agent (events + causal + spatial) ---
-        logger.info("[Step 3a] Processing chunk %d/%d — physics …", i + 1, len(chunks))
-        physics_msg = (
-            f"Chunk {i + 1} of {len(chunks)} "
-            f"(syuzhet_index offset: {syuzhet_counter}, "
-            f"fabula_time_spacing: {config.fabula_time_spacing}, "
-            f"max fabula_time so far: {prev_max_fabula}).\n\n"
-            f"Use ABSOLUTE story-world chronology for fabula_time. Most "
-            f"continuation events will follow the previous max, but the "
-            f"narration MAY jump in either direction: flashbacks / "
-            f"prologues / pre-story events use SMALLER fabula_time, and "
-            f"flash-forwards / prophecies / glimpses of the future use "
-            f"LARGER fabula_time than surrounding chunks. Chunk position "
-            f"in the syuzhet does NOT determine fabula order.\n\n"
-            f"{chunk_with_ctx}"
-        )
-        physics_deps = _PhysicsDeps(
-            global_register=register,
-            scaffold=scaffold,
-            previous_event_ids=all_event_ids.copy(),
-        )
-        try:
-            physics_result = physics_agent.run_sync(physics_msg, deps=physics_deps, **_user_kwargs())
-            physics = physics_result.output
-            log_agent_output(logger, f"PhysicsExtraction[chunk={i + 1}]", physics)
-        except Exception:
-            logger.exception("[Step 3a] Chunk %d FAILED — returning empty physics.", i + 1)
-            physics = PhysicsExtraction()
-            failure_counts["physics"] += 1
+    For every axis present on every RelationshipEdge in
+    ``social.social_topology``, count whether at least one
+    mutation_social CausalEdge in ``physics.causal_topology`` targets
+    that (entity, counterpart, axis) triple. Returns a fraction so
+    the caller can threshold (e.g. < 0.6 → retry).
+    """
+    triples: set[Tuple[str, str, str]] = set()
+    for re in social.social_topology:
+        for axis in re.metrics.keys():
+            triples.add((re.source_entity_id, re.target_entity_id, axis))
+    if not triples:
+        return (0, 0)
+    covered: set[Tuple[str, str, str]] = set()
+    for ce in physics.causal_topology:
+        if ce.causality_type != "mutation_social":
+            continue
+        cp = getattr(ce, "rel_counterpart_id", None) or ""
+        ax = getattr(ce, "trait_target", None) or ""
+        if not cp or not ax:
+            continue
+        key = (ce.target_id, cp, ax)
+        if key in triples:
+            covered.add(key)
+    return (len(covered), len(triples))
 
-        # Retry once if zero events from a substantive chunk
-        if not physics.events and len(chunk) > 500:
-            logger.info("[Step 3a] Chunk %d: 0 events from %d chars — retrying …", i + 1, len(chunk))
-            retry_msg = (
-                "IMPORTANT: The previous extraction returned zero events. "
-                "Re-read the chunk carefully — every narrative chunk contains "
-                "at least one event (choice, outcome, or revelation). "
-                "Look for decisions, consequences, emotional shifts, and "
-                "information reveals.\n\n" + physics_msg
-            )
-            try:
-                physics_result = physics_agent.run_sync(retry_msg, deps=physics_deps, **_user_kwargs())
-                physics = physics_result.output
-                log_agent_output(logger, f"PhysicsExtraction[chunk={i + 1},retry]", physics)
-            except Exception:
-                logger.exception("[Step 3a] Chunk %d retry FAILED.", i + 1)
 
-        # Retry if events were extracted but causal density is too low
-        # (rule #12 — every event should participate in at least one
-        # causal edge). Without this, events sit as orphan nodes with
-        # no propagation effect on the world state.
-        if _physics_causal_density_low(physics):
-            n_evt = len(physics.events)
-            n_causal = len(physics.causal_topology)
-            logger.info(
-                "[Step 3a] Chunk %d: low causal density (%d edges across "
-                "%d events) — retrying with emphasis …",
-                i + 1, n_causal, n_evt,
-            )
-            density_msg = (
-                "IMPORTANT: The previous extraction produced "
-                f"{n_evt} events but only {n_causal} causal edges. "
-                "Every event MUST participate in at least one causal "
-                "edge — re-extract with explicit attention to:\n"
-                "  - chain_reaction edges between consecutive events,\n"
-                "  - mutation edges for every event that changes a "
-                "character's traits / status / location,\n"
-                "  - mutation_social edges for every event that "
-                "shifts a relationship axis (affinity / fear / "
-                "power_dynamic), with the rel_counterpart_id and "
-                "trait_target both set,\n"
-                "  - affordance_gate edges for state-prerequisites,\n"
-                "  - ambient_propagation for background drift.\n"
-                "Aim for AT LEAST one outgoing causal edge per event "
-                "and emit ALL implied mutations.\n\n" + physics_msg
-            )
-            try:
-                density_result = physics_agent.run_sync(
-                    density_msg, deps=physics_deps, **_user_kwargs(),
-                )
-                density_physics = density_result.output
-                log_agent_output(
-                    logger, f"PhysicsExtraction[chunk={i + 1},density_retry]",
-                    density_physics,
-                )
-                # Only adopt the retry if it actually improved density
-                # AND preserved the events list (we don't want a retry
-                # that drops events to silently win).
-                if (
-                    len(density_physics.events) >= n_evt
-                    and len(density_physics.causal_topology) > n_causal
-                ):
-                    physics = density_physics
-                    logger.info(
-                        "[Step 3a] Chunk %d: density retry recovered "
-                        "%d→%d causal edges.",
-                        i + 1, n_causal, len(physics.causal_topology),
-                    )
-            except Exception:
-                logger.exception(
-                    "[Step 3a] Chunk %d causal density retry FAILED.", i + 1,
-                )
+# --- Tier 2: prompt/process improvements (2026-05-06) ---
 
-        logger.info(
-            "[Step 3a] Chunk %d: %d events, %d causal, %d spatial edges.",
-            i + 1, len(physics.events), len(physics.causal_topology),
-            len(physics.spatial_topology),
-        )
+def _on_page_entity_ids(
+    chunk: str,
+    register: "GlobalRegister",
+) -> List[str]:
+    """Return ENT_ ids whose ``name`` (or any whitespace-separated
+    sub-token of length \u2265 4) appears as a substring of ``chunk``.
 
-        # Build event summary for Social Agent
-        chunk_evt_ids = [e.id for e in physics.events]
-        event_summary_lines = []
-        for e in physics.events:
-            event_summary_lines.append(
-                f"  - {e.id} (fabula={e.fabula_time}, syuzhet={e.syuzhet_index}, "
-                f"type={e.event_type}, actors={e.actor_ids}, targets={e.target_ids}): "
-                f"{e.description}"
-            )
-        event_summary = "\n".join(event_summary_lines)
+    Pure substring match \u2014 over-permissive on purpose so we don't
+    miss canonical references the LLM might use ("Scrooge" matches
+    "old Scrooge", "Mr. Scrooge", etc.). The result is advisory only:
+    the system prompt still surfaces the full register so the LLM
+    can reference offstage entities when narratively appropriate
+    (memories, prophecies, gossip).
+    """
+    text = chunk.lower()
+    found: List[str] = []
+    for eid, ent in register.entities.items():
+        name = (ent.name or "").strip()
+        if not name:
+            continue
+        # Try the full name first.
+        if name.lower() in text:
+            found.append(eid)
+            continue
+        # Then surname / first name tokens of length >= 4 (avoids
+        # false positives on short tokens like "of", "the", "a").
+        for tok in name.split():
+            tok_clean = tok.strip(".,;:!?\"'()[]").lower()
+            if len(tok_clean) >= 4 and tok_clean in text:
+                found.append(eid)
+                break
+    return sorted(set(found))
 
-        # --- Step 3b: Social Agent (information + relationship) ---
-        # The social pass also runs when physics yielded zero events,
-        # provided the chunk shows linguistic evidence of dialogue or
-        # written communication — a pure-dialogue chunk (Mr Darcy's
-        # letter, the radio announcement in 1984, the witches' first
-        # scene) legitimately has no choices/outcomes but is exactly
-        # where the channels and utterances live.
-        social = SocialExtraction()
-        run_social = bool(physics.events) or _chunk_likely_contains_speech(chunk)
-        if run_social:
-            logger.info("[Step 3b] Processing chunk %d/%d — social …", i + 1, len(chunks))
-            social_msg = (
-                f"Chunk {i + 1} of {len(chunks)}.\n\n"
-                f"EVENTS EXTRACTED FROM THIS CHUNK:\n{event_summary}\n\n"
-                f"ORIGINAL TEXT:\n{chunk}"
-            )
-            social_deps = _SocialDeps(
-                global_register=register,
-                scaffold=scaffold,
-                chunk_event_ids=chunk_evt_ids,
-                previous_event_ids=all_event_ids.copy(),
-                previous_chunk_channels=dict(accumulated_channels),
-            )
-            try:
-                social_result = social_agent.run_sync(social_msg, deps=social_deps, **_user_kwargs())
-                social = social_result.output
-                log_agent_output(logger, f"SocialExtraction[chunk={i + 1}]", social)
-            except Exception:
-                logger.exception("[Step 3b] Chunk %d FAILED — returning empty social.", i + 1)
-                failure_counts["social"] += 1
 
-            # Retry if zero channels AND zero utterance events with multiple events (quality gate).
-            # Most narrative chunks contain at least one piece of communication, but
-            # pure-action chunks (chases, silent set-pieces) do not — only retry
-            # when the chunk text shows linguistic evidence of speech / writing.
+def _scaffold_mentioned_entities(
+    scaffold: "SocraticScaffold",
+    register: "GlobalRegister",
+) -> Set[str]:
+    """ENT_ ids referenced (by name) in any QA pair's question or answer."""
+    text_blob = " ".join(
+        f"{qa.question} {qa.answer}" for qa in scaffold.qa_pairs
+    ).lower()
+    found: Set[str] = set()
+    for eid, ent in register.entities.items():
+        name = (ent.name or "").strip()
+        if name and name.lower() in text_blob:
+            found.add(eid)
+            continue
+        for tok in (name or "").split():
+            tok_clean = tok.strip(".,;:!?\"'()[]").lower()
+            if len(tok_clean) >= 4 and tok_clean in text_blob:
+                found.add(eid)
+                break
+    return found
+
+
+def _physics_event_entities(physics: "PhysicsExtraction") -> Set[str]:
+    """ENT_ ids referenced as actor or target in any physics event."""
+    found: Set[str] = set()
+    for e in physics.events:
+        for x in (e.actor_ids or []) + (e.target_ids or []):
+            if x.startswith("ENT_"):
+                found.add(x)
+    return found
+
+
+def _scaffold_drift_ratio(
+    scaffold: "SocraticScaffold",
+    physics: "PhysicsExtraction",
+    register: "GlobalRegister",
+) -> Tuple[float, Set[str]]:
+    """Return (coverage_ratio, missed_ent_ids).
+
+    ``coverage_ratio`` = |scaffold_entities \u2229 physics_event_entities|
+    \u00f7 |scaffold_entities|. ``missed_ent_ids`` is the set of
+    scaffold-mentioned entities Physics produced no event for. A low
+    ratio indicates Physics ignored the scaffold's analysis.
+    """
+    scaffold_ents = _scaffold_mentioned_entities(scaffold, register)
+    if not scaffold_ents:
+        return (1.0, set())
+    physics_ents = _physics_event_entities(physics)
+    overlap = scaffold_ents & physics_ents
+    missed = scaffold_ents - physics_ents
+    return (len(overlap) / len(scaffold_ents), missed)
+
+
+def _physics_fabula_monotonicity_violations(
+    physics: "PhysicsExtraction",
+) -> List[Tuple[str, str]]:
+    """Return pairs of EVT_ ids inside one chunk where syuzhet order
+    contradicts fabula order for events sharing the same primary
+    actor and a non-negative fabula_time (i.e. excluding flashbacks
+    which legitimately go backward).
+
+    Heuristic: group by ``frozenset(actor_ids)`` and walk events in
+    syuzhet order; flag any pair where ``fabula_time[i+1] <
+    fabula_time[i]`` and BOTH fabula_times are >= 0. Negative-time
+    events are flashbacks and are expected to be retrograde relative
+    to the present, so we exclude them from this check.
+    """
+    by_actors: Dict[frozenset, List["EventNode"]] = {}
+    for e in physics.events:
+        actors = frozenset(e.actor_ids or [])
+        if not actors:
+            continue
+        by_actors.setdefault(actors, []).append(e)
+    violations: List[Tuple[str, str]] = []
+    for actors, evs in by_actors.items():
+        evs.sort(key=lambda x: x.syuzhet_index)
+        for prev, curr in zip(evs, evs[1:]):
             if (
-                len(physics.events) >= 2
-                and not social.channels
-                and not social.utterance_events
-                and _chunk_likely_contains_speech(chunk)
+                (prev.fabula_time or 0) >= 0
+                and (curr.fabula_time or 0) >= 0
+                and curr.fabula_time < prev.fabula_time
             ):
-                logger.info(
-                    "[Step 3b] Chunk %d: 0 channels and 0 utterance events — retrying with emphasis …",
-                    i + 1,
-                )
-                retry_social_msg = (
-                    "IMPORTANT: The previous extraction returned zero Channel "
-                    "entries AND zero utterance events. Most narrative chunks "
-                    "contain conversations, prophecies, letters, confessions, "
-                    "orders, announcements, or rumours — each one MUST produce "
-                    "either an EventNode(event_type='utterance') (for a "
-                    "discrete on-page message) or a Channel (for a standing "
-                    "capability such as a telephone link, mind-bond, or "
-                    "classified pipeline). Re-read the text and extract ALL "
-                    "information flows.\n\n" + social_msg
-                )
-                try:
-                    retry_result = social_agent.run_sync(retry_social_msg, deps=social_deps, **_user_kwargs())
-                    retry_social = retry_result.output
-                    log_agent_output(logger, f"SocialExtraction[chunk={i + 1},retry]", retry_social)
-                    if retry_social.channels or retry_social.utterance_events:
-                        social = SocialExtraction(
-                            channels=retry_social.channels or social.channels,
-                            utterance_events=retry_social.utterance_events or social.utterance_events,
-                            social_topology=social.social_topology,
-                        )
-                        logger.info(
-                            "[Step 3b] Chunk %d: retry recovered %d channels, %d utterances.",
-                            i + 1,
-                            len(social.channels),
-                            len(social.utterance_events),
-                        )
-                except Exception:
-                    logger.exception("[Step 3b] Chunk %d info retry FAILED.", i + 1)
+                violations.append((prev.id, curr.id))
+    return violations
 
-            # Channel under-extraction quality gate — when utterances
-            # repeatedly traverse the same speaker→addressee dyad with
-            # no via_channel_id and no Channel covers the pair, ask
-            # the LLM to look again. This catches epistolary
-            # exchanges, repeated phone calls, and standing
-            # broadcasts that the agent rendered as N independent
-            # speech-acts instead of a single persistent capability.
-            if _social_channel_underextracted(social):
-                logger.info(
-                    "[Step 3b] Chunk %d: utterances cluster on a "
-                    "speaker→addressee dyad with no Channel — "
-                    "retrying with channel-inference emphasis …",
-                    i + 1,
-                )
-                chn_retry_msg = (
-                    "IMPORTANT: Your previous extraction emitted "
-                    "MULTIPLE utterance events between the SAME speaker "
-                    "and addressee(s) but no Channel that covers them, "
-                    "and none of those utterances had a `via_channel_id`. "
-                    "Repeated communication between the same parties is "
-                    "almost always carried by a STANDING capability "
-                    "(letter correspondence, telephone line, telepathic "
-                    "bond, courier route, broadcast frequency). Re-emit "
-                    "the extraction with: (a) at least one Channel for "
-                    "each repeated dyad whose medium the text supports, "
-                    "and (b) `via_channel_id` set on every utterance "
-                    "that rides over one of those channels. Keep all "
-                    "previously-extracted utterances and relationship "
-                    "edges.\n\n" + social_msg
-                )
-                try:
-                    chn_retry_result = social_agent.run_sync(
-                        chn_retry_msg, deps=social_deps, **_user_kwargs()
-                    )
-                    chn_retry = chn_retry_result.output
-                    log_agent_output(
-                        logger,
-                        f"SocialExtraction[chunk={i + 1},chn_retry]",
-                        chn_retry,
-                    )
-                    # Only adopt if the retry strictly improves the
-                    # gap: it must add at least one channel AND no
-                    # longer trip the underextracted detector.
-                    if (
-                        len(chn_retry.channels) > len(social.channels)
-                        and not _social_channel_underextracted(chn_retry)
-                    ):
-                        social = chn_retry
-                        logger.info(
-                            "[Step 3b] Chunk %d: channel-inference "
-                            "retry recovered %d channels (was %d).",
-                            i + 1,
-                            len(social.channels),
-                            len(social.channels) - 1,
-                        )
-                except Exception:
-                    logger.exception(
-                        "[Step 3b] Chunk %d channel-inference retry FAILED.",
-                        i + 1,
-                    )
 
-            # Symmetric retry on empty social_topology when the chunk's
-            # events involve multiple distinct entities — the per-axis
-            # observation requirement makes per-edge omissions much
-            # more likely under the new schema, and the social
-            # propagator is a no-op without at least one edge.
-            multi_entity_events = [
-                e for e in physics.events
-                if len(set(e.actor_ids) | set(e.target_ids)) >= 2
-            ]
-            if multi_entity_events and not social.social_topology:
-                logger.info(
-                    "[Step 3b] Chunk %d: 0 social edges across %d "
-                    "multi-entity event(s) — retrying with emphasis …",
-                    i + 1, len(multi_entity_events),
-                )
-                retry_rel_msg = (
-                    "IMPORTANT: The previous extraction returned zero "
-                    "RelationshipEdge entries despite the chunk containing "
-                    "events with multiple distinct participants. For each "
-                    "such event, infer the *minimum* relationship axes the "
-                    "text supports — even one observed axis per dyad is "
-                    "valuable. Use ``observed=True`` for axes the text "
-                    "speaks to, and omit unobserved axes entirely (do not "
-                    "fabricate neutral zeros).\n\n" + social_msg
-                )
-                try:
-                    rel_retry_result = social_agent.run_sync(retry_rel_msg, deps=social_deps, **_user_kwargs())
-                    rel_retry = rel_retry_result.output
-                    log_agent_output(logger, f"SocialExtraction[chunk={i + 1},rel_retry]", rel_retry)
-                    if rel_retry.social_topology:
-                        social = SocialExtraction(
-                            channels=social.channels,
-                            utterance_events=social.utterance_events,
-                            social_topology=rel_retry.social_topology,
-                        )
-                        logger.info(
-                            "[Step 3b] Chunk %d: rel retry recovered %d social edges.",
-                            i + 1, len(social.social_topology),
-                        )
-                except Exception:
-                    logger.exception("[Step 3b] Chunk %d social retry FAILED.", i + 1)
+# --- Tier 3 #11: chunk-level checkpointing helpers ---
 
-            # Per-axis mutation_social coverage — if Social observed
-            # any non-zero relationship axis but Physics never emitted
-            # a matching ``mutation_social`` edge, retry physics with
-            # the missing axes called out by name. Without this the
-            # affective gauges (danger / conflict / power-dynamic) sit
-            # at the baseline for the whole story.
-            missing_axes = _physics_missing_mutation_social(physics, social)
-            if missing_axes:
-                logger.info(
-                    "[Step 3a] Chunk %d: missing mutation_social axes %s "
-                    "— retrying physics with axis-specific emphasis …",
-                    i + 1, missing_axes,
-                )
-                axis_msg = (
-                    "IMPORTANT: The Social Agent observed non-zero "
-                    f"relationship reading(s) on the following axes "
-                    f"but the Physics Agent emitted NO matching "
-                    f"mutation_social causal edge for them: "
-                    f"{missing_axes}. For each axis, find the on-page "
-                    "event that produced the reading and emit a "
-                    "mutation_social edge with source_id=<that event>, "
-                    "target_id=<perspective entity>, "
-                    "rel_counterpart_id=<other entity>, "
-                    "trait_target=<axis>, and a signed trait_delta. "
-                    "Keep all events and causal edges from your "
-                    "previous extraction.\n\n" + physics_msg
-                )
-                try:
-                    axis_result = physics_agent.run_sync(
-                        axis_msg, deps=physics_deps, **_user_kwargs(),
-                    )
-                    axis_physics = axis_result.output
-                    log_agent_output(
-                        logger,
-                        f"PhysicsExtraction[chunk={i + 1},axis_retry]",
-                        axis_physics,
-                    )
-                    new_missing = _physics_missing_mutation_social(
-                        axis_physics, social,
-                    )
-                    if (
-                        len(axis_physics.events) >= len(physics.events)
-                        and len(new_missing) < len(missing_axes)
-                    ):
-                        physics = axis_physics
-                        logger.info(
-                            "[Step 3a] Chunk %d: axis retry covered "
-                            "%d/%d missing axes.",
-                            i + 1,
-                            len(missing_axes) - len(new_missing),
-                            len(missing_axes),
-                        )
-                except Exception:
-                    logger.exception(
-                        "[Step 3a] Chunk %d axis retry FAILED.", i + 1,
-                    )
+def _chunk_checkpoint_path(checkpoint_dir: str, chunk_text: str, idx: int) -> Path:
+    h = hashlib.sha256(chunk_text.encode("utf-8", errors="replace")).hexdigest()[:12]
+    return Path(checkpoint_dir) / f"chunk_{idx:04d}_{h}.json"
 
-            # Per-DYAD-per-axis mutation_social coverage — stronger
-            # than the per-axis check above. The per-axis check only
-            # asks "does *some* mutation_social edge cover this axis
-            # *anywhere*?". A fixture can pass that and still leave
-            # individual relationship traces flat (the bundled Star
-            # Wars project: 3 axes covered globally but 6 of 9 dyads
-            # had no mutation_social edge at all). The downstream
-            # timeline reconstructor cannot move a metric without a
-            # mutation, so the affective sub-curves for those dyads
-            # render as flat lines from t=0 to t=∞. Retry once more
-            # with the missing dyad×axis triples spelled out.
-            missing_dyads = _physics_missing_mutation_social_per_dyad(
-                physics, social,
-            )
-            if missing_dyads:
-                # Compact summary cap to avoid prompt bloat on highly
-                # social chunks; the LLM only needs a few examples to
-                # generalise the pattern.
-                summary_lines = [
-                    f"  - dyad ({tgt} ↔ {cp}) is missing axis '{ax}'"
-                    for tgt, cp, ax in missing_dyads[:25]
-                ]
-                more = (
-                    f"\n  …and {len(missing_dyads) - 25} more"
-                    if len(missing_dyads) > 25 else ""
-                )
-                logger.info(
-                    "[Step 3a] Chunk %d: %d dyad×axis pair(s) lack a "
-                    "mutation_social edge — retrying physics with "
-                    "per-dyad emphasis …",
-                    i + 1, len(missing_dyads),
-                )
-                dyad_msg = (
-                    "IMPORTANT: For each of the following observed "
-                    "relationship axes, the Physics Agent emitted no "
-                    "mutation_social edge wired to that *specific* "
-                    "dyad-axis combination. Without one, the timeline "
-                    "reconstructor cannot evolve the metric and the "
-                    "corresponding sub-curve in the affective dashboard "
-                    "renders as a flat line.\n\n"
-                    "Missing dyad×axis triples:\n"
-                    + "\n".join(summary_lines) + more + "\n\n"
-                    "For each missing triple, find (or invent if the "
-                    "narrative implies one) the on-page event that "
-                    "produced or shifted the reading, and emit a "
-                    "mutation_social CausalEdge:\n"
-                    "  source_id=<EVT_ id>, "
-                    "causality_type='mutation_social', "
-                    "target_id=<perspective entity>, "
-                    "rel_counterpart_id=<other entity in the dyad>, "
-                    "trait_target=<axis>, "
-                    "trait_delta=<signed magnitude>.\n"
-                    "Keep all events and causal edges from your "
-                    "previous extraction.\n\n" + physics_msg
-                )
-                try:
-                    dyad_result = physics_agent.run_sync(
-                        dyad_msg, deps=physics_deps, **_user_kwargs(),
-                    )
-                    dyad_physics = dyad_result.output
-                    log_agent_output(
-                        logger,
-                        f"PhysicsExtraction[chunk={i + 1},dyad_retry]",
-                        dyad_physics,
-                    )
-                    new_missing_dyads = (
-                        _physics_missing_mutation_social_per_dyad(
-                            dyad_physics, social,
-                        )
-                    )
-                    if (
-                        len(dyad_physics.events) >= len(physics.events)
-                        and len(new_missing_dyads) < len(missing_dyads)
-                    ):
-                        physics = dyad_physics
-                        logger.info(
-                            "[Step 3a] Chunk %d: dyad retry covered "
-                            "%d/%d missing dyad×axis triples.",
-                            i + 1,
-                            len(missing_dyads) - len(new_missing_dyads),
-                            len(missing_dyads),
-                        )
-                except Exception:
-                    logger.exception(
-                        "[Step 3a] Chunk %d dyad retry FAILED.", i + 1,
-                    )
-        else:
-            logger.info("[Step 3b] Chunk %d: skipping social pass (no events, no speech cues).", i + 1)
 
-        # --- Step 3c: Consequences Agent (entity_updates) ---
-        entity_updates_final = physics.entity_updates
-        if consequences_agent is not None and physics.events:
-            logger.info("[Step 3c] Processing chunk %d/%d — consequences …", i + 1, len(chunks))
-            consequences_msg = (
-                f"Chunk {i + 1} of {len(chunks)}.\n\n"
-                f"EVENTS EXTRACTED FROM THIS CHUNK:\n{event_summary}\n\n"
-                f"ORIGINAL TEXT:\n{chunk}"
-            )
-            consequences_deps = _ConsequencesDeps(
-                global_register=register,
-                scaffold=scaffold,
-                # Pass Physics events + Social utterance events — the
-                # Consequences agent needs both so beliefs can reference
-                # utterance ids in ``acquired_via_event_id``.
-                chunk_events=list(physics.events) + list(social.utterance_events),
-                chunk_causal=physics.causal_topology,
-                chunk_channels=social.channels,
-                chunk_utterance_events=social.utterance_events,
-                previous_event_ids=all_event_ids.copy(),
-            )
-            try:
-                consequences_result = consequences_agent.run_sync(
-                    consequences_msg, deps=consequences_deps, **_user_kwargs(),
-                )
-                consequences = consequences_result.output
-                log_agent_output(
-                    logger, f"ConsequencesExtraction[chunk={i + 1}]", consequences,
-                )
-                entity_updates_final = consequences.entity_updates
-            except Exception:
-                logger.exception(
-                    "[Step 3c] Chunk %d FAILED — falling back to physics.entity_updates.",
-                    i + 1,
-                )
-                failure_counts["consequences"] += 1
-                consequences = ConsequencesExtraction()
+def _load_chunk_checkpoint(
+    checkpoint_dir: Optional[str], chunk_text: str, idx: int,
+) -> Optional["ChunkTopology"]:
+    if not checkpoint_dir:
+        return None
+    p = _chunk_checkpoint_path(checkpoint_dir, chunk_text, idx)
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return ChunkTopology.model_validate(data)
+    except Exception:
+        logger.warning(
+            "[Checkpoint] Could not load %s \u2014 ignoring.", p,
+        )
+        return None
 
-            # Mutation-parity retry — Physics declared mutation edges
-            # against entities, but Consequences emitted no
-            # EntityUpdates for them, so the snapshot timeline will be
-            # blank for those entities. Retry with the missing entity
-            # ids called out by name.
-            missing_entities = _consequences_mutation_parity_broken(
-                physics, consequences,
-            )
-            if missing_entities:
-                logger.info(
-                    "[Step 3c] Chunk %d: mutation parity broken for "
-                    "%d entit(y/ies) %s — retrying consequences …",
-                    i + 1, len(missing_entities), missing_entities,
-                )
-                parity_msg = (
-                    "IMPORTANT: The Physics Agent emitted mutation "
-                    "causal edges that target the following entities, "
-                    "but the previous extraction returned NO "
-                    f"EntityUpdate for them: {missing_entities}. For "
-                    "each one, emit at least one EntityUpdate "
-                    "anchored on the triggering event's fabula_time, "
-                    "with the new absolute trait values implied by "
-                    "the mutation edge's trait_target / trait_delta "
-                    "(and any implicit belief / status / location "
-                    "changes the event causes). Keep all "
-                    "EntityUpdates from your previous extraction.\n\n"
-                    + consequences_msg
-                )
-                try:
-                    parity_result = consequences_agent.run_sync(
-                        parity_msg, deps=consequences_deps, **_user_kwargs(),
-                    )
-                    parity_consequences = parity_result.output
-                    log_agent_output(
-                        logger,
-                        f"ConsequencesExtraction[chunk={i + 1},parity_retry]",
-                        parity_consequences,
-                    )
-                    new_missing = _consequences_mutation_parity_broken(
-                        physics, parity_consequences,
-                    )
-                    if len(new_missing) < len(missing_entities):
-                        consequences = parity_consequences
-                        entity_updates_final = consequences.entity_updates
-                        logger.info(
-                            "[Step 3c] Chunk %d: parity retry covered "
-                            "%d/%d missing entities.",
-                            i + 1,
-                            len(missing_entities) - len(new_missing),
-                            len(missing_entities),
-                        )
-                except Exception:
-                    logger.exception(
-                        "[Step 3c] Chunk %d parity retry FAILED.", i + 1,
-                    )
 
-        # Merge into ChunkTopology. Utterance events emitted by the
-        # Social Agent are appended to the chunk's event list so they
-        # participate in normal causal/temporal physics downstream.
-        merged_events = _merge_utterances_into_events(
-            physics.events, social.utterance_events,
-            chunk_label=f"Step 3b chunk {i + 1}",
+def _save_chunk_checkpoint(
+    checkpoint_dir: Optional[str],
+    chunk_text: str,
+    idx: int,
+    topo: "ChunkTopology",
+) -> None:
+    if not checkpoint_dir:
+        return
+    try:
+        p = _chunk_checkpoint_path(checkpoint_dir, chunk_text, idx)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(
+            topo.model_dump_json(indent=2),
+            encoding="utf-8",
+        )
+        logger.debug("[Checkpoint] Wrote %s", p)
+    except Exception:
+        logger.exception(
+            "[Checkpoint] Could not write checkpoint for chunk %d.", idx,
         )
 
-        topo = ChunkTopology(
-            events=merged_events,
-            causal_topology=physics.causal_topology,
-            channels=social.channels,
-            social_topology=social.social_topology,
-            spatial_topology=physics.spatial_topology,
-            entity_updates=entity_updates_final,
-        )
-        topologies.append(topo)
-
-        # Accumulate counters. ``prev_max_fabula`` is purely informational —
-        # it tells the next chunk's prompt what the high-water mark is so
-        # the LLM can place forward-marching events sensibly. We do NOT
-        # shift the LLM's output, so flashbacks remain expressible.
-        syuzhet_counter += len(merged_events)
-        if merged_events:
-            chunk_max = max(e.fabula_time for e in merged_events)
-            if chunk_max > prev_max_fabula:
-                prev_max_fabula = chunk_max
-        all_event_ids.extend([e.id for e in merged_events])
-        # Accumulate channels so subsequent chunks can reuse a CHN_ id
-        # rather than reinventing the same standing capability. Newer
-        # extractions overwrite older ones on id collision (the
-        # cross-chunk dedup at assembly handles deeper merging).
-        accumulated_channels.update(social.channels)
-
-        # Save trailing context for next chunk's coreference overlap
-        if config.chunk_overlap_chars > 0:
-            prev_chunk_tail = chunk[-config.chunk_overlap_chars:]
-
-        logger.info(
-            "[Step 3] Chunk %d: %d events (%d utterances), %d causal, %d social, %d spatial, %d channels.",
-            i + 1,
-            len(topo.events),
-            len(social.utterance_events),
-            len(topo.causal_topology),
-            len(topo.social_topology),
-            len(topo.spatial_topology),
-            len(topo.channels),
-        )
-
-    _check_chunk_failure_threshold(failure_counts, len(chunks))
-
-    # Post-merge reconciliation: rename duplicate ``EVT_`` IDs across
-    # chunks and renumber ``syuzhet_index`` globally in chunk order.
-    # Without this the sync path silently kept chunk-local syuzhet
-    # numbering — every chunk after the first restarted at 0 (or
-    # whatever the LLM picked), so the syuzhet-axis affective views
-    # showed wraparounds (e.g. Star Wars chunk 2 jumped from 33 back
-    # to 1) and any duplicate ``EVT_FOO`` IDs across chunks silently
-    # collided when the assembler dict-merged them. Mirrors the
-    # existing async-path call at the end of ``extract_topology_async``.
-    topologies = _reconcile_chunk_topologies(topologies, config)
-
-    return topologies
 
 
 def _check_chunk_failure_threshold(
@@ -3499,6 +3851,19 @@ async def _extract_single_chunk_async(
     n = params.total_chunks
     failure_flags: Dict[str, int] = {"physics": 0, "social": 0, "consequences": 0}
 
+    # Tier 3 #11: try checkpoint before any agent calls.
+    cached = _load_chunk_checkpoint(config.checkpoint_dir, chunk, i)
+    if cached is not None:
+        logger.info(
+            "[Checkpoint\u00b7Async] Chunk %d/%d loaded from disk \u2014 "
+            "skipping extraction (%d events, %d causal, %d social).",
+            i + 1, n,
+            len(cached.events),
+            len(cached.causal_topology),
+            len(cached.social_topology),
+        )
+        return cached, failure_flags
+
     # Prepend trailing context from previous chunk for coreference
     overlap_ctx = ""
     if params.prev_chunk_tail and config.chunk_overlap_chars > 0:
@@ -3522,6 +3887,9 @@ async def _extract_single_chunk_async(
 
     logger.info("[Step 2·Async] Chunk %d: %d QA pairs generated.", i + 1, len(scaffold.qa_pairs))
 
+    # Tier 2 #6: pre-compute on-page entity roster.
+    on_page = _on_page_entity_ids(chunk, register)
+
     # --- Step 3a: Physics Agent ---
     logger.info("[Step 3a·Async] Processing chunk %d/%d — physics …", i + 1, n)
     physics_msg = (
@@ -3541,6 +3909,7 @@ async def _extract_single_chunk_async(
         global_register=register,
         scaffold=scaffold,
         previous_event_ids=[],  # no cross-chunk IDs in parallel mode
+        on_page_entity_ids=on_page,
     )
     try:
         physics_result = await physics_agent.run(physics_msg, deps=physics_deps, **_user_kwargs())
@@ -3562,7 +3931,8 @@ async def _extract_single_chunk_async(
         )
         try:
             physics_result = await physics_agent.run(retry_msg, deps=physics_deps, **_user_kwargs())
-            physics = physics_result.output
+            retry_physics = physics_result.output
+            physics = _merge_physics_retry(physics, retry_physics)
         except Exception:
             logger.exception("[Step 3a·Async] Chunk %d retry FAILED.", i + 1)
 
@@ -3597,20 +3967,80 @@ async def _extract_single_chunk_async(
                 density_msg, deps=physics_deps, **_user_kwargs(),
             )
             density_physics = density_result.output
-            if (
-                len(density_physics.events) >= n_evt
-                and len(density_physics.causal_topology) > n_causal
-            ):
-                physics = density_physics
+            merged_density = _merge_physics_retry(physics, density_physics)
+            if len(merged_density.causal_topology) > n_causal:
+                physics = merged_density
                 logger.info(
                     "[Step 3a·Async] Chunk %d: density retry recovered "
-                    "%d→%d causal edges.",
+                    "%d→%d causal edges (merged).",
                     i + 1, n_causal, len(physics.causal_topology),
                 )
         except Exception:
             logger.exception(
                 "[Step 3a·Async] Chunk %d causal density retry FAILED.", i + 1,
             )
+
+    # Anonymous-events retry (async). See sync path for rationale.
+    anon_ids = _physics_anonymous_events(physics)
+    if anon_ids:
+        sample = anon_ids[:6]
+        logger.info(
+            "[Step 3a·Async] Chunk %d: %d anonymous event(s) (no actor + "
+            "no target): %s\u2026 \u2014 retrying with participant emphasis \u2026",
+            i + 1, len(anon_ids), sample,
+        )
+        anon_msg = (
+            "IMPORTANT: The previous extraction produced "
+            f"{len(anon_ids)} non-utterance event(s) with EMPTY "
+            f"actor_ids AND EMPTY target_ids: {sample}. Every "
+            "non-utterance event MUST name at least one ENT_ in "
+            "actor_ids OR at least one ENT_/OBJ_ in target_ids. "
+            "Re-emit those events with the on-page participants "
+            "filled in, keeping the SAME id and fabula_time so the "
+            "merge step replaces the anonymous version.\n\n" + physics_msg
+        )
+        try:
+            anon_result = await physics_agent.run(
+                anon_msg, deps=physics_deps, **_user_kwargs(),
+            )
+            anon_physics = anon_result.output
+            merged_anon = _merge_anonymous_retry(physics, anon_physics)
+            new_anon = _physics_anonymous_events(merged_anon)
+            if len(new_anon) < len(anon_ids):
+                physics = merged_anon
+                logger.info(
+                    "[Step 3a·Async] Chunk %d: anon retry covered "
+                    "%d/%d anonymous events.",
+                    i + 1,
+                    len(anon_ids) - len(new_anon),
+                    len(anon_ids),
+                )
+        except Exception:
+            logger.exception(
+                "[Step 3a·Async] Chunk %d anon retry FAILED.", i + 1,
+            )
+
+    # Collapse duplicate events from multi-pass extraction.
+    physics = _dedupe_scene_events(physics)
+
+    # Tier 2 #7: scaffold-drift diagnostic (async).
+    drift_ratio, missed = _scaffold_drift_ratio(scaffold, physics, register)
+    if drift_ratio < 0.5 and missed:
+        logger.warning(
+            "[Scaffold-Drift·Async] Chunk %d: physics produced events "
+            "for only %.0f%% of scaffold-mentioned entities; missed %s",
+            i + 1, 100.0 * drift_ratio, sorted(missed)[:8],
+        )
+
+    # Tier 2 #9: fabula-time monotonicity check (async).
+    violations = _physics_fabula_monotonicity_violations(physics)
+    if violations:
+        logger.warning(
+            "[Fabula-Monotonicity·Async] Chunk %d: %d retrograde event "
+            "pair(s) where syuzhet order contradicts fabula order "
+            "(non-flashback): %s",
+            i + 1, len(violations), violations[:5],
+        )
 
     logger.info(
         "[Step 3a·Async] Chunk %d: %d events, %d causal, %d spatial edges.",
@@ -3635,6 +4065,25 @@ async def _extract_single_chunk_async(
     social = SocialExtraction()
     entity_updates_final = physics.entity_updates  # legacy fallback
 
+    # Hoisted to outer scope so the mirror / anonymous-utterance retries
+    # below (which reuse social_msg + social_deps) can see them after
+    # ``_run_social`` returns. Previously these were defined inside
+    # ``_run_social`` and the retries hit a NameError when triggered.
+    social_msg = (
+        f"Chunk {i + 1} of {n}.\n\n"
+        f"EVENTS EXTRACTED FROM THIS CHUNK:\n{event_summary}\n\n"
+        f"ORIGINAL TEXT:\n{chunk_with_ctx}"
+    )
+    social_deps = _SocialDeps(
+        global_register=register,
+        scaffold=scaffold,
+        chunk_event_ids=chunk_evt_ids,
+        chunk_events=list(physics.events),
+        chunk_causal=list(physics.causal_topology),
+        previous_event_ids=[],
+        on_page_entity_ids=on_page,
+    )
+
     async def _run_social() -> SocialExtraction:
         # The social pass runs even when physics yielded zero events,
         # provided the chunk shows linguistic evidence of dialogue or
@@ -3645,17 +4094,6 @@ async def _extract_single_chunk_async(
             )
             return SocialExtraction()
         logger.info("[Step 3b·Async] Processing chunk %d/%d — social …", i + 1, n)
-        social_msg = (
-            f"Chunk {i + 1} of {n}.\n\n"
-            f"EVENTS EXTRACTED FROM THIS CHUNK:\n{event_summary}\n\n"
-            f"ORIGINAL TEXT:\n{chunk}"
-        )
-        social_deps = _SocialDeps(
-            global_register=register,
-            scaffold=scaffold,
-            chunk_event_ids=chunk_evt_ids,
-            previous_event_ids=[],
-        )
         try:
             social_result = await social_agent.run(social_msg, deps=social_deps, **_user_kwargs())
             local_social = social_result.output
@@ -3692,13 +4130,9 @@ async def _extract_single_chunk_async(
                 retry_result = await social_agent.run(retry_social_msg, deps=social_deps, **_user_kwargs())
                 retry_social = retry_result.output
                 if retry_social.channels or retry_social.utterance_events:
-                    local_social = SocialExtraction(
-                        channels=retry_social.channels or local_social.channels,
-                        utterance_events=retry_social.utterance_events or local_social.utterance_events,
-                        social_topology=local_social.social_topology,
-                    )
+                    local_social = _merge_social_retry(local_social, retry_social)
                     logger.info(
-                        "[Step 3b·Async] Chunk %d: retry recovered %d channels, %d utterances.",
+                        "[Step 3b·Async] Chunk %d: retry recovered %d channels, %d utterances (merged).",
                         i + 1,
                         len(local_social.channels),
                         len(local_social.utterance_events),
@@ -3738,14 +4172,15 @@ async def _extract_single_chunk_async(
                     chn_retry_msg, deps=social_deps, **_user_kwargs(),
                 )
                 chn_retry = chn_retry_result.output
+                merged_chn = _merge_social_retry(local_social, chn_retry)
                 if (
-                    len(chn_retry.channels) > len(local_social.channels)
-                    and not _social_channel_underextracted(chn_retry)
+                    len(merged_chn.channels) > len(local_social.channels)
+                    and not _social_channel_underextracted(merged_chn)
                 ):
-                    local_social = chn_retry
+                    local_social = merged_chn
                     logger.info(
                         "[Step 3b·Async] Chunk %d: channel-inference "
-                        "retry recovered %d channels.",
+                        "retry recovered %d channels (merged).",
                         i + 1, len(local_social.channels),
                     )
             except Exception:
@@ -3756,7 +4191,7 @@ async def _extract_single_chunk_async(
 
         # Symmetric retry on empty social_topology when the chunk's
         # events involve multiple distinct entities — ports the sync
-        # extract_topology behaviour so async runs don't quietly drop
+        # extract_topology_async behaviour so async runs don't quietly drop
         # social-edge recall (audit item #6).
         multi_entity_events = [
             e for e in physics.events
@@ -3784,13 +4219,9 @@ async def _extract_single_chunk_async(
                 )
                 rel_retry = rel_retry_result.output
                 if rel_retry.social_topology:
-                    local_social = SocialExtraction(
-                        channels=local_social.channels,
-                        utterance_events=local_social.utterance_events,
-                        social_topology=rel_retry.social_topology,
-                    )
+                    local_social = _merge_social_retry(local_social, rel_retry)
                     logger.info(
-                        "[Step 3b·Async] Chunk %d: rel retry recovered %d social edges.",
+                        "[Step 3b·Async] Chunk %d: rel retry recovered %d social edges (merged).",
                         i + 1, len(local_social.social_topology),
                     )
             except Exception:
@@ -3804,7 +4235,7 @@ async def _extract_single_chunk_async(
         consequences_msg = (
             f"Chunk {i + 1} of {n}.\n\n"
             f"EVENTS EXTRACTED FROM THIS CHUNK:\n{event_summary}\n\n"
-            f"ORIGINAL TEXT:\n{chunk}"
+            f"ORIGINAL TEXT:\n{chunk_with_ctx}"
         )
         consequences_deps = _ConsequencesDeps(
             global_register=register,
@@ -3814,6 +4245,7 @@ async def _extract_single_chunk_async(
             chunk_channels=local_social.channels,
             chunk_utterance_events=local_social.utterance_events,
             previous_event_ids=[],
+            on_page_entity_ids=on_page,
         )
         try:
             consequences_result = await consequences_agent.run(
@@ -3861,10 +4293,12 @@ async def _extract_single_chunk_async(
                     physics, parity_consequences,
                 )
                 if len(new_missing) < len(missing_entities):
-                    consequences = parity_consequences
+                    consequences = _merge_consequences_retry(
+                        consequences, parity_consequences,
+                    )
                     logger.info(
                         "[Step 3c·Async] Chunk %d: parity retry covered "
-                        "%d/%d missing entities.",
+                        "%d/%d missing entities (merged).",
                         i + 1,
                         len(missing_entities) - len(new_missing),
                         len(missing_entities),
@@ -3899,27 +4333,28 @@ async def _extract_single_chunk_async(
             "target_id=<perspective entity>, "
             "rel_counterpart_id=<other entity>, "
             "trait_target=<axis>, and a signed trait_delta. "
-            "Keep all events and causal edges from your "
-            "previous extraction.\n\n" + physics_msg
+            "Keep ALL events and causal edges from your "
+            "previous extraction WITH THEIR ORIGINAL fabula_time "
+            "VALUES UNCHANGED — in particular, do not collapse "
+            "flashback events that previously had negative "
+            "fabula_time into the present timeline.\n\n" + physics_msg
         )
         try:
             axis_result = await physics_agent.run(
                 axis_msg, deps=physics_deps, **_user_kwargs(),
             )
             axis_physics = axis_result.output
-            new_missing = _physics_missing_mutation_social(
-                axis_physics, social,
+            merged_axis = _merge_physics_retry(physics, axis_physics)
+            new_missing_after_merge = _physics_missing_mutation_social(
+                merged_axis, social,
             )
-            if (
-                len(axis_physics.events) >= len(physics.events)
-                and len(new_missing) < len(missing_axes)
-            ):
-                physics = axis_physics
+            if len(new_missing_after_merge) < len(missing_axes):
+                physics = merged_axis
                 logger.info(
                     "[Step 3a·Async] Chunk %d: axis retry covered "
-                    "%d/%d missing axes.",
+                    "%d/%d missing axes (merged).",
                     i + 1,
-                    len(missing_axes) - len(new_missing),
+                    len(missing_axes) - len(new_missing_after_merge),
                     len(missing_axes),
                 )
         except Exception:
@@ -3928,7 +4363,7 @@ async def _extract_single_chunk_async(
             )
 
     # Per-DYAD-per-axis coverage (async). Mirrors the sync path; see
-    # the longer rationale in ``extract_topology``. The retry is the
+    # the longer rationale in ``extract_topology_async``. The retry is the
     # last opportunity to anchor a specific dyad-axis combination on
     # an on-page event before consequences runs.
     missing_dyads = _physics_missing_mutation_social_per_dyad(
@@ -3969,27 +4404,30 @@ async def _extract_single_chunk_async(
             "rel_counterpart_id=<other entity in the dyad>, "
             "trait_target=<axis>, "
             "trait_delta=<signed magnitude>.\n"
-            "Keep all events and causal edges from your "
-            "previous extraction.\n\n" + physics_msg
+            "Keep ALL events and causal edges from your "
+            "previous extraction WITH THEIR ORIGINAL fabula_time "
+            "VALUES UNCHANGED — in particular, do not collapse "
+            "flashback events that previously had negative "
+            "fabula_time into the present timeline. The merge step "
+            "keys on event ``id``, so reusing the same id with a "
+            "new fabula_time has no effect.\n\n" + physics_msg
         )
         try:
             dyad_result = await physics_agent.run(
                 dyad_msg, deps=physics_deps, **_user_kwargs(),
             )
             dyad_physics = dyad_result.output
+            merged_physics = _merge_physics_retry(physics, dyad_physics)
             new_missing_dyads = (
                 _physics_missing_mutation_social_per_dyad(
-                    dyad_physics, social,
+                    merged_physics, social,
                 )
             )
-            if (
-                len(dyad_physics.events) >= len(physics.events)
-                and len(new_missing_dyads) < len(missing_dyads)
-            ):
-                physics = dyad_physics
+            if len(new_missing_dyads) < len(missing_dyads):
+                physics = merged_physics
                 logger.info(
                     "[Step 3a·Async] Chunk %d: dyad retry covered "
-                    "%d/%d missing dyad×axis triples.",
+                    "%d/%d missing dyad×axis triples (merged).",
                     i + 1,
                     len(missing_dyads) - len(new_missing_dyads),
                     len(missing_dyads),
@@ -3997,6 +4435,160 @@ async def _extract_single_chunk_async(
         except Exception:
             logger.exception(
                 "[Step 3a·Async] Chunk %d dyad retry FAILED.", i + 1,
+            )
+
+    # --- Tier 1 #1: Mirror-suspicious dyad retry (async) -----------
+    mirror_suspect = _social_mirror_suspicious_dyads(social)
+    if mirror_suspect:
+        sample = ", ".join(
+            f"{a}\u2194{b} ({'/'.join(ax)})"
+            for a, b, ax in mirror_suspect[:5]
+        )
+        logger.info(
+            "[Step 3b\u00b7Async] Chunk %d: %d dyad(s) with near-identical "
+            "bidirectional metrics (%s) \u2014 retrying \u2026",
+            i + 1, len(mirror_suspect), sample,
+        )
+        mirror_msg = (
+            "IMPORTANT: The previous extraction emitted "
+            f"{len(mirror_suspect)} dyad(s) where the forward and "
+            "reverse RelationshipEdges carry IDENTICAL metric values "
+            f"across all shared axes: {sample}. Re-emit each of these "
+            "dyads with two distinct, asymmetric readings grounded in "
+            "what each character separately experiences. Keep all "
+            "other channels, utterances, and edges UNCHANGED.\n\n"
+            + social_msg
+        )
+        try:
+            mirror_result = await social_agent.run(
+                mirror_msg, deps=social_deps, **_user_kwargs(),
+            )
+            mirror_retry = mirror_result.output
+            merged_mirror = _merge_social_retry(social, mirror_retry)
+            new_suspect = _social_mirror_suspicious_dyads(merged_mirror)
+            if len(new_suspect) < len(mirror_suspect):
+                social = merged_mirror
+                logger.info(
+                    "[Step 3b\u00b7Async] Chunk %d: mirror retry resolved "
+                    "%d/%d (merged).",
+                    i + 1,
+                    len(mirror_suspect) - len(new_suspect),
+                    len(mirror_suspect),
+                )
+        except Exception:
+            logger.exception(
+                "[Step 3b\u00b7Async] Chunk %d mirror retry FAILED.", i + 1,
+            )
+
+    # --- Tier 1 #5: Anonymous-utterance retry (async) ---------------
+    anon_utts = _social_anonymous_utterances(social)
+    if anon_utts:
+        logger.info(
+            "[Step 3b\u00b7Async] Chunk %d: %d utterance(s) missing "
+            "speaker_id or addressee_ids: %s\u2026 \u2014 retrying \u2026",
+            i + 1, len(anon_utts), anon_utts[:5],
+        )
+        anon_utt_msg = (
+            "IMPORTANT: The previous extraction produced "
+            f"{len(anon_utts)} utterance event(s) with EMPTY "
+            f"speaker_id OR EMPTY addressee_ids: {anon_utts[:10]}. "
+            "Every utterance MUST name exactly one ENT_ in speaker_id "
+            "and at least one ENT_ in addressee_ids. Re-emit those "
+            "utterances with the on-page speaker and listener(s) "
+            "filled in, keeping the SAME id and fabula_time so the "
+            "merge step replaces the anonymous version. Keep all "
+            "other channels, utterances, and edges UNCHANGED.\n\n"
+            + social_msg
+        )
+        try:
+            anon_utt_result = await social_agent.run(
+                anon_utt_msg, deps=social_deps, **_user_kwargs(),
+            )
+            anon_utt_retry = anon_utt_result.output
+            merged_anon_utt = _merge_anonymous_utterance_retry(
+                social, anon_utt_retry,
+            )
+            new_anon_utt = _social_anonymous_utterances(merged_anon_utt)
+            if len(new_anon_utt) < len(anon_utts):
+                social = merged_anon_utt
+                logger.info(
+                    "[Step 3b\u00b7Async] Chunk %d: anon-utterance retry "
+                    "resolved %d/%d (merged).",
+                    i + 1,
+                    len(anon_utts) - len(new_anon_utt),
+                    len(anon_utts),
+                )
+        except Exception:
+            logger.exception(
+                "[Step 3b\u00b7Async] Chunk %d anon-utterance retry FAILED.",
+                i + 1,
+            )
+
+    # --- Tier 1 #2: Utterance \u2194 physics parity (async) ----------
+    social_only, physics_only = _utterance_parity_orphans(physics, social)
+    if social_only:
+        logger.info(
+            "[Step 3a/b\u00b7Async] Chunk %d: %d social utterance(s) have "
+            "no matching physics event \u2014 synthesizing stubs: %s\u2026",
+            i + 1, len(social_only), social_only[:5],
+        )
+        physics_known = {e.id for e in physics.events}
+        stubs_added = 0
+        for u in social.utterance_events:
+            if u.id in physics_known:
+                continue
+            physics.events.append(u.model_copy())
+            stubs_added += 1
+        if stubs_added:
+            logger.info(
+                "[Step 3a/b\u00b7Async] Chunk %d: added %d stub utterance "
+                "events to physics from social.",
+                i + 1, stubs_added,
+            )
+    if physics_only:
+        logger.info(
+            "[Step 3a/b\u00b7Async] Chunk %d: %d physics utterance(s) have "
+            "no matching social channel/utterance.",
+            i + 1, len(physics_only),
+        )
+
+    # --- Tier 1 #4: mutation_social coverage gauge (async) ----------
+    covered, total = _social_mutation_coverage(physics, social)
+    if total >= 4 and covered / total < 0.6:
+        logger.info(
+            "[Step 3a\u00b7Async] Chunk %d: mutation_social coverage "
+            "%d/%d (%.0f%%) below threshold \u2014 retrying physics \u2026",
+            i + 1, covered, total, 100.0 * covered / total,
+        )
+        cov_msg = (
+            "IMPORTANT: The Social Agent observed "
+            f"{total} dyad\u00d7axis readings but the Physics Agent only "
+            f"emitted mutation_social edges for {covered} of them "
+            f"({100.0 * covered / total:.0f}%%). Every observed "
+            "relationship axis needs at least one mutation_social "
+            "CausalEdge wired to the specific (target_id, "
+            "rel_counterpart_id, trait_target) triple. Re-emit the "
+            "extraction with the missing mutation_social edges added. "
+            "Keep all other events, edges, and fabula_times "
+            "UNCHANGED.\n\n" + physics_msg
+        )
+        try:
+            cov_result = await physics_agent.run(
+                cov_msg, deps=physics_deps, **_user_kwargs(),
+            )
+            cov_physics = cov_result.output
+            merged_cov = _merge_physics_retry(physics, cov_physics)
+            new_covered, _ = _social_mutation_coverage(merged_cov, social)
+            if new_covered > covered:
+                physics = merged_cov
+                logger.info(
+                    "[Step 3a\u00b7Async] Chunk %d: coverage retry raised "
+                    "mutation_social coverage %d\u2192%d / %d (merged).",
+                    i + 1, covered, new_covered, total,
+                )
+        except Exception:
+            logger.exception(
+                "[Step 3a\u00b7Async] Chunk %d coverage retry FAILED.", i + 1,
             )
 
     consequences_out = await _run_consequences(social)
@@ -4027,6 +4619,8 @@ async def _extract_single_chunk_async(
         len(topo.spatial_topology),
         len(topo.channels),
     )
+    # Tier 3 #11: persist topology so a re-run skips the agents.
+    _save_chunk_checkpoint(config.checkpoint_dir, chunk, i, topo)
     return topo, failure_flags
 
 
@@ -4275,7 +4869,7 @@ async def extract_topology_async(
     register: GlobalRegister,
     config: ExtractionConfig | None = None,
 ) -> List[ChunkTopology]:
-    """Async variant of :func:`extract_topology` — extracts chunks in parallel.
+    """Extract per-chunk topology — chunks are processed in parallel.
 
     Chunks are dispatched concurrently (limited by
     ``config.max_concurrent_chunks``) with pre-allocated syuzhet and
@@ -4294,14 +4888,30 @@ async def extract_topology_async(
 
     params_list = _pre_allocate_chunk_params(chunks, config)
     semaphore = asyncio.Semaphore(config.max_concurrent_chunks)
+    chunk_timeout = getattr(config, "per_chunk_timeout_seconds", 0)
 
     async def _guarded_extract(chunk: str, params: _ChunkParams) -> Tuple[ChunkTopology, Dict[str, int]]:
         async with semaphore:
-            return await _extract_single_chunk_async(
+            coro = _extract_single_chunk_async(
                 chunk, params, register, config,
                 socratic_agent, physics_agent, social_agent,
                 consequences_agent,
             )
+            if chunk_timeout and chunk_timeout > 0:
+                try:
+                    return await asyncio.wait_for(coro, timeout=chunk_timeout)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "[Pipeline\u00b7Async] Chunk %d/%d exceeded per-chunk "
+                        "timeout (%.0fs) \u2014 returning empty topology so "
+                        "the rest of the run can proceed.",
+                        params.chunk_index + 1, params.total_chunks, chunk_timeout,
+                    )
+                    return (
+                        ChunkTopology(),
+                        {"physics": 1, "social": 1, "consequences": 1},
+                    )
+            return await coro
 
     chunk_results = await asyncio.gather(*[
         _guarded_extract(chunk, params)
@@ -4865,59 +5475,6 @@ def _warn_suspicious_mirror_dyads(edges: List[RelationshipEdge]) -> None:
         )
 
 
-def _mirror_missing_relationship_directions(
-    edges: List[RelationshipEdge],
-) -> List[RelationshipEdge]:
-    """Deprecated shim — mirroring now happens automatically inside
-    ``WorldStateV1``'s post-init validator
-    (:meth:`WorldStateV1._mirror_missing_relationship_directions`).
-
-    Kept here as a thin wrapper because a handful of internal callers
-    (and possibly downstream tests) imported the function directly.
-    Constructs a transient ``WorldStateV1``-shaped pass through the
-    standalone mirror logic so the behaviour stays identical.
-    """
-    if not edges:
-        return edges
-    indexed: dict[tuple[str, str], RelationshipEdge] = {
-        (e.source_entity_id, e.target_entity_id): e for e in edges
-    }
-    mirrored: list[RelationshipEdge] = []
-    for (src, tgt), edge in list(indexed.items()):
-        if (tgt, src) in indexed:
-            continue
-        new_metrics: dict[str, dict] = {}
-        for name, m in edge.metrics.items():
-            value = float(m.value)
-            if name == "power_dynamic":
-                value = -value
-            new_metrics[name] = {
-                "value": value,
-                "inertia": float(m.inertia),
-                "evidence_strength": "weak",
-                "last_updated_fabula": int(m.last_updated_fabula),
-                "observed": False,
-            }
-        if not new_metrics:
-            continue
-        try:
-            mirror = RelationshipEdge(
-                world_id=edge.world_id,
-                source_entity_id=tgt,
-                target_entity_id=src,
-                metrics=new_metrics,  # type: ignore[arg-type]
-            )
-        except Exception:
-            logger.warning(
-                "Failed to mirror RelationshipEdge %s→%s; leaving "
-                "reverse direction missing.", src, tgt, exc_info=True,
-            )
-            continue
-        mirrored.append(mirror)
-        indexed[(tgt, src)] = mirror
-    return list(edges) + mirrored
-
-
 def _deduplicate_spatial(edges: List[SpatialEdge]) -> List[SpatialEdge]:
     """Merge spatial edges per (source, target), preserving lifecycle state.
 
@@ -5045,16 +5602,23 @@ def _deduplicate_causal(
 
 def _deduplicate_channels_with_map(
     channel_dicts: List[Dict[str, Channel]],
+    fabula_tolerance: int = 2,
 ) -> Tuple[Dict[str, Channel], Dict[str, str]]:
     """Merge per-chunk Channel dicts and also return an old→canonical id map.
 
     Keyed on ``(medium, sorted(participant_ids), directionality,
-    established_at_fabula)`` rather than the LLM-generated ``CHN_``
-    id, because two chunks may each invent their own id for the
-    same standing capability. Directionality is part of the key so
-    a duplex channel and a broadcast channel (e.g. a public
+    established_at_fabula // max(1, fabula_tolerance))`` rather than the
+    LLM-generated ``CHN_`` id, because two chunks may each invent their
+    own id for the same standing capability. Directionality is part of
+    the key so a duplex channel and a broadcast channel (e.g. a public
     proclamation vs a private chat) over the same participants are
     NOT collapsed.
+
+    ``fabula_tolerance`` (default 2) bucketises ``established_at_fabula``
+    so two chunks that report the same channel with slightly jittered
+    establishment ticks (a common LLM artefact) still collapse. The
+    earliest tick within a merged group becomes the canonical
+    ``established_at_fabula``. Set to 0 to disable bucketing.
 
     When two chunks describe the same channel, ``intelligibility``
     maps are *merged* per-participant (later wins on collisions);
@@ -5068,6 +5632,7 @@ def _deduplicate_channels_with_map(
     that pointed at a now-collapsed id, so dedup never silently orphans
     those references (which used to be nulled by ``_auto_repair``).
     """
+    bucket_size = max(1, fabula_tolerance)
     best: dict[tuple, Channel] = {}
     # Track every id ever seen for each shape-key so the forwarding map
     # covers every collapsed alias, not just the most recent.
@@ -5078,7 +5643,7 @@ def _deduplicate_channels_with_map(
                 ch.medium,
                 tuple(sorted(ch.participant_ids)),
                 ch.directionality,
-                ch.established_at_fabula,
+                ch.established_at_fabula // bucket_size,
             )
             aliases.setdefault(key, []).append(ch.id)
             existing = best.get(key)
@@ -5096,9 +5661,14 @@ def _deduplicate_channels_with_map(
                 if t is not None
             ]
             merged_term: Optional[int] = min(term_candidates) if term_candidates else None
+            # Earliest establishment tick wins (channel exists from the
+            # earliest report onward; later jittered re-reports were
+            # the LLM observing the same standing capability later).
+            merged_estab = min(existing.established_at_fabula, ch.established_at_fabula)
             best[key] = ch.model_copy(update={
                 "intelligibility": merged_intel,
                 "terminated_at_fabula": merged_term,
+                "established_at_fabula": merged_estab,
             })
     deduped = {ch.id: ch for ch in best.values()}
     forwarding: Dict[str, str] = {}
@@ -5442,6 +6012,61 @@ def assemble_world_state(
         len(ws.spatial_topology), len(ws.channels),
         len(ws.world_traits),
     )
+
+    # --- Tier 1 #3: trajectory population check ---------------------
+    # An entity that participates in many events but ends up with an
+    # empty state_timeline almost always means the consequences pass
+    # silently no-opped. Surface as a warning so operators don't
+    # discover flat affective curves only at dashboard render time.
+    event_participation: Dict[str, int] = {}
+    for e in events:
+        for eid in (e.actor_ids or []) + (e.target_ids or []):
+            event_participation[eid] = event_participation.get(eid, 0) + 1
+    flat_entities: List[Tuple[str, int]] = []
+    for eid, ent in ws.entities.items():
+        n_events = event_participation.get(eid, 0)
+        if n_events >= 3 and not ent.state_timeline:
+            flat_entities.append((eid, n_events))
+    if flat_entities:
+        flat_entities.sort(key=lambda p: -p[1])
+        sample = ", ".join(f"{eid}({n})" for eid, n in flat_entities[:5])
+        logger.warning(
+            "[Pipeline-Skip] %d entit(y/ies) participate in 3+ events "
+            "but have an empty state_timeline \u2014 consequences pass "
+            "may have no-opped. Top: %s",
+            len(flat_entities), sample,
+        )
+
+    # --- Tier 2 #8: belief-consistency check ------------------------
+    # For each EntityUpdate's invalidated_belief_targets, verify the
+    # entity actually held a belief with that target_id at or before
+    # the snapshot's fabula_time. Invalidations of never-held beliefs
+    # are no-ops at best and indicators of confused extraction at
+    # worst (the LLM is mixing up which entity held the belief, or
+    # confabulating beliefs the text never established).
+    belief_inconsistencies: List[str] = []
+    for eid, ent in ws.entities.items():
+        # Build cumulative belief target history at each tick.
+        held: Set[str] = {b.target_id for b in (ent.beliefs or [])}
+        for snap in ent.state_timeline:
+            for added in (snap.beliefs_added or []):
+                held.add(added.target_id)
+            for invalidated in (snap.beliefs_invalidated or []):
+                if invalidated not in held:
+                    belief_inconsistencies.append(
+                        f"{eid}@fabula={snap.fabula_time}: invalidates "
+                        f"belief target {invalidated!r} never held"
+                    )
+                else:
+                    held.discard(invalidated)
+    if belief_inconsistencies:
+        logger.warning(
+            "[Belief-Consistency] %d invalidation(s) target beliefs "
+            "the entity never held. Sample: %s",
+            len(belief_inconsistencies),
+            belief_inconsistencies[:5],
+        )
+
     return ws
 
 
@@ -5512,15 +6137,23 @@ def _auto_repair(ws: WorldStateV1) -> Tuple[WorldStateV1, List[str]]:
         clean_events.append(evt.model_copy(update=updates) if updates else evt)
 
     # --- Fix broken entity location_ids ---
-    first_loc = next(iter(ws.locations.keys()), None)
-    if first_loc:
-        new_entities_map: dict[str, Entity] = {}
-        for eid, ent in ws.entities.items():
-            if ent.location_id not in location_ids:
-                repairs.append(f"Fixed entity '{eid}' location_id '{ent.location_id}' → '{first_loc}'.")
-                new_entities_map[eid] = ent.model_copy(update={"location_id": first_loc})
-            else:
-                new_entities_map[eid] = ent
+    # Prefer NULL over a positive but-likely-wrong assignment: silently
+    # planting an entity in "the first location" can create plausible-
+    # looking but completely fabricated geography. Downstream readers
+    # already handle ``location_id is None`` (entity off-page / unknown).
+    new_entities_map: dict[str, Entity] = {}
+    needs_rewrite = False
+    for eid, ent in ws.entities.items():
+        if ent.location_id is not None and ent.location_id not in location_ids:
+            repairs.append(
+                f"Cleared entity '{eid}' invalid location_id "
+                f"'{ent.location_id}' (set to None — no safe fallback)."
+            )
+            new_entities_map[eid] = ent.model_copy(update={"location_id": None})
+            needs_rewrite = True
+        else:
+            new_entities_map[eid] = ent
+    if needs_rewrite:
         ws = ws.model_copy(update={"entities": new_entities_map})
 
     # --- Strip broken causal edges ---
@@ -7095,48 +7728,87 @@ def _is_correction_regression(
 
 
 _EVT_ID_RE = re.compile(r"\bEVT_[A-Za-z0-9_]+")
+_ENT_ID_RE = re.compile(r"\bENT_[A-Za-z0-9_]+")
+_CHN_ID_RE = re.compile(r"\bCHN_[A-Za-z0-9_]+")
+_LOC_ID_RE = re.compile(r"\bLOC_[A-Za-z0-9_]+")
+_OBJ_ID_RE = re.compile(r"\bOBJ_[A-Za-z0-9_]+")
+_WORLD_ID_RE = re.compile(r"\bWORLD_[A-Za-z0-9_]+")
 
 
 def _build_correction_subgraph(
     world_state: WorldStateV1,
     prog_errors: List["ValidationIssue"],
 ) -> Optional[str]:
-    """Return a JSON subgraph that focuses on error-relevant events.
+    """Return a JSON subgraph that focuses on error-relevant nodes.
 
     Used by ``_run_correction_patch`` when the full WorldState exceeds
-    ~60 KB and would otherwise crowd out the LLM's reasoning budget.
-    The subgraph contains:
+    the configured threshold and would otherwise crowd out the LLM's
+    reasoning budget. The subgraph contains:
 
-    * ontology header (locations, objects, entities — keys + names only);
-    * every event whose id appears in any error detail;
-    * every event reachable in one causal hop from a seed event;
-    * the causal/spatial edges between any two seed/neighbour events.
+    * ontology header (locations, objects, entities, world_traits —
+      keys + names + minimal metadata);
+    * every event whose id appears in any error detail, plus one-hop
+      causal neighbours;
+    * the causal edges between any two seed/neighbour events;
+    * every channel whose id appears in any error detail;
+    * every spatial edge touching a seed location/entity;
+    * every social edge touching a seed entity.
 
-    Returns ``None`` if no event ids could be extracted from the errors
-    (the caller should then fall back to the full state).
+    Returns ``None`` only when NO ids of any kind could be extracted
+    from the errors (the caller should then fall back to the full
+    state, which may still be necessary for purely textual errors).
     """
-    seed_ids: set[str] = set()
+    seed_evt: set[str] = set()
+    seed_ent: set[str] = set()
+    seed_chn: set[str] = set()
+    seed_loc: set[str] = set()
+    seed_obj: set[str] = set()
+    seed_world: set[str] = set()
     for err in prog_errors:
-        for match in _EVT_ID_RE.findall(err.detail):
-            seed_ids.add(match)
-    if not seed_ids:
+        seed_evt.update(_EVT_ID_RE.findall(err.detail))
+        seed_ent.update(_ENT_ID_RE.findall(err.detail))
+        seed_chn.update(_CHN_ID_RE.findall(err.detail))
+        seed_loc.update(_LOC_ID_RE.findall(err.detail))
+        seed_obj.update(_OBJ_ID_RE.findall(err.detail))
+        seed_world.update(_WORLD_ID_RE.findall(err.detail))
+
+    if not (seed_evt or seed_ent or seed_chn or seed_loc or seed_obj or seed_world):
         return None
 
     valid_event_ids = {e.id for e in world_state.events}
-    seed_ids &= valid_event_ids
+    seed_evt &= valid_event_ids
 
-    # One-hop causal expansion
-    expanded = set(seed_ids)
+    # One-hop causal expansion from seed events
+    expanded_evt = set(seed_evt)
     for ce in world_state.causal_topology:
-        if ce.source_id in seed_ids and ce.target_id in valid_event_ids:
-            expanded.add(ce.target_id)
-        if ce.target_id in seed_ids and ce.source_id in valid_event_ids:
-            expanded.add(ce.source_id)
+        if ce.source_id in seed_evt and ce.target_id in valid_event_ids:
+            expanded_evt.add(ce.target_id)
+        if ce.target_id in seed_evt and ce.source_id in valid_event_ids:
+            expanded_evt.add(ce.source_id)
 
-    relevant_events = [e for e in world_state.events if e.id in expanded]
+    relevant_events = [e for e in world_state.events if e.id in expanded_evt]
     relevant_causal = [
         ce for ce in world_state.causal_topology
-        if ce.source_id in expanded and ce.target_id in expanded
+        if ce.source_id in expanded_evt and ce.target_id in expanded_evt
+    ]
+
+    # Channels referenced in errors
+    relevant_channels = [
+        ch.model_dump(mode="json")
+        for ch in world_state.channels if ch.id in seed_chn
+    ]
+
+    # Spatial edges touching any seed location or entity
+    relevant_spatial = [
+        se.model_dump(mode="json") for se in world_state.spatial_topology
+        if se.source_id in seed_loc or se.target_id in seed_loc
+        or se.source_id in seed_ent or se.target_id in seed_ent
+    ]
+
+    # Social edges touching any seed entity
+    relevant_social = [
+        sr.model_dump(mode="json") for sr in world_state.social_topology
+        if sr.source_id in seed_ent or sr.target_id in seed_ent
     ]
 
     # Ontology header — names only, no nested timelines / beliefs.
@@ -7155,15 +7827,61 @@ def _build_correction_subgraph(
     import json as _json
     payload = {
         "_subgraph_note": (
-            f"Error-relevant subgraph: {len(relevant_events)} of "
-            f"{len(world_state.events)} events shown. Patch ids must "
-            f"target the full WorldState."
+            f"Error-relevant subgraph: {len(relevant_events)}/"
+            f"{len(world_state.events)} events, "
+            f"{len(relevant_channels)}/{len(world_state.channels)} channels, "
+            f"{len(relevant_spatial)}/{len(world_state.spatial_topology)} spatial edges, "
+            f"{len(relevant_social)}/{len(world_state.social_topology)} social edges shown. "
+            f"Patch ids must target the full WorldState."
         ),
         "ontology_header": ontology,
         "events": [e.model_dump(mode="json") for e in relevant_events],
         "causal_topology": [ce.model_dump(mode="json") for ce in relevant_causal],
+        "channels": relevant_channels,
+        "spatial_topology": relevant_spatial,
+        "social_topology": relevant_social,
     }
     return _json.dumps(payload, indent=2)
+
+
+def _format_correction_history(
+    history: Optional[List[Dict[str, Any]]],
+) -> str:
+    """Render previous correction-loop iterations into a prompt block.
+
+    Returns ``""`` when there's no prior history (first iteration). Each
+    history entry surfaces what the LLM tried last time and what the
+    deterministic side did with it (applied / regression / empty /
+    failed) so the agent can change strategy instead of re-emitting the
+    same patch and oscillating against the regression guard.
+    """
+    if not history:
+        return ""
+    lines: List[str] = [
+        "PRIOR CORRECTION ATTEMPTS (do NOT repeat strategies that "
+        "previously failed or were rejected):"
+    ]
+    for entry in history:
+        it = entry.get("iteration", "?")
+        status = entry.get("status", "unknown")
+        if entry.get("changes"):
+            change_preview = "; ".join(entry["changes"][:5])
+            if len(entry["changes"]) > 5:
+                change_preview += f"; …+{len(entry['changes']) - 5} more"
+            lines.append(
+                f"  - iter {it} [{status}] applied: {change_preview}"
+            )
+        if entry.get("errors"):
+            err_preview = "; ".join(entry["errors"][:5])
+            if len(entry["errors"]) > 5:
+                err_preview += f"; …+{len(entry['errors']) - 5} more"
+            lines.append(
+                f"    errors at start of iter {it}: {err_preview}"
+            )
+        notes = entry.get("note")
+        if notes:
+            lines.append(f"    note: {notes}")
+    return "\n".join(lines) + "\n\n"
 
 
 def _run_correction_patch(
@@ -7171,18 +7889,46 @@ def _run_correction_patch(
     prog_errors: List["ValidationIssue"],
     config: ExtractionConfig,
     log_prefix: str,
-) -> Tuple[WorldStateV1, List[str]]:
+    history: Optional[List[Dict[str, Any]]] = None,
+) -> Tuple[WorldStateV1, List[str], str]:
     """Run one correction-agent iteration and apply the resulting patch.
 
-    Returns ``(new_world_state, repairs_applied)``. On any failure
-    (LLM error, regression guard tripped, empty patch) the original
-    *world_state* is returned unchanged and the failure is logged.
+    Parameters
+    ----------
+    history : list of dicts, optional
+        Compact log of previous correction iterations on this same
+        ``world_state``. Each entry has keys ``iteration`` (1-based),
+        ``status`` (one of the return statuses below), and either
+        ``errors`` (list of ``"[category] detail"`` strings) or
+        ``changes`` (list of repair lines). Surfaced verbatim in the
+        correction prompt so the LLM can see what was already tried
+        and avoid re-emitting patches that previously oscillated, were
+        rejected by the regression guard, or returned empty.
+
+    Returns ``(new_world_state, repairs_applied, status)`` where status
+    is one of:
+
+    * ``"applied"`` — patch applied successfully (``repairs_applied``
+      is non-empty).
+    * ``"empty_patch"`` — the agent intentionally returned an empty
+      patch (it could not find a safe fix); the orchestrator should
+      stop retrying because re-asking will produce the same result.
+    * ``"regression"`` — patch was rejected by the regression guard;
+      orchestrator may continue but the same errors will likely
+      recur, so the oscillation guard should kick in.
+    * ``"agent_failed"`` — transient LLM error; orchestrator may
+      retry within the remaining budget.
+    * ``"apply_failed"`` — patch could not be applied to the state;
+      orchestrator may retry.
+
+    On any non-``"applied"`` status the original *world_state* is
+    returned unchanged.
     """
     try:
         agent = _build_correction_patch_agent(config)
     except Exception:
         logger.exception("%s Failed to build correction patch agent.", log_prefix)
-        return world_state, []
+        return world_state, [], "agent_failed"
 
     ws_json = world_state.model_dump_json(indent=2)
     error_summary = "\n".join(
@@ -7221,6 +7967,7 @@ def _run_correction_patch(
         f"these errors. Do not re-emit the entire world state. Do not drop "
         f"unrelated edges, events, or entities. If you cannot determine a "
         f"safe fix, leave the patch empty and explain why in `notes`.\n\n"
+        f"{_format_correction_history(history)}"
         f"ERRORS:\n{error_summary}{payload_note}\n\n"
         f"WORLD STATE:\n{state_payload}"
     )
@@ -7229,7 +7976,7 @@ def _run_correction_patch(
         result = agent.run_sync(correction_msg, **_user_kwargs())
     except Exception:
         logger.exception("%s Correction agent FAILED — keeping previous state.", log_prefix)
-        return world_state, []
+        return world_state, [], "agent_failed"
 
     patch: WorldStatePatch = result.output
     if (
@@ -7252,7 +7999,7 @@ def _run_correction_patch(
             "%s Correction agent returned an empty patch (notes: %r).",
             log_prefix, patch.notes,
         )
-        return world_state, []
+        return world_state, [], "empty_patch"
 
     try:
         new_ws, changes = _apply_world_state_patch(world_state, patch)
@@ -7261,7 +8008,7 @@ def _run_correction_patch(
             "%s Failed to apply correction patch — keeping previous state.",
             log_prefix,
         )
-        return world_state, []
+        return world_state, [], "apply_failed"
 
     regression = _is_correction_regression(world_state, new_ws)
     if regression:
@@ -7270,13 +8017,13 @@ def _run_correction_patch(
             "Patch notes: %r",
             log_prefix, regression, patch.notes,
         )
-        return world_state, []
+        return world_state, [], "regression"
 
     logger.info(
         "%s Applied correction patch: %d change(s). Notes: %r",
         log_prefix, len(changes), patch.notes,
     )
-    return new_ws, changes
+    return new_ws, changes, "applied"
 
 
 # =====================================================================
@@ -7682,164 +8429,6 @@ def validate_world_state(
 # Top-Level Orchestrator
 # =====================================================================
 
-def run_extraction(
-    text: str,
-    config: ExtractionConfig | None = None,
-    *,
-    user_id: Optional[int] = None,
-    project_id: Optional[int] = None,
-    version_id: Optional[int] = None,
-) -> Tuple[WorldStateV1, ValidationReport]:
-    """
-    Run the full 3-step extraction pipeline.
-
-    Parameters
-    ----------
-    text : str
-        Full narrative prose text.
-    config : ExtractionConfig or None
-        Pipeline configuration. Uses defaults if None.
-    user_id : int, optional
-        User ID for cost tracking and audit logging.
-    project_id : int, optional
-        Project ID for cost tracking context.
-    version_id : int, optional 
-        Version ID for cost tracking context.
-
-    Returns
-    -------
-    (WorldStateV1, ValidationReport)
-        The assembled world state and its validation report.
-    """
-    config = config or ExtractionConfig()
-    logger.info("[Pipeline] Starting extraction with model=%s, strategy=%s", config.model, config.chunk_strategy)
-    
-    # Prepare user context for cost tracking
-    user_context = {
-        'user_id': user_id,
-        'project_id': project_id,
-        'version_id': version_id
-    }
-    # Set ContextVar so internal agent calls (extract_topology,
-    # _run_correction_patch, extract_world_trait_timelines, validation,
-    # research) can splat the same kwargs into ``agent.run_sync`` for
-    # cost attribution — see ``_user_kwargs()``. The ``with`` block
-    # captures the set token and resets it on exit (including
-    # exceptions) so back-to-back extractions on the same thread don't
-    # inherit stale attribution metadata.
-    with _user_context_scope(user_context):
-        # Step 1: Global Ontology
-        # Step 1: Extract ontology
-        register = extract_ontology(text, config, user_context)
-
-        # Step 2: Chunk Topology
-        chunks = chunk_text(text, strategy=config.chunk_strategy, min_chunk_chars=config.min_chunk_chars)
-        logger.info("[Pipeline] Text split into %d chunks.", len(chunks))
-        topologies = extract_topology(chunks, register, config)
-
-        # Step 3: Assembly + Normalize + Auto-Repair + Validation
-        world_state = assemble_world_state(register, topologies)
-
-        # Normalize fabula_time if the LLM used small integers
-        world_state = _normalize_fabula_times(world_state, config.fabula_time_spacing)
-
-        # Auto-repair broken links and duplicates before validation
-        world_state, repairs = _auto_repair(world_state)
-        if repairs:
-            logger.info("[Pipeline] Auto-repaired %d issues before validation.", len(repairs))
-
-        # Step 5: Post-assembly world trait timeline extraction
-        world_state = extract_world_trait_timelines(world_state, config)
-
-        report = validate_world_state(world_state, config)
-
-        # --- Correction retry loop ---
-        # If programmatic errors remain after auto-repair, attempt LLM correction.
-        # Snapshot event identity so we can re-run trait timelines afterwards if
-        # any patch renamed / dropped / time-shifted events (which would have
-        # left the pre-correction world-trait snapshots anchored to stale events).
-        pre_correction_event_signature = tuple(
-            (e.id, e.fabula_time) for e in world_state.events
-        )
-        for retry_num in range(config.max_correction_retries):
-            prog_errors = [i for i in report.issues if i.severity == "error"]
-            if not prog_errors:
-                break
-
-            log_prefix = f"[Pipeline·Correction {retry_num + 1}/{config.max_correction_retries}]"
-            logger.info(
-                "%s %d errors remain — running patch-based correction agent.",
-                log_prefix, len(prog_errors),
-            )
-
-            new_world_state, change_log = _run_correction_patch(
-                world_state, prog_errors, config, log_prefix,
-            )
-            if not change_log:
-                # No-op or rejected patch — retrying would just burn more tokens.
-                break
-            world_state = new_world_state
-            repairs.extend(change_log)
-
-            # Re-normalise, re-repair, and re-validate after the patch.
-            world_state = _normalize_fabula_times(world_state, config.fabula_time_spacing)
-            world_state, new_repairs = _auto_repair(world_state)
-            if new_repairs:
-                repairs.extend(new_repairs)
-            report = validate_world_state(world_state, config)
-
-        # If correction renamed, dropped, or time-shifted events the
-        # pre-correction world-trait timelines may now reference stale ids
-        # or wrong fabula ticks. Re-run timeline extraction once and re-
-        # validate. Skipped when nothing relevant changed.
-        post_correction_event_signature = tuple(
-            (e.id, e.fabula_time) for e in world_state.events
-        )
-        if (
-            post_correction_event_signature != pre_correction_event_signature
-            and world_state.world_traits
-        ):
-            logger.info(
-                "[Pipeline] Re-running world-trait timeline extraction after "
-                "correction touched events.",
-            )
-            try:
-                world_state = extract_world_trait_timelines(world_state, config)
-                world_state, post_repairs = _auto_repair(world_state)
-                if post_repairs:
-                    repairs.extend(post_repairs)
-                report = validate_world_state(world_state, config)
-            except Exception:
-                logger.exception(
-                    "[Pipeline] Post-correction timeline re-extraction failed — "
-                    "keeping pre-correction timelines.",
-                )
-
-        # ------------------------------------------------------------------
-        # Step 3d — optional, segregated external research (post-assembly)
-        # ------------------------------------------------------------------
-        try:
-            world_state = _run_research_step(world_state, config)
-        except Exception:
-            logger.exception("[Pipeline·Research] unexpected failure — continuing without research.")
-
-        # ------------------------------------------------------------------
-        # Step 3e — capture source narrative style for downstream fidelity
-        # ------------------------------------------------------------------
-        try:
-            world_state.narrative_style = infer_narrative_style(text)
-            logger.info(
-                "[Pipeline] Narrative style inferred: format=%s, target=%d–%d words, density=%s.",
-                world_state.narrative_style.format,
-                world_state.narrative_style.target_word_min,
-                world_state.narrative_style.target_word_max,
-                world_state.narrative_style.prose_density,
-            )
-        except Exception:
-            logger.exception("[Pipeline] Narrative-style inference failed — continuing without it.")
-
-        return world_state, report
-
 async def run_extraction_async(
     text: str,
     config: ExtractionConfig | None = None,
@@ -7848,7 +8437,7 @@ async def run_extraction_async(
     project_id: Optional[int] = None,
     version_id: Optional[int] = None,
 ) -> Tuple[WorldStateV1, ValidationReport]:
-    """Async variant of :func:`run_extraction`.
+    """Run the full 3-step extraction pipeline (async).
     
     Parameters
     ----------
@@ -7878,8 +8467,9 @@ async def run_extraction_async(
         'project_id': project_id,
         'version_id': version_id,
     }
-    # See ``run_extraction`` for rationale; ContextVar is async-task
-    # local under ``asyncio``. Note: ``asyncio.to_thread`` calls below
+    # ContextVar is async-task local under ``asyncio``; the ``with``
+    # block sets it for the duration of this orchestrator and resets
+    # on exit (including exceptions). Note: ``asyncio.to_thread`` calls below
     # automatically copy the current Context (via
     # ``contextvars.copy_context``), so the worker thread sees the same
     # ``_user_context_var`` as the orchestrator task.
@@ -7916,10 +8506,34 @@ async def run_extraction_async(
         )
 
         # --- Correction retry loop ---
+        # Track the signature of the outstanding errors across iterations
+        # so we can detect oscillation (the patch keeps fixing X and
+        # breaking Y, then fixing Y and breaking X). Without this guard
+        # the loop runs to ``max_correction_retries`` even when no
+        # progress is being made, burning LLM tokens for no benefit.
+        seen_error_signatures: set[Tuple[Tuple[str, str], ...]] = set()
+        # Compact iteration log fed back into each correction prompt so
+        # the LLM can see what was already tried (and rejected) and
+        # avoid re-emitting the same patch shape.
+        correction_history: List[Dict[str, Any]] = []
         for retry_num in range(config.max_correction_retries):
             prog_errors = [i for i in report.issues if i.severity == "error"]
             if not prog_errors:
                 break
+
+            error_signature = tuple(sorted(
+                (i.category, i.detail) for i in prog_errors
+            ))
+            if error_signature in seen_error_signatures:
+                logger.warning(
+                    "[Pipeline·Async·Correction] Same error set recurred "
+                    "after a correction iteration (oscillation detected) "
+                    "— breaking out of the retry loop with %d error(s) "
+                    "remaining.",
+                    len(prog_errors),
+                )
+                break
+            seen_error_signatures.add(error_signature)
 
             log_prefix = f"[Pipeline·Async·Correction {retry_num + 1}/{config.max_correction_retries}]"
             logger.info(
@@ -7927,15 +8541,40 @@ async def run_extraction_async(
                 log_prefix, len(prog_errors),
             )
 
+            iter_errors_compact = [
+                f"[{i.category}] {i.detail}" for i in prog_errors
+            ]
+
             # ``_run_correction_patch`` calls ``agent.run_sync`` internally;
             # wrap it in ``to_thread`` so concurrent extraction tasks under
             # the same event loop are not stalled by the LLM round-trip.
-            new_world_state, change_log = await asyncio.to_thread(
+            new_world_state, change_log, patch_status = await asyncio.to_thread(
                 _run_correction_patch,
                 world_state, prog_errors, config, log_prefix,
+                correction_history,
             )
-            if not change_log:
+            correction_history.append({
+                "iteration": retry_num + 1,
+                "status": patch_status,
+                "errors": iter_errors_compact,
+                "changes": list(change_log),
+            })
+            if patch_status == "empty_patch":
+                # Agent intentionally signalled "no safe fix available" —
+                # re-asking will return the same answer, so stop early
+                # and let the remaining errors surface on the report.
+                logger.info(
+                    "%s Correction agent returned an intentional empty "
+                    "patch; ending correction loop with %d error(s) "
+                    "remaining.",
+                    log_prefix, len(prog_errors),
+                )
                 break
+            if not change_log:
+                # Transient failure (agent_failed / apply_failed /
+                # regression). Burn one retry slot but keep going so
+                # the oscillation guard above can decide when to stop.
+                continue
             world_state = new_world_state
             repairs.extend(change_log)
 
@@ -7987,5 +8626,24 @@ async def run_extraction_async(
             )
         except Exception:
             logger.exception("[Pipeline·Async] Narrative-style inference failed — continuing without it.")
+
+        # Final-pass validation snapshot. Research + narrative-style do
+        # not normally mutate topology, but a stale ``report`` would
+        # silently misrepresent the returned WorldState if anything in
+        # those steps did edit it. Cheap programmatic re-validation
+        # ensures ``report`` always describes what we actually return.
+        try:
+            final_report = await asyncio.to_thread(
+                validate_world_state, world_state, config,
+            )
+            # Preserve the accumulated repairs log across the refresh.
+            final_report.repairs = list(repairs)
+            report = final_report
+        except Exception:
+            logger.exception(
+                "[Pipeline·Async] Final-pass validation failed — "
+                "returning the pre-research report.",
+            )
+            report.repairs = list(repairs)
 
         return world_state, report

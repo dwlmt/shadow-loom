@@ -149,12 +149,13 @@ The thresholds map directly onto the auditor categories described in
 | `EXTRACTION_CHUNK_STRATEGY` | `act_headings` | `act_headings` splits on `Act N` / `Chapter N` markers, `paragraph` packs by size. |
 | `EXTRACTION_OUTPUT_RETRIES` | `5` | First-pass structured-output retries. |
 | `EXTRACTION_FABULA_TIME_SPACING` | `1000` | Initial gap between fabula-time stamps; leaves room for flashbacks/inserts. |
-| `EXTRACTION_MIN_CHUNK_CHARS` | `1500` | Minimum chunk size before merging adjacent paragraphs. |
+| `EXTRACTION_MIN_CHUNK_CHARS` | `800` | Minimum chunk size before merging adjacent paragraphs. |
 | `EXTRACTION_CHUNK_OVERLAP_CHARS` | `300` | Trailing context prepended to the next chunk for coreference. |
 | `EXTRACTION_MAX_CORRECTION_RETRIES` | `5` | Max validation-feedback repair passes (after the initial extract). |
 | `EXTRACTION_VALIDATION_PAYLOAD_MAX_CHARS` | `600000` | Hard cap on the WorldStateV1 JSON sent to the LLM validator (Step 3 Phase B). When the serialised state exceeds this, the validator switches to a compact projection (timeline-stripped) before falling back to truncation. Sized for a 256K-token context window with headroom for system prompt and structured-output response — lower this for smaller-context models. |
-| `EXTRACTION_CORRECTION_SUBGRAPH_THRESHOLD_CHARS` | `400000` | When the WorldStateV1 JSON sent to the correction-patch agent exceeds this, fall back to an error-relevant subgraph (events named in errors + immediate causal neighbours + ontology header) instead of the full state. The patch contract still applies to the full world on the way out. |
-| `EXTRACTION_MAX_CONCURRENT_CHUNKS` | `8` | Parallel async LLM extraction concurrency. Tune to your model's throughput. |
+| `EXTRACTION_CORRECTION_SUBGRAPH_THRESHOLD_CHARS` | `400000` | When the WorldStateV1 JSON sent to the correction-patch agent exceeds this, fall back to an error-relevant subgraph (events, entities, channels, locations, objects, and world traits whose ids appear in the error details, plus one-hop causal neighbours and any spatial/social edges touching them) instead of the full state. The patch contract still applies to the full world on the way out. |
+| `EXTRACTION_MAX_CONCURRENT_CHUNKS` | `12` | Parallel async LLM extraction concurrency. Tune to your model's throughput. |
+| `EXTRACTION_PER_CHUNK_TIMEOUT_SECONDS` | `600` | Soft per-chunk timeout (seconds) for the Socratic→Physics→Social→Consequences chain. `0` disables. On `asyncio.TimeoutError` the chunk yields an empty `ChunkTopology` (with all stage flags marked failed) so the run can proceed; if more than 50% of chunks fail the orchestrator still aborts. |
 | `EXTRACTION_ESTIMATED_EVENTS_PER_CHUNK` | `10` | Pre-allocates syuzhet/fabula-time ranges for parallel extraction. |
 | `EXTRACTION_ENABLE_RESEARCH_AGENT` | `false` | Opt-in: run Step 3d external research after world-state assembly. Off by default. |
 | `EXTRACTION_RESEARCH_PROVIDER` | `none` | `none` (no-op) or `tavily` (requires `TAVILY_API_KEY` and `pip install -e ".[research]"`). |

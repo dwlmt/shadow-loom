@@ -10,7 +10,6 @@ Chat/query input lives in the bottom command bar (not here).
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import TYPE_CHECKING
 
@@ -260,7 +259,7 @@ def _confirm_reingest(state: AppState, edited_text: str) -> None:
 
 def _start_reingest(state: AppState, edited_text: str) -> None:
     """Kick off background re-ingestion task."""
-    from shadow_loom.ingestion import ExtractionConfig, run_extraction
+    from shadow_loom.ingestion import ExtractionConfig, run_extraction_async
 
     project_id = state.project_id
     user_id = state.user_id
@@ -285,8 +284,11 @@ def _start_reingest(state: AppState, edited_text: str) -> None:
     async def _do_work():
         try:
             with capture_logs_to_task(state, task):
-                ws, report = await asyncio.to_thread(
-                    run_extraction, edited_text, extraction_config,
+                # Use the async pipeline so chunk extraction runs in
+                # parallel (gated by ``max_concurrent_chunks``); see the
+                # ingest-dialog path for the longer rationale.
+                ws, report = await run_extraction_async(
+                    edited_text, extraction_config,
                 )
 
             # Bail out cleanly if the user navigated to a different

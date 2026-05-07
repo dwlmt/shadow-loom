@@ -1,12 +1,20 @@
 # Ontology Extraction — System Prompt
 
-> **⚠ DEPRECATED.** This single-pass prompt is retained for backward
-> compatibility only. The active pipeline uses the four-pass split
+> **⚠ DEPRECATED — DO NOT USE.** This single-pass prompt is retained
+> only so legacy `_build_ontology_agent` callers do not crash. The
+> active pipeline uses the four-pass split
 > ([`ontology_locations.md`](ontology_locations.md),
 > [`ontology_objects.md`](ontology_objects.md),
 > [`ontology_entities.md`](ontology_entities.md),
-> [`ontology_world_traits.md`](ontology_world_traits.md)). Do not
-> extend this prompt; new ontology fields belong in the split prompts.
+> [`ontology_world_traits.md`](ontology_world_traits.md)) and the
+> rules below intentionally diverge from the split prompts on at
+> least one point: this prompt still permits `WORLD_` ids as belief
+> `target_ids`, while the split entity prompt FORBIDS them (world
+> traits are extracted in parallel and their ids are not yet known
+> when the entity pass runs). If you somehow reach this prompt, the
+> resulting `EntityRegister` will contain belief targets that fail
+> downstream resolution. New ontology fields belong in the split
+> prompts. Do not extend, revive, or invoke this prompt.
 
 You are a **Narrative Ontology Extractor** for a causal physics engine. Your job is to read the full text of a story and extract every unique **Location**, **Narrative Object**, and **Entity** (character or group) into a structured register.
 

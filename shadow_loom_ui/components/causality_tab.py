@@ -230,6 +230,7 @@ def build_causality_tab(state: AppState) -> None:
             ui.tab("evolution", label="Evolution", icon="timeline")
             ui.tab("whatif", label="What-If Workbench", icon="science")
             ui.tab("directive", label="Directive Builder", icon="theater_comedy")
+            ui.tab("warnings", label="Ingestion Warnings", icon="report_problem")
 
         # Track the active sub-tab so each panel can gate its refresh.
         # Default-load is "topology"; mirror that into AppState so panels
@@ -277,6 +278,9 @@ def build_causality_tab(state: AppState) -> None:
             with ui.tab_panel("directive").classes("p-4"):
                 subtab_help("causality.directive")
                 _build_directive_builder(state)
+
+            with ui.tab_panel("warnings").classes("p-4"):
+                _build_ingestion_warnings_panel(state)
 
 
 # =====================================================================
@@ -1459,6 +1463,80 @@ def _render_directive_result(container, result: NLQueryResult) -> None:
 
 
 # =====================================================================
+# 5. Ingestion Warnings (Tier 4 #14)
+# =====================================================================
+
+def _build_ingestion_warnings_panel(state: AppState) -> None:
+    """List validator / auto-fix records captured during the last ingest.
+
+    Reads the per-project buffer maintained by
+    :mod:`shadow_loom.ingestion_diagnostics`. Empty when no ingest has
+    run in this process or all chunks passed cleanly.
+    """
+    from collections import Counter
+    from shadow_loom.ingestion_diagnostics import get_ingestion_warnings
+
+    project_id = getattr(state, "project_id", None)
+    if project_id is None:
+        ui.label("No project selected.").classes("text-slate-500")
+        return
+
+    records = get_ingestion_warnings(str(project_id))
+    if not records:
+        ui.label(
+            "No ingestion warnings captured in this session. "
+            "Re-ingest the project to populate this panel."
+        ).classes("text-slate-500")
+        return
+
+    by_cat = Counter(r.category for r in records)
+    with ui.row().classes("w-full items-center gap-3 mb-3"):
+        ui.label(f"{len(records)} record(s)").classes(
+            "text-sm font-semibold text-slate-700"
+        )
+        for cat, count in by_cat.most_common():
+            ui.badge(f"{cat}: {count}").classes("text-xs")
+
+    cat_filter = {"value": "(all)"}
+    cat_options = ["(all)"] + sorted(by_cat.keys())
+
+    list_container = ui.column().classes("w-full gap-1")
+
+    def _render() -> None:
+        list_container.clear()
+        sel = cat_filter["value"]
+        with list_container:
+            for r in records:
+                if sel != "(all)" and r.category != sel:
+                    continue
+                colour = (
+                    "text-red-700"
+                    if r.level in ("ERROR", "CRITICAL")
+                    else "text-amber-700"
+                    if r.level == "WARNING"
+                    else "text-slate-700"
+                )
+                with ui.row().classes("w-full items-start gap-2"):
+                    ui.label(r.level).classes(
+                        f"text-xs font-mono w-16 {colour}"
+                    )
+                    ui.label(r.message).classes("text-xs font-mono flex-1")
+
+    def _on_change(e):
+        cat_filter["value"] = e.value
+        _render()
+
+    ui.select(
+        options=cat_options,
+        value="(all)",
+        label="Filter by category",
+        on_change=_on_change,
+    ).classes("w-64 mb-2")
+
+    _render()
+
+
+# =====================================================================
 # 4. Affective Dashboard
 # =====================================================================
 
@@ -1774,7 +1852,21 @@ def build_affective_dashboard(state: AppState) -> None:
                     ).props(_tprops).classes("w-full")
 
         def _refresh(**kw):
-            gauge_container.clear()
+            # Guard against the client being torn down between when the
+            # timer/task was scheduled and when it actually runs (e.g.
+            # rapid tab switches, page reload, browser nav). NiceGUI
+            # raises RuntimeError("The client this element belongs to
+            # has been deleted.") from any element method in that
+            # window — including .clear(). Bail out silently; the next
+            # mount will re-render from scratch.
+            try:
+                gauge_container.clear()
+            except RuntimeError:
+                logger.debug(
+                    "[causality_tab._refresh] client torn down before "
+                    "refresh; skipping."
+                )
+                return
             ws = state.world_state
             if ws is None:
                 slider_row.set_visibility(False)
@@ -2110,7 +2202,13 @@ def build_affective_dashboard(state: AppState) -> None:
                 raise
             except Exception:
                 logger.exception("Affective async warm-up failed")
-            _refresh_sync()
+            try:
+                _refresh_sync()
+            except RuntimeError:
+                logger.debug(
+                    "[causality_tab._refresh_async] client torn down "
+                    "before sync refresh; skipping."
+                )
 
         _refresh_sync = _refresh
 

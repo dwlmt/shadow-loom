@@ -58,14 +58,16 @@ world_state  ─▶ ┌───────────────────
 ## Step 1 — Ingestion (raw text → `WorldStateV1`)
 
 Only runs when the caller supplies `raw_text=`. Implemented in
-[`shadow_loom/ingestion.py::run_extraction`](../shadow_loom/ingestion.py)
-(sync) and `run_extraction_async` (parallel chunks).
+[`shadow_loom/ingestion.py::run_extraction_async`](../shadow_loom/ingestion.py)
+(async, parallel chunks).
 
 The extraction is a **5-step LLM cascade** with a programmatic safety net.
 
-### 1a. Global Coreference Pre-Pass — `extract_ontology`
+### 1a. Global Coreference Pre-Pass — `extract_ontology_async`
 
-Three (optionally four) parallel LLM agents extract the static ontology:
+Step 1a (locations) runs first. Steps 1b (objects) and 1d (world traits)
+then run in parallel; Step 1c (entities) chains after 1b so the entity
+agent receives the resolved Object Register for belief grounding.
 
 | Sub-step | Agent | Output | Prompt |
 |---|---|---|---|
@@ -84,12 +86,20 @@ Splits the prose by `act_headings` (default) or `paragraph` strategy, padding
 each chunk with the previous chunk's last `chunk_overlap_chars` characters so
 references survive boundaries. Tunable via `ExtractionConfig.min_chunk_chars`.
 
-### 1c. Per-Chunk Topology — `extract_topology`
+### 1c. Per-Chunk Topology — `extract_topology_async`
 
 For each chunk the pipeline runs a **Socratic scaffold** first, then
 decomposes the structured extraction across **three specialist agents**
-(Step 3a → 3b ∥ 3c). The Social and Consequences agents run concurrently
-in async mode because both depend only on the Physics output.
+in sequence (Step 3a → 3b → 3c). Consequences depends on Social's
+extracted utterance events and channels for belief provenance, so the
+two run sequentially within a chunk; chunk-level parallelism (gated by
+`ExtractionConfig.max_concurrent_chunks`, default 12) provides the
+throughput. A per-chunk soft timeout
+(`ExtractionConfig.per_chunk_timeout_seconds`, default `600` s) wraps
+the entire Socratic→Physics→Social→Consequences chain in
+`asyncio.wait_for`; a wedged LLM call is cancelled and that chunk
+yields an empty `ChunkTopology` (with all stage flags marked failed) so
+the rest of the run can proceed. Set to `0` to disable.
 
 | Step | Agent | Output | Prompt |
 |---|---|---|---|
@@ -129,8 +139,12 @@ later).
 
 Pure-Python pass that fixes mechanical issues without touching the LLM:
 broken `source_id`/`target_id` references resolved by fuzzy match, exact
-duplicates dropped, orphan edges deleted, syuzhet indices made contiguous.
-Returns the list of repairs for the validation report.
+duplicates dropped, orphan edges deleted, syuzhet indices made
+contiguous. Invalid `Entity.location_id` values are **cleared to `None`**
+(rather than silently re-pointed at "the first location"), since
+plausible-but-wrong geography is a worse failure mode than "unknown
+location". Returns the list of repairs, which is later attached to
+`ValidationReport.repairs` so downstream UIs can audit silent fixes.
 
 ### 1g. World-Trait Timelines — `extract_world_trait_timelines`
 
@@ -143,14 +157,45 @@ seasons turn). These become `WorldTraitSnapshot` entries on
 
 `validate_world_state` runs `_programmatic_validation` (hallucinated IDs,
 broken links, contradictions, duplicates, orphans). If errors remain, a
-**correction agent** is invoked with the error summary + the current state
-(truncated to ~80 KB). Up to `max_correction_retries` passes are run; after
-each, `_normalize_fabula_times` and `_auto_repair` re-run and validation
-re-checks. If correction itself raises, the previous state is kept.
+**correction agent** is invoked with the error summary + the current
+state. When the serialised state exceeds
+`correction_subgraph_threshold_chars` (default 400 KB) the prompt is
+switched to an **error-relevant subgraph** that includes the events,
+causal neighbours, channels, spatial edges and social edges referenced
+by the error ids — not just events — so non-event errors
+(channel/spatial/social) still get the right context.
 
-The result is `(WorldStateV1, ValidationReport)`. The pipeline records an
-`IngestionStepRecord` (event/entity/location counts + `is_valid`) and wraps
-the world state in a fresh `VersionedWorldModel` at version 0.
+Up to `max_correction_retries` passes are run. Each pass returns a
+structured status (`applied` / `empty_patch` / `regression` /
+`agent_failed` / `apply_failed`):
+
+* `empty_patch` — the agent intentionally signalled "no safe fix";
+  the loop stops because re-asking will return the same answer.
+* `regression` / `agent_failed` / `apply_failed` — transient; the loop
+  burns one retry slot but continues so the **oscillation guard** can
+  decide when to stop.
+* The oscillation guard hashes the outstanding error set after each
+  iteration and breaks the loop the moment the same set recurs (the
+  patch keeps fixing X and breaking Y, then fixing Y and breaking X).
+
+Each iteration's compact log (errors, status, applied changes) is fed
+back into the next correction prompt under a `PRIOR CORRECTION ATTEMPTS`
+block so the LLM can change strategy instead of re-emitting the same
+patch shape. After every applied patch, `_normalize_fabula_times` and
+`_auto_repair` re-run and validation re-checks.
+
+A **regression guard** (`_is_correction_regression`) rejects any patch
+that drops more than 50 % of any topology, any entities, any channels,
+or any world traits — silent destructive hallucinations are kept out of
+the persisted state.
+
+The result is `(WorldStateV1, ValidationReport)`. After research and
+narrative-style inference run, a **final-pass `validate_world_state`**
+is invoked once more so the returned report always describes the
+returned state (the accumulated `repairs` log is preserved across the
+refresh). The pipeline records an `IngestionStepRecord` (event/entity/
+location counts + `is_valid`) and wraps the world state in a fresh
+`VersionedWorldModel` at version 0.
 
 > **In short:** ingestion is five LLM passes plus a programmatic safety
 > net plus a correction loop — designed so that the topology handed to

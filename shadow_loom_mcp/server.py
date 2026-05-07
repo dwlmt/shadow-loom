@@ -80,7 +80,7 @@ from shadow_loom.db import (
     update_project,
     VersionMutationError,
 )
-from shadow_loom.ingestion import ExtractionConfig, run_extraction
+from shadow_loom.ingestion import ExtractionConfig, run_extraction_async
 from shadow_loom.models import (
     WorldStateV1,
     reconstruct_entity_at,
@@ -1952,7 +1952,7 @@ async def ingest(
     await ctx.report_progress(1, 3, "Extracting ontology and topology...")
 
     try:
-        ws, report = run_extraction(text, config)
+        ws, report = await run_extraction_async(text, config)
     except Exception as e:
         logger.exception("Ingestion failed")
         return {"error": f"Ingestion failed: {e}"}

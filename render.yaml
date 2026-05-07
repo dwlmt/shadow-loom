@@ -74,6 +74,13 @@ services:
         sync: false
       - key: OPENROUTER_BASE_URL
         value: https://openrouter.ai/api/v1
+      # Provider-routing sort: prefer the highest-throughput backend
+      # (best for long ingestion runs). Use "price" for cheapest,
+      # "latency" for fastest first token, or empty to disable and
+      # fall back to OpenRouter's default price-based load balancer.
+      # See https://openrouter.ai/docs/features/provider-routing.
+      - key: OPENROUTER_PROVIDER_SORT
+        value: throughput
       # Set DEFAULT_MODEL once and every pipeline stage inherits it.
       # Override individual stages (GENERATION_MODEL, AUDITOR_MODEL,
       # AUDITOR_GENERATION_MODEL, EXTRACTION_MODEL, QUERY_PARSING_MODEL)

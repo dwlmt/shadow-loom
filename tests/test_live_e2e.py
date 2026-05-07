@@ -1476,8 +1476,9 @@ class TestChannelExtractionE2E:
 
     def test_dialogue_plot_extracts_channels(self):
         cfg = ExtractionConfig(model=_MODEL)
-        from shadow_loom.ingestion import run_extraction
-        ws, report = run_extraction(_DIALOGUE_PLOT, config=cfg)
+        import asyncio
+        from shadow_loom.ingestion import run_extraction_async
+        ws, report = asyncio.run(run_extraction_async(_DIALOGUE_PLOT, config=cfg))
         assert isinstance(ws, WorldStateV1)
         # Channels are a dict on WorldStateV1 — at least one for the
         # parlour conversation must be extracted.
@@ -1496,8 +1497,9 @@ class TestChannelExtractionE2E:
 
     def test_utterance_event_has_addressees_and_truth_value(self):
         cfg = ExtractionConfig(model=_MODEL)
-        from shadow_loom.ingestion import run_extraction
-        ws, _ = run_extraction(_DIALOGUE_PLOT, config=cfg)
+        import asyncio
+        from shadow_loom.ingestion import run_extraction_async
+        ws, _ = asyncio.run(run_extraction_async(_DIALOGUE_PLOT, config=cfg))
         utts = [e for e in ws.events if getattr(e, "speaker_id", None)]
         assert utts, "No utterance events extracted"
         # At least one utterance should carry addressees AND a truth_value.

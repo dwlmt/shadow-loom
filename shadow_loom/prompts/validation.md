@@ -59,16 +59,22 @@ Return a JSON object with:
 - `is_valid` (bool): `true` if no errors found (warnings are acceptable). `false` if any errors exist.
 - `issues` (list): Each issue has:
   - `severity` (str): `"error"` (must fix) or `"warning"` (informational).
-  - `category` (str): One of `"contradiction"`, `"orphan"`, `"missing_causal"`, `"missing_information"`, `"narrative_gap"`, `"missing_mutation"`, `"missing_state_timeline"`, `"broken_link"`, `"hallucinated_id"`, `"temporal"`, `"duplicate"`, `"dead_actor"`, `"type_mismatch"`, `"low_information_density"`.
+  - `category` (str): One of `"contradiction"`, `"orphan"`, `"missing_causal"`, `"missing_information"`, `"narrative_gap"`, `"missing_mutation"`, `"missing_state_timeline"`, `"low_information_density"`.
   - `detail` (str): Human-readable description of the specific problem.
 - `suggestions` (list[str]): Recommended fixes. Be specific — reference exact IDs and propose concrete changes.
+
+> **Forbidden categories.** Do NOT emit issues with `category` in
+> `{"broken_link", "hallucinated_id", "temporal", "duplicate",
+> "dead_actor", "type_mismatch"}`. These are detected and corrected by
+> the deterministic validator/auto-repair layer; LLM-emitted duplicates
+> would be discarded and only waste your output budget.
 
 ---
 
 ## Rules
 
 1. **Be thorough but fair.** Minor stylistic issues are warnings, not errors.
-2. **Do NOT check structural issues** — hallucinated IDs, broken links, temporal ordering, duplicates, and dead-actor contradictions are already handled by code.
+2. **Do NOT check structural issues** — hallucinated IDs, broken links, temporal ordering, duplicates, and dead-actor contradictions are already handled by code (and listed under *Forbidden categories* above).
 3. **Logical contradictions are errors.** Traits/beliefs that conflict with events, impossible spatial movements.
 4. **Missing causal chains and information flows are errors** if they represent significant narrative omissions.
 5. **Orphaned nodes are warnings** unless they represent significant omissions.

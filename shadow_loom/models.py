@@ -1,8 +1,25 @@
 # SPDX-FileCopyrightText: 2026 David Rae Wilmot
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+import logging
+
 from pydantic import BaseModel, Field, model_validator, field_validator
-from typing import Any, List, Dict, Optional, Literal
+from typing import Annotated, Any, List, Dict, Optional, Literal
+
+_logger = logging.getLogger(__name__)
+
+
+# Tier 5 #16: shared annotated alias for entity ids. Non-breaking — we
+# expose the alias and use it on new fields; existing ``str`` fields
+# remain ``str`` to preserve backwards compatibility with fixtures /
+# example worlds that may emit looser ids during construction.
+EntityId = Annotated[
+    str,
+    Field(
+        pattern=r"^(?:ENT|OBJ|LOC|EVT|CHN)_[A-Z0-9_]+$",
+        description="Canonical Shadow Loom topology id (ENT_/OBJ_/LOC_/EVT_/CHN_).",
+    ),
+]
 
 # =====================================================================
 # PART 1: THE GRAPH DATABASE (The Reality Engine)
@@ -404,6 +421,39 @@ class EventNode(AMWNNode):
             "dropping of the bomb). Scenic / connective beats sit at 0.5–1.0."
         ),
     )
+
+    # Tier 5 #17: ``choice`` events are by definition deliberate decisions —
+    # they should have at least one actor. ``outcome`` events legitimately
+    # admit empty ``actor_ids`` (natural disasters, ambient happenings).
+    # ``utterance`` events may be authored by a speaker without populating
+    # ``actor_ids`` (chorus-anonymous quotes), so we tolerate empty there
+    # iff ``speaker_id`` is set. ``revelation`` events are narrator-side
+    # disclosures and need no actor.
+    #
+    # We emit a logger warning rather than raising — auto-repair runs
+    # downstream and the warning is captured by ingestion_diagnostics
+    # for surface in the Causality / Ingestion-Warnings UI panel.
+    @model_validator(mode="after")
+    def _warn_on_actorless_intentional_event(self) -> "EventNode":
+        import logging as _logging
+        _log = _logging.getLogger("shadow_loom.ingestion")
+        if self.event_type == "choice" and not self.actor_ids:
+            _log.warning(
+                "[Validator·EventNode] choice event %r has no actor_ids "
+                "(a deliberate decision requires at least one decider).",
+                self.id,
+            )
+        elif (
+            self.event_type == "utterance"
+            and not self.actor_ids
+            and not self.speaker_id
+        ):
+            _log.warning(
+                "[Validator·EventNode] utterance event %r has neither "
+                "actor_ids nor speaker_id.",
+                self.id,
+            )
+        return self
 
 class AMWNEdge(BaseModel):
     """Base class for all topology edges. Distinct from AMWNNode."""
@@ -1189,10 +1239,14 @@ class WorldStateV1(BaseModel):
             on ``A→B`` means *A holds power over B*, so the dyad's
             other half necessarily reads as *B holds power under A* —
             same magnitude, flipped sign.
-          * Every mirrored metric is marked ``observed=False`` and
-            ``evidence_strength="weak"`` so the abduction reasoner,
-            audit asymmetry score, and any later extraction treat it
-            as a fallback prior rather than ground truth.
+          * Every mirrored metric is marked ``observed=False``,
+            ``evidence_strength="weak"``, has its ``inertia`` halved
+            (so the abduction blender doesn't treat the prior as
+            calcified), and resets ``last_updated_fabula`` to ``0``
+            (the canonical "no recent observation" sentinel used by
+            ``default_relationship_metrics_dict``). Together these
+            ensure the mirror reads as a fallback prior rather than
+            ground truth across every downstream consumer.
 
         Idempotent: a world that already has both directions of every
         dyad is unchanged. Runs at construction time so every
@@ -1203,6 +1257,14 @@ class WorldStateV1(BaseModel):
         edges = list(self.social_topology)
         if not edges:
             return self
+        # Only mirror when *both* endpoints reference entities the world
+        # actually knows about. Mirroring an edge whose source or target
+        # is a hallucinated/unknown id would synthesise a second broken
+        # edge that ``_auto_repair`` then has to clean up — silently
+        # doubling the repair count and obscuring the original
+        # extraction error. Skipping the mirror leaves the lone broken
+        # edge intact for the existing ID-validation pass to flag.
+        known_ids = set(self.entities.keys())
         indexed: dict[tuple[str, str], RelationshipEdge] = {
             (e.source_entity_id, e.target_entity_id): e for e in edges
         }
@@ -1210,16 +1272,24 @@ class WorldStateV1(BaseModel):
         for (src, tgt), edge in list(indexed.items()):
             if (tgt, src) in indexed:
                 continue
+            if src not in known_ids or tgt not in known_ids:
+                continue
             new_metrics: dict[str, dict] = {}
             for name, m in edge.metrics.items():
                 value = float(m.value)
                 if name == "power_dynamic":
                     value = -value
+                # Mirrored metrics are weak fallback priors, not
+                # observations: halve the forward inertia (so the
+                # abduction blender does not treat them as calcified)
+                # and reset ``last_updated_fabula`` to 0 — the canonical
+                # "no recent observation" sentinel used by
+                # ``default_relationship_metrics_dict``.
                 new_metrics[name] = {
                     "value": value,
-                    "inertia": float(m.inertia),
+                    "inertia": max(0.0, float(m.inertia) * 0.5),
                     "evidence_strength": "weak",
-                    "last_updated_fabula": int(m.last_updated_fabula),
+                    "last_updated_fabula": 0,
                     "observed": False,
                 }
             if not new_metrics:
@@ -1233,8 +1303,13 @@ class WorldStateV1(BaseModel):
                 )
             except Exception:
                 # Validation of the mirror should never fail in
-                # practice — if it does, leave the gap rather than
-                # blocking world construction.
+                # practice — if it does, log and leave the gap rather
+                # than blocking world construction.
+                _logger.warning(
+                    "Failed to mirror RelationshipEdge %s→%s; leaving "
+                    "reverse direction missing.",
+                    src, tgt, exc_info=True,
+                )
                 continue
             mirrored.append(mirror)
             indexed[(tgt, src)] = mirror
