@@ -970,6 +970,37 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_ELIZABETH_MURDERED", target_id="ENT_CREATURE", rel_counterpart_id="ENT_ELIZABETH", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.5, mechanism="betrayal", evidence_strength="strong", causal_force=10.0, fabula_time=13000, propagation_delay=0),
         CausalEdge(source_id="EVT_VICTOR_RESCUED", target_id="ENT_WALTON", rel_counterpart_id="ENT_VICTOR", causality_type="mutation_social", trait_target="affinity", trait_delta=0.75, mechanism="emotional", evidence_strength="strong", causal_force=7.0, fabula_time=14500, propagation_delay=0),
         CausalEdge(source_id="EVT_VICTOR_RESCUED", target_id="ENT_VICTOR", rel_counterpart_id="ENT_WALTON", causality_type="mutation_social", trait_target="affinity", trait_delta=0.6, mechanism="emotional", evidence_strength="moderate", causal_force=6.0, fabula_time=14500, propagation_delay=0),
+        # ── auto-backfilled per-axis mutation_social ──
+        CausalEdge(source_id="EVT_CREATURE_FLEES", target_id="ENT_CREATURE", rel_counterpart_id="ENT_FELIX",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.26,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=3500, propagation_delay=0),
+        CausalEdge(source_id="EVT_CREATION", target_id="ENT_WILLIAM", rel_counterpart_id="ENT_CREATURE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.21,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=3000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_ELIZABETH_LETTER_NEWS_FROM_HOME", target_id="ENT_ELIZABETH", rel_counterpart_id="ENT_CREATURE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.26,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1800, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_ELIZABETH_LETTER_NEWS_FROM_HOME", target_id="ENT_ELIZABETH", rel_counterpart_id="ENT_JUSTINE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.26,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1800, propagation_delay=0),
+        CausalEdge(source_id="EVT_CREATION", target_id="ENT_WILLIAM", rel_counterpart_id="ENT_CREATURE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="fear", trait_delta=0.28,
+                   mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=3000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_ELIZABETH_LETTER_NEWS_FROM_HOME", target_id="ENT_ELIZABETH", rel_counterpart_id="ENT_CREATURE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="fear", trait_delta=0.28,
+                   mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=1800, propagation_delay=0),
+        CausalEdge(source_id="EVT_CREATURE_FLEES", target_id="ENT_CREATURE", rel_counterpart_id="ENT_FELIX",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.18,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=3500, propagation_delay=0),
+        CausalEdge(source_id="EVT_CREATION", target_id="ENT_WILLIAM", rel_counterpart_id="ENT_CREATURE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.28,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=3000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_ELIZABETH_LETTER_NEWS_FROM_HOME", target_id="ENT_ELIZABETH", rel_counterpart_id="ENT_CREATURE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.28,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1800, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_ELIZABETH_LETTER_NEWS_FROM_HOME", target_id="ENT_ELIZABETH", rel_counterpart_id="ENT_JUSTINE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.15,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1800, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────

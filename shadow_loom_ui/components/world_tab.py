@@ -254,21 +254,24 @@ def build_world_tab(state: AppState) -> None:
 
         def _set_live():
             # Route through the official setter so every other panel
-            # subscribed to FABULA_CURSOR_CHANGED re-renders in lockstep.
+            # subscribed to FABULA_CURSOR_CHANGED / SYUZHET_CURSOR_CHANGED
+            # re-renders in lockstep. Dispatch by active axis so a syuzhet
+            # axis flip back to live clears the syuzhet cursor (not the
+            # fabula one), keeping Genette's two clocks decoupled.
             _slider_state["local_origin"] = False
-            state.set_fabula_cursor(None)
+            state.set_active_cursor(None)
 
         def _on_slider_change():
             try:
                 t = int(time_slider.value)
             except (TypeError, ValueError):
                 return
-            if state.fabula_cursor == t:
+            if state.active_cursor == t:
                 return
-            # Mark this change as ours so the FABULA_CURSOR_CHANGED
-            # listener doesn't bounce the slider value back at us.
+            # Mark this change as ours so the cursor-change listener
+            # doesn't bounce the slider value back at us.
             _slider_state["local_origin"] = True
-            state.set_fabula_cursor(t)
+            state.set_active_cursor(t)
 
         def _nearest_event_label(t: int) -> str:
             """Return ``"t=N \u2014 nearest event description"`` for the slider tooltip.
@@ -375,11 +378,12 @@ def build_world_tab(state: AppState) -> None:
             event_index.sort(key=lambda x: x[0])
             _slider_state["event_index"] = event_index
             cur_prefix = "s" if axis == "syuzhet" else "t"
-            if state.fabula_cursor is None:
+            cursor_value = state.active_cursor
+            if cursor_value is None:
                 desired = tmax
                 label_text = "live"
             else:
-                desired = max(tmin, min(tmax, state.fabula_cursor))
+                desired = max(tmin, min(tmax, cursor_value))
                 label_text = f"{cur_prefix}={desired}"
             if not _slider_state["local_origin"]:
                 try:
@@ -434,9 +438,10 @@ def build_world_tab(state: AppState) -> None:
             # Snapshot the world model if a cursor is active. The
             # cursor value is on the active axis; resolve it back to
             # a fabula time for the entity/state replay.
-            if state.fabula_cursor is not None and tmax > 0:
+            cursor_value = state.active_cursor
+            if cursor_value is not None and tmax > 0:
                 try:
-                    eff = resolve_cursor(ws, axis, state.fabula_cursor)
+                    eff = resolve_cursor(ws, axis, cursor_value)
                     if eff is not None:
                         ws = snapshot_world_at(ws, eff)
                 except Exception:
@@ -711,6 +716,7 @@ def build_world_tab(state: AppState) -> None:
         # Graph snapshot, URL hydration) the World view re-snapshots to
         # match. Without this the slider thumbs would appear stuck.
         state.on(StateEvent.FABULA_CURSOR_CHANGED, _world_gated)
+        state.on(StateEvent.SYUZHET_CURSOR_CHANGED, _world_gated)
         state.on(StateEvent.TIME_AXIS_CHANGED, _on_world_axis_change)
 
 

@@ -1317,6 +1317,149 @@ def compute_hidden_channels_for(
     return assembler.compute_hidden_channels(syuzhet_anchor)
 
 
+# Event-types the instantiator treats as "this did not happen". Any
+# event carrying one of these tags is part of the world's *negative*
+# physics record — the renderer must not stage it as occurring.
+_PREVENTED_EVENT_TYPES = frozenset({"prevented", "never_happened", "removed"})
+
+
+def build_prevented_event_constraints(
+    world_state: WorldStateV1,
+    syuzhet_anchor: Optional[int],
+    *,
+    world_label: str = "this",
+) -> List[ConstraintBlock]:
+    """HARD constraints for events the physics records as NOT occurring.
+
+    Rendered prose must not stage any event whose ``event_type`` is in
+    :data:`_PREVENTED_EVENT_TYPES` (``prevented`` / ``never_happened`` /
+    ``removed``). These tags are emitted by the instantiator and the
+    Rung-2/3 surgery paths to mark non-occurrences in the canonical
+    record; without surfacing them on the brief the renderer reliably
+    re-narrates them as having happened (the event row still carries a
+    natural-language description).
+
+    Applied to every brief builder (observation / intervention /
+    counterfactual / directive) so the "what NOT to do" half of causal
+    physics travels alongside the "what to do" mechanism block.
+    """
+    events = list(getattr(world_state, "events", []) or [])
+    if not events:
+        return []
+    cap = syuzhet_anchor
+    prevented = []
+    for e in events:
+        if (getattr(e, "event_type", None) or "") not in _PREVENTED_EVENT_TYPES:
+            continue
+        ft = getattr(e, "fabula_time", None)
+        if cap is not None and ft is not None and ft > cap:
+            continue
+        prevented.append(e)
+    if not prevented:
+        return []
+    lines: List[str] = []
+    for e in prevented[:20]:
+        eid = getattr(e, "id", "?")
+        et = getattr(e, "event_type", "?")
+        desc = (getattr(e, "description", "") or "").strip()
+        if len(desc) > 120:
+            desc = desc[:117] + "..."
+        snippet = f" \u2014 {desc}" if desc else ""
+        lines.append(f"  - {eid} [{et}]{snippet}")
+    if len(prevented) > 20:
+        lines.append(f"  - ...and {len(prevented) - 20} more.")
+    return [ConstraintBlock(
+        constraint_type="narrative",
+        priority="hard",
+        instruction=(
+            f"=== PREVENTED EVENTS (HARD) === \u2014 the physics tags these "
+            f"events as not occurring in the {world_label} world. Do "
+            "NOT render any of them as having happened, do not stage "
+            "them in real time, and do not have characters witness, "
+            "remember, or react to them as past events. If a "
+            "character's plan or expectation depended on one of them, "
+            "render the consequence of its non-occurrence (the gap, "
+            "the frustrated plan, the absence) \u2014 not the event "
+            "itself.\n"
+            + "\n".join(lines)
+        ),
+        evidence={"prevented_event_ids": [getattr(e, "id", "?") for e in prevented]},
+    )]
+
+
+def build_false_proposition_constraints(
+    world_state: WorldStateV1,
+    syuzhet_anchor: Optional[int],
+    *,
+    world_label: str = "this",
+) -> List[ConstraintBlock]:
+    """HARD constraints for propositions committed FALSE at the anchor.
+
+    Walks ``Proposition.truth_at_fabula`` for every catalogued
+    proposition and selects the latest commit at or before
+    ``syuzhet_anchor``. Propositions whose latest applicable commit is
+    ``False`` are surfaced as a "do-not-render-as-true" block so the
+    renderer cannot stage their content as occurring in the scene.
+
+    Characters may still *believe* them (and that gap powers
+    dramatic-irony / surprise effects); the constraint targets the
+    narration layer, not the belief layer.
+    """
+    props = getattr(world_state, "propositions", None) or []
+    if not props:
+        return []
+    # ``propositions`` is canonically a List[Proposition] but historic
+    # snapshots / fixtures sometimes deliver a dict keyed by PROP_ id.
+    if isinstance(props, dict):
+        prop_iter = list(props.values())
+    else:
+        prop_iter = list(props)
+    cap = syuzhet_anchor if syuzhet_anchor is not None else None
+    falsified: List[tuple] = []
+    for p in prop_iter:
+        pid = getattr(p, "id", None) or getattr(p, "proposition_id", None) or "?"
+        truth_map = getattr(p, "truth_at_fabula", {}) or {}
+        if not truth_map:
+            continue
+        applicable = [
+            (int(t), bool(v))
+            for t, v in truth_map.items()
+            if cap is None or int(t) <= cap
+        ]
+        if not applicable:
+            continue
+        applicable.sort(key=lambda kv: kv[0])
+        last_t, last_v = applicable[-1]
+        if last_v is False:
+            falsified.append((pid, p, last_t))
+    if not falsified:
+        return []
+    lines: List[str] = []
+    for pid, p, t in falsified[:20]:
+        desc = (getattr(p, "description", "") or "").strip()
+        if len(desc) > 120:
+            desc = desc[:117] + "..."
+        snippet = f" \u2014 {desc}" if desc else ""
+        lines.append(f"  - {pid} (false @ T={t}){snippet}")
+    if len(falsified) > 20:
+        lines.append(f"  - ...and {len(falsified) - 20} more.")
+    return [ConstraintBlock(
+        constraint_type="narrative",
+        priority="hard",
+        instruction=(
+            f"=== FALSE PROPOSITIONS (HARD) === \u2014 the physics commits "
+            f"these propositions FALSE at or before this scene's anchor "
+            f"in the {world_label} world. Do NOT stage their content "
+            "as occurring or having occurred. Characters may still "
+            "*believe* them \u2014 that mismatch is allowed and is often "
+            "the point \u2014 but the narration must not enact them as "
+            "fact.\n"
+            + "\n".join(lines)
+        ),
+        evidence={"false_proposition_ids": [pid for pid, _, _ in falsified]},
+    )]
+
+
 # =====================================================================
 # Engine
 # =====================================================================
@@ -4581,6 +4724,23 @@ class DirectiveAssembler:
         hidden_channels = self.compute_hidden_channels(syuzhet_anchor)
 
         constraints: List[ConstraintBlock] = []
+
+        # =============================================================
+        # NEGATIVE PHYSICS  (what the prose must NOT stage)
+        # =============================================================
+        # The "what to do" half of the brief is the constraint /
+        # mechanism / tension stack below. The "what NOT to do" half
+        # comes from the world's negative-physics record: events the
+        # instantiator (or a Rung-2/3 surgery) tagged as not occurring,
+        # and propositions committed FALSE at or before the anchor.
+        # Both must reach the renderer AND the auditor or the prose
+        # silently re-narrates non-occurrences as fact.
+        constraints.extend(build_prevented_event_constraints(
+            self.world_state, syuzhet_anchor, world_label="this",
+        ))
+        constraints.extend(build_false_proposition_constraints(
+            self.world_state, syuzhet_anchor, world_label="this",
+        ))
 
         # =============================================================
         # USER INTENT  (verbatim NL request as a HARD constraint)

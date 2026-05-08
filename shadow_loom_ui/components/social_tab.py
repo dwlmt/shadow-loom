@@ -45,6 +45,7 @@ from nicegui import ui
 from shadow_loom_ui.state import AppState, StateEvent
 from shadow_loom_ui.viz import (
     render_channels_overview,
+    render_concern_salience_heatmap,
     render_entity_belief_chart,
     render_entity_concern_card,
     render_entity_concerns_grid,
@@ -52,6 +53,8 @@ from shadow_loom_ui.viz import (
     render_epistemic_grid,
     render_knowledge_asymmetry_heatmap,
     render_proposition_state_card,
+    render_proposition_stake_timeline,
+    render_proposition_truth_sparkline,
     render_propositions_grid,
     render_relationship_heatmap,
     render_relationship_heatmap_timeline,
@@ -338,22 +341,23 @@ def build_social_tab(state: AppState) -> None:
 
         def _set_live():
             _slider_state["local_origin"] = False
-            state.set_fabula_cursor(None)
+            state.set_active_cursor(None)
 
         def _on_slider_change():
             try:
                 t = int(time_slider.value)
             except (TypeError, ValueError):
                 return
-            if state.fabula_cursor == t:
+            if state.active_cursor == t:
                 return
             _slider_state["local_origin"] = True
-            state.set_fabula_cursor(t)
+            state.set_active_cursor(t)
 
         def _nearest_event_label(t: int) -> str:
             idx = _slider_state["event_index"]
+            prefix = "s" if state.time_axis == "syuzhet" else "t"
             if not idx:
-                return f"t={t}"
+                return f"{prefix}={t}"
             best = min(
                 idx,
                 key=lambda et: (abs(et[0] - t), 0 if et[0] <= t else 1),
@@ -361,7 +365,7 @@ def build_social_tab(state: AppState) -> None:
             label = best[1]
             if len(label) > 80:
                 label = label[:77] + "\u2026"
-            return f"t={t} \u2014 {label}"
+            return f"{prefix}={t} \u2014 {label}"
 
         def _push_label_value(text: str) -> None:
             safe = text.replace('"', "'").replace("\n", " ")
@@ -373,7 +377,8 @@ def build_social_tab(state: AppState) -> None:
             except (TypeError, ValueError):
                 return
             _push_label_value(_nearest_event_label(t))
-            label_text = f"t={t}"
+            prefix = "s" if state.time_axis == "syuzhet" else "t"
+            label_text = f"{prefix}={t}"
             if time_label.text != label_text:
                 time_label.text = label_text
 
@@ -428,12 +433,14 @@ def build_social_tab(state: AppState) -> None:
                 event_index.append((int(ft), desc))
             event_index.sort(key=lambda x: x[0])
             _slider_state["event_index"] = event_index
-            if state.fabula_cursor is None:
+            cursor_value = state.active_cursor
+            cur_prefix = "s" if state.time_axis == "syuzhet" else "t"
+            if cursor_value is None:
                 desired = tmax
                 label_text = "live"
             else:
-                desired = max(tmin, min(tmax, state.fabula_cursor))
-                label_text = f"t={desired}"
+                desired = max(tmin, min(tmax, cursor_value))
+                label_text = f"{cur_prefix}={desired}"
             if not _slider_state["local_origin"]:
                 try:
                     cur = int(time_slider.value or 0)
@@ -475,8 +482,8 @@ def build_social_tab(state: AppState) -> None:
             from shadow_loom_ui.viz_helpers import axis_bounds
             _, tmax = axis_bounds(ws, state.time_axis)
 
-            # The active fabula cursor (None => live / latest).
-            fabula_t = state.fabula_cursor
+            # The active cursor on the current axis (None => live / latest).
+            fabula_t = state.active_cursor
             if fabula_t is None:
                 fabula_t_eff = tmax if tmax > 0 else None
             else:
@@ -727,6 +734,16 @@ def build_social_tab(state: AppState) -> None:
                     elif mode == "concerns":
                         sel = concern_holder_select.value
                         sel_ids = list(sel) if isinstance(sel, list) and sel else None
+                        # Salience heatmap above the per-character
+                        # cards: lets the user spot high-salience
+                        # concerns at a glance before drilling into
+                        # individual horizon strips.
+                        render_concern_salience_heatmap(
+                            ws,
+                            fabula_t=fabula_t_eff,
+                            selected_ids=sel_ids,
+                        )
+                        ui.separator().classes("q-my-md")
                         render_entity_concerns_grid(
                             ws,  # use live ws so concerns aren't lost
                             selected_ids=sel_ids,
@@ -741,6 +758,40 @@ def build_social_tab(state: AppState) -> None:
                             fabula_t=fabula_t_eff,
                             selected_kinds=kinds,
                         )
+                        # Stake / audience-prior / surprise-spike
+                        # timeline for each surfaced proposition.
+                        # Mirrors the grid filter so the user can
+                        # scan the same set as a time-series.
+                        props_for_timeline = list(ws.propositions or [])
+                        if kinds:
+                            wanted = set(kinds)
+                            props_for_timeline = [
+                                p for p in props_for_timeline if p.kind in wanted
+                            ]
+                        if props_for_timeline:
+                            ui.separator().classes("q-my-md")
+                            ui.label("Stake & truth-commit timeline").classes(
+                                "text-sm font-semibold text-slate-700"
+                            )
+                            for p in props_for_timeline[:6]:
+                                render_proposition_stake_timeline(
+                                    ws, p.proposition_id,
+                                )
+                                # Compact binary truth sparkline
+                                # right under each stake chart so
+                                # the reveal pattern (one-shot vs
+                                # oscillating) is visible at a glance.
+                                with ui.row().classes(
+                                    "w-full items-center gap-2"
+                                ):
+                                    ui.label("truth:").classes(
+                                        "text-[10px] uppercase "
+                                        "text-slate-500 tracking-wide"
+                                        " w-12 shrink-0"
+                                    )
+                                    render_proposition_truth_sparkline(
+                                        ws, p.proposition_id,
+                                    )
 
                     elif mode == "channels":
                         # First-class Channel rendering: medium,
@@ -750,7 +801,7 @@ def build_social_tab(state: AppState) -> None:
                         # at or before the cursor. Channels were
                         # invisible in the UI prior to this panel.
                         render_channels_overview(
-                            ws_snap, fabula_t=fabula_t_eff,
+                            ws_snap, fabula_t=fabula_t_eff, state=state,
                         )
 
                     elif mode == "relationships":
@@ -866,6 +917,7 @@ def build_social_tab(state: AppState) -> None:
         state.on(StateEvent.WORLD_STATE_CHANGED, _social_gated)
         state.on(StateEvent.ACTIVE_PATH_CHANGED, _on_path)
         state.on(StateEvent.FABULA_CURSOR_CHANGED, _social_gated)
+        state.on(StateEvent.SYUZHET_CURSOR_CHANGED, _social_gated)
         state.on(StateEvent.TIME_AXIS_CHANGED, _social_gated)
 
 
@@ -1026,7 +1078,7 @@ def _build_data_tables(state: AppState) -> None:
         # Cursor lives on the active axis; resolve to a fabula time for
         # the row queries (they snapshot in story-world time).
         from shadow_loom_ui.viz_helpers import resolve_cursor
-        raw_cursor = state.fabula_cursor
+        raw_cursor = state.active_cursor
         cursor["t"] = resolve_cursor(ws, state.time_axis, raw_cursor)
         if raw_cursor is None:
             t_disp = "live"
@@ -1078,4 +1130,5 @@ def _build_data_tables(state: AppState) -> None:
     _refresh_tables()
     state.on(StateEvent.WORLD_STATE_CHANGED, _refresh_tables)
     state.on(StateEvent.FABULA_CURSOR_CHANGED, _refresh_tables)
+    state.on(StateEvent.SYUZHET_CURSOR_CHANGED, _refresh_tables)
     state.on(StateEvent.TIME_AXIS_CHANGED, _refresh_tables)

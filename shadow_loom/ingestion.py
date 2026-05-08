@@ -9386,8 +9386,11 @@ def _programmatic_validation(ws: WorldStateV1) -> List[ValidationIssue]:
     prop_ids = {p.proposition_id for p in ws.propositions}
 
     # E1.a Proposition.referent_ids must resolve in the ontology.
+    # Channels are valid referents (a proposition can name a CHN_* node, e.g.
+    # "the locket-letter is a covert channel between Macbeth and his wife").
     valid_referent_targets = (
-        location_ids | object_ids | entity_ids | world_trait_ids | event_id_set
+        location_ids | object_ids | entity_ids | world_trait_ids
+        | event_id_set | set(ws.channels.keys())
     )
     for prop in ws.propositions:
         if not prop.proposition_id.startswith("PROP_"):
@@ -9936,6 +9939,18 @@ class WorldStatePatch(BaseModel):
             "belief / utterance pointing at the old channel)."
         ),
     )
+    update_channel_intelligibility: Dict[str, Dict[str, float]] = Field(
+        default_factory=dict,
+        description=(
+            "Edit per-participant decode probabilities on existing "
+            "channels: {channel_id: {participant_id: 0.0..1.0}}. Each "
+            "value is clamped to [0, 1] and merged into the channel's "
+            "existing ``intelligibility`` map (existing entries for "
+            "other participants are preserved). Use this for narrative "
+            "tweaks (\"the line is now noisy for ENT_BOB\") without "
+            "rebuilding the channel."
+        ),
+    )
     # ----- Phase E: proposition / concern / belief-proposition ops -----
     add_propositions: Dict[str, Proposition] = Field(
         default_factory=dict,
@@ -10100,6 +10115,33 @@ def _apply_world_state_patch(
     for cid, ch in patch.add_channels.items():
         new_channels[cid] = ch
         changes.append(f"Added channel '{cid}'.")
+
+    # 6b. Per-participant intelligibility edits on channels that
+    # survived the rename/drop/add pass. Clamps to [0, 1] and merges
+    # into the existing map so an edit for ENT_BOB does not erase the
+    # value for ENT_ALICE.
+    for cid, intel_updates in (patch.update_channel_intelligibility or {}).items():
+        target_cid = chan_renames.get(cid, cid)
+        ch = new_channels.get(target_cid)
+        if ch is None:
+            changes.append(
+                f"Skipped intelligibility update for missing channel '{cid}'."
+            )
+            continue
+        merged: Dict[str, float] = dict(ch.intelligibility or {})
+        for pid, raw in (intel_updates or {}).items():
+            try:
+                val = float(raw)
+            except (TypeError, ValueError):
+                continue
+            merged[pid] = max(0.0, min(1.0, val))
+        new_channels[target_cid] = ch.model_copy(
+            update={"intelligibility": merged}
+        )
+        changes.append(
+            f"Updated intelligibility on channel '{target_cid}' "
+            f"for {sorted((intel_updates or {}).keys())}."
+        )
 
     # 7. Entity location overrides + state_timeline appends.
     new_entities: Dict[str, Entity] = {}

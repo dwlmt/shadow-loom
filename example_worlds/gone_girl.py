@@ -916,6 +916,70 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_AMY_DISAPPEARS", target_id="ENT_MARYBETH", rel_counterpart_id="ENT_AMY", causality_type="mutation_social", trait_target="affinity", trait_delta=0.3, mechanism="emotional", evidence_strength="strong", causal_force=6.0, fabula_time=2000, propagation_delay=0),
         CausalEdge(source_id="EVT_UTT_MARYBETH_TV_APPEAL", target_id="ENT_MARYBETH", rel_counterpart_id="ENT_AMY", causality_type="mutation_social", trait_target="affinity", trait_delta=0.3, mechanism="performative", evidence_strength="strong", causal_force=6.0, fabula_time=5000, propagation_delay=0),
         CausalEdge(source_id="EVT_AMY_RETURNS", target_id="ENT_MARYBETH", rel_counterpart_id="ENT_AMY", causality_type="mutation_social", trait_target="affinity", trait_delta=0.3, mechanism="emotional", evidence_strength="strong", causal_force=7.0, fabula_time=14000, propagation_delay=0),
+        # ── auto-backfilled per-axis mutation_social ──
+        CausalEdge(source_id="EVT_MARRIAGE_CRUMBLES", target_id="ENT_NICK", rel_counterpart_id="ENT_BONEY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.09,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_MARRIAGE_CRUMBLES", target_id="ENT_TANNER", rel_counterpart_id="ENT_NICK",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.14,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_MARRIAGE_CRUMBLES", target_id="ENT_NICK", rel_counterpart_id="ENT_GILPIN",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.21,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_DIARY_FOUND", target_id="ENT_BONEY", rel_counterpart_id="ENT_GILPIN",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.12,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=3000, propagation_delay=0),
+        CausalEdge(source_id="EVT_DIARY_FOUND", target_id="ENT_GILPIN", rel_counterpart_id="ENT_BONEY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.15,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=3000, propagation_delay=0),
+        CausalEdge(source_id="EVT_MARRIAGE_CRUMBLES", target_id="ENT_AMY", rel_counterpart_id="ENT_NOELLE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.05,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_MARRIAGE_CRUMBLES", target_id="ENT_NICK", rel_counterpart_id="ENT_NOELLE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.12,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_MARRIAGE_CRUMBLES", target_id="ENT_AMY", rel_counterpart_id="ENT_MARYBETH",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.12,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_MARRIAGE_CRUMBLES", target_id="ENT_NICK", rel_counterpart_id="ENT_MARYBETH",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.09,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_MARRIAGE_CRUMBLES", target_id="ENT_RAND", rel_counterpart_id="ENT_NICK",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.15,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_MARRIAGE_CRUMBLES", target_id="ENT_NICK", rel_counterpart_id="ENT_RAND",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.06,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_MARRIAGE_CRUMBLES", target_id="ENT_NICK", rel_counterpart_id="ENT_BONEY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="fear", trait_delta=0.17,
+                   mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_MARRIAGE_CRUMBLES", target_id="ENT_NICK", rel_counterpart_id="ENT_GILPIN",  # auto-backfill
+                   causality_type="mutation_social", trait_target="fear", trait_delta=0.21,
+                   mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_MARRIAGE_CRUMBLES", target_id="ENT_NICK", rel_counterpart_id="ENT_RAND",  # auto-backfill
+                   causality_type="mutation_social", trait_target="fear", trait_delta=0.05,
+                   mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_MARRIAGE_CRUMBLES", target_id="ENT_NICK", rel_counterpart_id="ENT_BONEY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.17,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_MARRIAGE_CRUMBLES", target_id="ENT_TANNER", rel_counterpart_id="ENT_NICK",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.09,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_MARRIAGE_CRUMBLES", target_id="ENT_NICK", rel_counterpart_id="ENT_GILPIN",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.22,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_DIARY_FOUND", target_id="ENT_BONEY", rel_counterpart_id="ENT_GILPIN",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.12,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=3000, propagation_delay=0),
+        CausalEdge(source_id="EVT_DIARY_FOUND", target_id="ENT_GILPIN", rel_counterpart_id="ENT_BONEY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.12,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=3000, propagation_delay=0),
+        CausalEdge(source_id="EVT_MARRIAGE_CRUMBLES", target_id="ENT_AMY", rel_counterpart_id="ENT_NOELLE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.12,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_MARRIAGE_CRUMBLES", target_id="ENT_NICK", rel_counterpart_id="ENT_MARYBETH",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.09,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────

@@ -957,6 +957,31 @@ world_state = WorldStateV1(
         # is established at the same Do Lung knowledge-pivot; without this edge the
         # (KURTZ, COLBY) power_dynamic dyad reads as a flat baseline on the gauge.
         CausalEdge(source_id="EVT_DO_LUNG_BRIDGE", target_id="ENT_KURTZ", rel_counterpart_id="ENT_COLBY", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.8, mechanism="epistemic", evidence_strength="strong", causal_force=6.0, fabula_time=4500, propagation_delay=0),
+        # ── auto-backfilled per-axis mutation_social ──
+        CausalEdge(source_id="EVT_BOARD_PBR", target_id="ENT_WILLARD", rel_counterpart_id="ENT_CHEF",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.05,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_BOARD_PBR", target_id="ENT_CHIEF", rel_counterpart_id="ENT_CLEAN",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.21,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WILLARD_CAGED", target_id="ENT_KURTZ", rel_counterpart_id="ENT_LANCE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.06,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=6500, propagation_delay=0),
+        CausalEdge(source_id="EVT_WILLARD_CAGED", target_id="ENT_KURTZ", rel_counterpart_id="ENT_PHOTOJOURNALIST",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.05,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=6500, propagation_delay=0),
+        CausalEdge(source_id="EVT_BOARD_PBR", target_id="ENT_WILLARD", rel_counterpart_id="ENT_CHEF",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.15,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_BOARD_PBR", target_id="ENT_CHIEF", rel_counterpart_id="ENT_CLEAN",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.2,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WILLARD_CAGED", target_id="ENT_KURTZ", rel_counterpart_id="ENT_LANCE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.2,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=6500, propagation_delay=0),
+        CausalEdge(source_id="EVT_WILLARD_CAGED", target_id="ENT_KURTZ", rel_counterpart_id="ENT_PHOTOJOURNALIST",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.2,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=6500, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ───────────────────────────────────────────────

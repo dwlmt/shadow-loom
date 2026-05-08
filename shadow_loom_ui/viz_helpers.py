@@ -1779,6 +1779,8 @@ def ws_to_channel_rows(ws: WorldStateV1) -> list[dict]:
                 if ch.intelligibility else 1.0
             ),
             "established_at_fabula": ch.established_at_fabula,
+            "terminated_at_fabula": ch.terminated_at_fabula,
+            "evidence_strength": ch.evidence_strength,
             "world_id": ch.world_id,
         }
         for ch in ws.channels.values()
@@ -4741,6 +4743,11 @@ def ws_to_concern_rows(
                 None,
             )
             prop_desc = prop.description if prop else concern.proposition_id
+            ccids = list(getattr(concern, "counter_concern_ids", []) or [])
+            triggered_by = (
+                snap.get("triggered_by") if fabula_t is not None else None
+            )
+            window = getattr(concern, "activation_fabula_window", None)
             rows.append({
                 "entity_id": ent.id,
                 "entity": ent.name,
@@ -4752,6 +4759,11 @@ def ws_to_concern_rows(
                 "kind": kind,
                 "active": "✓" if active else "—",
                 "_active_bool": active,
+                "counter_concern_ids": ", ".join(ccids),
+                "activation_window": (
+                    f"{window[0]}–{window[1]}" if window else ""
+                ),
+                "triggered_by": triggered_by or "",
                 "world_id": concern.world_id,
             })
     rows.sort(key=lambda r: (-r["salience"], r["entity"]))

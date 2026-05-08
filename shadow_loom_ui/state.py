@@ -702,6 +702,95 @@ class AppState:
         )
         return self.run_structured_query(query)
 
+    # ---- Structured patch (skips prose round-trip) ----
+
+    def apply_world_state_patch(
+        self,
+        patch: "Any",
+        *,
+        description: str = "",
+    ) -> tuple[bool, list[str]]:
+        """Apply a typed ``WorldStatePatch`` directly to the active world.
+
+        Bypasses the prose re-extraction round-trip when the change is
+        already known structurally (e.g. backfilling
+        ``Belief.proposition_id``, committing a proposition truth,
+        renaming a channel). Persists a new DB version on success and
+        emits ``VERSION_CHANGED`` so the UI refreshes.
+
+        Returns ``(ok, change_log)`` — ``ok`` is False on validation /
+        apply / persist failures and the change log is a list of
+        human-readable strings produced by the patcher.
+        """
+        from shadow_loom.ingestion import (
+            WorldStatePatch as _WorldStatePatch,
+            _apply_world_state_patch,
+        )
+
+        if self.world_state is None:
+            return False, ["No active world state."]
+
+        if isinstance(patch, dict):
+            try:
+                typed_patch = _WorldStatePatch.model_validate(patch)
+            except Exception as exc:
+                logger.exception("[AppState] Invalid world-state patch payload")
+                return False, [f"Invalid patch payload: {exc}"]
+        else:
+            typed_patch = patch
+
+        try:
+            new_ws, changes = _apply_world_state_patch(
+                self.world_state, typed_patch,
+            )
+        except Exception as exc:
+            logger.exception("[AppState] World-state patch apply failed")
+            return False, [f"Patch application failed: {exc}"]
+
+        # Re-seed the versioned model with the patched world so the
+        # next merge sees the corrected baseline.
+        self.load_world_state(new_ws)
+
+        # Persist a new DB version so the patch is durable.
+        proj_id = self.project_id
+        if proj_id is not None:
+            try:
+                ws_json = new_ws.model_dump_json()
+                desc = description or typed_patch.notes or (
+                    f"Structured patch ({len(changes)} change(s))"
+                )
+                ver = save_version(
+                    project_id=proj_id,
+                    world_state_json=ws_json,
+                    ancestor_id=self.current_version_row_id,
+                    source="patch_world_state",
+                    description=desc,
+                    user_id=self.user_id,
+                )
+                self.current_version_row_id = ver.id
+                if self.user_id is not None:
+                    try:
+                        set_active_version(proj_id, self.user_id, ver.id)
+                    except Exception:
+                        logger.exception(
+                            "[AppState] Failed to update active-version pointer"
+                        )
+                try:
+                    log_activity(
+                        project_id=proj_id,
+                        action="patch_world_state",
+                        user_id=self.user_id,
+                        summary=desc,
+                        version_id=ver.id,
+                    )
+                except Exception:
+                    pass
+                self.emit(StateEvent.VERSION_CHANGED, version=ver.version)
+            except Exception:
+                logger.exception("[AppState] Failed to persist patched world")
+                return True, changes + ["(warning) DB persistence failed"]
+        return True, changes
+
     # ---- DB persistence ----
 
     def _save_version_to_db(
@@ -975,6 +1064,31 @@ class AppState:
             "syuzhet", StateEvent.SYUZHET_CURSOR_CHANGED, s,
             immediate=immediate,
         )
+
+    @property
+    def active_cursor(self) -> int | None:
+        """The cursor for the currently selected ``time_axis``.
+
+        Cross-panel sliders read this so an axis flip automatically
+        switches between :attr:`fabula_cursor` (Genette story order)
+        and :attr:`syuzhet_cursor` (telling order) without each panel
+        re-implementing the dispatch.
+        """
+        if self.time_axis == "syuzhet":
+            return self.syuzhet_cursor
+        return self.fabula_cursor
+
+    def set_active_cursor(self, value: int | None, *, immediate: bool = False) -> None:
+        """Set the cursor on the currently active axis.
+
+        Routes to :meth:`set_fabula_cursor` or :meth:`set_syuzhet_cursor`
+        based on :attr:`time_axis`. Used by the World and Social tab
+        sliders so the same widget drives the correct axis cursor.
+        """
+        if self.time_axis == "syuzhet":
+            self.set_syuzhet_cursor(value, immediate=immediate)
+        else:
+            self.set_fabula_cursor(value, immediate=immediate)
 
     def set_time_axis(self, axis: str) -> None:
         """Set the global time axis ("fabula" | "syuzhet").

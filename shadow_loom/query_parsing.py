@@ -740,11 +740,11 @@ def _build_counterfactual_dynamic_model(world_state: WorldStateV1):
             Field(
                 ...,
                 description=(
-                    "Event ID (EVT_*) or Channel ID (CHAN_*) to alter. "
+                    "Event ID (EVT_*) or Channel ID (CHN_*) to alter. "
                     "MUST be exact. Utterance events (event_type='utterance') "
                     "are addressed by their EVT_* id; channel-level "
                     "surgery (sever/establish/change intelligibility) uses "
-                    "the CHAN_* id."
+                    "the CHN_* id."
                 ),
             ),
         ),
@@ -1242,10 +1242,10 @@ Past communications are first-class targets:
   - "What if the message had been a lie" →
     `"EVT_LETTER_DELIVERED.truth_value": "false"`.
   - "What if the ravens couldn't carry messages" →
-    `"CHAN_RAVENS.status": "severed"` or
-    `"CHAN_RAVENS.intelligibility": {{"ENT_LADY_M": 0.0}}`.
+    `"CHN_RAVENS.status": "severed"` or
+    `"CHN_RAVENS.intelligibility": {{"ENT_LADY_M": 0.0}}`.
   - "What if Banquo had eavesdropped" →
-    `"CHAN_PROPHECY.participant_ids": ["ENT_MACBETH","ENT_BANQUO"]`.
+    `"CHN_PROPHECY.participant_ids": ["ENT_MACBETH","ENT_BANQUO"]`.
 """,
     "directive": """\
 ## DIRECTIVE QUERY

@@ -456,6 +456,10 @@ def _render_prose(state: AppState, container) -> None:
                 # Header with badges
                 with ui.row().classes("items-center gap-2 mb-3"):
                     ui.badge(qtype, color="primary").props("dense")
+                    from shadow_loom_ui.components._pearl_chip import (
+                        render_pearl_chip,
+                    )
+                    render_pearl_chip(qtype)
                     if converged is not None:
                         color = "positive" if converged else "warning"
                         label = "converged" if converged else f"unconverged ({iters} iters)"
@@ -472,6 +476,14 @@ def _render_prose(state: AppState, container) -> None:
                         render_changeset_chips(
                             cs_summary, compact=True, empty_label=None,
                         )
+                    ui.space()
+                    # Per-card copy-to-clipboard so a researcher can
+                    # pull the generated paragraph straight into notes
+                    # without scrubbing the export tab.
+                    from shadow_loom_ui.components._copy_button import (
+                        copy_button,
+                    )
+                    copy_button(prose, tooltip="Copy prose to clipboard")
 
                 # Prose content
                 safe_markdown(prose)

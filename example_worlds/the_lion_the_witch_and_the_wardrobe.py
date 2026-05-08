@@ -1002,6 +1002,46 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_ASLAN_PACT", target_id="EVT_UTT_ASLAN_SECRET_PACT",
                    causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
                    causal_force=5.0, fabula_time=16000, propagation_delay=0),
+        # ── auto-backfilled per-axis mutation_social ──
+        CausalEdge(source_id="EVT_EDMUND_TURKISH_DELIGHT", target_id="ENT_WHITE_WITCH", rel_counterpart_id="ENT_EDMUND",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.18,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=4000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PEVENSIES_ARRIVE", target_id="ENT_EDMUND", rel_counterpart_id="ENT_SUSAN",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.14,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_EDMUND_RESCUED", target_id="ENT_ASLAN", rel_counterpart_id="ENT_LUCY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.3,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=14000, propagation_delay=0),
+        CausalEdge(source_id="EVT_BATTLE", target_id="ENT_ASLAN", rel_counterpart_id="ENT_PETER",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.26,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=19000, propagation_delay=0),
+        CausalEdge(source_id="EVT_EDMUND_RESCUED", target_id="ENT_ASLAN", rel_counterpart_id="ENT_SUSAN",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.26,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=14000, propagation_delay=0),
+        CausalEdge(source_id="EVT_EDMUND_RESCUED", target_id="ENT_ASLAN", rel_counterpart_id="ENT_EDMUND",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.3,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=14000, propagation_delay=0),
+        CausalEdge(source_id="EVT_ASLAN_PACT", target_id="ENT_ASLAN", rel_counterpart_id="ENT_WHITE_WITCH",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.3,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=16000, propagation_delay=0),
+        CausalEdge(source_id="EVT_EDMUND_TURKISH_DELIGHT", target_id="ENT_WHITE_WITCH", rel_counterpart_id="ENT_EDMUND",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.24,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=4000, propagation_delay=0),
+        CausalEdge(source_id="EVT_EDMUND_RESCUED", target_id="ENT_ASLAN", rel_counterpart_id="ENT_LUCY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.24,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=14000, propagation_delay=0),
+        CausalEdge(source_id="EVT_BATTLE", target_id="ENT_ASLAN", rel_counterpart_id="ENT_PETER",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.21,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=19000, propagation_delay=0),
+        CausalEdge(source_id="EVT_EDMUND_RESCUED", target_id="ENT_ASLAN", rel_counterpart_id="ENT_SUSAN",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.21,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=14000, propagation_delay=0),
+        CausalEdge(source_id="EVT_EDMUND_RESCUED", target_id="ENT_ASLAN", rel_counterpart_id="ENT_EDMUND",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.24,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=14000, propagation_delay=0),
+        CausalEdge(source_id="EVT_ASLAN_PACT", target_id="ENT_ASLAN", rel_counterpart_id="ENT_WHITE_WITCH",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.15,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=16000, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────

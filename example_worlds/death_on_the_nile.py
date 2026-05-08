@@ -1027,6 +1027,49 @@ world_state = WorldStateV1(
         # ─── placeholder remediation: Louise ↔ Linnet maid hierarchy ───
         CausalEdge(source_id="EVT_BOARD_KARNAK", target_id="ENT_LOUISE", rel_counterpart_id="ENT_LINNET", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.8, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=4000, propagation_delay=0),
         CausalEdge(source_id="EVT_BOARD_KARNAK", target_id="ENT_LINNET", rel_counterpart_id="ENT_LOUISE", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.8, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=4000, propagation_delay=0),
+        # ── auto-backfilled per-axis mutation_social ──
+        CausalEdge(source_id="EVT_LINNET_STEALS_SIMON", target_id="ENT_LINNET", rel_counterpart_id="ENT_PENNINGTON",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.05,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=500, propagation_delay=0),
+        CausalEdge(source_id="EVT_HONEYMOON_STALKING", target_id="ENT_JACQUELINE", rel_counterpart_id="ENT_POIROT",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.05,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_BOWERS_RETURNS_PEARLS", target_id="ENT_BOWERS", rel_counterpart_id="ENT_VAN_SCHUYLER",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.09,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=9700, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_JACQUELINE_DRUNK_OUTBURST", target_id="ENT_VAN_SCHUYLER", rel_counterpart_id="ENT_CORNELIA",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.09,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=8000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_BOWERS_RETURNS_PEARLS", target_id="ENT_CORNELIA", rel_counterpart_id="ENT_VAN_SCHUYLER",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.12,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=9700, propagation_delay=0),
+        CausalEdge(source_id="EVT_HONEYMOON_STALKING", target_id="ENT_JACQUELINE", rel_counterpart_id="ENT_POIROT",  # auto-backfill
+                   causality_type="mutation_social", trait_target="fear", trait_delta=0.15,
+                   mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_BOWERS_RETURNS_PEARLS", target_id="ENT_CORNELIA", rel_counterpart_id="ENT_VAN_SCHUYLER",  # auto-backfill
+                   causality_type="mutation_social", trait_target="fear", trait_delta=0.18,
+                   mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=9700, propagation_delay=0),
+        CausalEdge(source_id="EVT_LINNET_STEALS_SIMON", target_id="ENT_LINNET", rel_counterpart_id="ENT_PENNINGTON",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.09,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=500, propagation_delay=0),
+        CausalEdge(source_id="EVT_LINNET_STEALS_SIMON", target_id="ENT_SIMON", rel_counterpart_id="ENT_LOUISE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.21,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=500, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_POIROT_REVEALS_SOLUTION", target_id="ENT_POIROT", rel_counterpart_id="ENT_RACE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.06,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=13000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_RACE_BRIEFS_POIROT_AGITATOR", target_id="ENT_RACE", rel_counterpart_id="ENT_POIROT",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.06,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=7000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_BOWERS_RETURNS_PEARLS", target_id="ENT_BOWERS", rel_counterpart_id="ENT_VAN_SCHUYLER",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.21,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=9700, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_JACQUELINE_DRUNK_OUTBURST", target_id="ENT_VAN_SCHUYLER", rel_counterpart_id="ENT_CORNELIA",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.26,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=8000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_BOWERS_RETURNS_PEARLS", target_id="ENT_CORNELIA", rel_counterpart_id="ENT_VAN_SCHUYLER",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.26,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=9700, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────

@@ -58,8 +58,8 @@ _HELP: Dict[str, Tuple[str, str]] = {
             " convergence outcome, and the final prose.\n\n"
             "### When it's empty\n"
             "The trace populates only after a rung-2 or rung-3 query"
-            " runs. Use the **command bar** (Intervene / What-If) or"
-            " the *What-If Workbench* in the Causality tab."
+            " runs. Use the **command bar** (Intervene / What-If)"
+            " to populate it."
         ),
     ),
     "reasoning.belief": (

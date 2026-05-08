@@ -1006,6 +1006,43 @@ world_state = WorldStateV1(
         # ─── placeholder remediation: Lady Macbeth → Duncan covert hostility ───
         CausalEdge(source_id="EVT_LADY_MACBETH_PERSUADES", target_id="ENT_LADY_MACBETH", rel_counterpart_id="ENT_DUNCAN", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.9, mechanism="emotional", evidence_strength="strong", causal_force=8.0, fabula_time=5000, propagation_delay=0),
         CausalEdge(source_id="EVT_LADY_MACBETH_PERSUADES", target_id="ENT_LADY_MACBETH", rel_counterpart_id="ENT_DUNCAN", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.6, mechanism="social", evidence_strength="moderate", causal_force=5.0, fabula_time=5000, propagation_delay=0),
+        # ── auto-backfilled per-axis mutation_social ──
+        CausalEdge(source_id="EVT_CAWDOR_TITLE", target_id="ENT_DUNCAN", rel_counterpart_id="ENT_MACBETH",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.26,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=3000, propagation_delay=0),
+        CausalEdge(source_id="EVT_REBELLION_DEFEATED", target_id="ENT_MACBETH", rel_counterpart_id="ENT_MALCOLM",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.21,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_CAWDOR_TITLE", target_id="ENT_DUNCAN", rel_counterpart_id="ENT_LADY_MACBETH",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.18,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=3000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WITCHES_PROPHECY_1", target_id="ENT_WITCHES", rel_counterpart_id="ENT_MACBETH",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.09,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_REBELLION_DEFEATED", target_id="ENT_FLEANCE", rel_counterpart_id="ENT_MACBETH",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.27,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_REBELLION_DEFEATED", target_id="ENT_MACBETH", rel_counterpart_id="ENT_MALCOLM",  # auto-backfill
+                   causality_type="mutation_social", trait_target="fear", trait_delta=0.17,
+                   mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_REBELLION_DEFEATED", target_id="ENT_FLEANCE", rel_counterpart_id="ENT_MACBETH",  # auto-backfill
+                   causality_type="mutation_social", trait_target="fear", trait_delta=0.27,
+                   mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_CAWDOR_TITLE", target_id="ENT_DUNCAN", rel_counterpart_id="ENT_MACBETH",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.21,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=3000, propagation_delay=0),
+        CausalEdge(source_id="EVT_REBELLION_DEFEATED", target_id="ENT_MACBETH", rel_counterpart_id="ENT_MALCOLM",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.12,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_CAWDOR_TITLE", target_id="ENT_DUNCAN", rel_counterpart_id="ENT_LADY_MACBETH",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.18,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=3000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WITCHES_PROPHECY_1", target_id="ENT_WITCHES", rel_counterpart_id="ENT_MACBETH",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.18,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_REBELLION_DEFEATED", target_id="ENT_FLEANCE", rel_counterpart_id="ENT_MACBETH",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.21,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────

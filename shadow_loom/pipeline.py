@@ -1254,6 +1254,11 @@ def _apply_manual_edit_replacements(
             if not getattr(se, "established_by_event_id", None)
             or se.established_by_event_id not in drop_events
         ]
+        # Cascade: scrub belief provenance pointing at removed events.
+        for ent in new_ws.entities.values():
+            for b in ent.beliefs:
+                if getattr(b, "acquired_via_event_id", None) in drop_events:
+                    b.acquired_via_event_id = None
     if drop_entities:
         new_ws.entities = {
             eid: e for eid, e in new_ws.entities.items()
@@ -1291,21 +1296,52 @@ def _apply_manual_edit_replacements(
             cid: c for cid, c in new_ws.channels.items()
             if cid not in drop_channels
         }
+        # Cascade: scrub channel pointers on events and beliefs.
+        for evt in new_ws.events:
+            if getattr(evt, "via_channel_id", None) in drop_channels:
+                evt.via_channel_id = None
+        for ent in new_ws.entities.values():
+            for b in ent.beliefs:
+                if getattr(b, "acquired_via_channel_id", None) in drop_channels:
+                    b.acquired_via_channel_id = None
     if drop_props:
         new_ws.propositions = [
             p for p in new_ws.propositions
             if p.proposition_id not in drop_props
         ]
+        # Cascade: clear proposition refs on events and beliefs.
+        for evt in new_ws.events:
+            if getattr(evt, "asserts_proposition_id", None) in drop_props:
+                evt.asserts_proposition_id = None
+            if getattr(evt, "denies_proposition_id", None) in drop_props:
+                evt.denies_proposition_id = None
+            resolves = getattr(evt, "resolves_proposition_ids", None)
+            if resolves:
+                evt.resolves_proposition_ids = [
+                    pid for pid in resolves if pid not in drop_props
+                ]
         for ent in new_ws.entities.values():
             ent.concerns = [
                 c for c in ent.concerns if c.proposition_id not in drop_props
             ]
+            for b in ent.beliefs:
+                if getattr(b, "proposition_id", None) in drop_props:
+                    b.proposition_id = None
     if drop_concerns:
+        # Build a set of removed concern_ids regardless of entity for
+        # scrubbing counter_concern_ids on surviving concerns.
+        removed_cids = {cid for _eid, cid in drop_concerns}
         for eid, ent in new_ws.entities.items():
             ent.concerns = [
                 c for c in ent.concerns
                 if (eid, c.concern_id) not in drop_concerns
             ]
+            for c in ent.concerns:
+                ccids = getattr(c, "counter_concern_ids", None)
+                if ccids:
+                    c.counter_concern_ids = [
+                        x for x in ccids if x not in removed_cids
+                    ]
     return new_ws
 
 

@@ -1506,10 +1506,20 @@ def _apply_deletions(
         changeset.spatial_edges_removed += before - len(merged.spatial_topology)
 
     # --- Channels
-    for cid in topology.removed_channel_ids:
-        if cid in merged.channels:
-            del merged.channels[cid]
-            changeset.channels_removed += 1
+    if topology.removed_channel_ids:
+        drop_chan = set(topology.removed_channel_ids)
+        for cid in drop_chan:
+            if cid in merged.channels:
+                del merged.channels[cid]
+                changeset.channels_removed += 1
+        # Cascade: scrub channel pointers on events and beliefs.
+        for evt in merged.events:
+            if getattr(evt, "via_channel_id", None) in drop_chan:
+                evt.via_channel_id = None
+        for ent in merged.entities.values():
+            for b in ent.beliefs:
+                if getattr(b, "acquired_via_channel_id", None) in drop_chan:
+                    b.acquired_via_channel_id = None
 
     # --- Entities (cascade beliefs/concerns/edges)
     if topology.removed_entity_ids:
@@ -1547,7 +1557,8 @@ def _apply_deletions(
             del merged.world_traits[wid]
             changeset.world_traits_removed += 1
 
-    # --- Propositions (also drop concerns referencing them)
+    # --- Propositions (also drop concerns referencing them; scrub
+    # proposition pointers on surviving events and beliefs).
     if topology.removed_proposition_ids:
         drop = set(topology.removed_proposition_ids)
         before = len(merged.propositions)
@@ -1557,10 +1568,24 @@ def _apply_deletions(
             before_c = len(ent.concerns)
             ent.concerns = [c for c in ent.concerns if c.proposition_id not in drop]
             changeset.concerns_removed += before_c - len(ent.concerns)
+            for b in ent.beliefs:
+                if getattr(b, "proposition_id", None) in drop:
+                    b.proposition_id = None
+        for evt in merged.events:
+            if getattr(evt, "asserts_proposition_id", None) in drop:
+                evt.asserts_proposition_id = None
+            if getattr(evt, "denies_proposition_id", None) in drop:
+                evt.denies_proposition_id = None
+            resolves = getattr(evt, "resolves_proposition_ids", None)
+            if resolves:
+                evt.resolves_proposition_ids = [
+                    pid for pid in resolves if pid not in drop
+                ]
 
     # --- Concerns (entity_id, concern_id)
     if topology.removed_concern_ids:
         drop = set((eid, cid) for eid, cid in topology.removed_concern_ids)
+        removed_cids = {cid for _eid, cid in drop}
         for eid, cid in drop:
             ent = merged.entities.get(eid)
             if ent is None:
@@ -1568,6 +1593,14 @@ def _apply_deletions(
             before_c = len(ent.concerns)
             ent.concerns = [c for c in ent.concerns if c.concern_id != cid]
             changeset.concerns_removed += before_c - len(ent.concerns)
+        # Scrub counter_concern_ids on surviving concerns.
+        for ent in merged.entities.values():
+            for c in ent.concerns:
+                ccids = getattr(c, "counter_concern_ids", None)
+                if ccids:
+                    c.counter_concern_ids = [
+                        x for x in ccids if x not in removed_cids
+                    ]
 
 
 def _apply_supersession(

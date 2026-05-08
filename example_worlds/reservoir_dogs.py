@@ -863,6 +863,37 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_HEIST_PLANNED", target_id="ENT_JOE", rel_counterpart_id="ENT_EDDIE", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.65, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=1000, propagation_delay=0),
         CausalEdge(source_id="EVT_HEIST_PLANNED", target_id="ENT_BROWN", rel_counterpart_id="ENT_JOE", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.6, mechanism="social", evidence_strength="moderate", causal_force=6.0, fabula_time=1000, propagation_delay=0),
         CausalEdge(source_id="EVT_HEIST_PLANNED", target_id="ENT_BLUE", rel_counterpart_id="ENT_JOE", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.6, mechanism="social", evidence_strength="moderate", causal_force=6.0, fabula_time=1000, propagation_delay=0),
+        # ── auto-backfilled per-axis mutation_social ──
+        CausalEdge(source_id="EVT_DINER_BREAKFAST", target_id="ENT_BLONDE", rel_counterpart_id="ENT_WHITE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.12,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_DINER_BREAKFAST", target_id="ENT_BLONDE", rel_counterpart_id="ENT_ORANGE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.06,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_BLONDE_TORTURES_COP", target_id="ENT_BLONDE", rel_counterpart_id="ENT_MARVIN",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.18,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=6000, propagation_delay=0),
+        CausalEdge(source_id="EVT_HEIST_PLANNED", target_id="ENT_JOE", rel_counterpart_id="ENT_BROWN",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.09,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_HEIST_PLANNED", target_id="ENT_JOE", rel_counterpart_id="ENT_BLUE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.12,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_DINER_BREAKFAST", target_id="ENT_BLONDE", rel_counterpart_id="ENT_WHITE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.09,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_DINER_BREAKFAST", target_id="ENT_BLONDE", rel_counterpart_id="ENT_ORANGE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.12,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_BLONDE_TORTURES_COP", target_id="ENT_BLONDE", rel_counterpart_id="ENT_MARVIN",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.28,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=6000, propagation_delay=0),
+        CausalEdge(source_id="EVT_HEIST_PLANNED", target_id="ENT_JOE", rel_counterpart_id="ENT_BROWN",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.18,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_HEIST_PLANNED", target_id="ENT_JOE", rel_counterpart_id="ENT_BLUE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.18,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────

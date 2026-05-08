@@ -1079,6 +1079,31 @@ world_state = WorldStateV1(
                    causality_type="mutation", mechanism="psychological", evidence_strength="strong",
                    causal_force=5.0, fabula_time=8500,
                    trait_target="hope", trait_delta=-0.3),
+        # ── auto-backfilled per-axis mutation_social ──
+        CausalEdge(source_id="EVT_BROKEN_ENGAGEMENT", target_id="ENT_ANNE", rel_counterpart_id="ENT_ELIZABETH",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.06,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_BROKEN_ENGAGEMENT", target_id="ENT_ANNE", rel_counterpart_id="ENT_MARY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.12,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_KELLYNCH_LET", target_id="ENT_SIR_WALTER", rel_counterpart_id="ENT_MRS_CLAY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.15,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=3000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WAR_AND_PRIZE_MONEY", target_id="ENT_WENTWORTH", rel_counterpart_id="ENT_ADMIRAL_CROFT",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.24,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WAR_AND_PRIZE_MONEY", target_id="ENT_WENTWORTH", rel_counterpart_id="ENT_SOPHIA_CROFT",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.27,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_BROKEN_ENGAGEMENT", target_id="ENT_ANNE", rel_counterpart_id="ENT_ELIZABETH",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.09,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_BROKEN_ENGAGEMENT", target_id="ENT_ANNE", rel_counterpart_id="ENT_MARY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.06,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_KELLYNCH_LET", target_id="ENT_SIR_WALTER", rel_counterpart_id="ENT_MRS_CLAY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.15,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=3000, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────

@@ -367,16 +367,20 @@ def test_appstate_set_fabula_cursor_emits_event_once():
 
 def test_world_tab_routes_slider_through_setter():
     """Regression guard: ``world_tab._on_slider_change`` and ``_set_live``
-    must call the official ``state.set_fabula_cursor`` API instead of
-    writing ``state.fabula_cursor`` directly. Direct writes bypass the
-    event bus and desync every other time-aware panel."""
+    must call an official cursor setter (``set_fabula_cursor``,
+    ``set_syuzhet_cursor`` or the axis-aware ``set_active_cursor``)
+    instead of writing ``state.fabula_cursor`` directly. Direct writes
+    bypass the event bus and desync every other time-aware panel."""
     from pathlib import Path
 
     src = Path(
         "shadow_loom_ui/components/world_tab.py"
     ).read_text(encoding="utf-8")
-    assert "state.set_fabula_cursor(" in src, (
-        "world_tab must route slider changes through state.set_fabula_cursor"
+    assert (
+        "state.set_fabula_cursor(" in src
+        or "state.set_active_cursor(" in src
+    ), (
+        "world_tab must route slider changes through an official cursor setter"
     )
     # No bare attribute write to ``state.fabula_cursor`` (would bypass the bus).
     import re

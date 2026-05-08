@@ -40,6 +40,11 @@ Assess these dimensions and synthesize into a single paragraph:
 - **Character Voice Consistency**: Do characters' dialogue and actions remain consistent with their trait vectors and belief states?
 - **Spatial Logic**: Are characters only interacting when they share a location or have an active Channel?
 - **Event Completeness**: Are all events in the relevant fabula_time window accounted for in the prose?
+- **Proposition Truth Fidelity**: When a proposition has a `truth_at_fabula` commit at this anchor (resolved by an event with `asserts_proposition_id` / `denies_proposition_id` / `resolves_proposition_ids`), the prose should show — not contradict — that resolution. Open propositions (no truth commit yet) should remain *open* on the page; do not let the prose silently settle them.
+- **Concern Salience & Polarity**: Active `Concern`s on the focal/POV entity (within `activation_fabula_window`, with their `polarity` = desire/fear and `salience`) should shape that character's interior weighting. A high-salience desire concern should pull attention; a high-salience fear concern should pull avoidance. Paired `counter_concern_ids` should read as ambivalence, not random mood swings.
+- **Channel Intelligibility**: Utterances must travel through a `Channel` whose participants include both speaker and addressee, and whose `intelligibility` for each receiver is non-zero at the relevant fabula tick. Severed channels (`terminated_at_fabula` ≤ now) cannot carry utterances.
+- **Belief Provenance**: A character's new beliefs should trace to either a same-scene `acquired_via_event_id` (direct witness) or a same-scene `acquired_via_channel_id` (utterance-mediated). Beliefs introduced without on-page provenance are an epistemic shortcut.
+- **Narrative Tension Realisation**: When a `NARRATIVE TENSION` block is present, the prose should keep its `displacements` (foreshadowing setups) visibly unresolved, render `withheld_causes` only through their downstream effects, and let the focal circle `upcoming_revelations` without commit. The composite score is a pacing budget — flag if the prose is markedly more relaxed (or more frantic) than the score implies.
 
 ### 2. Reward Hacking Diagnostics
 

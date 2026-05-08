@@ -5480,6 +5480,186 @@ def render_entity_concern_card(
     return container
 
 
+def render_concern_salience_heatmap(
+    ws: WorldStateV1,
+    *,
+    fabula_t: int | None = None,
+    selected_ids: list[str] | None = None,
+    height: str = "320px",
+) -> ui.element:
+    """Entity × concern salience heatmap at the active fabula cursor.
+
+    Implements the Sternberg-triad / Frijda concern-salience lens at
+    a glance: rows are characters that hold concerns, columns are
+    each unique concern (labelled by the underlying proposition or
+    the concern's ``name``/``id``), and the cell colour encodes
+    salience replayed at ``fabula_t`` via
+    :func:`reconstruct_concern_at`. Cells render blank when a
+    character does not hold the concern, distinguishing "absent
+    concern" from "low salience" — the curiosity-vs-suspense
+    distinction in the audit lens.
+
+    Parameters mirror the surrounding concern panels so the social
+    tab can wire the same selection filter through.
+    """
+    from shadow_loom.models import reconstruct_concern_at
+
+    container = ui.column().classes("w-full gap-2")
+    with container:
+        # Collect (entity_name, concern_label, salience) triples.
+        # Rows preserve entity order; columns are unique concern
+        # labels in first-seen order.
+        sel = set(selected_ids) if selected_ids else None
+        rows: list[str] = []
+        col_index: dict[str, int] = {}
+        cells: list[tuple[int, int, float]] = []
+        ent_lookup: dict[str, str] = {}
+
+        for eid, ent in (ws.entities or {}).items():
+            if sel is not None and eid not in sel:
+                continue
+            concerns = list(getattr(ent, "concerns", None) or [])
+            if not concerns:
+                continue
+            row_idx = len(rows)
+            rows.append(ent.name or eid)
+            ent_lookup[ent.name or eid] = eid
+            for c in concerns:
+                # Column key: prefer the concern's display name,
+                # fall back to proposition_id, then concern id.
+                label = (
+                    getattr(c, "name", None)
+                    or getattr(c, "proposition_id", None)
+                    or getattr(c, "id", None)
+                    or "concern"
+                )
+                if label not in col_index:
+                    col_index[label] = len(col_index)
+                col_idx = col_index[label]
+                if fabula_t is None:
+                    sal = float(getattr(c, "salience", 0.0) or 0.0)
+                else:
+                    try:
+                        snap = reconstruct_concern_at(c, fabula_t)
+                        sal = float(snap.get("salience", 0.0) or 0.0)
+                    except Exception:
+                        sal = float(getattr(c, "salience", 0.0) or 0.0)
+                cells.append((col_idx, row_idx, sal))
+
+        if not rows or not col_index:
+            ui.label(
+                "No concerns to plot at this cursor."
+            ).classes("text-sm text-slate-500 italic q-pa-md")
+            return container
+
+        cols = sorted(col_index, key=lambda k: col_index[k])
+        ui.label(
+            f"Concern salience \u2014 {len(rows)} characters \u00d7 "
+            f"{len(cols)} concerns"
+        ).classes("text-xs font-semibold text-slate-700")
+        option = {
+            "tooltip": {
+                "position": "top",
+                "formatter": (
+                    "function(p){return p.value[2]==null?'':"
+                    "p.name+'<br/>salience: '+Number(p.value[2]).toFixed(2);}"
+                ),
+            },
+            "grid": {"left": 140, "right": 30, "top": 80, "bottom": 30},
+            "xAxis": {
+                "type": "category", "data": cols,
+                "axisLabel": {"interval": 0, "rotate": 30, "fontSize": 10},
+                "splitArea": {"show": True},
+            },
+            "yAxis": {
+                "type": "category", "data": rows,
+                "axisLabel": {"fontSize": 10},
+                "splitArea": {"show": True},
+            },
+            "visualMap": {
+                "min": 0.0, "max": 1.0,
+                "calculable": True, "orient": "horizontal",
+                "left": "center", "top": 10,
+                "inRange": {"color": ["#f1f5f9", "#3b82f6", "#1e3a8a"]},
+            },
+            "series": [{
+                "name": "salience",
+                "type": "heatmap",
+                "data": [[c, r, round(v, 3)] for (c, r, v) in cells],
+                "label": {"show": False},
+                "emphasis": {
+                    "itemStyle": {
+                        "shadowBlur": 6,
+                        "shadowColor": "rgba(0,0,0,0.4)",
+                    },
+                },
+            }],
+        }
+        ui.echart(option).classes("w-full").style(f"height: {height}")
+    return container
+
+
+def render_proposition_truth_sparkline(
+    ws: WorldStateV1,
+    proposition_id: str,
+    *,
+    height: str = "60px",
+) -> ui.element:
+    """Compact truth_at_fabula sparkline for one proposition.
+
+    Plots the discrete True/False commits in
+    :attr:`Proposition.truth_at_fabula` against fabula time so a
+    researcher can see at a glance how often (and when) the
+    storyworld committed to a value for the proposition. Distinct
+    from :func:`render_proposition_stake_timeline` which plots
+    continuous stakes / audience prior — this is just the binary
+    truth track.
+    """
+    container = ui.element("div").classes("w-full")
+    with container:
+        prop = next(
+            (p for p in (ws.propositions or [])
+             if getattr(p, "proposition_id", None) == proposition_id),
+            None,
+        )
+        if prop is None:
+            ui.label("(no proposition)").classes(
+                "text-[10px] text-slate-400 italic"
+            )
+            return container
+        commits = dict(getattr(prop, "truth_at_fabula", {}) or {})
+        if not commits:
+            ui.label("no truth commits").classes(
+                "text-[10px] text-slate-400 italic"
+            )
+            return container
+        items = sorted(commits.items(), key=lambda kv: int(kv[0]))
+        xs = [int(k) for k, _ in items]
+        ys = [1 if bool(v) else 0 for _, v in items]
+        option = {
+            "grid": {"left": 4, "right": 4, "top": 4, "bottom": 4},
+            "xAxis": {"type": "value", "show": False, "min": min(xs) - 1, "max": max(xs) + 1},
+            "yAxis": {"type": "value", "show": False, "min": -0.2, "max": 1.2},
+            "tooltip": {
+                "trigger": "axis",
+                "formatter": (
+                    "function(ps){var p=ps[0];"
+                    "return 't='+p.value[0]+'<br/>'+(p.value[1]?'true':'false');}"
+                ),
+            },
+            "series": [{
+                "type": "scatter",
+                "symbolSize": 8,
+                "data": [[x, y] for x, y in zip(xs, ys)],
+                "itemStyle": {
+                    "color": "#16a34a",
+                },
+            }],
+        }
+        ui.echart(option).classes("w-full").style(f"height: {height}")
+    return container
+
+
 def render_entity_concerns_grid(
     ws: WorldStateV1,
     *,
@@ -5831,6 +6011,7 @@ def render_channels_overview(
     ws: WorldStateV1,
     *,
     fabula_t: int | None = None,
+    state: "Any" = None,
 ) -> ui.element:
     """Per-channel cards exposing intelligibility, directionality, lifespan.
 
@@ -5848,7 +6029,11 @@ def render_channels_overview(
         before the active fabula cursor
       * **evidence_strength** — extraction confidence dot
 
-    Click an entity chip to deep-link the inspector via
+    When ``state`` is provided each per-participant intelligibility
+    bar becomes an inline editor (NiceGUI slider with a Save button)
+    that calls :meth:`AppState.apply_world_state_patch` with an
+    ``update_channel_intelligibility`` op so the edit persists as a
+    new version. Click an entity chip to deep-link the inspector via
     :data:`StateEvent.NODE_SELECTED` (handled by the social tab).
     """
     container = ui.column().classes("w-full gap-3")
@@ -5940,31 +6125,99 @@ def render_channels_overview(
                                 )
                                 # 1.0 when key absent (fully intelligible).
                                 decode = float(ch.intelligibility.get(pid, 1.0))
-                                with ui.row().classes(
-                                    "w-full items-center gap-2 text-xs"
-                                ):
-                                    ui.label(pname).classes(
-                                        "text-slate-700 truncate w-32 shrink-0"
-                                    )
-                                    with ui.element("div").classes(
-                                        "flex-grow h-2 rounded-full bg-slate-200 "
-                                        "overflow-hidden"
+                                if state is None:
+                                    with ui.row().classes(
+                                        "w-full items-center gap-2 text-xs"
                                     ):
-                                        # Opacity ∝ decode probability so
-                                        # opaque participants (decode=0)
-                                        # render as faint bars — visually
-                                        # encoding "can't read this channel".
-                                        opacity = max(0.15, decode)
-                                        ui.element("div").classes(
-                                            "h-full rounded-full"
-                                        ).style(
-                                            f"width: {int(decode * 100)}%; "
-                                            f"background-color: #3A7BD5; "
-                                            f"opacity: {opacity:.2f}"
+                                        ui.label(pname).classes(
+                                            "text-slate-700 truncate w-32 shrink-0"
                                         )
-                                    ui.label(f"{decode:.2f}").classes(
-                                        "font-mono text-slate-600 w-10 text-right"
-                                    )
+                                        with ui.element("div").classes(
+                                            "flex-grow h-2 rounded-full bg-slate-200 "
+                                            "overflow-hidden"
+                                        ):
+                                            # Opacity ∝ decode probability so
+                                            # opaque participants (decode=0)
+                                            # render as faint bars — visually
+                                            # encoding "can't read this channel".
+                                            opacity = max(0.15, decode)
+                                            ui.element("div").classes(
+                                                "h-full rounded-full"
+                                            ).style(
+                                                f"width: {int(decode * 100)}%; "
+                                                f"background-color: #3A7BD5; "
+                                                f"opacity: {opacity:.2f}"
+                                            )
+                                        ui.label(f"{decode:.2f}").classes(
+                                            "font-mono text-slate-600 w-10 text-right"
+                                        )
+                                else:
+                                    # Editable slider: writes through
+                                    # ``state.apply_world_state_patch`` with
+                                    # an ``update_channel_intelligibility``
+                                    # op so the edit persists as a new
+                                    # version.
+                                    with ui.row().classes(
+                                        "w-full items-center gap-2 text-xs"
+                                    ):
+                                        ui.label(pname).classes(
+                                            "text-slate-700 truncate w-28 shrink-0"
+                                        )
+                                        slider = ui.slider(
+                                            min=0.0, max=1.0, step=0.05,
+                                            value=decode,
+                                        ).props(
+                                            "label-always color=primary "
+                                            "dense"
+                                        ).classes("flex-grow")
+                                        readout = ui.label(f"{decode:.2f}").classes(
+                                            "font-mono text-slate-600 w-10 text-right"
+                                        )
+
+                                        def _on_change(
+                                            _e=None,
+                                            *,
+                                            s=slider,
+                                            r=readout,
+                                            cid=ch.id,
+                                            participant=pid,
+                                            pretty=pname,
+                                        ) -> None:
+                                            try:
+                                                v = float(s.value)
+                                            except (TypeError, ValueError):
+                                                return
+                                            v = max(0.0, min(1.0, v))
+                                            r.text = f"{v:.2f}"
+                                            ok, log = state.apply_world_state_patch(
+                                                {
+                                                    "update_channel_intelligibility": {
+                                                        cid: {participant: v},
+                                                    }
+                                                },
+                                                description=(
+                                                    f"Channel intelligibility: "
+                                                    f"{cid}[{pretty}] = {v:.2f}"
+                                                ),
+                                            )
+                                            if ok:
+                                                ui.notify(
+                                                    "Intelligibility updated",
+                                                    type="positive",
+                                                    position="top-right",
+                                                    timeout=1500,
+                                                )
+                                            else:
+                                                ui.notify(
+                                                    "Update failed: "
+                                                    + (log[0] if log else "unknown"),
+                                                    type="negative",
+                                                )
+
+                                        slider.on(
+                                            "change",
+                                            lambda _e=None, h=_on_change: h(),
+                                        )
                         # Utterance count via this channel.
                         utter_n = sum(
                             1 for e in ws.events

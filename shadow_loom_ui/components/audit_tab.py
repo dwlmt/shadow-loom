@@ -969,6 +969,12 @@ def _render_query_audit_entry(index: int, result: NLQueryResult, state: AppState
         f"#{index + 1} — {query_type}",
         icon=icon,
     ).classes("w-full").props("dense"):
+        # Pearl-rung tag on the activity entry so a researcher
+        # auditing the project's epistemic posture can see at a glance
+        # whether each entry was rung-1 (Observation), rung-2
+        # (Intervention), or rung-3 (Counterfactual).
+        from shadow_loom_ui.components._pearl_chip import render_pearl_chip
+        render_pearl_chip(query_type)
         if result.summary:
             # Summary is now multi-line lay-user text (humanize_pipeline_result).
             safe_markdown(result.summary).classes("text-sm text-slate-600")

@@ -782,6 +782,13 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_MORTON_HIRES_FRANK", target_id="ENT_FRANK", rel_counterpart_id="ENT_MORTON", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.4, mechanism="social", evidence_strength="strong", causal_force=6.0, fabula_time=100, propagation_delay=0),
         CausalEdge(source_id="EVT_FRANK_FORCES_JILL", target_id="ENT_JILL", rel_counterpart_id="ENT_FRANK", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.7, mechanism="physical", evidence_strength="strong", causal_force=8.0, fabula_time=1800, propagation_delay=0),
         CausalEdge(source_id="EVT_FRANK_FORCES_JILL", target_id="ENT_FRANK", rel_counterpart_id="ENT_JILL", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.7, mechanism="physical", evidence_strength="strong", causal_force=8.0, fabula_time=1800, propagation_delay=0),
+        # ── auto-backfilled per-axis mutation_social ──
+        CausalEdge(source_id="EVT_JILL_ARRIVES_AT_SWEETWATER", target_id="ENT_JILL", rel_counterpart_id="ENT_CHEYENNE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.15,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1200, propagation_delay=0),
+        CausalEdge(source_id="EVT_JILL_ARRIVES_AT_SWEETWATER", target_id="ENT_JILL", rel_counterpart_id="ENT_CHEYENNE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="fear", trait_delta=0.06,
+                   mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=1200, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────

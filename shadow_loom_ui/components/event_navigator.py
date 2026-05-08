@@ -322,6 +322,52 @@ def _render_event_dossier(state: AppState, ctx: Dict[str, Any]) -> None:
             ui.label(f"fabula t={evt['fabula_time']}").classes(
                 "text-xs text-slate-500"
             )
+            # Per-event affective badges — KL-style surprise + dramatic
+            # irony at this event's syuzhet anchor. Computed via the
+            # cached gauge scorer so repeat scrubs are O(1). Hidden
+            # silently when the engine cannot score (no focus entities,
+            # missing syuzhet index, etc.) so the dossier stays clean
+            # for early/utterance-only events.
+            try:
+                from shadow_loom_ui.viz_helpers import (
+                    compute_affective_scores,
+                    _top_entity_ids_by_event_degree,
+                )
+
+                ws_full = state.world_state
+                anchor = evt.get("syuzhet_index")
+                if ws_full is not None and anchor is not None:
+                    eids = _top_entity_ids_by_event_degree(ws_full, limit=20)
+                    if eids:
+                        affect = compute_affective_scores(
+                            ws_full,
+                            entity_ids=eids,
+                            syuzhet_anchor=int(anchor),
+                            ws_for_engine=ws_full,
+                            surprise_local=True,
+                        )
+                        surprise = affect.get("surprise")
+                        irony = affect.get("dramatic_irony")
+                        if surprise is not None:
+                            ui.badge(
+                                f"surprise {float(surprise):.2f}",
+                                color="amber",
+                            ).props("dense outline").tooltip(
+                                "KL(actual || reader prior) — "
+                                "Itti-Baldi Bayesian surprise scored at "
+                                "this event's syuzhet anchor."
+                            )
+                        if irony is not None:
+                            ui.badge(
+                                f"irony {float(irony):.2f}",
+                                color="indigo",
+                            ).props("dense outline").tooltip(
+                                "Dramatic irony — reader/character "
+                                "knowledge asymmetry at this event."
+                            )
+            except Exception:
+                # Engine scoring is best-effort; never break the dossier.
+                pass
             ui.space()
             ui.label(evt["id"]).classes(
                 "text-[10px] text-slate-400 font-mono"

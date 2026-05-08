@@ -1112,6 +1112,40 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_PARIS_PROPOSAL", target_id="ENT_PARIS", rel_counterpart_id="ENT_JULIET", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.4, mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
         CausalEdge(source_id="EVT_PRINCE_DECREE", target_id="ENT_PRINCE_ESCALUS", rel_counterpart_id="ENT_CAPULET", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.8, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=800, propagation_delay=0),
         CausalEdge(source_id="EVT_PRINCE_DECREE", target_id="ENT_PRINCE_ESCALUS", rel_counterpart_id="ENT_MONTAGUE", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.8, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=800, propagation_delay=0),
+        # ── auto-backfilled per-axis mutation_social ──
+        CausalEdge(source_id="EVT_UTT_BENVOLIO_DRAWS_OUT_ROSALINE", target_id="ENT_ROMEO", rel_counterpart_id="ENT_BENVOLIO",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.24,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1200, propagation_delay=0),
+        CausalEdge(source_id="EVT_SECRET_MARRIAGE", target_id="ENT_ROMEO", rel_counterpart_id="ENT_FRIAR_LAURENCE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.22,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=4000, propagation_delay=0),
+        CausalEdge(source_id="EVT_ROMEO_MEETS_JULIET", target_id="ENT_JULIET", rel_counterpart_id="ENT_PARIS",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.21,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_CAPULET_BALL", target_id="ENT_CAPULET", rel_counterpart_id="ENT_PRINCE_ESCALUS",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.05,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1800, propagation_delay=0),
+        CausalEdge(source_id="EVT_FAMILIES_RECONCILE", target_id="ENT_MONTAGUE", rel_counterpart_id="ENT_PRINCE_ESCALUS",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.05,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=17500, propagation_delay=0),
+        CausalEdge(source_id="EVT_ROMEO_MEETS_JULIET", target_id="ENT_JULIET", rel_counterpart_id="ENT_PARIS",  # auto-backfill
+                   causality_type="mutation_social", trait_target="fear", trait_delta=0.12,
+                   mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_BENVOLIO_DRAWS_OUT_ROSALINE", target_id="ENT_ROMEO", rel_counterpart_id="ENT_BENVOLIO",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.06,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1200, propagation_delay=0),
+        CausalEdge(source_id="EVT_SECRET_MARRIAGE", target_id="ENT_ROMEO", rel_counterpart_id="ENT_FRIAR_LAURENCE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.15,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=4000, propagation_delay=0),
+        CausalEdge(source_id="EVT_ROMEO_MEETS_JULIET", target_id="ENT_JULIET", rel_counterpart_id="ENT_PARIS",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.12,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_CAPULET_BALL", target_id="ENT_CAPULET", rel_counterpart_id="ENT_PRINCE_ESCALUS",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.24,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1800, propagation_delay=0),
+        CausalEdge(source_id="EVT_FAMILIES_RECONCILE", target_id="ENT_MONTAGUE", rel_counterpart_id="ENT_PRINCE_ESCALUS",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.24,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=17500, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────

@@ -133,6 +133,10 @@ def _render_card(
                 ui.badge(
                     f"{conf_pct}% confidence", color=conf_color,
                 ).props("dense outline")
+                from shadow_loom_ui.components._pearl_chip import (
+                    render_pearl_chip,
+                )
+                render_pearl_chip(qtype)
                 from shadow_loom_ui.components.help_popover import (
                     help_popover,
                 )
@@ -176,13 +180,23 @@ def _render_card(
                     tooltip="What does this panel show?",
                 )
                 ui.space()
+                from shadow_loom_ui.components._copy_button import (
+                    copy_button,
+                )
+                copy_button(
+                    card.get("claim") or "",
+                    tooltip="Copy answer to clipboard",
+                )
                 def _do_dismiss():
                     last_result["value"] = None
                     rerender()
                 ui.button(
                     icon="close",
                     on_click=_do_dismiss,
-                ).props("flat dense round size=sm").tooltip("Dismiss")
+                ).props(
+                    'flat dense round size=sm '
+                    'aria-label="Dismiss answer"'
+                ).tooltip("Dismiss")
 
             claim = card.get("claim") or "(no answer returned)"
             safe_markdown(claim).classes(

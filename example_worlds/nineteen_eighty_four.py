@@ -890,6 +890,43 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_ARREST", target_id="ENT_JULIA", rel_counterpart_id="ENT_PARTY", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.85, mechanism="physical", evidence_strength="strong", causal_force=9.0, fabula_time=13000, propagation_delay=0),
         CausalEdge(source_id="EVT_PARSONS_DENOUNCED", target_id="ENT_PARSONS", rel_counterpart_id="ENT_PARTY", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.85, mechanism="betrayal", evidence_strength="strong", causal_force=8.0, fabula_time=13500, propagation_delay=0),
         CausalEdge(source_id="EVT_OBRIEN_INVITES", target_id="ENT_OBRIEN", rel_counterpart_id="ENT_PARTY", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.7, mechanism="social", evidence_strength="strong", causal_force=6.0, fabula_time=10000, propagation_delay=0),
+        # ── auto-backfilled per-axis mutation_social ──
+        CausalEdge(source_id="EVT_OPENING_DIARY_DATE", target_id="ENT_BIG_BROTHER", rel_counterpart_id="ENT_WINSTON",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.18,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_HATE_WEEK_SWITCH", target_id="ENT_PARTY", rel_counterpart_id="ENT_WINSTON",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.18,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=11000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_HATE_WEEK_ENEMY_SWITCH", target_id="ENT_PARTY", rel_counterpart_id="ENT_JULIA",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.15,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=11000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_HATE_WEEK_ENEMY_SWITCH", target_id="ENT_PARTY", rel_counterpart_id="ENT_PARSONS",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.12,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=11000, propagation_delay=0),
+        CausalEdge(source_id="EVT_OPENING_DIARY_DATE", target_id="ENT_WINSTON", rel_counterpart_id="ENT_KATHARINE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.18,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_OPENING_DIARY_DATE", target_id="ENT_KATHARINE", rel_counterpart_id="ENT_WINSTON",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.06,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_HATE_WEEK_SWITCH", target_id="ENT_PARTY", rel_counterpart_id="ENT_OBRIEN",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.27,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=11000, propagation_delay=0),
+        CausalEdge(source_id="EVT_OPENING_DIARY_DATE", target_id="ENT_BIG_BROTHER", rel_counterpart_id="ENT_WINSTON",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.28,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_HATE_WEEK_SWITCH", target_id="ENT_PARTY", rel_counterpart_id="ENT_WINSTON",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.28,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=11000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_HATE_WEEK_ENEMY_SWITCH", target_id="ENT_PARTY", rel_counterpart_id="ENT_JULIA",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.26,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=11000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_HATE_WEEK_ENEMY_SWITCH", target_id="ENT_PARTY", rel_counterpart_id="ENT_PARSONS",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.26,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=11000, propagation_delay=0),
+        CausalEdge(source_id="EVT_HATE_WEEK_SWITCH", target_id="ENT_PARTY", rel_counterpart_id="ENT_OBRIEN",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.21,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=11000, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────

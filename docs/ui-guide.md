@@ -15,11 +15,11 @@ tab (Save / Save Anyway), as documented below.
 
 The workspace is composed of a left-hand **version sidebar**, a top-level
 **chat / command bar**, a dedicated **Answer panel** (above the chat bar,
-for read-only Q&A results), and nine cross-linked tabs defined in
+for read-only Q&A results), and ten cross-linked tabs defined in
 [`components/workspace.py`](../shadow_loom_ui/components/workspace.py):
 
 ```
-story · explorer · world · causality · reasoning · audit · research · editor · export
+story · explorer · world · social · affective · reasoning · audit · research · editor · export
 ```
 
 State is centralised in [`state.py::AppState`](../shadow_loom_ui/state.py),
@@ -87,7 +87,7 @@ lingers across versions.
 Write-mode queries (`observation` / `intervention` / `counterfactual` /
 `directive` / `evaluate` / `manual_edit`) take their normal pipeline
 route and surface in whichever tab consumes their result
-(Story / Reasoning / Audit / Causality).
+(Story / Reasoning / Audit / Affective).
 
 ## 1. Story tab
 
@@ -152,19 +152,18 @@ rest of the UI.
 
 ## 4. Causality tab
 
+Removed. The top-level Causality tab was retired in May 2026; its
+sub-views were promoted to first-class tabs:
+
+* **Topology / Evolution** — the causal Sankey, trait trajectories, and
+  per-event causal-graph snapshot now live inside the **Social** and
+  **World** tabs (animated relationships, snapshot cards).
+* **Affective Dashboard** — promoted to its own top-level **Affective**
+  tab (see below).
+
 [`components/causality_tab.py`](../shadow_loom_ui/components/causality_tab.py)
-
-Three sub-tabs:
-
-* **Topology** — Sankey of causal flow up to the fabula cursor.
-* **Evolution** — trait trajectory plots per entity, with cursor needle.
-* **Affective Dashboard** — suspense / mystery / irony / surprise / emotion
-  gauges and time-series, computed by `viz_helpers.compute_affective_scores`
-  (which routes through `DirectiveAssembler.compute_*_score`). Top-20
-  entities by event degree are shown by default.
-
-Heavy panels go through `state.spawn_panel_task` — rapid scrubs collapse to
-the most recent render.
+is kept only as an internal builder library that exposes the affective
+rendering helpers; it is not mounted as a workspace tab.
 
 ## 5. Reasoning tab
 
@@ -344,9 +343,9 @@ The events most useful when extending a tab:
 | `PROJECT_LOADED` | project picker, MCP `open_project` | every tab — full re-render |
 | `WORLD_STATE_CHANGED` | `load_db_version`, manual save, pipeline | every tab + cache invalidation in `viz_helpers` |
 | `VERSION_CHANGED` | `load_db_version` | version sidebar highlight, story tab raw-text reload |
-| `FABULA_CURSOR_CHANGED` | sliders in world / causality tabs | world tab, causality sub-tabs |
-| `SYUZHET_CURSOR_CHANGED` | reasoning tab, causality affective dashboard | causality affective dashboard |
-| `ACTIVE_PATH_CHANGED` | top tabs, causality sub-tabs | gated panels for "render only when visible" |
+| `FABULA_CURSOR_CHANGED` | sliders in world / social tabs | world tab, social tab, affective dashboard |
+| `SYUZHET_CURSOR_CHANGED` | reasoning tab, affective dashboard | world tab, social tab, affective dashboard |
+| `ACTIVE_PATH_CHANGED` | top tabs, sub-tab controllers | gated panels for "render only when visible" |
 
 ---
 

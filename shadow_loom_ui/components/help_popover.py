@@ -58,5 +58,7 @@ def help_popover(
         dialog.on("hide", lambda: dialog.delete())
         dialog.open()
 
-    with ui.icon(icon).classes(icon_classes).on("click", _open):
+    with ui.icon(icon).classes(icon_classes).on("click", _open).props(
+        f'role="button" tabindex="0" aria-label="{tooltip}"'
+    ):
         ui.tooltip(tooltip).classes("text-xs")

@@ -887,6 +887,28 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_TOM_TAKES_NICK_TO_NY", target_id="ENT_MYRTLE", rel_counterpart_id="ENT_TOM", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.6, mechanism="social", evidence_strength="strong", causal_force=6.0, fabula_time=3500, propagation_delay=0),
         CausalEdge(source_id="EVT_TOM_BREAKS_NOSE", target_id="ENT_MYRTLE", rel_counterpart_id="ENT_TOM", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.25, mechanism="physical", evidence_strength="strong", causal_force=9.0, fabula_time=5000, propagation_delay=0),
         CausalEdge(source_id="EVT_UTT_TOM_EXPOSES_BOOTLEG", target_id="ENT_MEYER_WOLFSHIEM", rel_counterpart_id="ENT_GATSBY", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.7, mechanism="social", evidence_strength="moderate", causal_force=6.0, fabula_time=13100, propagation_delay=0),
+        # ── auto-backfilled per-axis mutation_social ──
+        CausalEdge(source_id="EVT_NICK_DINES_AT_BUCHANANS", target_id="ENT_TOM", rel_counterpart_id="ENT_NICK",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.06,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_GATSBY_MEETS_DAISY_1917", target_id="ENT_GATSBY", rel_counterpart_id="ENT_MEYER_WOLFSHIEM",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.15,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=500, propagation_delay=0),
+        CausalEdge(source_id="EVT_GATSBY_MEETS_DAISY_1917", target_id="ENT_GATSBY", rel_counterpart_id="ENT_HENRY_GATZ",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.06,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=500, propagation_delay=0),
+        CausalEdge(source_id="EVT_GATSBY_MEETS_DAISY_1917", target_id="ENT_GATSBY", rel_counterpart_id="ENT_GEORGE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.12,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=500, propagation_delay=0),
+        CausalEdge(source_id="EVT_NICK_DINES_AT_BUCHANANS", target_id="ENT_TOM", rel_counterpart_id="ENT_NICK",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.12,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_GATSBY_MEETS_DAISY_1917", target_id="ENT_GATSBY", rel_counterpart_id="ENT_MEYER_WOLFSHIEM",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.21,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=500, propagation_delay=0),
+        CausalEdge(source_id="EVT_GATSBY_MEETS_DAISY_1917", target_id="ENT_GATSBY", rel_counterpart_id="ENT_HENRY_GATZ",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.12,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=500, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────

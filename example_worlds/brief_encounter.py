@@ -739,6 +739,16 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_UTT_STEPHEN_CHASTISES_ALEC", target_id="ENT_ALEC", rel_counterpart_id="ENT_STEPHEN", causality_type="mutation_social", trait_target="fear", trait_delta=0.3, mechanism="psychological", evidence_strength="strong", causal_force=6.0, fabula_time=7000, propagation_delay=0),
         CausalEdge(source_id="EVT_UTT_STEPHEN_CHASTISES_ALEC", target_id="ENT_STEPHEN", rel_counterpart_id="ENT_ALEC", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.3, mechanism="psychological", evidence_strength="strong", causal_force=6.0, fabula_time=7000, propagation_delay=0),
         CausalEdge(source_id="EVT_STAFF_FLIRTATION_ARC", target_id="ENT_MYRTLE_PALMER", rel_counterpart_id="ENT_ALBERT_GODBY", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.5, mechanism="social", evidence_strength="moderate", causal_force=5.0, fabula_time=6000, propagation_delay=0),
+        # ── auto-backfilled per-axis mutation_social ──
+        CausalEdge(source_id="EVT_FINAL_MEETING", target_id="ENT_DOLLY", rel_counterpart_id="ENT_LAURA",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.21,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=10000, propagation_delay=0),
+        CausalEdge(source_id="EVT_CHEMIST_MEETING", target_id="ENT_LAURA", rel_counterpart_id="ENT_ALEC",  # auto-backfill
+                   causality_type="mutation_social", trait_target="fear", trait_delta=0.09,
+                   mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_GRIT_IN_EYE", target_id="ENT_ALEC", rel_counterpart_id="ENT_LAURA",  # auto-backfill
+                   causality_type="mutation_social", trait_target="fear", trait_delta=0.05,
+                   mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────

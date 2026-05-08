@@ -1077,6 +1077,61 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_ALLELINE_BECOMES_CHIEF", target_id="ENT_PERCY_ALLELINE", rel_counterpart_id="ENT_GEORGE_SMILEY", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.6, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=3000, propagation_delay=0),
         CausalEdge(source_id="EVT_CONTROL_FORCED_RETIREMENT", target_id="ENT_GEORGE_SMILEY", rel_counterpart_id="ENT_CONTROL", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.5, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=2500, propagation_delay=0),
         CausalEdge(source_id="EVT_GUILLAM_STEALS_LOGBOOK", target_id="ENT_PETER_GUILLAM", rel_counterpart_id="ENT_GEORGE_SMILEY", causality_type="mutation_social", trait_target="affinity", trait_delta=0.4, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=14000, propagation_delay=0),
+        # ── auto-backfilled per-axis mutation_social ──
+        CausalEdge(source_id="EVT_PRIDEAUX_HUNGARY_MISSION", target_id="ENT_CONTROL", rel_counterpart_id="ENT_GEORGE_SMILEY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.24,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=500, propagation_delay=0),
+        CausalEdge(source_id="EVT_CONTROL_FORCED_RETIREMENT", target_id="ENT_ANN_SMILEY", rel_counterpart_id="ENT_GEORGE_SMILEY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.09,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=2500, propagation_delay=0),
+        CausalEdge(source_id="EVT_LACON_RECRUITS_SMILEY", target_id="ENT_OLIVER_LACON", rel_counterpart_id="ENT_GEORGE_SMILEY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.17,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=5000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WITCHCRAFT_PROJECT_STARTS", target_id="ENT_BILL_HAYDON", rel_counterpart_id="ENT_JIM_PRIDEAUX",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.12,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=3200, propagation_delay=0),
+        CausalEdge(source_id="EVT_ESTERHASE_PRESSED", target_id="ENT_GEORGE_SMILEY", rel_counterpart_id="ENT_TOBY_ESTERHASE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.09,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=19000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WITCHCRAFT_PROJECT_STARTS", target_id="ENT_KARLA", rel_counterpart_id="ENT_BILL_HAYDON",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.12,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=3200, propagation_delay=0),
+        CausalEdge(source_id="EVT_PRIDEAUX_HUNGARY_MISSION", target_id="ENT_KARLA", rel_counterpart_id="ENT_JIM_PRIDEAUX",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.15,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=500, propagation_delay=0),
+        CausalEdge(source_id="EVT_SACHS_SACKED", target_id="ENT_PERCY_ALLELINE", rel_counterpart_id="ENT_CONNIE_SACHS",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.12,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=3500, propagation_delay=0),
+        CausalEdge(source_id="EVT_SMILEY_INTERVIEWS_SACHS", target_id="ENT_GEORGE_SMILEY", rel_counterpart_id="ENT_PETER_GUILLAM",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.24,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=12000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PRIDEAUX_HUNGARY_MISSION", target_id="ENT_CONTROL", rel_counterpart_id="ENT_GEORGE_SMILEY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.15,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=500, propagation_delay=0),
+        CausalEdge(source_id="EVT_CONTROL_FORCED_RETIREMENT", target_id="ENT_ANN_SMILEY", rel_counterpart_id="ENT_GEORGE_SMILEY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.09,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=2500, propagation_delay=0),
+        CausalEdge(source_id="EVT_LACON_RECRUITS_SMILEY", target_id="ENT_OLIVER_LACON", rel_counterpart_id="ENT_GEORGE_SMILEY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.09,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=5000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WITCHCRAFT_PROJECT_STARTS", target_id="ENT_BILL_HAYDON", rel_counterpart_id="ENT_JIM_PRIDEAUX",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.15,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=3200, propagation_delay=0),
+        CausalEdge(source_id="EVT_ESTERHASE_PRESSED", target_id="ENT_GEORGE_SMILEY", rel_counterpart_id="ENT_TOBY_ESTERHASE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.18,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=19000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WITCHCRAFT_PROJECT_STARTS", target_id="ENT_KARLA", rel_counterpart_id="ENT_BILL_HAYDON",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.15,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=3200, propagation_delay=0),
+        CausalEdge(source_id="EVT_PRIDEAUX_HUNGARY_MISSION", target_id="ENT_KARLA", rel_counterpart_id="ENT_JIM_PRIDEAUX",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.28,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=500, propagation_delay=0),
+        CausalEdge(source_id="EVT_SACHS_SACKED", target_id="ENT_PERCY_ALLELINE", rel_counterpart_id="ENT_CONNIE_SACHS",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.21,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=3500, propagation_delay=0),
+        CausalEdge(source_id="EVT_SMILEY_INTERVIEWS_SACHS", target_id="ENT_GEORGE_SMILEY", rel_counterpart_id="ENT_PETER_GUILLAM",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.12,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=12000, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────

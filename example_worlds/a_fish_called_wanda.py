@@ -998,6 +998,16 @@ world_state = WorldStateV1(
         # and (OTTO, GEORGE) power_dynamic dyads stay flat on the gauge.
         CausalEdge(source_id="EVT_WANDA_BETRAYS_GEORGE", target_id="ENT_WANDA", rel_counterpart_id="ENT_GEORGE", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.7, mechanism="betrayal", evidence_strength="strong", causal_force=8.0, fabula_time=3000, propagation_delay=0),
         CausalEdge(source_id="EVT_WANDA_BETRAYS_GEORGE", target_id="ENT_OTTO", rel_counterpart_id="ENT_GEORGE", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.7, mechanism="betrayal", evidence_strength="strong", causal_force=8.0, fabula_time=3000, propagation_delay=0),
+        # ── auto-backfilled per-axis mutation_social ──
+        CausalEdge(source_id="EVT_HEIST", target_id="ENT_KEN", rel_counterpart_id="ENT_WANDA",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.12,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_HEIST", target_id="ENT_KEN", rel_counterpart_id="ENT_WANDA",  # auto-backfill
+                   causality_type="mutation_social", trait_target="fear", trait_delta=0.06,
+                   mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_HEIST", target_id="ENT_KEN", rel_counterpart_id="ENT_WANDA",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.09,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
     ],
     spatial_topology=[
         SpatialEdge(source_id="LOC_HEATHROW", target_id="LOC_GEORGE_FLAT"),

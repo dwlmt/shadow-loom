@@ -1030,6 +1030,34 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_FEYRE_TAKEN", target_id="ENT_TAMLIN", rel_counterpart_id="ENT_ANDRAS", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.6, mechanism="social", evidence_strength="strong", causal_force=6.0, fabula_time=2000, propagation_delay=0),
         CausalEdge(source_id="EVT_WOLF_KILLED", target_id="ENT_ANDRAS", rel_counterpart_id="ENT_TAMLIN", causality_type="mutation_social", trait_target="affinity", trait_delta=0.9, mechanism="emotional", evidence_strength="strong", causal_force=7.0, fabula_time=1000, propagation_delay=0),
         CausalEdge(source_id="EVT_WOLF_KILLED", target_id="ENT_ANDRAS", rel_counterpart_id="ENT_TAMLIN", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.6, mechanism="social", evidence_strength="strong", causal_force=6.0, fabula_time=1000, propagation_delay=0),
+        # ── auto-backfilled per-axis mutation_social ──
+        CausalEdge(source_id="EVT_FEYRE_TAKEN", target_id="ENT_TAMLIN", rel_counterpart_id="ENT_LUCIEN",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.17,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_FEYRE_ENTERS_MOUNTAIN", target_id="ENT_FEYRE", rel_counterpart_id="ENT_AMARANTHA",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.28,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=12000, propagation_delay=0),
+        CausalEdge(source_id="EVT_TAMLIN_CAPTURED", target_id="ENT_AMARANTHA", rel_counterpart_id="ENT_LUCIEN",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.15,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=10000, propagation_delay=0),
+        CausalEdge(source_id="EVT_TAMLIN_CAPTURED", target_id="ENT_AMARANTHA", rel_counterpart_id="ENT_RHYSAND",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.12,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=10000, propagation_delay=0),
+        CausalEdge(source_id="EVT_FEYRE_ENTERS_MOUNTAIN", target_id="ENT_FEYRE", rel_counterpart_id="ENT_AMARANTHA",  # auto-backfill
+                   causality_type="mutation_social", trait_target="fear", trait_delta=0.26,
+                   mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=12000, propagation_delay=0),
+        CausalEdge(source_id="EVT_FEYRE_TAKEN", target_id="ENT_TAMLIN", rel_counterpart_id="ENT_LUCIEN",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.09,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_FEYRE_ENTERS_MOUNTAIN", target_id="ENT_FEYRE", rel_counterpart_id="ENT_AMARANTHA",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.24,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=12000, propagation_delay=0),
+        CausalEdge(source_id="EVT_TAMLIN_CAPTURED", target_id="ENT_AMARANTHA", rel_counterpart_id="ENT_LUCIEN",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.18,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=10000, propagation_delay=0),
+        CausalEdge(source_id="EVT_TAMLIN_CAPTURED", target_id="ENT_AMARANTHA", rel_counterpart_id="ENT_RHYSAND",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.09,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=10000, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────

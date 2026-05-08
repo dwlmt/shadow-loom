@@ -577,6 +577,15 @@ def belief_provenance_data(
             "inertia": float(b.inertia),
             "trigger_id": "",
             "trigger_label": "(pre-story)",
+            "acquired_via_event_id": b.acquired_via_event_id or "",
+            "acquired_via_event_label": (
+                label(b.acquired_via_event_id) if b.acquired_via_event_id else ""
+            ),
+            "acquired_via_channel_id": b.acquired_via_channel_id or "",
+            "acquired_via_channel_label": (
+                label(b.acquired_via_channel_id) if b.acquired_via_channel_id else ""
+            ),
+            "proposition_id": getattr(b, "proposition_id", None) or "",
         })
 
     # ── Snapshot deltas ───────────────────────────────────────────
@@ -602,6 +611,7 @@ def belief_provenance_data(
                 "acquired_via_channel_label": (
                     label(b.acquired_via_channel_id) if b.acquired_via_channel_id else ""
                 ),
+                "proposition_id": getattr(b, "proposition_id", None) or "",
             })
         for tid in snap.beliefs_invalidated:
             rows.append({
@@ -618,6 +628,7 @@ def belief_provenance_data(
                 "acquired_via_event_label": "",
                 "acquired_via_channel_id": "",
                 "acquired_via_channel_label": "",
+                "proposition_id": "",
             })
 
     rows.sort(key=lambda r: (r["fabula_time"], 0 if r["kind"] == "initial" else 1))

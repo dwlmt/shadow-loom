@@ -1479,6 +1479,52 @@ def assemble_audit_prompt(
         )
         sections.append("")
 
+    # === Negative-physics record (HARD)
+    # The brief's CONSTRAINTS section already carries the HARD
+    # ``=== PREVENTED EVENTS (HARD) ===`` and ``=== FALSE PROPOSITIONS
+    # (HARD) ===`` blocks (emitted by every brief builder \u2014 directive,
+    # observation, intervention, counterfactual). Surface a dedicated
+    # reminder here so the auditor flags negative-physics breaches
+    # under a typed rationale rather than as a generic prose drift.
+    has_prevented = any(
+        "PREVENTED EVENTS (HARD)" in (c.instruction or "")
+        for c in (brief.constraints or [])
+    )
+    has_false_props = any(
+        "FALSE PROPOSITIONS (HARD)" in (c.instruction or "")
+        for c in (brief.constraints or [])
+    )
+    if has_prevented or has_false_props:
+        sections.append(
+            "=== NEGATIVE PHYSICS (the prose must NOT stage these "
+            "as occurring) ==="
+        )
+        if has_prevented:
+            sections.append(
+                "  Prevented events: see the `=== PREVENTED EVENTS "
+                "(HARD) ===` block in the constraints above. The "
+                "physics tags those event ids as not occurring. Flag "
+                "any prose that stages them as having happened, has "
+                "characters witness or remember them as past events, "
+                "or treats a downstream consequence as if the "
+                "prevented event were canonical. Violation type: "
+                "`reasoning_failure` with rationale prefix "
+                "`prevented_event:`."
+            )
+        if has_false_props:
+            sections.append(
+                "  False propositions: see the `=== FALSE PROPOSITIONS "
+                "(HARD) ===` block in the constraints above. The "
+                "physics commits those propositions FALSE at or before "
+                "this scene's anchor. Characters MAY believe them "
+                "(belief\u2260fact is an allowed mismatch and often the "
+                "point); the narration MUST NOT enact them as fact. "
+                "Flag prose that asserts a false proposition as "
+                "occurring/true. Violation type: `reasoning_failure` "
+                "with rationale prefix `false_proposition:`."
+            )
+        sections.append("")
+
     sections.append(f"=== AUDIT CATEGORIES TO CHECK: {', '.join(audit_categories)} ===")
     sections.append(
         "Run ONLY the audit categories listed above. Do not surface "

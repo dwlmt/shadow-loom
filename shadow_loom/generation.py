@@ -48,6 +48,8 @@ from shadow_loom.directive_assembly import (
     RenderingDirective,
     SurpriseProfile,
     ThreatProximity,
+    build_false_proposition_constraints,
+    build_prevented_event_constraints,
     compute_hidden_channels_for,
 )
 from shadow_loom.models import WorldStateV1
@@ -2054,6 +2056,15 @@ def build_observation_brief(
     """Build a lightweight CreativeBrief for observation queries."""
     pov = query.focus_entity_ids[0] if query.focus_entity_ids else None
     constraints: List[ConstraintBlock] = _user_intent_constraints(query.original_query)
+    # Negative-physics record: events the world tags as not occurring
+    # and propositions committed FALSE at or before the anchor must
+    # NOT be staged as having happened. Applies to every rung.
+    constraints.extend(build_prevented_event_constraints(
+        world_state, syuzhet_anchor, world_label="observed",
+    ))
+    constraints.extend(build_false_proposition_constraints(
+        world_state, syuzhet_anchor, world_label="observed",
+    ))
     scene_context = dict(physics_state) if isinstance(physics_state, dict) else {}
     if syuzhet_anchor is not None and isinstance(scene_context, dict):
         scene_context.setdefault("syuzhet_anchor", syuzhet_anchor)
@@ -2371,6 +2382,13 @@ def build_intervention_brief(
         world_state,
         world_label="intervened",
     ))
+    # Negative-physics record: prevented events + false propositions.
+    constraints.extend(build_prevented_event_constraints(
+        world_state, syuzhet_anchor, world_label="intervened",
+    ))
+    constraints.extend(build_false_proposition_constraints(
+        world_state, syuzhet_anchor, world_label="intervened",
+    ))
 
     return CreativeBrief(
         target_effect="intervention",
@@ -2594,6 +2612,13 @@ def build_counterfactual_brief(
         disabled_channel_ids,
         world_state,
         world_label="counterfactual",
+    ))
+    # Negative-physics record: prevented events + false propositions.
+    constraints.extend(build_prevented_event_constraints(
+        world_state, syuzhet_anchor, world_label="counterfactual",
+    ))
+    constraints.extend(build_false_proposition_constraints(
+        world_state, syuzhet_anchor, world_label="counterfactual",
     ))
 
     # Resolve target entities from the historical intervention keys

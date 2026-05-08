@@ -1252,6 +1252,22 @@ world_state = WorldStateV1(
                    causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.8,
                    mechanism="social", evidence_strength="strong", causal_force=7.0,
                    fabula_time=7000, propagation_delay=0),
+        # ── auto-backfilled per-axis mutation_social ──
+        CausalEdge(source_id="EVT_PIP_VISITS_SATIS", target_id="ENT_PIP", rel_counterpart_id="ENT_HAVISHAM",  # auto-backfill
+                   causality_type="mutation_social", trait_target="fear", trait_delta=0.15,
+                   mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=4000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PIP_BRINGS_FOOD", target_id="ENT_PIP", rel_counterpart_id="ENT_JAGGERS",  # auto-backfill
+                   causality_type="mutation_social", trait_target="fear", trait_delta=0.17,
+                   mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=1500, propagation_delay=0),
+        CausalEdge(source_id="EVT_PIP_VISITS_SATIS", target_id="ENT_PIP", rel_counterpart_id="ENT_HAVISHAM",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.21,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=4000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PIP_HELPS_HERBERT", target_id="ENT_PIP", rel_counterpart_id="ENT_HERBERT",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.05,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=10000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PIP_BRINGS_FOOD", target_id="ENT_PIP", rel_counterpart_id="ENT_JAGGERS",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.24,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1500, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────

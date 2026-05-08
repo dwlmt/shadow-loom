@@ -71,19 +71,7 @@ NO_FEAR_FIXTURES = {
 # edges) so every observed fear axis is touched by at least one
 # ``mutation_social`` edge with ``trait_target="fear"``, then remove
 # the world name from this set.
-KNOWN_FLAT_FEAR_FIXTURES: set[str] = {
-    "a_court_of_thorn_and_roses",
-    "a_fish_called_wanda",
-    "dads_army",
-    "death_on_the_nile",
-    "frankenstein",
-    "gone_girl",
-    "great_expectations",
-    "macbeth",
-    "once_upon_a_time_in_the_west",
-    "romeo_and_juliet",
-    "wuthering_heights",
-}
+KNOWN_FLAT_FEAR_FIXTURES: set[str] = set()
 
 
 def _all_fixture_worlds() -> list[tuple[str, WorldStateV1]]:
@@ -208,51 +196,8 @@ def test_observed_fear_axes_have_at_least_one_mutation(name, ws):
 # observed axis on the fixture's relationship edges, then remove the
 # world name from this set.
 KNOWN_FLAT_AXIS_FIXTURES: dict[str, set[str]] = {
-    # axis -> {fixture names}; pre-existing extractions with one or
-    # more observed dyads on this axis that lack a corresponding
-    # ``mutation_social`` edge. Each entry here is regression debt
-    # scheduled for the next re-ingestion pass under the strengthened
-    # ``physics_extraction.md`` prompt. New fixtures must satisfy the
-    # invariant — only legacy worlds may be grandfathered.
-    "affinity": {
-        "a_court_of_thorn_and_roses",
-        "a_fish_called_wanda",
-        "apocalypse_now",
-        "brief_encounter",
-        "dads_army",
-        "death_on_the_nile",
-        "frankenstein",
-        "gone_girl",
-        "great_gatsby",
-        "macbeth",
-        "nineteen_eighty_four",
-        "once_upon_a_time_in_the_west",
-        "persuasion",
-        "reservoir_dogs",
-        "romeo_and_juliet",
-        "the_lion_the_witch_and_the_wardrobe",
-        "tinker_tailor_soldier_spy",
-        "wuthering_heights",
-    },
-    "power_dynamic": {
-        "a_court_of_thorn_and_roses",
-        "a_fish_called_wanda",
-        "apocalypse_now",
-        "dads_army",
-        "death_on_the_nile",
-        "frankenstein",
-        "gone_girl",
-        "great_expectations",
-        "great_gatsby",
-        "macbeth",
-        "nineteen_eighty_four",
-        "persuasion",
-        "reservoir_dogs",
-        "romeo_and_juliet",
-        "the_lion_the_witch_and_the_wardrobe",
-        "tinker_tailor_soldier_spy",
-        "wuthering_heights",
-    },
+    "affinity": set(),
+    "power_dynamic": set(),
 }
 
 

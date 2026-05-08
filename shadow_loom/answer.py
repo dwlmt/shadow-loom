@@ -332,6 +332,98 @@ def _compress_world_state(
                 wid_tag = f" [{ch.get('world_id', 'factual')}]"
             lines.append(f"- `{cid}` {medium}{wid_tag} participants=[{parts}]")
 
+    # Propositions — the catalogue of structured factual claims.
+    # ``truth_at_fabula`` is the physics commit log: the answer LLM
+    # MUST treat ``False`` commits as factually NOT the case (even if
+    # one or more characters still believe them) and ``True`` commits
+    # as established fact. Without this section the Interrogator /
+    # General Q&A surfaces only events + beliefs and silently misses
+    # the propositional ground truth.
+    propositions = physics_state.get("propositions", None)
+    if propositions:
+        if isinstance(propositions, dict):
+            prop_iter = list(propositions.items())
+        else:
+            prop_iter = [
+                (p.get("id") or p.get("proposition_id") or "?", p)
+                for p in propositions
+                if isinstance(p, dict)
+            ]
+        if prop_iter:
+            lines.append("\n## Propositions (factual claims, with commit log)")
+            for pid, p in prop_iter[:max_events]:
+                desc = (p.get("description") or "").strip().replace("\n", " ")
+                if len(desc) > 140:
+                    desc = desc[:137] + "…"
+                truth_map = p.get("truth_at_fabula") or {}
+                if truth_map:
+                    items = sorted(
+                        ((int(t), bool(v)) for t, v in truth_map.items()),
+                        key=lambda kv: kv[0],
+                    )
+                    truth_str = ", ".join(
+                        f"T={t}:{'TRUE' if v else 'FALSE'}" for t, v in items
+                    )
+                    truth_part = f" truth=[{truth_str}]"
+                else:
+                    truth_part = " truth=[uncommitted]"
+                lines.append(f"- `{pid}`{truth_part} — {desc}")
+            if len(prop_iter) > max_events:
+                lines.append(
+                    f"  …(+{len(prop_iter) - max_events} more propositions)"
+                )
+
+    # Negative facts — events the physics tags as NOT occurring and
+    # propositions whose latest commit is FALSE. Surfaced as a
+    # dedicated callout so the answer LLM cannot accidentally answer
+    # "yes, X happened" about an event the world records as prevented,
+    # or assert a falsified proposition as fact.
+    prevented_events = [
+        e for e in (physics_state.get("events", []) or [])
+        if (e.get("event_type") or "") in {"prevented", "never_happened", "removed"}
+    ]
+    false_props: List[str] = []
+    if propositions:
+        if isinstance(propositions, dict):
+            _piter = list(propositions.values())
+        else:
+            _piter = [p for p in propositions if isinstance(p, dict)]
+        for p in _piter:
+            truth_map = p.get("truth_at_fabula") or {}
+            if not truth_map:
+                continue
+            items = sorted(
+                ((int(t), bool(v)) for t, v in truth_map.items()),
+                key=lambda kv: kv[0],
+            )
+            if items and items[-1][1] is False:
+                pid = p.get("id") or p.get("proposition_id") or "?"
+                desc = (p.get("description") or "").strip().replace("\n", " ")
+                if len(desc) > 120:
+                    desc = desc[:117] + "…"
+                false_props.append(f"`{pid}` (false @ T={items[-1][0]}) — {desc}")
+    if prevented_events or false_props:
+        lines.append(
+            "\n## NEGATIVE FACTS — these did NOT occur / are NOT true"
+        )
+        lines.append(
+            "  Treat the items below as authoritative non-events. The "
+            "answer must not assert them as having happened or being "
+            "true. Characters may still *believe* a false proposition "
+            "(belief ≠ fact); answer that distinction explicitly when "
+            "asked, but do not enact the proposition as fact."
+        )
+        for evt in prevented_events[:max_events]:
+            eid = evt.get("id", "?")
+            ft = evt.get("fabula_time", "?")
+            etype = evt.get("event_type", "?")
+            desc = (evt.get("description") or "").strip().replace("\n", " ")
+            if len(desc) > 120:
+                desc = desc[:117] + "…"
+            lines.append(f"- T={ft} `{eid}` [{etype}] — {desc}")
+        for fp in false_props[:max_events]:
+            lines.append(f"- {fp}")
+
     return "\n".join(lines)
 
 
@@ -365,6 +457,15 @@ Rules:
   • The active branch is the source of truth for the answer. When on a
     shadow fork, do NOT default back to canonical / factual outcomes
     that the shadow has overwritten — answer from the shadow state.
+  • The world state has a NEGATIVE FACTS section listing events the
+    physics tags as `prevented` / `never_happened` / `removed` and
+    propositions whose latest commit in `truth_at_fabula` is FALSE.
+    Treat these as authoritative non-events: do NOT assert any of
+    them as having occurred or being true. A character may still
+    *believe* a false proposition; surface that distinction
+    explicitly when relevant (e.g. "Macbeth believes Banquo is
+    dead" vs "Banquo is alive"), but do not enact the proposition
+    as fact in the answer.
   • If the answer is not deducible, say so plainly and lower confidence.
   • Reference characters, events, and locations by their human names
     in the prose answer; list the exact node ids in evidence_node_ids.
@@ -405,6 +506,14 @@ Rules:
     direct knowledge, inference, and what X is unaware of.
   • When asked about relationships or spatial reachability, walk the
     social_topology / spatial_topology edges.
+  • The world state has a NEGATIVE FACTS section listing events the
+    physics tags as `prevented` / `never_happened` / `removed` and
+    propositions whose latest commit is FALSE. Do NOT walk through
+    a prevented event as if it occurred, do NOT cite a falsified
+    proposition as a cause, and do NOT include their node ids in
+    evidence_node_ids as supporting evidence for a positive claim.
+    A causal chain that depends on a prevented event collapses —
+    say so plainly.
   • If require_proof is true, only assert claims you can back with at
     least one explicit edge or event in the supplied data, and only
     use edges that belong to the active branch.

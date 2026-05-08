@@ -103,8 +103,8 @@ def build_reasoning_tab(state: AppState) -> None:
                     "### When the trace is empty\n"
                     "The trace populates only after a rung-2 or"
                     " rung-3 query has run in this session. Use the"
-                    " command bar (Intervene / What-If) or the What-If"
-                    " Workbench in the Causality tab to populate it."
+                    " command bar (Intervene / What-If) to populate"
+                    " it."
                 ),
                 tooltip="What is this tab?",
             )

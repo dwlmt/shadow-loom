@@ -960,6 +960,43 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_UTT_FULLARD_DRESSDOWN", target_id="ENT_FULLARD", rel_counterpart_id="ENT_MAINWARING", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.65, mechanism="social", evidence_strength="strong", causal_force=8.0, fabula_time=9500, propagation_delay=0),
         CausalEdge(source_id="EVT_VICAR_COMPLAINS", target_id="ENT_VICAR", rel_counterpart_id="ENT_MAINWARING", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.2, mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=4000, propagation_delay=0),
         CausalEdge(source_id="EVT_MAINWARING_STANDS_FIRM", target_id="ENT_GERMAN_OFFICER", rel_counterpart_id="ENT_MAINWARING", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.4, mechanism="social", evidence_strength="strong", causal_force=8.0, fabula_time=11000, propagation_delay=0),
+        # ── auto-backfilled per-axis mutation_social ──
+        CausalEdge(source_id="EVT_PARACHUTIST_CAPTURED", target_id="ENT_MAINWARING", rel_counterpart_id="ENT_FRAZER",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.07,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=10000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PIKE_SCARF_INCIDENT", target_id="ENT_PIKE", rel_counterpart_id="ENT_MAINWARING",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.17,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=6000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PLATOON_FORMED", target_id="ENT_WALKER", rel_counterpart_id="ENT_MAINWARING",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.05,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PLATOON_FORMED", target_id="ENT_MAINWARING", rel_counterpart_id="ENT_WALKER",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.05,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PLATOON_FORMED", target_id="ENT_MAINWARING", rel_counterpart_id="ENT_VICAR",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.14,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PARACHUTIST_CAPTURED", target_id="ENT_MAINWARING", rel_counterpart_id="ENT_GERMAN_OFFICER",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.21,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=10000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PIKE_SCARF_INCIDENT", target_id="ENT_PIKE", rel_counterpart_id="ENT_MAINWARING",  # auto-backfill
+                   causality_type="mutation_social", trait_target="fear", trait_delta=0.1,
+                   mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=6000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PARACHUTIST_CAPTURED", target_id="ENT_MAINWARING", rel_counterpart_id="ENT_FRAZER",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.07,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=10000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PARACHUTIST_CAPTURED", target_id="ENT_MAINWARING", rel_counterpart_id="ENT_GODFREY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.09,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=10000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PIKE_SCARF_INCIDENT", target_id="ENT_PIKE", rel_counterpart_id="ENT_MAINWARING",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.17,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=6000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PLATOON_FORMED", target_id="ENT_MAINWARING", rel_counterpart_id="ENT_VICAR",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.06,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PARACHUTIST_CAPTURED", target_id="ENT_MAINWARING", rel_counterpart_id="ENT_GERMAN_OFFICER",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.12,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=10000, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────

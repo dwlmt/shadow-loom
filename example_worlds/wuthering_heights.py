@@ -1077,6 +1077,34 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_HINDLEY_DIES", target_id="ENT_HEATHCLIFF", rel_counterpart_id="ENT_HARETON", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.9, mechanism="social", evidence_strength="strong", causal_force=9.0, fabula_time=12000, propagation_delay=0),
         CausalEdge(source_id="EVT_HINDLEY_DIES", target_id="ENT_HARETON", rel_counterpart_id="ENT_HEATHCLIFF", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.9, mechanism="social", evidence_strength="strong", causal_force=9.0, fabula_time=12000, propagation_delay=0),
         CausalEdge(source_id="EVT_HEATHCLIFF_DIES", target_id="ENT_HARETON", rel_counterpart_id="ENT_HEATHCLIFF", causality_type="mutation_social", trait_target="affinity", trait_delta=0.65, mechanism="emotional", evidence_strength="strong", causal_force=7.0, fabula_time=19500, propagation_delay=0),
+        # ── auto-backfilled per-axis mutation_social ──
+        CausalEdge(source_id="EVT_UTT_HEATHCLIFF_COERCES_LINTON", target_id="ENT_HEATHCLIFF", rel_counterpart_id="ENT_CATHY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.12,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=15000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_CATHERINE_CONFESSES_TO_NELLY", target_id="ENT_CATHERINE", rel_counterpart_id="ENT_NELLY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.09,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=7000, propagation_delay=0),
+        CausalEdge(source_id="EVT_HEATHCLIFF_AND_CATHERINE_BOND", target_id="ENT_HEATHCLIFF", rel_counterpart_id="ENT_NELLY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.05,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_HEATHCLIFF_AND_CATHERINE_BOND", target_id="ENT_CATHERINE", rel_counterpart_id="ENT_HEATHCLIFF",  # auto-backfill
+                   causality_type="mutation_social", trait_target="fear", trait_delta=0.09,
+                   mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_HEATHCLIFF_AND_CATHERINE_BOND", target_id="ENT_HEATHCLIFF", rel_counterpart_id="ENT_EDGAR",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.12,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_CATHERINE_MARRIES_EDGAR", target_id="ENT_EDGAR", rel_counterpart_id="ENT_HEATHCLIFF",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.12,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=9500, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_HEATHCLIFF_COERCES_LINTON", target_id="ENT_HEATHCLIFF", rel_counterpart_id="ENT_CATHY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.26,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=15000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_CATHERINE_CONFESSES_TO_NELLY", target_id="ENT_CATHERINE", rel_counterpart_id="ENT_NELLY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.12,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=7000, propagation_delay=0),
+        CausalEdge(source_id="EVT_HEATHCLIFF_AND_CATHERINE_BOND", target_id="ENT_HEATHCLIFF", rel_counterpart_id="ENT_NELLY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.18,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
