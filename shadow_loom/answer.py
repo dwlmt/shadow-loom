@@ -26,7 +26,7 @@ from pydantic_ai import Agent, NativeOutput
 
 from shadow_loom.generation import GenerationConfig
 from shadow_loom.models import WorldStateV1
-from shadow_loom.settings import resolve_model as _resolve_model
+from shadow_loom.settings import resolve_model as _resolve_model, get_settings as _get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -696,8 +696,12 @@ def answer_question(
             caveats=["Empty question."],
         )
 
+    _gs = _get_settings().generation
     context_block = _compress_world_state(
-        physics_state, branch_world_id=branch_world_id,
+        physics_state,
+        branch_world_id=branch_world_id,
+        max_entities=_gs.answer_max_entities,
+        max_events=_gs.answer_max_events,
     )
     user_msg_parts: List[str] = [
         f"Question: {question.strip()}",
@@ -761,10 +765,14 @@ def answer_question(
             "not assume the shadow branch follows it.)",
         ])
     if preceding_prose:
+        _pp_max = _get_settings().generation.preceding_prose_max_chars
+        _pp = preceding_prose.strip()
+        if len(_pp) > _pp_max:
+            _pp = "\u2026" + _pp[-_pp_max:]
         user_msg_parts.extend([
             "",
             "=== STORY SO FAR (prior prose on this branch) ===",
-            preceding_prose.strip(),
+            _pp,
         ])
     if narrative_style is not None:
         # Surface the source register so the LLM uses the same

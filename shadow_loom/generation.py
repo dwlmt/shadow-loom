@@ -87,13 +87,22 @@ class GenerationConfig(BaseModel):
         description="Max retries for output validation.",
     )
     max_tokens: int = Field(
-        default=64000,
+        default=16000,
         description="Maximum tokens in the generated prose.",
     )
     temperature: float = Field(
         default=0.7,
         description="Sampling temperature for creative prose.",
     )
+    # Scene-context trimming — mirrors GenerationSettings fields.
+    scene_context_recent_events: int = Field(default=10)
+    scene_context_max_beliefs: int = Field(default=4)
+    scene_context_loc_desc_chars: int = Field(default=160)
+    scene_context_obj_desc_chars: int = Field(default=120)
+    scene_context_utterance_chars: int = Field(default=200)
+    preceding_prose_max_chars: int = Field(default=3000)
+    answer_max_entities: int = Field(default=30)
+    answer_max_events: int = Field(default=40)
 
     @model_validator(mode="before")
     @classmethod
@@ -1257,7 +1266,15 @@ def _normalise_sandbox_to_ego_shape(ctx: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def format_scene_context_for_prompt(ctx: Dict[str, Any]) -> str:
+def format_scene_context_for_prompt(
+    ctx: Dict[str, Any],
+    *,
+    recent_events: Optional[int] = None,
+    max_beliefs: Optional[int] = None,
+    loc_desc_chars: Optional[int] = None,
+    obj_desc_chars: Optional[int] = None,
+    utterance_chars: Optional[int] = None,
+) -> str:
     """Build a rich scene-context block from the full ego-graph payload.
 
     Surfaces every field that ``extract_ego_graph_from_memory`` returns
@@ -1283,12 +1300,23 @@ def format_scene_context_for_prompt(ctx: Dict[str, Any]) -> str:
 
     Returned as a single multi-line string suitable for embedding
     under a ``=== SCENE CONTEXT ===`` header.
+
+    The optional keyword arguments control how much context is emitted.
+    When ``None``, each defaults to the value from
+    ``GenerationSettings`` (read at call time from the live settings).
     """
     if not ctx:
         return "(No scene context available.)"
 
+    _s = _get_settings().generation
+    _recent_events = recent_events if recent_events is not None else _s.scene_context_recent_events
+    _max_beliefs = max_beliefs if max_beliefs is not None else _s.scene_context_max_beliefs
+    _loc_desc = loc_desc_chars if loc_desc_chars is not None else _s.scene_context_loc_desc_chars
+    _obj_desc = obj_desc_chars if obj_desc_chars is not None else _s.scene_context_obj_desc_chars
+    _utt_chars = utterance_chars if utterance_chars is not None else _s.scene_context_utterance_chars
+
     ctx = _normalise_sandbox_to_ego_shape(ctx)
-    ctx = _normalise_omniscient_to_ego_shape(ctx)
+    ctx = _normalise_omniscient_to_ego_shape(ctx, recent_event_limit=_recent_events)
     sections: List[str] = []
 
     # ------------------------------------------------------------
@@ -1305,7 +1333,7 @@ def format_scene_context_for_prompt(ctx: Dict[str, Any]) -> str:
             sections.append(f"  - {lname} ({lid}){parent_str}")
             desc = (loc.get("description") or "").strip()
             if desc:
-                sections.append(f"      {desc[:240]}")
+                sections.append(f"      {desc[:_loc_desc]}")
 
     spatial = ctx.get("relevant_spatial_edges") or []
     if spatial:
@@ -1352,7 +1380,7 @@ def format_scene_context_for_prompt(ctx: Dict[str, Any]) -> str:
             status = ent.get("status", "unknown")
             sections.append(f"  - {name} ({eid}) — {status}, present at {loc}")
             sections.append(f"      traits: {_fmt_traits(ent.get('traits') or {})}")
-            sections.extend(_fmt_beliefs(ent.get("beliefs") or []))
+            sections.extend(_fmt_beliefs(ent.get("beliefs") or [], max_items=_max_beliefs))
 
     # ------------------------------------------------------------
     # Co-present entities — also need traits / status so the renderer
@@ -1386,7 +1414,7 @@ def format_scene_context_for_prompt(ctx: Dict[str, Any]) -> str:
             sections.append(f"  - {oname} ({oid}) — {where}")
             desc = (obj.get("description") or "").strip()
             if desc:
-                sections.append(f"      {desc[:200]}")
+                sections.append(f"      {desc[:_obj_desc]}")
             # Affordances — what this object lets characters DO. Without
             # surfacing these the renderer can't reason about a key
             # unlocking a door, a weapon enabling a kill, a vehicle
@@ -1555,9 +1583,9 @@ def format_scene_context_for_prompt(ctx: Dict[str, Any]) -> str:
                 f"  - {time_blob}{uid} — {speaker} → {addressees}{via_blob}{tv}"
             )
             if desc:
-                sections.append(f"      {desc[:200]}")
+                sections.append(f"      {desc[:_utt_chars]}")
             if content:
-                sections.append(f"      content: {content[:300]}")
+                sections.append(f"      content: {content[:_utt_chars]}")
 
     # ------------------------------------------------------------
     # Causal edges between in-scene nodes
@@ -1671,14 +1699,21 @@ def assemble_rendering_prompt(
 
     # === Story so far (narrative continuity) ===
     # Concatenated prose from prior versions in the current session's
-    # lineage so a chain of queries (counterfactual \u2192 intervention
-    # \u2192 observation, etc.) renders prose that is continuous with
+    # lineage so a chain of queries (counterfactual → intervention
+    # → observation, etc.) renders prose that is continuous with
     # everything that came before, not just the accumulated world
-    # state. Background context only \u2014 hard constraints and the
+    # state. Background context only — hard constraints and the
     # SCENE CONTEXT below remain authoritative on conflict.
+    # Capped to ``preceding_prose_max_chars`` (tail of the text, i.e.
+    # the most recent prose) so long session lineages don't overflow
+    # the context window.
     if brief.preceding_prose:
+        _pp_max = _get_settings().generation.preceding_prose_max_chars
+        _pp = brief.preceding_prose.strip()
+        if len(_pp) > _pp_max:
+            _pp = "…" + _pp[-_pp_max:]
         sections.append("=== STORY SO FAR (prior prose for continuity) ===")
-        sections.append(brief.preceding_prose.strip())
+        sections.append(_pp)
         sections.append(
             "Treat the prose above as established narrative this scene "
             "must continue from. Honour its tone, point-of-view drift, "
@@ -2774,8 +2809,7 @@ def render_scene(
     model_settings: Dict[str, Any] = {}
     if config.temperature != 0.7:
         model_settings["temperature"] = config.temperature
-    if config.max_tokens != 64000:
-        model_settings["max_tokens"] = config.max_tokens
+    model_settings["max_tokens"] = config.max_tokens
 
     try:
         result = agent.run_sync(

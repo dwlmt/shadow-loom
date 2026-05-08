@@ -1590,6 +1590,101 @@ class TestReconcileChunkTopologies:
         # Mixed chunk untouched — at least one event ≥ prior_max.
         assert [e.fabula_time for e in result[1].events] == [5, 2500]
 
+    def test_long_range_dedup_collapses_distant_chunk_duplicates(self):
+        """Same actors+targets+event_type and high token overlap on
+        descriptions across non-adjacent chunks → collapse onto the
+        first-syuzhet occurrence regardless of chunk distance or
+        fabula offset."""
+        # Chunk 0: canonical event at fabula 1000
+        topo0 = self._make_topo(events=[
+            EventNode(id="EVT_OBI_WAN_SACRIFICE",
+                      description="Obi-Wan sacrifices himself in a lightsaber duel with Darth Vader",
+                      event_type="outcome",
+                      fabula_time=1000, syuzhet_index=0,
+                      actor_ids=["ENT_OBI_WAN"], target_ids=["ENT_VADER"]),
+        ])
+        # Chunk 1: filler so chunks 0 and 2 are non-adjacent
+        topo1 = self._make_topo(events=[
+            EventNode(id="EVT_FILLER", description="filler", event_type="choice",
+                      fabula_time=2000, syuzhet_index=1,
+                      actor_ids=["ENT_LUKE"], target_ids=[]),
+        ])
+        # Chunk 2: re-extracts the same beat at a wildly different fabula time
+        topo2 = self._make_topo(events=[
+            EventNode(id="EVT_OBIWAN_SACRIFICES_SELF",
+                      description="Obi-Wan sacrifices himself in a lightsaber duel against Vader",
+                      event_type="outcome",
+                      fabula_time=3600, syuzhet_index=2,
+                      actor_ids=["ENT_OBI_WAN"], target_ids=["ENT_VADER"]),
+        ])
+        config = ExtractionConfig(fabula_time_spacing=1000)
+        result = _reconcile_chunk_topologies([topo0, topo1, topo2], config)
+        # The duplicate in chunk 2 is dropped; the canonical id remains.
+        all_ids = [e.id for topo in result for e in topo.events]
+        assert "EVT_OBI_WAN_SACRIFICE" in all_ids
+        assert "EVT_OBIWAN_SACRIFICES_SELF" not in all_ids
+
+    def test_long_range_dedup_skips_low_overlap(self):
+        """Same actors+targets+event_type but low description overlap →
+        do NOT collapse (legitimately separate beats)."""
+        topo0 = self._make_topo(events=[
+            EventNode(id="EVT_FIGHT_1",
+                      description="Macbeth duels Banquo in the courtyard",
+                      event_type="outcome",
+                      fabula_time=1000, syuzhet_index=0,
+                      actor_ids=["ENT_MACBETH"], target_ids=["ENT_BANQUO"]),
+        ])
+        topo1 = self._make_topo(events=[
+            EventNode(id="EVT_FILLER", description="filler", event_type="choice",
+                      fabula_time=2000, syuzhet_index=1,
+                      actor_ids=["ENT_LUKE"], target_ids=[]),
+        ])
+        topo2 = self._make_topo(events=[
+            EventNode(id="EVT_FIGHT_2",
+                      description="Macbeth dispatches Banquo at the feast hall",
+                      event_type="outcome",
+                      fabula_time=3000, syuzhet_index=2,
+                      actor_ids=["ENT_MACBETH"], target_ids=["ENT_BANQUO"]),
+        ])
+        config = ExtractionConfig(fabula_time_spacing=1000)
+        result = _reconcile_chunk_topologies([topo0, topo1, topo2], config)
+        all_ids = [e.id for topo in result for e in topo.events]
+        # Both kept (different beats, low Jaccard).
+        assert "EVT_FIGHT_1" in all_ids
+        assert "EVT_FIGHT_2" in all_ids
+
+    def test_long_range_dedup_skips_utterances(self):
+        """Utterances are excluded from cross-chunk dedup — each speech
+        act is treated as distinct."""
+        topo0 = self._make_topo(events=[
+            EventNode(id="EVT_UTT_HELLO",
+                      description="Luke greets Obi-Wan with a friendly hello",
+                      event_type="utterance",
+                      fabula_time=1000, syuzhet_index=0,
+                      actor_ids=["ENT_LUKE"], target_ids=["ENT_OBI_WAN"],
+                      speaker_id="ENT_LUKE", addressee_ids=["ENT_OBI_WAN"],
+                      content="Hello"),
+        ])
+        topo1 = self._make_topo(events=[
+            EventNode(id="EVT_FILLER", description="filler", event_type="choice",
+                      fabula_time=2000, syuzhet_index=1,
+                      actor_ids=["ENT_LUKE"], target_ids=[]),
+        ])
+        topo2 = self._make_topo(events=[
+            EventNode(id="EVT_UTT_HELLO_AGAIN",
+                      description="Luke greets Obi-Wan with a friendly hello",
+                      event_type="utterance",
+                      fabula_time=3000, syuzhet_index=2,
+                      actor_ids=["ENT_LUKE"], target_ids=["ENT_OBI_WAN"],
+                      speaker_id="ENT_LUKE", addressee_ids=["ENT_OBI_WAN"],
+                      content="Hello again"),
+        ])
+        config = ExtractionConfig(fabula_time_spacing=1000)
+        result = _reconcile_chunk_topologies([topo0, topo1, topo2], config)
+        all_ids = [e.id for topo in result for e in topo.events]
+        assert "EVT_UTT_HELLO" in all_ids
+        assert "EVT_UTT_HELLO_AGAIN" in all_ids
+
 
 class TestApplyEventRenames:
     """Tests for _apply_event_renames."""

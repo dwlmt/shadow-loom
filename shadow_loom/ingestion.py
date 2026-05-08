@@ -4129,6 +4129,27 @@ def _dedupe_scene_events(
     kept_events: List["EventNode"] = []
     for e in physics.events:
         if e.event_type == "utterance":
+            # Utterance dedup: collapse identical-content speech acts
+            # by the same speaker to the same addressees within the
+            # same fabula window. The per-chunk extractor's collision
+            # resolver appends ``_2``/``_3`` suffixes when it sees an
+            # already-used EVT_UTT_ id, so duplicates show up with the
+            # same content + speaker but distinct ids. Any one of
+            # speaker_id, content, or fabula_time differing keeps the
+            # event distinct.
+            content_norm = (e.content or e.description or "").strip().lower()
+            if e.speaker_id and content_norm:
+                utt_key = (
+                    "__utt__",
+                    e.speaker_id,
+                    frozenset(e.addressee_ids or []),
+                    content_norm,
+                    (e.fabula_time or 0) // fabula_window,
+                )
+                if utt_key in seen_keys:
+                    canonical_of[e.id] = seen_keys[utt_key]
+                    continue
+                seen_keys[utt_key] = e.id
             kept_events.append(e)
             canonical_of[e.id] = e.id
             continue
@@ -6513,6 +6534,72 @@ def _reconcile_chunk_topologies(
         for topo in reconciled:
             renamed = _apply_event_renames(topo, cross_chunk_renames)
             kept = [e for e in renamed.events if e.id not in dropped_events]
+            rewritten.append(renamed.model_copy(update={"events": kept}))
+        reconciled = rewritten
+
+    # --- Pass 1c: long-range high-confidence dedup ---
+    #
+    # Pass 1b only collapses adjacent-chunk duplicates within a 50-tick
+    # fabula window. Some LLM extractions emit the same beat in two
+    # non-adjacent chunks at very different absolute fabula times
+    # (e.g. Star Wars: Obi-Wan's lightsaber sacrifice tagged at
+    # fabula=1000 in chunk 2 and fabula=3600 in chunk 5). When two
+    # non-utterance events share the same actors, targets, and
+    # event_type AND their descriptions overlap heavily (Jaccard
+    # >= 0.7 on word tokens), they almost certainly describe the
+    # same beat regardless of chunk distance or fabula offset. The
+    # earliest-syuzhet occurrence is canonical; later ones are
+    # collapsed onto it. Utterances are still excluded from this
+    # pass (separate speech acts with similar content are common).
+    _LONG_RANGE_OVERLAP_MIN = 0.70
+    _LONG_RANGE_MIN_SHARED_TOKENS = 3
+    long_range_groups: Dict[tuple, List[Tuple[int, int, str, str]]] = {}
+    long_range_renames: Dict[str, str] = {}
+    long_range_dropped: Set[str] = set()
+    for ci, topo in enumerate(reconciled):
+        for e in topo.events:
+            if e.event_type == "utterance":
+                continue
+            if not e.actor_ids and not e.target_ids:
+                continue
+            key = (
+                frozenset(e.actor_ids or []),
+                frozenset(e.target_ids or []),
+                e.event_type,
+            )
+            entries = long_range_groups.setdefault(key, [])
+            tokens = _desc_tokens(e.description)
+            if not tokens:
+                entries.append((ci, e.syuzhet_index, e.id, e.description))
+                continue
+            best_match: Optional[Tuple[int, int, str, str]] = None
+            for prev in entries:
+                prev_tokens = _desc_tokens(prev[3])
+                if not prev_tokens:
+                    continue
+                shared = tokens & prev_tokens
+                if len(shared) < _LONG_RANGE_MIN_SHARED_TOKENS:
+                    continue
+                jacc = len(shared) / max(1, len(tokens | prev_tokens))
+                if jacc >= _LONG_RANGE_OVERLAP_MIN:
+                    best_match = prev
+                    break
+            if best_match is not None and best_match[2] != e.id:
+                long_range_renames[e.id] = best_match[2]
+                long_range_dropped.add(e.id)
+            else:
+                entries.append((ci, e.syuzhet_index, e.id, e.description))
+
+    if long_range_renames:
+        logger.info(
+            "[Reconcile] Long-range dedup: collapsing %d cross-chunk "
+            "duplicate event(s) onto canonical ids (Jaccard >= %.2f).",
+            len(long_range_renames), _LONG_RANGE_OVERLAP_MIN,
+        )
+        rewritten = []
+        for topo in reconciled:
+            renamed = _apply_event_renames(topo, long_range_renames)
+            kept = [e for e in renamed.events if e.id not in long_range_dropped]
             rewritten.append(renamed.model_copy(update={"events": kept}))
         reconciled = rewritten
 

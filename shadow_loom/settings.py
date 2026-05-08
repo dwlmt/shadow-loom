@@ -178,9 +178,32 @@ class GenerationSettings(BaseSettings):
             "empty to fall back to ``CoreSettings.default_model``."
         ),
     )
-    max_tokens: int = Field(default=128000)
+    max_tokens: int = Field(default=32000)
     temperature: float = Field(default=0.7)
     output_retries: int = Field(default=5)
+    # ── Scene-context trimming ────────────────────────────────────
+    # Controls how much world-state data is injected into each LLM
+    # prompt.  Reducing these keeps input tokens well inside GPT-class
+    # context windows without losing the information that matters for
+    # a single scene.  Raise them back toward the old values if you
+    # switch to a model with a large context window.
+    scene_context_recent_events: int = Field(default=10)
+    scene_context_max_beliefs: int = Field(default=4)
+    scene_context_loc_desc_chars: int = Field(default=160)
+    scene_context_obj_desc_chars: int = Field(default=120)
+    scene_context_utterance_chars: int = Field(default=200)
+    # ── Preceding-prose cap ──────────────────────────────────────
+    # ``STORY SO FAR`` is the concatenation of all prior rendered prose
+    # in a session lineage.  Without a cap it grows unboundedly and
+    # can easily consume thousands of tokens.  Only the tail (most
+    # recent content) is kept.
+    preceding_prose_max_chars: int = Field(default=3000)
+    # ── Answer-agent compress limits ───────────────────────────────────
+    # Controls how many entities/events are sent to the Q&A answer
+    # agent (_compress_world_state). Large worlds can easily exceed
+    # GPT-class context windows with the old unlimited defaults.
+    answer_max_entities: int = Field(default=30)
+    answer_max_events: int = Field(default=40)
 
 
 # =====================================================================
@@ -239,7 +262,7 @@ class AuditorSettings(BaseSettings):
     temperature: float = Field(default=0.2)
     generation_temperature: float = Field(default=0.7)
     max_tokens: int = Field(default=32000)
-    max_tokens_generation: int = Field(default=128000)
+    max_tokens_generation: int = Field(default=16000)
     min_foreshadowing_score: float = Field(default=0.6)
     max_affective_loss: float = Field(default=0.3)
     min_cognitive_plausibility: float = Field(default=0.7)
@@ -272,8 +295,8 @@ class ExtractionSettings(BaseSettings):
     min_chunk_chars: int = Field(default=800)
     chunk_overlap_chars: int = Field(default=300)
     max_correction_retries: int = Field(default=5)
-    validation_payload_max_chars: int = Field(default=600_000)
-    correction_subgraph_threshold_chars: int = Field(default=400_000)
+    validation_payload_max_chars: int = Field(default=200_000)
+    correction_subgraph_threshold_chars: int = Field(default=120_000)
     max_concurrent_chunks: int = Field(default=12)
     per_chunk_timeout_seconds: float = Field(default=1200.0)
     estimated_events_per_chunk: int = Field(default=10)
@@ -965,6 +988,14 @@ class Settings:
             "output_retries": self.generation.output_retries,
             "max_tokens": self.generation.max_tokens,
             "temperature": self.generation.temperature,
+            "scene_context_recent_events": self.generation.scene_context_recent_events,
+            "scene_context_max_beliefs": self.generation.scene_context_max_beliefs,
+            "scene_context_loc_desc_chars": self.generation.scene_context_loc_desc_chars,
+            "scene_context_obj_desc_chars": self.generation.scene_context_obj_desc_chars,
+            "scene_context_utterance_chars": self.generation.scene_context_utterance_chars,
+            "preceding_prose_max_chars": self.generation.preceding_prose_max_chars,
+            "answer_max_entities": self.generation.answer_max_entities,
+            "answer_max_events": self.generation.answer_max_events,
         }
 
     def query_parsing_config(self) -> dict:
@@ -1031,6 +1062,42 @@ class Settings:
 # Shared model resolver
 # =====================================================================
 
+class _MergedSystemPromptsModel:
+    """Thin mixin/wrapper that merges consecutive leading system messages.
+
+    Some OpenAI-compatible providers (e.g. Parasail serving qwen models
+    via OpenRouter) enforce the invariant that there must be *exactly one*
+    system message and it must be the very first message.  PydanticAI
+    emits one ``{"role": "system"}`` entry per static ``system_prompt=``
+    argument **plus** one per ``@agent.system_prompt`` decorator, so a
+    typical ingestion agent sends two system messages back-to-back.
+
+    This subclass post-processes the mapped OpenAI message list and
+    collapses all leading ``role="system"`` entries into a single
+    message (joining their content with ``"\\n\\n"``).  Providers that
+    already accept multiple system messages are unaffected in practice
+    because the combined text is semantically identical.
+    """
+
+    async def _map_messages(self, messages, model_request_parameters):  # type: ignore[override]
+        from pydantic_ai.models.openai import OpenAIChatModel
+        openai_messages = await OpenAIChatModel._map_messages(  # type: ignore[arg-type]
+            self, messages, model_request_parameters
+        )
+        # Separate leading system messages from the rest
+        system_contents: list[str] = []
+        rest: list = []
+        for msg in openai_messages:
+            if not rest and msg.get("role") == "system":
+                content = msg.get("content", "")
+                system_contents.append(content if isinstance(content, str) else str(content))
+            else:
+                rest.append(msg)
+        if len(system_contents) <= 1:
+            return openai_messages  # nothing to merge
+        return [{"role": "system", "content": "\n\n".join(system_contents)}] + rest
+
+
 def resolve_model(model_str: str):
     """Resolve a ``<provider>:<model>`` string to a PydanticAI model instance.
 
@@ -1084,7 +1151,15 @@ def resolve_model(model_str: str):
                 sort = (core.openrouter_provider_sort or "").strip().lower()
                 if sort:
                     settings = {"extra_body": {"provider": {"sort": sort}}}
-            return OpenAIChatModel(
+
+            # Build a subclass that merges multiple leading system messages
+            # into one (required by strict providers such as Parasail/qwen).
+            _MergedModel = type(
+                "_MergedOpenAIChatModel",
+                (_MergedSystemPromptsModel, OpenAIChatModel),
+                {},
+            )
+            return _MergedModel(
                 model_name,
                 provider=OpenAIProvider(base_url=base_url, api_key=api_key),
                 settings=settings,  # type: ignore[arg-type]

@@ -1305,9 +1305,15 @@ def assemble_audit_prompt(
     # Without this the auditor can raise false-positive continuity /
     # voice / thread judgments on prose the renderer was actually
     # instructed to continue from earlier versions.
+    # Capped to the same ``preceding_prose_max_chars`` limit as the
+    # renderer so the auditor sees an identical (tail-truncated) slice.
     if brief.preceding_prose:
+        _pp_max = _get_settings().generation.preceding_prose_max_chars
+        _pp = brief.preceding_prose.strip()
+        if len(_pp) > _pp_max:
+            _pp = "…" + _pp[-_pp_max:]
         sections.append("=== STORY SO FAR (background continuity \u2014 do NOT re-audit) ===")
-        sections.append(brief.preceding_prose.strip())
+        sections.append(_pp)
         sections.append(
             "The prose above is the established narrative this scene "
             "continues from. Use it only to judge continuity / tone / "
