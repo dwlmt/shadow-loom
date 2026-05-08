@@ -1097,6 +1097,66 @@ class _MergedSystemPromptsModel:
             return openai_messages  # nothing to merge
         return [{"role": "system", "content": "\n\n".join(system_contents)}] + rest
 
+    async def request(self, *args, **kwargs):  # type: ignore[override]
+        """Retry transient ``UnexpectedModelBehavior`` / ``ModelHTTPError``.
+
+        OpenRouter occasionally returns HTTP 200 with an upstream-error
+        body that has ``{id, choices, model, object}`` all set to
+        ``None`` (the provider crashed mid-completion). The OpenAI SDK
+        parses this as a malformed ``ChatCompletion`` and pydantic-ai
+        raises ``UnexpectedModelBehavior`` — fatal by default,
+        because pydantic-ai's retry logic only catches ``ModelRetry``.
+
+        We retry such transients up to ``_PROVIDER_RETRY_ATTEMPTS``
+        times with a short backoff. Genuine schema errors and 4xx
+        client errors (``ModelHTTPError`` with status < 500) are
+        re-raised after the first attempt — they won't get better.
+        """
+        import asyncio
+        import logging
+        from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
+        from pydantic_ai.models.openai import OpenAIChatModel
+
+        log = logging.getLogger(__name__)
+        last_exc: Exception | None = None
+        for attempt in range(_PROVIDER_RETRY_ATTEMPTS):
+            try:
+                return await OpenAIChatModel.request(self, *args, **kwargs)
+            except UnexpectedModelBehavior as exc:
+                last_exc = exc
+                if attempt + 1 >= _PROVIDER_RETRY_ATTEMPTS:
+                    raise
+                log.warning(
+                    "[Provider Retry] Malformed completion from %s "
+                    "(attempt %d/%d): %s",
+                    getattr(self, "model_name", "<unknown>"),
+                    attempt + 1, _PROVIDER_RETRY_ATTEMPTS, exc,
+                )
+            except ModelHTTPError as exc:
+                # Only retry on 5xx / 429; 4xx client errors won't recover.
+                status = getattr(exc, "status_code", None) or 0
+                retryable = status >= 500 or status == 429
+                if not retryable or attempt + 1 >= _PROVIDER_RETRY_ATTEMPTS:
+                    raise
+                last_exc = exc
+                log.warning(
+                    "[Provider Retry] HTTP %d from %s (attempt %d/%d): %s",
+                    status, getattr(self, "model_name", "<unknown>"),
+                    attempt + 1, _PROVIDER_RETRY_ATTEMPTS, exc,
+                )
+            await asyncio.sleep(_PROVIDER_RETRY_BACKOFF_S * (attempt + 1))
+        # Unreachable in practice — the loop either returns or re-raises.
+        assert last_exc is not None
+        raise last_exc
+
+
+# Number of times to retry a transient malformed response or 5xx HTTP
+# error from an OpenAI-compatible provider before giving up. Two
+# in-loop retries (3 attempts total) absorbs the brief Parasail / Together
+# outages we have seen in practice without masking persistent issues.
+_PROVIDER_RETRY_ATTEMPTS = 3
+_PROVIDER_RETRY_BACKOFF_S = 1.5
+
 
 def resolve_model(model_str: str):
     """Resolve a ``<provider>:<model>`` string to a PydanticAI model instance.

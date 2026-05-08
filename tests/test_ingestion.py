@@ -35,6 +35,7 @@ from shadow_loom.ingestion import (
     _load_prompt,
     _normalize_fabula_times,
     _programmatic_validation,
+    _sanitize_register,
     _validate_dead_actors,
     _validate_time_ordering,
     assemble_world_state,
@@ -1728,6 +1729,100 @@ class TestApplyEventRenames:
         )
         result = _apply_event_renames(topo, {"EVT_OTHER": "EVT_NEW"})
         assert result.events[0].id == "EVT_KEEP"
+
+
+class TestSanitizeRegisterCrossKindCollision:
+    """Tests for the entity↔location name-collision check in _sanitize_register."""
+
+    def test_drops_entity_colliding_with_location_name(self):
+        """When an entity shares a (case-insensitive) name with a location,
+        the entity is dropped and a note is emitted."""
+        reg = GlobalRegister(
+            locations={
+                "LOC_REBEL_BASE": Location(
+                    name="Rebel Base on Yavin 4",
+                    description="Hidden HQ.",
+                    ambient_state={},
+                ),
+                "LOC_TATOOINE": Location(
+                    name="Tatooine", description="Desert planet.",
+                    ambient_state={},
+                ),
+            },
+            objects={},
+            entities={
+                "ENT_REBEL_BASE": Entity(
+                    id="ENT_REBEL_BASE", name="Rebel Base on Yavin 4",
+                    location_id="LOC_REBEL_BASE", status="healthy",
+                    traits={"hope": TraitVector(value=0.9, inertia=0.6)},
+                ),
+                "ENT_LUKE": Entity(
+                    id="ENT_LUKE", name="Luke Skywalker",
+                    location_id="LOC_TATOOINE", status="healthy",
+                    traits={"courage": TraitVector(value=0.7, inertia=0.5)},
+                ),
+            },
+        )
+        notes: list[str] = []
+        out = _sanitize_register(reg, notes)
+        assert "ENT_REBEL_BASE" not in out.entities
+        assert "ENT_LUKE" in out.entities
+        assert any("ENT_REBEL_BASE" in n and "collides with location" in n for n in notes)
+
+    def test_clears_object_owner_when_owner_is_dropped(self):
+        """An object whose owner_id pointed at the dropped entity gets
+        its owner_id cleared (a location can't own an object)."""
+        from shadow_loom.models import NarrativeObject
+        reg = GlobalRegister(
+            locations={
+                "LOC_REBEL_BASE": Location(
+                    name="Rebel Base on Yavin 4", description="HQ.",
+                    ambient_state={},
+                ),
+            },
+            objects={
+                "OBJ_PLANS": NarrativeObject(
+                    id="OBJ_PLANS", name="Death Star Plans",
+                    location_id="LOC_REBEL_BASE",
+                    owner_id="ENT_REBEL_BASE",
+                    properties={}, affordances=[],
+                ),
+            },
+            entities={
+                "ENT_REBEL_BASE": Entity(
+                    id="ENT_REBEL_BASE", name="Rebel Base on Yavin 4",
+                    location_id="LOC_REBEL_BASE", status="healthy",
+                    traits={"hope": TraitVector(value=0.9, inertia=0.6)},
+                ),
+            },
+        )
+        notes: list[str] = []
+        out = _sanitize_register(reg, notes)
+        assert "ENT_REBEL_BASE" not in out.entities
+        assert out.objects["OBJ_PLANS"].owner_id is None
+
+    def test_preserves_when_no_collision(self):
+        """No-op when entity and location names are distinct."""
+        reg = GlobalRegister(
+            locations={
+                "LOC_TATOOINE": Location(
+                    name="Tatooine", description="Desert planet.",
+                    ambient_state={},
+                ),
+            },
+            objects={},
+            entities={
+                "ENT_LUKE": Entity(
+                    id="ENT_LUKE", name="Luke Skywalker",
+                    location_id="LOC_TATOOINE", status="healthy",
+                    traits={"courage": TraitVector(value=0.7, inertia=0.5)},
+                ),
+            },
+        )
+        notes: list[str] = []
+        out = _sanitize_register(reg, notes)
+        assert "ENT_LUKE" in out.entities
+        assert not any("collides with location" in n for n in notes)
 
 
 class TestShiftFabulaTimes:

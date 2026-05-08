@@ -2468,6 +2468,53 @@ def _sanitize_register(register: "GlobalRegister", notes: List[str]) -> "GlobalR
                 evidence_strength=mag.evidence_strength,
             )
 
+    # --- Cross-kind name-collision check (Star Wars audit, May 2026) ---
+    #
+    # The Step 1c Entity extractor occasionally promotes a location-
+    # like noun phrase ("Rebel Base on Yavin 4", "the courtroom",
+    # "the manor") into an Entity record when it appears as a target
+    # of agentic verbs in the prose. The same name then exists as
+    # both a Location *and* an Entity, which (a) double-counts the
+    # node in graph viz, (b) confuses social/causal extraction (the
+    # location node gets traits + beliefs it shouldn't have), and
+    # (c) breaks the "entity belongs at a location" invariant used
+    # by the spatial topology pass.
+    #
+    # We detect a collision when an entity's name (case-insensitive,
+    # whitespace-collapsed) matches an existing location's name and
+    # drop the entity, rewiring any object owner_id that pointed at
+    # it onto ``None`` (a location can't own an object).  Only the
+    # entity is dropped — locations are the canonical "place" record.
+    loc_name_to_id: Dict[str, str] = {}
+    for lid, loc in register.locations.items():
+        loc_name_to_id[(loc.name or "").lower().strip()] = lid
+    dropped_entity_ids: List[str] = []
+    for eid in list(register.entities.keys()):
+        ent = register.entities[eid]
+        norm_name = (ent.name or "").lower().strip()
+        if norm_name and norm_name in loc_name_to_id:
+            collided_loc = loc_name_to_id[norm_name]
+            notes.append(
+                f"[Auto-Fix] Dropping entity '{eid}' ({ent.name!r}) — "
+                f"its name collides with location '{collided_loc}'. "
+                f"Locations are the canonical 'place' nodes; an entity "
+                f"with the same name double-counts the node and breaks "
+                f"the spatial-topology invariant."
+            )
+            del register.entities[eid]
+            dropped_entity_ids.append(eid)
+    # Rewire any object whose owner_id pointed at a dropped entity.
+    if dropped_entity_ids:
+        dropped_set = set(dropped_entity_ids)
+        for obj in register.objects.values():
+            if obj.owner_id in dropped_set:
+                notes.append(
+                    f"[Auto-Fix] Cleared owner_id on object '{obj.id}' "
+                    f"(was {obj.owner_id!r}, now dropped as a "
+                    f"location-collision entity)."
+                )
+                obj.owner_id = None
+
     return register
 
 
