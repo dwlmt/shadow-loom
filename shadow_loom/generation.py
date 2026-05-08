@@ -1877,6 +1877,55 @@ def assemble_rendering_prompt(
             )
         sections.append("")
 
+    # === Narrative Tension (fabula/syuzhet displacement) ===
+    # Brief carries per-event withholding/flash-forward markers from
+    # ``DirectiveAssembler.compute_narrative_tension``. The renderer
+    # uses these to pace reveals: ``withheld_cause`` events should
+    # feel pre-loaded with consequence (the reader senses something
+    # pending) without being explained on-page; ``upcoming_revelation``
+    # events should be foreshadowed without being spoiled. Filtered to
+    # the items most likely to fire on the *next* beat — full list is
+    # already in the brief log for downstream auditing.
+    if brief.narrative_tensions:
+        active = [
+            t for t in brief.narrative_tensions
+            if t.tension_type != "linear"
+        ]
+        if active:
+            sections.append(
+                "=== NARRATIVE TENSION (pacing — silent guidance) ==="
+            )
+            sections.append(
+                "These are events whose chronological position differs "
+                "from their narrative position. Use them to pace this "
+                "beat: hint at withheld causes without explaining them, "
+                "and foreshadow upcoming revelations without spoiling "
+                "them. Do NOT name 'displacement', 'fabula', 'syuzhet', "
+                "'foreshadow' or any meta-structure in the prose."
+            )
+            for t in active[:8]:
+                if t.tension_type == "withheld_cause":
+                    sections.append(
+                        f"  - WITHHELD: {t.event_id} (already happened "
+                        f"at fabula_time={t.fabula_time}, revealed later "
+                        f"at syuzhet={t.syuzhet_index}, displacement="
+                        f"{t.displacement:+.2f}). Pre-load consequence; "
+                        f"do not explain. Description: {t.description}"
+                    )
+                elif t.tension_type == "upcoming_revelation":
+                    sections.append(
+                        f"  - UPCOMING: {t.event_id} (shown ahead of its "
+                        f"fabula time at syuzhet={t.syuzhet_index}, "
+                        f"displacement={t.displacement:+.2f}). "
+                        f"Foreshadow lightly; the full beat lands later. "
+                        f"Description: {t.description}"
+                    )
+            if len(active) > 8:
+                sections.append(
+                    f"  … (+{len(active) - 8} more displacement markers)"
+                )
+            sections.append("")
+
     # === Utterance & Channel Fidelity ===
     # Hidden channels (carrier capabilities + future utterances) and
     # on-page utterance metadata (truth_value, intelligibility) impose

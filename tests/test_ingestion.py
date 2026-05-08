@@ -597,8 +597,8 @@ class TestValidateDeadActors:
 
 class TestLoadPrompt:
     def test_existing_prompt_loads(self):
-        content = _load_prompt("ontology_extraction.md")
-        assert "Narrative Ontology Extractor" in content
+        content = _load_prompt("ontology_locations.md")
+        assert len(content) > 100
 
     def test_missing_prompt_raises(self):
         with pytest.raises(FileNotFoundError):
@@ -606,7 +606,7 @@ class TestLoadPrompt:
 
     def test_all_prompts_exist(self):
         """Verify all prompt files referenced by the pipeline exist."""
-        for name in ["ontology_extraction.md", "ontology_locations.md",
+        for name in ["ontology_locations.md",
                       "ontology_objects.md", "ontology_entities.md",
                       "socratic_scaffolding.md",
                       "physics_extraction.md", "social_extraction.md",

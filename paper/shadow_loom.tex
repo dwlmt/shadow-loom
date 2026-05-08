@@ -1735,20 +1735,29 @@ within the envelope.
 \label{app:audit}
 
 The auditor \citep[an LLM-as-judge in the sense of][]{gu2024judge}
-runs three passes over the rendered prose:
-(i)~\textbf{causal} --- reverse-engineers prose into causal claims
-and flags ``miracle steps'' (state changes with no licensing edge
-in the brief); (ii)~\textbf{abduction} --- runs counterfactual
-probes against the prose to check that implicit events hold;
-(iii)~\textbf{affective} --- measures the realised epistemic gap
-in the prose against the target. If the structured loss is
-non-zero, generation is re-run with the auditor's feedback
-appended, up to \texttt{max\_correction\_retries}. On success the
-re-extracted prose is merged into a new \texttt{VersionRow}, with
-\texttt{world\_id} set by the branch policy
-($\texttt{auto} \mid \texttt{mainline} \mid \texttt{shadow}$);
-counterfactual queries default to a fresh \texttt{shadow} branch,
-preserving canon.
+runs a single \emph{categorical} pass per iteration whose prompt
+is assembled from a target-effect-gated category set
+($\texttt{epistemic} \mid \texttt{probabilistic} \mid
+\texttt{counterfactual} \mid \texttt{physics} \mid \texttt{meta}
+\mid \texttt{style}$). Three logical check families are bundled
+into that pass: (i)~\textbf{causal} --- reverse-engineers prose
+into causal claims and flags ``miracle steps'' (state changes
+with no licensing edge in the brief); (ii)~\textbf{abduction}
+--- runs counterfactual probes against the prose to check that
+implicit events hold; (iii)~\textbf{affective} --- measures the
+realised epistemic gap in the prose against the target. Bundling
+the three families into one prompt rather than three sequential
+LLM calls trades a small loss of focus for a $3\times$ reduction
+in LLM cost and round-trip latency, and lets each iteration
+reason jointly about cross-family interactions (a miracle step is
+usually \emph{also} an abduction failure). If the structured
+loss is non-zero, generation is re-run with the auditor's
+feedback appended, up to \texttt{max\_correction\_retries}. On
+success the re-extracted prose is merged into a new
+\texttt{VersionRow}, with \texttt{world\_id} set by the branch
+policy ($\texttt{auto} \mid \texttt{mainline} \mid
+\texttt{shadow}$); counterfactual queries default to a fresh
+\texttt{shadow} branch, preserving canon.
 
 
 \section{Worked examples on real plot fixtures}
@@ -2265,8 +2274,9 @@ dictionaries in \texttt{docs/settings.md~\S 8}).}
 Gone Girl is the system's lying-narrator fixture: Amy's diary is a
 sequence of \texttt{EventNode}s with \texttt{truth\_value="false"}
 broadcast through \texttt{CHN\_DIARY\_PUBLIC}. After generation,
-\texttt{auditor.run\_feedback\_loop} runs three passes in parallel.
-The \emph{causal audit} reverse-engineers the prose into
+\texttt{auditor.run\_feedback\_loop} runs a single categorical
+pass whose prompt bundles the causal, abduction, and affective
+check families. The \emph{causal} family reverse-engineers the prose into
 $(\text{source}, \text{target}, \text{modality})$ claims and
 matches each against the brief; an LLM-emitted ``Nick suddenly
 realises Amy is alive'' with no licensing causal edge is flagged
@@ -2274,7 +2284,7 @@ as a \emph{miracle step}. The \emph{abduction audit} runs
 counterfactual probes (``if the diary were truthful, would the
 prose still hold?''); a ``yes'' here means the prose has
 collapsed Amy's two faces into one, and is rejected. The
-\emph{affective audit} measures the realised dramatic-irony gap
+\emph{affective} family measures the realised dramatic-irony gap
 against the target. A \emph{style-fidelity audit} compares the
 prose against the \texttt{NarrativeStyle} profile recovered at
 ingestion --- word-count budget, prose density, register, POV,
@@ -2548,16 +2558,17 @@ a graph.
 \subsection{Step 8: audit, re-extraction, and merge}
 \label{app:wk-audit}
 
-The auditor runs three passes in parallel. The \emph{causal audit}
+The auditor runs a single categorical pass whose prompt bundles
+three check families. The \emph{causal} family
 reverse-engineers the prose into $(\text{source}, \text{target},
 \text{modality})$ triples and matches each against the brief; an
 LLM-emitted ``Banquo's ghost rises behind Macbeth'' would be
 flagged as a \emph{miracle step} (no licensing edge), but in this
-run nothing of the kind appears. The \emph{abduction audit} runs
+run nothing of the kind appears. The \emph{abduction} family runs
 counterfactual probes against the prose --- ``if Banquo had
 suspected the prophecy, would the prose still hold?'' --- and
 checks the answers against the brief's belief envelope. The
-\emph{affective audit} re-runs the four scorers on the prose and
+\emph{affective} family re-runs the four scorers on the prose and
 compares them to the brief's targets. If any pass fails the
 \texttt{engine\_thresholds} gate or the \texttt{llm\_pass} gate,
 the renderer is re-invoked with the structured feedback appended,

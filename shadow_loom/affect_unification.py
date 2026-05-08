@@ -351,6 +351,55 @@ def backfill_character_belief_propositions(world: WorldStateV1) -> int:
     return n
 
 
+def backfill_belief_propositions_by_referent(world: WorldStateV1) -> int:
+    """Deterministic non-event belief→proposition backfill.
+
+    For every (non-audience) ``Belief`` whose ``proposition_id`` is
+    not yet set and whose ``target_id`` appears in **exactly one**
+    proposition's ``referent_ids``, bind the belief to that
+    proposition. Walks both initial ``entity.beliefs`` and every
+    ``EntityStateSnapshot.beliefs_added`` on the timeline.
+
+    Complements :func:`backfill_character_belief_propositions` (which
+    only handles event-target beliefs). Together they spare the
+    expensive LLM clustering pass for the unambiguous referent-match
+    case (a belief about ENT_DUNCAN with a single PROP that lists
+    ENT_DUNCAN as a referent — almost always the right link).
+
+    The single-referent guard is deliberate: when two propositions
+    share a referent (e.g. a relation_holds and an identity_is both
+    naming the same character), we defer to the LLM clustering pass
+    rather than guess. Returns the number of beliefs updated.
+    Idempotent.
+    """
+    # Build target_id → [proposition_ids] index.
+    by_referent: Dict[str, List[str]] = {}
+    for prop in world.propositions:
+        for rid in prop.referent_ids:
+            by_referent.setdefault(rid, []).append(prop.proposition_id)
+
+    n = 0
+
+    def _backfill(beliefs: List[Belief]) -> None:
+        nonlocal n
+        for b in beliefs:
+            if b.proposition_id is not None:
+                continue
+            candidates = by_referent.get(b.target_id, [])
+            if len(candidates) == 1:
+                b.proposition_id = candidates[0]
+                n += 1
+
+    for eid, ent in world.entities.items():
+        if eid == AUDIENCE_ID:
+            continue
+        _backfill(ent.beliefs)
+        for snap in ent.state_timeline:
+            _backfill(snap.beliefs_added)
+
+    return n
+
+
 def synthesise_audience_entity(world: WorldStateV1) -> Entity:
     """Synthesise (or refresh) ``ENT_AUDIENCE`` from the syuzhet stream.
 

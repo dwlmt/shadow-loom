@@ -51,6 +51,41 @@ One entry per *standing* fear or desire that an on-page character carries throug
 - `evidence_strength` (str): `"weak"` (concern is purely abductive — inferred from genre / character archetype with no direct on-page support), `"moderate"` (concern is implied by behaviour and reactions), `"strong"` (the character explicitly states or repeatedly enacts the concern). Feeds the post-pass concern-coverage gate.
 - `counter_concern_ids` (list[str]): Other CCN_ ids in your catalogue forming an ambivalent pair with this concern. Empty list when not ambivalent.
 
+#### Worked example: an ambivalent concern pair
+
+When a character both *wants* and *fears* the same proposition, emit
+TWO seeds with opposite polarity over the same `proposition_id` and
+cross-reference them in `counter_concern_ids`:
+
+```json
+[
+  {
+    "concern_id": "CCN_MACBETH_DESIRE_KINGSHIP",
+    "entity_id": "ENT_MACBETH",
+    "proposition_id": "PROP_MACBETH_BECOMES_KING",
+    "polarity": "desire",
+    "kind": "power",
+    "baseline_salience": 0.85,
+    "evidence_strength": "strong",
+    "counter_concern_ids": ["CCN_MACBETH_FEAR_KINGSHIP_COST"]
+  },
+  {
+    "concern_id": "CCN_MACBETH_FEAR_KINGSHIP_COST",
+    "entity_id": "ENT_MACBETH",
+    "proposition_id": "PROP_MACBETH_BECOMES_KING",
+    "polarity": "fear",
+    "kind": "exposure",
+    "baseline_salience": 0.55,
+    "evidence_strength": "moderate",
+    "counter_concern_ids": ["CCN_MACBETH_DESIRE_KINGSHIP"]
+  }
+]
+```
+
+The "torn between X and ¬X" affect surface only fires when *both*
+members of the pair are above threshold simultaneously, so the
+cross-listing is load-bearing — a one-sided seed loses the ambivalence.
+
 ---
 
 ## Rules

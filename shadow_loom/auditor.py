@@ -81,6 +81,14 @@ EFFECT_AUDIT_CATEGORIES: Dict[str, List[str]] = {
     "grief": ["counterfactual", "physics"],
     "rage": ["counterfactual", "physics"],
     "love": ["counterfactual", "physics"],
+    # Composite — narrative tension is the Brewer-Lichtenstein triad
+    # aggregator over suspense + mystery + irony + Δsurprise + unpaid
+    # setup debt. It needs every structural pass to fire because each
+    # contributing scorer reads a different aspect of the world. We
+    # union epistemic + probabilistic + physics; counterfactual is
+    # not strictly required (the surprise term is local Δ, not a
+    # rung-3 attribution) but kept off to bound prompt size.
+    "narrative_tension": ["epistemic", "probabilistic", "physics"],
     # Non-directive
     "observation": ["physics"],
     "intervention": ["physics"],

@@ -8,7 +8,7 @@ You are given (via the system prompt the orchestrator stitches in front of this 
 3. The **Concern catalogue** — every CCN_ id with its `entity_id`, anchored `proposition_id`, `polarity`, `kind`, baseline `salience`, and `counter_concern_ids`.
 4. The **chunk events** extracted by Physics + Social (full EventNode records).
 5. The **chunk entity_updates** extracted by Consequences (so you know what shifted).
-6. The **prior accumulated proposition / concern state** going into this chunk (so your snapshots are diffs, not redeclarations).
+6. The **prior baseline state** for each catalogue proposition (its `stakes`, `audience_default_prior`, `description`) and each catalogue concern (its `baseline_salience`, `polarity`, `kind`, `counter_concern_ids`) — the values shown in the catalogue blocks above ARE the prior state you diff against. The pipeline runs chunks in parallel and reconciles per-chunk drift after the fact, so within one chunk you always diff against the catalogue baseline; do NOT attempt to forward-reference drift from other chunks.
 
 > **Hard contract surface (the reconciler assumes these without warning):**
 > - You MUST NOT emit events, channels, edges, beliefs, or entity_updates. Those belong to upstream agents.
@@ -65,12 +65,89 @@ One entry per *newly-discovered* concern that the catalogue did not seed but tha
 
 - `concern_id` (str): A fresh `CCN_*` id not in the catalogue.
 - `entity_id` (str): ENT_ id of the concern-holder from the ontology.
-- `proposition_id` (str): An existing catalogue PROP_ id. **You may not invent new propositions here** — if the chunk introduces a concern about something not in the catalogue, omit the seed; the post-pass concern extractor will catch it.
+- `proposition_id` (str): An existing catalogue PROP_ id. **You may not invent new propositions here** — when the chunk introduces a concern about something not yet propositionalised, anchor it to the *nearest* existing catalogue PROP whose `referent_ids` overlap the concern's subject; only omit the seed entirely when no plausible catalogue PROP exists at all. The post-pass concern extractor will then catch it.
 - `polarity` (str): `"desire"` or `"fear"`.
 - `kind` (str | null): Optional harm/benefit-kind label.
 - `baseline_salience` (float, 0.0–1.0): Initial salience as established by this chunk.
 - `evidence_strength` (str): `"weak"` / `"moderate"` / `"strong"`. Use `"strong"` only when the chunk *explicitly enacts* the concern.
 - `counter_concern_ids` (list[str]): Empty unless this seed pairs with another concern in this chunk's emission.
+
+---
+
+## Worked Example
+
+Given a chunk where `EVT_BANQUO_GHOST_APPEARS` (fabula=1820) drives
+Macbeth's terror at the banquet, and the catalogue contains:
+- `PROP_MACBETH_KEEPS_THRONE` (kind=outcome, baseline stakes=0.7,
+  baseline prior=0.5).
+- `CCN_MACBETH_FEAR_BANQUO_LINE` (entity=ENT_MACBETH,
+  prop=PROP_BANQUO_LINE_RULES, polarity=fear, baseline salience=0.55,
+  paired with `CCN_MACBETH_DESIRE_DYNASTY`).
+- `CCN_MACBETH_DESIRE_KINGSHIP` (entity=ENT_MACBETH,
+  prop=PROP_MACBETH_KEEPS_THRONE, polarity=desire, baseline salience=0.85).
+
+A well-formed Affect output for that chunk:
+
+```json
+{
+  "proposition_snapshots": [
+    {
+      "proposition_id": "PROP_MACBETH_KEEPS_THRONE",
+      "fabula_time": 1820,
+      "triggered_by": "EVT_BANQUO_GHOST_APPEARS",
+      "stakes": 0.85,
+      "audience_default_prior": 0.40
+    }
+  ],
+  "proposition_truth_commits": [
+    {
+      "proposition_id": "PROP_BANQUO_DEAD",
+      "fabula_time": 1820,
+      "truth": true,
+      "triggered_by": "EVT_BANQUO_GHOST_APPEARS"
+    }
+  ],
+  "concern_snapshots": [
+    {
+      "concern_id": "CCN_MACBETH_FEAR_BANQUO_LINE",
+      "fabula_time": 1820,
+      "triggered_by": "EVT_BANQUO_GHOST_APPEARS",
+      "salience": 0.92
+    },
+    {
+      "concern_id": "CCN_MACBETH_DESIRE_KINGSHIP",
+      "fabula_time": 1820,
+      "triggered_by": "EVT_BANQUO_GHOST_APPEARS",
+      "polarity": "fear",
+      "salience": 0.78
+    }
+  ],
+  "new_concern_seeds": [
+    {
+      "concern_id": "CCN_LADY_MACBETH_FEAR_EXPOSURE",
+      "entity_id": "ENT_LADY_MACBETH",
+      "proposition_id": "PROP_MACBETH_GUILT_DISCOVERED",
+      "polarity": "fear",
+      "kind": "exposure",
+      "baseline_salience": 0.6,
+      "evidence_strength": "strong",
+      "counter_concern_ids": []
+    }
+  ]
+}
+```
+
+Note four patterns:
+- **Diff-only snapshots**: only `stakes` and `audience_default_prior` are
+  emitted on `PROP_MACBETH_KEEPS_THRONE` because `description` is unchanged.
+- **Polarity flip**: `CCN_MACBETH_DESIRE_KINGSHIP` flips `desire → fear`
+  (Macbeth no longer wants the throne so much as fears losing it). This
+  is rare — only emit when on-page events make the reversal undeniable.
+- **Truth commit fabula equals trigger fabula**: 1820 on both sides.
+- **`new_concern_seeds`** anchors to an existing catalogue PROP. If the
+  chunk introduces a concern with no matching PROP, prefer the *nearest*
+  existing PROP rather than silently dropping the seed; if no plausible
+  PROP exists, omit it and let the post-pass concern extractor catch it.
 
 ---
 

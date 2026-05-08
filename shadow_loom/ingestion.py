@@ -1210,39 +1210,6 @@ def _build_world_traits_agent(config: ExtractionConfig) -> Agent[None, WorldTrai
     )
 
 
-# --- Legacy single-pass agent (kept for backward compatibility) ---
-
-def _build_ontology_agent(config: ExtractionConfig) -> Agent[None, GlobalRegister]:
-    """Construct the legacy single-pass Step 1 PydanticAI agent.
-
-    .. deprecated::
-        The active pipeline uses the four-pass split
-        (`_build_location_agent`, `_build_object_agent`,
-        `_build_entity_agent`, `_build_world_traits_agent`). This
-        single-pass builder is retained only for backward-compat
-        callers and emits a `DeprecationWarning` when invoked.
-    """
-    import warnings
-    warnings.warn(
-        "ontology_extraction.md / _build_ontology_agent is deprecated; "
-        "use the split ontology_locations / ontology_objects / "
-        "ontology_entities / ontology_world_traits agents instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    logger.warning(
-        "[ingestion] Legacy _build_ontology_agent invoked \u2014 the "
-        "active pipeline uses the four-pass split; this prompt is "
-        "stale relative to the current channel/world-trait schema."
-    )
-    return Agent(
-        _resolve_model(config.model),
-        output_type=NativeOutput(GlobalRegister),
-        system_prompt=_load_prompt("ontology_extraction.md"),
-        retries=config.output_retries,
-    )
-
-
 def _resolve_object_owner_ids(
     objects: Dict[str, NarrativeObject],
     entities: Dict[str, Entity],
@@ -1618,24 +1585,83 @@ def _build_proposition_catalogue_agent(
         ctx: RunContext[_PropCatalogueDeps],
     ) -> str:
         reg = ctx.deps.global_register
-        entity_names = {eid: reg.entities[eid].name for eid in sorted(reg.entities)}
-        location_names = {lid: reg.locations[lid].name for lid in sorted(reg.locations)}
-        object_names = {oid: reg.objects[oid].name for oid in sorted(reg.objects)}
-        world_trait_names = {
-            wid: reg.world_traits[wid].name for wid in sorted(reg.world_traits)
-        }
+
+        # Entity cards: name + status + headline traits (top 3 by value).
+        ent_lines: List[str] = []
+        for eid in sorted(reg.entities):
+            ent = reg.entities[eid]
+            traits = getattr(ent, "traits", {}) or {}
+            top_traits = sorted(
+                traits.items(),
+                key=lambda kv: -float(getattr(kv[1], "value", 0.0)),
+            )[:3]
+            trait_str = ", ".join(
+                f"{tn}={float(getattr(tv, 'value', 0.0)):.2f}"
+                for tn, tv in top_traits
+            ) or "—"
+            ent_lines.append(
+                f"  - {eid}: {ent.name} [{getattr(ent, 'status', 'unknown')}] "
+                f"@{getattr(ent, 'location_id', '?')} traits=({trait_str})"
+            )
+        entities_block = "\n".join(ent_lines) if ent_lines else "  (none)"
+
+        # Location cards: name + 1-line description.
+        loc_lines: List[str] = []
+        for lid in sorted(reg.locations):
+            loc = reg.locations[lid]
+            desc = (getattr(loc, "description", "") or "").strip().splitlines()
+            desc_str = (desc[0][:120] if desc else "—")
+            loc_lines.append(f"  - {lid}: {loc.name} — {desc_str}")
+        locations_block = "\n".join(loc_lines) if loc_lines else "  (none)"
+
+        # Object cards: name + owner/location + top affordance verbs.
+        obj_lines: List[str] = []
+        for oid in sorted(reg.objects):
+            obj = reg.objects[oid]
+            affs = getattr(obj, "affordances", []) or []
+            verbs = ",".join(
+                getattr(a, "action", str(a)) for a in affs[:3]
+            ) or "—"
+            holder = getattr(obj, "owner_id", None) or getattr(obj, "location_id", "?")
+            obj_lines.append(
+                f"  - {oid}: {obj.name} @{holder} affordances=({verbs})"
+            )
+        objects_block = "\n".join(obj_lines) if obj_lines else "  (none)"
+
+        # World-trait cards: name + 1-line description.
+        wt_lines: List[str] = []
+        for wid in sorted(reg.world_traits):
+            wt = reg.world_traits[wid]
+            desc = (getattr(wt, "description", "") or "").strip().splitlines()
+            desc_str = (desc[0][:120] if desc else "—")
+            wt_lines.append(f"  - {wid}: {wt.name} — {desc_str}")
+        world_traits_block = "\n".join(wt_lines) if wt_lines else "  (none)"
+
         return (
             "=== ONTOLOGY REGISTER (from Step 1) ===\n"
-            f"ENTITIES: {entity_names}\n"
-            f"LOCATIONS: {location_names}\n"
-            f"OBJECTS: {object_names}\n"
-            f"WORLD TRAITS: {world_trait_names}\n"
+            "Use ONLY the ENT_/LOC_/OBJ_/WORLD_ ids below in `referent_ids` "
+            "and `entity_id`. The compact cards give you the context you "
+            "need to pick `referent_ids` that fully scope each proposition "
+            "(e.g. a relation_holds proposition between two entities should "
+            "list BOTH entity ids; a location-bound prophecy should list "
+            "the location, not the speaker).\n"
             "\n"
-            "Use ONLY these ENT_/LOC_/OBJ_/WORLD_ ids in `referent_ids` "
-            "and `entity_id`. You MAY mint new PROP_*/CCN_* ids \u2014 they "
-            "are your namespace and downstream extractors will reference "
-            "them by name. Do NOT mint EVT_ ids; per-chunk Physics / Social "
-            "agents own that namespace."
+            "ENTITIES:\n"
+            f"{entities_block}\n"
+            "\n"
+            "LOCATIONS:\n"
+            f"{locations_block}\n"
+            "\n"
+            "OBJECTS:\n"
+            f"{objects_block}\n"
+            "\n"
+            "WORLD TRAITS:\n"
+            f"{world_traits_block}\n"
+            "\n"
+            "You MAY mint new PROP_*/CCN_* ids \u2014 they are your namespace "
+            "and downstream extractors will reference them by name. Do NOT "
+            "mint EVT_ ids; per-chunk Physics / Social agents own that "
+            "namespace."
         )
 
     @agent.output_validator
@@ -3546,6 +3572,9 @@ def _chunk_has_affect_signal(
     entity_updates: List["EntityUpdate"],
     catalogue_prop_ids: Set[str],
     seeded_entity_ids: Set[str],
+    *,
+    referent_to_props: Dict[str, Set[str]] | None = None,
+    concern_entity_to_props: Dict[str, Set[str]] | None = None,
 ) -> bool:
     """True iff this chunk plausibly affects a catalogue prop or seeded concern.
 
@@ -3554,9 +3583,21 @@ def _chunk_has_affect_signal(
     entity. Runs in O(events + entity_updates + new_beliefs); the
     chunk-level cost is negligible compared to a saved per-chunk
     LLM round-trip.
+
+    The optional ``referent_to_props`` map widens the gate so a chunk
+    also fires when an event's actors / targets / participants
+    overlap a catalogue proposition's ``referent_ids`` even if the
+    event has no explicit ``asserts/denies/resolves`` link yet (the
+    Affect agent is exactly where that link should be drawn).
+    Similarly, ``concern_entity_to_props`` widens the gate when an
+    event's participants include any entity carrying a proposition-
+    tied concern, since salience/polarity drift on those concerns
+    is the common case the narrow gate misses.
     """
     if not catalogue_prop_ids and not seeded_entity_ids:
         return False
+    referent_to_props = referent_to_props or {}
+    concern_entity_to_props = concern_entity_to_props or {}
     for e in events:
         if e.asserts_proposition_id and e.asserts_proposition_id in catalogue_prop_ids:
             return True
@@ -3565,11 +3606,32 @@ def _chunk_has_affect_signal(
         for pid in e.resolves_proposition_ids:
             if pid in catalogue_prop_ids:
                 return True
+        # Widened: referent overlap on actors / targets / participants.
+        evt_refs: Set[str] = set()
+        evt_refs.update(getattr(e, "actor_ids", []) or [])
+        evt_refs.update(getattr(e, "target_ids", []) or [])
+        evt_refs.update(getattr(e, "participant_ids", []) or [])
+        for rid in evt_refs:
+            if rid in referent_to_props:
+                return True
+            if rid in concern_entity_to_props:
+                return True
     for eu in entity_updates:
         if eu.entity_id in seeded_entity_ids:
             return True
+        if eu.entity_id in concern_entity_to_props:
+            return True
         for b in eu.new_beliefs:
             if b.proposition_id and b.proposition_id in catalogue_prop_ids:
+                return True
+            # Widened: a belief whose target_id is a catalogued referent
+            # is almost certainly tied to that proposition; let Affect see it.
+            if b.target_id in referent_to_props:
+                return True
+        # Widened: a belief invalidation about a catalogued referent
+        # is a textbook resolution / framing-shift event.
+        for tid in getattr(eu, "invalidated_belief_targets", []) or []:
+            if tid in referent_to_props:
                 return True
     return False
 
@@ -6227,9 +6289,21 @@ async def _extract_single_chunk_async(
         catalogue = params.chunk_catalogue
         catalogue_prop_ids = {p.proposition_id for p in catalogue.propositions}
         seeded_entity_ids = {s.entity_id for s in catalogue.concern_seeds}
+        # Build the widened-gate lookup maps once per chunk.
+        referent_to_props: Dict[str, Set[str]] = {}
+        for prop in catalogue.propositions:
+            for rid in prop.referent_ids:
+                referent_to_props.setdefault(rid, set()).add(prop.proposition_id)
+        concern_entity_to_props: Dict[str, Set[str]] = {}
+        for seed in catalogue.concern_seeds:
+            concern_entity_to_props.setdefault(seed.entity_id, set()).add(
+                seed.proposition_id,
+            )
         if _chunk_has_affect_signal(
             merged_events, entity_updates_final,
             catalogue_prop_ids, seeded_entity_ids,
+            referent_to_props=referent_to_props,
+            concern_entity_to_props=concern_entity_to_props,
         ):
             affect_deps = _AffectDeps(
                 global_register=register,
@@ -9506,6 +9580,65 @@ def _programmatic_validation(ws: WorldStateV1) -> List[ValidationIssue]:
                 ),
             ))
 
+    # E1.g mutation_social edges should have at least one concern
+    # touching them on either source or target. A mutation_social
+    # edge represents a social-fact change (alliance forms, betrayal,
+    # marriage, public exposure) — the affect substrate cares about
+    # these only insofar as some entity has a stake in them. An edge
+    # that no concern references is structurally valid but produces
+    # no felt suspense / irony / surprise on the affect ledger,
+    # because both `_audience_concern_for_event` and the per-entity
+    # appraisal computations will route around it. Warn (not error)
+    # so legacy worlds without populated concern catalogues still
+    # pass; the LLM correction agent can surface this as a hint to
+    # add the missing concerns.
+    if ws.causal_topology and ws.entities:
+        # Build a lookup: entity_id → set of proposition referent
+        # entity ids the entity has concerns about. A mutation_social
+        # edge is "concern-covered" when its source or target entity
+        # appears in this lookup.
+        concern_touches: Dict[str, Set[str]] = {}
+        prop_referents: Dict[str, Set[str]] = {
+            p.proposition_id: set(p.referent_ids) for p in ws.propositions
+        }
+        for ent_id, ent in ws.entities.items():
+            touched: Set[str] = set()
+            for c in ent.concerns:
+                touched |= prop_referents.get(c.proposition_id, set())
+            if touched:
+                concern_touches[ent_id] = touched
+        events_by_id_local = {e.id: e for e in ws.events}
+        for ce in ws.causal_topology:
+            if ce.mechanism != "mutation_social":
+                continue
+            # Resolve the entity participants of this edge. Source
+            # and target may be event ids or entity ids; for events
+            # we expand to actor + target sets.
+            participants: Set[str] = set()
+            for eid in (ce.source_id, ce.target_id):
+                if eid in ws.entities:
+                    participants.add(eid)
+                elif eid in events_by_id_local:
+                    evt = events_by_id_local[eid]
+                    participants |= set(evt.actor_ids)
+                    participants |= set(evt.target_ids)
+            if not participants:
+                continue  # orphan edge — caught by other validators
+            covered = any(p in concern_touches for p in participants)
+            if not covered:
+                issues.append(ValidationIssue(
+                    severity="warning",
+                    category="uncovered_mutation_social",
+                    detail=(
+                        f"mutation_social edge {ce.source_id} → "
+                        f"{ce.target_id} has no concern from any of its "
+                        f"participants ({sorted(participants)}). The "
+                        f"affect substrate will route around it — add a "
+                        f"concern referencing this edge's social stake "
+                        f"so suspense/irony register the change."
+                    ),
+                ))
+
     # --- Time validation ---
     issues.extend(_validate_time_ordering(ws))
 
@@ -11470,8 +11603,12 @@ def cluster_belief_propositions(
         logger.info("[Step 5d] Belief clustering disabled — skipping.")
         return ws
 
-    # Always run the cheap deterministic event-target backfill first.
+    # Always run the cheap deterministic event-target backfill first,
+    # then the deterministic single-referent-match backfill. Both are
+    # cheap, idempotent, and shrink the work the LLM clustering pass
+    # has to do.
     from shadow_loom.affect_unification import (
+        backfill_belief_propositions_by_referent,
         backfill_character_belief_propositions,
         synthesise_propositions,
     )
@@ -11482,6 +11619,12 @@ def cluster_belief_propositions(
         logger.info(
             "[Step 5d] Deterministic event-target backfill bound %d beliefs.",
             n_event_bound,
+        )
+    n_referent_bound = backfill_belief_propositions_by_referent(ws)
+    if n_referent_bound:
+        logger.info(
+            "[Step 5d] Deterministic single-referent backfill bound %d beliefs.",
+            n_referent_bound,
         )
 
     grouped = _gather_unbound_beliefs(ws)
@@ -11553,6 +11696,7 @@ async def cluster_belief_propositions_async(
         return ws
 
     from shadow_loom.affect_unification import (
+        backfill_belief_propositions_by_referent,
         backfill_character_belief_propositions,
         synthesise_propositions,
     )
@@ -11563,6 +11707,12 @@ async def cluster_belief_propositions_async(
         logger.info(
             "[Step 5d·Async] Deterministic event-target backfill bound %d beliefs.",
             n_event_bound,
+        )
+    n_referent_bound = backfill_belief_propositions_by_referent(ws)
+    if n_referent_bound:
+        logger.info(
+            "[Step 5d·Async] Deterministic single-referent backfill bound %d beliefs.",
+            n_referent_bound,
         )
 
     grouped = _gather_unbound_beliefs(ws)

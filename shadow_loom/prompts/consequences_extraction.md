@@ -83,14 +83,23 @@ Given the events:
     Macbeth stabs Duncan in his sleep.
 - EVT_DUNCAN_DEATH (fabula=305, type=outcome, actors=[], targets=[ENT_DUNCAN]):
     Duncan dies from his wounds.
+- EVT_UTT_MACDUFF_TELLS_MALCOLM (fabula=320, type=utterance,
+    actors=[ENT_MACDUFF], targets=[ENT_MALCOLM]):
+    Macduff sends word to Malcolm in England that the king is murdered.
 ```
 
-And the mutation edges:
+The mutation edges:
 
 ```
 - EVT_DUNCAN_MURDER → ENT_MACBETH [mutation] trait=guilt delta=1.0 (force=9.0, evidence=strong)
 - EVT_DUNCAN_MURDER → ENT_MACBETH [mutation] trait=paranoia delta=0.6 (force=7.0, evidence=strong)
 ```
+
+The standing channel block lists `CHN_MACDUFF_TO_MALCOLM_MESSENGER`
+carrying `EVT_UTT_MACDUFF_TELLS_MALCOLM`.
+
+The proposition catalogue contains
+`PROP_DUNCAN_DEAD` (kind=identity_is, referent_ids=[ENT_DUNCAN]).
 
 Produce:
 
@@ -108,6 +117,9 @@ Produce:
       "new_beliefs": [
         {"target_id": "ENT_DUNCAN", "perceived_state": "Duncan is dead by my hand",
          "confidence": 1.0, "inertia": 0.9, "established_at_fabula": 300,
+         "acquired_via_event_id": "EVT_DUNCAN_MURDER",
+         "acquired_via_channel_id": null,
+         "proposition_id": "PROP_DUNCAN_DEAD",
          "evidence_strength": "strong"}
       ],
       "invalidated_belief_targets": [],
@@ -123,7 +135,36 @@ Produce:
       "invalidated_belief_targets": [],
       "new_status": "dead",
       "new_location_id": null
+    },
+    {
+      "entity_id": "ENT_MALCOLM",
+      "fabula_time": 320,
+      "triggered_by": "EVT_UTT_MACDUFF_TELLS_MALCOLM",
+      "trait_updates": {
+        "grief": {"value": 0.70, "inertia": 0.30, "evidence_strength": "moderate"}
+      },
+      "new_beliefs": [
+        {"target_id": "ENT_DUNCAN", "perceived_state": "My father Duncan is dead",
+         "confidence": 0.95, "inertia": 0.9, "established_at_fabula": 320,
+         "acquired_via_event_id": "EVT_UTT_MACDUFF_TELLS_MALCOLM",
+         "acquired_via_channel_id": "CHN_MACDUFF_TO_MALCOLM_MESSENGER",
+         "proposition_id": "PROP_DUNCAN_DEAD",
+         "evidence_strength": "strong"}
+      ],
+      "invalidated_belief_targets": [],
+      "new_status": null,
+      "new_location_id": null
     }
   ]
 }
 ```
+
+Note three patterns:
+- **Direct witness** (Macbeth): `acquired_via_event_id` is the witnessed
+  causal event; `acquired_via_channel_id` is null.
+- **Absent learner via channel** (Malcolm in England): `acquired_via_event_id`
+  is the *utterance* event; `acquired_via_channel_id` is the standing
+  channel that carried it.
+- **Catalogue link** (both): `proposition_id` set to the matching `PROP_`
+  id. Counterfactual surgery uses these three fields together to prune
+  beliefs when an event or channel is removed.

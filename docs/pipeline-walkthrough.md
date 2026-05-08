@@ -72,8 +72,8 @@ agent receives the resolved Object Register for belief grounding.
 | Sub-step | Agent | Output | Prompt |
 |---|---|---|---|
 | 1a | `_extract_locations` | `LocationRegister` (`LOC_*` with `ambient_state`) | `prompts/ontology_locations.md` |
-| 1b | `_extract_objects` | `ObjectRegister` (`OBJ_*` with `affordances`) | `prompts/ontology_entities.md` |
-| 1c | `_extract_entities` | `EntityRegister` (`ENT_*` with initial `TraitVector`s, `Belief`s, `status`, `location_id`) | `prompts/ontology_extraction.md` |
+| 1b | `_extract_objects` | `ObjectRegister` (`OBJ_*` with `affordances`) | `prompts/ontology_objects.md` |
+| 1c | `_extract_entities` | `EntityRegister` (`ENT_*` with initial `TraitVector`s, `Belief`s, `status`, `location_id`) | `prompts/ontology_entities.md` |
 | 1d | `_extract_world_traits` | `WorldTraitsRegister` (`WORLD_*` — magic system, regime, climate, …) | (focused world-trait prompt) |
 
 Each register feeds into the next so entities can reference real `LOC_` /
