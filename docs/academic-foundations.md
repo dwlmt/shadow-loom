@@ -63,10 +63,13 @@ sender/receiver/helper/opponent topology.
 
 ### 1.3 Propp's morphology and story grammars (`EventNode.event_type`)
 
-`EventNode.event_type ∈ {choice, outcome, revelation}` is a coarse
+`EventNode.event_type ∈ {choice, outcome, revelation, utterance}` is a coarse
 generalisation of Propp's 31 narrative functions. We do not model Propp's
 fine-grained typology because we want event types to be *causally*
-significant rather than narratologically prescriptive.
+significant rather than narratologically prescriptive. The `utterance` type is
+the exclusive output of the Social agent and is a first-class event modality
+(speech *is* the act); it carries `speaker_id`, `addressee_ids`,
+`via_channel_id`, `content`, and `truth_value ∈ {true, false, unknown, performative}`.
 
 * Propp, V. (1928/1968). *Morphology of the Folktale*. 2nd rev. English ed., trans. L. Scott, rev. L. A. Wagner. Univ. of Texas Press.
 * Rumelhart, D. E. (1975). "Notes on a schema for stories". In D. G. Bobrow & A. M. Collins (eds.), *Representation and Understanding: Studies in Cognitive Science*, pp. 211–236. Academic Press. — the "story grammar" tradition that motivated event-type taxonomies in early AI.
@@ -75,6 +78,11 @@ significant rather than narratologically prescriptive.
 * Kintsch, W. & van Dijk, T. A. (1978). "Toward a model of text comprehension and production". *Psychological Review* 85(5): 363–394. — the propositional macro-structure model; canonical complement to story-grammar approaches.
 * Trabasso, T. & van den Broek, P. (1985). "Causal thinking and the representation of narrative events". *J. Memory and Language* 24(5): 612–630. — the empirical case that *causal* event chains (not surface form) drive comprehension and recall — the central justification for our graph-first design.
 * Bremond, C. (1973). *Logique du récit*. Seuil. — the choice/outcome/revelation triad we adopt is closest to Bremond's *triade narrative*.
+
+The `truth_value="performative"` field on utterance events is grounded in speech-act theory. Austin (1962) distinguishes *performative* utterances — those that enact a state of affairs rather than describe one — from constative assertions; Searle (1969) formalises them as illocutionary acts that posit, commit to, or predict future states. A prophecy, vow, or order does not claim a fact; it inaugurates a commitment. This is why performative utterances are exempt from the temporal-coherence constraint (Rule 5 in `_validate_time_ordering`, §D5e in [design-decisions.md](design-decisions.md)) that requires non-performative utterance `target_ids` to reference past or simultaneous events: a prophecy *announces* the future event rather than reporting one that has already occurred.
+
+* Austin, J. L. (1962). *How to Do Things with Words*. Oxford UP. — the foundational performative/constative distinction; *illocutionary force* underwrites `truth_value="performative"`.
+* Searle, J. R. (1969). *Speech Acts: An Essay in the Philosophy of Language*. Cambridge UP. — formal taxonomy of illocutionary acts (assertives, directives, commissives, expressives, declarations); vows, prophecies, and orders are commissives/declarations and do not carry truth-conditional content in the same sense as assertives.
 
 ### 1.4 Cognitive narratology and possible-worlds (`AMWN`, `Belief`)
 

@@ -157,6 +157,10 @@ only; each chunk's events keep their LLM-extracted `fabula_time`, so
 flashbacks and flashforwards are preserved across chunk boundaries instead
 of being re-sorted into reading order.
 
+After assembly completes and before validation, three async passes run over the assembled state: `extract_entity_concerns_async` populates each entity's `concerns` list from the proposition catalogue; `cluster_belief_propositions_async` groups raw belief targets into canonical `PROP_*` references so downstream affect scorers can reason over named claims; and `_maybe_synthesise_audience_entity` injects a reserved `ENT_AUDIENCE` entity (the omniscient-reader perspective) when no audience entity was already present in the register.
+
+`_programmatic_validation` runs `_validate_time_ordering`, which enforces four temporal invariants (contiguous unique `syuzhet_index`; reasonable `fabula_time` spacing; causal-edge cause-before-effect for `chain_reaction` edges; channel `established_at_fabula ≤ terminated_at_fabula`). A **fifth rule** (severity=error, category=temporal) was added for utterance temporal coherence: non-performative utterances (`truth_value ∈ {true, false, unknown}`) may not place `EVT_*` ids referring to future-fabula events in `target_ids` — if `target.fabula_time > utterance.fabula_time` the rule fires. Performative utterances (prophecies, vows, orders, declarations) are exempt because they posit or announce future states rather than report past ones; their downstream causal effects belong on `causal_topology` as `chain_reaction` edges, not in `target_ids`.
+
 #### Step 3d — Optional external research (segregated, off by default)
 
 After world-state assembly the pipeline can call an optional

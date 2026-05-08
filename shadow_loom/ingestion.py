@@ -9821,6 +9821,39 @@ def _validate_time_ordering(ws: WorldStateV1) -> List[ValidationIssue]:
                 ),
             ))
 
+    # 5. Utterance temporal coherence: a non-performative utterance can
+    #    only *describe* events that have already occurred (target_ids
+    #    referring to EVT_ ids must have fabula_time <= utterance.fabula_time).
+    #    Performative speech-acts — prophecies, vows, orders, declarations
+    #    — are exempt because they posit/announce future events rather
+    #    than report past ones.
+    for u in ws.events:
+        if u.event_type != "utterance":
+            continue
+        if u.truth_value == "performative":
+            continue
+        for tid in u.target_ids or []:
+            if not tid.startswith("EVT_"):
+                continue
+            tgt_t = evt_fabula.get(tid)
+            if tgt_t is None:
+                continue
+            if tgt_t > u.fabula_time:
+                issues.append(ValidationIssue(
+                    severity="error", category="temporal",
+                    detail=(
+                        f"Utterance '{u.id}' (fabula={u.fabula_time}, "
+                        f"truth_value={u.truth_value!r}) has target_ids "
+                        f"referencing future event '{tid}' (fabula={tgt_t}). "
+                        f"A non-performative utterance can only describe "
+                        f"already-occurred events. Either set "
+                        f"truth_value='performative' (if the utterance is a "
+                        f"prophecy/vow/order positing the future event), or "
+                        f"remove the future event from target_ids and let "
+                        f"causal_topology express the downstream causal link."
+                    ),
+                ))
+
     return issues
 
 

@@ -738,10 +738,10 @@ typed state each carries. All six share a common
 Node ID prefix & Pydantic class & Distinctive state \\
 \midrule
 \texttt{ENT\_} & \texttt{Entity} & \texttt{traits: Dict[str, TraitVector]}; \texttt{beliefs: List[Belief]}; \texttt{constants: List[str]}; \texttt{location\_id}; \texttt{status}; \texttt{state\_timeline} of \texttt{EntityStateSnapshot} deltas. \\
-\texttt{EVT\_} & \texttt{EventNode} & \texttt{event\_type} (\texttt{action} / \texttt{utterance} / \texttt{outcome} / \texttt{revelation} / \texttt{choice} / \dots); \texttt{actor\_ids}, \texttt{target\_ids}; \texttt{fabula\_time}, \texttt{syuzhet\_index}; for \texttt{utterance}: \texttt{speaker\_id}, \texttt{addressee\_ids}, \texttt{via\_channel\_id}, \texttt{content}, \texttt{truth\_value} $\in$ \{\texttt{true}, \texttt{false}, \texttt{uncertain}\}. \\
+\texttt{EVT\_} & \texttt{EventNode} & \texttt{event\_type} $\in$ \{\texttt{choice}, \texttt{outcome}, \texttt{revelation}, \texttt{utterance}\}; \texttt{actor\_ids}, \texttt{target\_ids}; \texttt{fabula\_time}, \texttt{syuzhet\_index}; for \texttt{utterance}: \texttt{speaker\_id}, \texttt{addressee\_ids}, \texttt{via\_channel\_id}, \texttt{content}, \texttt{truth\_value} $\in$ \{\texttt{true}, \texttt{false}, \texttt{unknown}, \texttt{performative}\} (the last covers prophecies / vows / orders, which alone may carry future-fabula \texttt{target\_ids}; see \S\ref{sec:utterance-temporal}). \\
 \texttt{LOC\_} & \texttt{Location} & \texttt{ambient\_state: Dict[str, AmbientVector]} (e.g.\ \textit{tension}, \textit{bustle}, \textit{supernatural}); \texttt{capacity}; outgoing \texttt{SpatialEdge}s. \\
 \texttt{OBJ\_} & \texttt{Object} & \texttt{location\_id} or \texttt{owner\_id}; \texttt{properties}; \texttt{affordances: List[Affordance]} (typed action/target gates). \\
-\texttt{CHN\_} & \texttt{Channel} & \texttt{medium}, \texttt{directionality}, \texttt{participant\_ids}; \texttt{intelligibility: Dict[entity\_id, float]} per-participant; \texttt{established\_at\_fabula}, \texttt{terminated\_at\_fabula}. \\
+\texttt{CHN\_} & \texttt{Channel} & \texttt{medium}, \texttt{directionality}, \texttt{participant\_ids}; \texttt{intelligibility: Dict[entity\_id, float]} per-participant; \texttt{established\_at\_fabula}, \texttt{terminated\_at\_fabula}; \texttt{discovered\_at\_syuzhet} (optional, marks reader-facing channel reveals). \\
 \texttt{WORLD\_} & \texttt{GlobalTrait} & Standing pressure (e.g.\ \texttt{WORLD\_REGENCY\_RANK} in Persuasion, \texttt{WORLD\_SOVIET\_PENETRATION} in Tinker Tailor): a single value $v$, \texttt{inertia}, \texttt{evidence\_strength}, plus a \texttt{state\_timeline} of \texttt{WorldTraitSnapshot}s. \\
 \bottomrule
 \end{tabular}
@@ -832,7 +832,10 @@ The Inverness night reduces to a small, fully typed sub-graph:
       \texttt{participants=[\\
       ENT\_MACBETH,\ ENT\_BANQUO,\ ENT\_WITCHES]}, used by the
       utterance event \texttt{EVT\_UTT\_PROPHECY\_HEATH}
-      ($\texttt{truth\_value}=\textit{uncertain}$).
+      ($\texttt{truth\_value}=\textit{performative}$ --- the witches'
+      prophecy is a future-positing speech-act, not a fact-claim,
+      and may therefore reference future events such as
+      \texttt{EVT\_MACBETH\_CROWNED} in its \texttt{target\_ids}).
 \item \textbf{Causal sub-graph.} \texttt{EVT\_LADY\_MACBETH\_PERSUADES
       $\to$ EVT\_DUNCAN\_MURDER} (\texttt{chain\_reaction},
       $\texttt{causal\_force}=8.0$); \texttt{OBJ\_BLOODY\_DAGGERS
@@ -864,17 +867,70 @@ Given prose $P$, ingestion produces a $\mathcal{W}$ via:
 \item Five extraction agents over $P$ build a
       \texttt{GlobalRegister} of $\mathrm{WORLD}\_$, $\mathrm{ENT}\_$,
       $\mathrm{LOC}\_$, $\mathrm{OBJ}\_$ nodes plus a fuzzy alias
-      table.
+      table. A single global \emph{proposition catalogue} pass
+      then mints $\mathrm{PROP}\_$ ids for every fact-claim the
+      story will need to track --- shared targets that downstream
+      utterances and beliefs reference rather than duplicating
+      free-text \texttt{perceived\_state}s.
 \item For each chunk, a Socratic Who/What/Where/When/Why/How
       scaffold dispatches three concurrent specialist agents:
       \emph{physics} (events, causal/spatial edges), \emph{social}
-      (relationship edges, channels), \emph{consequences}
-      (authoritative entity-state deltas).
+      (relationship edges, channels, utterance \texttt{EVT\_UTT\_}
+      events), \emph{consequences} (authoritative entity-state
+      deltas). A per-chunk \emph{affect sub-stage} runs after
+      consequences to wire \texttt{asserts\_proposition\_id} /
+      \texttt{denies\_proposition\_id} / \texttt{resolves\_proposition\_ids}
+      onto the chunk's events.
 \item Output is normalised, fabula times are remapped to a
       uniform $\Delta t = 100$ spacing, and a programmatic
       validator + LLM correction loop enforces ID closure and
-      type constraints.
+      type constraints. The validator includes a temporal-coherence
+      rule on utterances: see \S\ref{sec:utterance-temporal}.
+\item Three post-assembly passes complete the world model:
+      (a) \emph{concern extraction} per entity (standing fears
+      and desires that drive the affective-physics threat / hope
+      surfacing); (b) \emph{belief proposition clustering} (an
+      LLM clusters free-text \texttt{perceived\_state} strings
+      sharing a target into the catalogue's \texttt{PROP\_} ids);
+      (c) \emph{audience entity synthesis} ---
+      \texttt{\_maybe\_synthesise\_audience\_entity} constructs an
+      \texttt{ENT\_AUDIENCE} entity carrying graded belief
+      snapshots over each \texttt{Proposition} on the syuzhet
+      timeline. \texttt{ENT\_AUDIENCE} is what the propositional
+      affect scorers (\S\ref{sec:propositional}) read when
+      computing reader-side suspense, surprise, irony, and
+      mystery.
 \end{enumerate}
+
+\subsubsection{Utterance temporal coherence}
+\label{sec:utterance-temporal}
+
+An \texttt{EventNode} with \texttt{event\_type="utterance"} carries
+a \texttt{target\_ids} list naming the entities, objects, and
+events the speech-act is \emph{about}. The schema enforces a
+temporal-coherence invariant: every $\mathrm{EVT}\_$ id appearing
+in an utterance's \texttt{target\_ids} must satisfy
+$\texttt{fabula\_time}_{\text{target}} \le
+\texttt{fabula\_time}_{\text{utterance}}$, \emph{unless} the
+utterance carries $\texttt{truth\_value} = \texttt{performative}$.
+The exemption is grounded in the speech-act tradition of
+\citet{austin1962how} and \citet{searle1969speech}: prophecies,
+vows, oaths, orders, and declarations are not fact-claims about
+the world but illocutionary acts that posit, commit to, or
+predict future states. They are accordingly the only utterance
+class that may legitimately reference an event whose
+\texttt{fabula\_time} lies in their own future. The witches'
+prophecy (\texttt{EVT\_UTT\_PROPHECY\_HEATH} in
+\emph{Macbeth}, $\texttt{truth\_value}=\texttt{performative}$,
+\texttt{target\_ids} = \texttt{[EVT\_MACBETH\_CROWNED]}) is the
+canonical example. The constraint is enforced by
+\texttt{shadow\_loom.ingestion.\_validate\_time\_ordering} (Rule~5,
+\texttt{severity="error"}) and authored into the social-extraction
+prompt (\texttt{prompts/social\_extraction.md} Rule 8).
+Causal effects \emph{produced} by an utterance are expressed in
+\texttt{causal\_topology} as \texttt{chain\_reaction} edges
+$(\mathrm{EVT}\_\mathrm{UTT}\_X \to \mathrm{EVT}\_Y)$, distinct
+from referential targets in \texttt{target\_ids}.
 
 \subsection{Ego-graph slicing and AMWN sandbox}
 \label{app:amwn}

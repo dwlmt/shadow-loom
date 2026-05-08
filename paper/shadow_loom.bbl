@@ -1,4 +1,4 @@
-\begin{thebibliography}{131}
+\begin{thebibliography}{133}
 \providecommand{\natexlab}[1]{#1}
 
 \bibitem[{Akoury et~al.(2020)Akoury, Wang, Whiting, Hood, Peng, and Iyyer}]{akoury2020storium}
@@ -10,6 +10,11 @@ Nader Akoury, Shufan Wang, Josh Whiting, Stephen Hood, Nanyun Peng, and Mohit Iy
 Carlos~E. Alchourr{\'o}n, Peter G{\"a}rdenfors, and David Makinson. 1985.
 \newblock On the logic of theory change: Partial meet contraction and revision functions.
 \newblock \emph{Journal of Symbolic Logic}, 50(2):510--530.
+
+\bibitem[{Austin(1962)}]{austin1962how}
+J.~L. Austin. 1962.
+\newblock \emph{How to Do Things with Words}.
+\newblock Oxford University Press, Oxford.
 
 \bibitem[{Bae and Young(2008)}]{baeyoung2008surprise}
 Byung-Chull Bae and R.~Michael Young. 2008.
@@ -482,6 +487,11 @@ Dorothy~L. Sayers. 1929.
 Roger~C. Schank and Robert~P. Abelson. 1977.
 \newblock \emph{Scripts, Plans, Goals and Understanding: An Inquiry into Human Knowledge Structures}.
 \newblock Lawrence Erlbaum.
+
+\bibitem[{Searle(1969)}]{searle1969speech}
+John~R. Searle. 1969.
+\newblock \emph{Speech Acts: An Essay in the Philosophy of Language}.
+\newblock Cambridge University Press, Cambridge.
 
 \bibitem[{Shannon(1948)}]{shannon1948mathematical}
 Claude~E. Shannon. 1948.

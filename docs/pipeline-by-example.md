@@ -284,6 +284,14 @@ Several things become clear from this single record:
   weights the belief update by truth value × intelligibility ×
   evidence_strength.
 
+Non-performative utterances (`truth_value ∈ {true, false, unknown}`) must
+not place future-fabula events in `target_ids`; their causal effects on
+later events belong on `causal_topology` as `chain_reaction` edges rather
+than in the utterance's own `target_ids` field. The ingestion validator
+(`_validate_time_ordering` Rule 5) raises a temporal error otherwise.
+Performative utterances (prophecies, vows, orders) are exempt because
+they posit the future state rather than report a past one.
+
 Reservoir Dogs is the cleanest demo of the two-clock split:
 `EVT_ORANGE_RECRUITED` sits at low `fabula_time` but high `syuzhet_index`
 because the audience learns it long after they meet Orange in the

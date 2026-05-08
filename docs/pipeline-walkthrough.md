@@ -153,10 +153,26 @@ emits inflection points for each `WORLD_*` trait (regime change, war ends,
 seasons turn). These become `WorldTraitSnapshot` entries on
 `GlobalTrait.state_timeline`.
 
+### 1i–1k. Post-assembly async passes
+
+Three passes run after assembly (and world-trait timelines) complete, before validation:
+
+* **1i — Concern extraction** (`extract_entity_concerns_async`): populates each entity's `concerns` list from the proposition catalogue, resolving `ConcernSeed` entries into full `Concern` objects with `polarity`, `salience`, and `activation_fabula_window`.
+* **1j — Belief proposition clustering** (`cluster_belief_propositions_async`): groups raw belief targets into canonical `PROP_*` references so downstream affect scorers can reason over named claims rather than free-form strings.
+* **1k — Audience entity synthesis** (`_maybe_synthesise_audience_entity`): injects a reserved `ENT_AUDIENCE` entity (the omniscient-reader perspective) when none was already present — required by the dramatic-irony scorer and the reader-belief propagation path.
+
 ### 1h. Programmatic Validation + Correction Loop
 
 `validate_world_state` runs `_programmatic_validation` (hallucinated IDs,
-broken links, contradictions, duplicates, orphans). If errors remain, a
+broken links, contradictions, duplicates, orphans), which includes
+`_validate_time_ordering`. That function enforces four temporal invariants
+(contiguous unique `syuzhet_index`; reasonable `fabula_time` spacing;
+causal-edge cause-before-effect; channel `established_at_fabula ≤
+terminated_at_fabula`) plus a **fifth** (Rule 5, severity=error,
+category=temporal): non-performative utterances (`truth_value ∈ {true,
+false, unknown}`) may not place `EVT_*` ids referring to future-fabula
+events in `target_ids`. Performative utterances (prophecies, vows, orders)
+are exempt. If errors remain, a
 **correction agent** is invoked with the error summary + the current
 state. When the serialised state exceeds
 `correction_subgraph_threshold_chars` (default 400 KB) the prompt is

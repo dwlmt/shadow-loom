@@ -671,7 +671,7 @@ world_state = WorldStateV1(
             actor_ids=["ENT_FEYRE"], target_ids=["EVT_FEYRE_ENTERS_MOUNTAIN"],
             description="Before re-crossing the Wall to fight for Tamlin, Feyre leaves a written farewell for her father and Elain.",
             content="I am going back to Prythian. If I do not return, know that I went willingly, and that I love you both.",
-            via_channel_id=None, truth_value="true",
+            via_channel_id=None, truth_value="performative",
             fabula_time=10500, syuzhet_index=26,
         ),
         EventNode(

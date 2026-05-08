@@ -637,7 +637,17 @@ class EventNode(AMWNNode):
         ),
     )
     actor_ids: List[str] = Field(default_factory=list, description="Who did it? Empty if natural event. Supports joint actions (e.g., ['ENT_MACBETH', 'ENT_LADY_MACBETH']).")
-    target_ids: List[str] = Field(default_factory=list, description="Who/what was acted upon? e.g., ['ENT_DUNCAN'] in a murder event. Supports diffuse effects.")
+    target_ids: List[str] = Field(default_factory=list, description=(
+        "Who/what was acted upon? e.g., ['ENT_DUNCAN'] in a murder event. "
+        "Supports diffuse effects. For ``event_type='utterance'``, "
+        "``target_ids`` is the set of entities/objects/EVENTS the speech-act "
+        "is *about* (the utterance's referents) — not its downstream causal "
+        "effects. Any EVT_ id in an utterance's ``target_ids`` must have "
+        "``fabula_time <= utterance.fabula_time`` UNLESS the utterance is "
+        "``truth_value='performative'`` (prophecies, vows, orders may "
+        "reference future events they posit/commit to). Causal effects of an "
+        "utterance belong in ``causal_topology`` as ``chain_reaction`` edges."
+    ))
     description: str
 
     # --- Utterance / revelation payload (optional, mainly for event_type='utterance' or 'revelation') ---

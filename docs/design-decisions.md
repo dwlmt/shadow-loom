@@ -297,7 +297,22 @@ output can hand back `"high"`/`"low"`/etc. without retry. MCP
 `inspect_*` and the UI viz time-slicer surface the new key.
 
 ---
+## D5e — Utterance temporal-coherence invariant
 
+**Decision.** A non-performative utterance (`truth_value ∈ {true, false, unknown}`) may not list `EVT_*` ids in its `target_ids` whose `fabula_time` exceeds the utterance's own `fabula_time`. Performative utterances (`truth_value="performative"`) — prophecies, vows, orders, declarations — are exempt because they announce or posit future events rather than report past ones.
+
+**Provenance.** The rule is enforced in three co-located places:
+* [shadow_loom/ingestion.py](../shadow_loom/ingestion.py) — `_validate_time_ordering` Rule 5 (severity=error, category=temporal).
+* [shadow_loom/prompts/social_extraction.md](../shadow_loom/prompts/social_extraction.md) — Rule 8 instructs the Social agent not to place future-fabula events in `target_ids` of non-performative utterances.
+* [shadow_loom/models.py](../shadow_loom/models.py) — `EventNode.target_ids` field docstring notes the performative exemption.
+
+**Why not allow it?** A non-performative utterance is a *report* about what has already happened — it is evidence for character beliefs about past events. Placing a future event in `target_ids` would cause the belief-propagation cascade to treat the future event as a known, reportable fact, contaminating entity belief timelines and violating the fabula-time ordering that the affect scorers and d-separation checks depend on.
+
+**Downstream causal effects.** When an utterance *causes* a future event — Amy's lie triggering Nick's actions days later — that relationship belongs on `causal_topology` as a `CausalEdge(causality_type='chain_reaction')`, not in the utterance's `target_ids`. `target_ids` on an utterance should reference only the events the utterance *describes* (already occurred or simultaneous) — or, for performatives, the prospective commitment being announced.
+
+**Invariant.** For all utterance events `u` where `u.truth_value ≠ "performative"` and all `tid ∈ u.target_ids` where `tid.startswith("EVT_")`: `events[tid].fabula_time ≤ u.fabula_time`.
+
+---
 ## D6. AMWN sandboxing for all simulation
 
 **Decision.** Every Pearl rung-2 (Intervention) / rung-3 (Counterfactual) query runs against a NetworkX
