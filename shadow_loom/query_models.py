@@ -299,7 +299,7 @@ class DirectiveQuery(_QueryBase):
     """
     query_type: Literal["directive"] = "directive"
     target_entity_ids: List[str] = Field(description="The Entities experiencing the emotion or the ignorance.")
-    target_effect: Literal["suspense", "surprise", "mystery", "dramatic_irony", "grief", "rage", "joy", "regret", "love", "fear"] = Field(
+    target_effect: Literal["suspense", "surprise", "mystery", "dramatic_irony", "narrative_tension", "grief", "rage", "joy", "regret", "love", "fear"] = Field(
         description="The narrative effect to maximize."
     )
     target_vector_id: Optional[str] = Field(

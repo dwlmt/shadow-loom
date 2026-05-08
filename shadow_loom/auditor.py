@@ -758,7 +758,7 @@ def compute_affective_feedback(
     # ``affective_loss`` as ``None`` in that case so the hero tile
     # and findings card render "not measured" honestly.
     _MEASURABLE_TARGETS = (
-        {"mystery", "dramatic_irony", "suspense", "surprise"}
+        {"mystery", "dramatic_irony", "suspense", "surprise", "narrative_tension"}
         | set(_EFFECT_TRAITS.keys())
     )
     target = brief.target_effect
@@ -780,6 +780,7 @@ def compute_affective_feedback(
         "dramatic_irony": "compute_dramatic_irony_score",
         "suspense": "compute_suspense_score",
         "surprise": "compute_surprise_score",
+        "narrative_tension": "compute_tension_score",
     }
     for effect, method_name in score_map.items():
         try:
@@ -1026,6 +1027,240 @@ def _format_affective_metrics_block(
         )
     lines.append("")
     return lines
+
+
+def _format_propositional_context(brief: CreativeBrief) -> List[str]:
+    """Surface propositional / belief / concern context to the auditor.
+
+    The renderer (``shadow_loom.generation``) already emits dedicated
+    prompt blocks for ``surprise_profile``, ``irony_profile``,
+    ``mystery_profile`` and the per-emotion appraisal payloads, plus
+    the ``affected_propositions`` / ``affected_concerns`` /
+    ``affected_beliefs`` lists carried on
+    :class:`ThreatProximity` (Rung-2) and
+    :class:`CounterfactualBranch` (Rung-3). The auditor must see the
+    same data, otherwise it can flag prose against trait/belief gaps
+    while staying blind to whether the rendered scene respects the
+    propositional commitments and concern polarities the directive
+    was assembled around. This helper renders only the populated
+    fields so audits on briefs without a Phase A3 catalogue degrade
+    gracefully to the legacy trait-anchored picture.
+    """
+    out: List[str] = []
+
+    sp = getattr(brief, "surprise_profile", None)
+    if sp is not None and (sp.revealed_proposition_ids or sp.score):
+        out.append(
+            "=== SURPRISE PROFILE (audience-belief revision — "
+            "propositions whose audience prior just shifted) ==="
+        )
+        out.append(
+            f"  total KL: {sp.score:.3f}  "
+            f"pleasant: {sp.pleasant_score:.3f}  "
+            f"unpleasant: {sp.unpleasant_score:.3f}"
+        )
+        descs = list(sp.revealed_descriptions or [])
+        for i, pid in enumerate(sp.revealed_proposition_ids[:8]):
+            desc = descs[i] if i < len(descs) else ""
+            out.append(f"    - {pid}: {desc}")
+        if sp.per_focal_score:
+            top = sorted(
+                sp.per_focal_score.items(), key=lambda kv: -kv[1]
+            )[:5]
+            out.append(
+                "  per-focal (concern-weighted): "
+                + ", ".join(f"{eid}={s:.2f}" for eid, s in top)
+            )
+        out.append(
+            "  Rule: prose must render the on-page consequence of "
+            "these belief shifts; do NOT have the focal voice the "
+            "shift directly (no 'she suddenly realised...')."
+        )
+        out.append("")
+
+    ip = getattr(brief, "irony_profile", None)
+    if ip is not None and (
+        ip.audience_advantage_score
+        or ip.focal_advantage_score
+        or ip.audience_advantage_propositions
+        or ip.focal_advantage_propositions
+    ):
+        out.append(
+            "=== IRONY PROFILE (audience vs focal belief gap) ==="
+        )
+        out.append(
+            f"  focal: {ip.focal_id}  "
+            f"audience-advantage KL: {ip.audience_advantage_score:.3f}  "
+            f"focal-advantage KL: {ip.focal_advantage_score:.3f}"
+        )
+        if ip.audience_advantage_propositions:
+            out.append("  audience knows (focal does NOT):")
+            for desc in ip.audience_advantage_propositions[:6]:
+                out.append(f"    - {desc}")
+        if ip.focal_advantage_propositions:
+            out.append("  focal knows (audience does NOT — keep hidden):")
+            for desc in ip.focal_advantage_propositions[:6]:
+                out.append(f"    - {desc}")
+        if ip.most_ironised_entity_id and ip.most_ironised_entity_id != ip.focal_id:
+            out.append(
+                f"  most-ironised entity: {ip.most_ironised_entity_id} "
+                f"(KL={ip.most_ironised_score:.2f})"
+            )
+        out.append(
+            "  Rule: the focal MUST act consistent with their "
+            "(false) belief state on every audience-advantage "
+            "proposition. Flag prose where the focal silently "
+            "absorbs an audience-advantage fact without an on-page "
+            "trigger."
+        )
+        out.append("")
+
+    mp = getattr(brief, "mystery_profile", None)
+    if mp is not None and (mp.score or mp.open_questions):
+        out.append(
+            "=== MYSTERY PROFILE (open erotetic questions — known "
+            "effects with hidden causes) ==="
+        )
+        out.append(
+            f"  score: {mp.score:.3f}  "
+            f"plot-gap: {mp.plot_gap_score:.3f}  "
+            f"character-gap: {mp.character_gap_score:.3f}"
+        )
+        if mp.governing_question_description:
+            out.append(
+                f"  governing question: "
+                f"{mp.governing_question_description}"
+            )
+        for q in (mp.open_questions or [])[:6]:
+            out.append(f"    - {q}")
+        for q in (mp.character_gap_descriptions or [])[:4]:
+            out.append(f"    ~ {q}")
+        out.append(
+            "  Rule: the prose MUST render the effects on-page "
+            "without naming or implying the hidden cause."
+        )
+        out.append("")
+
+    # Rung-2 / Rung-3 surgery side-effects on the propositional /
+    # concern / belief layer. These are populated only on briefs
+    # built from typed DoTarget queries; the legacy event-only path
+    # leaves the lists empty and the block is suppressed.
+    for label, payload in (
+        ("RUNG-2 INTERVENTION SIDE-EFFECTS", brief.threat_proximity),
+        ("RUNG-3 COUNTERFACTUAL SIDE-EFFECTS", brief.counterfactual_branch),
+    ):
+        if payload is None:
+            continue
+        ap = list(getattr(payload, "affected_propositions", []) or [])
+        ab = list(getattr(payload, "affected_beliefs", []) or [])
+        ac = list(getattr(payload, "affected_concerns", []) or [])
+        if not (ap or ab or ac):
+            continue
+        out.append(f"=== {label} (typed DoTarget surgery) ===")
+        if ap:
+            out.append(
+                "  PROPOSITIONS whose truth flipped: "
+                + ", ".join(ap[:12])
+            )
+        if ab:
+            out.append(
+                "  BELIEFS whose confidence shifted "
+                "(holder→target): " + ", ".join(ab[:12])
+            )
+        if ac:
+            out.append(
+                "  CONCERNS whose polarity / salience shifted: "
+                + ", ".join(ac[:12])
+            )
+        tragedy = getattr(payload, "tragedy_form", None)
+        if tragedy:
+            out.append(f"  tragedy_form: {tragedy}")
+        out.append(
+            "  Rule: every flipped proposition / belief / concern "
+            "above MUST be visibly grounded in an on-page event "
+            "or utterance; flag silent off-page changes as "
+            "miracle steps."
+        )
+        out.append("")
+
+    # Character-felt emotion appraisals — surface the concern-level
+    # diagnostics so the auditor can validate prose against the
+    # appraisal that drove the directive's stylistic instructions.
+    emo_blocks = (
+        ("FEAR APPRAISAL", brief.fear_profile, [
+            ("object_fear", "object_fear_score"),
+            ("anxiety", "anxiety_score"),
+            ("coping", "coping_score"),
+            ("flight_available", "flight_available"),
+            ("dread", "dread"),
+            ("primary_concern", "primary_concern_description"),
+        ]),
+        ("JOY APPRAISAL", brief.joy_profile, [
+            ("own_joy", "own_joy_score"),
+            ("happy_for", "happy_for_score"),
+            ("gloating", "gloating_score"),
+            ("relief", "relief_score"),
+            ("primary_concern", "primary_concern_description"),
+        ]),
+        ("REGRET APPRAISAL", brief.regret_profile, [
+            ("agentive_regret", "agentive_regret_score"),
+            ("disappointment", "disappointment_score"),
+            ("commission", "commission_score"),
+            ("omission", "omission_score"),
+            ("downward_relief", "downward_relief_score"),
+            ("mode", "mode"),
+        ]),
+        ("GRIEF APPRAISAL", brief.grief_profile, [
+            ("coupling_strength", "coupling_strength"),
+            ("stage", "stage"),
+            ("unfinished_concerns", "unfinished_concern_count"),
+            ("lost_entity", "lost_entity_id"),
+        ]),
+        ("RAGE APPRAISAL", brief.rage_profile, [
+            ("blocked_concern", "blocked_concern_score"),
+            ("attribution_clarity", "attribution_clarity"),
+            ("perpetrator", "perpetrator_id"),
+            ("perpetrator_proximity", "perpetrator_proximity"),
+            ("normative_violation", "normative_violation"),
+            ("mode", "mode"),
+        ]),
+        ("LOVE APPRAISAL", brief.love_profile, [
+            ("partner", "primary_partner_id"),
+            ("intimacy", "intimacy_score"),
+            ("passion", "passion_score"),
+            ("commitment", "commitment_score"),
+            ("style", "style"),
+        ]),
+    )
+    for label, payload, fields in emo_blocks:
+        if payload is None:
+            continue
+        parts: List[str] = []
+        for human, attr in fields:
+            v = getattr(payload, attr, None)
+            if v is None or v == "":
+                continue
+            if isinstance(v, bool):
+                parts.append(f"{human}={'yes' if v else 'no'}")
+            elif isinstance(v, (int, float)) and not isinstance(v, bool):
+                parts.append(f"{human}={float(v):.2f}")
+            else:
+                parts.append(f"{human}={v}")
+        if not parts:
+            continue
+        out.append(f"=== {label} ===")
+        focal = getattr(payload, "focal_id", None)
+        if focal:
+            out.append(f"  focal: {focal}")
+        out.append("  " + "  ".join(parts))
+        cids = list(getattr(payload, "contributing_concern_ids", []) or [])
+        if cids:
+            out.append(
+                "  driving concerns: " + ", ".join(cids[:8])
+            )
+        out.append("")
+
+    return out
 
 
 def assemble_audit_prompt(
@@ -1414,6 +1649,14 @@ def assemble_audit_prompt(
                 f"coupling={p.coupling_strength:.2f}"
             )
         sections.append("")
+
+    # Propositional / belief / concern surfacing — the renderer was
+    # given dedicated blocks for surprise / irony / mystery profiles
+    # and the affected_propositions / affected_concerns / affected_beliefs
+    # lists; the auditor must see the same data so it can flag prose
+    # that fails to ground a flipped proposition or violates a focal's
+    # concern polarity.
+    sections.extend(_format_propositional_context(brief))
 
     # Prior feedback (for iteration > 0)
     if prior_feedback:
@@ -1870,6 +2113,14 @@ def assemble_evaluation_prompt(
                 f"(inertia={t.inertia:.2f})"
             )
         sections.append("")
+
+    # Propositional / belief / concern surfacing — same data the
+    # renderer was given via the ``*_profile`` and
+    # ``affected_propositions`` / ``affected_concerns`` /
+    # ``affected_beliefs`` blocks. Without this the evaluator scores
+    # full-story prose blind to the propositional commitments the
+    # directive was assembled around.
+    sections.extend(_format_propositional_context(brief))
 
     # Engine-computed metrics (ground truth for the evaluator)
     if causal_feedback is not None:

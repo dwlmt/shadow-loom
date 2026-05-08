@@ -57,10 +57,11 @@ def build_event_navigator(state: AppState) -> None:
         return
 
     selected_event = {"id": ""}
-    # User-toggled order: "syuzhet" (narrative-text order) vs
-    # "fabula" (in-world chronological order). They differ for any
-    # story with flashbacks, framing devices, or in medias res.
-    order_state = {"mode": "syuzhet"}
+    # Order is bound to the global ``state.time_axis`` so flipping the
+    # workspace toolbar's Fabula/Syuzhet picker also reorders this
+    # rail (and vice-versa). The local ``order_state`` shim is kept
+    # only as a read-through helper for the existing render code.
+    order_state = {"mode": state.time_axis or "syuzhet"}
     # Whether to filter out events that have been superseded by a
     # promoted counterfactual (Tier-6 supersession UX). Default False
     # so historical context is visible; toggle on to read the canonical
@@ -83,13 +84,16 @@ def build_event_navigator(state: AppState) -> None:
                         "text-[10px] text-slate-400 uppercase"
                     )
 
-                # Order toggle: syuzhet (text) vs fabula (chronology)
+                # Order toggle: syuzhet (text) vs fabula (chronology).
+                # Bound to the global ``state.time_axis`` so changes
+                # propagate to every other axis-aware panel.
                 order_toggle = ui.toggle(
                     {"syuzhet": "Narrative", "fabula": "Chronology"},
-                    value="syuzhet",
+                    value=order_state["mode"],
                 ).props("dense no-caps spread").classes("w-full px-2 q-mt-xs").tooltip(
                     "Narrative = syuzhet (order events appear in the text). "
-                    "Chronology = fabula (order events happen in the world)."
+                    "Chronology = fabula (order events happen in the world). "
+                    "Bound to the global time-axis picker."
                 )
 
                 # Hide-superseded switch — filters events with a
@@ -206,11 +210,29 @@ def build_event_navigator(state: AppState) -> None:
                                     ).style("overflow-wrap:anywhere")
 
                 def _on_order_change() -> None:
-                    order_state["mode"] = order_toggle.value or "syuzhet"
+                    new_axis = order_toggle.value or "syuzhet"
+                    order_state["mode"] = new_axis
+                    # Push to global so other tabs follow.
+                    if state.time_axis != new_axis:
+                        state.set_time_axis(new_axis)
+                    _refresh_list()
+
+                def _on_global_axis_change(**_kw) -> None:
+                    new_axis = state.time_axis or "syuzhet"
+                    if order_state["mode"] == new_axis:
+                        return
+                    order_state["mode"] = new_axis
+                    if order_toggle.value != new_axis:
+                        order_toggle.value = new_axis
+                        try:
+                            order_toggle.update()
+                        except RuntimeError:
+                            return
                     _refresh_list()
 
                 order_toggle.on("update:model-value", lambda _e: _on_order_change())
                 search.on("update:model-value", lambda _e: _refresh_list())
+                state.on(StateEvent.TIME_AXIS_CHANGED, _on_global_axis_change)
 
                 def _on_hide_superseded_change(e: Any) -> None:
                     hide_superseded["v"] = bool(getattr(e, "value", False))

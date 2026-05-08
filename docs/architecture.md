@@ -42,13 +42,39 @@ Note: communication is no longer modelled as an edge. Standing capability lives 
   `traits / beliefs_added / beliefs_invalidated / status / location_id` valid
   from a given `fabula_time`, with an optional `triggered_by` event ID.
 * **`WorldTraitSnapshot`** does the same for `GlobalTrait.state_timeline`.
-* `Entity.traits / beliefs / status / location_id` represent the **initial
-  pre-story baseline**; the timeline replays deltas on top.
-* `reconstruct_entity_at(entity, fabula_time)` and
-  `reconstruct_world_trait_at(trait, fabula_time)` are pure functions that
-  return the merged state at any chronological slice. They are used by the
-  ego-graph extractor, the causal physics engine, and the narrative physics
-  layer.
+* **`PropositionSnapshot`** lives on `Proposition.state_timeline` — sparse delta of `stakes / audience_default_prior / description` plus `truth_at_fabula` commitments emitted whenever a chunk's events resolve a proposition.
+* **`ConcernSnapshot`** lives on `Concern.state_timeline` — sparse delta of `salience / polarity / activation_fabula_window / counter_concern_ids / kind`, capturing reversals such as Macbeth's desire→fear flip on `PROP_BANQUO_DEAD`.
+* `Entity.traits / beliefs / status / location_id`,
+  `GlobalTrait.magnitude`, `Proposition.stakes /
+  audience_default_prior`, and `Concern.salience / polarity`
+  represent the **initial pre-story baseline**; each timeline
+  replays sparse deltas on top.
+* Four pure reconstruction functions return the merged state at any chronological slice: `reconstruct_entity_at(entity, fabula_time)`, `reconstruct_world_trait_at(trait, fabula_time)`, `reconstruct_proposition_at(prop, fabula_time)`, and `reconstruct_concern_at(concern, fabula_time)`. They are used by the ego-graph extractor, the causal physics engine, the narrative physics layer, and the propositional affect scorers (`affect_unification.BeliefState`).
+
+### Propositions and concerns
+
+`WorldStateV1.propositions: List[Proposition]` is the world's typed
+claim registry. Each `Proposition` carries `proposition_id`
+(`PROP_*`), `kind ∈ {event_occurs, trait_holds, relation_holds,
+identity_is, outcome}`, `referent_ids` (the ontology entities the
+claim is about), `audience_default_prior ∈ [0, 1]`,
+`stakes ∈ [0, 1]`, the time-indexed `truth_at_fabula: Dict[int,
+bool]`, and a sparse `state_timeline` of `PropositionSnapshot`s.
+
+`Entity.concerns: List[Concern]` carries each character's standing
+fear / desire about a specific proposition: `concern_id` (`CCN_*`),
+`proposition_id`, `polarity ∈ {desire, fear}`, `kind` (e.g.
+`betrayal`), `salience ∈ [0, 1]`, `activation_fabula_window`, and
+`counter_concern_ids` for ambivalence pairs (a character
+simultaneously *desiring* and *fearing* the same outcome). Both
+field families are populated either in Phase A3 (`Proposition
+Catalogue`) of ingestion or in the per-chunk Affect sub-stage
+(B4). Together they let the propositional / Bayesian affect
+scorers in [`affect_unification.py`](../shadow_loom/affect_unification.py) reason
+about suspense / surprise / irony / mystery as belief-revision
+over named claims rather than only as graph-geometry of
+trait-and-event mass — see
+[academic-foundations.md §3.7](academic-foundations.md#37-propositional-belief-revision-affect-affect_unificationpy).
 
 ### Time
 
@@ -79,6 +105,17 @@ Five LLM agents extract a `GlobalRegister` from prose:
 4. `extract_objects` → `OBJ_*` with affordances
 5. fuzzy-resolve cross-chunk references (handles aliasing, partial names)
 
+**A3 — Proposition catalogue.** A single global LLM pass
+(`extract_proposition_catalogue_async`) extracts every `Proposition`
+the narrative is *about* — outcome props (Will Macbeth become
+king? Will Linnet die?), trait/relation/identity claims, and a
+`ConcernSeed` list (per-entity polarity / salience anchored to a
+PROP id). The catalogue is laid down once with full-text
+attention so per-chunk extractors downstream can reference
+canonical PROP / CCN ids without re-defining them. Truth
+commitments and snapshot drift are deferred to the per-chunk
+Affect sub-stage (B4 in §2 below).
+
 ### Step 2: Topology extraction (per-chunk)
 
 For each text chunk the pipeline runs a **Socratic-QA scaffold** first
@@ -92,8 +129,12 @@ for the lineage), then dispatches three specialist agents:
 * `ConsequencesExtraction` — authoritative `EntityUpdate`s anchored to the Physics events + mutation edges (default-on; overrides the Physics agent's own `entity_updates`). Toggle via `ExtractionConfig.enable_consequences_agent`.
 
 In async mode Physics runs first; Social runs next (it is fed Physics's
-event list and on-page entity ids); Consequences runs last so it can
-wire belief provenance through Social's utterance / channel ids. Chunks
+event list and on-page entity ids); Consequences runs third so it can
+wire belief provenance through Social's utterance / channel ids;
+**Affect (B4)** runs last on chunks that touch a known
+proposition / concern, emitting `PropositionSnapshot`s,
+`truth_at_fabula` commits, `ConcernSnapshot`s, and weak-evidence
+`new_concern_seeds` cited against this chunk's events. Chunks
 are extracted in parallel under an `asyncio.Semaphore` gated by
 `ExtractionConfig.max_concurrent_chunks` (default `12`); each chunk's
 entire Socratic→Physics→Social→Consequences chain is wrapped in
@@ -261,6 +302,36 @@ the midpoint.
 
 `compute_affective_score()` returns the weighted combination requested by the
 `DirectiveQuery`.
+
+#### Propositional / Bayesian affect (`affect_unification.py`)
+
+Alongside the trait-anchored scorers above, the post-2026
+ingestion pipeline lays down a typed `Proposition` registry
+(with `audience_default_prior`, `stakes`, time-indexed
+`truth_at_fabula`, and a `state_timeline`) plus per-entity
+`Concern` rows (polarity `desire`/`fear`, salience, activation
+window, counter-concern pairs). On top of those,
+[`affect_unification.py`](../shadow_loom/affect_unification.py)
+exposes a second scoring layer that reasons over **belief
+revision** rather than over graph geometry:
+
+| Effect | Form (propositional) |
+|---|---|
+| **Suspense** | $\sum_P H(p_{\rm aud}(P, t_f)) \cdot \text{stakes} \cdot e^{-\Delta t / \tau}$ over open `outcome` propositions whose truth has not committed at $t_f$. |
+| **Surprise** | $\sum_P D_{\rm KL}(p_{\rm aud}(P, t_f) \,\|\, p_{\rm aud}(P, t_f')) \cdot \text{stakes}$ — Itti–Baldi Bayesian surprise on the audience prior between two anchors. |
+| **Dramatic irony** | $\sum_P D_{\rm KL}(p_{\rm aud}(P, t_f) \,\|\, p_c(P, t_f)) \cdot \text{stakes}$ — Pfister/Sternberg asymmetric KL between audience and focal character $c$. |
+| **Mystery** | Erotetic mystery: Shannon entropy over softmax-normalised candidate causes of *known-to-audience* effect propositions. |
+
+The trait layer (above) is what the **directive-assembly
+optimiser** consumes — its loss semantics need a monotonically
+declining graph-geometry signal that exists for every world.
+The propositional layer is what the **affective dashboard** and
+any Bayesian-narratology consumer surfaces — it answers *"how
+surprised should the reader have been by this beat, given the
+stated audience prior on `PROP_DUNCAN_DEAD`?"* — a question that
+requires named propositions and is undefined for worlds whose
+ingestion never produced a Phase A3 catalogue. See
+[academic-foundations.md §3.7](academic-foundations.md#37-propositional-belief-revision-affect-affect_unificationpy).
 
 #### What the four structural effects *mean*
 

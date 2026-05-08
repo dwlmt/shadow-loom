@@ -27,7 +27,7 @@ from nicegui import ui
 
 from shadow_loom.models import WorldStateV1
 from shadow_loom_ui import db
-from shadow_loom_ui.state import AppState
+from shadow_loom_ui.state import AppState, StateEvent
 
 if TYPE_CHECKING:
     pass
@@ -40,7 +40,7 @@ _TABS = [
     ("story", "auto_stories", "Story"),
     ("explorer", "travel_explore", "Explorer"),
     ("world", "hub", "World"),
-    ("causality", "account_tree", "Causality"),
+    ("social", "groups", "Social"),
     ("affective", "favorite", "Affective"),
     ("reasoning", "psychology", "Reasoning"),
     ("audit", "fact_check", "Audit"),
@@ -66,10 +66,10 @@ _TAB_HELP: dict[str, str] = {
         "to see how every entity's traits, beliefs, status, and location "
         "evolve across the fabula."
     ),
-    "causality": (
-        "Causality \u2014 visualise the typed causal/social/spatial/information "
-        "graph, build interventions and counterfactuals in the what-if "
-        "workbench, and assemble emotional directives."
+    "social": (
+        "Social \u2014 characters, beliefs, concerns, propositions, and "
+        "relationships unified as a time-sliced graph plus per-character "
+        "cards and trait trajectories."
     ),
     "affective": (
         "Affective \u2014 narrative-affect dashboard: suspense, surprise, "
@@ -195,6 +195,42 @@ def build_workspace(state: AppState, project_id: int) -> None:
             )
         ui.space()
 
+        # ── Global time-axis picker ───────────────────────────────
+        # Flips every time-binned chart (Gantt, theme-river, physics
+        # trajectory, social-layer time-slicing, affective curves,
+        # etc.) between fabula time (Genette: order of the story) and
+        # syuzhet (order of the telling). Hidden on tabs where the
+        # axis isn't story time (Audit, Research) via the
+        # ``_AXIS_HIDDEN_PATHS`` watcher below.
+        axis_picker_row = ui.row().classes("items-center gap-1")
+        with axis_picker_row:
+            ui.icon("alt_route", color="primary").tooltip(
+                "Time axis"
+            )
+            time_axis_toggle = ui.toggle(
+                {"fabula": "Fabula", "syuzhet": "Syuzhet"},
+                value=getattr(state, "time_axis", "fabula"),
+            ).props("dense no-caps").tooltip(
+                "Fabula = chronological story order. "
+                "Syuzhet = order of the telling (anachrony, "
+                "dramatic irony, foreshadowing surfaces here)."
+            )
+            time_axis_toggle.on(
+                "update:model-value",
+                lambda _e=None: state.set_time_axis(
+                    time_axis_toggle.value or "fabula"
+                ),
+            )
+
+        _AXIS_HIDDEN_PATHS = {"audit", "research"}
+
+        def _on_axis_path_change(**kw):
+            path = (kw.get("path") or "").split(".")[0]
+            axis_picker_row.set_visibility(
+                path not in _AXIS_HIDDEN_PATHS
+            )
+        state.on(StateEvent.ACTIVE_PATH_CHANGED, _on_axis_path_change)
+
         # Delete button (owner-only) with confirmation
         is_owner = (
             state.user_id is not None and project.owner_id == state.user_id
@@ -315,9 +351,11 @@ def build_workspace(state: AppState, project_id: int) -> None:
                         from shadow_loom_ui.components.world_tab import build_world_tab
                         build_world_tab(state)
 
-                    with ui.tab_panel("causality").classes("q-pa-none h-full"):
-                        from shadow_loom_ui.components.causality_tab import build_causality_tab
-                        build_causality_tab(state)
+                    with ui.tab_panel("social").classes("q-pa-none h-full"):
+                        from shadow_loom_ui.components.social_tab import (
+                            build_social_tab,
+                        )
+                        build_social_tab(state)
 
                     with ui.tab_panel("affective").classes("q-pa-none h-full"):
                         from shadow_loom_ui.components.affective_tab import (

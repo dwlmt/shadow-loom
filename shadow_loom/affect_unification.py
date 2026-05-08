@@ -556,7 +556,19 @@ def compute_suspense_unified(
         tau_fabula = _auto_tau_fabula(bs.world)
     total = 0.0
     for prop in bs.world.propositions:
-        if prop.kind != "outcome":
+        # Originally restricted to ``kind == "outcome"`` (Brewer-
+        # Lichtenstein open questions). In practice the auto-
+        # synthesiser only tags ``event_type == "choice"`` events
+        # as outcomes, leaving the bulk of dramatically uncertain
+        # propositions (event_occurs, trait_holds, identity_is)
+        # off the ledger and crushing the score on most worlds.
+        # Treat any *uncommitted* proposition the audience is
+        # uncertain about as an open outcome — the entropy term
+        # naturally collapses to zero for propositions whose
+        # audience confidence has already saturated, so this
+        # widening costs nothing on already-resolved props but
+        # rescues every unrevealed event/trait/identity beat.
+        if prop.kind not in ("outcome", "event_occurs", "trait_holds", "identity_is"):
             continue
         # Skip if already committed
         if any(t <= fabula_t for t in prop.truth_at_fabula):

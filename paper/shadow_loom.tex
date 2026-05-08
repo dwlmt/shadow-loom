@@ -1547,6 +1547,174 @@ misinterpretation: cumulative surprise is a state quantity
 local surprise is its temporal derivative (``which revelation
 moments most shift the reader's beliefs'').
 
+\paragraph{Propositional belief-state affect (\texttt{affect\_unification.py}).}
+The four scorers above operate on \emph{trait} and \emph{event}
+mass --- graph geometry, calibrated to behave well as a
+directive-assembly loss. Alongside them, the post-2026 ingestion
+pipeline lays down a typed \texttt{Proposition} registry (with
+\texttt{audience\_default\_prior} $\in [0, 1]$,
+\texttt{stakes} $\in [0, 1]$, time-indexed
+\texttt{truth\_at\_fabula}, and a sparse \texttt{state\_timeline})
+and per-entity \texttt{Concern} rows (polarity desire/fear,
+salience, activation window, counter-concern pairs). On top of
+those, \texttt{shadow\_loom/affect\_unification.py} exposes a
+second, \emph{propositional / Bayesian} scoring layer that
+operates directly on belief revision over named claims rather
+than on graph geometry. Letting $p_{\mathrm{aud}}(P, t_f)$ denote
+the audience belief on proposition $P$ at fabula time $t_f$
+(reconstructed from a synthesised \texttt{ENT\_AUDIENCE} entity's
+belief replay, falling back to $P$'s
+\texttt{audience\_default\_prior} when no belief exists) and
+$p_c(P, t_f)$ the analogous belief of focal character $c$:
+\begin{align}
+\label{eq:susp-prop}
+\mathrm{Susp}^{\mathrm{prop}}(t_f) &= \!\!\!\sum_{P \in \mathrm{open\,outcomes}}\!\!\! H\!\big(p_{\mathrm{aud}}(P, t_f)\big) \cdot \mathrm{stakes}(P, t_f) \cdot e^{-\Delta t_f / \tau}, \\
+\label{eq:sur-prop}
+\mathrm{Sur}^{\mathrm{prop}}(t_f \,\|\, t_f') &= \sum_P D_{\mathrm{KL}}\!\big(p_{\mathrm{aud}}(P, t_f) \,\|\, p_{\mathrm{aud}}(P, t_f')\big) \cdot \mathrm{stakes}(P, t_f), \\
+\label{eq:iro-prop}
+\mathrm{Iro}^{\mathrm{prop}}(c, t_f) &= \sum_P D_{\mathrm{KL}}\!\big(p_{\mathrm{aud}}(P, t_f) \,\|\, p_c(P, t_f)\big) \cdot \mathrm{stakes}(P, t_f), \\
+\label{eq:mys-prop}
+\mathrm{Mys}^{\mathrm{prop}}(t_f) &= \!\!\!\sum_{e \in \mathrm{known\,effects}}\!\!\! H\!\big(\mathrm{softmax}_a \,\mathrm{path}(a, e)\big),
+\end{align}
+where $H$ is binary Shannon entropy, the suspense sum runs over
+propositions with \texttt{kind=\textquotesingle outcome\textquotesingle}
+whose \texttt{truth\_at\_fabula} has not yet committed, the kernel
+$e^{-\Delta t_f/\tau}$ is the Comisky--Bryant imminence factor on the
+fabula axis with $\tau$ defaulting to the world's median inter-event
+fabula gap, the surprise form is \citeauthor{ittibaldi2009surprise}'s
+definition lifted to the proposition layer (and formally equivalent
+to \citeauthor{schmidhuber1995rdia}'s belief-state KL), and the
+mystery form is \citeauthor{carroll2007closure}'s erotetic mystery:
+softmax-normalised candidate-cause path strengths in the
+proposition graph induced by
+\texttt{EventNode.resolves\_proposition\_ids} and
+\texttt{asserts}/\texttt{denies\_proposition\_id}, summed over
+effect propositions whose audience confidence already exceeds the
+known-effect threshold (default $0.7$). The trait layer (above)
+and the propositional layer coexist: the directive-assembly
+optimiser consumes the trait scorers because their graph-geometry
+loss is defined for every world; the propositional layer is what
+surfaces in the affective dashboard for any consumer asking the
+Bayesian-narratology question \emph{``how surprised should the
+reader have been by this beat, given the stated audience prior on
+this proposition?''}, which is undefined for worlds whose
+ingestion never produced a Phase A3 proposition catalogue.
+Valence-decomposed variants are also exposed:
+\texttt{compute\_surprise\_breakdown} returns a Tan/Ortony
+pleasant/unpleasant split per focal entity (using the entity's
+\texttt{Concern} polarity to decide whether a positive belief
+shift on a desired proposition is pleasant surprise vs.\
+pleasant relief), and \texttt{compute\_irony\_breakdown} returns
+Sternberg's three irony modes (suspense-irony, curiosity-irony,
+surprise-irony).
+
+\paragraph{Theory-driven refinements (May 2026).}
+A re-reading of the primary sources against corpus output
+identified five gaps closed by small, interpretable factors on
+top of the scorers above; each is anchored to a specific
+literature claim rather than a calibration heuristic.
+
+\emph{(i) Audience-concern weighting on suspense and dramatic
+irony \citep{tan1996emotion}.} Brewer--Lichtenstein establishes
+\emph{whether} a future outcome is suspenseful (outcome
+ambiguity); Tan's \emph{F-emotions} supply \emph{which} outcomes
+the audience cares about. Without a concern gate, two non-focal
+NPCs arguing weighted as much as the protagonist on trial. We
+introduce a per-event multiplier
+\begin{equation}
+\omega_{\mathrm{con}}(e) = 0.2 + 0.8 \cdot \frac{S_e}{1 + S_e},
+\qquad
+S_e = \!\!\!\!\sum_{c \in C_{\mathrm{aud}}: \mathrm{ref}(c) \cap \mathrm{part}(e) \neq \emptyset}\!\!\!\!\! s_c,
+\end{equation}
+where $C_{\mathrm{aud}}$ is the audience's concern set,
+$\mathrm{ref}(c)$ the referent set of the proposition behind
+concern $c$, $\mathrm{part}(e)$ the actor/target set of $e$, and
+$s_c$ the concern salience. The 0.2 floor avoids
+zero-weighting orphan events; the saturation maps a single
+high-salience concern to the ceiling. $\omega_{\mathrm{con}}$
+multiplies $w_e$ in both Eq.~\ref{eq:irony} (gap mass) and the
+EFK / classic suspense ledgers (Eq.~\ref{eq:suspense}), making
+both surface and gap forms of structural affect uniformly
+F-emotion gated.
+
+\emph{(ii) Carroll erotetic recency on mystery
+\citep{carroll1990philosophy}.} Carroll's erotetic narrative
+theory holds that the mystery salient at any reader position
+is the set of \emph{live} questions (those raised by recent
+surface events). The curiosity-proximity decay
+$\rho_e = \exp(-(t_s - s(e))/\tau_{\mathrm{cur}})$ in
+Eq.~\ref{eq:mystery} already implements this directly; the
+May-2026 audit confirmed the alignment and re-anchored the
+docstring to Carroll's primary claim rather than the previous
+Iser citation alone.
+
+\emph{(iii) False-lead mystery \citep{sayers1929omnibus,
+knox1929decalogue}.} Detective-fiction theory (Sayers' \emph{Omnibus
+of Crime} introduction; Knox's \emph{Decalogue}) frames mystery
+intensity as tracking not only the number of unrevealed causes
+but the number of \emph{plausible-but-wrong} hypotheses the
+reader is actively entertaining. Red-herring-rich worlds
+(Christie, \emph{Gone Girl}) read as more mysterious than worlds
+with the same hidden-ancestor count but no plausible alternates.
+Approximating the live-hypothesis count as
+\begin{equation}
+n_{\mathrm{fl}}(t_s) = \big|\{ P \in \mathrm{open} : 0.3 \le p_{\mathrm{aud}}(P, t_f(t_s)) \le 0.7 \}\big|,
+\end{equation}
+the gauge of Eq.~\ref{eq:mystery} is blended with a saturating
+false-lead term:
+\begin{equation}
+\mathrm{Mys}^{*} = 0.75 \cdot \mathrm{Mys} + 0.25 \cdot \frac{n_{\mathrm{fl}}}{n_{\mathrm{fl}} + 4}.
+\end{equation}
+
+\emph{(iv) Correlation-aware surprise aggregator
+\citep{friston2010freeenergy}.} Friston's free-energy /
+predictive-coding framework treats surprise as the
+precision-weighted prediction error on a single information
+unit. The naive aggregator double-counts when simultaneously-
+revealed propositions are causally connected --- the audience
+perceives the joint reveal as a single update, not several. We
+deflate each per-step KL contribution by
+\begin{equation}
+w_P = \frac{1}{1 + \kappa \cdot n_{\mathrm{kin}}(P)}, \qquad \kappa = 0.5,
+\end{equation}
+where $n_{\mathrm{kin}}(P)$ counts $P$'s causal-graph neighbours
+that \emph{also} moved this step. One co-moving kin halves the
+contribution, three quarters it. Applied inside the local form
+of $\mathrm{Sur}_{\mathrm{KL}}$ where joint-reveal double-counting
+is the dominant systematic bias.
+
+\emph{(v) Composite narrative tension
+\citep{brewer1982stories,sternberg1978expositional,vorderer1996suspense}.}
+The four scorers measure orthogonal facets of structural affect,
+but readers experience a single felt \emph{tension}, the quantity
+Brewer \& Lichtenstein originally framed as a \textbf{triad}
+(suspense $+$ curiosity $+$ surprise). Sternberg frames the same
+construct as the \emph{disequilibrium} between what the reader
+knows, suspects, and is owed; \citet{vorderer1996suspense} as
+the running integral of moment-to-moment uncertainty. We
+aggregate
+\begin{equation}
+\label{eq:tension}
+T = 0.40 \cdot \mathrm{Susp} + 0.25 \cdot \mathrm{Mys}^{*} + 0.20 \cdot \mathrm{Iro} + 0.10 \cdot \dot{\mathrm{Sur}} + 0.05 \cdot D_{\mathrm{unp}},
+\end{equation}
+with the surprise term as its first derivative
+$\dot{\mathrm{Sur}}$ (the local form: the disequilibrium kick),
+and
+$D_{\mathrm{unp}} = n_{\mathrm{unp}} / (n_{\mathrm{unp}} + 4)$
+counting foreshadowing arcs whose payoff event has not yet been
+revealed at the anchor (Chekhov's-gun overhang). The weight
+vector is calibrated against the \texttt{example\_worlds/}
+corpus so canonical mid-arc tension peaks land in the
+$[0.5, 0.7]$ band; on \emph{Macbeth} at the Duncan-murder
+anchor $T \approx 0.49$, rising to $0.51$ at the Banquo banquet
+and decaying toward $0.28$ at the denouement. Implemented as
+\texttt{DirectiveAssembler.compute\_tension\_score} and surfaced
+as the \texttt{narrative\_tension} series in the affective-curve
+plot, gauge strip, and \texttt{compute\_affective\_score}
+dispatch table; also exposed via the MCP server's
+\texttt{target\_effect} whitelist and the
+\texttt{DirectiveQuery} schema.
+
 \subsection{Generation}
 \label{app:generation}
 

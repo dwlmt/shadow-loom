@@ -380,6 +380,38 @@ def _inspect_entity(ws: "WorldStateV1", eid: str) -> None:
                 f"(conf={b.confidence:.2f})"
             ).classes("text-sm text-slate-600 px-2")
 
+    # Concerns: per-entity desires/fears anchored to propositions.
+    if ent.concerns:
+        ui.label("Concerns").classes(
+            "text-sm font-semibold text-slate-700 mt-2"
+        )
+        prop_lookup = {
+            p.proposition_id: p for p in (ws.propositions or [])
+        }
+        for c in ent.concerns[:8]:
+            prop = prop_lookup.get(c.proposition_id)
+            desc = prop.description if prop else c.proposition_id
+            icon = "\u2665" if c.polarity == "desire" else "\u26a0"
+            ui.label(
+                f"{icon} {c.polarity}s: {desc} "
+                f"(sal={c.salience:.2f})"
+            ).classes("text-sm text-slate-600 px-2")
+
+    # Propositions referencing this entity OR believed about by it.
+    related_props = [
+        p for p in (ws.propositions or [])
+        if eid in (p.referent_ids or [])
+        or any(b.proposition_id == p.proposition_id for b in ent.beliefs)
+    ]
+    if related_props:
+        ui.label("Propositions").classes(
+            "text-sm font-semibold text-slate-700 mt-2"
+        )
+        for p in related_props[:8]:
+            ui.label(f"\u2022 [{p.kind}] {p.description}").classes(
+                "text-sm text-slate-600 px-2"
+            )
+
     if ent.state_timeline:
         ui.label("State Changes").classes(
             "text-sm font-semibold text-slate-700 mt-2"

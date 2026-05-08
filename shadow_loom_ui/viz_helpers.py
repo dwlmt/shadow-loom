@@ -1485,6 +1485,158 @@ def ws_to_entity_belief_rows(
     return rows
 
 
+def ws_to_belief_rows(
+    ws: WorldStateV1,
+    *,
+    fabula_t: int | None = None,
+) -> list[dict]:
+    """All beliefs across all entities as flat table rows.
+
+    Each row carries the believer + target metadata used by the Social
+    tab's raw-data table. ``fabula_t`` filters out beliefs whose
+    ``established_at_fabula`` is later than the cursor.
+    """
+    rows: list[dict] = []
+    for ent in ws.entities.values():
+        for b in ent.beliefs:
+            est = int(getattr(b, "established_at_fabula", 0) or 0)
+            if fabula_t is not None and est > fabula_t:
+                continue
+            target = ws.entities.get(b.target_id)
+            if target is not None:
+                target_name = target.name
+                target_kind = "entity"
+            elif b.target_id in ws.objects:
+                target_name = ws.objects[b.target_id].name
+                target_kind = "object"
+            elif b.target_id in ws.locations:
+                target_name = ws.locations[b.target_id].name
+                target_kind = "location"
+            else:
+                target_name = b.target_id
+                target_kind = "—"
+            via_chn_id = getattr(b, "acquired_via_channel_id", None)
+            via_chn_name = (
+                ws.channels[via_chn_id].name
+                if via_chn_id and via_chn_id in ws.channels
+                else None
+            )
+            rows.append({
+                "believer": ent.name,
+                "believer_id": ent.id,
+                "target": target_name,
+                "target_id": b.target_id,
+                "target_kind": target_kind,
+                "perceived_state": b.perceived_state,
+                "confidence": round(float(b.confidence), 2),
+                "inertia": round(float(b.inertia), 2),
+                "established_at_fabula": est,
+                "acquired_via_event_id": getattr(
+                    b, "acquired_via_event_id", None
+                ),
+                "acquired_via_channel": via_chn_name,
+                "proposition_id": getattr(b, "proposition_id", None),
+            })
+    rows.sort(key=lambda r: (-r["confidence"], r["believer"], r["target"]))
+    return rows
+
+
+def ws_to_knowledge_asymmetry_matrix(
+    ws: WorldStateV1,
+    *,
+    fabula_t: int | None = None,
+) -> tuple[list[str], list[str], list[list], list[dict]]:
+    """Character × proposition asymmetry matrix.
+
+    Returns ``(entity_names, prop_labels, cells, meta)`` where each
+    cell is ``[col_idx, row_idx, value]`` with value in ``[-1, +1]``:
+
+      * ``+conf``   character believes (any state) and their belief is
+                    consistent with the proposition being **true** at
+                    the cursor.
+      * ``-conf``   character believes but truth is **false** at the
+                    cursor (dramatic-irony / mistaken belief).
+      *  ``0``      no belief held (curiosity gap; rendered blank).
+
+    Meta includes the audience prior (so callers can mark a "what the
+    audience thinks" row at the top) and the truth value at cursor.
+
+    The truth-stance heuristic assumes ``Belief.perceived_state`` is
+    an *assertion* of the proposition; we compare it to
+    ``truth_at_fabula`` ≤ cursor. This gives Sternberg's gaps /
+    suspense / surprise triad as a single visual sweep.
+    """
+    from shadow_loom.models import reconstruct_proposition_at
+
+    props = list(ws.propositions or [])
+    ents = list(ws.entities.values())
+    if not props or not ents:
+        return [], [], [], []
+
+    # Resolve truth + meta per prop.
+    prop_meta: list[dict] = []
+    truth_by_pid: dict[str, bool | None] = {}
+    prior_by_pid: dict[str, float] = {}
+    for prop in props:
+        if fabula_t is not None:
+            snap = reconstruct_proposition_at(prop, int(fabula_t))
+            truth = snap.get("truth_at")
+            prior = float(snap.get(
+                "audience_default_prior",
+                getattr(prop, "audience_default_prior", 0.5),
+            ))
+        else:
+            truth = None
+            for t in sorted((prop.truth_at_fabula or {}).keys()):
+                truth = prop.truth_at_fabula[t]
+            prior = float(getattr(prop, "audience_default_prior", 0.5))
+        truth_by_pid[prop.proposition_id] = truth
+        prior_by_pid[prop.proposition_id] = prior
+        prop_meta.append({
+            "id": prop.proposition_id,
+            "label": (prop.description or prop.proposition_id)[:32],
+            "truth_at": truth,
+            "audience_prior": prior,
+            "stakes": float(getattr(prop, "stakes", 0.0)),
+        })
+
+    # Entity rows (sort by name for stability).
+    ent_sorted = sorted(ents, key=lambda e: (e.name or e.id))
+    ent_names = [e.name or e.id for e in ent_sorted]
+    prop_labels = [m["label"] for m in prop_meta]
+
+    cells: list[list] = []
+    for r, ent in enumerate(ent_sorted):
+        # Index this entity's beliefs by proposition_id.
+        bel_by_pid: dict[str, float] = {}
+        for b in ent.beliefs:
+            pid = getattr(b, "proposition_id", None)
+            if not pid:
+                continue
+            if fabula_t is not None and getattr(
+                b, "established_at_fabula", 0
+            ) > fabula_t:
+                continue
+            bel_by_pid[pid] = max(
+                bel_by_pid.get(pid, 0.0), float(b.confidence)
+            )
+        for c, m in enumerate(prop_meta):
+            conf = bel_by_pid.get(m["id"])
+            truth = m["truth_at"]
+            if conf is None:
+                # blank cell — curiosity gap
+                continue
+            if truth is None:
+                value = 0.05  # belief held but truth unresolved
+            elif truth:
+                value = round(float(conf), 3)
+            else:
+                value = round(-float(conf), 3)
+            cells.append([c, r, value])
+
+    return ent_names, prop_labels, cells, prop_meta
+
+
 # ── Topology table rows (correct field names) ────────────────────
 
 def ws_to_causal_rows(ws: WorldStateV1) -> list[dict]:
@@ -2205,6 +2357,10 @@ def invalidate_snapshot_cache() -> None:
     # memory predictable when projects are swapped frequently.
     _AFFECT_SCORE_CACHE.clear()
     _AFFECT_TIMESERIES_CACHE.clear()
+    try:
+        _CHAR_EMOTION_CACHE.clear()
+    except NameError:
+        pass
 
 
 def fabula_time_bounds(ws: WorldStateV1) -> tuple[int, int]:
@@ -2261,6 +2417,54 @@ def syuzhet_time_bounds(ws: WorldStateV1) -> tuple[int, int]:
         return (0, 0)
     idxs = [evt.syuzhet_index for evt in ws.events]
     return (min(idxs), max(idxs))
+
+
+# ── Time-axis abstraction (fabula vs syuzhet) ─────────────────────
+#
+# The UI exposes a single "time axis" toggle that flips every chart
+# between Genette's *order of the story* (fabula) and *order of the
+# telling* (syuzhet). Charts shouldn't read the cursor directly;
+# they should ask for ``event_axis_value(evt, axis)`` and
+# ``axis_bounds(ws, axis)`` so the same code drives both modes.
+
+def event_axis_value(evt, axis: str = "fabula") -> int:
+    """Return ``evt.fabula_time`` or ``evt.syuzhet_index``.
+
+    Defensively coerces to ``int`` and falls back to fabula if an
+    unknown axis is supplied.
+    """
+    if (axis or "fabula").lower() == "syuzhet":
+        return int(getattr(evt, "syuzhet_index", 0) or 0)
+    return int(getattr(evt, "fabula_time", 0) or 0)
+
+
+def axis_bounds(ws: WorldStateV1, axis: str = "fabula") -> tuple[int, int]:
+    """Min/max of the chosen time axis across ``ws.events``."""
+    if (axis or "fabula").lower() == "syuzhet":
+        return syuzhet_time_bounds(ws)
+    return fabula_time_bounds(ws)
+
+
+def resolve_cursor(
+    ws: WorldStateV1, axis: str, value: int | None,
+) -> int | None:
+    """Resolve a cursor value on ``axis`` to an effective fabula time.
+
+    * fabula axis: returns ``value`` unchanged.
+    * syuzhet axis: returns the *latest* ``fabula_time`` among events
+      whose ``syuzhet_index`` is \u2264 ``value``. This is the "what
+      does the audience know by the time syuzhet=k is told?" rule
+      that makes anachrony / dramatic-irony analysis legible.
+    """
+    if value is None:
+        return None
+    if (axis or "fabula").lower() != "syuzhet":
+        return int(value)
+    revealed = [
+        int(evt.fabula_time) for evt in (ws.events or [])
+        if int(getattr(evt, "syuzhet_index", 0) or 0) <= int(value)
+    ]
+    return max(revealed) if revealed else 0
 
 
 def snapshot_world_at_syuzhet(ws: WorldStateV1, s: int) -> WorldStateV1:
@@ -2382,28 +2586,41 @@ def relationship_heatmap_frames(
     *,
     metric: str = "affinity",
     num_frames: int = 12,
+    axis: str = "fabula",
 ) -> dict:
     """Time-sliced entity×entity matrices for an animated heatmap.
 
-    Builds one matrix per fabula tick (capped at ``num_frames``,
+    Builds one matrix per cursor tick (capped at ``num_frames``,
     distributed evenly between the world's earliest and latest
-    ``fabula_time``) using
+    cursor on the chosen ``axis``) using
     :func:`reconstruct_relationship_with_causal` so each frame
     reflects authored snapshots **and** ``mutation_social`` causal
     edges accumulated through that tick. Two-cell symmetry mirrors
     :func:`ws_to_heatmap_data` so both heatmaps render the same way.
 
-    Returns ``{"names": [...], "times": [...], "frames": [[[x,y,v]...], ...]}``
+    When ``axis='syuzhet'`` the slider scrubs reading-order indices
+    and each sample is resolved to the latest revealed fabula tick
+    via :func:`resolve_cursor`, so the heatmap shows what dyad state
+    the audience has been told by then. ``times`` carries the cursor
+    values along the chosen axis (used for tick labels), and
+    ``fabula_times`` carries the resolved fabula ticks each frame
+    was reconstructed at.
+
+    Returns ``{"names": [...], "times": [...], "fabula_times": [...],
+    "frames": [[[x,y,v]...], ...], "axis": "fabula"|"syuzhet"}``
     where ``frames[i]`` is the matrix at ``times[i]``. Returns empty
     lists if the world has no entities or no events.
     """
     ent_ids = list(ws.entities.keys())
     if not ent_ids:
-        return {"names": [], "times": [], "frames": []}
+        return {
+            "names": [], "times": [], "fabula_times": [],
+            "frames": [], "axis": axis,
+        }
     ent_names = [ws.entities[eid].name for eid in ent_ids]
     idx = {eid: i for i, eid in enumerate(ent_ids)}
 
-    tmin, tmax = fabula_time_bounds(ws)
+    tmin, tmax = axis_bounds(ws, axis)
     if tmax <= tmin:
         # No span — emit a single frame so the chart still renders.
         times = [tmax]
@@ -2415,12 +2632,17 @@ def relationship_heatmap_frames(
         seen: set[int] = set()
         times = [t for t in times if not (t in seen or seen.add(t))]
 
+    # Resolve each cursor sample to a fabula tick. For the fabula
+    # axis this is the identity; for syuzhet we walk back to the
+    # latest revealed fabula time via resolve_cursor.
+    fabula_times = [resolve_cursor(ws, axis, t) or 0 for t in times]
+
     # Walk every dyad once per frame using the causal-aware
     # reconstructor. We deliberately iterate ``social_topology`` (not
     # the cartesian product of entities) — characters with no edge
     # have no signal to display and would clutter the matrix.
     frames: list[list[list]] = []
-    for t in times:
+    for ft in fabula_times:
         frame_data: list[list] = []
         seen_pairs: set[tuple[str, str]] = set()
         for rel in ws.social_topology:
@@ -2433,7 +2655,7 @@ def relationship_heatmap_frames(
                 continue
             seen_pairs.add(pair_key)
             recon = reconstruct_relationship_with_causal(
-                ws, rel.source_entity_id, rel.target_entity_id, t
+                ws, rel.source_entity_id, rel.target_entity_id, ft
             )
             if recon is None:
                 continue
@@ -2446,7 +2668,13 @@ def relationship_heatmap_frames(
             frame_data.append([ti, si, v])
         frames.append(frame_data)
 
-    return {"names": ent_names, "times": times, "frames": frames}
+    return {
+        "names": ent_names,
+        "times": times,
+        "fabula_times": fabula_times,
+        "frames": frames,
+        "axis": axis,
+    }
 
 
 def list_relationship_pairs(ws: WorldStateV1) -> list[tuple[str, str, str, str]]:
@@ -2753,10 +2981,37 @@ def _engine_structural_scores(
         ("surprise", lambda eids, sa: assembler.compute_surprise_score(
             eids, sa, local=surprise_local,
         )),
+        ("narrative_tension", lambda eids, sa: assembler.compute_tension_score(eids, sa)),
     )
+    # Weber-Fechner perceptual saturation for the engine-grade
+    # structural affects. The raw scorers are mathematically
+    # well-behaved in [0, 1] but their *typical* corpus peak sits
+    # in the 0.1–0.3 band — readers expect a needle near the right
+    # of the gauge to mean "very tense", not "0.15 out of 1.0".
+    # ``1 - exp(-τ · s)`` maps the perceptually-meaningful raw
+    # band onto the visible gauge range while preserving monotone
+    # ordering and never exceeding 1.0. Per-metric τ tuned so a
+    # canonical mid-arc peak lands near 0.6 of the gauge:
+    #   suspense   τ=4 → 0.15 raw → 0.45 gauge
+    #   surprise   τ=3 → 0.27 raw → 0.55 gauge (already blended)
+    #   irony      τ=3 → matches surprise band
+    #   mystery    τ=2 → already a fraction-of-events ratio
+    _PERCEPTUAL_TAU = {
+        "suspense": 4.0,
+        "surprise": 3.0,
+        "dramatic_irony": 3.0,
+        "mystery": 2.0,
+        "narrative_tension": 2.5,
+    }
+    import math as _math
     for name, fn in metric_calls:
         try:
-            out[name] = float(fn(entity_ids, syuzhet_anchor))
+            raw = float(fn(entity_ids, syuzhet_anchor))
+            tau = _PERCEPTUAL_TAU.get(name)
+            if tau and 0.0 <= raw <= 1.0:
+                out[name] = 1.0 - _math.exp(-tau * raw)
+            else:
+                out[name] = raw
         except Exception:
             logger.debug("affective metric %s failed", name, exc_info=True)
     return out
@@ -2982,6 +3237,139 @@ def _compute_affective_scores_uncached(
         )
         scores.update(engine)
     return scores
+
+
+_CHAR_EMOTION_CACHE: "dict[tuple, dict[str, dict[str, float]]]" = {}
+
+
+def compute_character_emotion_grid(
+    ws: WorldStateV1,
+    *,
+    entity_ids: list[str] | None = None,
+    syuzhet_anchor: int | None = None,
+) -> dict[str, dict[str, float]]:
+    """OCC character-felt emotion appraisals per (entity, emotion).
+
+    Runs the six appraisal computations from
+    :mod:`shadow_loom.affect_unification` (fear, joy, regret, grief,
+    rage, love) for each focal entity in ``entity_ids`` and returns a
+    nested mapping ``{entity_id: {emotion: scalar}}`` where each
+    scalar is a single salience number in roughly ``[0, 1]`` chosen
+    as the headline field of the corresponding profile (e.g.
+    ``object_fear_score`` for fear, ``own_joy_score`` for joy).
+
+    Cached on ``(id(ws), revision, entity_ids, syuzhet_anchor)`` so
+    rapid cursor scrubbing collapses to a single recompute per unique
+    snapshot.
+    """
+    eids = tuple(entity_ids) if entity_ids else ()
+    key = (id(ws), _SNAPSHOT_REVISION, eids, syuzhet_anchor)
+    cached = _CHAR_EMOTION_CACHE.get(key)
+    if cached is not None:
+        return {e: dict(d) for e, d in cached.items()}
+
+    try:
+        from shadow_loom.affect_unification import (
+            AUDIENCE_ID,
+            BeliefState,
+            backfill_character_belief_propositions,
+            compute_fear_appraisal,
+            compute_grief_appraisal,
+            compute_joy_appraisal,
+            compute_love_appraisal,
+            compute_rage_appraisal,
+            compute_regret_appraisal,
+            synthesise_audience_entity,
+            synthesise_propositions,
+        )
+    except Exception:
+        return {}
+
+    if not entity_ids or not ws.events:
+        return {}
+
+    # Make sure the proposition / audience plumbing the appraisal
+    # functions depend on exists. ``synthesise_*`` are idempotent.
+    if not ws.propositions:
+        try:
+            synthesise_propositions(ws)
+            backfill_character_belief_propositions(ws)
+        except Exception:
+            return {}
+    if AUDIENCE_ID not in ws.entities:
+        try:
+            synthesise_audience_entity(ws)
+        except Exception:
+            return {}
+
+    bs = BeliefState(world=ws)
+
+    # Resolve fabula-time anchor: prefer the latest revealed event at
+    # the syuzhet cursor; fall back to the global max so all
+    # appraisals see a fully-played world.
+    if syuzhet_anchor is not None:
+        revealed_ft = [
+            e.fabula_time for e in ws.events
+            if e.syuzhet_index is not None
+            and e.syuzhet_index <= syuzhet_anchor
+        ]
+        ft_now = max(revealed_ft) if revealed_ft else None
+    else:
+        ft_now = max(
+            (e.fabula_time for e in ws.events), default=None,
+        )
+    if ft_now is None:
+        return {}
+
+    grid: dict[str, dict[str, float]] = {}
+    for eid in entity_ids:
+        if eid == AUDIENCE_ID or eid not in ws.entities:
+            continue
+        row: dict[str, float] = {}
+        try:
+            ap = compute_fear_appraisal(bs, eid, ft_now)
+            row["fear"] = float(ap.object_fear_score or 0.0)
+        except Exception:
+            row["fear"] = 0.0
+        try:
+            ap = compute_joy_appraisal(bs, eid, ft_now)
+            row["joy"] = float(ap.own_joy_score or 0.0)
+        except Exception:
+            row["joy"] = 0.0
+        try:
+            ap = compute_regret_appraisal(bs, eid, ft_now)
+            row["regret"] = float(ap.agentive_regret_score or 0.0)
+        except Exception:
+            row["regret"] = 0.0
+        try:
+            ap = compute_grief_appraisal(bs, eid, ft_now)
+            row["grief"] = float(ap.coupling_strength or 0.0)
+        except Exception:
+            row["grief"] = 0.0
+        try:
+            ap = compute_rage_appraisal(bs, eid, ft_now)
+            row["rage"] = float(ap.blocked_concern_score or 0.0)
+        except Exception:
+            row["rage"] = 0.0
+        try:
+            ap = compute_love_appraisal(bs, eid, ft_now)
+            # Sternberg triangular: take the strongest of the three
+            # legs as the headline so a partner-less character with
+            # zero scores stays at zero, and a full triad reads as
+            # one strong love signal rather than three weak ones.
+            row["love"] = float(max(
+                ap.intimacy_score or 0.0,
+                ap.passion_score or 0.0,
+                ap.commitment_score or 0.0,
+            ))
+        except Exception:
+            row["love"] = 0.0
+        grid[eid] = row
+
+    if len(_CHAR_EMOTION_CACHE) >= _AFFECT_CACHE_MAX:
+        _CHAR_EMOTION_CACHE.pop(next(iter(_CHAR_EMOTION_CACHE)))
+    _CHAR_EMOTION_CACHE[key] = {e: dict(d) for e, d in grid.items()}
+    return grid
 
 
 def affective_timeseries(
@@ -4241,3 +4629,634 @@ _PHYSICS_TRAJECTORY_CACHE_MAX = 16
 def invalidate_physics_trajectory_cache() -> None:
     """Drop all cached physics trajectories."""
     _PHYSICS_TRAJECTORY_CACHE.clear()
+
+
+# =====================================================================
+# Social-layer helpers (Beliefs / Concerns / Propositions / Relationships)
+# =====================================================================
+
+def list_concern_holders(ws: WorldStateV1) -> list[tuple[str, str, int]]:
+    """Return ``(entity_id, name, concern_count)`` for entities with concerns.
+
+    Sorted by concern_count desc so the most loaded characters come first.
+    """
+    rows: list[tuple[str, str, int]] = []
+    for eid, ent in ws.entities.items():
+        if ent.concerns:
+            rows.append((eid, ent.name, len(ent.concerns)))
+    rows.sort(key=lambda r: (-r[2], r[1]))
+    return rows
+
+
+def ws_to_proposition_rows(
+    ws: WorldStateV1,
+    fabula_t: int | None = None,
+) -> list[dict]:
+    """Per-proposition rows, optionally replayed at ``fabula_t``.
+
+    When ``fabula_t`` is None the row carries the proposition's
+    initial framing fields. Otherwise
+    :func:`shadow_loom.models.reconstruct_proposition_at` is used so
+    ``stakes`` / ``audience_default_prior`` / ``description`` /
+    ``truth_at`` reflect the requested moment.
+    """
+    from shadow_loom.models import reconstruct_proposition_at
+
+    rows: list[dict] = []
+    for prop in (ws.propositions or []):
+        if fabula_t is not None:
+            snap = reconstruct_proposition_at(prop, fabula_t)
+            stakes = snap["stakes"]
+            prior = snap["audience_default_prior"]
+            desc = snap["description"]
+            truth = snap["truth_at"]
+        else:
+            stakes = prop.stakes
+            prior = prop.audience_default_prior
+            desc = prop.description
+            truth = None
+            for t in sorted(prop.truth_at_fabula.keys()):
+                truth = prop.truth_at_fabula[t]
+        # How many entities hold a concern about this proposition?
+        concern_count = sum(
+            1 for ent in ws.entities.values()
+            for c in ent.concerns if c.proposition_id == prop.proposition_id
+        )
+        # How many beliefs reference the proposition?
+        belief_count = sum(
+            1 for ent in ws.entities.values()
+            for b in ent.beliefs
+            if getattr(b, "proposition_id", None) == prop.proposition_id
+        )
+        rows.append({
+            "id": prop.proposition_id,
+            "kind": prop.kind,
+            "description": desc,
+            "referent_ids": ", ".join(prop.referent_ids or []),
+            "stakes": round(float(stakes), 3),
+            "audience_default_prior": round(float(prior), 3),
+            "truth_at": (
+                "true" if truth is True
+                else "false" if truth is False
+                else "—"
+            ),
+            "concerns_referencing": concern_count,
+            "beliefs_referencing": belief_count,
+            "world_id": prop.world_id,
+        })
+    return rows
+
+
+def ws_to_concern_rows(
+    ws: WorldStateV1,
+    fabula_t: int | None = None,
+    *,
+    only_active: bool = False,
+) -> list[dict]:
+    """Per-(entity, concern) rows, optionally replayed at ``fabula_t``."""
+    from shadow_loom.models import reconstruct_concern_at
+
+    rows: list[dict] = []
+    for ent in ws.entities.values():
+        for concern in ent.concerns:
+            if fabula_t is not None:
+                snap = reconstruct_concern_at(concern, fabula_t)
+                salience = snap["salience"]
+                polarity = snap["polarity"]
+                kind = snap.get("kind") or "—"
+                active = snap["active"]
+            else:
+                salience = concern.salience
+                polarity = concern.polarity
+                kind = concern.kind or "—"
+                active = True
+                if concern.activation_fabula_window:
+                    active = False  # unknown without a cursor
+            if only_active and not active:
+                continue
+            # Look up the proposition description for context.
+            prop = next(
+                (p for p in (ws.propositions or [])
+                 if p.proposition_id == concern.proposition_id),
+                None,
+            )
+            prop_desc = prop.description if prop else concern.proposition_id
+            rows.append({
+                "entity_id": ent.id,
+                "entity": ent.name,
+                "concern_id": concern.concern_id,
+                "proposition_id": concern.proposition_id,
+                "proposition_desc": prop_desc,
+                "polarity": polarity,
+                "salience": round(float(salience), 3),
+                "kind": kind,
+                "active": "✓" if active else "—",
+                "_active_bool": active,
+                "world_id": concern.world_id,
+            })
+    rows.sort(key=lambda r: (-r["salience"], r["entity"]))
+    return rows
+
+
+def ws_to_entity_concern_rows(
+    ws: WorldStateV1,
+    entity_id: str,
+    fabula_t: int | None = None,
+) -> list[dict]:
+    """Per-concern rows for one entity (for the per-character card)."""
+    from shadow_loom.models import reconstruct_concern_at
+
+    ent = ws.entities.get(entity_id)
+    if ent is None or not ent.concerns:
+        return []
+    rows: list[dict] = []
+    for concern in ent.concerns:
+        if fabula_t is not None:
+            snap = reconstruct_concern_at(concern, fabula_t)
+            salience = snap["salience"]
+            polarity = snap["polarity"]
+            kind = snap.get("kind") or None
+            active = snap["active"]
+        else:
+            salience = concern.salience
+            polarity = concern.polarity
+            kind = concern.kind
+            active = True
+        prop = next(
+            (p for p in (ws.propositions or [])
+             if p.proposition_id == concern.proposition_id),
+            None,
+        )
+        rows.append({
+            "concern_id": concern.concern_id,
+            "proposition_id": concern.proposition_id,
+            "proposition_desc": prop.description if prop else concern.proposition_id,
+            "polarity": polarity,
+            "salience": round(float(salience), 3),
+            "kind": kind,
+            "active": active,
+        })
+    rows.sort(key=lambda r: (-r["salience"], r["concern_id"]))
+    return rows
+
+
+def ws_to_social_layer_graph(
+    ws: WorldStateV1,
+    *,
+    include_relationships: bool = True,
+    include_beliefs: bool = True,
+    include_concerns: bool = True,
+    include_propositions: bool = True,
+    fabula_t: int | None = None,
+    ego_id: str | None = None,
+    ego_max_hops: int = 1,
+    pov_id: str | None = None,
+    intermental_ids: list[str] | None = None,
+    intermental_threshold: float = 0.4,
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """Combined social-layer graph: entities, propositions, concerns,
+    beliefs (as edges), relationships (as edges).
+
+    Node categories:
+      0 = Entity (character)
+      1 = Proposition
+      2 = Concern (one per ``(entity, concern_id)`` pair)
+
+    Edges:
+      • Entity → Entity   (relationship; coloured by affinity)
+      • Entity → Concern  (holds; weighted by salience, coloured by polarity)
+      • Concern → Proposition (about)
+      • Entity → Proposition  (belief; coloured by confidence)
+
+    All series respect ``fabula_t``: relationships are time-sliced via
+    ``last_updated_fabula <= t``; concerns honour their activation
+    window and replayed salience/polarity; beliefs honour
+    ``established_at_fabula <= t``.
+    """
+    from shadow_loom.models import reconstruct_concern_at
+
+    nodes: list[dict] = []
+    links: list[dict] = []
+    cats = [
+        {"name": "Character"},
+        {"name": "Proposition"},
+        {"name": "Concern"},
+    ]
+
+    # --- Entity nodes -------------------------------------------------
+    for eid, ent in ws.entities.items():
+        nodes.append({
+            "id": eid,
+            "name": ent.name,
+            "category": 0,
+            "symbol": "circle",
+            "symbolSize": 36,
+            "itemStyle": {"color": NODE_COLORS["Entity"]},
+            "tooltip": {"formatter": (
+                f"<b>{ent.name}</b><br/>Status: {ent.status}<br/>"
+                f"{len(ent.beliefs)} beliefs, {len(ent.concerns)} concerns"
+            )},
+            "_sl_node_type": "Entity",
+        })
+
+    # --- Proposition nodes -------------------------------------------
+    if include_propositions:
+        from shadow_loom.models import reconstruct_proposition_at
+        for prop in (ws.propositions or []):
+            stakes = prop.stakes
+            desc = prop.description
+            prior = float(getattr(prop, "audience_default_prior", 0.5))
+            if fabula_t is not None:
+                snap = reconstruct_proposition_at(prop, fabula_t)
+                stakes = snap["stakes"]
+                desc = snap["description"]
+                prior = float(snap.get("audience_default_prior", prior))
+            # Diamond, sized by stakes.
+            size = 18 + 22 * max(0.0, min(1.0, float(stakes)))
+            # Audience-prior ring colour (white → iris) so the user
+            # can read at a glance how surprising the proposition is
+            # for the implied audience.
+            ring = ("#dc2626" if prior < 0.34
+                    else "#f59e0b" if prior < 0.67
+                    else "#16a34a")
+            nodes.append({
+                "id": prop.proposition_id,
+                "name": desc[:40],
+                "category": 1,
+                "symbol": "diamond",
+                "symbolSize": size,
+                "itemStyle": {
+                    "color": "#8a5cf0",  # iris
+                    "borderColor": ring,
+                    "borderWidth": 2 + 3 * abs(prior - 0.5),
+                },
+                "tooltip": {"formatter": (
+                    f"<b>{desc}</b><br/>kind: {prop.kind}<br/>"
+                    f"stakes: {float(stakes):.2f}<br/>"
+                    f"audience prior: {prior:.2f}"
+                )},
+                "_sl_node_type": "Proposition",
+            })
+
+    # --- Concern nodes -----------------------------------------------
+    if include_concerns:
+        for ent in ws.entities.values():
+            for concern in ent.concerns:
+                if fabula_t is not None:
+                    snap = reconstruct_concern_at(concern, fabula_t)
+                    salience = snap["salience"]
+                    polarity = snap["polarity"]
+                    if not snap["active"]:
+                        continue  # skip inactive concerns at this t
+                else:
+                    salience = concern.salience
+                    polarity = concern.polarity
+                color = "#16a34a" if polarity == "desire" else "#dc2626"
+                cnid = f"{ent.id}::{concern.concern_id}"
+                size = 12 + 18 * max(0.0, min(1.0, float(salience)))
+                nodes.append({
+                    "id": cnid,
+                    "name": concern.kind or concern.concern_id,
+                    "category": 2,
+                    "symbol": ("triangle" if polarity == "desire"
+                               else "pin"),
+                    "symbolSize": size,
+                    "itemStyle": {"color": color},
+                    "tooltip": {"formatter": (
+                        f"<b>{ent.name}</b> "
+                        f"{'desires' if polarity == 'desire' else 'fears'}"
+                        f"<br/>salience: {float(salience):.2f}"
+                        f"<br/>kind: {concern.kind or '—'}"
+                    )},
+                    "_sl_node_type": "Concern",
+                })
+                # Entity → Concern edge (holds).
+                links.append({
+                    "source": ent.id,
+                    "target": cnid,
+                    "lineStyle": {
+                        "color": color,
+                        "width": max(1.0, float(salience) * 3.0),
+                        "type": "solid",
+                        "opacity": 0.6,
+                    },
+                })
+                # Concern → Proposition edge (about). Arrowed and
+                # coloured by polarity so the desire/fear vector is
+                # legible (Phelan instabilities).
+                if include_propositions and any(
+                    p.proposition_id == concern.proposition_id
+                    for p in (ws.propositions or [])
+                ):
+                    links.append({
+                        "source": cnid,
+                        "target": concern.proposition_id,
+                        "symbol": ["none", "arrow"],
+                        "symbolSize": [4, 8],
+                        "lineStyle": {
+                            "color": color,
+                            "width": max(1.0, float(salience) * 2.0),
+                            "type": "dashed",
+                            "opacity": 0.55,
+                        },
+                    })
+
+    # --- Belief edges (Entity → Proposition) -------------------------
+    if include_beliefs and include_propositions:
+        for ent in ws.entities.values():
+            for b in ent.beliefs:
+                pid = getattr(b, "proposition_id", None)
+                if not pid:
+                    continue
+                if fabula_t is not None and getattr(
+                    b, "established_at_fabula", 0
+                ) > fabula_t:
+                    continue
+                if not any(
+                    p.proposition_id == pid
+                    for p in (ws.propositions or [])
+                ):
+                    continue
+                conf = float(b.confidence)
+                # Confidence colour: grey → blue → green.
+                if conf < 0.34:
+                    bcolor = "#94a3b8"
+                elif conf < 0.67:
+                    bcolor = "#3A7BD5"
+                else:
+                    bcolor = "#6FBF3A"
+                links.append({
+                    "source": ent.id,
+                    "target": pid,
+                    "_sl_kind": "belief",
+                    "_sl_holder": ent.id,
+                    "_sl_pid": pid,
+                    "_sl_state": b.perceived_state,
+                    "_sl_conf": conf,
+                    "lineStyle": {
+                        "color": bcolor,
+                        "width": max(1.0, conf * 3.5),
+                        "type": "solid",
+                        "opacity": 0.7,
+                    },
+                    "tooltip": {"formatter": (
+                        f"{ent.name} believes "
+                        f"({conf:.2f}): {b.perceived_state}"
+                    )},
+                })
+
+    # --- Relationship edges (Entity ↔ Entity) ------------------------
+    if include_relationships:
+        for rel in ws.social_topology:
+            if fabula_t is not None and rel.last_updated_fabula > fabula_t:
+                continue
+            aff = float(rel.affinity)
+            color = (
+                "#16a34a" if aff > 0
+                else "#dc2626" if aff < 0
+                else "#94a3b8"
+            )
+            links.append({
+                "source": rel.source_entity_id,
+                "target": rel.target_entity_id,
+                "lineStyle": {
+                    "color": color,
+                    "width": max(1.0, abs(aff) * 4.0),
+                    "type": "solid",
+                    "opacity": 0.55,
+                    "curveness": 0.15,
+                },
+                "tooltip": {"formatter": (
+                    f"affinity={aff:+.2f}<br/>fear={float(rel.fear):.2f}"
+                    f"<br/>power={float(rel.power_dynamic):+.2f}"
+                )},
+            })
+
+    # --- POV filter (focalisation) -----------------------------------
+    # Restrict the world to *one* character's epistemic horizon: only
+    # entities they hold relationships toward (or vice-versa) plus
+    # propositions they have beliefs/concerns about. Other entities
+    # are dimmed but kept so the structure of "what they don't see"
+    # is still visible (greyed out).
+    if pov_id is not None and pov_id in ws.entities:
+        pov_ent = ws.entities[pov_id]
+        known_entities: set[str] = {pov_id}
+        for rel in ws.social_topology:
+            if pov_id in (rel.source_entity_id, rel.target_entity_id):
+                known_entities.add(rel.source_entity_id)
+                known_entities.add(rel.target_entity_id)
+        known_props: set[str] = set()
+        for b in pov_ent.beliefs:
+            pid = getattr(b, "proposition_id", None)
+            if pid:
+                known_props.add(pid)
+            if b.target_id in ws.entities:
+                known_entities.add(b.target_id)
+        for c in pov_ent.concerns:
+            known_props.add(c.proposition_id)
+        # Dim unknown nodes; keep them in-graph so layout is stable.
+        for n in nodes:
+            nt = n.get("_sl_node_type")
+            nid = n["id"]
+            visible = (
+                (nt == "Entity" and nid in known_entities) or
+                (nt == "Proposition" and nid in known_props) or
+                (nt == "Concern" and nid.startswith(f"{pov_id}::"))
+            )
+            if not visible:
+                style = dict(n.get("itemStyle") or {})
+                style["opacity"] = 0.15
+                n["itemStyle"] = style
+                n["label"] = {"show": False}
+        # Drop edges touching unknown propositions; dim edges between
+        # entities outside POV.
+        kept_links: list[dict] = []
+        for lnk in links:
+            kind = lnk.get("_sl_kind")
+            s, t = lnk["source"], lnk["target"]
+            # Belief edges: keep only those held by POV.
+            if kind == "belief":
+                if lnk.get("_sl_holder") != pov_id:
+                    continue
+            # Drop concern edges not owned by POV.
+            if isinstance(s, str) and "::" in s and not s.startswith(
+                f"{pov_id}::"
+            ):
+                continue
+            if isinstance(t, str) and "::" in t and not t.startswith(
+                f"{pov_id}::"
+            ):
+                continue
+            kept_links.append(lnk)
+        links = kept_links
+        # Highlight POV node.
+        for n in nodes:
+            if n["id"] == pov_id:
+                style = dict(n.get("itemStyle") or {})
+                style["borderColor"] = "#0ea5e9"
+                style["borderWidth"] = 4
+                n["itemStyle"] = style
+
+    # --- Intermental overlay (Palmer two-mind) -----------------------
+    # When two or more egos are selected, recompute belief edges as
+    # *shared* (thick teal, both-believe-same-state above threshold)
+    # vs *divergent* (red, both-believe-different-state above
+    # threshold). Single-ego beliefs are dimmed.
+    if intermental_ids and len(intermental_ids) >= 2:
+        ids = [i for i in intermental_ids if i in ws.entities]
+        if len(ids) >= 2:
+            # Build per-(holder, pid) state index.
+            state_idx: dict[tuple[str, str], tuple[str, float]] = {}
+            for ent in ws.entities.values():
+                if ent.id not in ids:
+                    continue
+                for b in ent.beliefs:
+                    pid = getattr(b, "proposition_id", None)
+                    if not pid:
+                        continue
+                    if fabula_t is not None and getattr(
+                        b, "established_at_fabula", 0
+                    ) > fabula_t:
+                        continue
+                    if float(b.confidence) < intermental_threshold:
+                        continue
+                    state_idx[(ent.id, pid)] = (
+                        b.perceived_state, float(b.confidence)
+                    )
+            # Group by pid.
+            by_pid: dict[str, list[tuple[str, str, float]]] = {}
+            for (eid, pid), (state, conf) in state_idx.items():
+                by_pid.setdefault(pid, []).append((eid, state, conf))
+            # Drop original belief edges (we'll re-add a styled overlay).
+            kept = []
+            for lnk in links:
+                if lnk.get("_sl_kind") == "belief":
+                    # dim it
+                    ls = dict(lnk.get("lineStyle") or {})
+                    ls["opacity"] = 0.15
+                    lnk["lineStyle"] = ls
+                kept.append(lnk)
+            links = kept
+            # Add overlay edges between each pair of selected egos.
+            for pid, holders in by_pid.items():
+                if len(holders) < 2:
+                    continue
+                for i in range(len(holders)):
+                    for j in range(i + 1, len(holders)):
+                        e1, s1, c1 = holders[i]
+                        e2, s2, c2 = holders[j]
+                        same = (s1 or "").strip() == (s2 or "").strip()
+                        color = "#0d9488" if same else "#dc2626"
+                        label = ("shared belief" if same
+                                 else "divergent belief")
+                        w = 2.5 + 2.0 * min(c1, c2)
+                        # Triangle e1 – pid – e2 reads as a "two-mind
+                        # arc" through the proposition.
+                        for src in (e1, e2):
+                            links.append({
+                                "source": src,
+                                "target": pid,
+                                "_sl_kind": "intermental",
+                                "lineStyle": {
+                                    "color": color,
+                                    "width": w,
+                                    "type": "solid",
+                                    "opacity": 0.85,
+                                    "curveness": 0.25,
+                                },
+                                "tooltip": {"formatter": (
+                                    f"{label}<br/>"
+                                    f"{ws.entities[e1].name}: "
+                                    f"{s1} ({c1:.2f})<br/>"
+                                    f"{ws.entities[e2].name}: "
+                                    f"{s2} ({c2:.2f})"
+                                )},
+                            })
+            # Highlight the selected egos.
+            for n in nodes:
+                if n["id"] in ids:
+                    style = dict(n.get("itemStyle") or {})
+                    style["borderColor"] = "#0d9488"
+                    style["borderWidth"] = 3
+                    n["itemStyle"] = style
+
+    # --- Ego filter ----------------------------------------------------
+    # Restrict to the BFS neighbourhood of ``ego_id`` (over the
+    # social-layer link graph just built). Concern nodes are pulled in
+    # via their owning entity, and proposition nodes via beliefs /
+    # concerns that touch the ego.
+    if ego_id is not None and any(n["id"] == ego_id for n in nodes):
+        adj: dict[str, set[str]] = {}
+        for lnk in links:
+            s, t = lnk["source"], lnk["target"]
+            adj.setdefault(s, set()).add(t)
+            adj.setdefault(t, set()).add(s)
+        visited: set[str] = {ego_id}
+        frontier: set[str] = {ego_id}
+        for _ in range(max(1, int(ego_max_hops))):
+            nxt: set[str] = set()
+            for nid in frontier:
+                nxt |= adj.get(nid, set())
+            nxt -= visited
+            visited |= nxt
+            frontier = nxt
+            if not frontier:
+                break
+        nodes = [n for n in nodes if n["id"] in visited]
+        links = [
+            l for l in links
+            if l["source"] in visited and l["target"] in visited
+        ]
+        # Highlight the ego node.
+        for n in nodes:
+            if n["id"] == ego_id:
+                n["itemStyle"] = {
+                    **n.get("itemStyle", {}),
+                    "borderColor": "#FFD700",
+                    "borderWidth": 3,
+                }
+                n["symbolSize"] = n.get("symbolSize", 36) * 1.3
+
+    return nodes, links, cats
+
+
+def entity_trait_trajectory(
+    ws: WorldStateV1,
+    entity_id: str,
+    *,
+    trait_names: list[str] | None = None,
+    max_traits: int = 6,
+) -> tuple[list[int], dict[str, list[float]]]:
+    """Return ``(times, {trait_name: [values…]})`` for one entity.
+
+    Replays ``reconstruct_entity_with_causal`` at every distinct
+    ``fabula_time`` in the world's event list. ``trait_names`` filters
+    which traits to plot; defaults to the top ``max_traits`` by
+    presence in the entity's baseline.
+    """
+    ent = ws.entities.get(entity_id)
+    if ent is None:
+        return [], {}
+    times = sorted({evt.fabula_time for evt in ws.events})
+    if not times:
+        # Fall back to baseline-only.
+        baseline = list(ent.traits.keys())[:max_traits]
+        return [0], {tn: [float(ent.traits[tn].value)] for tn in baseline}
+
+    if trait_names is None:
+        trait_names = list(ent.traits.keys())[:max_traits]
+
+    series: dict[str, list[float]] = {tn: [] for tn in trait_names}
+    for t in times:
+        snap = reconstruct_entity_with_causal(ws, entity_id, t)
+        traits = snap.get("traits", {}) or {}
+        for tn in trait_names:
+            tv = traits.get(tn)
+            if tv is None:
+                series[tn].append(
+                    float(ent.traits[tn].value) if tn in ent.traits else 0.5
+                )
+            else:
+                val = tv["value"] if isinstance(tv, dict) else float(tv)
+                series[tn].append(round(float(val), 3))
+    return times, series

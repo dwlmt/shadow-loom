@@ -8,7 +8,6 @@ from shadow_loom_ui.components.dashboard import build_dashboard
 from shadow_loom_ui.components.workspace import build_workspace
 from shadow_loom_ui.components.story_tab import build_story_tab
 from shadow_loom_ui.components.world_tab import build_world_tab
-from shadow_loom_ui.components.causality_tab import build_causality_tab
 from shadow_loom_ui.components.affective_tab import build_affective_tab
 from shadow_loom_ui.components.audit_tab import build_audit_tab
 from shadow_loom_ui.components.export_tab import build_export_tab
@@ -28,7 +27,6 @@ __all__ = [
     "build_workspace",
     "build_story_tab",
     "build_world_tab",
-    "build_causality_tab",
     "build_affective_tab",
     "build_audit_tab",
     "build_export_tab",

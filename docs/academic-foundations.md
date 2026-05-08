@@ -983,6 +983,90 @@ see [docs/settings.md §8](settings.md#8-directive-assembly-step-8--affective-sc
 for the full env-var table. Reproduce the audit with
 [`scripts/audit_affective.py`](../scripts/audit_affective.py).
 
+### 3.7 Propositional belief-revision affect (`affect_unification.py`)
+
+The four structural scorers in §3.1–§3.4 operate on *trait* and
+*event* mass — graph geometry. The post-2026 ingestion pipeline
+additionally lays down a registry of typed `Proposition` rows (with
+`audience_default_prior ∈ [0,1]`, `stakes ∈ [0,1]`,
+`truth_at_fabula: Dict[int, bool]`, and a `state_timeline` of
+`PropositionSnapshot`s) and per-entity `Concern` rows (with
+`polarity ∈ {desire, fear}`, `salience`,
+`activation_fabula_window`, `counter_concern_ids`, and a
+`state_timeline` of `ConcernSnapshot`s). On top of those,
+[`shadow_loom/affect_unification.py`](../shadow_loom/affect_unification.py)
+exposes a second, **propositional / Bayesian** scoring layer that
+operates directly on belief revision over outcome propositions —
+the formal cousin of the trait-anchored scorers above. The two
+layers coexist: the trait layer drives the directive-assembly
+optimiser (which needs a graph-geometry signal); the propositional
+layer powers the affective UI dashboard, the per-proposition belief
+tensor, and any consumer that needs a quantity *defined over
+propositions the audience and characters hold beliefs about*.
+
+A `BeliefState(world)` reader replays each agent's beliefs at any
+`fabula_t` via `reconstruct_entity_at` and falls back to the
+proposition's `audience_default_prior` when no agent belief exists.
+A reserved `ENT_AUDIENCE` entity is synthesised by
+`synthesise_audience_entity(world)` so the omniscient-reader prior
+is a first-class agent.
+
+* **Suspense** (Brewer–Lichtenstein, propositional form):
+  $$\mathrm{Susp}(t_f) = \!\!\sum_{P \,\in\, \mathrm{open\,outcomes}}\!\! H\!\big(p_{\rm aud}(P, t_f)\big)\,\cdot\,\mathrm{stakes}(P, t_f)\,\cdot\,\exp\!\big(-\Delta t_f / \tau\big),$$
+  where $H$ is binary Shannon entropy, the sum runs over
+  propositions whose `kind == "outcome"` and whose `truth_at_fabula`
+  has not yet committed, $\Delta t_f$ is the fabula-time gap to the
+  next future commitment, and $\tau$ defaults to the world's
+  median inter-event fabula gap (`_auto_tau_fabula`). The kernel
+  is the Comisky–Bryant imminence factor on a *propositional* axis
+  rather than the event axis used by §3.1.
+* **Surprise** (Itti–Baldi 2009 Bayesian Surprise, propositional
+  form):
+  $$\mathrm{Sur}(t_f \,\|\, t_f') = \!\!\sum_{P}\!\! D_{\rm KL}\!\big(p_{\rm aud}(P, t_f)\,\|\,p_{\rm aud}(P, t_f')\big)\,\cdot\,\mathrm{stakes}(P, t_f),$$
+  the audience-belief KL between two anchors, summed over
+  propositions the audience moved on. This is the Itti–Baldi
+  definition verbatim, lifted to the proposition layer and
+  weighted by the proposition's stakes.
+* **Dramatic irony** (Pfister/Sternberg, propositional form):
+  $$\mathrm{Iro}(c, t_f) = \!\!\sum_{P}\!\! D_{\rm KL}\!\big(p_{\rm aud}(P, t_f)\,\|\,p_c(P, t_f)\big)\,\cdot\,\mathrm{stakes}(P, t_f),$$
+  the asymmetric KL between the audience and a focal character
+  $c$ across propositions on which they disagree. Asymmetry
+  matters: audience-knows-more (Oedipus's prophecy) and
+  focal-knows-more (Iago's plan, before its disclosure to the
+  reader) produce distinguishable signals.
+* **Mystery** (Carroll erotetic, propositional form): for each
+  *known* effect proposition (audience confidence ≥ threshold,
+  default 0.7), build the directed proposition graph induced by
+  `EventNode.resolves_proposition_ids` /
+  `asserts/denies_proposition_id`, find the shortest path from
+  every potential cause, softmax-normalise across candidates, and
+  sum Shannon entropy. High when the reader sees the effect but
+  many causes remain plausibly hidden.
+
+Valence-decomposed variants are also exposed:
+`compute_surprise_breakdown` returns a Tan/Ortony pleasant /
+unpleasant split per focal entity (using the entity's `Concern`
+polarity to decide whether a positive belief shift on a desired
+proposition is pleasant surprise or pleasant relief);
+`compute_irony_breakdown` returns Sternberg's three irony modes
+(suspense-irony, curiosity-irony, surprise-irony).
+
+The propositional layer is **complementary to**, not a replacement
+for, the trait-anchored scorers in §3.1–§3.4. The directive
+optimiser still consumes the trait scorers because their loss
+semantics (monotonically declining with reveals, comparable
+across worlds with no propositions) match what the optimiser
+needs. The propositional layer is what surfaces in the UI when a
+reader asks *"how surprised should I have been by this beat?"* —
+the Bayesian-narratology question that requires named
+propositions and audience-prior provenance.
+
+* Itti, L. & Baldi, P. (2009). "Bayesian surprise attracts human attention". *Vision Research* 49(10): 1295–1306. DOI 10.1016/j.visres.2008.09.007.
+* Tan, E. S. (1996). *Emotion and the Structure of Narrative Film*. Lawrence Erlbaum. — pleasant/unpleasant surprise valence decomposition.
+* Carroll, N. (2007). "Narrative closure". *Philosophical Studies* 135(1): 1–15. — erotetic mystery as the entropy over hidden causes of known effects.
+* Sternberg, M. (2003). "Universals of narrative and their cognitivist fortunes". *Poetics Today* 24(2): 297–395. — three modes of irony.
+* Storck, J., Hochreiter, S., Schmidhuber, J. (1995). "Reinforcement-driven information acquisition in non-deterministic environments". *Proc. ICANN '95*. — KL between belief states $p^*(t{+}1) \| p^*(t)$, formally equivalent to the propositional surprise above.
+
 ### 3.6 Heuristic affects (conflict, danger, narrative-tension, causal-density)
 
 Alongside the four engine-grade structural affects (§§3.1–3.4),
@@ -1026,6 +1110,142 @@ ego graphs). The engine-grade affects (§§3.1–3.4) require the
 full event graph and are the ones the directive-assembly
 optimiser actually targets — but the heuristics anchor the
 reader's quick read of the state at any cursor position.
+
+### 3.8 Theory-driven refinements to the structural-affect family
+
+The four engine-grade scorers (§§3.1–3.4) were extended in May
+2026 with five literature-anchored refinements that close gaps
+identified by re-reading the underlying primary sources against
+real corpus output. Each refinement adds a small, interpretable
+factor on top of the existing scorer rather than rewriting it.
+
+#### 3.8.1 Audience-concern weighting on suspense (Tan 1996)
+
+Brewer & Lichtenstein 1982 establish *whether* an outcome is
+suspenseful (via outcome ambiguity); Tan 1996 (*Emotion and the
+Structure of Narrative Film*) supplies the missing piece — *which*
+outcomes the audience cares about. Without an audience-concern
+gate, two non-focal NPCs having an argument weighted as much on
+the suspense ledger as the protagonist on trial for their life,
+because both have similar belief variance.
+
+We add a per-event weight $\omega_{\text{concern}}(e) \in [0.2, 1]$
+that sums audience concern saliences over propositions whose
+referents intersect the event's actor/target set, then maps the
+total through a saturating curve:
+
+$$\omega_{\text{concern}}(e) = 0.2 + 0.8 \cdot \frac{\sum_{c \in C(e)} s_c}{1 + \sum_{c \in C(e)} s_c}$$
+
+The 0.2 floor avoids zero-weighting orphan events; saturation
+ensures a single high-salience concern is enough to hit the
+ceiling. This factor multiplies `weighted_prob` in both the EFK
+ledger and the unified Bayesian-stakes path of
+`compute_suspense_score`. Implemented as
+`DirectiveAssembler._audience_concern_for_event`.
+
+The same factor is applied **symmetrically** to dramatic irony's
+per-gap-event weight in `compute_dramatic_irony_score` — an
+ironic gap about a character the audience cares about lands
+harder than an ironic gap about a stranger. Both surface and
+gap forms of structural affect are now uniformly concern-gated,
+matching Tan 1996's claim that *F-emotions* (concern-driven) are
+the substrate on which all narrative-affect responses are built.
+
+#### 3.8.2 Mystery recency (Carroll 1990 erotetic model)
+
+Carroll's *erotetic narrative* theory holds that the mystery
+salient at any reader position is the set of *live* questions —
+those raised by recent surface events, not those trailing
+behind. The existing curiosity-proximity decay already
+implemented this for the *effect* node, so live questions
+$Q_t$ contribute more than archived questions $Q_{t-k}$ via
+
+$$w_{\text{prox}}(\text{eff}) = \exp\left(-\frac{s_{\text{anchor}} - s_{\text{eff}}}{\tau_{\text{curiosity}}}\right)$$
+
+with $\tau = 8$ syuzhet steps. The May 2026 audit confirmed this
+implements Carroll's recency principle directly; no further
+change was needed beyond re-documenting the connection.
+
+#### 3.8.3 False-lead mystery (Sayers 1929 / Knox 1929)
+
+Detective-fiction theory (Sayers' *The Omnibus of Crime*
+introduction; Knox's *Decalogue*) frames mystery intensity as
+tracking not only the *number* of unrevealed causes but the
+*number of plausible-but-wrong* hypotheses the audience is
+actively entertaining. Red-herring-rich worlds (Christie, Sayers
+herself, *Gone Girl*) read as more mysterious than worlds with
+the same hidden-ancestor count but no plausible alternates.
+
+We approximate the live-hypothesis count as the number of
+audience belief assignments on uncommitted propositions whose
+confidence falls in the ambiguity band $[0.3, 0.7]$ — the reader
+has a hypothesis but isn't sure of it. Blended with the
+hidden-ratio base via
+
+$$\text{Mystery} = 0.75 \cdot \frac{\text{hidden}_\text{mass}}{\text{total}_\text{mass}} + 0.25 \cdot \frac{n_{\text{false-lead}}}{n_{\text{false-lead}} + 4}$$
+
+so the gauge is still dominated by structural hidden mass but
+red-herring-rich fixtures lift visibly.
+
+#### 3.8.4 Correlation-aware surprise (Friston 2010)
+
+Friston's free-energy / predictive-coding framework treats
+surprise as the precision-weighted prediction error on a single
+information unit. The naive aggregator that sums per-proposition
+KL across simultaneously-revealed propositions *double-counts*
+when those propositions are causally connected — the audience
+perceives the joint reveal as a single update, not two.
+
+We deflate each per-step KL contribution by a factor
+
+$$w_p = \frac{1}{1 + \kappa \cdot n_{\text{kin}}(p)}$$
+
+where $n_{\text{kin}}(p)$ counts how many of $p$'s causal-graph
+neighbours *also* moved this step and $\kappa = 0.5$. One co-
+moving kin halves the contribution; three quarters it. This is
+applied inside the local (per-step) form of
+`compute_surprise_score`, where joint-reveal double-counting is
+the dominant systematic bias.
+
+#### 3.8.5 Composite narrative tension (Brewer-Lichtenstein triad + Sternberg disequilibrium)
+
+The four scorers above measure orthogonal facets of structural
+affect, but readers experience a single felt *tension* — the
+quantity Brewer & Lichtenstein 1982 originally framed as a
+**triad** (suspense + curiosity + surprise). Sternberg 1978
+(*Expositional Modes and Temporal Ordering in Fiction*) frames
+the same construct as the *disequilibrium* between what the
+reader knows, suspects, and is owed. Vorderer-Wulff-Friedrichsen
+1996 (*Suspense: Conceptualizations, Theoretical Analyses, and
+Empirical Explorations*) defines tension as the running integral
+of moment-to-moment uncertainty.
+
+We aggregate these into
+
+$$T = 0.40 \cdot \text{Suspense} + 0.25 \cdot \text{Mystery} + 0.20 \cdot \text{Irony} + 0.10 \cdot \Delta\text{Surprise} + 0.05 \cdot \text{UnpaidDebt}$$
+
+with the surprise term as its *first derivative* (the local
+form) — the disequilibrium kick — and the unpaid-setup-debt term
+as $n_{\text{unpaid}} / (n_{\text{unpaid}} + 4)$ counting
+foreshadowing arcs whose payoff event has not yet been revealed
+at the anchor (Chekhov's-gun overhang). The weight vector is
+calibrated against the `example_worlds/` corpus so canonical
+mid-arc tension peaks land in the 0.5–0.7 band; on Macbeth at
+syuzhet anchor 4 (Duncan's murder), $T \approx 0.49$, rising to
+0.51 at the Banquo banquet (anchor 8) and decaying toward 0.28
+at the denouement. Implemented as
+`DirectiveAssembler.compute_tension_score` and surfaced as the
+`narrative_tension` series in the affective-curve plot, gauge
+strip, and `compute_affective_score` dispatch table.
+
+* Brewer, W. F. & Lichtenstein, E. H. (1982). "Stories are to entertain: A structural-affect theory of stories". *Journal of Pragmatics* 6(5–6): 473–486.
+* Sternberg, M. (1978). *Expositional Modes and Temporal Ordering in Fiction*. Johns Hopkins University Press.
+* Vorderer, P., Wulff, H. J. & Friedrichsen, M. (Eds.) (1996). *Suspense: Conceptualizations, Theoretical Analyses, and Empirical Explorations*. Lawrence Erlbaum.
+* Tan, E. S. (1996). *Emotion and the Structure of Narrative Film*. Lawrence Erlbaum. — F-emotion concern theory.
+* Carroll, N. (1990). *The Philosophy of Horror, or Paradoxes of the Heart*. Routledge. — erotetic-question framework.
+* Sayers, D. L. (1929). Introduction to *Great Short Stories of Detection, Mystery, and Horror*. Gollancz. — false-lead aesthetics.
+* Knox, R. (1929). "A Detective Story Decalogue". In H. Haycraft (ed.), *The Art of the Mystery Story* (1946). — fair-play hypothesis space.
+* Friston, K. (2010). "The free-energy principle: a unified brain theory?" *Nature Reviews Neuroscience* 11: 127–138. — predictive-coding aggregator.
 
 ---
 

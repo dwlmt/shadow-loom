@@ -62,6 +62,8 @@ class StateEvent(Enum):
     TASKS_CHANGED = "tasks_changed"
     FABULA_CURSOR_CHANGED = "fabula_cursor_changed"
     SYUZHET_CURSOR_CHANGED = "syuzhet_cursor_changed"
+    TIME_AXIS_CHANGED = "time_axis_changed"
+    WORLD_ID_CHANGED = "world_id_changed"
     ACTIVE_PATH_CHANGED = "active_path_changed"
     WORLD_FACTS_CHANGED = "world_facts_changed"
     PROJECT_LIST_CHANGED = "project_list_changed"
@@ -156,6 +158,18 @@ class AppState:
 
     # Syuzhet (reading-order) cursor (None = "live"); affects suspense/reveal views
     syuzhet_cursor: Optional[int] = None
+
+    # Global time axis: "fabula" (chronological) or "syuzhet" (telling
+    # order). Charts that bin on event time honour this so the user
+    # can see Genette's order/anachrony with one switch.
+    time_axis: str = "fabula"
+
+    # Active AMWN branch: "factual" (canonical timeline) or "shadow"
+    # (a what-if fork). Every snapshot/replay panel filters
+    # ``state_timeline`` and edge ``world_id`` by this so the UI shows
+    # one branch coherently. Emits :data:`StateEvent.WORLD_ID_CHANGED`
+    # when toggled via :meth:`set_world_id`.
+    world_id: str = "factual"
 
     # Background task registry (in-flight + recently completed)
     background_tasks: List[BackgroundTask] = field(default_factory=list)
@@ -961,6 +975,38 @@ class AppState:
             "syuzhet", StateEvent.SYUZHET_CURSOR_CHANGED, s,
             immediate=immediate,
         )
+
+    def set_time_axis(self, axis: str) -> None:
+        """Set the global time axis ("fabula" | "syuzhet").
+
+        Charts that bin on event time read this to decide whether to
+        use ``evt.fabula_time`` (Genette: story order) or
+        ``evt.syuzhet_index`` (telling order). Emits
+        :data:`StateEvent.TIME_AXIS_CHANGED`.
+        """
+        axis = (axis or "fabula").lower()
+        if axis not in ("fabula", "syuzhet"):
+            axis = "fabula"
+        if self.time_axis == axis:
+            return
+        self.time_axis = axis
+        self.emit(StateEvent.TIME_AXIS_CHANGED, axis=axis)
+
+    def set_world_id(self, world_id: str) -> None:
+        """Set the active AMWN branch ("factual" | "shadow").
+
+        Snapshot panels filter entity / world-trait / proposition /
+        concern timelines by this so a Rung-2/3 intervention's shadow
+        nodes are isolated from the canonical mainline. Emits
+        :data:`StateEvent.WORLD_ID_CHANGED`.
+        """
+        wid = (world_id or "factual").lower()
+        if wid not in ("factual", "shadow"):
+            wid = "factual"
+        if self.world_id == wid:
+            return
+        self.world_id = wid
+        self.emit(StateEvent.WORLD_ID_CHANGED, world_id=wid)
 
     def _schedule_cursor_emit(
         self, axis: str, event: "StateEvent", value: int | None,

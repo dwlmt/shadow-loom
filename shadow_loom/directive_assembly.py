@@ -18,7 +18,7 @@ import logging
 import math
 import re
 from copy import deepcopy
-from typing import Any, Dict, List, Optional, Literal, Tuple
+from typing import Any, Dict, List, Optional, Literal, Set, Tuple
 
 import networkx as nx
 from pydantic import BaseModel, Field
@@ -1420,14 +1420,43 @@ class DirectiveAssembler:
     # ------------------------------------------------------------------
     # Trait trajectory computation
     # ------------------------------------------------------------------
-    def compute_trait_trajectories(self, entity_ids: List[str]) -> List[TraitTrajectory]:
+    def _syuzhet_anchor_to_fabula_time(
+        self, syuzhet_anchor: Optional[int],
+    ) -> Optional[int]:
+        """Translate a syuzhet anchor into a fabula_time cut-off.
+
+        Returns the maximum ``fabula_time`` among events whose
+        ``syuzhet_index`` is ``<= syuzhet_anchor``. ``None`` if the
+        anchor is ``None`` or no event qualifies, signalling
+        "use latest available state" to callers.
+        """
+        if syuzhet_anchor is None:
+            return None
+        revealed_t = [
+            e.fabula_time for e in self.world_state.events
+            if e.syuzhet_index is not None
+            and e.syuzhet_index <= syuzhet_anchor
+            and e.fabula_time is not None
+        ]
+        return max(revealed_t) if revealed_t else None
+
+    def compute_trait_trajectories(
+        self,
+        entity_ids: List[str],
+        syuzhet_anchor: Optional[int] = None,
+    ) -> List[TraitTrajectory]:
         """Compute current value + headroom for each trait of given entities.
 
-        Looks first in the ego payload (``focus_entities`` /
-        ``present_entities``) where the orchestrator stages
-        per-directive trait dicts; falls back to
-        ``world_state.entities`` when the requested id has no ego
-        entry. The fallback path is essential for any caller that
+        When ``syuzhet_anchor`` is supplied, trait values are
+        reconstructed from each entity's ``state_timeline`` at the
+        fabula_time of the latest revealed event — so emotion-axis
+        affective curves vary across the syuzhet (matching Reagan
+        et al. 2016 / Vonnegut "shapes of stories" temporal arcs).
+        When the anchor is ``None`` we keep the legacy behaviour:
+        ego payload first (live, per-directive overrides), then a
+        fallback to the entity's current ``traits`` map.
+
+        The legacy fallback path is essential for any caller that
         constructs a ``DirectiveAssembler`` with an empty ego (the
         affective-curve plot, the audit script, the auditor's
         per-target rescore loop). Without it the emotion scorers
@@ -1436,21 +1465,33 @@ class DirectiveAssembler:
         no-contributions branch fired.
         """
         trajectories: List[TraitTrajectory] = []
+        anchor_t = self._syuzhet_anchor_to_fabula_time(syuzhet_anchor)
 
         for eid in entity_ids:
-            ent_data = self._find_entity(eid)
-            if ent_data:
-                trait_iter = (
-                    (n, t) for n, t in ent_data.get("traits", {}).items()
-                    if isinstance(t, dict)
-                )
-                resolve = lambda t, k, d: t.get(k, d)
-            else:
+            # When a syuzhet anchor is supplied, prefer the temporal
+            # reconstruction over the (time-invariant) ego snapshot —
+            # otherwise emotion curves collapse to flat lines.
+            if anchor_t is not None:
                 ent = self.world_state.entities.get(eid)
                 if ent is None or not getattr(ent, "traits", None):
                     continue
-                trait_iter = ent.traits.items()
-                resolve = lambda t, k, d: getattr(t, k, d)
+                snap = reconstruct_entity_at(ent, anchor_t)
+                trait_iter = snap.get("traits", {}).items()
+                resolve = lambda t, k, d: t.get(k, d)
+            else:
+                ent_data = self._find_entity(eid)
+                if ent_data:
+                    trait_iter = (
+                        (n, t) for n, t in ent_data.get("traits", {}).items()
+                        if isinstance(t, dict)
+                    )
+                    resolve = lambda t, k, d: t.get(k, d)
+                else:
+                    ent = self.world_state.entities.get(eid)
+                    if ent is None or not getattr(ent, "traits", None):
+                        continue
+                    trait_iter = ent.traits.items()
+                    resolve = lambda t, k, d: getattr(t, k, d)
 
             for trait_name, trait_data in trait_iter:
                 val = resolve(trait_data, "value", 0.5)
@@ -1827,7 +1868,16 @@ class DirectiveAssembler:
             rev_g.add_edge(v, u, neglogw=-math.log(w))
 
         def _curiosity_proximity(eff_id: str) -> float:
-            """Backward-looking decay weight on an effect's contribution."""
+            """Backward-looking decay weight on an effect's contribution.
+
+            Carroll 1990 *erotetic narrative*: live questions are the
+            ones the story is currently asking. ``exp(-Δ/τ)`` decays
+            the curiosity weight of effects whose syuzhet position is
+            far behind the anchor — distinguishes *live mystery*
+            (whodunit imminent) from *background mystery* (subplots
+            trailing). Effects without a syuzhet position (entity-
+            as-effect) get a neutral 1.0.
+            """
             if syuzhet_anchor is None:
                 return 1.0
             evt = events_by_id.get(eff_id)
@@ -1835,6 +1885,47 @@ class DirectiveAssembler:
                 return 1.0  # entity-as-effect (no syuzhet position)
             delta = max(0, syuzhet_anchor - evt.syuzhet_index)
             return math.exp(-delta / self._MYSTERY_PROXIMITY_TAU_SYUZHET)
+
+        # Sayers 1929 / Knox 1929 detective-fiction false-lead term.
+        # Detective-genre theory says mystery intensity tracks not
+        # only the *number* of unrevealed causes but the *number of
+        # plausible-but-wrong* hypotheses the audience is actively
+        # entertaining. We approximate this as the count of audience
+        # belief assignments on event-shaped propositions whose
+        # confidence sits in the ambiguity band (0.3–0.7) — the
+        # reader has a hypothesis but isn't sure of it. Computed once
+        # outside the per-effect loop and added as a bonus into the
+        # final ratio so red-herring-rich worlds (Gone Girl, Death on
+        # the Nile) read as more mysterious than worlds with the
+        # same hidden-ancestor count but no plausible alternates.
+        false_lead_count = 0
+        try:
+            from shadow_loom.affect_unification import (
+                AUDIENCE_ID,
+                BeliefState,
+                synthesise_audience_entity,
+                synthesise_propositions,
+                backfill_character_belief_propositions,
+            )
+            ws_m = self.world_state
+            if not ws_m.propositions:
+                synthesise_propositions(ws_m)
+                backfill_character_belief_propositions(ws_m)
+            if AUDIENCE_ID not in ws_m.entities:
+                synthesise_audience_entity(ws_m)
+            bs_m = BeliefState(world=ws_m)
+            ft_now_m = self._fabula_now(revealed)
+            if ft_now_m is not None:
+                for prop in ws_m.propositions:
+                    if any(t <= ft_now_m for t in prop.truth_at_fabula):
+                        continue
+                    p = bs_m.confidence(
+                        AUDIENCE_ID, prop.proposition_id, ft_now_m,
+                    )
+                    if 0.3 <= p <= 0.7:
+                        false_lead_count += 1
+        except Exception:
+            logger.debug("mystery false-lead pass failed", exc_info=True)
 
         total_mass = 0.0
         hidden_mass = 0.0
@@ -1883,13 +1974,29 @@ class DirectiveAssembler:
                     hidden_mass += w
 
         if total_mass == 0.0:
-            return 0.0
+            base_score = 0.0
+        else:
+            base_score = hidden_mass / total_mass
 
-        score = hidden_mass / total_mass
+        # Sayers/Knox false-lead boost: blend a saturating curve on
+        # the live-hypothesis count into the base score. ``count /
+        # (count + K)`` saturates at 1 with K=4 → 4 plausible alts
+        # ⇒ 0.5 false-lead boost; 8 alts ⇒ 0.67. Convex-combined
+        # with the base hidden-ratio at weight 0.25 so the gauge is
+        # still dominated by structural hidden mass but red-herring-
+        # rich fixtures (Gone Girl, Death on the Nile) lift visibly.
+        if false_lead_count > 0:
+            fl = false_lead_count / (false_lead_count + 4.0)
+            score = 0.75 * base_score + 0.25 * fl
+        else:
+            score = base_score
+        score = max(0.0, min(1.0, score))
+
         logger.debug(
-            "[DirectiveAssembly·Mystery] hidden_mass=%.3f / total_mass=%.3f = %.3f "
+            "[DirectiveAssembly·Mystery] hidden_mass=%.3f / total_mass=%.3f "
+            "base=%.3f false_leads=%d → %.3f "
             "(path-decay depth=%d, τ_curiosity=%.1f)",
-            hidden_mass, total_mass, score,
+            hidden_mass, total_mass, base_score, false_lead_count, score,
             self._MYSTERY_PATH_DECAY_DEPTH,
             self._MYSTERY_PROXIMITY_TAU_SYUZHET,
         )
@@ -2257,6 +2364,12 @@ class DirectiveAssembler:
                 ):
                     w *= self._IRONY_FALSE_BELIEF_MULT
                 w *= _closure_proximity(evt)
+                # Tan 1996 audience-concern gating (parity with
+                # suspense). Dramatic irony about a character the
+                # audience cares about lands harder than irony about
+                # an indifferent stranger — the felt gap requires the
+                # reader to be invested in the blind party's fate.
+                w *= self._audience_concern_for_event(evt)
                 gap_mass += w
 
             # Normalise by *revealed* mass (Sternberg gap fraction)
@@ -2320,18 +2433,20 @@ class DirectiveAssembler:
     # physical threats don't saturate quickly — one death threat does
     # not max out the gauge — so K_kind is large. Social / epistemic
     # threats do saturate quickly (three slights and the reader is
-    # bored), so K_kind is small. Calibrated against the example_worlds
-    # corpus so a single mid-anchor mortal threat lands in the 0.3-0.5
-    # stakes band rather than flooring at near-zero or pegging to 1.0.
+    # bored), so K_kind is small. Halved from the original
+    # calibration (4.0/3.0/2.5/2.0/2.0/1.5/1.5/1.5) after broadening
+    # the unified suspense filter to all uncommitted propositions —
+    # the previous K's were tuned for a much larger ledger and were
+    # crushing the score in the new regime.
     _SUSPENSE_STAKES_K_BY_KIND: Dict[str, float] = {
-        "existential": 4.0,
-        "physical": 3.0,
-        "betrayal": 2.5,
-        "psychological": 2.0,
-        "emotional": 2.0,
-        "social": 1.5,
-        "epistemic": 1.5,
-        "informational": 1.5,
+        "existential": 2.0,
+        "physical": 1.5,
+        "betrayal": 1.25,
+        "psychological": 1.0,
+        "emotional": 1.0,
+        "social": 0.75,
+        "epistemic": 0.75,
+        "informational": 0.75,
     }
 
     # Anticipatory-proximity decay (improvement #2 — Comisky & Bryant
@@ -2400,6 +2515,26 @@ class DirectiveAssembler:
     # gracefully to the prior behaviour.
     _SUSPENSE_HOSTILE_AFFINITY: float = -0.2
     _SUSPENSE_ALLY_AFFINITY: float = 0.2
+
+    # Soft penalty for a one-sided forward reveal set (only threats
+    # coming → despair, or only hopes coming → safety). Strict
+    # Brewer-Lichtenstein 1982 zeroes both, but Carroll 1990
+    # (anomalous suspense) and Gerrig 1989 (pre-known outcomes still
+    # arouse) give a robust empirical floor: readers feel something
+    # on one-sided futures, just less than on balanced ones. ×0.3
+    # preserves the theoretical ranking without the visual cliff at
+    # the start/end of every story.
+    _SUSPENSE_ONE_SIDED_MULT: float = 0.3
+
+    # Convex blend weight for compute_suspense_score(mode='efk'):
+    # final = w · efk + (1-w) · unified_entropy. EFK is expected
+    # belief variance over kind ledgers (Ely-Frankel-Kamenica);
+    # unified is current outcome-set entropy over uncommitted
+    # propositions (Brewer-Lichtenstein audience-side substrate).
+    # 0.6/0.4 mirrors the surprise scorer's blend and keeps the
+    # legacy EFK contract dominant while adding a steady proposition-
+    # entropy channel that doesn't collapse at the structural endpoints.
+    _SUSPENSE_EFK_BLEND_WEIGHT: float = 0.6
 
     # Harm-kind salience weights for the suspense ledger.
     #
@@ -2495,6 +2630,47 @@ class DirectiveAssembler:
                 best_w = w
                 seen_known = True
         return best_kind, best_w
+
+    def _audience_concern_for_event(self, evt) -> float:
+        """Tan 1996 F-emotion concern weight for a candidate event.
+
+        Sum of audience-concern saliences referencing any proposition
+        whose ``referent_ids`` intersect this event's actor/target set,
+        plus a small floor so events with no concern hookup still
+        register on the ledger. Returns a multiplier in roughly
+        ``[0.2, 1.0]`` — concern dominates but never zeroes out.
+
+        Brewer-Lichtenstein outcome ambiguity tells us *whether* a
+        future event is suspenseful; Tan 1996 *Emotion and the
+        Structure of Narrative Film* tells us *which* outcomes the
+        reader cares about. Without this gate, "two non-focal NPCs
+        having an argument" weighs as much as "the protagonist on
+        trial for their life" — both have similar belief-variance,
+        but the audience only feels suspense about the second.
+        """
+        from shadow_loom.affect_unification import AUDIENCE_ID
+        audience = self.world_state.entities.get(AUDIENCE_ID)
+        if audience is None or not audience.concerns:
+            return 1.0  # no audience model → neutral, don't penalise
+        evt_participants = set(evt.actor_ids) | set(evt.target_ids)
+        if not evt_participants:
+            return 0.5
+        # Index propositions by their referent set for O(1) lookup.
+        prop_index = {p.proposition_id: p for p in self.world_state.propositions}
+        total = 0.0
+        for c in audience.concerns:
+            prop = prop_index.get(c.proposition_id)
+            if prop is None:
+                continue
+            if not (set(prop.referent_ids) & evt_participants):
+                continue
+            total += float(c.salience)
+        # Map concern total onto a [0.2, 1.0] multiplier — saturate
+        # so a single high-salience concern is enough to hit the
+        # ceiling, but events with no concern hookup still contribute
+        # 20% so the gauge degrades gracefully on sparse fixtures.
+        floor = 0.2
+        return floor + (1.0 - floor) * (total / (total + 1.0))
 
     def _build_affinity_index(self) -> Dict[Tuple[str, str], float]:
         """Build a directed ``(src,tgt) → affinity`` lookup.
@@ -2897,6 +3073,7 @@ class DirectiveAssembler:
                 contribution = (
                     h * prop.stakes * salience * imminence_t
                     * persistence_mult
+                    * self._audience_concern_for_event(evt)
                 )
                 if contribution <= 0.0:
                     continue
@@ -3097,6 +3274,7 @@ class DirectiveAssembler:
                 weighted_prob = (
                     prob * salience * imminence_t * imminence_s
                     * persistence_mult
+                    * self._audience_concern_for_event(evt)
                 )
                 if weighted_prob <= 0.0:
                     continue
@@ -3249,20 +3427,25 @@ class DirectiveAssembler:
                     continue
                 A, B = revealed_by_focal_kind.get((fid, kind), [0.0, 0.0])
                 # Bilateral-mass guard (Brewer & Lichtenstein
-                # structural-affect floor): require the *upcoming*
-                # reveal set to contain both threat and hope
-                # candidates on this (focal, kind). A purely one-
-                # sided forward reveal set is despair (only threats
-                # coming) or safety (only hopes coming), even
-                # though strict EFK would still admit positive
-                # variance from the magnitude-uncertainty alone.
-                # This matches the test contract and the OCC
-                # prospect-based-emotion taxonomy: suspense requires
-                # outcome ambiguity, not merely magnitude ambiguity.
+                # structural-affect floor): the *upcoming* reveal
+                # set ideally contains both threat and hope
+                # candidates on this (focal, kind). Strict
+                # Brewer-Lichtenstein zeroes one-sided futures, but
+                # Carroll 1990 (anomalous suspense) and Gerrig 1989
+                # (pre-known outcome physiological arousal) show
+                # readers still feel dread on despair beats and
+                # relieved tension on safety beats. We soften the
+                # guard to a multiplier (×0.3) instead of a hard
+                # skip, preserving the theoretical ranking
+                # (balanced > one-sided) without the visual cliff
+                # at the start/end of every story.
                 unrev_threat = sum(w for b, w, _ in unrev if b == "threat")
                 unrev_hope = sum(w for b, w, _ in unrev if b == "hope")
+                one_sided_mult = 1.0
                 if unrev_threat <= 0.0 or unrev_hope <= 0.0:
-                    continue
+                    one_sided_mult = self._SUSPENSE_ONE_SIDED_MULT
+                    if one_sided_mult <= 0.0:
+                        continue
                 denom_mu = 2.0 + A + B
                 if denom_mu <= 0.0:
                     continue
@@ -3331,7 +3514,7 @@ class DirectiveAssembler:
                 sigma_k = self._HARM_KIND_SALIENCE.get(
                     kind, self._DEFAULT_HARM_SALIENCE,
                 )
-                weight_fk = sigma_k * stakes_k
+                weight_fk = sigma_k * stakes_k * one_sided_mult
                 num += weight_fk * var_norm
                 denom += weight_fk
                 # Diagnostic per-kind aggregate (max over focal).
@@ -3351,34 +3534,95 @@ class DirectiveAssembler:
                 # max-normalised); the salience-stakes weighted
                 # average preserves that bound.
                 score_efk = max(0.0, min(1.0, num / denom))
+                # Blend in the unified audience-entropy substrate
+                # (compute_suspense_unified, normalised by the
+                # uncommitted-proposition count × ln 2). EFK
+                # measures *expected* belief variance across kind
+                # ledgers; unified measures *current* outcome-set
+                # uncertainty over propositions. They're the same
+                # theoretical quantity through different lenses
+                # (Brewer & Lichtenstein outcome ambiguity → EFK
+                # Bayesian variance), so a convex blend gives the
+                # gauge a steadier signal — EFK alone goes to 0
+                # at the structural endpoints (start/end of story)
+                # even when there's still proposition entropy in
+                # play. Default 0.6 EFK / 0.4 unified mirrors the
+                # surprise scorer's blend.
+                unified_score = 0.0
+                try:
+                    from shadow_loom.affect_unification import (
+                        AUDIENCE_ID,
+                        BeliefState,
+                        compute_suspense_unified,
+                        synthesise_audience_entity,
+                        synthesise_propositions,
+                        backfill_character_belief_propositions,
+                    )
+                    ws_u = self.world_state
+                    if not ws_u.propositions:
+                        synthesise_propositions(ws_u)
+                        backfill_character_belief_propositions(ws_u)
+                    if AUDIENCE_ID not in ws_u.entities:
+                        synthesise_audience_entity(ws_u)
+                    bs_u = BeliefState(world=ws_u)
+                    revealed_u = self._revealed_event_ids(syuzhet_anchor)
+                    ft_u = self._fabula_now(revealed_u)
+                    if ft_u is not None and ws_u.propositions:
+                        raw_u = compute_suspense_unified(bs_u, ft_u)
+                        # Count uncommitted candidate propositions
+                        # to normalise into [0, 1] — the unified
+                        # sum scales with the open-proposition
+                        # count, so divide by N · ln 2.
+                        n_open = sum(
+                            1 for prop in ws_u.propositions
+                            if not any(
+                                t <= ft_u for t in prop.truth_at_fabula
+                            )
+                        )
+                        if n_open > 0:
+                            unified_score = min(
+                                1.0, raw_u / (n_open * math.log(2.0)),
+                            )
+                except Exception:
+                    logger.debug(
+                        "unified suspense blend failed", exc_info=True,
+                    )
+                w_efk = self._SUSPENSE_EFK_BLEND_WEIGHT
+                blended = w_efk * score_efk + (1.0 - w_efk) * unified_score
+                blended = max(0.0, min(1.0, blended))
                 dom_kind = max(per_kind_var.items(), key=lambda kv: kv[1])[0] \
                     if per_kind_var else None
                 logger.debug(
-                    "[DirectiveAssembly·Suspense·EFK·full] suspense=%.3f "
-                    "dominant_kind=%s per_kind_var=%s "
-                    "threat_by_kind=%s hope_by_kind=%s",
-                    score_efk, dom_kind,
+                    "[DirectiveAssembly·Suspense·EFK·full] efk=%.3f "
+                    "unified=%.3f → blended=%.3f dominant_kind=%s "
+                    "per_kind_var=%s threat_by_kind=%s hope_by_kind=%s",
+                    score_efk, unified_score, blended, dom_kind,
                     {k: round(v, 4) for k, v in per_kind_var.items()},
                     {k: round(v, 3) for k, v in threat_by_kind.items()},
                     {k: round(v, 3) for k, v in hope_by_kind.items()},
                 )
-                return round(score_efk, 4)
+                return round(blended, 4)
 
-        # Despair/safety guards: classic-only. (For EFK we already
-        # returned above when the belief-martingale found
-        # non-trivial expected variance; if it didn't, we fall
-        # through here intentionally so the classic combiner can
-        # still emit zero in the structurally-degenerate cases.)
-        if hope_weight <= 0.0:
-            logger.debug(
-                "[DirectiveAssembly·Suspense] No hope outcome — suspense=0 (despair)",
-            )
-            return 0.0
-        if threat_weight <= 0.0:
-            logger.debug(
-                "[DirectiveAssembly·Suspense] No threat outcome — suspense=0 (safety)",
-            )
-            return 0.0
+        # Despair/safety guards: classic-only. EFK already handled
+        # one-sided futures via ``_SUSPENSE_ONE_SIDED_MULT``; the
+        # classic aggregator gets the same soft penalty here so
+        # both modes share the Carroll/Gerrig empirical floor.
+        classic_mult = 1.0
+        if hope_weight <= 0.0 or threat_weight <= 0.0:
+            classic_mult = self._SUSPENSE_ONE_SIDED_MULT
+            if classic_mult <= 0.0:
+                logger.debug(
+                    "[DirectiveAssembly·Suspense] one-sided future "
+                    "(threat=%.3f hope=%.3f) → suspense=0",
+                    threat_weight, hope_weight,
+                )
+                return 0.0
+            # Synthesise a tiny opposing-side weight so the
+            # downstream balance/stakes maths stays well-defined.
+            if hope_weight <= 0.0:
+                hope_weight = 1e-6
+            if threat_weight <= 0.0:
+                threat_weight = 1e-6
 
         # ------------- Per-kind balance × stakes, weighted-max combine (#3, #6) -------------
         per_kind_scores: Dict[str, float] = {}
@@ -3414,7 +3658,7 @@ class DirectiveAssembler:
             score = balance * stakes
             dominant_kind = None
 
-        score = max(0.0, min(1.0, score))
+        score = max(0.0, min(1.0, score)) * classic_mult
 
         dom_threat = max(threat_by_kind.items(), key=lambda kv: kv[1])[0] \
             if threat_by_kind else None
@@ -3451,8 +3695,20 @@ class DirectiveAssembler:
     # anachrony move the gauge where it should (Reservoir Dogs, Gone
     # Girl, Tinker Tailor) without overwhelming worlds with linear
     # tellings.
-    _SURPRISE_TRAIT_KL_WEIGHT: float = 0.7
-    _SURPRISE_ANACHRONY_WEIGHT: float = 0.3
+    _SURPRISE_TRAIT_KL_WEIGHT: float = 0.4
+    _SURPRISE_ANACHRONY_WEIGHT: float = 0.2
+    # Audience belief-revision component (Itti & Baldi 2009 Bayesian
+    # surprise on the audience's posterior over event propositions).
+    # The trait-KL form is mathematically correct but produces a
+    # near-zero signal whenever a focal entity's traits sit close to
+    # the corpus marginal — i.e. on most realistic protagonists. The
+    # belief-revision form measures KL between the audience's
+    # confidence-over-time on every uncommitted proposition and is
+    # the direct analogue of what the unified suspense scorer reads
+    # from the same substrate. Blending it in here gives the gauge a
+    # responsive event-driven channel without breaking the existing
+    # trait/anachrony test contract.
+    _SURPRISE_BELIEF_KL_WEIGHT: float = 0.4
 
     # Batch C.4 — per-trait narrative salience (Reagan et al. 2016
     # corpus emotional-arc analysis; Kim, Padó & Klinger 2017 genre-
@@ -3829,20 +4085,242 @@ class DirectiveAssembler:
                 ) / len(relevant)
                 anachrony_score = min(1.0, anachrony_score)
 
-        # Convex weighted combine of trait-shift KL (the existing
-        # Itti-Baldi / Storck quantity) and anachrony (Bae-Young
-        # plan-based / Bissell-Paulin-Piper 2025 narrative-level
-        # surprise). Weights sum to 1 so the result stays in [0, 1].
+        # Audience belief-revision component (Itti-Baldi 2009 over
+        # the unified Proposition substrate). For ``local=True`` we
+        # take the per-step KL between the audience's posterior at
+        # this anchor's fabula time and the previous anchor's fabula
+        # time; for cumulative we take the integrated audience-belief
+        # entropy on still-open propositions (which collapses as the
+        # plot resolves, mirroring the cumulative trait form). Both
+        # are normalised by the open-proposition count × ln 2 so the
+        # output stays in [0, 1].
+        belief_kl_score = 0.0
+        try:
+            from shadow_loom.affect_unification import (
+                AUDIENCE_ID,
+                BeliefState,
+                _binary_entropy,
+                _binary_kl,
+                _prop_stakes_at,
+                backfill_character_belief_propositions,
+                synthesise_audience_entity,
+                synthesise_propositions,
+            )
+            ws = self.world_state
+            if not ws.propositions:
+                synthesise_propositions(ws)
+                backfill_character_belief_propositions(ws)
+            if AUDIENCE_ID not in ws.entities:
+                synthesise_audience_entity(ws)
+            bs = BeliefState(world=ws)
+            revealed_now = self._revealed_event_ids(syuzhet_anchor)
+            ft_now = self._fabula_now(revealed_now)
+            if ft_now is not None and ws.propositions:
+                if local:
+                    revealed_prev = self._revealed_event_ids(
+                        max(0, syuzhet_anchor - 1),
+                    )
+                    ft_prev = self._fabula_now(revealed_prev)
+                    if ft_prev is None:
+                        ft_prev = ft_now
+                    # Correlation-aware aggregator (Friston 2010 free-
+                    # energy predictive coding): two simultaneous
+                    # reveals on causally-connected propositions are
+                    # *jointly implied*, so the audience perceives them
+                    # as a single information unit, not two independent
+                    # surprises. Build a lookup of moved-this-step
+                    # propositions, then for each we'll deflate its KL
+                    # by the fraction of its immediate causal
+                    # predecessors / successors that *also* moved this
+                    # step. Mathematically: w_p = 1 / (1 + κ · n_kin)
+                    # where n_kin counts in-step causal kin and κ
+                    # controls how aggressively we collapse. κ=0.5
+                    # halves the contribution when one kin moved with
+                    # it; quarters when three did.
+                    moved_this_step: Dict[str, float] = {}
+                    for prop in ws.propositions:
+                        p_now = bs.confidence(
+                            AUDIENCE_ID, prop.proposition_id, ft_now,
+                        )
+                        p_prev = bs.confidence(
+                            AUDIENCE_ID, prop.proposition_id, ft_prev,
+                        )
+                        if abs(p_now - p_prev) < 1e-9:
+                            continue
+                        moved_this_step[prop.proposition_id] = (
+                            _binary_kl(p_now, p_prev) * _prop_stakes_at(
+                                prop, ft_now,
+                            )
+                        )
+                    # Build prop_id → referent event_id and an event-
+                    # level causal-kin map (predecessors + successors)
+                    # so we can count in-step kin per proposition.
+                    prop_to_evt: Dict[str, str] = {}
+                    for prop in ws.propositions:
+                        if prop.referent_ids:
+                            prop_to_evt[prop.proposition_id] = prop.referent_ids[0]
+                    causal_kin: Dict[str, Set[str]] = {}
+                    for ce in ws.causal_topology:
+                        causal_kin.setdefault(ce.source_id, set()).add(
+                            ce.target_id,
+                        )
+                        causal_kin.setdefault(ce.target_id, set()).add(
+                            ce.source_id,
+                        )
+                    moved_evt_ids = {
+                        prop_to_evt[pid] for pid in moved_this_step
+                        if pid in prop_to_evt
+                    }
+                    KAPPA = 0.5
+                    total = 0.0
+                    n_terms = 0
+                    for pid, raw_kl in moved_this_step.items():
+                        evt_id = prop_to_evt.get(pid)
+                        n_kin = 0
+                        if evt_id is not None:
+                            kin = causal_kin.get(evt_id, set())
+                            n_kin = len(kin & moved_evt_ids)
+                        deflate = 1.0 / (1.0 + KAPPA * n_kin)
+                        total += raw_kl * deflate
+                        n_terms += 1
+                    if n_terms > 0:
+                        belief_kl_score = min(
+                            1.0, total / (n_terms * math.log(2.0)),
+                        )
+                else:
+                    # Cumulative: integrated entropy on uncommitted
+                    # outcome-shaped propositions at the current
+                    # anchor. Mirrors the cumulative trait gap form.
+                    total = 0.0
+                    n_terms = 0
+                    for prop in ws.propositions:
+                        if any(
+                            t <= ft_now for t in prop.truth_at_fabula
+                        ):
+                            continue
+                        p_aud = bs.confidence(
+                            AUDIENCE_ID, prop.proposition_id, ft_now,
+                        )
+                        h = _binary_entropy(p_aud)
+                        if h <= 0.0:
+                            continue
+                        total += h * _prop_stakes_at(prop, ft_now)
+                        n_terms += 1
+                    if n_terms > 0:
+                        belief_kl_score = min(
+                            1.0, total / (n_terms * math.log(2.0)),
+                        )
+        except Exception:
+            logger.debug(
+                "surprise belief-KL component failed", exc_info=True,
+            )
+
+        # Convex weighted combine of trait-shift KL (Itti-Baldi /
+        # Storck on entity traits), audience-belief revision (Itti-
+        # Baldi on the unified Proposition substrate), and anachrony
+        # (Bae-Young / Bissell-Paulin-Piper 2025). Weights sum to 1
+        # so the result stays in [0, 1].
         score = (
             self._SURPRISE_TRAIT_KL_WEIGHT * trait_kl_score
+            + self._SURPRISE_BELIEF_KL_WEIGHT * belief_kl_score
             + self._SURPRISE_ANACHRONY_WEIGHT * anachrony_score
         )
 
         logger.debug(
-            "[DirectiveAssembly·Surprise%s] trait_kl=%.4f anachrony=%.4f "
-            "→ %.4f over %d traits",
+            "[DirectiveAssembly·Surprise%s] trait_kl=%.4f belief_kl=%.4f "
+            "anachrony=%.4f → %.4f over %d traits",
             "·local" if local else "",
-            trait_kl_score, anachrony_score, score, trait_count,
+            trait_kl_score, belief_kl_score, anachrony_score,
+            score, trait_count,
+        )
+        return round(score, 4)
+
+    # ------------------------------------------------------------------
+    # Narrative Tension (Brewer-Lichtenstein triad aggregator)
+    # ------------------------------------------------------------------
+    def compute_tension_score(
+        self,
+        entity_ids: List[str],
+        syuzhet_anchor: Optional[int] = None,
+    ) -> float:
+        """Composite tension reading across the structural-affect triad.
+
+        Brewer & Lichtenstein 1982 frame narrative tension as a
+        *triad* (suspense + curiosity + surprise) rather than four
+        independent gauges; Sternberg 1978 *Expositional Modes*
+        frames it as the disequilibrium between what the reader
+        knows, suspects, and is owed; Vorderer-Wulff-Friedrichsen
+        1996 *Suspense: Conceptualizations…* defines tension as the
+        running integral of moment-to-moment uncertainty.
+
+        We aggregate as
+
+            T = α · suspense + β · mystery + γ · irony +
+                δ · |Δ surprise| + ε · unpaid_setup_debt
+
+        with weights ``(α,β,γ,δ,ε) = (0.40, 0.25, 0.20, 0.10, 0.05)``:
+        suspense dominates per Brewer-Lichtenstein; mystery and
+        irony contribute their current cumulative gaps; surprise
+        contributes its *first derivative* as the disequilibrium
+        kick (per Friston 2010 prediction error); unpaid setup debt
+        adds the Chekhov's-gun overhang from foreshadowing arcs.
+
+        Returns a clamped ``[0, 1]`` score.
+        """
+        suspense = self.compute_suspense_score(
+            entity_ids, syuzhet_anchor,
+        )
+        mystery = self.compute_mystery_score(
+            entity_ids, syuzhet_anchor,
+        )
+        irony = self.compute_dramatic_irony_score(
+            entity_ids, syuzhet_anchor,
+        )
+        # Surprise derivative — local form is already the per-step
+        # belief-update spike; that *is* dT/ds for surprise.
+        surprise_delta = self.compute_surprise_score(
+            entity_ids, syuzhet_anchor, local=True,
+        )
+        # Unpaid setup debt — count foreshadowing setups whose
+        # payoff event (if any) hasn't been revealed yet at the
+        # anchor. Saturating curve so debt-rich worlds (Chekhov,
+        # Tinker Tailor) lift visibly without pegging the gauge.
+        debt_score = 0.0
+        try:
+            from shadow_loom_ui.reasoning_helpers import (
+                foreshadowing_arcs_data,
+            )
+            arcs = foreshadowing_arcs_data(self.world_state)
+            revealed = self._revealed_event_ids(syuzhet_anchor)
+            payoff_syuzhet: Dict[str, int] = {
+                e.id: e.syuzhet_index for e in self.world_state.events
+            }
+            unpaid = 0
+            for a in arcs:
+                if a.get("is_loose"):
+                    unpaid += 1
+                    continue
+                pid = a.get("payoff_id")
+                if pid in payoff_syuzhet and pid not in revealed:
+                    unpaid += 1
+            debt_score = unpaid / (unpaid + 4.0)
+        except Exception:
+            logger.debug(
+                "tension unpaid-setup-debt failed", exc_info=True,
+            )
+
+        score = (
+            0.40 * suspense
+            + 0.25 * mystery
+            + 0.20 * irony
+            + 0.10 * surprise_delta
+            + 0.05 * debt_score
+        )
+        score = max(0.0, min(1.0, score))
+        logger.debug(
+            "[DirectiveAssembly·Tension] suspense=%.3f mystery=%.3f "
+            "irony=%.3f Δsurprise=%.3f debt=%.3f → %.3f",
+            suspense, mystery, irony, surprise_delta, debt_score, score,
         )
         return round(score, 4)
 
@@ -3881,6 +4359,9 @@ class DirectiveAssembler:
         elif target_effect == "surprise":
             score -= self.compute_surprise_score(entity_ids, syuzhet_anchor)
 
+        elif target_effect == "narrative_tension":
+            score -= self.compute_tension_score(entity_ids, syuzhet_anchor)
+
         # --- Emotion effects (distance-to-target, NOT remaining headroom) ---
         # The previous implementation rewarded ``headroom_up`` for the
         # increase set, but ``headroom_up = 1 - current_value`` is the
@@ -3904,7 +4385,9 @@ class DirectiveAssembler:
             positive_set = set(positive)
             inverse_set = set(inverse)
 
-            trajectories = self.compute_trait_trajectories(entity_ids)
+            trajectories = self.compute_trait_trajectories(
+                entity_ids, syuzhet_anchor=syuzhet_anchor,
+            )
             contributions: List[float] = []
             for traj in trajectories:
                 if traj.trait_name in positive_set:
@@ -4090,7 +4573,9 @@ class DirectiveAssembler:
                      effect, entity_ids, intensity)
 
         gaps = self.compute_epistemic_gaps(entity_ids)
-        trajectories = self.compute_trait_trajectories(entity_ids)
+        trajectories = self.compute_trait_trajectories(
+            entity_ids, syuzhet_anchor=syuzhet_anchor,
+        )
         rel_tensions = self.compute_relationship_tensions(entity_ids)
         narrative_tensions = self.compute_narrative_tension(syuzhet_anchor)
         hidden_channels = self.compute_hidden_channels(syuzhet_anchor)

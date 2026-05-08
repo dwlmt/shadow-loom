@@ -18,6 +18,53 @@ from shadow_loom.pipeline import run_pipeline
 
 ---
 
+## 0. Inventory of bundled fixtures
+
+Each `example_worlds/<name>.py` instantiates a fully-populated
+`WorldStateV1` — entities, events, causal/social edges, channels,
+propositions, and per-entity concerns. The table below is the actual
+cardinality of every bundled fixture (counts produced by walking the
+imported `world_state` object; reproduce with
+`python scripts/_dump_world_inventory.py` or any one-line variant
+that instantiates the world and reads `len(ws.entities)` etc.).
+
+| Fixture | ent | loc | obj | WT | evt | causal | social | chn | prop | concern |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `macbeth` | 12 | 9 | 6 | 3 | 32 | 105 | 18 | 2 | 18 | 21 |
+| `romeo_and_juliet` | 15 | 9 | 6 | 5 | 35 | 112 | 22 | 2 | 12 | 19 |
+| `apocalypse_now` | 10 | 8 | 4 | 4 | 23 | 91 | 20 | 2 | 17 | 24 |
+| `great_gatsby` | 9 | 8 | 5 | 3 | 26 | 97 | 22 | 2 | 19 | 23 |
+| `gone_girl` | 11 | 8 | 5 | 3 | 24 | 103 | 28 | 4 | 12 | 17 |
+| `reservoir_dogs` | 9 | 5 | 5 | 2 | 18 | 106 | 24 | 1 | 12 | 15 |
+| `frankenstein` | 12 | 9 | 4 | 3 | 32 | 94 | 20 | 3 | 15 | 19 |
+| `death_on_the_nile` | 15 | 8 | 8 | 3 | 30 | 99 | 20 | 2 | 18 | 33 |
+| `dads_army` | 11 | 7 | 3 | 2 | 25 | 134 | 22 | 2 | 16 | 36 |
+| `tinker_tailor_soldier_spy` | 17 | 10 | 5 | 5 | 43 | 100 | 27 | 5 | 11 | 15 |
+| `great_expectations` | 14 | 10 | 5 | 3 | 38 | 141 | 22 | 1 | 17 | 18 |
+| `wuthering_heights` | 12 | 5 | 4 | 3 | 36 | 122 | 22 | 5 | 14 | 20 |
+| `persuasion` | 17 | 7 | 5 | 3 | 28 | 104 | 26 | 2 | 13 | 18 |
+| `nineteen_eighty_four` | 9 | 9 | 5 | 3 | 28 | 98 | 18 | 5 | 11 | 13 |
+| `brief_encounter` | 11 | 7 | 5 | 3 | 21 | 83 | 12 | 2 | 7 | 9 |
+| `a_fish_called_wanda` | 7 | 10 | 3 | 4 | 39 | 128 | 18 | 4 | 17 | 21 |
+| `the_devil_wears_prada` | 8 | 7 | 5 | 3 | 27 | 73 | 12 | 3 | 17 | 20 |
+| `the_lion_the_witch_and_the_wardrobe` | 13 | 10 | 6 | 4 | 33 | 107 | 26 | 1 | 13 | 15 |
+| `once_upon_a_time_in_the_west` | 9 | 5 | 5 | 3 | 27 | 67 | 12 | 3 | 17 | 18 |
+| `a_court_of_thorn_and_roses` | 10 | 8 | 4 | 6 | 30 | 124 | 28 | 4 | 23 | 33 |
+
+Key: `ent`=entities, `loc`=locations, `obj`=objects,
+`WT`=`WORLD_*` traits, `evt`=events (choice/outcome/revelation/utterance
+combined), `causal`=`CausalEdge` count across all five modalities,
+`social`=`RelationshipEdge` directed dyads (asymmetric — see §1.3),
+`chn`=`Channel` count, `prop`=`Proposition` registry size, `concern`
+=total `Concern` rows summed across every `Entity.concerns`. Every
+fixture has a populated `narrative_style` profile.
+
+All twenty fixtures instantiate the full Phase A3 (proposition
+catalogue) + per-entity concern roster used by the propositional
+affect scorers in [academic-foundations.md §3.7](academic-foundations.md#37-propositional-belief-revision-affect-affect_unificationpy).
+
+---
+
 ## Index
 
 1. [The world model — what gets stored](#1-the-world-model--what-gets-stored)

@@ -1844,7 +1844,7 @@ async def direct(
         return {"error": "No world model found."}
 
     valid_effects = {
-        "mystery", "dramatic_irony", "suspense", "surprise",
+        "mystery", "dramatic_irony", "suspense", "surprise", "narrative_tension",
         "grief", "rage", "joy", "fear", "love", "regret",
     }
     if target_effect not in valid_effects:

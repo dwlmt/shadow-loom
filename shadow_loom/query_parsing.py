@@ -165,6 +165,7 @@ class ParsedQuery(BaseModel):
     )
     target_effect: Optional[Literal[
         "suspense", "surprise", "mystery", "dramatic_irony",
+        "narrative_tension",
         "grief", "rage", "joy", "regret", "love", "fear",
     ]] = Field(default=None, description="For directive: the narrative effect.")
     target_vector_id: Optional[str] = Field(
@@ -834,6 +835,7 @@ def _build_directive_dynamic_model(world_state: WorldStateV1):
 
     EffectLit = Literal[
         "suspense", "surprise", "mystery", "dramatic_irony",
+        "narrative_tension",
         "grief", "rage", "joy", "regret", "love", "fear",
     ]
 

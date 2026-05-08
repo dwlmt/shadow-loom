@@ -114,6 +114,7 @@ def build_reasoning_tab(state: AppState) -> None:
             "w-full bg-white border-b border-slate-200 px-4"
         ) as sub_tabs:
             ui.tab("events", label="Events", icon="auto_stories")
+            ui.tab("topology", label="Causal Topology", icon="device_hub")
             ui.tab("trace", label="Trace", icon="psychology")
             ui.tab("belief", label="Belief lens", icon="visibility")
             ui.tab("channels", label="Hidden channels", icon="hearing_disabled")
@@ -128,6 +129,12 @@ def build_reasoning_tab(state: AppState) -> None:
             with ui.tab_panel("events").classes("q-pa-none h-full"):
                 subtab_help("reasoning.events")
                 build_event_navigator(state)
+            with ui.tab_panel("topology").classes("p-4"):
+                subtab_help("reasoning.topology")
+                from shadow_loom_ui.components.causality_tab import (
+                    _build_causal_topology,
+                )
+                _build_causal_topology(state)
             with ui.tab_panel("trace").classes("p-4"):
                 subtab_help("reasoning.trace")
                 _build_trace_panel(state)
