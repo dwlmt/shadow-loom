@@ -2060,7 +2060,16 @@ class DirectiveAssembler:
             ft_now_m = self._fabula_now(revealed)
             if ft_now_m is not None:
                 for prop in ws_m.propositions:
-                    if any(t <= ft_now_m for t in prop.truth_at_fabula):
+                    # Mirror ``compute_suspense_unified`` — multi-flip
+                    # propositions with a future commit are still open
+                    # even if a prior commit exists. Only skip when
+                    # every commit is at/before the cursor.
+                    future_commits_m = [
+                        t for t in prop.truth_at_fabula if t > ft_now_m
+                    ]
+                    if not future_commits_m and any(
+                        t <= ft_now_m for t in prop.truth_at_fabula
+                    ):
                         continue
                     p = bs_m.confidence(
                         AUDIENCE_ID, prop.proposition_id, ft_now_m,
@@ -3716,9 +3725,15 @@ class DirectiveAssembler:
                         # to normalise into [0, 1] — the unified
                         # sum scales with the open-proposition
                         # count, so divide by N · ln 2.
+                        # "Open" mirrors ``compute_suspense_unified``:
+                        # any future commit (t > cursor) keeps the
+                        # proposition open even if there's a prior
+                        # commit (multi-flip propositions).
                         n_open = sum(
                             1 for prop in ws_u.propositions
-                            if not any(
+                            if any(
+                                t > ft_u for t in prop.truth_at_fabula
+                            ) or not any(
                                 t <= ft_u for t in prop.truth_at_fabula
                             )
                         )
@@ -4337,7 +4352,13 @@ class DirectiveAssembler:
                     total = 0.0
                     n_terms = 0
                     for prop in ws.propositions:
-                        if any(
+                        # Mirror ``compute_suspense_unified`` — keep
+                        # multi-flip propositions open while a future
+                        # commit is still pending.
+                        future_commits_c = [
+                            t for t in prop.truth_at_fabula if t > ft_now
+                        ]
+                        if not future_commits_c and any(
                             t <= ft_now for t in prop.truth_at_fabula
                         ):
                             continue

@@ -451,8 +451,8 @@ def render_knowledge_asymmetry_heatmap(
             ),
         },
         "grid": [
-            {"top": 30, "height": 22, "left": 160, "right": 30},  # prior strip
-            {"top": 70, "bottom": 80, "left": 160, "right": 30},  # matrix
+            {"top": 30, "height": 22, "left": 180, "right": 30},  # prior strip
+            {"top": 70, "bottom": 130, "left": 180, "right": 30},  # matrix
         ],
         "xAxis": [
             {
@@ -470,6 +470,9 @@ def render_knowledge_asymmetry_heatmap(
                     "rotate": 45,
                     "color": _CHART_TEXT,
                     "fontSize": 10,
+                    "width": 110,
+                    "overflow": "truncate",
+                    "ellipsis": "…",
                 },
                 "splitArea": {"show": True},
             },
@@ -485,7 +488,13 @@ def render_knowledge_asymmetry_heatmap(
                 "gridIndex": 1,
                 "type": "category",
                 "data": ent_names,
-                "axisLabel": {"color": _CHART_TEXT, "fontSize": 10},
+                "axisLabel": {
+                    "color": _CHART_TEXT,
+                    "fontSize": 10,
+                    "width": 160,
+                    "overflow": "truncate",
+                    "ellipsis": "…",
+                },
                 "splitArea": {"show": True},
             },
         ],
@@ -501,7 +510,7 @@ def render_knowledge_asymmetry_heatmap(
                 "min": -1.0, "max": 1.0,
                 "calculable": True,
                 "orient": "horizontal",
-                "left": "center", "bottom": 0,
+                "left": "center", "bottom": 10,
                 "inRange": {"color": [
                     "#dc2626", "#fca5a5", "#f1f5f9", "#86efac", "#16a34a"
                 ]},
@@ -915,12 +924,24 @@ def render_relationship_heatmap(
     # + tooltip instead. Axis labels also need thinning at scale.
     n = len(names)
     show_labels = n <= 12
-    label_interval = 0 if n <= 25 else max(0, n // 25)
+    # Thin axis labels well before they visually collide. fontSize=10 +
+    # 45° rotation needs ~14px per label; below ~15 entities every
+    # label fits, between 15 and 25 we drop every other, beyond that
+    # we widen the stride. ECharts ``interval`` is "how many to skip"
+    # so 1 = show every other, 2 = every third, etc.
+    if n <= 15:
+        label_interval = 0
+    elif n <= 25:
+        label_interval = 1
+    else:
+        label_interval = max(1, n // 20)
 
     chart = ui.echart({
         "backgroundColor": _CHART_BG,
         "tooltip": {**_CHART_TOOLTIP, "position": "top"},
-        "grid": {"top": 30, "bottom": 80, "left": 100, "right": 30},
+        # Bottom: rotated 45° names need ~70px; visualMap bar takes ~45px;
+        # 10px breathing room between them.
+        "grid": {"top": 30, "bottom": 125, "left": 130, "right": 30},
         "xAxis": {
             "type": "category",
             "data": names,
@@ -929,6 +950,12 @@ def render_relationship_heatmap(
                 "color": _CHART_TEXT,
                 "fontSize": 10,
                 "interval": label_interval,
+                # Keep long character names from spilling into adjacent
+                # cells / the visualMap bar by truncating with an
+                # ellipsis. Tooltip still shows the full name on hover.
+                "width": 110,
+                "overflow": "truncate",
+                "ellipsis": "…",
             },
             "splitArea": {"show": True},
         },
@@ -939,6 +966,9 @@ def render_relationship_heatmap(
                 "color": _CHART_TEXT,
                 "fontSize": 10,
                 "interval": label_interval,
+                "width": 120,
+                "overflow": "truncate",
+                "ellipsis": "…",
             },
             "splitArea": {"show": True},
         },
@@ -948,7 +978,7 @@ def render_relationship_heatmap(
             "calculable": True,
             "orient": "horizontal",
             "left": "center",
-            "bottom": 0,
+            "bottom": 10,
             "inRange": {"color": ramp},
             "textStyle": {"color": _CHART_TEXT},
         },
@@ -1294,13 +1324,20 @@ def render_relationship_heatmap_timeline(
 
     n = len(names)
     show_labels = n <= 12
-    label_interval = 0 if n <= 25 else max(0, n // 25)
+    if n <= 15:
+        label_interval = 0
+    elif n <= 25:
+        label_interval = 1
+    else:
+        label_interval = max(1, n // 20)
 
     base_option = {
         "backgroundColor": _CHART_BG,
         "tooltip": {**_CHART_TOOLTIP, "position": "top"},
-        # Bottom space: ~50px for visualMap + ~60px for the timeline.
-        "grid": {"top": 30, "bottom": 130, "left": 100, "right": 30},
+        # Bottom: ~70px x-axis names + ~45px visualMap + ~60px timeline
+        # + breathing room. Without this the rotated labels collide with
+        # the visualMap, which in turn collides with the timeline strip.
+        "grid": {"top": 30, "bottom": 185, "left": 130, "right": 30},
         "xAxis": {
             "type": "category",
             "data": names,
@@ -1309,6 +1346,9 @@ def render_relationship_heatmap_timeline(
                 "color": _CHART_TEXT,
                 "fontSize": 10,
                 "interval": label_interval,
+                "width": 110,
+                "overflow": "truncate",
+                "ellipsis": "…",
             },
             "splitArea": {"show": True},
         },
@@ -1319,6 +1359,9 @@ def render_relationship_heatmap_timeline(
                 "color": _CHART_TEXT,
                 "fontSize": 10,
                 "interval": label_interval,
+                "width": 120,
+                "overflow": "truncate",
+                "ellipsis": "…",
             },
             "splitArea": {"show": True},
         },
@@ -1328,7 +1371,7 @@ def render_relationship_heatmap_timeline(
             "calculable": True,
             "orient": "horizontal",
             "left": "center",
-            "bottom": 70,
+            "bottom": 75,
             "inRange": {"color": ramp},
             "textStyle": {"color": _CHART_TEXT},
         },
@@ -2755,13 +2798,22 @@ def render_epistemic_map(
     # confidence on hover.
     n_cells = max(len(ent_names), len(target_names))
     show_labels = n_cells <= 12
-    x_interval = 0 if len(target_names) <= 25 else max(0, len(target_names) // 25)
-    y_interval = 0 if len(ent_names) <= 25 else max(0, len(ent_names) // 25)
+    x_interval = (
+        0 if len(target_names) <= 15
+        else 1 if len(target_names) <= 25
+        else max(1, len(target_names) // 20)
+    )
+    y_interval = (
+        0 if len(ent_names) <= 15
+        else 1 if len(ent_names) <= 25
+        else max(1, len(ent_names) // 20)
+    )
 
     chart = ui.echart({
         "backgroundColor": _CHART_BG,
         "tooltip": {**_CHART_TOOLTIP, "position": "top"},
-        "grid": {"top": 30, "bottom": 80, "left": 100, "right": 30},
+        # Bottom: rotated 45° names ~70px + visualMap ~45px + breathing.
+        "grid": {"top": 30, "bottom": 130, "left": 130, "right": 30},
         "xAxis": {
             "type": "category",
             "data": target_names,
@@ -2772,6 +2824,9 @@ def render_epistemic_map(
                 "color": _CHART_TEXT,
                 "fontSize": 10,
                 "interval": x_interval,
+                "width": 110,
+                "overflow": "truncate",
+                "ellipsis": "…",
             },
             "splitArea": {"show": True},
         },
@@ -2784,6 +2839,9 @@ def render_epistemic_map(
                 "color": _CHART_TEXT,
                 "fontSize": 10,
                 "interval": y_interval,
+                "width": 120,
+                "overflow": "truncate",
+                "ellipsis": "…",
             },
             "splitArea": {"show": True},
         },
@@ -2793,7 +2851,7 @@ def render_epistemic_map(
             "calculable": True,
             "orient": "horizontal",
             "left": "center",
-            "bottom": 0,
+            "bottom": 10,
             "inRange": {"color": ["#1E2A3A", "#3A7BD5", "#6FBF3A"]},
             "textStyle": {"color": _CHART_TEXT},
         },
@@ -5078,7 +5136,7 @@ def render_character_emotion_heatmap(
             ),
         },
         "grid": {
-            "left": 110, "right": 30, "top": 30, "bottom": 50,
+            "left": 140, "right": 30, "top": 30, "bottom": 60,
             "containLabel": True,
         },
         "xAxis": {
@@ -5091,7 +5149,12 @@ def render_character_emotion_heatmap(
             "type": "category",
             "data": y_labels,
             "splitArea": {"show": True},
-            "axisLabel": {"fontSize": 11},
+            "axisLabel": {
+                "fontSize": 11,
+                "width": 130,
+                "overflow": "truncate",
+                "ellipsis": "…",
+            },
         },
         "visualMap": {
             "min": 0.0,
@@ -5565,21 +5628,29 @@ def render_concern_salience_heatmap(
                     "p.name+'<br/>salience: '+Number(p.value[2]).toFixed(2);}"
                 ),
             },
-            "grid": {"left": 140, "right": 30, "top": 80, "bottom": 30},
+            # Top: visualMap (~30px) + breathing room. Bottom: rotated
+            # 30° column labels need ~50px so they don't clip.
+            "grid": {"left": 160, "right": 30, "top": 60, "bottom": 70},
             "xAxis": {
                 "type": "category", "data": cols,
-                "axisLabel": {"interval": 0, "rotate": 30, "fontSize": 10},
+                "axisLabel": {
+                    "interval": 0, "rotate": 30, "fontSize": 10,
+                    "width": 100, "overflow": "truncate", "ellipsis": "…",
+                },
                 "splitArea": {"show": True},
             },
             "yAxis": {
                 "type": "category", "data": rows,
-                "axisLabel": {"fontSize": 10},
+                "axisLabel": {
+                    "fontSize": 10,
+                    "width": 140, "overflow": "truncate", "ellipsis": "…",
+                },
                 "splitArea": {"show": True},
             },
             "visualMap": {
                 "min": 0.0, "max": 1.0,
                 "calculable": True, "orient": "horizontal",
-                "left": "center", "top": 10,
+                "left": "center", "top": 5,
                 "inRange": {"color": ["#f1f5f9", "#3b82f6", "#1e3a8a"]},
             },
             "series": [{

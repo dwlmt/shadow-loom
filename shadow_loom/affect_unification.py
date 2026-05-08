@@ -619,12 +619,20 @@ def compute_suspense_unified(
         # rescues every unrevealed event/trait/identity beat.
         if prop.kind not in ("outcome", "event_occurs", "trait_holds", "identity_is"):
             continue
-        # Skip if already committed
-        if any(t <= fabula_t for t in prop.truth_at_fabula):
+        # A proposition is "open" when there is at least one truth
+        # commit STRICTLY in the future. Multi-commit propositions
+        # (e.g. ``{18000: True, 20000: False}``) flip back and forth
+        # so the prior commit at 18000 must NOT close the question
+        # at 19000 — the impending reversal at 20000 keeps it open.
+        # Only skip when every commit is at or before the cursor AND
+        # there are no future commits left.
+        future_commits = [t for t in prop.truth_at_fabula if t > fabula_t]
+        if not future_commits and any(
+            t <= fabula_t for t in prop.truth_at_fabula
+        ):
             continue
         p_aud = bs.confidence(AUDIENCE_ID, prop.proposition_id, fabula_t)
         # Imminence kernel — pull next future commitment time if any.
-        future_commits = [t for t in prop.truth_at_fabula if t > fabula_t]
         if future_commits:
             dt = min(future_commits) - fabula_t
             imminence = math.exp(-dt / max(1.0, tau_fabula))
