@@ -275,7 +275,7 @@ class ExtractionSettings(BaseSettings):
     validation_payload_max_chars: int = Field(default=600_000)
     correction_subgraph_threshold_chars: int = Field(default=400_000)
     max_concurrent_chunks: int = Field(default=12)
-    per_chunk_timeout_seconds: float = Field(default=600.0)
+    per_chunk_timeout_seconds: float = Field(default=1200.0)
     estimated_events_per_chunk: int = Field(default=10)
     enable_consequences_agent: bool = Field(default=True)
 

@@ -1176,6 +1176,78 @@ def _augment_topology_with_sandbox_deltas(
                 "[Bridge] Could not build ChunkConcernSnapshot for %s.%s.", ccn_id, field,
             )
 
+    # --- Observation reveals (Rung 1) -----------------------------------
+    # ``observation_facts`` is a Dict[node_id, value_str] declaring
+    # facts the POV (or audience) has now observed. Without a bridge
+    # these reveals only land if the rendered prose verbalises them
+    # clearly enough for the extractor to re-discover; many subtle
+    # reveals get lost. Materialise them deterministically:
+    #   * ``ENT_*`` → EntityUpdate with ``new_status=value``;
+    #     when the value names a known location (``LOC_...``) we
+    #     instead set ``new_location_id``.
+    #   * ``WORLD_*`` → WorldTraitSnapshot with no magnitude change
+    #     (the reveal is epistemic, not in-world); we attach a
+    #     status-style description on the snapshot's triggered_by
+    #     when the value parses as a number it's promoted to
+    #     magnitude.value (clamped to [0,1]).
+    #   * ``OBJ_*`` / ``LOC_*`` → recorded as a ``new_status``
+    #     entity_update on the carrier entity if any; otherwise a
+    #     debug log (we don't currently model object-state timelines
+    #     as snapshots).
+    obs_facts = physics_result.get("observation_facts") or {}
+    for node_id, raw_value in obs_facts.items():
+        if not isinstance(node_id, str) or raw_value is None:
+            continue
+        value = str(raw_value).strip()
+        if not value:
+            continue
+        if node_id.startswith("ENT_"):
+            ent = world_state.entities.get(node_id)
+            if ent is None:
+                continue
+            update_kwargs: Dict[str, Any] = {}
+            if value.startswith("LOC_") and value in (world_state.locations or {}):
+                update_kwargs["new_location_id"] = value
+            else:
+                update_kwargs["new_status"] = value
+            existing = next(
+                (
+                    eu for eu in topology.entity_updates
+                    if eu.entity_id == node_id
+                    and eu.fabula_time == fabula_time_now
+                ),
+                None,
+            )
+            if existing is None:
+                topology.entity_updates.append(EntityUpdate(
+                    entity_id=node_id,
+                    fabula_time=fabula_time_now,
+                    triggered_by=None,
+                    **update_kwargs,
+                ))
+            else:
+                # Don't clobber an explicit prior write at this tick.
+                for k, v in update_kwargs.items():
+                    if getattr(existing, k, None) in (None, "", []):
+                        setattr(existing, k, v)
+        elif node_id.startswith("WORLD_"):
+            # Numeric values are routed through the magnitude
+            # snapshot path; non-numeric reveals (descriptive
+            # strings) are skipped because WorldTraitSnapshot has
+            # no free-form status field today.
+            try:
+                num = float(value)
+            except ValueError:
+                continue
+            _upsert_world_trait_snapshot(
+                node_id, "magnitude", num, fabula_time_now,
+            )
+        else:
+            logger.debug(
+                "[Bridge·observe] Skipped reveal for non-ENT/WORLD node %s "
+                "(value=%r) — no snapshot path.", node_id, raw_value,
+            )
+
     return topology
 
 
@@ -1861,10 +1933,19 @@ def run_pipeline(
                 (e.fabula_time for e in ws.events),
                 default=-_spacing,
             ) + _spacing
-            _ft_hist = min(
-                (e.fabula_time for e in ws.events),
-                default=0,
-            )
+            # Rung-3 abduction returns ``past_anchor`` — the actual
+            # Point-of-Divergence in fabula time. Use it so hidden
+            # deltas land at the correct historical tick. Fall back
+            # to the timeline minimum only when the physics result
+            # didn't surface one (rung-1/2 paths).
+            _ft_hist = physics_result.get("past_anchor")
+            if _ft_hist is None:
+                _ft_hist = min(
+                    (e.fabula_time for e in ws.events),
+                    default=0,
+                )
+            else:
+                _ft_hist = int(_ft_hist)
             _augment_topology_with_sandbox_deltas(
                 topology,
                 world_state=ws,
@@ -2254,10 +2335,19 @@ async def run_pipeline_async(
                 (e.fabula_time for e in ws.events),
                 default=-_spacing,
             ) + _spacing
-            _ft_hist = min(
-                (e.fabula_time for e in ws.events),
-                default=0,
-            )
+            # Rung-3 abduction returns ``past_anchor`` — the actual
+            # Point-of-Divergence in fabula time. Use it so hidden
+            # deltas land at the correct historical tick. Fall back
+            # to the timeline minimum only when the physics result
+            # didn't surface one (rung-1/2 paths).
+            _ft_hist = physics_result.get("past_anchor")
+            if _ft_hist is None:
+                _ft_hist = min(
+                    (e.fabula_time for e in ws.events),
+                    default=0,
+                )
+            else:
+                _ft_hist = int(_ft_hist)
             _augment_topology_with_sandbox_deltas(
                 topology,
                 world_state=ws,

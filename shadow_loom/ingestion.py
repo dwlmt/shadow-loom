@@ -664,7 +664,7 @@ class ExtractionConfig(BaseModel):
         "a value of 0 would create ``asyncio.Semaphore(0)`` and hang every chunk.",
     )
     per_chunk_timeout_seconds: float = Field(
-        default=600.0,
+        default=1200.0,
         ge=0,
         description="Per-chunk soft timeout (seconds) for the entire "
         "Socratic\u2192Physics\u2192Social\u2192Consequences pipeline on a "
@@ -672,7 +672,7 @@ class ExtractionConfig(BaseModel):
         "chunk yields an empty ChunkTopology so the rest of the run can "
         "proceed; the chunk's stage flags are all set to 1 so the "
         ">50%-of-chunks failure threshold still triggers if many chunks "
-        "time out. Default 600s (10 min) accommodates slow local models "
+        "time out. Default 1200s (20 min) accommodates slow local models "
         "with multiple retries; set to 0 to disable.",
     )
     estimated_events_per_chunk: int = Field(
@@ -6673,18 +6673,23 @@ def _apply_event_renames(topo: ChunkTopology, rmap: Dict[str, str]) -> ChunkTopo
         cs.model_copy(update={"triggered_by": _r(cs.triggered_by)})
         for cs in topo.concern_snapshots
     ]
-    return ChunkTopology(
-        events=new_events,
-        causal_topology=new_causal,
-        channels=topo.channels,
-        social_topology=topo.social_topology,
-        spatial_topology=topo.spatial_topology,
-        entity_updates=new_entity_updates,
-        proposition_snapshots=new_prop_snaps,
-        proposition_truth_commits=new_truth_commits,
-        concern_snapshots=new_concern_snaps,
-        new_concern_seeds=topo.new_concern_seeds,
-    )
+    # ``model_copy(update=...)`` rather than rebuilding the model
+    # explicitly so any ChunkTopology field NOT touched by rename
+    # (new_entities, new_objects, new_locations, new_world_traits,
+    # new_propositions, new_concerns, proposition_truth_commits,
+    # belief_confidence_updates, deletions, supersession_updates,
+    # new_concern_seeds, etc.) is preserved verbatim. Rebuilding the
+    # model with a hand-listed subset silently dropped those fields,
+    # which manifested as snapshot-era / merge-era data going missing
+    # whenever cross-chunk EVT_ id reconciliation fired.
+    return topo.model_copy(update={
+        "events": new_events,
+        "causal_topology": new_causal,
+        "entity_updates": new_entity_updates,
+        "proposition_snapshots": new_prop_snaps,
+        "proposition_truth_commits": new_truth_commits,
+        "concern_snapshots": new_concern_snaps,
+    })
 
 
 def _shift_fabula_times(topo: ChunkTopology, shift: int) -> None:
@@ -7378,9 +7383,16 @@ def _deduplicate_social(edges: List[RelationshipEdge]) -> List[RelationshipEdge]
     Instead we merge per-axis, picking the metric with the larger
     ``last_updated_fabula`` for each axis independently.
     """
-    best: dict[tuple[str, str], RelationshipEdge] = {}
+    # Branch-aware key: same (src, tgt) on factual vs shadow must NOT
+    # collapse — Pearl Rung-2/3 forks legitimately produce parallel
+    # edges with the same endpoints on the shadow branch.
+    best: dict[tuple[str, str, str], RelationshipEdge] = {}
     for e in edges:
-        key = (e.source_entity_id, e.target_entity_id)
+        key = (
+            e.source_entity_id,
+            e.target_entity_id,
+            getattr(e, "world_id", "factual"),
+        )
         if key not in best:
             best[key] = e
             continue
@@ -7476,9 +7488,13 @@ def _deduplicate_spatial(edges: List[SpatialEdge]) -> List[SpatialEdge]:
     passage's birth tick is preserved) and merge in any subsequent
     edge's lock and destruction facts.
     """
-    by_pair: dict[tuple[str, str], List[SpatialEdge]] = {}
+    # Branch-aware key: factual and shadow spatial edges over the same
+    # passage must remain distinct so a counterfactual lock/destruction
+    # never bleeds into the factual world (and vice versa).
+    by_pair: dict[tuple[str, str, str], List[SpatialEdge]] = {}
     for e in edges:
-        by_pair.setdefault((e.source_id, e.target_id), []).append(e)
+        wid = getattr(e, "world_id", "factual")
+        by_pair.setdefault((e.source_id, e.target_id, wid), []).append(e)
     merged: List[SpatialEdge] = []
     for pair, group in by_pair.items():
         # Sort by established_at_fabula so the earliest is canonical.
@@ -7538,6 +7554,8 @@ def _deduplicate_causal(
     tick. Set ``fabula_tolerance=0`` to restore strict dedup.
     """
     def _key(e: CausalEdge) -> tuple:
+        # Branch-aware: the same causal arc on factual vs shadow must
+        # remain a distinct edge so Pearl Rung-2/3 forks survive merge.
         return (
             e.source_id,
             e.target_id,
@@ -7546,6 +7564,7 @@ def _deduplicate_causal(
             e.rel_counterpart_id,
             e.mechanism,
             e.fabula_time,
+            getattr(e, "world_id", "factual"),
         )
 
     best: dict[tuple, CausalEdge] = {}
@@ -7563,6 +7582,7 @@ def _deduplicate_causal(
     deduped.sort(key=lambda e: (
         e.source_id, e.target_id, e.causality_type,
         e.trait_target or "", e.rel_counterpart_id or "", e.mechanism,
+        getattr(e, "world_id", "factual"),
         e.fabula_time,
     ))
     collapsed: List[CausalEdge] = []
@@ -7576,6 +7596,8 @@ def _deduplicate_causal(
                 and prev.trait_target == e.trait_target
                 and prev.rel_counterpart_id == e.rel_counterpart_id
                 and prev.mechanism == e.mechanism
+                and getattr(prev, "world_id", "factual")
+                    == getattr(e, "world_id", "factual")
                 and abs(e.fabula_time - prev.fabula_time) <= fabula_tolerance
             ):
                 if e.causal_force > prev.causal_force:
@@ -7624,11 +7646,16 @@ def _deduplicate_channels_with_map(
     aliases: dict[tuple, list[str]] = {}
     for chunk_channels in channel_dicts:
         for ch in chunk_channels.values():
+            # Branch-aware bucket: a shadow-branch channel with the
+            # same medium/participants/directionality as a factual
+            # channel must NOT collapse — they describe parallel
+            # capabilities in distinct AMWN branches.
             key = (
                 ch.medium,
                 tuple(sorted(ch.participant_ids)),
                 ch.directionality,
                 ch.established_at_fabula // bucket_size,
+                getattr(ch, "world_id", "factual"),
             )
             aliases.setdefault(key, []).append(ch.id)
             existing = best.get(key)
@@ -7646,6 +7673,17 @@ def _deduplicate_channels_with_map(
                 if t is not None
             ]
             merged_term: Optional[int] = min(term_candidates) if term_candidates else None
+            # Earliest non-null syuzhet discovery wins (the channel
+            # becomes audience-knowledge at the first reveal beat;
+            # later re-mentions don't push the discovery later).
+            disc_candidates = [
+                d for d in (
+                    getattr(existing, "discovered_at_syuzhet", None),
+                    getattr(ch, "discovered_at_syuzhet", None),
+                )
+                if d is not None
+            ]
+            merged_disc: Optional[int] = min(disc_candidates) if disc_candidates else None
             # Earliest establishment tick wins (channel exists from the
             # earliest report onward; later jittered re-reports were
             # the LLM observing the same standing capability later).
@@ -7653,6 +7691,7 @@ def _deduplicate_channels_with_map(
             best[key] = ch.model_copy(update={
                 "intelligibility": merged_intel,
                 "terminated_at_fabula": merged_term,
+                "discovered_at_syuzhet": merged_disc,
                 "established_at_fabula": merged_estab,
             })
     deduped = {ch.id: ch for ch in best.values()}

@@ -1887,17 +1887,25 @@ class VersionedWorldModel(BaseModel):
             merged.world_traits[wid] = wt
             changeset.world_traits_added += 1
 
-        # --- Events (deduplicate by ID, keep existing) ---
+        # --- Events (deduplicate by (id, world_id), keep existing) ---
+        # Branch-aware: the same EVT_ id can legitimately exist on both
+        # factual and shadow branches (Pearl Rung-2/3 fork). Collapsing
+        # purely on ``id`` would silently drop the shadow variant of an
+        # event whose factual sibling was already merged.
         pre_events = len(merged.events)
-        existing_event_ids = {e.id for e in merged.events}
+        existing_event_keys = {
+            (e.id, getattr(e, "world_id", "factual")) for e in merged.events
+        }
         for evt in topology.events:
-            if evt.id not in existing_event_ids:
+            key = (evt.id, getattr(evt, "world_id", "factual"))
+            if key not in existing_event_keys:
                 merged.events.append(evt)
-                existing_event_ids.add(evt.id)
+                existing_event_keys.add(key)
             else:
                 logger.debug(
-                    "[VersionedWorldModel·merge] Duplicate event %s — kept existing.",
+                    "[VersionedWorldModel·merge] Duplicate event %s (%s) — kept existing.",
                     evt.id,
+                    key[1],
                 )
         merged.events.sort(key=lambda e: e.fabula_time)
         changeset.events_added = len(merged.events) - pre_events

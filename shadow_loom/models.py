@@ -848,6 +848,21 @@ class Channel(AMWNNode):
             "Null = still active at the end of the narrative."
         ),
     )
+    discovered_at_syuzhet: Optional[int] = Field(
+        default=None,
+        description=(
+            "Syuzhet index at which the audience (or POV entity) first "
+            "becomes aware of this channel. ``None`` means the channel "
+            "is overt from the start of the narrative; a positive value "
+            "marks the reveal beat at which a previously-hidden channel "
+            "(an undisclosed cipher line, a secret pact, a back-channel "
+            "tip-off) is brought on-page. Distinct from "
+            "``established_at_fabula`` (when the channel exists in the "
+            "storyworld) so dramatic-irony and mystery scoring can "
+            "reason about *audience knowledge* of the channel without "
+            "touching its in-world lifecycle."
+        ),
+    )
     evidence_strength: Literal["weak", "moderate", "strong"] = Field(
         default="moderate",
         description=(

@@ -297,7 +297,12 @@ def calculate_narrative_physics(
                 "status": "success",
                 "query_type": "observation",
                 "physics_state": full_state,
-                "directives": request.observations
+                "directives": request.observations,
+                # Surface the structured ``observations`` mapping so the
+                # pipeline merge bridge can materialise reveals as
+                # deterministic EntityUpdate / WorldTraitSnapshot rows
+                # instead of relying on prose extraction to recover them.
+                "observation_facts": dict(request.observations or {}),
             }
 
         logger.info("[Observation] Multi-Ego extraction for POV: %s", request.focus_entity_ids)
@@ -307,7 +312,9 @@ def calculate_narrative_physics(
             "status": "success",
             "query_type": "observation",
             "physics_state": ego_graph.model_dump(),
-            "directives": request.observations
+            "directives": request.observations,
+            # See above — same bridge contract for the POV path.
+            "observation_facts": dict(request.observations or {}),
         }
 
     # ==========================================
@@ -670,6 +677,13 @@ def calculate_narrative_physics(
         physics_override = _generate_physics_override(shadow_graph)
         if physics_override:
             result["physics_override"] = physics_override
+
+        # Surface the Point-of-Divergence so the pipeline can stamp
+        # rung-3 hidden_deltas snapshots at the actual historical
+        # anchor instead of falling back to the global event-timeline
+        # minimum (which would write abducted state at the start of
+        # the story).
+        result["past_anchor"] = int(past_anchor)
 
         if _forced_warning is not None:
             result["implausibility_warning"] = _forced_warning["reason"]

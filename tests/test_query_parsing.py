@@ -1091,7 +1091,7 @@ class TestTypedQueryParsing:
         for qt in QUERY_TYPES:
             prompt = _build_typed_system_prompt(qt)
             assert qt in prompt
-            assert "ID RESOLUTION RULES" in prompt
+            assert "ID PREFIX CHEATSHEET" in prompt
 
     def test_none_query_type_uses_legacy_prompt(self, macbeth):
         """When query_type is None, the legacy classification prompt is used."""
