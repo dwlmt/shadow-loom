@@ -2022,3 +2022,381 @@ class TestMirrorAsymmetricRelationships:
             f"mirrored reverse edge must not demand mutation_social "
             f"coverage; got {reverse_keys}"
         )
+
+
+# =====================================================================
+# Per-chunk deterministic consistency audit
+# =====================================================================
+
+from shadow_loom.ingestion import (  # noqa: E402
+    _audit_chunk_consistency,
+    _ChunkDefect,
+    EntityUpdate,
+)
+
+
+def _audit_register() -> GlobalRegister:
+    """Minimal GlobalRegister with two entities, one location, one object."""
+    return GlobalRegister(
+        locations={
+            "LOC_A": Location(name="A", description="a", ambient_state={}),
+            "LOC_B": Location(name="B", description="b", ambient_state={}),
+        },
+        objects={
+            "OBJ_KEY": NarrativeObject(
+                id="OBJ_KEY", name="Key", location_id="LOC_A",
+                owner_id=None, properties={}, affordances=[],
+            ),
+        },
+        entities={
+            "ENT_A": Entity(
+                id="ENT_A", name="A", location_id="LOC_A", status="healthy",
+                traits={"courage": TraitVector(value=0.5, inertia=0.5)},
+            ),
+            "ENT_B": Entity(
+                id="ENT_B", name="B", location_id="LOC_A", status="healthy",
+                traits={"courage": TraitVector(value=0.5, inertia=0.5)},
+            ),
+        },
+    )
+
+
+class TestAuditChunkConsistency:
+    """Tests for ``_audit_chunk_consistency``."""
+
+    def test_clean_topology_yields_no_defects(self):
+        reg = _audit_register()
+        topo = ChunkTopology(
+            events=[
+                EventNode(
+                    id="EVT_1", description="A acts", event_type="choice",
+                    fabula_time=100, syuzhet_index=0,
+                    actor_ids=["ENT_A"], target_ids=["ENT_B"],
+                ),
+            ],
+            causal_topology=[],
+            social_topology=[],
+            spatial_topology=[],
+            entity_updates=[],
+        )
+        defects = _audit_chunk_consistency(topo, reg)
+        assert defects == []
+
+    def test_unknown_entity_id_in_actor_flagged(self):
+        reg = _audit_register()
+        topo = ChunkTopology(
+            events=[
+                EventNode(
+                    id="EVT_1", description="ghost acts", event_type="choice",
+                    fabula_time=100, syuzhet_index=0,
+                    actor_ids=["ENT_GHOST"], target_ids=[],
+                ),
+            ],
+            causal_topology=[], social_topology=[],
+            spatial_topology=[], entity_updates=[],
+        )
+        defects = _audit_chunk_consistency(topo, reg)
+        kinds = {d.kind for d in defects}
+        assert "id_unknown_entity" in kinds
+        assert any("ENT_GHOST" in d.detail for d in defects)
+
+    def test_unknown_location_in_entity_update_flagged(self):
+        reg = _audit_register()
+        topo = ChunkTopology(
+            events=[
+                EventNode(
+                    id="EVT_1", description="moves", event_type="choice",
+                    fabula_time=100, syuzhet_index=0,
+                    actor_ids=["ENT_A"], target_ids=[],
+                ),
+            ],
+            causal_topology=[], social_topology=[],
+            spatial_topology=[],
+            entity_updates=[
+                EntityUpdate(
+                    entity_id="ENT_A", fabula_time=100, triggered_by="EVT_1",
+                    new_location_id="LOC_NOWHERE",
+                ),
+            ],
+        )
+        defects = _audit_chunk_consistency(topo, reg)
+        kinds = {d.kind for d in defects}
+        assert "id_unknown_location" in kinds
+
+    def test_unknown_event_id_in_causal_edge_flagged(self):
+        reg = _audit_register()
+        topo = ChunkTopology(
+            events=[
+                EventNode(
+                    id="EVT_1", description="d", event_type="choice",
+                    fabula_time=100, syuzhet_index=0,
+                    actor_ids=["ENT_A"], target_ids=[],
+                ),
+            ],
+            causal_topology=[
+                CausalEdge(
+                    source_id="EVT_1", target_id="EVT_GHOST",
+                    causality_type="chain_reaction", mechanism="physical",
+                    fabula_time=100,
+                ),
+            ],
+            social_topology=[], spatial_topology=[], entity_updates=[],
+        )
+        defects = _audit_chunk_consistency(topo, reg)
+        kinds = {d.kind for d in defects}
+        assert "id_unknown_event" in kinds
+
+    def test_previous_event_ids_resolve_cross_chunk_references(self):
+        """An event id from a prior chunk should resolve cleanly when
+        referenced by a causal edge."""
+        reg = _audit_register()
+        topo = ChunkTopology(
+            events=[
+                EventNode(
+                    id="EVT_2", description="d", event_type="choice",
+                    fabula_time=200, syuzhet_index=1,
+                    actor_ids=["ENT_A"], target_ids=[],
+                ),
+            ],
+            causal_topology=[
+                CausalEdge(
+                    source_id="EVT_1",  # from a previous chunk
+                    target_id="EVT_2",
+                    causality_type="chain_reaction", mechanism="physical",
+                    fabula_time=200,
+                ),
+            ],
+            social_topology=[], spatial_topology=[], entity_updates=[],
+        )
+        # Without prev_event_ids: EVT_1 is unknown.
+        d_without = _audit_chunk_consistency(topo, reg)
+        assert any(d.kind == "id_unknown_event" for d in d_without)
+        # With prev_event_ids: EVT_1 resolves cleanly.
+        d_with = _audit_chunk_consistency(
+            topo, reg, previous_event_ids={"EVT_1"},
+        )
+        assert not any(d.kind == "id_unknown_event" for d in d_with)
+
+    def test_orphan_trait_update_flagged(self):
+        """EntityUpdate with a trait_updates key not declared by any
+        mutation/mutation_social edge in physics is flagged."""
+        reg = _audit_register()
+        topo = ChunkTopology(
+            events=[
+                EventNode(
+                    id="EVT_1", description="d", event_type="choice",
+                    fabula_time=100, syuzhet_index=0,
+                    actor_ids=["ENT_A"], target_ids=[],
+                ),
+            ],
+            causal_topology=[],  # no mutation edge declared
+            social_topology=[], spatial_topology=[],
+            entity_updates=[
+                EntityUpdate(
+                    entity_id="ENT_A", fabula_time=100, triggered_by="EVT_1",
+                    trait_updates={
+                        "courage": TraitVector(value=0.9, inertia=0.5),
+                    },
+                ),
+            ],
+        )
+        defects = _audit_chunk_consistency(topo, reg)
+        kinds = {d.kind for d in defects}
+        assert "orphan_trait_update" in kinds
+
+    def test_orphan_trait_update_not_flagged_when_mutation_edge_present(self):
+        reg = _audit_register()
+        topo = ChunkTopology(
+            events=[
+                EventNode(
+                    id="EVT_1", description="d", event_type="choice",
+                    fabula_time=100, syuzhet_index=0,
+                    actor_ids=["ENT_A"], target_ids=[],
+                ),
+            ],
+            causal_topology=[
+                CausalEdge(
+                    source_id="EVT_1", target_id="ENT_A",
+                    causality_type="mutation", mechanism="psychological",
+                    fabula_time=100, trait_target="courage",
+                ),
+            ],
+            social_topology=[], spatial_topology=[],
+            entity_updates=[
+                EntityUpdate(
+                    entity_id="ENT_A", fabula_time=100, triggered_by="EVT_1",
+                    trait_updates={
+                        "courage": TraitVector(value=0.9, inertia=0.5),
+                    },
+                ),
+            ],
+        )
+        defects = _audit_chunk_consistency(topo, reg)
+        assert not any(d.kind == "orphan_trait_update" for d in defects)
+
+    def test_dead_actor_resurrection_flagged(self):
+        reg = _audit_register()
+        topo = ChunkTopology(
+            events=[
+                EventNode(
+                    id="EVT_1", description="dies", event_type="outcome",
+                    fabula_time=100, syuzhet_index=0,
+                    actor_ids=["ENT_A"], target_ids=[],
+                ),
+                EventNode(
+                    id="EVT_2", description="acts post-mortem",
+                    event_type="choice",
+                    fabula_time=200, syuzhet_index=1,
+                    actor_ids=["ENT_A"], target_ids=[],
+                ),
+            ],
+            causal_topology=[], social_topology=[], spatial_topology=[],
+            entity_updates=[
+                EntityUpdate(
+                    entity_id="ENT_A", fabula_time=100, triggered_by="EVT_1",
+                    new_status="dead",
+                ),
+            ],
+        )
+        defects = _audit_chunk_consistency(topo, reg)
+        kinds = {d.kind for d in defects}
+        assert "dead_actor_resurrection" in kinds
+
+    def test_same_tick_location_conflict_flagged(self):
+        """Two EntityUpdate records placing the same entity in two
+        different locations at the same fabula_time are flagged."""
+        reg = _audit_register()
+        topo = ChunkTopology(
+            events=[
+                EventNode(
+                    id="EVT_1", description="d", event_type="choice",
+                    fabula_time=100, syuzhet_index=0,
+                    actor_ids=["ENT_A"], target_ids=[],
+                ),
+                EventNode(
+                    id="EVT_2", description="d", event_type="choice",
+                    fabula_time=100, syuzhet_index=1,
+                    actor_ids=["ENT_A"], target_ids=[],
+                ),
+            ],
+            causal_topology=[], social_topology=[], spatial_topology=[],
+            entity_updates=[
+                EntityUpdate(
+                    entity_id="ENT_A", fabula_time=100, triggered_by="EVT_1",
+                    new_location_id="LOC_A",
+                ),
+                EntityUpdate(
+                    entity_id="ENT_A", fabula_time=100, triggered_by="EVT_2",
+                    new_location_id="LOC_B",
+                ),
+            ],
+        )
+        defects = _audit_chunk_consistency(topo, reg)
+        kinds = {d.kind for d in defects}
+        assert "same_tick_location_conflict" in kinds
+
+    def test_social_mutation_orphan_flagged(self):
+        """mutation_social edge with no matching RelationshipEdge reading."""
+        reg = _audit_register()
+        topo = ChunkTopology(
+            events=[
+                EventNode(
+                    id="EVT_1", description="d", event_type="choice",
+                    fabula_time=100, syuzhet_index=0,
+                    actor_ids=["ENT_A"], target_ids=["ENT_B"],
+                ),
+            ],
+            causal_topology=[
+                CausalEdge(
+                    source_id="EVT_1", target_id="ENT_A",
+                    causality_type="mutation_social", mechanism="social",
+                    fabula_time=100, trait_target="affinity",
+                    rel_counterpart_id="ENT_B",
+                ),
+            ],
+            social_topology=[],  # no matching reading
+            spatial_topology=[], entity_updates=[],
+        )
+        defects = _audit_chunk_consistency(topo, reg)
+        kinds = {d.kind for d in defects}
+        assert "social_mutation_orphan" in kinds
+
+    def test_social_mutation_orphan_not_flagged_when_reading_present(self):
+        from shadow_loom.models import RelationshipMetric
+        reg = _audit_register()
+        topo = ChunkTopology(
+            events=[
+                EventNode(
+                    id="EVT_1", description="d", event_type="choice",
+                    fabula_time=100, syuzhet_index=0,
+                    actor_ids=["ENT_A"], target_ids=["ENT_B"],
+                ),
+            ],
+            causal_topology=[
+                CausalEdge(
+                    source_id="EVT_1", target_id="ENT_A",
+                    causality_type="mutation_social", mechanism="social",
+                    fabula_time=100, trait_target="affinity",
+                    rel_counterpart_id="ENT_B",
+                ),
+            ],
+            social_topology=[
+                RelationshipEdge(
+                    source_entity_id="ENT_A", target_entity_id="ENT_B",
+                    metrics={
+                        "affinity": RelationshipMetric(
+                            value=0.6, inertia=0.4,
+                            evidence_strength="strong",
+                            last_updated_fabula=100, observed=True,
+                        ),
+                    },
+                ),
+            ],
+            spatial_topology=[], entity_updates=[],
+        )
+        defects = _audit_chunk_consistency(topo, reg)
+        assert not any(d.kind == "social_mutation_orphan" for d in defects)
+
+    def test_genesis_new_entities_resolve_locally(self):
+        """Entities present only in topo.new_entities should resolve."""
+        reg = _audit_register()
+        new_ent = Entity(
+            id="ENT_GHOST", name="Ghost", location_id="LOC_A",
+            status="healthy",
+            traits={"presence": TraitVector(value=0.5, inertia=0.5)},
+        )
+        topo = ChunkTopology(
+            events=[
+                EventNode(
+                    id="EVT_1", description="d", event_type="choice",
+                    fabula_time=100, syuzhet_index=0,
+                    actor_ids=["ENT_GHOST"], target_ids=[],
+                ),
+            ],
+            causal_topology=[], social_topology=[],
+            spatial_topology=[], entity_updates=[],
+            new_entities={"ENT_GHOST": new_ent},
+        )
+        defects = _audit_chunk_consistency(topo, reg)
+        assert not any(d.kind == "id_unknown_entity" for d in defects)
+
+    def test_defect_returned_as_chunk_defect_dataclass(self):
+        """``_ChunkDefect`` is the return-type contract."""
+        reg = _audit_register()
+        topo = ChunkTopology(
+            events=[
+                EventNode(
+                    id="EVT_1", description="d", event_type="choice",
+                    fabula_time=100, syuzhet_index=0,
+                    actor_ids=["ENT_GHOST"], target_ids=[],
+                ),
+            ],
+            causal_topology=[], social_topology=[],
+            spatial_topology=[], entity_updates=[],
+        )
+        defects = _audit_chunk_consistency(topo, reg)
+        assert defects, "expected at least one defect"
+        assert all(isinstance(d, _ChunkDefect) for d in defects)
+        assert all(isinstance(d.kind, str) and d.kind for d in defects)
+        assert all(isinstance(d.detail, str) and d.detail for d in defects)
+

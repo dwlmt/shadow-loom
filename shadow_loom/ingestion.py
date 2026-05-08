@@ -28,6 +28,7 @@ import json
 import logging
 import re
 from contextvars import ContextVar
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Set, Tuple
 
@@ -607,6 +608,24 @@ class ExtractionConfig(BaseModel):
             "entities. Off by default \u2014 the first drift pass is "
             "usually sufficient and a second pass costs an extra LLM "
             "round-trip per affected chunk."
+        ),
+    )
+    chunk_consistency_audit: bool = Field(
+        default=True,
+        description=(
+            "When true, run a deterministic post-extraction audit on "
+            "each chunk's assembled :class:`ChunkTopology` that checks "
+            "(a) every id referenced by an event/edge/update resolves "
+            "either to the global :class:`GlobalRegister` or to a "
+            "chunk-local id, and (b) cross-stage parity contracts not "
+            "already covered by the per-stage retries (orphan trait "
+            "updates, dead-then-acting actor resurrections, "
+            "same-tick location conflicts, mutation_social edges with "
+            "no matching RelationshipEdge reading). Defects are logged "
+            "as a structured warning but do NOT fail the chunk \u2014 "
+            "they are advisory only in this iteration. Cheap "
+            "(deterministic; no LLM call); leave on unless you are "
+            "diagnosing a noisy log."
         ),
     )
     pipeline_checkpoint_dir: Optional[str] = Field(
@@ -5142,6 +5161,305 @@ def _save_topologies_checkpoint(
         )
 
 
+# =====================================================================
+# Per-chunk deterministic consistency audit
+# =====================================================================
+#
+# Runs *after* all per-chunk extraction stages (Physics/Social/
+# Consequences/Affect) and their per-stage retries have completed,
+# against the assembled ``ChunkTopology`` and the global ontology
+# register. Flags structural defects the per-stage retries cannot
+# catch — most importantly id-validity (every reference resolves)
+# and cross-stage *contradictions* (same fabula tick, opposite
+# claim).  Advisory only: defects are logged but do not fail the
+# chunk in this iteration so the output can be inspected before
+# wiring targeted re-runs.
+
+@dataclass(frozen=True)
+class _ChunkDefect:
+    """A single structural defect found by ``_audit_chunk_consistency``.
+
+    ``kind`` is a short tag (one of the strings listed in the audit
+    plan); ``detail`` is a human-readable one-liner naming the
+    offending id(s). Both are plain strings so the defect list can be
+    serialised (logged or persisted) without bringing in extra
+    Pydantic machinery.
+    """
+    kind: str
+    detail: str
+
+
+def _audit_chunk_consistency(
+    topo: "ChunkTopology",
+    register: GlobalRegister,
+    *,
+    previous_event_ids: Optional[Set[str]] = None,
+    previous_channel_ids: Optional[Set[str]] = None,
+) -> List[_ChunkDefect]:
+    """Return a deterministic list of structural defects in ``topo``.
+
+    Checks fall into two families:
+
+    1. **Id validity** — every id referenced by an event, edge, channel
+       or :class:`EntityUpdate` resolves either to ``register`` (for
+       the static ontology) or to a chunk-local id (for events,
+       utterances, and channels). Ids on the chunk's ``new_*``
+       collections (genesis spawns) and ids forwarded from prior
+       chunks (via ``previous_event_ids`` / ``previous_channel_ids``)
+       count as resolved.
+
+    2. **Cross-stage contradictions** — defects the per-stage retries
+       cannot detect because they involve information from two
+       different stages disagreeing about the same fabula tick:
+       orphan trait updates (``EntityUpdate`` claims a trait shifted
+       but no Physics edge declares it), dead-then-acting actor
+       resurrections (``EntityUpdate.new_status='dead'`` with a later
+       chunk-event still listing the entity in ``actor_ids``),
+       same-tick location conflicts (two events place the same
+       entity in different ``location_id``s at the same fabula
+       time), and ``mutation_social`` causal edges with no
+       :class:`RelationshipEdge` reading covering the dyad-axis.
+
+    Defects already flagged by existing stage retries
+    (consequences-mutation parity, scaffold drift, channel
+    under-extraction, missing-mutation_social-axis) are **not**
+    re-emitted here — those have their own targeted retries upstream
+    and re-checking them would just produce duplicate noise.
+    """
+    prev_event_ids: Set[str] = set(previous_event_ids or ())
+    prev_channel_ids: Set[str] = set(previous_channel_ids or ())
+    defects: List[_ChunkDefect] = []
+
+    # ── Build resolution sets ──────────────────────────────────────
+    known_entities: Set[str] = set(register.entities.keys()) | set(
+        topo.new_entities.keys()
+    )
+    known_objects: Set[str] = set(register.objects.keys()) | set(
+        topo.new_objects.keys()
+    )
+    known_locations: Set[str] = set(register.locations.keys()) | set(
+        topo.new_locations.keys()
+    )
+    known_world_traits: Set[str] = set(register.world_traits.keys()) | set(
+        topo.new_world_traits.keys()
+    )
+    chunk_event_ids: Set[str] = {e.id for e in topo.events}
+    known_event_ids: Set[str] = chunk_event_ids | prev_event_ids
+    chunk_channel_ids: Set[str] = set(topo.channels.keys())
+    known_channel_ids: Set[str] = chunk_channel_ids | prev_channel_ids
+
+    def _classify(ref_id: str) -> str:
+        """Map an id prefix to the resolution-set tag."""
+        if ref_id.startswith("ENT_"):
+            return "entity"
+        if ref_id.startswith("OBJ_"):
+            return "object"
+        if ref_id.startswith("LOC_"):
+            return "location"
+        if ref_id.startswith("WORLD_"):
+            return "world_trait"
+        if ref_id.startswith("EVT_"):
+            return "event"
+        if ref_id.startswith("CHN_"):
+            return "channel"
+        return "unknown"
+
+    def _resolves(ref_id: str) -> bool:
+        kind = _classify(ref_id)
+        if kind == "entity":
+            return ref_id in known_entities
+        if kind == "object":
+            return ref_id in known_objects
+        if kind == "location":
+            return ref_id in known_locations
+        if kind == "world_trait":
+            return ref_id in known_world_traits
+        if kind == "event":
+            return ref_id in known_event_ids
+        if kind == "channel":
+            return ref_id in known_channel_ids
+        # Unknown prefix — let the upstream schema validator handle it.
+        return True
+
+    def _flag_id(ref_id: str, where: str) -> None:
+        if not ref_id:
+            return
+        if _resolves(ref_id):
+            return
+        kind = _classify(ref_id)
+        if kind == "unknown":
+            return
+        defects.append(_ChunkDefect(
+            kind=f"id_unknown_{kind}",
+            detail=f"{ref_id} referenced by {where} not in register or chunk",
+        ))
+
+    # ── 1. Id validity across the topology ────────────────────────
+    for ev in topo.events:
+        for aid in ev.actor_ids:
+            _flag_id(aid, f"event {ev.id}.actor_ids")
+        for tid in ev.target_ids:
+            # target_ids may reference EVT_ (utterances about events)
+            # in addition to ENT_/OBJ_; _resolves handles that.
+            _flag_id(tid, f"event {ev.id}.target_ids")
+        if ev.speaker_id:
+            _flag_id(ev.speaker_id, f"event {ev.id}.speaker_id")
+        for aid in ev.addressee_ids:
+            _flag_id(aid, f"event {ev.id}.addressee_ids")
+        if ev.via_channel_id:
+            _flag_id(ev.via_channel_id, f"event {ev.id}.via_channel_id")
+        # ``triggered_by`` lives on EntityUpdate, not EventNode (events
+        # carry their causal predecessors through ``causal_topology``).
+        # Older revisions stored a free-text trigger on the event itself;
+        # tolerate both shapes via ``getattr``.
+        ev_trigger = getattr(ev, "triggered_by", None)
+        if ev_trigger:
+            _flag_id(ev_trigger, f"event {ev.id}.triggered_by")
+
+    for ce in topo.causal_topology:
+        _flag_id(ce.source_id, "causal_edge.source_id")
+        _flag_id(ce.target_id, "causal_edge.target_id")
+        if ce.rel_counterpart_id:
+            _flag_id(ce.rel_counterpart_id, "causal_edge.rel_counterpart_id")
+
+    for re in topo.social_topology:
+        _flag_id(re.source_entity_id, "relationship_edge.source_entity_id")
+        _flag_id(re.target_entity_id, "relationship_edge.target_entity_id")
+        if getattr(re, "triggered_by_event_id", None):
+            _flag_id(re.triggered_by_event_id, "relationship_edge.triggered_by_event_id")
+
+    for sp in topo.spatial_topology:
+        _flag_id(sp.source_id, "spatial_edge.source_id")
+        _flag_id(sp.target_id, "spatial_edge.target_id")
+
+    for chn in topo.channels.values():
+        for pid in getattr(chn, "participant_ids", []) or []:
+            _flag_id(pid, f"channel {chn.id}.participant_ids")
+
+    for eu in topo.entity_updates:
+        _flag_id(eu.entity_id, "entity_update.entity_id")
+        if eu.triggered_by:
+            _flag_id(eu.triggered_by, "entity_update.triggered_by")
+        if eu.new_location_id:
+            _flag_id(eu.new_location_id, "entity_update.new_location_id")
+        for b in eu.new_beliefs:
+            if getattr(b, "acquired_via_event_id", None):
+                _flag_id(
+                    b.acquired_via_event_id,
+                    f"entity_update {eu.entity_id}.belief.acquired_via_event_id",
+                )
+            if getattr(b, "acquired_via_channel_id", None):
+                _flag_id(
+                    b.acquired_via_channel_id,
+                    f"entity_update {eu.entity_id}.belief.acquired_via_channel_id",
+                )
+
+    # ── 2. Orphan trait updates ───────────────────────────────────
+    # Build the set of (entity_id, trait_name) pairs Physics declared
+    # via mutation / mutation_social edges.
+    declared_trait_shifts: Set[Tuple[str, str]] = set()
+    for ce in topo.causal_topology:
+        if ce.causality_type not in ("mutation", "mutation_social"):
+            continue
+        if not ce.trait_target:
+            continue
+        if ce.target_id.startswith("ENT_"):
+            declared_trait_shifts.add((ce.target_id, ce.trait_target))
+    for eu in topo.entity_updates:
+        for trait_name in eu.trait_updates.keys():
+            key = (eu.entity_id, trait_name)
+            if key not in declared_trait_shifts:
+                defects.append(_ChunkDefect(
+                    kind="orphan_trait_update",
+                    detail=(
+                        f"EntityUpdate({eu.entity_id}) shifts trait "
+                        f"'{trait_name}' but no mutation/mutation_social "
+                        f"causal edge declares it"
+                    ),
+                ))
+
+    # ── 3. Dead-then-acting actor resurrection (chunk-internal) ───
+    death_time: Dict[str, int] = {}
+    for eu in topo.entity_updates:
+        if eu.new_status == "dead":
+            t = eu.fabula_time
+            if eu.entity_id not in death_time or t < death_time[eu.entity_id]:
+                death_time[eu.entity_id] = t
+    if death_time:
+        for ev in topo.events:
+            for aid in ev.actor_ids:
+                d_t = death_time.get(aid)
+                if d_t is None:
+                    continue
+                if ev.fabula_time > d_t:
+                    defects.append(_ChunkDefect(
+                        kind="dead_actor_resurrection",
+                        detail=(
+                            f"Entity {aid} marked dead at fabula_time={d_t} "
+                            f"but acts in event {ev.id} at "
+                            f"fabula_time={ev.fabula_time}"
+                        ),
+                    ))
+
+    # ── 4. Same-tick location conflict ────────────────────────────
+    # If two ``EntityUpdate`` records for the same entity at the same
+    # fabula_time disagree on ``new_location_id``, the chunk has a
+    # cross-stage contradiction the per-stage retries cannot detect
+    # (only one of the locations can be physically true).
+    by_ent_tick: Dict[Tuple[str, int], List[Tuple[str, str]]] = {}
+    for eu in topo.entity_updates:
+        if not eu.new_location_id:
+            continue
+        key = (eu.entity_id, eu.fabula_time)
+        by_ent_tick.setdefault(key, []).append(
+            (eu.new_location_id, eu.triggered_by or "<no trigger>"),
+        )
+    for (ent_id, tick), placements in by_ent_tick.items():
+        unique_locs = {loc for loc, _ in placements}
+        if len(unique_locs) > 1:
+            defects.append(_ChunkDefect(
+                kind="same_tick_location_conflict",
+                detail=(
+                    f"Entity {ent_id} placed at "
+                    f"{sorted(unique_locs)} at fabula_time={tick} "
+                    f"by {len(placements)} EntityUpdate(s)"
+                ),
+            ))
+
+    # ── 5. Social-mutation orphan ─────────────────────────────────
+    # mutation_social edges declare (target, counterpart, axis); each
+    # should have a matching RelationshipEdge reading on that dyad-axis.
+    rel_dyad_axes: Set[Tuple[str, str, str]] = set()
+    for re in topo.social_topology:
+        for axis_name, reading in (re.metrics or {}).items():
+            # Only count axes the social agent actually observed.
+            if not getattr(reading, "observed", True):
+                continue
+            rel_dyad_axes.add(
+                (re.source_entity_id, re.target_entity_id, axis_name)
+            )
+    for ce in topo.causal_topology:
+        if ce.causality_type != "mutation_social":
+            continue
+        if not (ce.target_id and ce.rel_counterpart_id and ce.trait_target):
+            continue
+        # mutation_social edges may be declared in either direction.
+        forward = (ce.target_id, ce.rel_counterpart_id, ce.trait_target)
+        reverse = (ce.rel_counterpart_id, ce.target_id, ce.trait_target)
+        if forward in rel_dyad_axes or reverse in rel_dyad_axes:
+            continue
+        defects.append(_ChunkDefect(
+            kind="social_mutation_orphan",
+            detail=(
+                f"mutation_social edge ({ce.target_id} \u2194 "
+                f"{ce.rel_counterpart_id}, axis={ce.trait_target}) has no "
+                f"matching RelationshipEdge reading"
+            ),
+        ))
+
+    return defects
+
+
 def _check_chunk_failure_threshold(
     failure_counts: Dict[str, int],
     total_chunks: int,
@@ -6440,6 +6758,45 @@ async def _extract_single_chunk_async(
         len(topo.spatial_topology),
         len(topo.channels),
     )
+
+    # Deterministic post-extraction consistency audit (advisory only).
+    # Logs a structured warning when the assembled chunk topology has
+    # id-validity or cross-stage parity defects the per-stage retries
+    # cannot detect (orphan trait updates, dead-then-acting actor
+    # resurrections, same-tick location conflicts, mutation_social
+    # edges with no matching RelationshipEdge reading). Does NOT fail
+    # the chunk — the goal in this iteration is observability so the
+    # follow-up can wire defect-class-specific re-runs.
+    if config.chunk_consistency_audit:
+        try:
+            chunk_defects = _audit_chunk_consistency(
+                topo,
+                register,
+                previous_event_ids=set(params.previous_event_ids),
+                previous_channel_ids=set(params.previous_chunk_channels.keys()),
+            )
+        except Exception:
+            logger.exception(
+                "[Audit\u00b7Async] Chunk %d consistency audit FAILED \u2014 "
+                "continuing without audit results.", i + 1,
+            )
+            chunk_defects = []
+        if chunk_defects:
+            counts: Dict[str, int] = {}
+            for d in chunk_defects:
+                counts[d.kind] = counts.get(d.kind, 0) + 1
+            sample = "; ".join(
+                f"{d.kind}: {d.detail}" for d in chunk_defects[:5]
+            )
+            logger.warning(
+                "[Audit\u00b7Async] Chunk %d: %d defect(s) %s. Sample: %s",
+                i + 1, len(chunk_defects), counts, sample,
+            )
+            stage_errors.setdefault(
+                "audit",
+                f"{len(chunk_defects)} defect(s) {counts}",
+            )
+
     # Tier 3 #11 + audit fix #4/#5: persist topology so a re-run skips
     # the agents — but only when no stage failed (else resume could
     # serve a degraded extraction as clean).
@@ -10851,7 +11208,7 @@ def _build_correction_subgraph(
     # Channels referenced in errors
     relevant_channels = [
         ch.model_dump(mode="json")
-        for ch in world_state.channels if ch.id in seed_chn
+        for ch in world_state.channels.values() if ch.id in seed_chn
     ]
 
     # Spatial edges touching any seed location or entity
@@ -10864,7 +11221,7 @@ def _build_correction_subgraph(
     # Social edges touching any seed entity
     relevant_social = [
         sr.model_dump(mode="json") for sr in world_state.social_topology
-        if sr.source_id in seed_ent or sr.target_id in seed_ent
+        if sr.source_entity_id in seed_ent or sr.target_entity_id in seed_ent
     ]
 
     # Ontology header — names only, no nested timelines / beliefs.

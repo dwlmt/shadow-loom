@@ -301,6 +301,20 @@ class ExtractionSettings(BaseSettings):
     per_chunk_timeout_seconds: float = Field(default=1200.0)
     estimated_events_per_chunk: int = Field(default=10)
     enable_consequences_agent: bool = Field(default=True)
+    chunk_consistency_audit: bool = Field(
+        default=True,
+        description=(
+            "When true, run a deterministic post-extraction audit on "
+            "each chunk's assembled topology that flags id-validity "
+            "and cross-stage parity defects (orphan trait updates, "
+            "dead-then-acting actor resurrections, same-tick location "
+            "conflicts, mutation_social edges with no matching "
+            "RelationshipEdge reading). Defects are logged as a "
+            "structured warning but do NOT fail the chunk. Cheap "
+            "(deterministic; no LLM call); leave on unless you are "
+            "diagnosing a noisy log."
+        ),
+    )
 
     # ------------------------------------------------------------------
     # Optional research extraction (off by default)
@@ -1041,6 +1055,7 @@ class Settings:
             "per_chunk_timeout_seconds": self.extraction.per_chunk_timeout_seconds,
             "estimated_events_per_chunk": self.extraction.estimated_events_per_chunk,
             "enable_consequences_agent": self.extraction.enable_consequences_agent,
+            "chunk_consistency_audit": self.extraction.chunk_consistency_audit,
             "enable_research_agent": self.extraction.enable_research_agent,
             "research_provider": self.extraction.research_provider,
             "research_provider_model": self.extraction.research_provider_model,
@@ -1151,10 +1166,12 @@ class _MergedSystemPromptsModel:
 
 
 # Number of times to retry a transient malformed response or 5xx HTTP
-# error from an OpenAI-compatible provider before giving up. Two
-# in-loop retries (3 attempts total) absorbs the brief Parasail / Together
-# outages we have seen in practice without masking persistent issues.
-_PROVIDER_RETRY_ATTEMPTS = 3
+# error from an OpenAI-compatible provider before giving up. Five
+# in-loop retries (6 attempts total) absorbs the brief Parasail / Together
+# outages we have seen in practice without masking persistent issues —
+# qwen3.6-35b-a3b:nitro on Parasail can return null-body completions for
+# several consecutive requests when its upstream is saturated.
+_PROVIDER_RETRY_ATTEMPTS = 6
 _PROVIDER_RETRY_BACKOFF_S = 1.5
 
 
