@@ -2166,10 +2166,38 @@ def _fix_id(candidate: str, valid_ids: set[str], field_label: str, fixes: List[s
     if candidate and "_" in candidate and candidate.split("_", 1)[0] in {
         "LOC", "OBJ", "ENT", "EVT", "CHN", "WORLD",
     }:
-        fixes.append(
-            f"[Unknown-ID] {field_label} '{candidate}' is not in the "
-            f"ontology register and could not be fuzzy-matched."
-        )
+        prefix = candidate.split("_", 1)[0]
+        if prefix == "EVT":
+            # Events aren't in the static ontology register at all —
+            # they live on the Physics agent's `events` list (this
+            # chunk) plus `previous_event_ids` (prior chunks). A
+            # dangling EVT_ reference almost always means the LLM
+            # "drew an arrow" to a canon event it knows from
+            # background but never actually emitted as an EventNode.
+            # Use a precise message so the retry prompt steers the
+            # LLM to either add the event to `events` or drop the
+            # edge — the generic "ontology register" wording
+            # actively misleads here because events are never in it.
+            fixes.append(
+                f"[Unknown-ID] {field_label} '{candidate}' references "
+                f"an event that is neither in this chunk's `events` "
+                f"list nor in the previous-chunk event list. Either "
+                f"add it to `events` (if it actually occurs on-page "
+                f"in this chunk's text) or drop the edge/reference."
+            )
+        elif prefix == "CHN":
+            fixes.append(
+                f"[Unknown-ID] {field_label} '{candidate}' references "
+                f"a channel that is neither declared in this chunk's "
+                f"`channels` map nor carried over from a prior chunk."
+            )
+        else:
+            fixes.append(
+                f"[Unknown-ID] {field_label} '{candidate}' is not in "
+                f"the Step-1 ontology register "
+                f"({prefix}_ ids are fixed at extraction setup) "
+                f"and could not be fuzzy-matched."
+            )
     return candidate, False
 
 
@@ -2742,6 +2770,23 @@ def _build_physics_agent(config: ExtractionConfig) -> Agent[_PhysicsDeps, Physic
             "above by matching the name (e.g. 'the dagger' \u2192 "
             "whichever OBJ_ entry has name 'Bloody Daggers').\n"
             "\n"
+            "=== EVT_ CLOSURE RULE ===\n"
+            "Every EVT_ id you reference in `causal_topology` "
+            "(source_id, target_id, rel_counterpart_id) or in "
+            "`entity_updates.triggered_by` MUST appear either (a) in "
+            "this chunk's `events` list that you are producing right "
+            "now, OR (b) in the PREVIOUSLY EXTRACTED EVENT IDs list "
+            "above. Do NOT name EVT_ ids that you have not extracted "
+            "as EventNodes in this chunk and that have not appeared "
+            "in a prior chunk \u2014 that includes events you know from "
+            "background knowledge of the source text but that are "
+            "not actually depicted on-page in this chunk's prose. If "
+            "a causal arrow points at such a missing event, EITHER "
+            "add the event to `events` (only if it really happens "
+            "in this chunk's text) OR drop the edge. Forward "
+            "references to future-chunk events are not allowed; the "
+            "future chunk will own that causal arrow when it lands.\n"
+            "\n"
             "=== ON-PAGE ENTITIES (substring-matched in this chunk's text) ===\n"
             f"{ctx.deps.on_page_entity_ids}\n"
             "\n"
@@ -2926,8 +2971,22 @@ def _build_physics_agent(config: ExtractionConfig) -> Agent[_PhysicsDeps, Physic
 
         if bad:
             raise ModelRetry(
-                "The following IDs could not be auto-resolved. "
-                "Fix them using ONLY IDs from the register:\n" + "\n".join(bad)
+                "The following IDs could not be auto-resolved.\n"
+                "Repair rules:\n"
+                "  * ENT_/LOC_/OBJ_/WORLD_ ids: must come from the "
+                "Step-1 ontology register shown in the system prompt. "
+                "Do NOT invent new ones — look up the right id from "
+                "the maps.\n"
+                "  * EVT_ ids: must either appear in this chunk's "
+                "`events` list OR in the PREVIOUSLY EXTRACTED EVENT "
+                "IDs list shown in the system prompt. If a causal "
+                "edge points at an event you didn't extract, EITHER "
+                "(a) add that event to `events` because it actually "
+                "occurs on-page in this chunk's text, OR (b) drop "
+                "the edge entirely. Do NOT invent EVT_ ids for "
+                "events you only know about from background "
+                "knowledge or from text outside this chunk.\n\n"
+                "Bad ids:\n" + "\n".join(bad)
             )
 
         return PhysicsExtraction(
@@ -3316,8 +3375,17 @@ def _build_social_agent(config: ExtractionConfig) -> Agent[_SocialDeps, SocialEx
 
         if bad:
             raise ModelRetry(
-                "The following IDs could not be auto-resolved. "
-                "Fix them using ONLY IDs from the register:\n" + "\n".join(bad)
+                "The following IDs could not be auto-resolved.\n"
+                "Repair rules:\n"
+                "  * ENT_/LOC_/OBJ_/WORLD_ ids: use ONLY ids from the "
+                "Step-1 ontology register shown in the system prompt.\n"
+                "  * EVT_ ids: must appear in this chunk's events OR "
+                "in PREVIOUSLY EXTRACTED EVENT IDs. Drop edges/utterances "
+                "that reference events you cannot find in those lists.\n"
+                "  * CHN_ ids: must be in this chunk's `channels` map "
+                "or in the carried-over channel list. Do not invent "
+                "channel ids on utterances.\n\n"
+                "Bad ids:\n" + "\n".join(bad)
             )
 
         # --- Tier 3 #13: prune empty conversational channels -----------
@@ -3642,8 +3710,16 @@ def _build_consequences_agent(
             )
         if bad:
             raise ModelRetry(
-                "The following IDs could not be auto-resolved. "
-                "Fix them using ONLY IDs from the register:\n" + "\n".join(bad)
+                "The following IDs could not be auto-resolved.\n"
+                "Repair rules:\n"
+                "  * ENT_/LOC_ ids: use ONLY ids from the Step-1 "
+                "ontology register shown in the system prompt.\n"
+                "  * EVT_ ids on `triggered_by`: must be in the "
+                "chunk's events list (Physics output) or in "
+                "PREVIOUSLY EXTRACTED EVENT IDs. If a consequence "
+                "is triggered by an event you cannot find, drop "
+                "the EntityUpdate — do NOT invent EVT_ ids.\n\n"
+                "Bad ids:\n" + "\n".join(bad)
             )
 
         return ConsequencesExtraction(entity_updates=fixed_updates)
@@ -9086,6 +9162,203 @@ def reconcile_affect(
                 for c in ent.concerns
             ]
 
+    # ----------------------------------------------------------------
+    # 6. Auto-close concerns whose anchor proposition has resolved but
+    #    whose timeline got no closure snapshot from the affect agent.
+    #    This is a backstop against the common LLM failure mode of
+    #    emitting `proposition_truth_commits` without the matching
+    #    `concern_snapshots` (see affect_extraction.md rule 9). We
+    #    fold a synthetic salience-0.1 snapshot at the *latest* commit
+    #    fabula and \u2014 for materialised harms (fear\u2192true,
+    #    desire\u2192false) \u2014 cap ``activation_fabula_window`` at
+    #    the commit tick so the post-resolution scoring isn't
+    #    double-counting a still-active standing fear/desire about an
+    #    already-settled question.
+    #
+    #    Multi-commit handling: a proposition that flips truth more
+    #    than once (true \u2192 false \u2192 true \u2014 e.g. character
+    #    believed dead, revealed alive, then actually killed) is
+    #    treated against its *latest* commit, not the earliest. A
+    #    concern that closed against an earlier commit and was
+    #    explicitly re-opened by the affect agent (snapshot with
+    #    salience>=0.2 between two commits) is honoured: we only fire
+    #    the synthetic close if the concern is still open *after* the
+    #    most recent commit at this batch's tick.
+    #
+    #    Counter-concern propagation: when a concern over PROP_X is
+    #    closed, every concern listed in its ``counter_concern_ids``
+    #    is also driven to closure at the same tick \u2014 even if
+    #    the partner concern is anchored to a *different* (logically
+    #    inverse) proposition that has not itself committed in this
+    #    batch. The polarity used for the partner's
+    #    materialised-vs-realised decision is the partner's own
+    #    polarity vs the *partner-side* truth value, which we derive
+    #    by inverting the trigger commit's truth (counter_concern_ids
+    #    encodes "if mine is realised, theirs is materialised and
+    #    vice versa").
+    #
+    #    Tracked via INFO log so the affect agent can be tuned over
+    #    time; the synthetic snapshots are tagged with the resolving
+    #    EVT_ id so the auditor can distinguish them from on-page
+    #    drift (see ``triggered_by`` in the snapshot).
+    chunk_truth_index: Dict[str, Tuple[int, str, bool]] = {}
+    for topo in topologies:
+        for tc in topo.proposition_truth_commits:
+            existing = chunk_truth_index.get(tc.proposition_id)
+            # Keep the LATEST commit (highest fabula_time) when the
+            # batch contains multiple commits for the same prop.
+            if existing is None or tc.fabula_time > existing[0]:
+                chunk_truth_index[tc.proposition_id] = (
+                    tc.fabula_time, tc.triggered_by, tc.truth,
+                )
+
+    def _concern_open_after(c: Concern, fab: int) -> bool:
+        """True iff *c* has no closure snapshot at fabula >= *fab*.
+
+        A closure snapshot is one that drops salience below 0.2 OR
+        sets ``activation_fabula_window`` to a non-None value. A
+        snapshot at-or-after *fab* whose salience is >= 0.2 with no
+        window cap counts as an *explicit re-open* and the concern
+        is treated as open again (honours mid-batch re-openings).
+        """
+        # Find the most recent snapshot at or after `fab`.
+        latest: Optional[ConcernSnapshot] = None
+        for snap in c.state_timeline:
+            if snap.fabula_time < fab:
+                continue
+            if latest is None or snap.fabula_time > latest.fabula_time:
+                latest = snap
+        if latest is None:
+            return True
+        if latest.salience is not None and latest.salience < 0.2:
+            return False
+        if latest.activation_fabula_window is not None:
+            return False
+        return True
+
+    if chunk_truth_index:
+        # Build (concern_id) -> (entity_id, Concern) for fast lookup
+        # so counter_concern propagation can find partner records
+        # across entities.
+        all_concerns: Dict[str, Tuple[str, Concern]] = {}
+        for eid, ent in world.entities.items():
+            for c in ent.concerns:
+                all_concerns[c.concern_id] = (eid, c)
+
+        # Plan synthetic closures as
+        # concern_id -> (commit_fab, commit_evt, commit_truth, propagated_from)
+        # Direct closures from chunk_truth_index are planned first,
+        # then we transitively expand counter_concern_ids.
+        planned: Dict[str, Tuple[int, str, bool, Optional[str]]] = {}
+        for ccn_id, (eid, c) in all_concerns.items():
+            tinfo = chunk_truth_index.get(c.proposition_id)
+            if tinfo is None:
+                continue
+            commit_fab, commit_evt, commit_truth = tinfo
+            if not _concern_open_after(c, commit_fab):
+                continue
+            planned[ccn_id] = (commit_fab, commit_evt, commit_truth, None)
+
+        # Transitively propagate to counter_concern partners. A
+        # partner's effective truth is the *inverse* of the trigger's
+        # truth (counter_concerns by definition straddle inverse
+        # propositions \u2014 see Concern.counter_concern_ids docs).
+        # Bound the BFS so a malformed graph cannot loop forever.
+        frontier = list(planned.items())
+        guard = 0
+        while frontier and guard < 256:
+            guard += 1
+            next_frontier: List[Tuple[str, Tuple[int, str, bool, Optional[str]]]] = []
+            for src_id, (cf, ce, ct, _src_via) in frontier:
+                src_entry = all_concerns.get(src_id)
+                if src_entry is None:
+                    continue
+                _src_eid, src_concern = src_entry
+                for partner_id in src_concern.counter_concern_ids:
+                    if partner_id in planned:
+                        continue
+                    p_entry = all_concerns.get(partner_id)
+                    if p_entry is None:
+                        continue
+                    _p_eid, partner = p_entry
+                    if not _concern_open_after(partner, cf):
+                        continue
+                    # Partner sees the inverse truth of the trigger.
+                    partner_truth = not ct
+                    planned[partner_id] = (cf, ce, partner_truth, src_id)
+                    next_frontier.append(
+                        (partner_id, (cf, ce, partner_truth, src_id))
+                    )
+            frontier = next_frontier
+
+        if planned:
+            auto_closed = 0
+            for eid, ent in world.entities.items():
+                patched: List[Concern] = []
+                for c in ent.concerns:
+                    plan = planned.get(c.concern_id)
+                    if plan is None:
+                        patched.append(c)
+                        continue
+                    commit_fab, commit_evt, commit_truth, propagated_from = plan
+                    # Materialised harm/benefit if polarity disagrees
+                    # with effective truth: fear+true OR desire+false.
+                    materialised = (
+                        (c.polarity == "fear" and commit_truth is True)
+                        or (c.polarity == "desire" and commit_truth is False)
+                    )
+                    window_update: Optional[List[int]] = None
+                    if materialised:
+                        lo = (
+                            c.activation_fabula_window[0]
+                            if c.activation_fabula_window
+                            else 0
+                        )
+                        window_update = [lo, commit_fab]
+                    synthetic = ConcernSnapshot(
+                        fabula_time=commit_fab,
+                        triggered_by=commit_evt,
+                        salience=0.10,
+                        activation_fabula_window=window_update,
+                    )
+                    merged = list(c.state_timeline) + [synthetic]
+                    merged = _coalesce_timeline(merged, _CONCERN_DIFF_FIELDS)
+                    patched.append(c.model_copy(update={"state_timeline": merged}))
+                    auto_closed += 1
+                    if propagated_from is None:
+                        logger.info(
+                            "[Phase C] Auto-closing concern %s "
+                            "(entity=%s, polarity=%s) at fabula=%d "
+                            "\u2014 anchor proposition %s resolved "
+                            "%s via %s and the affect agent did not "
+                            "emit a closure snapshot (see "
+                            "affect_extraction.md rule 9).",
+                            c.concern_id, eid, c.polarity, commit_fab,
+                            c.proposition_id, commit_truth, commit_evt,
+                        )
+                    else:
+                        logger.info(
+                            "[Phase C] Auto-closing counter-concern %s "
+                            "(entity=%s, polarity=%s) at fabula=%d "
+                            "\u2014 propagated from %s "
+                            "(effective truth %s via %s); the affect "
+                            "agent did not emit the paired closure "
+                            "snapshot.",
+                            c.concern_id, eid, c.polarity, commit_fab,
+                            propagated_from, commit_truth, commit_evt,
+                        )
+                ent.concerns = patched
+            if auto_closed:
+                logger.warning(
+                    "[Phase C] Auto-closed %d concern(s) whose anchor "
+                    "proposition (or a counter-concern partner's "
+                    "anchor) resolved without a paired closure "
+                    "snapshot. These are scoring-correct backstops, "
+                    "but the affect agent should be emitting them "
+                    "\u2014 inspect the chunk log for [Phase C] "
+                    "Auto-closing entries.", auto_closed,
+                )
+
     return world
 
 
@@ -10258,6 +10531,143 @@ def _programmatic_validation(ws: WorldStateV1) -> List[ValidationIssue]:
                         f"Concern '{ccn_id}' lists '{partner}' as a "
                         f"counter_concern but '{partner}' does not "
                         f"reciprocate."
+                    ),
+                ))
+
+    # E1.c.2 Concern closure check (audit fix): for every concern whose
+    # anchor proposition has a truth_at_fabula commit, the concern's
+    # state_timeline should contain a closure snapshot at or after the
+    # earliest commit (salience<0.2 or activation_fabula_window capped).
+    # Without one, downstream affective scoring will keep treating the
+    # concern as a standing fear/desire about an already-settled
+    # question \u2014 see ``affect_extraction.md`` rule 9 and the
+    # ``reconcile_affect`` auto-closer that backstops this. Surfaced as
+    # an info-level issue (not a hard error) so a deliberate
+    # surviving-concern pattern (e.g. fear of exposure of a now-true
+    # secret) doesn't trip the auditor.
+    prop_first_commit: Dict[str, int] = {}
+    for prop in ws.propositions:
+        if prop.truth_at_fabula:
+            prop_first_commit[prop.proposition_id] = min(
+                int(k) for k in prop.truth_at_fabula.keys()
+            )
+    if prop_first_commit:
+        for ccn_id, (eid, c) in all_concerns.items():
+            commit_fab = prop_first_commit.get(c.proposition_id)
+            if commit_fab is None:
+                continue
+            closed = False
+            for snap in c.state_timeline:
+                if snap.fabula_time < commit_fab:
+                    continue
+                if snap.salience is not None and snap.salience < 0.2:
+                    closed = True
+                    break
+                if snap.activation_fabula_window is not None:
+                    closed = True
+                    break
+            # Also consider already-closed if the initial baseline is
+            # tiny (catalogue may have shipped it pre-closed) or if
+            # the concern's own activation_fabula_window already ends
+            # before the commit.
+            if not closed and c.salience < 0.2:
+                closed = True
+            if (
+                not closed
+                and c.activation_fabula_window
+                and c.activation_fabula_window[1] <= commit_fab
+            ):
+                closed = True
+            if not closed:
+                issues.append(ValidationIssue(
+                    severity="warning", category="concern_not_closed_on_resolution",
+                    detail=(
+                        f"Concern '{ccn_id}' on entity '{eid}' anchors to "
+                        f"proposition '{c.proposition_id}' which committed "
+                        f"truth at fabula={commit_fab}, but the concern's "
+                        f"state_timeline has no closure snapshot at or after "
+                        f"that tick (salience<0.2 or "
+                        f"activation_fabula_window capped). Leaving the "
+                        f"concern open will double-count it in suspense / "
+                        f"surprise scoring \u2014 see affect_extraction.md "
+                        f"rule 9. The Phase C auto-closer will inject a "
+                        f"synthetic closure unless this is a deliberate "
+                        f"surviving-concern pattern."
+                    ),
+                ))
+
+    # E1.c.3 Polarity-flip consistency check (audit fix): when a
+    # concern's state_timeline contains a snapshot that flips the
+    # ``polarity`` field (desire \u2194 fear), each of its
+    # ``counter_concern_ids`` partners SHOULD also carry a paired
+    # snapshot at the same fabula tick \u2014 otherwise the
+    # desire/fear pair has gone asymmetric (one side now wants what
+    # the other side still wants, breaking the rivalry topology that
+    # downstream tension/asymmetry scoring relies on). The affect
+    # prompt's Rule 6 marks polarity flips as load-bearing; we
+    # surface missing partner-flips as warnings so the affect agent
+    # can be tuned without breaking valid asymmetric flips (e.g. one
+    # half of a pair undergoes a genuine moral conversion the other
+    # half does not).
+    for ccn_id, (eid, c) in all_concerns.items():
+        if not c.counter_concern_ids:
+            continue
+        # Find polarity-flip snapshots on this concern (snapshot's
+        # polarity differs from baseline).
+        flip_ticks: List[int] = []
+        prev_polarity = c.polarity
+        for snap in sorted(c.state_timeline, key=lambda s: s.fabula_time):
+            if snap.polarity is not None and snap.polarity != prev_polarity:
+                flip_ticks.append(snap.fabula_time)
+                prev_polarity = snap.polarity
+        if not flip_ticks:
+            continue
+        for partner_id in c.counter_concern_ids:
+            partner_entry = all_concerns.get(partner_id)
+            if partner_entry is None:
+                # Already reported as broken_link above.
+                continue
+            _p_eid, partner = partner_entry
+            partner_flip_ticks = set()
+            p_prev = partner.polarity
+            for snap in sorted(
+                partner.state_timeline, key=lambda s: s.fabula_time,
+            ):
+                if snap.polarity is not None and snap.polarity != p_prev:
+                    partner_flip_ticks.add(snap.fabula_time)
+                    p_prev = snap.polarity
+            for tick in flip_ticks:
+                if tick in partner_flip_ticks:
+                    continue
+                # Tolerate a partner snapshot at the same tick that
+                # explicitly closes the partner (salience<0.2 or
+                # window cap) \u2014 a closed partner is allowed to
+                # not flip because it is no longer a live rival.
+                partner_closed_at_tick = False
+                for snap in partner.state_timeline:
+                    if snap.fabula_time != tick:
+                        continue
+                    if snap.salience is not None and snap.salience < 0.2:
+                        partner_closed_at_tick = True
+                        break
+                    if snap.activation_fabula_window is not None:
+                        partner_closed_at_tick = True
+                        break
+                if partner_closed_at_tick:
+                    continue
+                issues.append(ValidationIssue(
+                    severity="warning",
+                    category="counter_concern_polarity_asymmetry",
+                    detail=(
+                        f"Concern '{ccn_id}' on entity '{eid}' flipped "
+                        f"polarity at fabula={tick}, but its "
+                        f"counter_concern partner '{partner_id}' "
+                        f"neither flipped nor closed at that tick. "
+                        f"Counter-concern rivalry expects paired "
+                        f"polarity transitions \u2014 see "
+                        f"affect_extraction.md rule 6. If the partner "
+                        f"genuinely diverged, emit an explicit closure "
+                        f"snapshot for it to silence this warning."
                     ),
                 ))
 

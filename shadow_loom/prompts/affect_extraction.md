@@ -161,3 +161,37 @@ Note four patterns:
 6. **Polarity reversals are rare and load-bearing.** Only emit a polarity flip when the chunk's events *clearly* show the entity's wanting flipping to fearing (or vice versa). Salience drift is the common case; polarity reversal is a major narrative beat.
 7. **Skip cleanly when nothing affects-relevant happens.** A chunk that touches no catalogue prop and no seeded concern should return four empty lists. Do NOT pad with no-op snapshots.
 8. **`new_concern_seeds` is a safety valve, not a primary tool.** If the catalogue is doing its job, you will rarely need it. Use it only when an on-page event makes a concern *undeniable* that the global pass missed.
+9. **Close concerns when their proposition resolves.** Whenever you emit a `proposition_truth_commits` entry, walk every catalogue concern whose `prop=` field equals that PROP_ id and emit a `concern_snapshots` entry that *closes* it at the same `fabula_time` and the same `triggered_by`. The closure shape depends on the concern's polarity vs the resolved truth value:
+   - **Concern realised** (a `desire` resolved `true`, or a `fear` resolved `false`) → snapshot `salience` to a low value (typically `0.05–0.15`); the standing wanting/dreading is over. Subsequent affect (satisfaction, relief, gratitude) lives on the post-resolution events, not on the concern ledger.
+   - **Concern materialised** (a `desire` resolved `false`, or a `fear` resolved `true`) → snapshot `salience` to a low value AND set `activation_fabula_window` to `[<original_start>, <commit_fabula_time>]` so downstream affect (grief, regret, rage) is computed against the *post-resolution* state, not the pre-resolution standing fear/desire. The materialised harm/benefit is now an event on the page, not a standing concern.
+   - **Concern that survives resolution** (rare — e.g. a fear of *exposure* about a now-confirmed-true secret remains active because the secret is still secret to the in-world audience) → emit no closure snapshot, but only if the on-page text makes that survival explicit. Default to closure.
+
+   Forgetting closure snapshots is a common failure mode: it leaves characters "fearing" things that have already happened or "desiring" things they already have, double-counting in suspense / surprise scoring and breaking grief / rage detectors. The reconciler logs a warning when a `proposition_truth_commits` arrives without paired closure snapshots for catalogue concerns anchored to that PROP_.
+
+   **Worked closure example.** Suppose `EVT_DUNCAN_KILLED` (fabula=1500) commits `PROP_DUNCAN_DEAD = true` and the catalogue holds:
+   - `CCN_MACBETH_DESIRE_THRONE` (entity=ENT_MACBETH, prop=PROP_DUNCAN_DEAD, polarity=desire, salience=0.85) — desire-realised.
+   - `CCN_MACDUFF_FEAR_REGICIDE` (entity=ENT_MACDUFF, prop=PROP_DUNCAN_DEAD, polarity=fear, salience=0.60) — fear-materialised.
+
+   The well-formed affect output for that chunk includes:
+   ```json
+   {
+     "proposition_truth_commits": [
+       {"proposition_id": "PROP_DUNCAN_DEAD", "fabula_time": 1500,
+        "truth": true, "triggered_by": "EVT_DUNCAN_KILLED"}
+     ],
+     "concern_snapshots": [
+       {"concern_id": "CCN_MACBETH_DESIRE_THRONE", "fabula_time": 1500,
+        "triggered_by": "EVT_DUNCAN_KILLED", "salience": 0.10},
+       {"concern_id": "CCN_MACDUFF_FEAR_REGICIDE", "fabula_time": 1500,
+        "triggered_by": "EVT_DUNCAN_KILLED", "salience": 0.10,
+        "activation_fabula_window": [0, 1500]}
+     ]
+   }
+   ```
+   Pre-1500 the engine still sees Macbeth's desire and Macduff's fear at full salience; post-1500 both close cleanly and grief / regicide-rage detectors fire on the *event*, not on the standing concern.
+
+   **Counter-concern propagation.** When a concern listed in `counter_concern_ids` exists, closing one side of the pair MUST be paired with closing the other side at the same fabula tick — even if the partner concern is anchored to a *different* (logically inverse) proposition that has not itself committed in this chunk. The partner's effective truth is the *inverse* of the trigger commit's truth, so its materialised-vs-realised classification flips accordingly. If you do not emit the partner's closure snapshot, the Phase C reconciler will inject one for you and log a warning; emit it explicitly to silence the warning and keep the on-page event auditable.
+
+   **Multi-commit propositions.** Some propositions resolve more than once over the source text (a character believed dead is revealed alive, then actually killed; a secret is exposed, retracted, then confirmed). When emitting `proposition_truth_commits`, treat each commit independently and emit closure (and, if applicable, re-opening) snapshots for the affected concerns at each commit tick. The reconciler treats the *latest* commit as canonical for closure but honours intermediate explicit re-openings (`concern_snapshots` with `salience >= 0.2` between two commits).
+
+   **Polarity flips and counter-concerns.** When you emit a `concern_snapshots` entry that flips a concern's `polarity` (Rule 6), emit a paired snapshot at the same fabula tick for every concern in its `counter_concern_ids` — the rivalry topology breaks if one side flips and the other does not. Closing the partner at the same tick (via salience<0.2 or `activation_fabula_window` cap) also counts as a valid pairing.
