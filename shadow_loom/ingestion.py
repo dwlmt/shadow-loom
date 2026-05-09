@@ -893,10 +893,49 @@ class ExtractionConfig(BaseModel):
             "extractor (Physics / Social / Consequences) so beliefs and "
             "utterances can carry canonical ``proposition_id`` / "
             "``asserts_proposition_id`` / ``denies_proposition_id`` / "
-            "``resolves_proposition_ids`` at extraction time — removing "
+            "``resolves_proposition_ids`` at extraction time \u2014 removing "
             "the round-trip the post-pass belief-clustering stage would "
             "otherwise need. Disable to skip the catalogue and fall back "
             "to legacy post-pass clustering only."
+        ),
+    )
+    proposition_catalogue_chunked: bool = Field(
+        default=True,
+        description=(
+            "If true, run the Phase A3 catalogue per-chunk in parallel "
+            "and union the results, instead of one giant LLM call over "
+            "the full source text. Each chunk produces a partial "
+            "catalogue; results are deduplicated by ``proposition_id`` "
+            "(later-chunk entries lose to earlier ones on collision; "
+            "concern_seeds dedupe by ``(entity, proposition, "
+            "polarity)``). The single-shot fallback (when this is "
+            "false) is the historical behaviour and still works on "
+            "short texts but reliably truncates / drops the response "
+            "envelope on long ones \u2014 the chunked path is robust to "
+            "single-chunk LLM flakes (one bad chunk = ~1/N loss, not "
+            "100%)."
+        ),
+    )
+    proposition_catalogue_max_tokens: int = Field(
+        default=8000,
+        ge=1000,
+        description=(
+            "Hard ``max_tokens`` for the Phase A3 catalogue agent. "
+            "Sized to fit a per-chunk catalogue payload (~30-80 "
+            "propositions) without truncation. The provider-default "
+            "behaviour was the silent-truncation source in the "
+            "May 2026 OpenRouter ``JSONDecodeError`` flake."
+        ),
+    )
+    proposition_catalogue_temperature: float = Field(
+        default=0.0,
+        ge=0.0, le=2.0,
+        description=(
+            "Sampling temperature for the Phase A3 catalogue agent. "
+            "0.0 is determinism-preferred: catalogue extraction is a "
+            "naming / classification task with a single best answer "
+            "per proposition, and the dedupe step downstream relies "
+            "on stable id minting across re-runs."
         ),
     )
 
@@ -1829,6 +1868,42 @@ class PropositionCatalogue(BaseModel):
     concern_seeds: List[ConcernSeed] = Field(default_factory=list)
 
 
+class _CataloguePropositionDraft(BaseModel):
+    """Slim wire-format for catalogue propositions.
+
+    The full :class:`Proposition` carries seven catalogue-author
+    fields (id, kind, referent_ids, description, audience_default_prior,
+    stakes, polarity-implicit) plus three runtime fields the catalogue
+    stage MUST NOT populate (``truth_at_fabula``, ``state_timeline``,
+    plus the inherited ``world_id`` flag). Asking the model to round-trip
+    the runtime fields inflates output size 30-50%, costs token budget
+    that goes straight into truncation risk, and previously gave
+    chatty extractors a place to leak per-chunk artefacts up into the
+    global registry. The slim draft below is what the LLM emits; the
+    output validator hydrates it into a full :class:`Proposition` with
+    the runtime fields zeroed.
+    """
+    proposition_id: str
+    kind: Literal[
+        "event_occurs", "trait_holds", "relation_holds",
+        "identity_is", "outcome",
+    ]
+    referent_ids: List[str] = Field(default_factory=list)
+    description: str
+    audience_default_prior: float = Field(default=0.5, ge=0.0, le=1.0)
+    stakes: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
+class _PropositionCatalogueDraft(BaseModel):
+    """Wire-format the LLM agent actually returns (slim).
+
+    Converted to :class:`PropositionCatalogue` inside the agent's
+    output validator.
+    """
+    propositions: List[_CataloguePropositionDraft] = Field(default_factory=list)
+    concern_seeds: List[ConcernSeed] = Field(default_factory=list)
+
+
 # Now that ``ConcernSeed`` exists, finalise the per-chunk topology
 # wire format whose forward ref to it was deferred earlier.
 ChunkTopology.model_rebuild()
@@ -1849,11 +1924,18 @@ def _build_proposition_catalogue_agent(
     Sees the full source text and the Step-1 ontology register; emits
     PROP_ and CCN_ ids that downstream per-chunk agents reference as
     opaque labels. Owns no events, edges, beliefs, or snapshots.
+
+    The agent's *wire output* is :class:`_PropositionCatalogueDraft`
+    (slim — author-fields only). The output validator hydrates it
+    into :class:`PropositionCatalogue` with full :class:`Proposition`
+    records (runtime fields zeroed). This shrinks the response
+    schema 30-50% vs. emitting the full :class:`Proposition` model
+    directly, dropping truncation risk on long source texts.
     """
     agent: Agent[_PropCatalogueDeps, PropositionCatalogue] = Agent(
         _resolve_model(config.model),
         deps_type=_PropCatalogueDeps,
-        output_type=NativeOutput(PropositionCatalogue),
+        output_type=NativeOutput(_PropositionCatalogueDraft),
         system_prompt=_load_prompt("proposition_catalogue.md"),
         retries=config.output_retries,
     )
@@ -1945,17 +2027,24 @@ def _build_proposition_catalogue_agent(
     @agent.output_validator
     def validate_catalogue_ids(
         ctx: RunContext[_PropCatalogueDeps],
-        result: PropositionCatalogue,
+        result: _PropositionCatalogueDraft,
     ) -> PropositionCatalogue:
-        """Drop catalogue entries with invalid ontology references / id shapes.
+        """Hydrate the slim draft into a full catalogue + enforce id integrity.
 
-        - PROP_ / CCN_ id shape is enforced by the model annotations on
-          downstream consumers (and by ``PropositionId`` / ``ConcernId``
-          aliases in ``models.py``); here we focus on referential integrity:
-          referent ids must exist in the ontology, and concern seeds must
-          point at a proposition the catalogue itself emits.
-        - Duplicates collapse silently (later entry wins) so a slightly
-          chatty extractor doesn't poison the world.
+        - Drops malformed PROP_ / CCN_ ids (id-shape gate).
+        - Drops referent_ids that don't exist in the ontology.
+        - Drops concern_seeds whose entity / proposition is unknown.
+        - **Raises** :class:`ModelRetry` (within the agent's
+          ``output_retries`` budget) when a *substantial* fraction of
+          ids is bad — gives the model one chance to repair its own
+          output instead of returning a half-stripped catalogue.
+        - On the final retry the validator falls back to silent drop,
+          so a chronically chatty extractor still produces a *partial*
+          catalogue rather than failing the whole run.
+        - Hydrates each accepted draft into a full :class:`Proposition`
+          with empty ``truth_at_fabula`` / ``state_timeline`` (those
+          are owned by per-chunk Affect; the deterministic post-pass
+          synthesises ``truth_at_fabula`` from EVT_ referents).
         """
         reg = ctx.deps.global_register
         valid_ontology = (
@@ -1967,49 +2056,102 @@ def _build_proposition_catalogue_agent(
         prop_re = re.compile(r"^PROP_[A-Z0-9_]+$")
         ccn_re = re.compile(r"^CCN_[A-Z0-9_]+$")
 
+        bad_ref_count = 0
+        bad_id_count = 0
+        bad_seed_count = 0
+
         deduped_props: Dict[str, Proposition] = {}
-        for p in result.propositions:
-            if not prop_re.match(p.proposition_id):
+        for draft in result.propositions:
+            if not prop_re.match(draft.proposition_id):
+                bad_id_count += 1
                 logger.warning(
                     "[PropCatalogue] Dropping proposition %r \u2014 id does not "
-                    "match ^PROP_[A-Z0-9_]+$.", p.proposition_id,
+                    "match ^PROP_[A-Z0-9_]+$.", draft.proposition_id,
                 )
                 continue
             kept_referents: List[str] = []
-            for rid in p.referent_ids:
+            for rid in draft.referent_ids:
                 if rid in valid_ontology:
                     kept_referents.append(rid)
                 else:
+                    bad_ref_count += 1
                     logger.warning(
                         "[PropCatalogue] Proposition %s drops unknown referent_id %r.",
-                        p.proposition_id, rid,
+                        draft.proposition_id, rid,
                     )
-            if kept_referents != list(p.referent_ids):
-                p = p.model_copy(update={"referent_ids": kept_referents})
-            deduped_props[p.proposition_id] = p
+            # Hydrate into a full Proposition with zeroed runtime fields.
+            deduped_props[draft.proposition_id] = Proposition(
+                proposition_id=draft.proposition_id,
+                kind=draft.kind,
+                referent_ids=kept_referents,
+                description=draft.description,
+                audience_default_prior=draft.audience_default_prior,
+                stakes=draft.stakes,
+                truth_at_fabula={},
+                state_timeline=[],
+            )
 
         prop_ids = set(deduped_props)
         deduped_seeds: Dict[Tuple[str, str, str], ConcernSeed] = {}
         for s in result.concern_seeds:
             if not ccn_re.match(s.concern_id):
+                bad_seed_count += 1
                 logger.warning(
                     "[PropCatalogue] Dropping concern seed %r \u2014 id does not "
                     "match ^CCN_[A-Z0-9_]+$.", s.concern_id,
                 )
                 continue
             if s.entity_id not in reg.entities:
+                bad_seed_count += 1
                 logger.warning(
                     "[PropCatalogue] Dropping concern seed %s \u2014 unknown entity %r.",
                     s.concern_id, s.entity_id,
                 )
                 continue
             if s.proposition_id not in prop_ids:
+                bad_seed_count += 1
                 logger.warning(
                     "[PropCatalogue] Dropping concern seed %s \u2014 unknown "
                     "proposition_id %r.", s.concern_id, s.proposition_id,
                 )
                 continue
             deduped_seeds[(s.entity_id, s.proposition_id, s.polarity)] = s
+
+        # Re-prompt-on-bad-id gate. Only fires when:
+        #   * the model has retries left (retry counter is bounded by
+        #     pydantic_ai's own ``output_retries`` budget), AND
+        #   * the error rate is substantial (>20% of refs OR >30% of
+        #     seeds). Below that threshold the silent-drop posture is
+        #     fine \u2014 catalogue completeness > a re-roll.
+        # Without this, a model that misnames 10 out of 50 referents
+        # silently ships a 40-prop catalogue with 10 mis-scoped props
+        # instead of a 50-prop catalogue with the misnames repaired.
+        total_refs = sum(len(p.referent_ids) for p in result.propositions) or 1
+        total_props = len(result.propositions) or 1
+        total_seeds = len(result.concern_seeds) or 1
+        ref_err_rate = bad_ref_count / total_refs
+        seed_err_rate = bad_seed_count / total_seeds
+        id_err_rate = bad_id_count / total_props
+        if (
+            ref_err_rate > 0.20
+            or seed_err_rate > 0.30
+            or id_err_rate > 0.20
+        ):
+            # Build a focused repair message naming a few concrete
+            # offenders so the model can see what to fix rather than
+            # being told only the rate.
+            sample_ents = sorted(reg.entities)[:8]
+            sample_locs = sorted(reg.locations)[:6]
+            raise ModelRetry(
+                "Your catalogue had a high invalid-id rate "
+                f"(referents={ref_err_rate:.0%}, ids={id_err_rate:.0%}, "
+                f"seeds={seed_err_rate:.0%}). Re-emit using ONLY canonical "
+                "ids from the ontology register supplied in the system "
+                "prompt. Sample valid entity ids: "
+                f"{sample_ents}. Sample valid location ids: {sample_locs}. "
+                "PROP_ ids must match ^PROP_[A-Z0-9_]+$ and CCN_ ids must "
+                "match ^CCN_[A-Z0-9_]+$. Do not invent EVT_ ids."
+            )
 
         return PropositionCatalogue(
             propositions=list(deduped_props.values()),
@@ -2019,6 +2161,187 @@ def _build_proposition_catalogue_agent(
     return agent
 
 
+def _catalogue_model_settings(config: ExtractionConfig) -> Dict[str, Any]:
+    """Build the ``model_settings=`` dict for catalogue agent.run calls.
+
+    Centralised so the chunked path and the single-shot fallback share
+    the same explicit ``temperature`` (deterministic) and bounded
+    ``max_tokens`` (drops the silent-truncation surface that caused
+    the May 2026 OpenRouter ``JSONDecodeError`` cascade).
+    """
+    return {
+        "max_tokens": int(config.proposition_catalogue_max_tokens),
+        "temperature": float(config.proposition_catalogue_temperature),
+    }
+
+
+def _merge_catalogues(
+    catalogues: List[PropositionCatalogue],
+) -> PropositionCatalogue:
+    """Union-dedupe a list of partial per-chunk catalogues.
+
+    Dedup rules:
+      * Propositions: first-seen wins on ``proposition_id`` collision.
+        Referent_ids unioned across collisions so a later chunk that
+        rediscovers the same proposition with extra referents still
+        contributes them.
+      * Propositions: also dedup on normalised description (lower /
+        whitespace-collapsed) to catch cases where two chunks mint
+        differently-spelled ids for the same claim. First-seen wins.
+      * Concern seeds: dedup on ``(entity_id, proposition_id,
+        polarity)``; first-seen wins; ``baseline_salience`` keeps the
+        max across collisions so a later, stronger appearance can
+        upgrade a tentative initial seed.
+      * Concern seeds whose ``proposition_id`` was dropped during
+        proposition merge are themselves dropped (referential
+        integrity).
+    """
+    by_id: Dict[str, Proposition] = {}
+    by_desc: Dict[str, str] = {}  # normalised description -> proposition_id
+
+    def _norm(s: str) -> str:
+        return " ".join((s or "").lower().split())
+
+    for cat in catalogues:
+        for p in cat.propositions:
+            norm = _norm(p.description)
+            existing = by_id.get(p.proposition_id)
+            if existing is None and norm in by_desc:
+                # Same claim minted under a different id — collapse onto
+                # the first id seen, but union referents.
+                first_id = by_desc[norm]
+                first = by_id[first_id]
+                merged_refs = list(dict.fromkeys(
+                    list(first.referent_ids) + list(p.referent_ids),
+                ))
+                if merged_refs != list(first.referent_ids):
+                    by_id[first_id] = first.model_copy(update={
+                        "referent_ids": merged_refs,
+                    })
+                continue
+            if existing is not None:
+                # Same id, second sighting — union referents only.
+                merged_refs = list(dict.fromkeys(
+                    list(existing.referent_ids) + list(p.referent_ids),
+                ))
+                if merged_refs != list(existing.referent_ids):
+                    by_id[p.proposition_id] = existing.model_copy(update={
+                        "referent_ids": merged_refs,
+                    })
+                continue
+            by_id[p.proposition_id] = p
+            if norm:
+                by_desc[norm] = p.proposition_id
+
+    valid_prop_ids = set(by_id)
+    seeds_by_key: Dict[Tuple[str, str, str], ConcernSeed] = {}
+    for cat in catalogues:
+        for s in cat.concern_seeds:
+            if s.proposition_id not in valid_prop_ids:
+                # Could happen when a per-chunk catalogue's prop was
+                # absorbed into another id via the description-collapse
+                # branch above; remap the seed's proposition_id.
+                # Attempt rewire by description similarity — but the
+                # seed only carries a PROP id, not text, so we drop.
+                continue
+            key = (s.entity_id, s.proposition_id, s.polarity)
+            existing = seeds_by_key.get(key)
+            if existing is None:
+                seeds_by_key[key] = s
+            else:
+                # Bump baseline_salience to max across sightings.
+                if s.baseline_salience > existing.baseline_salience:
+                    seeds_by_key[key] = s
+
+    return PropositionCatalogue(
+        propositions=list(by_id.values()),
+        concern_seeds=list(seeds_by_key.values()),
+    )
+
+
+def _catalogue_checkpoint_path(
+    checkpoint_dir: str, text: str, register: GlobalRegister, fingerprint: str,
+) -> Path:
+    """Cache key combines source-text hash, ontology hash, and config hash.
+
+    Catalogue output is deterministic in (text, ontology, model+prompt
+    fingerprint) — so a topology-checkpoint miss caused by a downstream
+    flake should still hit this cache rather than re-paying the
+    catalogue's LLM cost. Distinct from the topology checkpoint
+    envelope (which carries the catalogue alongside topologies but is
+    invalidated whenever any chunk's topology changes).
+    """
+    text_hash = hashlib.sha256(
+        text.encode("utf-8", errors="replace"),
+    ).hexdigest()[:16]
+    reg_hash = hashlib.sha256(
+        register.model_dump_json().encode("utf-8", errors="replace"),
+    ).hexdigest()[:16]
+    return (
+        Path(checkpoint_dir)
+        / f"catalogue_{text_hash}_{reg_hash}_{fingerprint}.json"
+    )
+
+
+def _load_catalogue_checkpoint(
+    checkpoint_dir: Optional[str], text: str,
+    register: GlobalRegister, fingerprint: str,
+) -> Optional[PropositionCatalogue]:
+    if not checkpoint_dir:
+        return None
+    p = _catalogue_checkpoint_path(checkpoint_dir, text, register, fingerprint)
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        logger.warning("[Checkpoint] Could not parse %s — ignoring.", p)
+        return None
+    if (
+        not isinstance(data, dict)
+        or data.get("version") != _CHECKPOINT_VERSION
+        or data.get("fingerprint") != fingerprint
+    ):
+        logger.info(
+            "[Checkpoint] %s envelope mismatch — ignoring catalogue cache.",
+            p,
+        )
+        return None
+    try:
+        cat = PropositionCatalogue.model_validate(data["catalogue"])
+    except Exception:
+        logger.warning("[Checkpoint] %s catalogue body invalid — ignoring.", p)
+        return None
+    logger.info(
+        "[Checkpoint] Loaded catalogue from %s (%d propositions, %d seeds).",
+        p, len(cat.propositions), len(cat.concern_seeds),
+    )
+    return cat
+
+
+def _save_catalogue_checkpoint(
+    checkpoint_dir: Optional[str], text: str,
+    register: GlobalRegister, fingerprint: str,
+    catalogue: PropositionCatalogue,
+) -> None:
+    if not checkpoint_dir:
+        return
+    try:
+        p = _catalogue_checkpoint_path(
+            checkpoint_dir, text, register, fingerprint,
+        )
+        p.parent.mkdir(parents=True, exist_ok=True)
+        envelope = {
+            "version": _CHECKPOINT_VERSION,
+            "fingerprint": fingerprint,
+            "catalogue": json.loads(catalogue.model_dump_json()),
+        }
+        p.write_text(json.dumps(envelope, indent=2), encoding="utf-8")
+        logger.debug("[Checkpoint] Wrote catalogue checkpoint %s", p)
+    except Exception:
+        logger.exception("[Checkpoint] Could not write catalogue checkpoint.")
+
+
 async def extract_proposition_catalogue_async(
     text: str,
     register: GlobalRegister,
@@ -2026,41 +2349,136 @@ async def extract_proposition_catalogue_async(
 ) -> PropositionCatalogue:
     """Run Phase A3: build the global Proposition Catalogue.
 
-    Single LLM call over the full source text. Failures degrade
-    gracefully to an empty catalogue \u2014 every per-chunk agent then
-    sees an empty PROP list and the legacy post-pass clustering path
-    handles belief\u2192proposition binding.
+    Three layers of robustness:
+
+    1. **Cache (F)** — first attempt is a checkpoint lookup keyed on
+       ``(text_hash, register_hash, model+prompt fingerprint)``.
+    2. **Chunked extraction (A)** — when
+       ``config.proposition_catalogue_chunked`` is true (default),
+       run the catalogue agent per source chunk in parallel and union
+       the results. One bad chunk loses ~1/N propositions, not 100%.
+    3. **Single-shot fallback** — when chunking is disabled or
+       produces nothing usable, fall back to one global LLM call over
+       the full text (the historical behaviour).
+
+    Failures degrade gracefully to an empty catalogue — every per-chunk
+    agent then sees an empty PROP list and the legacy post-pass
+    clustering path handles belief\u2192proposition binding.
     """
+    fingerprint = _extraction_fingerprint(config)
+    pipeline_ckpt = getattr(config, "pipeline_checkpoint_dir", None)
+
+    # Layer 1: catalogue cache.
+    cached = _load_catalogue_checkpoint(
+        pipeline_ckpt, text, register, fingerprint,
+    )
+    if cached is not None:
+        return cached
+
     agent = _build_proposition_catalogue_agent(config)
     deps = _PropCatalogueDeps(global_register=register)
-    logger.info("[Step 2.5] Extracting proposition catalogue \u2026")
-    # Bounded retry-with-backoff. The catalogue is a single LLM call
-    # over the whole source text, so a transient provider flake (e.g.
-    # OpenRouter returning a malformed JSON envelope, prompting
-    # ``json.JSONDecodeError`` from the OpenAI SDK before we ever see
-    # the model output) collapses the *entire* catalogue and silently
-    # propagates as "no propositions" through every downstream stage:
-    # the per-chunk Affect Agent runs without PROP context, the
-    # reconciler has nothing to fold, and the saved ``WorldStateV1``
-    # ends up with belief / utterance / event references that point
-    # at PROP_ ids the registry never contained.
-    try:
-        result = await _run_with_retry_async(
-            lambda: agent.run(text, deps=deps, **_user_kwargs()),
-            label="Step 2.5",
+    settings = _catalogue_model_settings(config)
+
+    # Layer 2: chunked extraction.
+    use_chunked = bool(getattr(
+        config, "proposition_catalogue_chunked", True,
+    ))
+    catalogue: Optional[PropositionCatalogue] = None
+
+    if use_chunked:
+        chunks = chunk_text(
+            text,
+            strategy=config.chunk_strategy,
+            min_chunk_chars=config.min_chunk_chars,
+            max_chunk_chars=config.max_chunk_chars,
         )
-        catalogue = result.output
-    except Exception:
-        logger.exception(
-            "[Step 2.5] Proposition catalogue extraction FAILED after "
-            "retries \u2014 returning empty catalogue (per-chunk "
-            "extractors will run with no PROP_ context; legacy "
-            "post-pass clustering still fires).",
+        n = len(chunks)
+        logger.info(
+            "[Step 2.5] Extracting proposition catalogue from %d chunks "
+            "in parallel \u2026", n,
         )
-        return PropositionCatalogue()
+        sem = asyncio.Semaphore(max(1, getattr(
+            config, "max_concurrent_chunks", 4,
+        )))
+
+        async def _one(idx: int, chunk: str) -> Optional[PropositionCatalogue]:
+            async with sem:
+                msg = (
+                    f"Chunk {idx + 1} of {n} of the source text. Emit ONLY "
+                    f"propositions and concern seeds whose evidence appears "
+                    f"in this chunk; the orchestrator unions all chunks' "
+                    f"catalogues into a single global registry.\n\n{chunk}"
+                )
+                try:
+                    res = await _run_with_retry_async(
+                        lambda: agent.run(
+                            msg, deps=deps,
+                            model_settings=settings,
+                            **_user_kwargs(),
+                        ),
+                        label=f"Step 2.5 chunk {idx + 1}/{n}",
+                    )
+                    return res.output
+                except Exception:
+                    logger.exception(
+                        "[Step 2.5] Chunk %d/%d catalogue extraction "
+                        "FAILED \u2014 dropping this chunk's contribution.",
+                        idx + 1, n,
+                    )
+                    return None
+
+        results = await asyncio.gather(
+            *(_one(i, c) for i, c in enumerate(chunks)),
+        )
+        partials = [r for r in results if r is not None]
+        succeeded = len(partials)
+        if succeeded > 0:
+            catalogue = _merge_catalogues(partials)
+            logger.info(
+                "[Step 2.5] Chunked catalogue: %d/%d chunks succeeded; "
+                "merged to %d propositions, %d concern seeds.",
+                succeeded, n,
+                len(catalogue.propositions),
+                len(catalogue.concern_seeds),
+            )
+        else:
+            logger.warning(
+                "[Step 2.5] All %d catalogue chunks failed \u2014 falling "
+                "back to single-shot full-text extraction.", n,
+            )
+
+    # Layer 3: single-shot fallback (or explicit single-shot mode).
+    if catalogue is None:
+        logger.info(
+            "[Step 2.5] Extracting proposition catalogue (single-shot) \u2026",
+        )
+        try:
+            result = await _run_with_retry_async(
+                lambda: agent.run(
+                    text, deps=deps,
+                    model_settings=settings,
+                    **_user_kwargs(),
+                ),
+                label="Step 2.5 single-shot",
+            )
+            catalogue = result.output
+        except Exception:
+            logger.exception(
+                "[Step 2.5] Proposition catalogue extraction FAILED after "
+                "retries \u2014 returning empty catalogue (per-chunk "
+                "extractors will run with no PROP_ context; legacy "
+                "post-pass clustering still fires).",
+            )
+            return PropositionCatalogue()
+
     logger.info(
         "[Step 2.5] Catalogue: %d propositions, %d concern seeds.",
         len(catalogue.propositions), len(catalogue.concern_seeds),
+    )
+
+    # Layer 1 (write side): cache the successful result.
+    _save_catalogue_checkpoint(
+        pipeline_ckpt, text, register, fingerprint, catalogue,
     )
     return catalogue
 

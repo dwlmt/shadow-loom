@@ -197,3 +197,147 @@ def test_reconcile_no_op_for_empty_catalogue_and_topologies():
     out = reconcile_affect(ws, None, [])
     assert out.propositions == []
     assert all(not e.concerns for e in out.entities.values())
+
+
+# =====================================================================
+# Robustness helpers added in May 2026 (B/E/A/F):
+#   * _CataloguePropositionDraft (slim wire-format)
+#   * _merge_catalogues (chunked union-dedupe)
+#   * catalogue cache load/save (round-trip)
+# =====================================================================
+
+import json
+from pathlib import Path
+
+from shadow_loom.ingestion import (
+    _CataloguePropositionDraft,
+    _PropositionCatalogueDraft,
+    _load_catalogue_checkpoint,
+    _merge_catalogues,
+    _save_catalogue_checkpoint,
+)
+
+
+def _prop(pid: str, desc: str, refs=None, stakes=0.5) -> Proposition:
+    return Proposition(
+        proposition_id=pid, kind="event_occurs",
+        referent_ids=refs or [], description=desc, stakes=stakes,
+    )
+
+
+def test_catalogue_draft_keeps_only_author_fields():
+    """Slim draft must NOT carry runtime fields; full Proposition does."""
+    draft_fields = set(_CataloguePropositionDraft.model_fields)
+    assert "truth_at_fabula" not in draft_fields
+    assert "state_timeline" not in draft_fields
+    assert "world_id" not in draft_fields
+    # Author-only payload \u2014 the validator hydrates the rest.
+    assert {
+        "proposition_id", "kind", "referent_ids", "description",
+        "audience_default_prior", "stakes",
+    } <= draft_fields
+
+
+def test_merge_catalogues_unions_referents_on_id_collision():
+    a = PropositionCatalogue(propositions=[
+        _prop("PROP_X", "Same claim", refs=["ENT_A"]),
+    ])
+    b = PropositionCatalogue(propositions=[
+        _prop("PROP_X", "Different framing same id", refs=["ENT_B"]),
+    ])
+    merged = _merge_catalogues([a, b])
+    assert len(merged.propositions) == 1
+    assert sorted(merged.propositions[0].referent_ids) == ["ENT_A", "ENT_B"]
+
+
+def test_merge_catalogues_collapses_normalised_description():
+    a = PropositionCatalogue(propositions=[
+        _prop("PROP_DUNCAN_DEAD", "Duncan is dead", refs=["ENT_DUNCAN"]),
+    ])
+    b = PropositionCatalogue(propositions=[
+        # Different id but same claim \u2014 should fold onto first id.
+        _prop("PROP_DEAD_DUNCAN", "  duncan IS  dead  ", refs=["ENT_KING"]),
+    ])
+    merged = _merge_catalogues([a, b])
+    assert len(merged.propositions) == 1
+    assert merged.propositions[0].proposition_id == "PROP_DUNCAN_DEAD"
+    # Referents from BOTH sightings.
+    assert sorted(merged.propositions[0].referent_ids) == ["ENT_DUNCAN", "ENT_KING"]
+
+
+def test_merge_catalogues_dedupes_seeds_and_keeps_max_salience():
+    p = _prop("PROP_X", "X", refs=[])
+    a = PropositionCatalogue(
+        propositions=[p],
+        concern_seeds=[ConcernSeed(
+            concern_id="CCN_A_DESIRE_X", entity_id="ENT_A",
+            proposition_id="PROP_X", polarity="desire",
+            baseline_salience=0.3,
+        )],
+    )
+    b = PropositionCatalogue(
+        propositions=[p],
+        concern_seeds=[ConcernSeed(
+            concern_id="CCN_A_DESIRE_X_2", entity_id="ENT_A",
+            proposition_id="PROP_X", polarity="desire",
+            baseline_salience=0.9,  # later sighting is stronger.
+        )],
+    )
+    merged = _merge_catalogues([a, b])
+    assert len(merged.concern_seeds) == 1
+    assert merged.concern_seeds[0].baseline_salience == 0.9
+
+
+def test_merge_catalogues_drops_seeds_for_unknown_proposition():
+    a = PropositionCatalogue(
+        propositions=[_prop("PROP_X", "X")],
+        concern_seeds=[ConcernSeed(
+            concern_id="CCN_A_DESIRE_Y", entity_id="ENT_A",
+            proposition_id="PROP_Y_GHOST",  # never declared.
+            polarity="desire", baseline_salience=0.5,
+        )],
+    )
+    merged = _merge_catalogues([a])
+    assert merged.concern_seeds == []
+
+
+def test_catalogue_checkpoint_roundtrip(tmp_path: Path):
+    """Save then load returns the same catalogue; envelope mismatch \u2192 None."""
+    from shadow_loom.ingestion import GlobalRegister, ExtractionConfig
+
+    reg = GlobalRegister(
+        locations={"LOC_X": Location(id="LOC_X", name="X", description="x")},
+        objects={},
+        entities={"ENT_A": Entity(
+            id="ENT_A", name="A", location_id="LOC_X",
+            status="healthy", traits={},
+        )},
+        world_traits={},
+    )
+    cat = PropositionCatalogue(
+        propositions=[_prop("PROP_X", "X", refs=["ENT_A"])],
+    )
+    cfg = ExtractionConfig()
+    text = "Once upon a time."
+    ckpt = str(tmp_path)
+
+    _save_catalogue_checkpoint(ckpt, text, reg, "fp_v1", cat)
+    loaded = _load_catalogue_checkpoint(ckpt, text, reg, "fp_v1")
+    assert loaded is not None
+    assert [p.proposition_id for p in loaded.propositions] == ["PROP_X"]
+
+    # Mismatched fingerprint \u2192 cache miss.
+    miss = _load_catalogue_checkpoint(ckpt, text, reg, "fp_v2_DIFFERENT")
+    assert miss is None
+
+    # Mismatched text \u2192 different file path entirely.
+    miss2 = _load_catalogue_checkpoint(ckpt, "different text", reg, "fp_v1")
+    assert miss2 is None
+
+
+def test_catalogue_checkpoint_no_op_when_dir_is_none():
+    cat = PropositionCatalogue()
+    # Should silently no-op, not raise.
+    _save_catalogue_checkpoint(None, "t", None, "fp", cat)  # type: ignore[arg-type]
+    loaded = _load_catalogue_checkpoint(None, "t", None, "fp")  # type: ignore[arg-type]
+    assert loaded is None
