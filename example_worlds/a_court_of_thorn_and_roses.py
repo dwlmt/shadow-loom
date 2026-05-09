@@ -1058,6 +1058,20 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_TAMLIN_CAPTURED", target_id="ENT_AMARANTHA", rel_counterpart_id="ENT_RHYSAND",  # auto-backfill
                    causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.09,
                    mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=10000, propagation_delay=0),
+
+        # ── WORLD_ → WORLD_ (named-latent forces destabilising one another) ──
+        CausalEdge(source_id="WORLD_AMARANTHAS_CURSE", target_id="WORLD_BLIGHT_INTENSITY",
+                   causality_type="chain_reaction", mechanism="physical", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=2000,
+                   description="Amarantha's curse is the literal cosmological cause of the Blight — the lived experience of decay across Prythian is the curse made meteorological."),
+        CausalEdge(source_id="WORLD_AMARANTHAS_CURSE", target_id="WORLD_TREATY_ENFORCEMENT",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=2000,
+                   description="The curse weaponises the Treaty's payment clause — the demand on Feyre after Andras's death is the curse routed through Treaty enforcement."),
+        CausalEdge(source_id="WORLD_AMARANTHAS_CURSE", target_id="WORLD_FAE_MORTAL_WALL",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=2000,
+                   description="The curse stresses the Wall — if it falls Prythian's power floods the mortal lands; the fragility is itself part of the curse's threat."),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -1154,6 +1168,7 @@ world_state = WorldStateV1(
             category="magic_system",
             magnitude=TraitVector(value=0.9, inertia=0.7, evidence_strength="strong"),
             affected_domains=["social", "psychological", "epistemic"],
+            proposition_id="PROP_CURSE_REMAINS_UNBROKEN",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=11000, triggered_by="EVT_ALIS_REVEALS_TRUTH",
                     magnitude=TraitVector(value=0.85, inertia=0.6, evidence_strength="strong"),
@@ -1174,6 +1189,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.8, inertia=0.85, evidence_strength="strong"),
             affected_domains=["social", "epistemic"],
+            proposition_id="PROP_FAE_MORTAL_WALL_INTACT",
         ),
         "WORLD_BLIGHT_INTENSITY": GlobalTrait(
             id="WORLD_BLIGHT_INTENSITY",
@@ -1185,6 +1201,7 @@ world_state = WorldStateV1(
             category="environment",
             magnitude=TraitVector(value=0.85, inertia=0.6, evidence_strength="strong"),
             affected_domains=["psychological", "social"],
+            proposition_id="PROP_AMARANTHA_THREATENS_PRYTHIAN",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=18000, triggered_by="EVT_FEYRE_SOLVES_RIDDLE",
                     magnitude=TraitVector(value=0.0, inertia=0.1, evidence_strength="strong"),
@@ -1201,6 +1218,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.7, inertia=0.8, evidence_strength="strong"),
             affected_domains=["social"],
+            proposition_id="PROP_TREATY_BINDS_HIGH_FAE",
         ),
         "WORLD_GLAMOUR_COVER_STORY": GlobalTrait(
             id="WORLD_GLAMOUR_COVER_STORY",
@@ -1212,6 +1230,7 @@ world_state = WorldStateV1(
             category="magic_system",
             magnitude=TraitVector(value=0.8, inertia=0.5, evidence_strength="strong"),
             affected_domains=["epistemic", "social"],
+            proposition_id="PROP_GLAMOUR_COVER_STORY_HOLDS",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=10000, triggered_by="EVT_NESTA_REVEALS_GLAMOUR",
                     magnitude=TraitVector(value=0.6, inertia=0.45, evidence_strength="strong"),
@@ -1232,6 +1251,7 @@ world_state = WorldStateV1(
             category="magic_system",
             magnitude=TraitVector(value=0.6, inertia=0.85, evidence_strength="weak"),
             affected_domains=["emotional", "psychological"],
+            proposition_id="PROP_MATING_BOND_REVEALED",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=20000, triggered_by="EVT_FEYRE_DIES_REBORN",
                     magnitude=TraitVector(value=0.85, inertia=0.9, evidence_strength="moderate"),
@@ -1683,5 +1703,21 @@ world_state = WorldStateV1(
                     description="The glamour cover story remains effective on Feyre's family.",
                     audience_default_prior=0.8, stakes=0.68,
                     truth_at_fabula={8000: True, 10000: False}),
+        # WORLD_ trait Pearl-Rung-2 reifications.
+        Proposition(proposition_id="PROP_FAE_MORTAL_WALL_INTACT", kind="trait_holds",
+                    referent_ids=["WORLD_FAE_MORTAL_WALL", "LOC_WALL"],
+                    description="The ancient magical wall between mortal and fae lands stands intact.",
+                    audience_default_prior=0.85, stakes=0.7,
+                    truth_at_fabula={1000: True}),
+        Proposition(proposition_id="PROP_TREATY_BINDS_HIGH_FAE", kind="trait_holds",
+                    referent_ids=["WORLD_TREATY_ENFORCEMENT", "ENT_TAMLIN", "ENT_FEYRE"],
+                    description="The Fae-Mortal Treaty binds the High Fae to demand payment for Andras's killing.",
+                    audience_default_prior=0.65, stakes=0.85,
+                    truth_at_fabula={2000: True}),
+        Proposition(proposition_id="PROP_MATING_BOND_REVEALED", kind="trait_holds",
+                    referent_ids=["WORLD_MATING_BOND", "ENT_FEYRE", "ENT_TAMLIN", "ENT_RHYSAND"],
+                    description="The named-latent High Fae mating bond surfaces — the seven High Lords' light remakes Feyre.",
+                    audience_default_prior=0.2, stakes=0.95,
+                    truth_at_fabula={20000: True}),
     ],
 )

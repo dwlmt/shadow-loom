@@ -1042,6 +1042,24 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_ASLAN_PACT", target_id="ENT_ASLAN", rel_counterpart_id="ENT_WHITE_WITCH",  # auto-backfill
                    causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.15,
                    mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=16000, propagation_delay=0),
+
+        # ── WORLD_ → WORLD_ (named-latent forces destabilising one another) ──
+        CausalEdge(source_id="WORLD_DEEP_MAGIC", target_id="WORLD_DEEPER_MAGIC",
+                   causality_type="chain_reaction", mechanism="epistemic", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=17000,
+                   description="The Deep Magic's demand for traitor's blood is exactly the lawful trigger that activates the older Deeper Magic — willing innocent sacrifice runs death backward."),
+        CausalEdge(source_id="WORLD_DEEPER_MAGIC", target_id="WORLD_ENCHANTED_WINTER",
+                   causality_type="chain_reaction", mechanism="physical", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=18000,
+                   description="Aslan's resurrection by the Deeper Magic is the cosmological event that breaks the Witch's grip on the seasons."),
+        CausalEdge(source_id="WORLD_PROPHECY_FOUR_THRONES", target_id="WORLD_ENCHANTED_WINTER",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=11500,
+                   description="The arrival of the four children begins fulfilling the prophecy whose completion ends the Witch's winter — Father Christmas's return is the first thaw."),
+        CausalEdge(source_id="WORLD_ENCHANTED_WINTER", target_id="WORLD_DEEP_MAGIC",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=10000,
+                   description="The Witch's hold on Narnia (perpetual winter) is the political precondition for her enforcement of the Deep Magic's claim on traitors."),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -1082,6 +1100,7 @@ world_state = WorldStateV1(
             category="cosmology",
             magnitude=TraitVector(value=0.85, inertia=0.9, evidence_strength="strong"),
             affected_domains=["social", "epistemic"],
+            proposition_id="PROP_DEEP_MAGIC_DEMANDS_TRAITOR_BLOOD",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=15000, triggered_by="EVT_WITCH_DEMANDS_EDMUND",
                     magnitude=TraitVector(value=0.95, inertia=0.95, evidence_strength="strong"),
@@ -1097,7 +1116,8 @@ world_state = WorldStateV1(
             description="Secret law older than the Deep Magic: a willing innocent sacrifice reverses death. Drives Aslan's resurrection.",
             category="cosmology",
             magnitude=TraitVector(value=0.6, inertia=0.95, evidence_strength="moderate"),
-            affected_domains=["supernatural", "psychological"],
+            affected_domains=["psychological", "epistemic"],
+            proposition_id="PROP_ASLAN_LIVES",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=18000, triggered_by="EVT_ASLAN_RESURRECTION",
                     magnitude=TraitVector(value=0.95, inertia=0.95, evidence_strength="strong"),
@@ -1111,6 +1131,7 @@ world_state = WorldStateV1(
             category="cosmology",
             magnitude=TraitVector(value=0.7, inertia=0.85, evidence_strength="strong"),
             affected_domains=["social", "psychological"],
+            proposition_id="PROP_PROPHECY_FULFILLED",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=21000, triggered_by="EVT_CORONATION",
                     magnitude=TraitVector(value=0.95, inertia=0.9, evidence_strength="strong"),
@@ -1123,7 +1144,8 @@ world_state = WorldStateV1(
             description="The Witch's spell: always winter, never Christmas. Drives the frozen landscape and oppressive atmosphere until Aslan's return breaks it.",
             category="magic_system",
             magnitude=TraitVector(value=0.9, inertia=0.75, evidence_strength="strong"),
-            affected_domains=["environmental", "psychological"],
+            affected_domains=["physical", "psychological"],
+            proposition_id="PROP_NARNIA_FREED",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=11500, triggered_by="EVT_FATHER_CHRISTMAS_GIFTS",
                     magnitude=TraitVector(value=0.5, inertia=0.6, evidence_strength="strong"),
@@ -1396,5 +1418,11 @@ world_state = WorldStateV1(
                     description="Aslan is the true king of Narnia.",
                     audience_default_prior=0.7, stakes=0.7,
                     truth_at_fabula={1: True}),
+        # WORLD_ trait Pearl-Rung-2 reification (Deep Magic).
+        Proposition(proposition_id="PROP_DEEP_MAGIC_DEMANDS_TRAITOR_BLOOD", kind="trait_holds",
+                    referent_ids=["WORLD_DEEP_MAGIC", "ENT_EDMUND", "ENT_WHITE_WITCH"],
+                    description="The Deep Magic carved on the Stone Table claims every traitor's life for the Witch — the law is absolute until the Deeper Magic supersedes it.",
+                    audience_default_prior=0.65, stakes=0.95,
+                    truth_at_fabula={15000: True, 18000: False}),
     ],
 )

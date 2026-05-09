@@ -194,6 +194,55 @@ class ChunkConcernSnapshot(BaseModel):
     kind: Optional[str] = None
 
 
+class ChunkBeliefSnapshot(BaseModel):
+    """Per-chunk wire format for a per-character Belief confidence drift.
+
+    Owned by the Phase B4 Affect Agent. Distinct from the Consequences
+    agent's :class:`BeliefConfidenceUpdate` (which lands as a flat
+    overwrite via :class:`EntityUpdate.belief_confidence_updates`):
+    ``ChunkBeliefSnapshot`` is folded onto an
+    :class:`EntityStateSnapshot.belief_confidence_updates` entry at
+    the snapshot's ``fabula_time`` so per-character Bayesian-surprise
+    diagnostics see the drift on the timeline, not just the
+    last-write-wins overwrite.
+
+    The reconciler matches by ``(holder_id, target_id,
+    proposition_id?)`` against the entity's *current* beliefs and
+    skips entries with no match — Affect must not forge new beliefs
+    (that's Consequences' job via ``new_beliefs``).
+    """
+    holder_id: str = Field(description="ENT_ id of the believer.")
+    target_id: str = Field(
+        description="ENT_/EVT_/OBJ_/LOC_/WORLD_ id the belief is *about*.",
+    )
+    proposition_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional PROP_ id discriminator when ``target_id`` matches "
+            "more than one belief on the holder."
+        ),
+    )
+    fabula_time: int
+    triggered_by: str = Field(
+        description="EVT_ id from this chunk that caused the drift.",
+    )
+    new_confidence: float = Field(
+        ge=0.0, le=1.0,
+        description=(
+            "Clamped post-drift confidence (0.0–1.0). Diff-only — emit "
+            "only when the value actually changes."
+        ),
+    )
+    new_inertia: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0,
+        description=(
+            "Optional override of belief.inertia. Use when the chunk "
+            "*shocks* a belief loose (lowers inertia) or *cements* it "
+            "(raises inertia)."
+        ),
+    )
+
+
 class ChunkAffectExtraction(BaseModel):
     """Step 3d output (Phase B4): per-chunk affect deltas.
 
@@ -205,6 +254,17 @@ class ChunkAffectExtraction(BaseModel):
     proposition_snapshots: List[ChunkPropositionSnapshot] = Field(default_factory=list)
     proposition_truth_commits: List[PropositionTruthCommit] = Field(default_factory=list)
     concern_snapshots: List[ChunkConcernSnapshot] = Field(default_factory=list)
+    belief_snapshots: List[ChunkBeliefSnapshot] = Field(
+        default_factory=list,
+        description=(
+            "Per-character Belief confidence drift snapshots. Diff-only:"
+            " emit only when an existing belief's ``confidence`` (or"
+            " ``inertia``) shifts in response to an on-page event. The"
+            " reconciler folds each into"
+            " ``EntityStateSnapshot.belief_confidence_updates`` at the"
+            " snapshot's fabula_time."
+        ),
+    )
     new_concern_seeds: List["ConcernSeed"] = Field(default_factory=list)
 
 
@@ -251,6 +311,7 @@ class ChunkTopology(BaseModel):
     proposition_snapshots: List[ChunkPropositionSnapshot] = Field(default_factory=list)
     proposition_truth_commits: List[PropositionTruthCommit] = Field(default_factory=list)
     concern_snapshots: List[ChunkConcernSnapshot] = Field(default_factory=list)
+    belief_snapshots: List[ChunkBeliefSnapshot] = Field(default_factory=list)
     new_concern_seeds: List["ConcernSeed"] = Field(default_factory=list)
     # Genesis spawns (post-physics promotion). Keyed by canonical id.
     new_entities: Dict[str, Entity] = Field(default_factory=dict)

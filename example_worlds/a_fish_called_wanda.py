@@ -1008,6 +1008,20 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_HEIST", target_id="ENT_KEN", rel_counterpart_id="ENT_WANDA",  # auto-backfill
                    causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.09,
                    mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+
+        # ── WORLD_ → WORLD_ (named-latent forces destabilising one another) ──
+        CausalEdge(source_id="WORLD_HEIST_HONOUR", target_id="WORLD_DOUBLE_CROSS_ECONOMY",
+                   causality_type="chain_reaction", mechanism="betrayal", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=2000,
+                   description="As thieves' honour collapses, every alliance is repriced as a betrayal contract — the double-cross economy is what fills the vacuum."),
+        CausalEdge(source_id="WORLD_RESPECTABILITY_PRESSURE", target_id="WORLD_ANGLO_AMERICAN_CLASH",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=24000,
+                   description="English respectability is precisely what Otto's American brashness offends; the clash is respectability's defensive reflex."),
+        CausalEdge(source_id="WORLD_DOUBLE_CROSS_ECONOMY", target_id="WORLD_HEIST_HONOUR",
+                   causality_type="chain_reaction", mechanism="betrayal", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=15000,
+                   description="Successful prior double-crosses (Wanda's testimony) reinforce the lesson — honour is for suckers — further eroding the heist code."),
     ],
     spatial_topology=[
         SpatialEdge(source_id="LOC_HEATHROW", target_id="LOC_GEORGE_FLAT"),
@@ -1078,6 +1092,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.6, inertia=0.4, evidence_strength="moderate"),
             affected_domains=["social", "psychological"],
+            proposition_id="PROP_HEIST_CODE_HOLDS",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=2000, triggered_by="EVT_DIAMONDS_MOVED",
                     magnitude=TraitVector(value=0.3, inertia=0.3, evidence_strength="strong"),
@@ -1094,6 +1109,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.7, inertia=0.6, evidence_strength="strong"),
             affected_domains=["social"],
+            proposition_id="PROP_BRITISH_ETIQUETTE_DEFENDED",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=24000, triggered_by="EVT_ARCHIE_TAUNTS_OTTO_VIETNAM",
                     magnitude=TraitVector(value=0.95, inertia=0.6, evidence_strength="strong"),
@@ -1107,6 +1123,7 @@ world_state = WorldStateV1(
             category="economy",
             magnitude=TraitVector(value=0.85, inertia=0.55, evidence_strength="strong"),
             affected_domains=["social", "betrayal"],
+            proposition_id="PROP_ALL_BETRAY_FOR_DIAMONDS",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=15000, triggered_by="EVT_WANDA_TESTIFIES_AGAINST_GEORGE",
                     magnitude=TraitVector(value=0.9, inertia=0.55, evidence_strength="strong"),
@@ -1123,6 +1140,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.8, inertia=0.7, evidence_strength="strong"),
             affected_domains=["social", "emotional"],
+            proposition_id="PROP_ARCHIE_CHOOSES_RESPECTABILITY",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=16000, triggered_by="EVT_ARCHIE_CALLS_WANDA_DARLING",
                     magnitude=TraitVector(value=0.6, inertia=0.65, evidence_strength="strong"),
@@ -1430,5 +1448,26 @@ world_state = WorldStateV1(
             audience_default_prior=0.25, stakes=0.85,
             truth_at_fabula={0: False, 26000: True},
         ),
+        # WORLD_ trait Pearl-Rung-2 reifications.
+        Proposition(proposition_id="PROP_HEIST_CODE_HOLDS", kind="trait_holds",
+                    referent_ids=["WORLD_HEIST_HONOUR", "ENT_GEORGE", "ENT_WANDA", "ENT_OTTO"],
+                    description="Thieves' honour still binds the heist crew — nobody crosses anybody for the diamonds.",
+                    audience_default_prior=0.4, stakes=0.7,
+                    truth_at_fabula={2000: False, 22000: False}),
+        Proposition(proposition_id="PROP_BRITISH_ETIQUETTE_DEFENDED", kind="trait_holds",
+                    referent_ids=["WORLD_ANGLO_AMERICAN_CLASH", "ENT_ARCHIE"],
+                    description="English etiquette wins out over American brashness in the Anglo-American clash.",
+                    audience_default_prior=0.5, stakes=0.6,
+                    truth_at_fabula={24000: True}),
+        Proposition(proposition_id="PROP_ALL_BETRAY_FOR_DIAMONDS", kind="trait_holds",
+                    referent_ids=["WORLD_DOUBLE_CROSS_ECONOMY", "ENT_WANDA"],
+                    description="Every partner becomes a future witness or victim — the double-cross economy is total.",
+                    audience_default_prior=0.65, stakes=0.7,
+                    truth_at_fabula={15000: True, 22000: True}),
+        Proposition(proposition_id="PROP_ARCHIE_CHOOSES_RESPECTABILITY", kind="trait_holds",
+                    referent_ids=["WORLD_RESPECTABILITY_PRESSURE", "ENT_ARCHIE", "ENT_WENDY"],
+                    description="Archie remains within the English-respectability frame — marriage, decorum, no flight to Rio.",
+                    audience_default_prior=0.6, stakes=0.85,
+                    truth_at_fabula={16000: False, 26000: False}),
     ],
 )

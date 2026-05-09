@@ -1104,6 +1104,20 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_KELLYNCH_LET", target_id="ENT_SIR_WALTER", rel_counterpart_id="ENT_MRS_CLAY",  # auto-backfill
                    causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.15,
                    mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=3000, propagation_delay=0),
+
+        # ── WORLD_ → WORLD_ (named-latent forces destabilising one another) ──
+        CausalEdge(source_id="WORLD_NAVAL_PRIZE_ECONOMY", target_id="WORLD_REGENCY_RANK",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=4000,
+                   description="Naval prize money lifts Wentworth across the rank gradient — the Napoleonic war is the mechanism by which a commoner becomes an eligible match."),
+        CausalEdge(source_id="WORLD_PRIMOGENITURE_ENTAIL", target_id="WORLD_REGENCY_RANK",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=1000,
+                   description="The entail enforces the rank gradient by channelling baronetcies down the male line; Mrs Clay's threat to Sir Walter is a threat to that very mechanism."),
+        CausalEdge(source_id="WORLD_REGENCY_RANK", target_id="WORLD_PRIMOGENITURE_ENTAIL",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=13000,
+                   description="William Elliot's manoeuvres around the entail are themselves rank-coded — his courtship of Anne is calibrated to his place in the gradient."),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -1158,6 +1172,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.95, inertia=0.9, evidence_strength="strong"),
             affected_domains=["social", "psychological"],
+            proposition_id="PROP_RANK_BARS_LOVE",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=12000, triggered_by="EVT_RECONCILIATION",
                     magnitude=TraitVector(value=0.7, inertia=0.85, evidence_strength="strong"),
@@ -1171,6 +1186,7 @@ world_state = WorldStateV1(
             category="economy",
             magnitude=TraitVector(value=0.85, inertia=0.85, evidence_strength="strong"),
             affected_domains=["social"],
+            proposition_id="PROP_WENTWORTH_RICH",
         ),
         "WORLD_PRIMOGENITURE_ENTAIL": GlobalTrait(
             id="WORLD_PRIMOGENITURE_ENTAIL",
@@ -1179,6 +1195,7 @@ world_state = WorldStateV1(
             category="governance",
             magnitude=TraitVector(value=0.9, inertia=0.9, evidence_strength="strong"),
             affected_domains=["social"],
+            proposition_id="PROP_WILLIAM_INHERITS",
         ),
     },
 
@@ -1433,5 +1450,11 @@ world_state = WorldStateV1(
                     description="Mrs Smith's West Indian property is recovered through Wentworth's help.",
                     audience_default_prior=0.35, stakes=0.55,
                     truth_at_fabula={14100: True}),
+        # WORLD_ trait Pearl-Rung-2 reification (Regency Rank).
+        Proposition(proposition_id="PROP_RANK_BARS_LOVE", kind="trait_holds",
+                    referent_ids=["WORLD_REGENCY_RANK", "ENT_ANNE", "ENT_WENTWORTH"],
+                    description="The Regency rank hierarchy still bars a baronet's daughter from a naval commander — the original ground for the broken engagement remains intact.",
+                    audience_default_prior=0.7, stakes=0.85,
+                    truth_at_fabula={1000: True, 12000: False}),
     ],
 )

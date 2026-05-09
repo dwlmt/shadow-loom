@@ -1268,6 +1268,20 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_PIP_BRINGS_FOOD", target_id="ENT_PIP", rel_counterpart_id="ENT_JAGGERS",  # auto-backfill
                    causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.24,
                    mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1500, propagation_delay=0),
+
+        # ── WORLD_ → WORLD_ (named-latent forces destabilising one another) ──
+        CausalEdge(source_id="WORLD_HAVISHAM_REVENGE", target_id="WORLD_VICTORIAN_CLASS",
+                   causality_type="chain_reaction", mechanism="psychological", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=6000,
+                   description="Havisham weaponises Estella against the gentleman class itself — her revenge project subverts the very hierarchy that elevates Pip."),
+        CausalEdge(source_id="WORLD_LAW_AND_TRANSPORTATION", target_id="WORLD_VICTORIAN_CLASS",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=13000,
+                   description="Penal law underwrites class: Magwitch's New-South-Wales fortune funding Pip's gentility is the system's hidden dependency on its own outcasts."),
+        CausalEdge(source_id="WORLD_VICTORIAN_CLASS", target_id="WORLD_HAVISHAM_REVENGE",
+                   causality_type="chain_reaction", mechanism="psychological", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=1000,
+                   description="The class system bred Compeyson — the false gentleman who jilted Havisham — and so seeded the revenge cosmology that radiates from Satis House."),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -1313,6 +1327,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.9, inertia=0.85, evidence_strength="strong"),
             affected_domains=["social", "psychological"],
+            proposition_id="PROP_PIP_BECOMES_GENTLEMAN",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=13000, triggered_by="EVT_MAGWITCH_REVEALS_HIMSELF",
                     magnitude=TraitVector(value=0.6, inertia=0.7, evidence_strength="strong"),
@@ -1329,6 +1344,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.8, inertia=0.75, evidence_strength="strong"),
             affected_domains=["psychological", "emotional", "social"],
+            proposition_id="PROP_REVENGE_IS_JUST",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=15200, triggered_by="EVT_HAVISHAM_REPENTS",
                     magnitude=TraitVector(value=0.2, inertia=0.55, evidence_strength="strong"),
@@ -1342,6 +1358,7 @@ world_state = WorldStateV1(
             category="governance",
             magnitude=TraitVector(value=0.85, inertia=0.85, evidence_strength="strong"),
             affected_domains=["social"],
+            proposition_id="PROP_MAGWITCH_ESCAPES",
         ),
     },
 

@@ -749,6 +749,16 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_GRIT_IN_EYE", target_id="ENT_ALEC", rel_counterpart_id="ENT_LAURA",  # auto-backfill
                    causality_type="mutation_social", trait_target="fear", trait_delta=0.05,
                    mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+
+        # ── WORLD_ → WORLD_ (named-latent forces destabilising one another) ──
+        CausalEdge(source_id="WORLD_INTERWAR_RESPECTABILITY", target_id="WORLD_DOMESTICITY",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=12000,
+                   description="Respectability enforces domesticity — the social cost of leaving Fred is what returns Laura to the wireless and the crossword."),
+        CausalEdge(source_id="WORLD_TIMETABLE", target_id="WORLD_DOMESTICITY",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=11500,
+                   description="The railway timetable structures the Thursdays — and, by ending Alec's last train, returns Laura to the domestic schedule on time."),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -801,6 +811,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.95, inertia=0.95, evidence_strength="strong"),
             affected_domains=["social", "psychological"],
+            proposition_id="PROP_AFFAIR_CONSUMMATED",
         ),
         "WORLD_DOMESTICITY": GlobalTrait(
             id="WORLD_DOMESTICITY",
@@ -809,6 +820,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.9, inertia=0.95, evidence_strength="strong"),
             affected_domains=["social", "psychological"],
+            proposition_id="PROP_LAURA_RETURNS_TO_FRED",
         ),
         "WORLD_TIMETABLE": GlobalTrait(
             id="WORLD_TIMETABLE",
@@ -817,6 +829,7 @@ world_state = WorldStateV1(
             category="cosmology",
             magnitude=TraitVector(value=0.85, inertia=0.95, evidence_strength="strong"),
             affected_domains=["social"],
+            proposition_id="PROP_ALEC_TAKES_POST",
         ),
     },
 
@@ -948,5 +961,11 @@ world_state = WorldStateV1(
                     description="Alec accepts the post in Johannesburg and emigrates.",
                     audience_default_prior=0.5, stakes=0.85,
                     truth_at_fabula={11500: True}),
+        # WORLD_ trait Pearl-Rung-2 reification (Domesticity).
+        Proposition(proposition_id="PROP_LAURA_RETURNS_TO_FRED", kind="trait_holds",
+                    referent_ids=["WORLD_DOMESTICITY", "ENT_LAURA", "ENT_FRED"],
+                    description="Laura returns to and stays within the suburban-married domesticity she briefly threatened to leave.",
+                    audience_default_prior=0.85, stakes=0.85,
+                    truth_at_fabula={12000: True}),
     ],
 )

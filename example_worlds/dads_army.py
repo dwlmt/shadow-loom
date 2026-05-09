@@ -997,6 +997,16 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_PARACHUTIST_CAPTURED", target_id="ENT_MAINWARING", rel_counterpart_id="ENT_GERMAN_OFFICER",  # auto-backfill
                    causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.12,
                    mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=10000, propagation_delay=0),
+
+        # ── WORLD_ → WORLD_ (named-latent forces destabilising one another) ──
+        CausalEdge(source_id="WORLD_HOME_FRONT", target_id="WORLD_CLASS_COMEDY",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=1000,
+                   description="Home-front mobilisation throws strangers from every class into one platoon — the social mixing is exactly the comedy's necessary precondition."),
+        CausalEdge(source_id="WORLD_CLASS_COMEDY", target_id="WORLD_HOME_FRONT",
+                   causality_type="chain_reaction", mechanism="psychological", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=15000,
+                   description="The platoon's class jostling is the very texture of home-front spirit — it is what 'Britain on parade' looks like in 1940."),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -1054,6 +1064,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.7, inertia=0.65, evidence_strength="strong"),
             affected_domains=["social", "psychological"],
+            proposition_id="PROP_BRITAIN_INVADED",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=10000, triggered_by="EVT_PARACHUTIST_CAPTURED",
                     magnitude=TraitVector(value=0.85, inertia=0.7, evidence_strength="strong"),
@@ -1070,6 +1081,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.85, inertia=0.85, evidence_strength="strong"),
             affected_domains=["social", "psychological"],
+            proposition_id="PROP_WILSON_SOCIALLY_SUPERIOR",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=7000, triggered_by="EVT_WILSON_OUTRANKS_REVELATION",
                     magnitude=TraitVector(value=0.95, inertia=0.9, evidence_strength="strong"),

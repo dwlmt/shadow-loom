@@ -980,6 +980,20 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_MARRIAGE_CRUMBLES", target_id="ENT_NICK", rel_counterpart_id="ENT_MARYBETH",  # auto-backfill
                    causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.09,
                    mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+
+        # ── WORLD_ → WORLD_ (named-latent forces destabilising one another) ──
+        CausalEdge(source_id="WORLD_RECESSION_PRECARITY", target_id="WORLD_SUBURBAN_PERFORMANCE",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=1000,
+                   description="Economic precarity intensifies the pressure to perform success; foreclosed-out Carthage demands a louder happy-couple show."),
+        CausalEdge(source_id="WORLD_MEDIA_TRIAL", target_id="WORLD_SUBURBAN_PERFORMANCE",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=7000,
+                   description="The media trial weaponises performed marriage — the cameras demand the couple-as-spectacle."),
+        CausalEdge(source_id="WORLD_SUBURBAN_PERFORMANCE", target_id="WORLD_MEDIA_TRIAL",
+                   causality_type="chain_reaction", mechanism="informational", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=14000,
+                   description="Amy's perfect-victim performance closes the loop: the staged return turns the media trial back into a coronation."),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -1054,6 +1068,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.7, inertia=0.5, evidence_strength="strong"),
             affected_domains=["social", "psychological", "informational"],
+            proposition_id="PROP_NICK_TRIED_BY_MEDIA",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=7000, triggered_by="EVT_MEDIA_TURNS",
                     magnitude=TraitVector(value=0.9, inertia=0.6, evidence_strength="strong"),
@@ -1070,6 +1085,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.8, inertia=0.7, evidence_strength="strong"),
             affected_domains=["psychological", "social"],
+            proposition_id="PROP_NICK_PERFORMS_HUSBAND",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=16000, triggered_by="EVT_NICK_STAYS",
                     magnitude=TraitVector(value=1.0, inertia=0.9, evidence_strength="strong"),
@@ -1083,6 +1099,7 @@ world_state = WorldStateV1(
             category="economy",
             magnitude=TraitVector(value=0.75, inertia=0.8, evidence_strength="strong"),
             affected_domains=["social", "psychological"],
+            proposition_id="PROP_DUNNES_ECONOMICALLY_TRAPPED",
         ),
     },
 
@@ -1377,5 +1394,16 @@ world_state = WorldStateV1(
                     description="Nick loves Andie and will leave Amy for her.",
                     audience_default_prior=0.3, stakes=0.5,
                     truth_at_fabula={6000: False}),
+        # WORLD_ trait Pearl-Rung-2 reifications.
+        Proposition(proposition_id="PROP_NICK_TRIED_BY_MEDIA", kind="trait_holds",
+                    referent_ids=["WORLD_MEDIA_TRIAL", "ENT_NICK"],
+                    description="The cable-news cycle has installed Nick as the presumed-guilty husband; the parallel media trial outweighs any forensic process.",
+                    audience_default_prior=0.6, stakes=0.85,
+                    truth_at_fabula={7000: True, 14000: False}),
+        Proposition(proposition_id="PROP_DUNNES_ECONOMICALLY_TRAPPED", kind="trait_holds",
+                    referent_ids=["WORLD_RECESSION_PRECARITY", "ENT_NICK", "ENT_AMY"],
+                    description="The Dunnes are materially trapped in North Carthage by the recession — no Brooklyn salaries to return to, the trust fund drained into the bar.",
+                    audience_default_prior=0.7, stakes=0.65,
+                    truth_at_fabula={1000: True}),
     ],
 )

@@ -982,6 +982,24 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_WILLARD_CAGED", target_id="ENT_KURTZ", rel_counterpart_id="ENT_PHOTOJOURNALIST",  # auto-backfill
                    causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.2,
                    mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=6500, propagation_delay=0),
+
+        # ── WORLD_ → WORLD_ (named-latent forces destabilising one another) ──
+        CausalEdge(source_id="WORLD_VIETNAM_WAR", target_id="WORLD_HEART_OF_DARKNESS",
+                   causality_type="chain_reaction", mechanism="psychological", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=1000,
+                   description="The war's machinery of sanctioned atrocity is the social conduit by which the Conradian abyss reaches the upriver outposts."),
+        CausalEdge(source_id="WORLD_HEART_OF_DARKNESS", target_id="WORLD_CHAIN_OF_COMMAND",
+                   causality_type="chain_reaction", mechanism="epistemic", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=8500,
+                   description="The horror Kurtz named delegitimises the chain of command in Willard's hands; the radio goes silent precisely because the abyss has spoken louder."),
+        CausalEdge(source_id="WORLD_RIVER_AS_FATE", target_id="WORLD_HEART_OF_DARKNESS",
+                   causality_type="chain_reaction", mechanism="physical", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=6000,
+                   description="The river's one-way pull is the geographical mechanism by which the abyss is reached — fate working through hydrology."),
+        CausalEdge(source_id="WORLD_VIETNAM_WAR", target_id="WORLD_CHAIN_OF_COMMAND",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=500,
+                   description="The war's institutional needs (sanctioned-murder orders, free-fire zones) are precisely what the chain of command exists to legitimise."),
     ],
 
     # ── SPATIAL TOPOLOGY ───────────────────────────────────────────────
@@ -1047,6 +1065,7 @@ world_state = WorldStateV1(
             category="governance",
             magnitude=TraitVector(value=0.95, inertia=0.95, evidence_strength="strong"),
             affected_domains=["social", "psychological", "physical"],
+            proposition_id="PROP_KURTZ_VIEW_OF_WAR_TRUE",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=8500, triggered_by="EVT_WILLARD_DEPARTS",
                     magnitude=TraitVector(value=0.95, inertia=0.95, evidence_strength="strong"),
@@ -1060,6 +1079,7 @@ world_state = WorldStateV1(
             category="cosmology",
             magnitude=TraitVector(value=0.9, inertia=0.95, evidence_strength="strong"),
             affected_domains=["psychological", "social", "emotional"],
+            proposition_id="PROP_HORROR_REVEALED",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=8100, triggered_by="EVT_KURTZ_KILLED",
                     magnitude=TraitVector(value=0.95, inertia=0.95, evidence_strength="strong"),
@@ -1073,6 +1093,7 @@ world_state = WorldStateV1(
             category="governance",
             magnitude=TraitVector(value=0.85, inertia=0.85, evidence_strength="strong"),
             affected_domains=["social", "informational"],
+            proposition_id="PROP_WILLARD_MISSION_LEGITIMATE",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=8500, triggered_by="EVT_WILLARD_DEPARTS",
                     magnitude=TraitVector(value=0.5, inertia=0.85, evidence_strength="strong"),
@@ -1086,6 +1107,7 @@ world_state = WorldStateV1(
             category="cosmology",
             magnitude=TraitVector(value=0.85, inertia=0.95, evidence_strength="strong"),
             affected_domains=["physical", "psychological"],
+            proposition_id="PROP_PBR_REACHES_CAMP",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=6000, triggered_by="EVT_ARRIVE_COMPOUND",
                     magnitude=TraitVector(value=0.95, inertia=0.95, evidence_strength="strong"),

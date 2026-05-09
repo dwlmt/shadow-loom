@@ -909,6 +909,20 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_GATSBY_MEETS_DAISY_1917", target_id="ENT_GATSBY", rel_counterpart_id="ENT_HENRY_GATZ",  # auto-backfill
                    causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.12,
                    mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=500, propagation_delay=0),
+
+        # ── WORLD_ → WORLD_ (named-latent forces destabilising one another) ──
+        CausalEdge(source_id="WORLD_PROHIBITION_BOOTLEG", target_id="WORLD_OLD_VS_NEW_MONEY",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=12000,
+                   description="Bootleg fortunes are the entire mechanism by which new money rises — and the very evidence old money uses to bar them."),
+        CausalEdge(source_id="WORLD_LOST_GENERATION", target_id="WORLD_OLD_VS_NEW_MONEY",
+                   causality_type="chain_reaction", mechanism="psychological", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=1000,
+                   description="Post-war disillusion drives the new-money frenzy — hollowed-out veterans chase Daisy-shaped golden idols."),
+        CausalEdge(source_id="WORLD_OLD_VS_NEW_MONEY", target_id="WORLD_LOST_GENERATION",
+                   causality_type="chain_reaction", mechanism="psychological", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=15000,
+                   description="The caste line's reaffirmation at Gatsby's death deepens the generation's nihilism — Nick boards the train west."),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -969,6 +983,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.95, inertia=0.9, evidence_strength="strong"),
             affected_domains=["social", "psychological"],
+            proposition_id="PROP_OLD_MONEY_PREVAILS",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=15000, triggered_by="EVT_GATSBY_KILLED",
                     magnitude=TraitVector(value=0.95, inertia=0.95, evidence_strength="strong"),
@@ -982,6 +997,7 @@ world_state = WorldStateV1(
             category="economy",
             magnitude=TraitVector(value=0.85, inertia=0.85, evidence_strength="strong"),
             affected_domains=["social"],
+            proposition_id="PROP_GATSBY_FORTUNE_LEGITIMATE",
         ),
         "WORLD_LOST_GENERATION": GlobalTrait(
             id="WORLD_LOST_GENERATION",
@@ -990,6 +1006,7 @@ world_state = WorldStateV1(
             category="cosmology",
             magnitude=TraitVector(value=0.8, inertia=0.85, evidence_strength="strong"),
             affected_domains=["psychological", "social"],
+            proposition_id="PROP_GENERATION_HAS_PURPOSE",
         ),
     },
 
@@ -1255,6 +1272,22 @@ world_state = WorldStateV1(
                     referent_ids=["ENT_TOM"],
                     description="Tom faces consequences for directing George to Gatsby.",
                     audience_default_prior=0.2, stakes=0.7,
+                    truth_at_fabula={17000: False}),
+        # WORLD_ trait Pearl-Rung-2 reifications.
+        Proposition(proposition_id="PROP_OLD_MONEY_PREVAILS", kind="trait_holds",
+                    referent_ids=["WORLD_OLD_VS_NEW_MONEY", "ENT_TOM", "ENT_DAISY"],
+                    description="The old-money caste line holds: inherited East Egg always defeats acquired West Egg, no matter how dazzling the parties.",
+                    audience_default_prior=0.7, stakes=0.85,
+                    truth_at_fabula={15000: True}),
+        Proposition(proposition_id="PROP_GATSBY_FORTUNE_LEGITIMATE", kind="trait_holds",
+                    referent_ids=["WORLD_PROHIBITION_BOOTLEG", "ENT_GATSBY"],
+                    description="Gatsby's fortune is legitimately earned, not bootleg-laundered through Wolfshiem's drugstore fronts.",
+                    audience_default_prior=0.4, stakes=0.7,
+                    truth_at_fabula={12000: False}),
+        Proposition(proposition_id="PROP_GENERATION_HAS_PURPOSE", kind="trait_holds",
+                    referent_ids=["WORLD_LOST_GENERATION", "ENT_NICK", "ENT_GATSBY"],
+                    description="The post-war American generation can still believe in meaning beyond restless pleasure and acquisitive striving.",
+                    audience_default_prior=0.4, stakes=0.6,
                     truth_at_fabula={17000: False}),
     ],
 )

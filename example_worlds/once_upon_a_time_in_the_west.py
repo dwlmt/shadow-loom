@@ -789,6 +789,20 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_JILL_ARRIVES_AT_SWEETWATER", target_id="ENT_JILL", rel_counterpart_id="ENT_CHEYENNE",  # auto-backfill
                    causality_type="mutation_social", trait_target="fear", trait_delta=0.06,
                    mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=1200, propagation_delay=0),
+
+        # ── WORLD_ → WORLD_ (named-latent forces destabilising one another) ──
+        CausalEdge(source_id="WORLD_THE_RAILROAD", target_id="WORLD_OLD_WEST_DYING",
+                   causality_type="chain_reaction", mechanism="physical", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=1000,
+                   description="The advancing rails are the literal physical mechanism that ends the era of the lone gunfighter — schedule replaces ritual."),
+        CausalEdge(source_id="WORLD_OLD_WEST_DYING", target_id="WORLD_REVENGE_CONTRACT",
+                   causality_type="chain_reaction", mechanism="psychological", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=3000,
+                   description="As the era ends, only the outstanding revenge contract justifies Harmonica and Frank's continued existence — the dying world concentrates all meaning into the duel."),
+        CausalEdge(source_id="WORLD_THE_RAILROAD", target_id="WORLD_REVENGE_CONTRACT",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=2000,
+                   description="Morton's contract on Frank, written by railroad money, is the same instrument that finally brings Harmonica face-to-face with Frank — the rails carry the revenge as much as the cargo."),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -844,7 +858,8 @@ world_state = WorldStateV1(
             description="The advancing railroad that values land by the inch, that turns water rights into murder warrants, and that absorbs every character's destiny into its westward schedule. The film's largest common-cause parent.",
             category="cosmology",
             magnitude=TraitVector(value=0.95, inertia=0.95, evidence_strength="strong"),
-            affected_domains=["social", "economic"],
+            affected_domains=["social", "physical"],
+            proposition_id="PROP_RAILROAD_REACHES_SWEETWATER",
         ),
         "WORLD_OLD_WEST_DYING": GlobalTrait(
             id="WORLD_OLD_WEST_DYING",
@@ -853,6 +868,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.85, inertia=0.9, evidence_strength="strong"),
             affected_domains=["social", "psychological"],
+            proposition_id="PROP_OLD_WEST_DYING",
         ),
         "WORLD_REVENGE_CONTRACT": GlobalTrait(
             id="WORLD_REVENGE_CONTRACT",
@@ -861,6 +877,7 @@ world_state = WorldStateV1(
             category="moral_law",
             magnitude=TraitVector(value=0.95, inertia=0.95, evidence_strength="strong"),
             affected_domains=["psychological"],
+            proposition_id="PROP_HARMONICA_AVENGES_BROTHER",
         ),
     },
 

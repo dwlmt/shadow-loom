@@ -1026,6 +1026,9 @@ def extract_topology_from_prose(
                 topology.proposition_snapshots.extend(affect_result.proposition_snapshots)
                 topology.proposition_truth_commits.extend(affect_result.proposition_truth_commits)
                 topology.concern_snapshots.extend(affect_result.concern_snapshots)
+                topology.belief_snapshots.extend(
+                    getattr(affect_result, "belief_snapshots", []) or []
+                )
                 topology.new_concern_seeds.extend(affect_result.new_concern_seeds)
         except Exception:
             logger.exception(
@@ -1069,6 +1072,7 @@ class MergeChangeset(BaseModel):
     proposition_snapshots_added: int = 0
     concerns_added: int = 0
     concern_snapshots_added: int = 0
+    belief_snapshots_added: int = 0
     belief_confidence_updates_applied: int = 0
     # Deletion counters (deletion pass runs before additive sections).
     events_removed: int = 0
@@ -1444,6 +1448,59 @@ def _apply_affect_to_world(
             target.state_timeline.append(cs)
             target.state_timeline.sort(key=lambda s: s.fabula_time)
             changeset.concern_snapshots_added += 1
+
+    # 7. Belief snapshots → EntityStateSnapshot.belief_confidence_updates
+    # Affect-side per-character confidence drift. Folded onto the
+    # entity's state_timeline at the snapshot's fabula_time so
+    # ``reconstruct_entity_at`` replays the drift in order. Distinct
+    # from Consequences-side ``EntityUpdate.belief_confidence_updates``
+    # which is a flat overwrite on the *current* belief list.
+    if topology.belief_snapshots:
+        from shadow_loom.models import EntityStateSnapshot, BeliefConfidenceShift
+        for bs in topology.belief_snapshots:
+            ent = merged.entities.get(bs.holder_id)
+            if ent is None:
+                logger.warning(
+                    "[merge\u00b7affect] Belief snapshot for unknown holder %s \u2014 skipped.",
+                    bs.holder_id,
+                )
+                continue
+            # Locate-or-create an EntityStateSnapshot at this
+            # (fabula_time, triggered_by) so multiple Affect snapshots
+            # at the same tick stack onto a single timeline entry.
+            snap_obj: Optional[EntityStateSnapshot] = None
+            for s in ent.state_timeline:
+                if (
+                    s.fabula_time == bs.fabula_time
+                    and s.triggered_by == bs.triggered_by
+                    and getattr(s, "world_id", "factual") == world_id
+                ):
+                    snap_obj = s
+                    break
+            if snap_obj is None:
+                snap_obj = EntityStateSnapshot(
+                    world_id=world_id,
+                    fabula_time=bs.fabula_time,
+                    triggered_by=bs.triggered_by,
+                )
+                ent.state_timeline.append(snap_obj)
+                ent.state_timeline.sort(key=lambda s: s.fabula_time)
+            # Dedup on (target_id, proposition_id) within the snapshot
+            # so re-applying the same topology doesn't pile up shifts.
+            existing = {
+                (u.target_id, u.proposition_id)
+                for u in snap_obj.belief_confidence_updates
+            }
+            key = (bs.target_id, bs.proposition_id)
+            if key in existing:
+                continue
+            snap_obj.belief_confidence_updates.append(BeliefConfidenceShift(
+                target_id=bs.target_id,
+                proposition_id=bs.proposition_id,
+                new_confidence=bs.new_confidence,
+                new_inertia=bs.new_inertia,
+            ))
+            changeset.belief_snapshots_added += 1
 
 
 def _apply_belief_confidence_updates(

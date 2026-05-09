@@ -894,6 +894,16 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_HEIST_PLANNED", target_id="ENT_JOE", rel_counterpart_id="ENT_BLUE",  # auto-backfill
                    causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.18,
                    mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+
+        # ── WORLD_ → WORLD_ (named-latent forces destabilising one another) ──
+        CausalEdge(source_id="WORLD_POLICE_INFILTRATION", target_id="WORLD_CRIMINAL_CODE",
+                   causality_type="chain_reaction", mechanism="betrayal", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=5000,
+                   description="Hidden infiltration is precisely the corrosive that fractures the criminal honour code — every shared moment with Orange retroactively becomes a violation of it."),
+        CausalEdge(source_id="WORLD_CRIMINAL_CODE", target_id="WORLD_POLICE_INFILTRATION",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=1000,
+                   description="The code's insistence on personal trust over verification is exactly the channel infiltration exploits — Joe's trust in White's vouching for Orange is the whole attack surface."),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -936,6 +946,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.85, inertia=0.75, evidence_strength="strong"),
             affected_domains=["social", "psychological"],
+            proposition_id="PROP_CODE_PROTECTS_LOYAL",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=5000, triggered_by="EVT_WAREHOUSE_REGROUP",
                     magnitude=TraitVector(value=0.55, inertia=0.5, evidence_strength="strong"),
@@ -952,6 +963,7 @@ world_state = WorldStateV1(
             category="governance",
             magnitude=TraitVector(value=0.65, inertia=0.85, evidence_strength="strong"),
             affected_domains=["epistemic", "psychological", "social"],
+            proposition_id="PROP_RAT_EXISTS",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=9000, triggered_by="EVT_ORANGE_REVEALED",
                     magnitude=TraitVector(value=1.0, inertia=0.95, evidence_strength="strong"),
@@ -1211,5 +1223,11 @@ world_state = WorldStateV1(
                     description="Vic Vega (Blonde) is the loyal ex-con Joe trusts most.",
                     audience_default_prior=0.7, stakes=0.55,
                     truth_at_fabula={7000: False}),
+        # WORLD_ trait Pearl-Rung-2 reification (Criminal Code).
+        Proposition(proposition_id="PROP_CODE_PROTECTS_LOYAL", kind="trait_holds",
+                    referent_ids=["WORLD_CRIMINAL_CODE", "ENT_WHITE", "ENT_JOE"],
+                    description="The criminal honour code still protects the loyal: Joe's professionalism, White's mentor-bond, and the rat-must-die rule all hold.",
+                    audience_default_prior=0.6, stakes=0.85,
+                    truth_at_fabula={5000: False, 10000: True}),
     ],
 )

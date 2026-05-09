@@ -381,6 +381,26 @@ class Concern(AMWNNode):
     )
 
 
+class BeliefConfidenceShift(BaseModel):
+    """Confidence/inertia overwrite on a single existing :class:`Belief`,
+    folded onto :class:`EntityStateSnapshot` so the per-fabula timeline
+    carries Affect-driven confidence drift alongside Consequences-driven
+    creates / invalidates.
+
+    Match is by ``target_id`` (and ``proposition_id`` when supplied). When
+    no matching belief exists at the snapshot's fabula tick the entry is
+    skipped during reconstruction — Affect must not forge new beliefs;
+    that's Consequences' job via ``new_beliefs``.
+    """
+    target_id: str = Field(description="target_id of the belief to update.")
+    proposition_id: Optional[str] = Field(
+        default=None,
+        description="Optional PROP_ id discriminator when target_id is ambiguous.",
+    )
+    new_confidence: float = Field(ge=0.0, le=1.0)
+    new_inertia: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+
+
 class EntityStateSnapshot(BaseModel):
     """A point-in-time snapshot of an entity's mutable state.
 
@@ -409,6 +429,20 @@ class EntityStateSnapshot(BaseModel):
     beliefs_invalidated: List[str] = Field(
         default_factory=list,
         description="target_ids of beliefs shattered/superseded at this point.",
+    )
+    belief_confidence_updates: List["BeliefConfidenceShift"] = Field(
+        default_factory=list,
+        description=(
+            "Per-belief confidence (and optional inertia) overwrites at "
+            "this fabula tick. Authored by the Phase B4 Affect Agent's "
+            "``belief_snapshots`` channel — confidence drift on existing "
+            "beliefs triggered by emotional / framing events. Distinct "
+            "from ``beliefs_added`` (Consequences creates a new belief) "
+            "and ``beliefs_invalidated`` (Consequences shatters a belief). "
+            "Replayed by :func:`reconstruct_entity_at` so per-character "
+            "Bayesian-surprise diagnostics see the drift at the right "
+            "fabula_time, not only the snapshot-flat overwrite."
+        ),
     )
     status: Optional[Literal["healthy", "injured", "ill", "dead", "unconscious"]] = Field(
         default=None, description="New status if changed, else null.",
@@ -1393,6 +1427,20 @@ def reconstruct_entity_at(entity: "Entity", fabula_time: int) -> dict:
         # Add new beliefs
         for b in snap.beliefs_added:
             beliefs.append(b.model_dump())
+        # Apply Affect-side confidence drift on existing beliefs.
+        # Match by (target_id, proposition_id when set); silently skip
+        # entries that don't match a current belief — Affect must not
+        # forge new beliefs (that's Consequences' job).
+        for shift in getattr(snap, "belief_confidence_updates", []) or []:
+            for b in beliefs:
+                if b.get("target_id") != shift.target_id:
+                    continue
+                if shift.proposition_id and b.get("proposition_id") not in (None, shift.proposition_id):
+                    continue
+                b["confidence"] = float(shift.new_confidence)
+                if shift.new_inertia is not None:
+                    b["inertia"] = float(shift.new_inertia)
+                break
         if snap.status is not None:
             status = snap.status
         if snap.location_id is not None:

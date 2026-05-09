@@ -1146,6 +1146,24 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_FAMILIES_RECONCILE", target_id="ENT_MONTAGUE", rel_counterpart_id="ENT_PRINCE_ESCALUS",  # auto-backfill
                    causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.24,
                    mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=17500, propagation_delay=0),
+
+        # ── WORLD_ → WORLD_ (named-latent forces destabilising one another) ──
+        CausalEdge(source_id="WORLD_HONOUR_CULTURE", target_id="WORLD_FAMILY_FEUD",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=7000,
+                   description="Honour culture re-ignites the feud at every insult — Tybalt's challenge after the masque is the duelling code working as designed."),
+        CausalEdge(source_id="WORLD_PATRIARCHAL_AUTHORITY", target_id="WORLD_FAMILY_FEUD",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=11000,
+                   description="Patriarchal disposal of Juliet to Paris is the feud reproducing itself in the next generation — the very mechanism the lovers must defy."),
+        CausalEdge(source_id="WORLD_PLAGUE_QUARANTINE", target_id="WORLD_FATE",
+                   causality_type="chain_reaction", mechanism="informational", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=15500,
+                   description="The plague that traps Friar John is the contingent vehicle by which 'star-crossed' fate becomes operative — fate working through quarantine as its named-latent instrument."),
+        CausalEdge(source_id="WORLD_FAMILY_FEUD", target_id="WORLD_HONOUR_CULTURE",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=2200,
+                   description="The standing feud raises every honour-stake — a Capulet/Montague slight cannot be passed off as private quarrel."),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -1201,6 +1219,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.85, inertia=0.75, evidence_strength="strong"),
             affected_domains=["social", "psychological", "betrayal"],
+            proposition_id="PROP_FEUD_ENDS",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=17500, triggered_by="EVT_FAMILIES_RECONCILE",
                     magnitude=TraitVector(value=0.15, inertia=0.45, evidence_strength="strong"),
@@ -1214,6 +1233,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.8, inertia=0.8, evidence_strength="strong"),
             affected_domains=["social", "emotional"],
+            proposition_id="PROP_JULIET_OBEDIENT_DAUGHTER",
         ),
         "WORLD_FATE": GlobalTrait(
             id="WORLD_FATE",
@@ -1222,6 +1242,7 @@ world_state = WorldStateV1(
             category="cosmology",
             magnitude=TraitVector(value=0.55, inertia=0.9, evidence_strength="moderate"),
             affected_domains=["psychological", "epistemic"],
+            proposition_id="PROP_LOVERS_STAR_CROSSED",
         ),
         "WORLD_HONOUR_CULTURE": GlobalTrait(
             id="WORLD_HONOUR_CULTURE",
@@ -1230,6 +1251,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.7, inertia=0.7, evidence_strength="strong"),
             affected_domains=["social", "betrayal"],
+            proposition_id="PROP_HOUSE_HONOUR",
         ),
         "WORLD_PLAGUE_QUARANTINE": GlobalTrait(
             id="WORLD_PLAGUE_QUARANTINE",
@@ -1238,6 +1260,7 @@ world_state = WorldStateV1(
             category="environmental",
             magnitude=TraitVector(value=0.6, inertia=0.85, evidence_strength="strong"),
             affected_domains=["physical", "informational"],
+            proposition_id="PROP_FRIAR_LETTER_DELIVERED",
         ),
     },
 
@@ -1471,5 +1494,16 @@ world_state = WorldStateV1(
                     description="Friar Laurence's secret marriage and potion plot is exposed.",
                     audience_default_prior=0.4, stakes=0.7,
                     truth_at_fabula={17500: True}),
+        # WORLD_ trait Pearl-Rung-2 reifications.
+        Proposition(proposition_id="PROP_LOVERS_STAR_CROSSED", kind="trait_holds",
+                    referent_ids=["WORLD_FATE", "ENT_ROMEO", "ENT_JULIET"],
+                    description="The lovers are 'star-crossed' — fate has already sealed the cluster of contingencies that will destroy them.",
+                    audience_default_prior=0.6, stakes=0.95,
+                    truth_at_fabula={17000: True}),
+        Proposition(proposition_id="PROP_FRIAR_LETTER_DELIVERED", kind="event_occurs",
+                    referent_ids=["WORLD_PLAGUE_QUARANTINE", "ENT_FRIAR_LAURENCE", "ENT_ROMEO"],
+                    description="Friar John reaches Romeo with the letter explaining Juliet's feigned death.",
+                    audience_default_prior=0.7, stakes=0.95,
+                    truth_at_fabula={15500: False}),
     ],
 )

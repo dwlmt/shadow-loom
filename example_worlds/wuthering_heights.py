@@ -1105,6 +1105,20 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_HEATHCLIFF_AND_CATHERINE_BOND", target_id="ENT_HEATHCLIFF", rel_counterpart_id="ENT_NELLY",  # auto-backfill
                    causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.18,
                    mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+
+        # ── WORLD_ → WORLD_ (named-latent forces destabilising one another) ──
+        CausalEdge(source_id="WORLD_CLASS_HIERARCHY", target_id="WORLD_PRIMOGENITURE_ENTAIL",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=1000,
+                   description="Class status flows from inheritance — the entail is the legal mechanism by which the gentry maintain their gradient over the Earnshaws and Heathcliffs of the world."),
+        CausalEdge(source_id="WORLD_PRIMOGENITURE_ENTAIL", target_id="WORLD_CLASS_HIERARCHY",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=17000,
+                   description="Heathcliff's weaponisation of the entail — acquiring both estates — inverts the local class hierarchy on its own legal terms."),
+        CausalEdge(source_id="WORLD_HAUNTED_MOORS", target_id="WORLD_CLASS_HIERARCHY",
+                   causality_type="chain_reaction", mechanism="psychological", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=11000,
+                   description="The moor is the liminal pre-class space in which Heathcliff and Catherine were equals — its haunting is what reproaches the hierarchy that separated them."),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -1194,6 +1208,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.9, inertia=0.85, evidence_strength="strong"),
             affected_domains=["social", "psychological"],
+            proposition_id="PROP_HEATHCLIFF_BARRED_BY_CLASS",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=20000, triggered_by="EVT_CATHY_HARETON_INHERIT",
                     magnitude=TraitVector(value=0.55, inertia=0.7, evidence_strength="strong"),
@@ -1207,6 +1222,7 @@ world_state = WorldStateV1(
             category="governance",
             magnitude=TraitVector(value=0.85, inertia=0.85, evidence_strength="strong"),
             affected_domains=["social"],
+            proposition_id="PROP_LINTONS_RUINED",
         ),
         "WORLD_HAUNTED_MOORS": GlobalTrait(
             id="WORLD_HAUNTED_MOORS",
@@ -1215,6 +1231,7 @@ world_state = WorldStateV1(
             category="cosmology",
             magnitude=TraitVector(value=0.55, inertia=0.9, evidence_strength="moderate"),
             affected_domains=["psychological", "epistemic"],
+            proposition_id="PROP_REUNITED_IN_DEATH",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=11000, triggered_by="EVT_CATHERINE_DIES",
                     magnitude=TraitVector(value=0.8, inertia=0.95, evidence_strength="strong"),
@@ -1462,5 +1479,11 @@ world_state = WorldStateV1(
                     description="Hareton and Cathy form a redemptive bond.",
                     audience_default_prior=0.4, stakes=0.7,
                     truth_at_fabula={19000: True}),
+        # WORLD_ trait Pearl-Rung-2 reification (Class Hierarchy).
+        Proposition(proposition_id="PROP_HEATHCLIFF_BARRED_BY_CLASS", kind="trait_holds",
+                    referent_ids=["WORLD_CLASS_HIERARCHY", "ENT_HEATHCLIFF", "ENT_CATHERINE"],
+                    description="The Yorkshire class hierarchy still bars the demoted Heathcliff from the gentry — Catherine cannot marry him without degrading herself.",
+                    audience_default_prior=0.85, stakes=0.85,
+                    truth_at_fabula={9000: True, 20000: False}),
     ],
 )

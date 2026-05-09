@@ -1001,6 +1001,20 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_UTT_ELIZABETH_LETTER_NEWS_FROM_HOME", target_id="ENT_ELIZABETH", rel_counterpart_id="ENT_JUSTINE",  # auto-backfill
                    causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.15,
                    mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1800, propagation_delay=0),
+
+        # ── WORLD_ → WORLD_ (named-latent forces destabilising one another) ──
+        CausalEdge(source_id="WORLD_SCIENTIFIC_HUBRIS", target_id="WORLD_MONSTROUS_OTHERNESS",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=3000,
+                   description="Promethean overreach is the literal cause of monstrous otherness — Victor's transgression manufactures the Creature whose body the world will reject."),
+        CausalEdge(source_id="WORLD_SCIENTIFIC_HUBRIS", target_id="WORLD_PATERNAL_DUTY",
+                   causality_type="chain_reaction", mechanism="psychological", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=3100,
+                   description="Hubris that treats creation as a technical achievement rather than a relationship is exactly what abandons the Creature — the same impulse generates and then fails the paternal-duty claim."),
+        CausalEdge(source_id="WORLD_MONSTROUS_OTHERNESS", target_id="WORLD_PATERNAL_DUTY",
+                   causality_type="chain_reaction", mechanism="emotional", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=8000,
+                   description="The reflex of disgust at the Creature is the social mechanism that suppresses any recognition of paternal duty — even De Lacey, blind, would have heard the claim."),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -1066,6 +1080,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.85, inertia=0.7, evidence_strength="strong"),
             affected_domains=["psychological", "epistemic", "social"],
+            proposition_id="PROP_HUBRIS_PUNISHED",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=3000, triggered_by="EVT_CREATION",
                     magnitude=TraitVector(value=1.0, inertia=0.8, evidence_strength="strong"),
@@ -1082,6 +1097,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.9, inertia=0.85, evidence_strength="strong"),
             affected_domains=["social", "psychological", "betrayal"],
+            proposition_id="PROP_DELACEY_ACCEPTS",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=8000, triggered_by="EVT_CREATURE_REJECTED",
                     magnitude=TraitVector(value=1.0, inertia=0.9, evidence_strength="strong"),
@@ -1095,6 +1111,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.55, inertia=0.6, evidence_strength="moderate"),
             affected_domains=["psychological", "emotional"],
+            proposition_id="PROP_CREATOR_BOND",
         ),
     },
 
@@ -1326,5 +1343,11 @@ world_state = WorldStateV1(
                     description="Walton's crew survives and turns south.",
                     audience_default_prior=0.5, stakes=0.85,
                     truth_at_fabula={15500: True}),
+        # WORLD_ trait Pearl-Rung-2 reification (Scientific Hubris).
+        Proposition(proposition_id="PROP_HUBRIS_PUNISHED", kind="trait_holds",
+                    referent_ids=["WORLD_SCIENTIFIC_HUBRIS", "ENT_VICTOR", "ENT_WALTON"],
+                    description="Promethean transgression of natural law is punished by the universe itself — Victor's ruin and Walton's reluctant retreat both confirm the moral physics.",
+                    audience_default_prior=0.55, stakes=0.85,
+                    truth_at_fabula={15000: True}),
     ],
 )

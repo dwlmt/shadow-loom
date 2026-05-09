@@ -812,6 +812,20 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_MOVE_TO_NYC", target_id="ENT_ANDREAS_PARENTS", rel_counterpart_id="ENT_ANDREA", causality_type="mutation_social", trait_target="affinity", trait_delta=0.95, mechanism="emotional", evidence_strength="strong", causal_force=5.0, fabula_time=2000, propagation_delay=0),
         CausalEdge(source_id="EVT_PARIS_CHRISTIAN_ENCOUNTER", target_id="ENT_CHRISTIAN", rel_counterpart_id="ENT_ANDREA", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.4, mechanism="social", evidence_strength="moderate", causal_force=5.0, fabula_time=7800, propagation_delay=0),
         CausalEdge(source_id="EVT_HIRED_AS_JR_ASSISTANT", target_id="ENT_EMILY", rel_counterpart_id="ENT_ANDREA", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.4, mechanism="social", evidence_strength="strong", causal_force=6.0, fabula_time=2500, propagation_delay=0),
+
+        # ── WORLD_ → WORLD_ (named-latent forces destabilising one another) ──
+        CausalEdge(source_id="WORLD_FASHION_STATUS_ECONOMY", target_id="WORLD_CAREER_VS_LIFE",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=2500,
+                   description="The status economy at Runway is exactly what makes the career-vs-life trade-off feel non-negotiable — the rung is too valuable to refuse a midnight call."),
+        CausalEdge(source_id="WORLD_ALWAYS_ON_PHONE", target_id="WORLD_CAREER_VS_LIFE",
+                   causality_type="chain_reaction", mechanism="informational", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=3000,
+                   description="The always-on phone is the literal infrastructural mechanism by which the career machine reaches into the personal-life domain."),
+        CausalEdge(source_id="WORLD_FASHION_STATUS_ECONOMY", target_id="WORLD_ALWAYS_ON_PHONE",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=2500,
+                   description="Status proximity to Miranda is granted via the phone — the device's centrality is itself a status-economy artefact."),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -869,7 +883,8 @@ world_state = WorldStateV1(
             description="The cosmology of Runway: a hierarchy of taste, surveillance, and proximity-to-Miranda in which a million girls would die for the bottom rung. Operates as common-cause parent over every demand, every sneer, and the public break at Dior.",
             category="social_structure",
             magnitude=TraitVector(value=0.95, inertia=0.95, evidence_strength="strong"),
-            affected_domains=["social", "economic"],
+            affected_domains=["social", "psychological"],
+            proposition_id="PROP_RUNWAY_PERFECTION",
         ),
         "WORLD_CAREER_VS_LIFE": GlobalTrait(
             id="WORLD_CAREER_VS_LIFE",
@@ -878,6 +893,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.9, inertia=0.9, evidence_strength="strong"),
             affected_domains=["social", "psychological"],
+            proposition_id="PROP_ANDREA_BECOMES_MIRANDA",
         ),
         "WORLD_ALWAYS_ON_PHONE": GlobalTrait(
             id="WORLD_ALWAYS_ON_PHONE",
@@ -886,6 +902,7 @@ world_state = WorldStateV1(
             category="cosmology",
             magnitude=TraitVector(value=0.9, inertia=0.9, evidence_strength="strong"),
             affected_domains=["social"],
+            proposition_id="PROP_PHONE_NEVER_SILENT",
         ),
     },
 
@@ -1074,5 +1091,11 @@ world_state = WorldStateV1(
                     description="Andrea returns to her family and the moral baseline.",
                     audience_default_prior=0.5, stakes=0.7,
                     truth_at_fabula={9000: True}),
+        # WORLD_ trait Pearl-Rung-2 reification (Always-On Phone).
+        Proposition(proposition_id="PROP_PHONE_NEVER_SILENT", kind="trait_holds",
+                    referent_ids=["WORLD_ALWAYS_ON_PHONE", "ENT_ANDREA"],
+                    description="The assistant phone is the standing material substrate — it may ring at any moment and must be answered.",
+                    audience_default_prior=0.85, stakes=0.6,
+                    truth_at_fabula={2500: True, 8500: False}),
     ],
 )

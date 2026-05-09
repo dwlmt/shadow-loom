@@ -1132,6 +1132,24 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_SMILEY_INTERVIEWS_SACHS", target_id="ENT_GEORGE_SMILEY", rel_counterpart_id="ENT_PETER_GUILLAM",  # auto-backfill
                    causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.12,
                    mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=12000, propagation_delay=0),
+
+        # ── WORLD_ → WORLD_ (named-latent forces destabilising one another) ──
+        CausalEdge(source_id="WORLD_SOVIET_MOLE", target_id="WORLD_INSTITUTIONAL_PARANOIA",
+                   causality_type="chain_reaction", mechanism="betrayal", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=2500,
+                   description="The hidden mole is the literal cause of institutional paranoia — every suspicion, every vetting, every Sarratt interrogation is downstream of his presence."),
+        CausalEdge(source_id="WORLD_KARLA_ASYMMETRY", target_id="WORLD_SOVIET_MOLE",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=1000,
+                   description="Karla's strategic patience and personal compromise of Haydon (via Ann) is the offstage mechanism that produces the mole."),
+        CausalEdge(source_id="WORLD_BRITISH_DECLINE", target_id="WORLD_KARLA_ASYMMETRY",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=1000,
+                   description="Post-imperial decline is the structural weakness Karla exploits — a Service desperate for prestige is one that buys Witchcraft without questioning its source."),
+        CausalEdge(source_id="WORLD_INSTITUTIONAL_PARANOIA", target_id="WORLD_COLD_WAR_TRADECRAFT",
+                   causality_type="chain_reaction", mechanism="epistemic", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=15000,
+                   description="Paranoia is exactly the operational climate in which tradecraft — dead drops, vetting, controlled surveillance — either tightens or breaks down."),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -1211,6 +1229,7 @@ world_state = WorldStateV1(
             category="governance",
             magnitude=TraitVector(value=0.85, inertia=0.8, evidence_strength="strong"),
             affected_domains=["social", "psychological", "informational"],
+            proposition_id="PROP_TRADECRAFT_HOLDS",
         ),
         "WORLD_INSTITUTIONAL_PARANOIA": GlobalTrait(
             id="WORLD_INSTITUTIONAL_PARANOIA",
@@ -1219,6 +1238,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.7, inertia=0.65, evidence_strength="strong"),
             affected_domains=["psychological", "social", "epistemic"],
+            proposition_id="PROP_CIRCUS_PENETRATED",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=2500, triggered_by="EVT_CONTROL_FORCED_RETIREMENT",
                     magnitude=TraitVector(value=0.8, inertia=0.7, evidence_strength="strong"),
@@ -1235,6 +1255,7 @@ world_state = WorldStateV1(
             category="cosmology",
             magnitude=TraitVector(value=0.75, inertia=0.9, evidence_strength="strong"),
             affected_domains=["psychological", "social", "informational"],
+            proposition_id="PROP_MOLE_IDENTIFIED",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=22000, triggered_by="EVT_HAYDON_UNMASKED",
                     magnitude=TraitVector(value=0.0, inertia=0.9, evidence_strength="strong"),
@@ -1248,6 +1269,7 @@ world_state = WorldStateV1(
             category="cosmology",
             magnitude=TraitVector(value=0.65, inertia=0.85, evidence_strength="moderate"),
             affected_domains=["psychological", "epistemic"],
+            proposition_id="PROP_KARLA_OUTPLAYS_CIRCUS",
         ),
         "WORLD_BRITISH_DECLINE": GlobalTrait(
             id="WORLD_BRITISH_DECLINE",
@@ -1256,6 +1278,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.6, inertia=0.75, evidence_strength="moderate"),
             affected_domains=["social", "psychological"],
+            proposition_id="PROP_EMPIRE_RECLAIMED",
         ),
     },
 
@@ -1531,5 +1554,21 @@ world_state = WorldStateV1(
                     description="Prideaux's Hungary meeting yields the mole's name.",
                     audience_default_prior=0.4, stakes=0.85,
                     truth_at_fabula={1000: False}),
+        # WORLD_ trait Pearl-Rung-2 reifications.
+        Proposition(proposition_id="PROP_TRADECRAFT_HOLDS", kind="trait_holds",
+                    referent_ids=["WORLD_COLD_WAR_TRADECRAFT", "ENT_GEORGE_SMILEY"],
+                    description="Cold War tradecraft — the institutional methods of secrecy, vetting, and counter-surveillance — still works as advertised inside the Circus.",
+                    audience_default_prior=0.6, stakes=0.85,
+                    truth_at_fabula={1000: False, 22000: True}),
+        Proposition(proposition_id="PROP_KARLA_OUTPLAYS_CIRCUS", kind="trait_holds",
+                    referent_ids=["WORLD_KARLA_ASYMMETRY", "ENT_KARLA", "ENT_GEORGE_SMILEY"],
+                    description="Karla's offstage strategic pressure outplays the Circus — the Witchcraft deception and Operation Testify both succeed before Smiley turns the table.",
+                    audience_default_prior=0.55, stakes=0.9,
+                    truth_at_fabula={1500: True, 22000: False}),
+        Proposition(proposition_id="PROP_EMPIRE_RECLAIMED", kind="trait_holds",
+                    referent_ids=["WORLD_BRITISH_DECLINE", "ENT_PERCY_ALLELINE"],
+                    description="British Intelligence reclaims its independent standing — Witchcraft restores parity with the Cousins and arrests the post-imperial decline.",
+                    audience_default_prior=0.4, stakes=0.7,
+                    truth_at_fabula={3000: True, 22000: False}),
     ],
 )

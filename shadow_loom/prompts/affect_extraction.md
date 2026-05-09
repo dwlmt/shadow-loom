@@ -11,7 +11,8 @@ You are given (via the system prompt the orchestrator stitches in front of this 
 6. The **prior baseline state** for each catalogue proposition (its `stakes`, `audience_default_prior`, `description`) and each catalogue concern (its `baseline_salience`, `polarity`, `kind`, `counter_concern_ids`) — the values shown in the catalogue blocks above ARE the prior state you diff against. The pipeline runs chunks in parallel and reconciles per-chunk drift after the fact, so within one chunk you always diff against the catalogue baseline; do NOT attempt to forward-reference drift from other chunks.
 
 > **Hard contract surface (the reconciler assumes these without warning):**
-> - You MUST NOT emit events, channels, edges, beliefs, or entity_updates. Those belong to upstream agents.
+> - You MUST NOT emit events, channels, edges, or entity_updates. Those belong to upstream agents.
+> - You MUST NOT *create* or *invalidate* beliefs. Belief creation (`new_beliefs`) and shattering (`invalidated_belief_targets`) belong to Consequences. Affect's lane is **per-character belief confidence drift on existing beliefs only** — emitted via `belief_snapshots` (see schema below).
 > - You MUST NOT invent new PROP_ ids. Reference only ids in the catalogue.
 > - You MUST NOT invent new CCN_ ids unless emitting a `new_concern_seeds` entry (see below). All `ConcernSnapshot.concern_id` values must be from the catalogue.
 > - Every snapshot you emit MUST cite a `triggered_by` EVT_ id from this chunk's events. Snapshots without a triggering on-page event are dropped by `_auto_repair`.
@@ -22,7 +23,7 @@ You are given (via the system prompt the orchestrator stitches in front of this 
 
 ## Output Schema
 
-Return a JSON object with four lists:
+Return a JSON object with five lists:
 
 ### `proposition_snapshots` — List[PropositionSnapshot]
 
@@ -58,6 +59,22 @@ One entry per (CCN_id, fabula_time) where the concern's *per-entity weighting* s
 - `activation_fabula_window` (list[int], optional): New `[start, end]` activation window if rewritten (e.g. a concern that only activates after the abdication). Omit if unchanged.
 - `counter_concern_ids` (list[str], optional): New set of counter-concern CCN_ ids if the ambivalence pairing has changed. Omit if unchanged.
 - `kind` (str, optional): New harm/benefit-kind label if the concern has been reclassified by an on-page revelation. Omit if unchanged.
+
+### `belief_snapshots` — List[BeliefSnapshot]
+
+One entry per (holder_id, target_id [, proposition_id], fabula_time) where an **existing** belief on a character drifts in confidence (or inertia) because of an on-page event. Fields:
+
+- `holder_id` (str): ENT_ id of the believer.
+- `target_id` (str): The id (ENT_/EVT_/OBJ_/LOC_/WORLD_/PROP_) the belief is *about*. MUST match an existing belief on the holder; if no such belief exists, the snapshot is dropped — Affect must NOT forge new beliefs.
+- `proposition_id` (str, optional): PROP_ id discriminator when `target_id` matches more than one belief on the holder.
+- `fabula_time` (int): Fabula tick at which the drift commits. MUST equal `triggered_by`'s `fabula_time`.
+- `triggered_by` (str): EVT_ id from this chunk that caused the drift. Required.
+- `new_confidence` (float, 0.0–1.0): Post-drift confidence. Diff-only — emit only when the value actually changes.
+- `new_inertia` (float, 0.0–1.0, optional): Override the belief's inertia when the chunk *shocks* it loose (lower) or *cements* it (higher). Omit if unchanged.
+
+**Affect's lane vs Consequences' lane.** Belief *creation* (forging a new belief that did not exist) and *invalidation* (shattering one beyond repair) belong to Consequences and arrive via `EntityUpdate.new_beliefs` / `invalidated_belief_targets`. Affect's job is the **drift in between** — the slow erosion of Lear's confidence that Cordelia loves him, the slow cementing of Macduff's certainty that Macbeth is a tyrant. If the belief flips from confidently-true to confidently-false, that's still drift (emit `new_confidence: 0.05` or similar) — only emit through Consequences when the holder has formed a *new* belief about a *different* perceived state (e.g. "Cordelia loves me" → "Cordelia hates me" is two beliefs, not one drift).
+
+**When to emit.** Confidence drift is a load-bearing affect signal — Bayesian-surprise scoring (Itti–Baldi) reads the diff between successive snapshots, and KL divergence across two characters' beliefs about the same `proposition_id` drives dramatic-irony detection. Emit a snapshot whenever an event would *plausibly shift* a character's certainty by ≥0.1 (10 percentage points) on a scale of 0–1. Smaller drifts are noise.
 
 ### `new_concern_seeds` — List[ConcernSeed]
 
@@ -122,6 +139,25 @@ A well-formed Affect output for that chunk:
       "salience": 0.78
     }
   ],
+  "belief_snapshots": [
+    {
+      "holder_id": "ENT_MACBETH",
+      "target_id": "ENT_BANQUO",
+      "proposition_id": "PROP_BANQUO_DEAD",
+      "fabula_time": 1820,
+      "triggered_by": "EVT_BANQUO_GHOST_APPEARS",
+      "new_confidence": 0.45,
+      "new_inertia": 0.2
+    },
+    {
+      "holder_id": "ENT_MACBETH",
+      "target_id": "ENT_WITCHES",
+      "proposition_id": "PROP_MACBETH_BECOMES_KING",
+      "fabula_time": 1820,
+      "triggered_by": "EVT_BANQUO_GHOST_APPEARS",
+      "new_confidence": 0.85
+    }
+  ],
   "new_concern_seeds": [
     {
       "concern_id": "CCN_LADY_MACBETH_FEAR_EXPOSURE",
@@ -143,6 +179,12 @@ Note four patterns:
 - **Polarity flip**: `CCN_MACBETH_DESIRE_KINGSHIP` flips `desire → fear`
   (Macbeth no longer wants the throne so much as fears losing it). This
   is rare — only emit when on-page events make the reversal undeniable.
+- **Belief drift**: Macbeth's belief that *Banquo is dead* (anchored to
+  `PROP_BANQUO_DEAD`) lurches from near-certainty to 0.45 at the ghost's
+  appearance, with inertia *lowered* to 0.2 because the belief is now
+  visibly fragile. The witches-are-true belief simultaneously cements
+  upward (0.85) — one event, two coupled drifts. Both target *existing*
+  beliefs; neither forges a new one (that would be Consequences' job).
 - **Truth commit fabula equals trigger fabula**: 1820 on both sides.
 - **`new_concern_seeds`** anchors to an existing catalogue PROP. If the
   chunk introduces a concern with no matching PROP, prefer the *nearest*
@@ -159,7 +201,7 @@ Note four patterns:
 4. **Truth commits at the resolving event's fabula_time.** A truth commit's `fabula_time` MUST equal its `triggered_by` event's `fabula_time`. Do not back-date or post-date commits.
 5. **One snapshot per (id, fabula_time).** If a proposition's stakes shift twice within the same chunk via two different events, emit two snapshots at the two different fabula_times. If the same event drives both stakes and prior changes, fold them into one snapshot.
 6. **Polarity reversals are rare and load-bearing.** Only emit a polarity flip when the chunk's events *clearly* show the entity's wanting flipping to fearing (or vice versa). Salience drift is the common case; polarity reversal is a major narrative beat.
-7. **Skip cleanly when nothing affects-relevant happens.** A chunk that touches no catalogue prop and no seeded concern should return four empty lists. Do NOT pad with no-op snapshots.
+7. **Skip cleanly when nothing affects-relevant happens.** A chunk that touches no catalogue prop and no seeded concern should return five empty lists. Do NOT pad with no-op snapshots.
 8. **`new_concern_seeds` is a safety valve, not a primary tool.** If the catalogue is doing its job, you will rarely need it. Use it only when an on-page event makes a concern *undeniable* that the global pass missed.
 9. **Close concerns when their proposition resolves.** Whenever you emit a `proposition_truth_commits` entry, walk every catalogue concern whose `prop=` field equals that PROP_ id and emit a `concern_snapshots` entry that *closes* it at the same `fabula_time` and the same `triggered_by`. The closure shape depends on the concern's polarity vs the resolved truth value:
    - **Concern realised** (a `desire` resolved `true`, or a `fear` resolved `false`) → snapshot `salience` to a low value (typically `0.05–0.15`); the standing wanting/dreading is over. Subsequent affect (satisfaction, relief, gratitude) lives on the post-resolution events, not on the concern ledger.
@@ -195,3 +237,17 @@ Note four patterns:
    **Multi-commit propositions.** Some propositions resolve more than once over the source text (a character believed dead is revealed alive, then actually killed; a secret is exposed, retracted, then confirmed). When emitting `proposition_truth_commits`, treat each commit independently and emit closure (and, if applicable, re-opening) snapshots for the affected concerns at each commit tick. The reconciler treats the *latest* commit as canonical for closure but honours intermediate explicit re-openings (`concern_snapshots` with `salience >= 0.2` between two commits).
 
    **Polarity flips and counter-concerns.** When you emit a `concern_snapshots` entry that flips a concern's `polarity` (Rule 6), emit a paired snapshot at the same fabula tick for every concern in its `counter_concern_ids` — the rivalry topology breaks if one side flips and the other does not. Closing the partner at the same tick (via salience<0.2 or `activation_fabula_window` cap) also counts as a valid pairing.
+
+10. **Conflicting concerns — explicit reconciliation, not silent drift.** When the same chunk drives two concerns held by the same entity in *opposing directions* (a desire intensifying while its anchored fear also intensifies, or two listed `counter_concern_ids` both spiking salience), you MUST emit *both* snapshots and let the engine compute the resulting ambivalence — do NOT silently pick a winner. The Phase C affect-unification reconciler reads the joint state to score sustained ambivalence (Macbeth simultaneously wanting and fearing the crown is a load-bearing dramatic signal); collapsing it to one side discards the conflict.
+
+   Three patterns to disambiguate:
+
+   - **Genuine ambivalence (both intensify).** Emit one snapshot per concern with the new salience values. Do NOT flip polarity and do NOT close either side. The reconciler treats `salience(desire) ≈ salience(fear) > 0.6` as a high-ambivalence beat for grief / hesitation detectors.
+   - **Reversal (one collapses, one rises).** Emit a closure snapshot (salience ≤ 0.15, optionally `activation_fabula_window` cap) for the side that collapses AND a high-salience snapshot for the side that rises. Use this when on-page events make the *abandonment* of the prior wanting/fearing explicit (Macbeth abandoning his fear of damnation as he commits the murder).
+   - **Polarity flip (one concern, two phases).** Emit a single `concern_snapshots` entry with both the new `polarity` and the new `salience`. This is the rare desire→fear pattern from Rule 6; do NOT also emit a closure on the same CCN_ at the same tick.
+
+   The reconciler logs a warning when it observes (a) two same-holder concerns anchored to the *same* PROP_ with opposite polarities both ending the chunk above 0.6 salience without an explicit ambivalence rationale on either snapshot, or (b) a `counter_concern_ids` pair where only one side received a snapshot. Make the on-page warrant explicit in the snapshots' implicit story (via salience values) rather than triggering the warning.
+
+11. **Belief snapshots are diff-only and existing-only.** Emit a `belief_snapshots` entry only when an event would shift an existing belief's confidence by ≥0.1. NEVER use `belief_snapshots` to forge a new belief or to remove one — those are Consequences' jobs (`new_beliefs` / `invalidated_belief_targets`). When in doubt, leave the belief alone: a no-op `belief_snapshots` entry is silently dropped, but a forged-belief attempt corrupts the per-character belief tensor that downstream Bayesian-surprise scoring reads from.
+
+   When a `proposition_truth_commits` entry resolves a proposition that an existing belief tracks (matched by `Belief.proposition_id`), emit a paired `belief_snapshots` for *every* holder whose belief is either confidently aligned with or confidently opposed to the resolved truth — typically the audience plus any character whose on-page reaction registers the resolution. Holders whose belief was already at the resolved value stay silent. The reconciler does NOT auto-cascade truth commits into beliefs; cascade only what the on-page text actually shifts.

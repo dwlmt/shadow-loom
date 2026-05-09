@@ -944,6 +944,20 @@ world_state = WorldStateV1(
                    causality_type="chain_reaction", mechanism="psychological", evidence_strength="moderate",
                    causal_force=4.0, fabula_time=16000),
 
+        # ── WORLD_ → WORLD_ (named-latent forces destabilising one another) ──
+        CausalEdge(source_id="WORLD_SUPERNATURAL_PROPHECY", target_id="WORLD_DIVINE_RIGHT",
+                   causality_type="chain_reaction", mechanism="epistemic", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=2000,
+                   description="The prophecy seduces Macbeth into regicide, weaponising fate against the divine order it transgresses."),
+        CausalEdge(source_id="WORLD_DIVINE_RIGHT", target_id="WORLD_FEUDAL_HIERARCHY",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=6000,
+                   description="Cosmic vengeance for regicide \u2014 madness, sleepwalking, sterile crown \u2014 cascades into the political collapse of the feudal compact."),
+        CausalEdge(source_id="WORLD_SUPERNATURAL_PROPHECY", target_id="WORLD_FEUDAL_HIERARCHY",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=6000,
+                   description="The prophecy directly nominates a usurper, bypassing the feudal succession the hierarchy enforces."),
+
         # ── orphan utterance wirings ──
         CausalEdge(source_id="EVT_WITCHES_PROPHECY_1", target_id="EVT_UTT_PROPHECY_HEATH",
                    causality_type="chain_reaction", mechanism="performative", evidence_strength="strong",
@@ -1103,6 +1117,7 @@ world_state = WorldStateV1(
             category="governance",
             magnitude=TraitVector(value=0.8, inertia=0.7, evidence_strength="strong"),
             affected_domains=["social", "psychological"],
+            proposition_id="PROP_FEUDAL_ORDER_INTACT",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=6000, triggered_by="EVT_DUNCAN_MURDER",
                     magnitude=TraitVector(value=0.5, inertia=0.4, evidence_strength="strong"),
@@ -1119,6 +1134,7 @@ world_state = WorldStateV1(
             category="cosmology",
             magnitude=TraitVector(value=0.55, inertia=0.9, evidence_strength="moderate"),
             affected_domains=["psychological", "epistemic"],
+            proposition_id="PROP_PROPHECY_BINDING",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=2000, triggered_by="EVT_WITCHES_PROPHECY_1",
                     magnitude=TraitVector(value=0.7, inertia=0.9, evidence_strength="strong"),
@@ -1138,6 +1154,7 @@ world_state = WorldStateV1(
             category="cosmology",
             magnitude=TraitVector(value=0.5, inertia=0.85, evidence_strength="moderate"),
             affected_domains=["psychological", "social"],
+            proposition_id="PROP_DIVINE_ORDER_AVENGES",
         ),
     },
 
@@ -1384,5 +1401,21 @@ world_state = WorldStateV1(
                     description="The thanes remain loyal to Duncan's house.",
                     audience_default_prior=0.85, stakes=0.65,
                     truth_at_fabula={6000: False}),
+        # Audience-question reifications of the three WORLD_ traits (Pearl-Rung-2 cross-link).
+        Proposition(proposition_id="PROP_FEUDAL_ORDER_INTACT", kind="trait_holds",
+                    referent_ids=["WORLD_FEUDAL_HIERARCHY"],
+                    description="Scotland's feudal compact \u2014 succession through anointed lineage rather than seizure \u2014 still binds.",
+                    audience_default_prior=0.8, stakes=0.85,
+                    truth_at_fabula={6000: False, 20000: True}),
+        Proposition(proposition_id="PROP_PROPHECY_BINDING", kind="trait_holds",
+                    referent_ids=["WORLD_SUPERNATURAL_PROPHECY"],
+                    description="The witches' prophecy is fate, not metaphor: what they foretell will literally come to pass.",
+                    audience_default_prior=0.55, stakes=0.9,
+                    truth_at_fabula={18500: True}),
+        Proposition(proposition_id="PROP_DIVINE_ORDER_AVENGES", kind="trait_holds",
+                    referent_ids=["WORLD_DIVINE_RIGHT"],
+                    description="The cosmos itself avenges regicide \u2014 the murder of an anointed king returns as madness, sleeplessness and ill omens upon its perpetrators.",
+                    audience_default_prior=0.5, stakes=0.7,
+                    truth_at_fabula={17000: True}),
     ],
 )

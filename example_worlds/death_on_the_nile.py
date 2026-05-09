@@ -1070,6 +1070,20 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_UTT_BOWERS_RETURNS_PEARLS", target_id="ENT_CORNELIA", rel_counterpart_id="ENT_VAN_SCHUYLER",  # auto-backfill
                    causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.26,
                    mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=9700, propagation_delay=0),
+
+        # ── WORLD_ → WORLD_ (named-latent forces destabilising one another) ──
+        CausalEdge(source_id="WORLD_INHERITED_MONEY", target_id="WORLD_CLOSED_SOCIETY",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=1000,
+                   description="Inherited money concentrates society on the Karnak's first-class deck — the closed-passenger world is itself a function of the inheritance apparatus."),
+        CausalEdge(source_id="WORLD_CLOSED_SOCIETY", target_id="WORLD_DETECTIVE_EPISTEMOLOGY",
+                   causality_type="chain_reaction", mechanism="epistemic", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=9000,
+                   description="The closed-society constraint is what makes Poirot's detective epistemology operative — a finite suspect set is the precondition for solvability."),
+        CausalEdge(source_id="WORLD_INHERITED_MONEY", target_id="WORLD_DETECTIVE_EPISTEMOLOGY",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=12000,
+                   description="Money trails (Pennington's speculations, Cousin Andrew's pre-marriage reach) are exactly the kind of paper evidence the gentleman-detective epistemology relies on."),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -1129,6 +1143,7 @@ world_state = WorldStateV1(
             category="economy",
             magnitude=TraitVector(value=0.95, inertia=0.9, evidence_strength="strong"),
             affected_domains=["social"],
+            proposition_id="PROP_LINNET_FORTUNE_DRIVES_MURDER",
         ),
         "WORLD_CLOSED_SOCIETY": GlobalTrait(
             id="WORLD_CLOSED_SOCIETY",
@@ -1137,6 +1152,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.85, inertia=0.85, evidence_strength="strong"),
             affected_domains=["epistemic", "social"],
+            proposition_id="PROP_KILLER_AMONG_PASSENGERS",
         ),
         "WORLD_DETECTIVE_EPISTEMOLOGY": GlobalTrait(
             id="WORLD_DETECTIVE_EPISTEMOLOGY",
@@ -1145,6 +1161,7 @@ world_state = WorldStateV1(
             category="cosmology",
             magnitude=TraitVector(value=0.85, inertia=0.85, evidence_strength="strong"),
             affected_domains=["epistemic", "social"],
+            proposition_id="PROP_POIROT_SOLVES_CASE",
         ),
     },
 
@@ -1446,6 +1463,23 @@ world_state = WorldStateV1(
             description="Jacqueline shoots Simon and herself with a concealed second pistol on the Shellal quay to escape the gallows.",
             audience_default_prior=0.2, stakes=0.85,
             truth_at_fabula={13000: False, 14000: True},
+        ),
+        # WORLD_ trait Pearl-Rung-2 reifications.
+        Proposition(
+            proposition_id="PROP_LINNET_FORTUNE_DRIVES_MURDER",
+            kind="trait_holds",
+            referent_ids=["WORLD_INHERITED_MONEY", "ENT_LINNET"],
+            description="The Ridgeway inherited-money apparatus — trustees, foreign holdings, marriage settlements — is the load-bearing motive for the murder; without it the conspiracy has no payoff.",
+            audience_default_prior=0.6, stakes=0.85,
+            truth_at_fabula={9000: True, 13000: True},
+        ),
+        Proposition(
+            proposition_id="PROP_KILLER_AMONG_PASSENGERS",
+            kind="trait_holds",
+            referent_ids=["WORLD_CLOSED_SOCIETY", "LOC_KARNAK_LOUNGE"],
+            description="The killer is among the bounded Karnak passenger list — the closed society guarantees that the answer is on board.",
+            audience_default_prior=0.85, stakes=0.85,
+            truth_at_fabula={9000: True, 13000: True},
         ),
     ],
 )

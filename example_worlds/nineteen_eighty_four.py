@@ -927,6 +927,20 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_HATE_WEEK_SWITCH", target_id="ENT_PARTY", rel_counterpart_id="ENT_OBRIEN",  # auto-backfill
                    causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.21,
                    mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=11000, propagation_delay=0),
+
+        # ── WORLD_ → WORLD_ (named-latent forces destabilising one another) ──
+        CausalEdge(source_id="WORLD_INGSOC", target_id="WORLD_PERPETUAL_WAR",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=1000,
+                   description="The Party requires perpetual war to consume surplus product and license enemy-switching; without it, Ingsoc collapses."),
+        CausalEdge(source_id="WORLD_INGSOC", target_id="WORLD_PANOPTICON",
+                   causality_type="chain_reaction", mechanism="informational", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=1000,
+                   description="Ingsoc cannot survive thoughtcrime; the panoptic apparatus is the load-bearing enforcement layer."),
+        CausalEdge(source_id="WORLD_PANOPTICON", target_id="WORLD_INGSOC",
+                   causality_type="chain_reaction", mechanism="epistemic", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=14000,
+                   description="Total surveillance is what makes doublethink rationally adaptive; the panopticon manufactures Ingsoc-compliant subjects."),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -1026,6 +1040,7 @@ world_state = WorldStateV1(
             category="governance",
             magnitude=TraitVector(value=1.0, inertia=0.95, evidence_strength="strong"),
             affected_domains=["social", "psychological", "epistemic"],
+            proposition_id="PROP_PARTY_DEFEATED",
         ),
         "WORLD_PERPETUAL_WAR": GlobalTrait(
             id="WORLD_PERPETUAL_WAR",
@@ -1034,6 +1049,7 @@ world_state = WorldStateV1(
             category="economy",
             magnitude=TraitVector(value=0.95, inertia=0.9, evidence_strength="strong"),
             affected_domains=["social"],
+            proposition_id="PROP_OCEANIA_AT_WAR_WITH_EASTASIA",
         ),
         "WORLD_PANOPTICON": GlobalTrait(
             id="WORLD_PANOPTICON",
@@ -1042,6 +1058,7 @@ world_state = WorldStateV1(
             category="cosmology",
             magnitude=TraitVector(value=0.95, inertia=0.95, evidence_strength="strong"),
             affected_domains=["epistemic", "social"],
+            proposition_id="PROP_PRIVATE_MEMORY",
         ),
     },
 
@@ -1245,5 +1262,12 @@ world_state = WorldStateV1(
                     description="Parsons is denounced to the Thought Police by his own daughter.",
                     audience_default_prior=0.5, stakes=0.7,
                     truth_at_fabula={13500: True}),
+        # WORLD_ trait Pearl-Rung-2 reification (additional surface for Perpetual War,
+        # which is otherwise referenced only as ambient backdrop).
+        Proposition(proposition_id="PROP_OCEANIA_AT_WAR_WITH_EASTASIA", kind="trait_holds",
+                    referent_ids=["WORLD_PERPETUAL_WAR", "ENT_PARTY"],
+                    description="Oceania has always been at war with Eastasia (Eurasia is and always was an ally) — the official enemy of the present moment.",
+                    audience_default_prior=0.5, stakes=0.6,
+                    truth_at_fabula={1000: False, 11000: True}),
     ],
 )
