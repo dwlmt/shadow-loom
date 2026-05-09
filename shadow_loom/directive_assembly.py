@@ -5757,6 +5757,7 @@ class DirectiveAssembler:
             external_research=self._select_external_research(entity_ids),
             narrative_style=getattr(self.world_state, "narrative_style", None),
         )
+        _resolve_pov_form_class_mutex(brief)
         _log_creative_brief(brief)
         return brief
 
@@ -6890,6 +6891,113 @@ class DirectiveAssembler:
 # =====================================================================
 # Readable summary logger for CreativeBrief
 # =====================================================================
+
+# Source-form classes that compress the entire scene into a few sentences
+# of summary diction. When the renderer is *also* asked to lock to a
+# single character's POV, the two constraints conflict: a sub-300-word
+# summary cannot carry interior monologue or moment-by-moment perception
+# and *also* honour third-person plot-summary register. Without a tie-
+# breaker the auditor flags one violation per iteration and the
+# refinement loop ping-pongs between expanding the prose (POV → 800
+# words) and re-compressing it (synopsis → 200 words).
+_SUMMARY_FORMATS: frozenset[str] = frozenset({
+    "plot_summary", "synopsis", "outline",
+})
+
+
+def _resolve_pov_form_class_mutex(brief: "CreativeBrief") -> None:
+    """Resolve the POV-lock vs. summary-form conflict in-place.
+
+    When ``brief.rendering.pov_lock`` is set AND ``brief.narrative_style.
+    format`` is one of the summary forms (``plot_summary``, ``synopsis``,
+    ``outline``), the two constraints are mutually unsatisfiable. Pick a
+    winner deterministically:
+
+      * If the query explicitly named a focus entity AND the rendering
+        mode is one of the epistemic / affective effects that *requires*
+        a POV anchor (``mystery``, ``dramatic_irony``, ``surprise``,
+        ``suspense``, ``fear``, ``regret``, ``grief``), POV lock is
+        hard. Append a stylistic instruction telling the renderer to
+        produce a *compressed POV scene* (≤target_word_max words but
+        third-person POV-restricted observation, no novelistic
+        interiority).
+      * Otherwise POV lock becomes soft; the summary register wins.
+
+    The decision is recorded in
+    ``brief.scene_context["pov_form_resolution"]`` so the auditor can
+    read which constraint is hard rather than flagging both.
+    """
+    rendering = getattr(brief, "rendering", None)
+    style = getattr(brief, "narrative_style", None)
+    if rendering is None or style is None:
+        return
+    if not getattr(rendering, "pov_lock", None):
+        return
+    fmt = getattr(style, "format", "unknown")
+    if fmt not in _SUMMARY_FORMATS:
+        return
+
+    pov_required_modes = {
+        "mystery", "dramatic_irony", "surprise",
+        "suspense", "fear", "regret", "grief",
+    }
+    pov_is_hard = rendering.rendering_mode in pov_required_modes
+    resolution: Dict[str, Any] = {
+        "pov_lock": rendering.pov_lock,
+        "format": fmt,
+        "winner": "pov" if pov_is_hard else "summary",
+        "reason": (
+            "POV-anchored effect ({mode}) requires a perspective "
+            "lock; downgrading summary register to a *compressed POV "
+            "scene*.".format(mode=rendering.rendering_mode)
+            if pov_is_hard else
+            "Source form is a summary register ({fmt}); downgrading "
+            "POV lock to a soft preference (third-person summary "
+            "with optional POV bias).".format(fmt=fmt)
+        ),
+    }
+
+    new_instructions = list(rendering.stylistic_instructions or [])
+    if pov_is_hard:
+        new_instructions.insert(0, (
+            "[Composition rule | HARD] POV lock to "
+            f"{rendering.pov_lock} is the binding constraint. The "
+            f"source format is {fmt!r}; render a *compressed POV "
+            "scene* — third-person limited to the POV character, no "
+            "omniscient summary jumps, but obey the target word "
+            "budget. Do NOT expand into novelistic interiority; do "
+            "NOT switch to omniscient summary."
+        ))
+    else:
+        new_instructions.insert(0, (
+            f"[Composition rule | HARD] Source format {fmt!r} is the "
+            "binding constraint: render as a summary in the source's "
+            f"register. POV bias toward {rendering.pov_lock} is a "
+            "*soft preference* — let the summary diction win when "
+            "they conflict."
+        ))
+        # POV lock is now soft; clear it on the directive so the
+        # auditor's hard POV-lock check doesn't enforce it.
+        try:
+            object.__setattr__(rendering, "pov_lock", None)
+        except Exception:
+            rendering.pov_lock = None  # type: ignore[assignment]
+
+    try:
+        object.__setattr__(rendering, "stylistic_instructions", new_instructions)
+    except Exception:
+        rendering.stylistic_instructions = new_instructions  # type: ignore[assignment]
+
+    if isinstance(brief.scene_context, dict):
+        brief.scene_context["pov_form_resolution"] = resolution
+
+    logger.info(
+        "[DirectiveAssembly] POV/form-class mutex: %s wins "
+        "(mode=%s, format=%s, pov=%s).",
+        resolution["winner"], rendering.rendering_mode, fmt,
+        resolution["pov_lock"],
+    )
+
 
 def _log_creative_brief(brief: "CreativeBrief", *, max_items: int = 10) -> None:
     """Emit a multi-line, human-readable INFO summary of a CreativeBrief."""

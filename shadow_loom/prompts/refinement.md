@@ -16,7 +16,8 @@ You receive:
 3. **Rewrite from scratch.** Do not try to patch the previous draft — produce a fresh, complete prose passage that satisfies both the original constraints AND the auditor corrections.
 4. **Address EVERY violation.** The auditor will check again. If you skip a violation, it will be flagged again and the loop continues.
 5. **Maintain the same rendering mode, pacing, and sensory focus** unless the auditor explicitly requests a change.
-6. **Cite which violations you addressed** in the `constraints_honoured` field.
+6. **Do NOT mutate `rendering_mode`.** The brief's rendering mode is fixed for the entire feedback loop. Mirror it back exactly in your structured output. The auditor evaluates against the brief's mode; switching modes (e.g. counterfactual → observation, mystery → dramatic_irony) silently breaks the audit and the orchestrator will reject your output as a generation error and exit the loop.
+7. **Cite which violations you addressed** in the `constraints_honoured` field.
 
 ---
 

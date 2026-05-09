@@ -2497,11 +2497,28 @@ def build_counterfactual_brief(
     syuzhet_anchor: Optional[int] = None,
 ) -> CreativeBrief:
     """Build a CreativeBrief for counterfactual (Rung 3) queries."""
-    # Build AbductionTruth entries from hidden_deltas
+    # Build AbductionTruth entries from hidden_deltas.
+    #
+    # Filter out near-zero deltas (|delta| < 0.10). When the Rung-3
+    # propagator hits a cyclic SCC or noisy-OR absorption it returns
+    # impact=0.00..0.18 across most traits, which the auditor then
+    # flags as "abduction failures" because the prose can't render
+    # observable cues for shifts that the simulator itself called
+    # negligible. The renderer is asked to invent observable behaviour
+    # for an effectively-flat trait distribution — and if it does, the
+    # POV-lock auditor flags those exact cues as "diagnostic gloss
+    # exceeding perceptual bounds". Dropping near-zero entries here
+    # cuts that double-jeopardy at the source. (May 2026 Star Wars
+    # counterfactual non-convergence audit.)
+    _ABDUCTION_MIN_DELTA = 0.10
     abduction: List[AbductionTruth] = []
     if hidden_deltas:
+        skipped_flat = 0
         for entity_id, deltas in hidden_deltas.items():
             for trait, delta_val in deltas.items():
+                if abs(float(delta_val)) < _ABDUCTION_MIN_DELTA:
+                    skipped_flat += 1
+                    continue
                 direction = "increased" if delta_val > 0 else "decreased"
                 abduction.append(AbductionTruth(
                     entity_id=entity_id,
@@ -2515,6 +2532,14 @@ def build_counterfactual_brief(
                         f"reveal the hidden {trait} shift without exposition."
                     ),
                 ))
+        if skipped_flat:
+            logger.info(
+                "[CounterfactualBrief] Skipped %d sub-threshold abduction "
+                "shifts (|delta| < %.2f) — propagator likely hit a cyclic "
+                "or noisy-OR-absorbed cluster; rendering would be invented "
+                "and immediately flagged as POV/abduction conflicts.",
+                skipped_flat, _ABDUCTION_MIN_DELTA,
+            )
 
     # Build a counterfactual branch from the intervention keys.
     # Phrasing is scene-internal: the renderer must treat the simulated

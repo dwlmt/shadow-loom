@@ -1815,6 +1815,57 @@ policy ($\texttt{auto} \mid \texttt{mainline} \mid
 \texttt{shadow}$); counterfactual queries default to a fresh
 \texttt{shadow} branch, preserving canon.
 
+\paragraph{Convergence safeguards.} The naive iterate-until-the-auditor-passes
+loop has two failure modes that surface as non-convergence on
+densely-constrained queries: (a)~the rewriter \emph{regresses} ---
+closing the latest violation while reintroducing one that an
+earlier iteration had already fixed --- and (b)~the rewriter
+\emph{flips the rendering mode} (e.g.\ \texttt{counterfactual}
+$\rightarrow$ \texttt{observation}), so each subsequent audit
+evaluates a different rubric than the prose was written under.
+The implementation defends against both: each iteration's
+violation set $\{(\text{type},\text{evidence})\}$ is snapshotted,
+and if iteration $n{+}1$ both \emph{strictly increases} the
+violation count \emph{and} introduces a previously-unseen
+violation type, the loop rolls back to the iteration-$n$ prose
+and exits with a structured \texttt{correction\_error};
+independently, the brief's \texttt{rendering\_mode} is treated as
+immutable across the loop, and any rewrite that returns a
+mismatching mode is rejected as a generation error. Composition-
+level safeguards run upstream, in the directive assembler:
+when the brief simultaneously requests a POV-locked perspective
+\emph{and} a summary source-form (\texttt{plot\_summary},
+\texttt{synopsis}, \texttt{outline}) the two constraints are
+mutually unsatisfiable, so the assembler resolves the mutex
+deterministically (POV wins for epistemic / affective effects
+that depend on a perspective anchor; summary wins otherwise) and
+records the decision on the brief so the auditor enforces
+exactly one. The renderer also drops the \emph{abducted-cue}
+sub-directive whenever the Rung-3 abduction posterior is flat
+($|\Delta| < 0.10$ on every trait), so the prose is no longer
+asked to dramatise observable behaviour for shifts the simulator
+itself called negligible.
+
+\paragraph{Cycle handling.} The propagator and the ingestion
+auto-repair pass distinguish \emph{temporal-collapse} cycles
+from \emph{genuine} causal loops. An \texttt{affordance\_gate}
+edge $\text{Entity} \rightarrow \text{Event}$ refers to the
+entity's pre-event state, while a \texttt{mutation} edge
+$\text{Event} \rightarrow \text{Entity}$ refers to the
+post-event state; collapsed onto a single entity node those two
+classes form a strongly-connected component (SCC) that does not
+exist in fabula time. Cycle detection therefore runs on the
+\texttt{affordance\_gate}-excluded sub-graph; any SCC that
+survives is treated as a real defect, and the ingestion repair
+pass iteratively breaks the lowest-\texttt{causal\_force} edge
+in each surviving SCC until the propagation graph is acyclic
+(or a configurable iteration cap is hit, which is logged as a
+warning). Genuine forward-causal loops between events thus
+remain visible to the auditor while characteristic
+extraction artefacts (e.g.\ Vader as both cause and consequence
+of the duel that mutates him) dissolve without losing causal
+information.
+
 
 \section{Worked examples on real plot fixtures}
 \label{app:examples}

@@ -561,9 +561,10 @@ def render_world_graph(
     *,
     on_click: OnClick = None,
     height: str = "100%",
+    fabula_t: int | None = None,
 ) -> ui.echart:
     """Full world graph — force layout with adjacency highlighting."""
-    nodes, links, cats = ws_to_graph_data(ws)
+    nodes, links, cats = ws_to_graph_data(ws, fabula_t=fabula_t)
     # Always-on labels collapse into illegible noise once the graph
     # holds more than ~25 nodes. Above that, hide them and let users
     # hover/click for the name; below, keep them on for readability.
@@ -612,9 +613,10 @@ def render_ego_graph(
     max_hops: int = 2,
     on_click: OnClick = None,
     height: str = "100%",
+    fabula_t: int | None = None,
 ) -> ui.echart:
     """Ego-graph centered on *focus_ids* with gold-bordered focus nodes."""
-    nodes, links, cats = ws_to_ego_graph_data(ws, focus_ids, max_hops=max_hops)
+    nodes, links, cats = ws_to_ego_graph_data(ws, focus_ids, max_hops=max_hops, fabula_t=fabula_t)
     show_labels = len(nodes) <= 25
     chart = ui.echart({
         "backgroundColor": _CHART_BG,
@@ -2679,14 +2681,6 @@ def render_causal_force_graph(
     chart = ui.echart({
         "backgroundColor": _CHART_BG,
         "tooltip": {**_CHART_TOOLTIP, "trigger": "item"},
-        "legend": {
-            "type": "scroll",
-            "data": [c["name"] for c in cats],
-            "textStyle": {"color": _CHART_TEXT},
-            "top": 0,
-            "right": 10,
-            "orient": "vertical",
-        },
         "series": [{
             "type": "graph",
             "roam": True,
@@ -5402,6 +5396,7 @@ def render_social_layer_graph(
     include_concerns: bool = True,
     include_propositions: bool = True,
     fabula_t: int | None = None,
+    event_t: int | None = None,
     ego_id: str | None = None,
     ego_max_hops: int = 1,
     pov_id: str | None = None,
@@ -5428,6 +5423,7 @@ def render_social_layer_graph(
         include_concerns=include_concerns,
         include_propositions=include_propositions,
         fabula_t=fabula_t,
+        event_t=event_t,
         ego_id=ego_id,
         ego_max_hops=ego_max_hops,
         pov_id=pov_id,
@@ -6076,8 +6072,9 @@ def render_trait_trajectories_grid(
 ) -> ui.element:
     """Tiled grid of per-character trait trajectories.
 
-    One :func:`render_entity_trait_trajectory` per selected entity (or
-    all entities with a non-empty trait vector if no selection).
+    Each card is a compact inline chart with an expand button that
+    opens a full-screen version of the same trajectory (same pattern
+    used by every other chart in the UI via :func:`with_expand`).
     """
     if selected_ids:
         ent_ids = [e for e in selected_ids if e in ws.entities]
@@ -6096,12 +6093,18 @@ def render_trait_trajectories_grid(
         )
         with grid:
             for eid in ent_ids:
+                ent = ws.entities.get(eid)
+                title = (ent.name if ent else eid) + " — trait trajectory"
                 with ui.element("div").classes(
                     "border border-slate-200 rounded-xl bg-white shadow-sm "
                     "overflow-hidden p-2"
                 ):
-                    render_entity_trait_trajectory(
-                        ws, eid, height=chart_height,
+                    with_expand(
+                        lambda h, e=eid: render_entity_trait_trajectory(
+                            ws, e, height=h,
+                        ),
+                        title=title,
+                        height=chart_height,
                     )
     return container
 

@@ -681,6 +681,89 @@ never has to re-verify physics, only fidelity.
 
 ---
 
+## D21. Audit-loop convergence safeguards and temporal-collapse cycle handling
+
+**Decision.** Six safeguards short-circuit the two non-convergence
+modes that surfaced on densely-constrained counterfactual queries
+(May 2026 Star Wars audit), and the propagator's cycle detection
+distinguishes *temporal-collapse* artefacts from real causal loops:
+
+1. **Refinement-regression rollback.** Each iteration's violation
+   set `{(type, evidence_quote)}` is snapshotted. If iteration
+   *n+1* both strictly increases the violation count *and*
+   introduces a violation type unseen at iteration *n*, the
+   `FeedbackLoop` rolls back to iteration *n*'s prose and exits
+   with a structured `correction_error`. Without this, the
+   rewriter regularly closes a minor density drift while opening
+   a major meta-narration leak and the user sees the regressed
+   draft as the final output.
+2. **`rendering_mode` is immutable across refinement.** The
+   refinement agent is forbidden from mutating the brief's
+   rendering mode; if it returns a mismatching mode the orchestrator
+   rejects the rewrite as a generation error and exits the loop.
+   Without this, mode flips silently desynchronise the auditor's
+   rubric from the prose's intent and convergence becomes accidental.
+3. **POV vs. summary-form mutex.** When a brief simultaneously
+   requests a POV-locked perspective *and* a summary source-form
+   (`plot_summary`, `synopsis`, `outline`) the two constraints
+   are mutually unsatisfiable. The directive assembler picks a
+   winner deterministically (POV wins for mystery / dramatic_irony
+   / surprise / suspense / fear / regret / grief; summary wins
+   otherwise) and records the decision in
+   `brief.scene_context["pov_form_resolution"]` so the auditor
+   enforces exactly one.
+4. **Quantitative form-class rubric** (auditor + generation
+   prompts). Each source format now carries explicit per-beat
+   sentence-count, dialogue-token, and interior-monologue-token
+   thresholds (e.g. `synopsis`: ≤2 sentences/beat, 0% dialogue,
+   ≤5% interior monologue) so generator and auditor share a
+   measurable contract instead of competing prose-style instincts.
+5. **Flat-abduction skip.** When the Rung-3 abduction posterior
+   returns shifts with `|delta| < 0.10` on every trait (typical
+   when the propagator hits a noisy-OR-absorbed or cyclic-blocked
+   cluster), the renderer's "render abducted shifts as observable
+   cues" sub-directive is dropped. The prose is no longer asked
+   to invent body-language for shifts the simulator itself called
+   negligible — and which the POV auditor would immediately flag
+   as diagnostic gloss.
+6. **Temporal-collapse-aware SCC handling.** An `affordance_gate`
+   edge (`Entity → Event`) refers to the entity's *pre-event*
+   state; a `mutation` edge (`Event → Entity`) refers to the
+   *post-event* state. Collapsed onto a single entity node the
+   two form a strongly-connected component that does not exist
+   in fabula time. Cycle detection (in both `causal_physics.propagate`
+   and ingestion's `_auto_repair`) therefore excludes
+   `affordance_gate` edges from the cycle-detection view; any SCC
+   that survives is a real defect. The ingestion repair pass
+   iteratively breaks the lowest-`causal_force` edge in each
+   surviving SCC until the propagation graph is acyclic, capped
+   at 50 iterations.
+
+**Alternative.** Iterate to `max_iterations` and accept whatever
+the rewriter last produced; treat all SCCs as physics blockers
+and emit a flat-distribution counterfactual.
+
+**Tradeoff.** Each safeguard adds a small amount of bookkeeping
+in the inner loop and a small amount of explicit metadata on
+the brief. The combined effect on the May 2026 Star Wars
+counterfactual sweep is to dissolve a 34-node SCC + 3-node SCC
+into a single genuine 3-node loop (`Tarkin orders → Alderaan
+destroyed → DEATH_STAR_TERROR → Tarkin orders`) which is then
+broken by the iterative repair pass; abduction recovers a
+non-flat posterior; the feedback loop converges or rolls back
+deterministically rather than ping-ponging between competing
+fixes.
+
+**Invariant.** (i) The final scene returned from the feedback
+loop is the best draft seen, never a strictly-worse rewrite.
+(ii) The auditor's rendering rubric matches the prose's rendering
+mode for every iteration. (iii) After ingestion repair, every
+SCC remaining in the propagation graph (with `affordance_gate`
+edges excluded) reflects a genuine extraction defect, not a
+temporal-collapse artefact.
+
+---
+
 ## What we rejected
 
 | Rejected | Why |

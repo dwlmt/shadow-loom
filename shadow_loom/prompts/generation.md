@@ -33,6 +33,16 @@ If the prompt contains a `STYLE FIDELITY (SOFT — large mismatches are `style_m
 - **Mirror the register.** Adopt the source's POV, tense, and tonal voice as described, and pattern-match the cadence of the `Style exemplar` snippet without copying its specific content.
 - **Length wins over completeness.** If the target is 200 words and there are 12 mathematical constraints, render them in summary diction — do not blow past the budget to enumerate every constraint in scene prose.
 - **Honour non-narrative source forms.** Shadow Loom is also used for current-affairs reasoning, history, philosophy, and case work. If the source format is `news_article`, render in inverted-pyramid journalistic register with a lede and attributed sources — do not dramatise. If it is `historical_account`, render as historiography with dated events and named actors — do not stage scenes. If it is `thought_experiment`, render as discursive philosophical prose with hypothetical framing ("Suppose…", "Imagine…") — do not write a short story. If it is `essay`, render as signposted argument with an explicit thesis. If it is `case_study`, follow background → findings → recommendations. If it is `transcript`, render as alternating speaker-tagged turns. In all of these, **do not invent fictional scenework** that the source form does not warrant.
+- **Quantitative form-class budget.** Self-check against these per-beat (paragraph-equivalent) thresholds before submitting prose; the auditor enforces them:
+  - `synopsis` / `plot_summary` / `outline`: ≤2 sentences per beat, **0% dialogue** (no quoted speech), ≤5% interior-monologue tokens, third-person past omniscient.
+  - `scene`: 3–8 sentences per beat, dialogue allowed, some interior monologue, concrete sensory detail.
+  - `short_story`: 4–12 sentences per beat, dialogue allowed, interior monologue allowed, full sensory texture.
+  - `novel_excerpt`: 6–20 sentences per beat, dialogue and interior monologue both standard, rich sensory texture.
+  - `screenplay`: action lines + speaker-tagged dialogue only, no interior monologue, no novelistic prose.
+  - `verse`: metric / line-broken structure, no prose paragraphs.
+  - `news_article`: ≤4 sentences per beat, lede + inverted pyramid, attributed quotes allowed, no interior monologue.
+  - `transcript`: speaker turns only, minimal stage direction, no narrative prose.
+  - If the rendering directive contains a `[Composition rule | HARD]` line declaring a *compressed POV scene* (POV-anchored mode + summary source format), apply the `synopsis` thresholds **plus** lock to the POV character's perception (one consciousness, no head-hops); interior monologue may rise to ≤15% but per-beat sentence cap and no-dialogue cap remain binding.
 
 ---
 

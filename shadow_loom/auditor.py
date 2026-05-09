@@ -2624,6 +2624,32 @@ def run_feedback_loop(
     consecutive_failed_open = 0
     correction_error: Optional[str] = None
 
+    # Snapshot the rendering mode the brief asked for. The refinement
+    # agent is forbidden from mutating it (mode-flip silently degrades
+    # the audit because the auditor evaluates against the *brief's*
+    # mode while the prose was rewritten under a different one). If
+    # the agent flips the mode we treat its output as a generation
+    # error, keep the previous scene, and exit the loop.
+    expected_rendering_mode: Optional[str] = None
+    if getattr(brief, "rendering", None) is not None:
+        expected_rendering_mode = getattr(
+            brief.rendering, "rendering_mode", None,
+        )
+
+    # Track the prior iteration's violation count and scene so we can
+    # roll back when the refinement agent INTRODUCES more violations
+    # than it closes. Without this guard the loop happily accepts a
+    # strictly-worse rewrite (e.g.\u00a0closes 1 minor density drift
+    # while opening a major meta-narration leak) and the user sees the
+    # regressed prose as the final output.
+    prior_violation_count: Optional[int] = None
+    prior_violation_keys: set[tuple[str, str]] = set()
+    prior_scene: Optional[GeneratedScene] = None
+    prior_audit: Optional[AuditResult] = None
+    prior_cycle_impact: Optional[ChangeImpactMetrics] = None
+    prior_graph_version: int = 0
+    prior_graph_data: Dict[str, Any] = {}
+
     # Initial-scene generation failure short-circuit. ``render_scene``
     # returns a placeholder GeneratedScene with ``generation_error``
     # set when the LLM call raises. There is no useful prose to audit
@@ -2782,6 +2808,60 @@ def run_feedback_loop(
         else:
             consecutive_failed_open = 0
 
+        # --- Refinement-regression rollback ---
+        # If the *previous* iteration's refinement introduced strictly
+        # more violations than it closed, the rewriter regressed.
+        # Roll back to the prior scene + audit and exit. This keeps
+        # the user's final output at the best draft seen rather than
+        # the latest draft (which is often worse). Specifically, the
+        # rewriter is "regressing" when:
+        #   (a) total violation count strictly increased, AND
+        #   (b) at least one *new* violation type appeared that was
+        #       not in the prior iteration's audit (so we are not
+        #       just seeing the same gripe re-flagged with extra
+        #       evidence). Pure increases on the same violation type
+        #       are tolerated as the auditor finding more instances.
+        if (
+            iteration > 0
+            and not audit.failed_open
+            and prior_audit is not None
+            and prior_violation_count is not None
+        ):
+            current_keys = {
+                (v.violation_type, (v.evidence_quote or "")[:160])
+                for v in audit.violations
+            }
+            new_keys = current_keys - prior_violation_keys
+            new_types = {t for (t, _q) in new_keys}
+            prior_types = {t for (t, _q) in prior_violation_keys}
+            introduced_types = new_types - prior_types
+            if (
+                len(audit.violations) > prior_violation_count
+                and introduced_types
+            ):
+                logger.warning(
+                    "[FeedbackLoop] Refinement REGRESSION at iteration %d: "
+                    "violation count rose %d -> %d and %d new violation "
+                    "type(s) appeared (%s). Rolling back to iteration %d "
+                    "prose and exiting loop.",
+                    iteration + 1, prior_violation_count,
+                    len(audit.violations), len(introduced_types),
+                    ", ".join(sorted(introduced_types)),
+                    iteration,
+                )
+                correction_error = (
+                    f"Refinement regressed at iteration {iteration + 1}: "
+                    f"introduced {sorted(introduced_types)}; rolled back."
+                )
+                # Use the prior iteration's scene/audit as the final.
+                if prior_scene is not None:
+                    current_scene = prior_scene
+                audit = prior_audit
+                cycle_impact = prior_cycle_impact or cycle_impact
+                graph_version = prior_graph_version
+                graph_data = prior_graph_data
+                break
+
         # --- Convergence rule ---
         # The LLM auditor's prose-level verdict is the only signal that
         # actually responds to a rewrite. The engine veto is folded in
@@ -2917,6 +2997,20 @@ def run_feedback_loop(
         # refinement pass sees them as non-regression constraints.
         accumulated_violations.extend(audit.violations)
 
+        # Snapshot this iteration's scene + audit BEFORE refinement so
+        # the regression-rollback at the top of the next iteration can
+        # restore them if the rewriter makes things strictly worse.
+        prior_scene = current_scene
+        prior_audit = audit
+        prior_violation_count = len(audit.violations)
+        prior_violation_keys = {
+            (v.violation_type, (v.evidence_quote or "")[:160])
+            for v in audit.violations
+        }
+        prior_cycle_impact = cycle_impact
+        prior_graph_version = graph_version
+        prior_graph_data = graph_data
+
         # Re-generate the scene under the refinement system prompt so
         # the LLM is explicitly in rewrite mode (rather than reusing
         # the generic generation prompt and relying on injected text).
@@ -2946,6 +3040,36 @@ def run_feedback_loop(
                 "Keeping previous scene and exiting loop.", exc,
             )
             correction_error = f"Refinement LLM call raised: {exc!r}"
+            break
+
+        # --- Refinement rendering_mode contract ---
+        # The refinement agent is forbidden from mutating
+        # ``rendering_mode``. The auditor evaluates against the
+        # brief's mode; if the rewriter switches modes (e.g.
+        # counterfactual -> observation) every subsequent iteration
+        # is auditing a different rubric than the prose was written
+        # under and convergence becomes accidental. Reject the output,
+        # restore the previous scene, and surface as a generation
+        # error.
+        if (
+            expected_rendering_mode is not None
+            and current_scene.rendering_mode
+            and current_scene.rendering_mode != expected_rendering_mode
+        ):
+            logger.error(
+                "[FeedbackLoop] Refinement agent mutated rendering_mode "
+                "(%r -> %r) at iteration %d; this is forbidden. "
+                "Restoring prior scene and exiting loop.",
+                expected_rendering_mode, current_scene.rendering_mode,
+                iteration + 1,
+            )
+            correction_error = (
+                f"Refinement agent mutated rendering_mode "
+                f"{expected_rendering_mode!r} -> "
+                f"{current_scene.rendering_mode!r}; rejected."
+            )
+            if prior_scene is not None:
+                current_scene = prior_scene
             break
 
         if current_scene.generation_error:

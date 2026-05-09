@@ -1448,23 +1448,51 @@ class CausalPhysicsEngine:
         try:
             execution_order = list(nx.topological_sort(causal_graph))
         except nx.NetworkXUnfeasible:
-            sccs = list(nx.strongly_connected_components(causal_graph))
-            cyclic_sccs = [s for s in sccs if len(s) > 1]
-            for s in cyclic_sccs:
-                cyclic_blocked |= s
-            logger.warning(
-                "[CausalPhysics·Propagate] Cyclic causal graph: %d SCC(s) with "
-                "%d node(s) total. Cyclic clusters are blocked from "
-                "propagation; only acyclic spines fire.",
-                len(cyclic_sccs), len(cyclic_blocked),
-            )
-            condensation = nx.condensation(causal_graph, sccs)
-            execution_order = []
-            for comp_idx in nx.topological_sort(condensation):
-                # ``members`` is the set of original node ids in this SCC.
-                members = condensation.nodes[comp_idx]["members"]
-                # Sort for determinism so test runs are reproducible.
-                execution_order.extend(sorted(members))
+            # ``affordance_gate`` edges (entity ENABLES event) refer to
+            # the entity's *pre-event* state, while ``mutation`` edges
+            # (event MUTATES entity) refer to the *post-event* state.
+            # Collapsed onto a single entity node those two classes
+            # form a temporal-collapse cycle that doesn't exist in
+            # fabula time. Build a cycle-detection view that excludes
+            # affordance_gate so genuine forward-causal cycles remain
+            # visible while these temporal artefacts are dissolved.
+            cycle_view = nx.DiGraph()
+            for u, v, edata in causal_graph.edges(data=True):
+                if edata.get("causality_type") == "affordance_gate":
+                    continue
+                cycle_view.add_edge(u, v, **edata)
+            try:
+                execution_order = list(nx.topological_sort(cycle_view))
+                # The cycle was an affordance/mutation temporal artefact;
+                # propagate every node in cycle_view's order, then append
+                # any nodes that only appear as affordance sources.
+                missing = [n for n in causal_graph.nodes if n not in cycle_view]
+                execution_order.extend(sorted(missing))
+                logger.info(
+                    "[CausalPhysics\u00b7Propagate] Cycle dissolved by "
+                    "excluding affordance_gate edges from cycle "
+                    "detection (temporal-collapse artefact, not a "
+                    "real causal loop)."
+                )
+            except nx.NetworkXUnfeasible:
+                sccs = list(nx.strongly_connected_components(cycle_view))
+                cyclic_sccs = [s for s in sccs if len(s) > 1]
+                for s in cyclic_sccs:
+                    cyclic_blocked |= s
+                logger.warning(
+                    "[CausalPhysics\u00b7Propagate] Cyclic causal graph: %d SCC(s) with "
+                    "%d node(s) total (after excluding affordance_gate). "
+                    "Cyclic clusters are blocked from propagation; only "
+                    "acyclic spines fire.",
+                    len(cyclic_sccs), len(cyclic_blocked),
+                )
+                condensation = nx.condensation(cycle_view, sccs)
+                execution_order = []
+                for comp_idx in nx.topological_sort(condensation):
+                    members = condensation.nodes[comp_idx]["members"]
+                    execution_order.extend(sorted(members))
+                missing = [n for n in causal_graph.nodes if n not in cycle_view]
+                execution_order.extend(sorted(missing))
 
         # 2b. Seed the active-source set. Edges only fire when their source
         #     is in this set; downstream targets get added as they mutate.

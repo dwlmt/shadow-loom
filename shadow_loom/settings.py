@@ -187,23 +187,23 @@ class GenerationSettings(BaseSettings):
     # context windows without losing the information that matters for
     # a single scene.  Raise them back toward the old values if you
     # switch to a model with a large context window.
-    scene_context_recent_events: int = Field(default=10)
-    scene_context_max_beliefs: int = Field(default=4)
-    scene_context_loc_desc_chars: int = Field(default=160)
-    scene_context_obj_desc_chars: int = Field(default=120)
-    scene_context_utterance_chars: int = Field(default=200)
+    scene_context_recent_events: int = Field(default=20)
+    scene_context_max_beliefs: int = Field(default=6)
+    scene_context_loc_desc_chars: int = Field(default=240)
+    scene_context_obj_desc_chars: int = Field(default=200)
+    scene_context_utterance_chars: int = Field(default=300)
     # ── Preceding-prose cap ──────────────────────────────────────
     # ``STORY SO FAR`` is the concatenation of all prior rendered prose
     # in a session lineage.  Without a cap it grows unboundedly and
     # can easily consume thousands of tokens.  Only the tail (most
     # recent content) is kept.
-    preceding_prose_max_chars: int = Field(default=3000)
+    preceding_prose_max_chars: int = Field(default=6000)
     # ── Answer-agent compress limits ───────────────────────────────────
     # Controls how many entities/events are sent to the Q&A answer
     # agent (_compress_world_state). Large worlds can easily exceed
     # GPT-class context windows with the old unlimited defaults.
-    answer_max_entities: int = Field(default=30)
-    answer_max_events: int = Field(default=40)
+    answer_max_entities: int = Field(default=60)
+    answer_max_events: int = Field(default=80)
 
 
 # =====================================================================
@@ -440,7 +440,7 @@ class CausalPhysicsSettings(BaseSettings):
     # Monte-Carlo distributional CTF
     # ------------------------------------------------------------------
     monte_carlo_samples: int = Field(
-        default=128,
+        default=24,
         description=(
             "If >0, ``CausalPhysicsEngine.execute_distribution`` will draw "
             "this many samples by perturbing causal_force ~ Normal(force, "

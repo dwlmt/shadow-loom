@@ -569,6 +569,7 @@ def build_social_tab(state: AppState) -> None:
                                             net_show_props.value
                                         ),
                                         fabula_t=fabula_t_eff,
+                                        event_t=fabula_t,
                                         pov_id=pid,
                                     )
                                 ),
@@ -644,6 +645,7 @@ def build_social_tab(state: AppState) -> None:
                                                 net_show_props.value
                                             ),
                                             fabula_t=fabula_t_eff,
+                                            event_t=fabula_t,
                                             ego_id=eid,
                                             ego_max_hops=hp,
                                         )
@@ -691,6 +693,7 @@ def build_social_tab(state: AppState) -> None:
                                                 net_layout.value or "force"
                                             ),
                                             fabula_t=fabula_t_eff,
+                                            event_t=fabula_t,
                                             intermental_ids=ids,
                                             intermental_threshold=th,
                                         )

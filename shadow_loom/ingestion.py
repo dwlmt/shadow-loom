@@ -9771,6 +9771,538 @@ def reconcile_affect(
         if any_linked:
             world = world.model_copy(update={"world_traits": new_world_traits})
 
+    # ----------------------------------------------------------------
+    # 9. Deterministic narrative-quality post-passes (May 2026 audit).
+    # ----------------------------------------------------------------
+    world = apply_post_pass_fixes(world)
+
+    return world
+
+
+# =====================================================================
+# Phase C′ — Deterministic Narrative-Quality Post-Passes
+#
+# Six fixes derived from the May 2026 Star Wars audit. Each one closes
+# a class of LLM-extraction shortfall that was silently breaking the
+# affect engine downstream:
+#
+#   1. Concern auto-closure — when a concern's proposition resolves,
+#      append a low-salience closing rung and set the activation
+#      window so time-sliced views stop showing it as "still active".
+#   2. Truth-commit synthesis — derive ``Proposition.truth_at_fabula``
+#      from events that explicitly reference the proposition (via
+#      ``referent_ids`` containing an EVT_ id, or matching prop_id on
+#      the event). Without commits the suspense scorer can never
+#      collapse entropy → flat affective curves.
+#   3. Audience-belief synthesis — for every revelation / outcome
+#      event the audience witnesses, ensure ``ENT_AUDIENCE`` carries
+#      a Belief on the resolved propositions. Powers Bayesian
+#      surprise.
+#   4. Belief invalidation — when a proposition's truth flips and a
+#      believer's stored confidence contradicts the new truth, append
+#      an ``EntityStateSnapshot`` with ``beliefs_invalidated`` so the
+#      replay layer drops the contradicted belief.
+#   5. Near-duplicate event detection — flag events with identical
+#      actors / targets / event_type whose fabula times collide, and
+#      collapse the safest cases (same fabula time).
+#   6. WORLD→WORLD chain inference — add ``chain_reaction`` causal
+#      edges between world traits when one trait's description names
+#      another, so the constraint field is connected.
+# =====================================================================
+
+
+def _post_pass_synthesize_truth_commits(
+    world: WorldStateV1, repairs: List[str],
+) -> WorldStateV1:
+    """Derive ``truth_at_fabula`` for event-resolving propositions.
+
+    A proposition with ``kind in {event_occurs, outcome}`` whose
+    ``referent_ids`` contains an EVT_ id committed at the referent
+    event's fabula time. Conservative: only writes when the
+    proposition has no commits at or before that time.
+    """
+    if not world.propositions:
+        return world
+    event_index = {e.id: e for e in world.events}
+    written = 0
+    new_props: List[Proposition] = []
+    for prop in world.propositions:
+        if prop.kind not in ("event_occurs", "outcome"):
+            new_props.append(prop)
+            continue
+        evt_referents = [
+            r for r in prop.referent_ids if r.startswith("EVT_") and r in event_index
+        ]
+        if not evt_referents:
+            new_props.append(prop)
+            continue
+        # Earliest referent event commits the proposition true.
+        commit_t = min(event_index[eid].fabula_time for eid in evt_referents)
+        if any(t <= commit_t for t in prop.truth_at_fabula):
+            new_props.append(prop)
+            continue
+        new_truth = dict(prop.truth_at_fabula)
+        new_truth[commit_t] = True
+        new_props.append(prop.model_copy(update={"truth_at_fabula": new_truth}))
+        written += 1
+        repairs.append(
+            f"Truth-commit: {prop.proposition_id} -> True @ fabula={commit_t} "
+            f"(via referent {evt_referents[0]})."
+        )
+    if written:
+        world = world.model_copy(update={"propositions": new_props})
+    return world
+
+
+# Audience entity id used by affect-unification (mirrors AUDIENCE_ID
+# in shadow_loom.affect_unification — duplicated locally to avoid an
+# import cycle in ingestion).
+_AUDIENCE_ENT_ID = "ENT_AUDIENCE"
+
+
+def _post_pass_synthesize_audience_beliefs(
+    world: WorldStateV1, repairs: List[str],
+) -> WorldStateV1:
+    """For every committed ``Proposition.truth_at_fabula`` entry, ensure
+    the AUDIENCE entity carries a matching belief at that fabula time.
+
+    No-ops when no AUDIENCE entity exists (older worlds without an
+    explicit audience surrogate). Existing audience beliefs are left
+    intact; we only append.
+    """
+    aud = world.entities.get(_AUDIENCE_ENT_ID)
+    if aud is None or not world.propositions:
+        return world
+    existing_aud_props = {
+        b.proposition_id for b in (aud.beliefs or []) if b.proposition_id
+    }
+    new_beliefs = list(aud.beliefs or [])
+    appended = 0
+    for prop in world.propositions:
+        if prop.proposition_id in existing_aud_props:
+            continue
+        if not prop.truth_at_fabula:
+            continue
+        commit_t = min(prop.truth_at_fabula)
+        truth = prop.truth_at_fabula[commit_t]
+        # Confidence shifts toward the committed truth — strong
+        # commits (event_occurs / outcome) move farther than the
+        # default 0.5 prior; framing propositions (trait_holds /
+        # identity_is) move less aggressively.
+        target_conf = 0.9 if truth else 0.1
+        if prop.kind in ("trait_holds", "identity_is", "relation_holds"):
+            target_conf = 0.75 if truth else 0.25
+        new_beliefs.append(Belief(
+            target_id=prop.referent_ids[0] if prop.referent_ids else prop.proposition_id,
+            perceived_state=prop.description if truth else f"NOT: {prop.description}",
+            confidence=target_conf,
+            inertia=0.5,
+            established_at_fabula=commit_t,
+            evidence_strength="strong",
+            proposition_id=prop.proposition_id,
+        ))
+        appended += 1
+    if appended:
+        world.entities[_AUDIENCE_ENT_ID] = aud.model_copy(
+            update={"beliefs": new_beliefs}
+        )
+        repairs.append(
+            f"Audience-belief synthesis: appended {appended} AUDIENCE beliefs "
+            f"to track committed propositions."
+        )
+    return world
+
+
+def _post_pass_invalidate_contradicted_beliefs(
+    world: WorldStateV1, repairs: List[str],
+) -> WorldStateV1:
+    """When a proposition's truth commits contradict a believer's
+    stored confidence, append an ``EntityStateSnapshot`` with
+    ``beliefs_invalidated`` so replay drops the obsolete belief.
+
+    A belief is "contradicted" when:
+      * confidence > 0.6 but the proposition is committed False, or
+      * confidence < 0.4 but the proposition is committed True.
+
+    Skipped silently when an invalidation snapshot for that target
+    already exists at or after the commit time (idempotent).
+    """
+    if not world.propositions or not world.entities:
+        return world
+    prop_index = {p.proposition_id: p for p in world.propositions}
+    invalidated = 0
+    for eid, ent in list(world.entities.items()):
+        if eid == _AUDIENCE_ENT_ID:
+            continue
+        new_snaps = list(ent.state_timeline)
+        snap_map: Dict[int, EntityStateSnapshot] = {}
+        for snap in new_snaps:
+            snap_map.setdefault(snap.fabula_time, snap)
+        added_local = 0
+        for b in ent.beliefs:
+            if not b.proposition_id or b.proposition_id not in prop_index:
+                continue
+            prop = prop_index[b.proposition_id]
+            if not prop.truth_at_fabula:
+                continue
+            for commit_t, truth in sorted(prop.truth_at_fabula.items()):
+                if commit_t < b.established_at_fabula:
+                    continue
+                contradicted = (
+                    (b.confidence > 0.6 and truth is False)
+                    or (b.confidence < 0.4 and truth is True)
+                )
+                if not contradicted:
+                    continue
+                # Idempotency: do not re-add if any snapshot at or
+                # after commit_t already invalidates this target.
+                already = any(
+                    s.fabula_time >= commit_t and b.target_id in s.beliefs_invalidated
+                    for s in new_snaps
+                )
+                if already:
+                    continue
+                new_snaps.append(EntityStateSnapshot(
+                    fabula_time=commit_t,
+                    triggered_by=None,
+                    beliefs_invalidated=[b.target_id],
+                ))
+                invalidated += 1
+                added_local += 1
+                break  # one invalidation per belief is enough
+        if added_local:
+            new_snaps.sort(key=lambda s: s.fabula_time)
+            world.entities[eid] = ent.model_copy(update={"state_timeline": new_snaps})
+    if invalidated:
+        repairs.append(
+            f"Belief-invalidation: appended {invalidated} beliefs_invalidated "
+            f"snapshots for truth-flipped propositions."
+        )
+    return world
+
+
+def _post_pass_close_resolved_concerns(
+    world: WorldStateV1, repairs: List[str],
+) -> WorldStateV1:
+    """Close concerns whose proposition has resolved or whose owner
+    has died. Sets ``activation_fabula_window`` if absent and appends
+    a low-salience closing snapshot rung if the concern's last rung
+    is well above zero.
+    """
+    if not world.entities:
+        return world
+    prop_index = {p.proposition_id: p for p in world.propositions}
+    closed = 0
+    for eid, ent in list(world.entities.items()):
+        # Death time of the owning entity (latest transition to dead).
+        death_t: Optional[int] = None
+        for snap in ent.state_timeline:
+            if snap.status == "dead":
+                death_t = snap.fabula_time if death_t is None else min(death_t, snap.fabula_time)
+        if not ent.concerns:
+            continue
+        new_concerns: List[Concern] = []
+        for concern in ent.concerns:
+            close_t: Optional[int] = None
+            close_reason: str = ""
+            prop = prop_index.get(concern.proposition_id)
+            if prop and prop.truth_at_fabula:
+                # Concern closes when its proposition's truth aligns
+                # with what the entity wants (desire→True, fear→False).
+                wants_true = concern.polarity == "desire"
+                for ct, tv in sorted(prop.truth_at_fabula.items()):
+                    if (wants_true and tv) or ((not wants_true) and not tv):
+                        close_t = ct
+                        close_reason = (
+                            f"prop {concern.proposition_id} resolved "
+                            f"{tv} at {ct}"
+                        )
+                        break
+            if death_t is not None and (close_t is None or death_t < close_t):
+                close_t = death_t
+                close_reason = f"owner {eid} died at {death_t}"
+            if close_t is None:
+                new_concerns.append(concern)
+                continue
+            updates: Dict[str, Any] = {}
+            timeline = list(concern.state_timeline)
+            # Set activation window if missing.
+            if concern.activation_fabula_window is None:
+                start_t = (
+                    timeline[0].fabula_time if timeline else 0
+                )
+                updates["activation_fabula_window"] = [start_t, close_t]
+            # Append closing rung if last rung is not already small.
+            last = timeline[-1] if timeline else None
+            if last is None or last.fabula_time < close_t or (
+                last.salience is not None and last.salience > 0.1
+            ):
+                timeline.append(ConcernSnapshot(
+                    fabula_time=close_t,
+                    triggered_by=None,
+                    salience=0.0,
+                    polarity=None,
+                    activation_fabula_window=None,
+                    counter_concern_ids=[],
+                    kind=concern.kind,
+                ))
+                updates["state_timeline"] = timeline
+                closed += 1
+                repairs.append(
+                    f"Concern-close: {eid}/{concern.concern_id} closed at "
+                    f"{close_t} ({close_reason})."
+                )
+            new_concerns.append(
+                concern.model_copy(update=updates) if updates else concern
+            )
+        if new_concerns != ent.concerns:
+            world.entities[eid] = ent.model_copy(update={"concerns": new_concerns})
+    if closed:
+        repairs.append(f"Concern-close: closed {closed} concerns total.")
+    return world
+
+
+def _post_pass_dedup_near_duplicate_events(
+    world: WorldStateV1, repairs: List[str],
+) -> WorldStateV1:
+    """Collapse near-duplicate events at the SAME fabula time.
+
+    Two events are considered duplicates iff they share
+    ``event_type``, ``fabula_time``, sorted ``actor_ids``, and sorted
+    ``target_ids``. The keeper is the event with the longest
+    description (most informative); the loser's id is rewritten in
+    every reference (causal_topology, state_timeline.triggered_by,
+    beliefs.acquired_via_event_id, propositions.referent_ids,
+    events.superseded_by_event_id).
+
+    Does NOT cross fabula times — different-time near-duplicates
+    (e.g. an event placed twice at t=400 and t=2300) are reported
+    only, since collapsing across time would silently mutate the
+    syuzhet.
+    """
+    if not world.events:
+        return world
+    groups: Dict[Tuple[str, int, Tuple[str, ...], Tuple[str, ...]], List[EventNode]] = {}
+    for evt in world.events:
+        key = (
+            evt.event_type or "",
+            evt.fabula_time,
+            tuple(sorted(evt.actor_ids or [])),
+            tuple(sorted(evt.target_ids or [])),
+        )
+        groups.setdefault(key, []).append(evt)
+
+    rename: Dict[str, str] = {}
+    for key, evts in groups.items():
+        if len(evts) <= 1:
+            continue
+        # Keep the longest-described (most informative) event.
+        keeper = max(evts, key=lambda e: len(e.description or ""))
+        for loser in evts:
+            if loser.id != keeper.id:
+                rename[loser.id] = keeper.id
+                repairs.append(
+                    f"Event-dedup: {loser.id} -> {keeper.id} "
+                    f"(t={loser.fabula_time}, type={loser.event_type})."
+                )
+
+    # Cross-time near-duplicate report (no rewrite).
+    desc_groups: Dict[Tuple[str, Tuple[str, ...], Tuple[str, ...]], List[EventNode]] = {}
+    for evt in world.events:
+        if evt.id in rename:
+            continue
+        key2 = (
+            evt.event_type or "",
+            tuple(sorted(evt.actor_ids or [])),
+            tuple(sorted(evt.target_ids or [])),
+        )
+        desc_groups.setdefault(key2, []).append(evt)
+    for key2, evts in desc_groups.items():
+        if len(evts) <= 1:
+            continue
+        # Only report when descriptions overlap heavily (Jaccard ≥ 0.6).
+        for i, a in enumerate(evts):
+            atok = set((a.description or "").lower().split())
+            for b in evts[i + 1:]:
+                btok = set((b.description or "").lower().split())
+                if not atok or not btok:
+                    continue
+                jac = len(atok & btok) / max(1, len(atok | btok))
+                if jac >= 0.6 and a.fabula_time != b.fabula_time:
+                    repairs.append(
+                        f"Event-dedup-WARN: cross-time near-duplicate "
+                        f"{a.id}@{a.fabula_time} ↔ {b.id}@{b.fabula_time} "
+                        f"(jaccard={jac:.2f}); not collapsed."
+                    )
+
+    if not rename:
+        return world
+
+    # Rewrite all references.
+    new_events: List[EventNode] = []
+    seen: Set[str] = set()
+    for evt in world.events:
+        if evt.id in rename:
+            continue
+        if evt.id in seen:
+            continue
+        seen.add(evt.id)
+        sup = evt.superseded_by_event_id
+        if sup and sup in rename:
+            evt = evt.model_copy(update={"superseded_by_event_id": rename[sup]})
+        new_events.append(evt)
+
+    new_causal: List[CausalEdge] = []
+    for ce in world.causal_topology:
+        s = rename.get(ce.source_id, ce.source_id)
+        t = rename.get(ce.target_id, ce.target_id)
+        if s == t:
+            continue  # self-loop after rename — drop
+        if s != ce.source_id or t != ce.target_id:
+            ce = ce.model_copy(update={"source_id": s, "target_id": t})
+        new_causal.append(ce)
+
+    # Rewrite proposition.referent_ids.
+    new_props: List[Proposition] = []
+    for prop in world.propositions:
+        new_refs = [rename.get(r, r) for r in prop.referent_ids]
+        # Drop dups while preserving order.
+        seen_r: Set[str] = set()
+        deduped = [r for r in new_refs if not (r in seen_r or seen_r.add(r))]
+        if deduped != prop.referent_ids:
+            prop = prop.model_copy(update={"referent_ids": deduped})
+        new_props.append(prop)
+
+    # Rewrite entity beliefs / state_timeline / concerns.state_timeline.
+    new_entities: Dict[str, Entity] = {}
+    for eid, ent in world.entities.items():
+        ent_updates: Dict[str, Any] = {}
+        if ent.beliefs:
+            new_b = []
+            for b in ent.beliefs:
+                if b.acquired_via_event_id and b.acquired_via_event_id in rename:
+                    b = b.model_copy(
+                        update={"acquired_via_event_id": rename[b.acquired_via_event_id]}
+                    )
+                new_b.append(b)
+            ent_updates["beliefs"] = new_b
+        if ent.state_timeline:
+            new_st = []
+            for snap in ent.state_timeline:
+                if snap.triggered_by and snap.triggered_by in rename:
+                    snap = snap.model_copy(
+                        update={"triggered_by": rename[snap.triggered_by]}
+                    )
+                new_st.append(snap)
+            ent_updates["state_timeline"] = new_st
+        if ent.concerns:
+            new_c = []
+            for c in ent.concerns:
+                if c.state_timeline:
+                    new_rungs = []
+                    for r in c.state_timeline:
+                        if r.triggered_by and r.triggered_by in rename:
+                            r = r.model_copy(
+                                update={"triggered_by": rename[r.triggered_by]}
+                            )
+                        new_rungs.append(r)
+                    c = c.model_copy(update={"state_timeline": new_rungs})
+                new_c.append(c)
+            ent_updates["concerns"] = new_c
+        new_entities[eid] = ent.model_copy(update=ent_updates) if ent_updates else ent
+
+    return world.model_copy(update={
+        "events": new_events,
+        "causal_topology": new_causal,
+        "propositions": new_props,
+        "entities": new_entities,
+    })
+
+
+def _post_pass_infer_world_chain_reactions(
+    world: WorldStateV1, repairs: List[str],
+) -> WorldStateV1:
+    """Add ``chain_reaction`` causal edges between world traits when
+    one trait's description names another trait by name.
+
+    Conservative: at most 3 outgoing inferred edges per source trait,
+    and never a duplicate of an existing edge between the same pair.
+    """
+    traits = list(world.world_traits.values())
+    if len(traits) < 2:
+        return world
+    existing_pairs: Set[Tuple[str, str]] = {
+        (ce.source_id, ce.target_id) for ce in world.causal_topology
+    }
+    additions: List[CausalEdge] = []
+    for src in traits:
+        src_id = src.id
+        src_desc = (src.description or "").lower()
+        if not src_desc:
+            continue
+        outgoing = 0
+        for tgt in traits:
+            if tgt.id == src_id:
+                continue
+            if outgoing >= 3:
+                break
+            tgt_name = (tgt.name or "").lower()
+            if not tgt_name or len(tgt_name) < 4:
+                continue
+            # Whole-word match on the target's name.
+            tokens = {t.strip(".,;:!?\"'()") for t in src_desc.split()}
+            if tgt_name not in tokens and tgt_name not in src_desc:
+                continue
+            if (src_id, tgt.id) in existing_pairs:
+                continue
+            additions.append(CausalEdge(
+                source_id=src_id,
+                target_id=tgt.id,
+                causality_type="chain_reaction",
+                causal_force=1.5,
+                mechanism="psychological",
+            ))
+            existing_pairs.add((src_id, tgt.id))
+            outgoing += 1
+            repairs.append(
+                f"World-chain: inferred {src_id} -> {tgt.id} "
+                f"(name match in description)."
+            )
+    if additions:
+        world = world.model_copy(update={
+            "causal_topology": list(world.causal_topology) + additions,
+        })
+    return world
+
+
+def apply_post_pass_fixes(
+    world: WorldStateV1, *, dedup_events: bool = True,
+) -> WorldStateV1:
+    """Run all six deterministic narrative-quality post-passes.
+
+    Idempotent and side-effect-free aside from the returned world.
+    Pure-Python; safe to call from tests, replays, and the live
+    pipeline. The auditor.py affective-feedback step depends on
+    these fixes having run, so calling order matters: this is wired
+    into ``reconcile_affect`` just before its return.
+
+    Set ``dedup_events=False`` to skip the (intentionally
+    conservative) event-collapse step, e.g. when a downstream
+    consumer needs the raw extraction.
+    """
+    repairs: List[str] = []
+    world = _post_pass_synthesize_truth_commits(world, repairs)
+    world = _post_pass_synthesize_audience_beliefs(world, repairs)
+    world = _post_pass_invalidate_contradicted_beliefs(world, repairs)
+    world = _post_pass_close_resolved_concerns(world, repairs)
+    if dedup_events:
+        world = _post_pass_dedup_near_duplicate_events(world, repairs)
+    world = _post_pass_infer_world_chain_reactions(world, repairs)
+    if repairs:
+        logger.info(
+            "[Post-Pass] applied %d narrative-quality fixes; samples:\n  %s",
+            len(repairs), "\n  ".join(repairs[:15]),
+        )
     return world
 
 
@@ -9871,6 +10403,85 @@ def _auto_repair(ws: WorldStateV1) -> Tuple[WorldStateV1, List[str]]:
             repairs.append(f"Removed causal edge: rel_counterpart_id '{ce.rel_counterpart_id}' not in node set.")
         else:
             clean_causal.append(ce)
+
+    # --- Break causal SCCs ------------------------------------------
+    # The Rung-3 propagator in causal_physics.py refuses to fire any
+    # node inside a non-trivial SCC ("Cyclic clusters are blocked from
+    # propagation; only acyclic spines fire") which collapses entire
+    # counterfactual abduction sweeps to flat distributions when the
+    # extraction wires (e.g.) ``EVT_OBI_WAN_DUELS_VADER → EVT_OBI_WAN_
+    # SACRIFICES_HIMSELF`` *and* the reverse. Rather than waiting for
+    # a cyclic_blocked warning at query time, detect SCCs at ingestion
+    # and break the lowest-causal-force edge in each cycle. Logged so
+    # the audit trail makes it explicit which edge was severed.
+    #
+    # ``affordance_gate`` edges (entity ENABLES event, pre-event state)
+    # and ``mutation`` edges (event MUTATES entity, post-event state)
+    # collapse onto the same entity node and form a temporal-artefact
+    # cycle that doesn't exist in fabula time. Skip affordance_gate
+    # edges in the cycle-detection view so genuine forward-causal
+    # cycles remain visible while temporal-collapse artefacts are
+    # dissolved without severing any real causal claim.
+    #
+    # Iterate: a single edge cut can leave a smaller-but-still-cyclic
+    # SCC behind on densely-cyclic graphs. Cap iterations so a runaway
+    # extraction can't loop forever; surface a warning if we hit it.
+    try:
+        import networkx as _nx_break  # local import; networkx is already a runtime dep
+        _MAX_SCC_BREAK_ITERS = 50
+        for _scc_iter in range(_MAX_SCC_BREAK_ITERS):
+            _g = _nx_break.DiGraph()
+            for ce in clean_causal:
+                if ce.causality_type == "affordance_gate":
+                    continue
+                _g.add_edge(ce.source_id, ce.target_id)
+            sccs = [s for s in _nx_break.strongly_connected_components(_g) if len(s) > 1]
+            if not sccs:
+                break
+            edges_to_drop: set[tuple[str, str]] = set()
+            for scc in sccs:
+                # Find every non-affordance edge whose endpoints both
+                # sit inside this SCC.
+                in_scc = [
+                    (i, ce) for i, ce in enumerate(clean_causal)
+                    if ce.source_id in scc
+                    and ce.target_id in scc
+                    and ce.causality_type != "affordance_gate"
+                ]
+                if not in_scc:
+                    continue
+                # Drop the lowest-causal-force edge — most likely an
+                # extraction artefact rather than a load-bearing causal
+                # backbone.
+                weakest_idx, weakest_ce = min(
+                    in_scc, key=lambda pair: pair[1].causal_force,
+                )
+                edges_to_drop.add((weakest_ce.source_id, weakest_ce.target_id))
+                repairs.append(
+                    f"SCC-break: removed weakest cyclic edge "
+                    f"{weakest_ce.source_id} -> {weakest_ce.target_id} "
+                    f"(causal_force={weakest_ce.causal_force:.1f}, "
+                    f"causality_type={weakest_ce.causality_type!r}, "
+                    f"mechanism={weakest_ce.mechanism!r}); SCC of "
+                    f"{len(scc)} nodes."
+                )
+            if not edges_to_drop:
+                break
+            clean_causal = [
+                ce for ce in clean_causal
+                if (ce.source_id, ce.target_id) not in edges_to_drop
+                or ce.causality_type == "affordance_gate"
+            ]
+        else:
+            logger.warning(
+                "[Auto-Repair] SCC-break iteration cap (%d) hit; some "
+                "cycles remain. Extraction quality may be degraded.",
+                _MAX_SCC_BREAK_ITERS,
+            )
+    except Exception:
+        # SCC analysis is best-effort — never block the repair pass on
+        # a graph-library hiccup.
+        logger.exception("[Auto-Repair] SCC-break pass failed; continuing.")
 
     # --- Strip broken social edges ---
     clean_social: List[RelationshipEdge] = []

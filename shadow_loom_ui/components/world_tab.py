@@ -439,11 +439,13 @@ def build_world_tab(state: AppState) -> None:
             # cursor value is on the active axis; resolve it back to
             # a fabula time for the entity/state replay.
             cursor_value = state.active_cursor
+            fabula_t_eff: int | None = None
             if cursor_value is not None and tmax > 0:
                 try:
                     eff = resolve_cursor(ws, axis, cursor_value)
                     if eff is not None:
                         ws = snapshot_world_at(ws, eff)
+                        fabula_t_eff = eff
                 except Exception:
                     logger.exception("Snapshot failed; falling back to live")
 
@@ -463,8 +465,9 @@ def build_world_tab(state: AppState) -> None:
                 try:
                     if mode == "overview":
                         with_expand(
-                            lambda h: render_world_graph(
-                                ws, on_click=_on_graph_click, height=h
+                            lambda h, ft=fabula_t_eff: render_world_graph(
+                                ws, on_click=_on_graph_click, height=h,
+                                fabula_t=ft,
                             ),
                             title="World graph \u2014 overview",
                         )
@@ -499,10 +502,11 @@ def build_world_tab(state: AppState) -> None:
                         if focus:
                             ids = focus if isinstance(focus, list) else [focus]
                             with_expand(
-                                lambda h, ids=ids: render_ego_graph(
+                                lambda h, ids=ids, ft=fabula_t_eff: render_ego_graph(
                                     ws, ids,
                                     on_click=_on_graph_click,
                                     height=h,
+                                    fabula_t=ft,
                                 ),
                                 title=f"Ego graph \u2014 {', '.join(ids)}",
                             )

@@ -378,6 +378,8 @@ EVENT_TYPE_COLORS: dict[str, str] = {
 
 def ws_to_graph_data(
     ws: WorldStateV1,
+    *,
+    fabula_t: int | None = None,
 ) -> tuple[list[dict], list[dict], list[dict]]:
     """Convert a WorldStateV1 into ECharts graph ``(nodes, links, categories)``."""
     nodes: list[dict] = []
@@ -578,6 +580,35 @@ def ws_to_graph_data(
                         _link(wid, evt.id, "governs", dash="dotted",
                               width=1.0)
 
+    # --- Current-event filter -----------------------------------------
+    # When fabula_t is set (pinned cursor), restrict the graph to event
+    # nodes at that exact fabula time plus their 1-hop neighbours.  This
+    # shows "what is happening RIGHT NOW" rather than the accumulated
+    # history of everything that has occurred up to the cursor.
+    if fabula_t is not None and ws.events:
+        evts_now = [e for e in ws.events if e.fabula_time == fabula_t]
+        if not evts_now:
+            all_times = sorted({e.fabula_time for e in ws.events})
+            if all_times:
+                nearest = min(all_times, key=lambda t: abs(t - fabula_t))
+                evts_now = [e for e in ws.events if e.fabula_time == nearest]
+        if evts_now:
+            # Seed: the event nodes themselves.
+            focus: set[str] = {e.id for e in evts_now}
+            # 1-hop expansion over all graph links.
+            adj_: dict[str, set[str]] = {}
+            for lnk in links:
+                adj_.setdefault(lnk["source"], set()).add(lnk["target"])
+                adj_.setdefault(lnk["target"], set()).add(lnk["source"])
+            reachable: set[str] = set(focus)
+            for fid in focus:
+                reachable |= adj_.get(fid, set())
+            nodes = [n for n in nodes if n["id"] in reachable]
+            links = [
+                l for l in links
+                if l["source"] in reachable and l["target"] in reachable
+            ]
+
     return nodes, links, list(CATEGORIES)
 
 
@@ -587,6 +618,8 @@ def ws_to_ego_graph_data(
     ws: WorldStateV1,
     focus_ids: list[str],
     max_hops: int = 2,
+    *,
+    fabula_t: int | None = None,
 ) -> tuple[list[dict], list[dict], list[dict]]:
     """Build graph data centered on *focus_ids* up to *max_hops* away.
 
@@ -637,7 +670,7 @@ def ws_to_ego_graph_data(
     visited |= frontier  # include the final ring
 
     # Filter full graph data to visited IDs
-    full_nodes, full_links, cats = ws_to_graph_data(ws)
+    full_nodes, full_links, cats = ws_to_graph_data(ws, fabula_t=fabula_t)
     node_set = visited
     nodes = [n for n in full_nodes if n["id"] in node_set]
     links = [l for l in full_links if l["source"] in node_set and l["target"] in node_set]
@@ -4841,6 +4874,7 @@ def ws_to_social_layer_graph(
     include_concerns: bool = True,
     include_propositions: bool = True,
     fabula_t: int | None = None,
+    event_t: int | None = None,
     ego_id: str | None = None,
     ego_max_hops: int = 1,
     pov_id: str | None = None,
@@ -5212,6 +5246,118 @@ def ws_to_social_layer_graph(
                     style["borderColor"] = "#0d9488"
                     style["borderWidth"] = 3
                     n["itemStyle"] = style
+
+    # --- World-trait nodes ------------------------------------------------
+    # For every GlobalTrait whose proposition_id resolves to a proposition
+    # already in the graph, add a WORLD_ node and an edge from it to that
+    # proposition.  This lets Network / Ego / Intermental views show the
+    # named-latent forces that characters' beliefs and concerns are grounded
+    # in, rather than leaving propositions visually floating without context.
+    if include_propositions and (ws.world_traits or {}) and nodes:
+        existing_prop_ids = {n["id"] for n in nodes if n.get("_sl_node_type") == "Proposition"}
+        for wid, trait in (ws.world_traits or {}).items():
+            pid = getattr(trait, "proposition_id", None)
+            if not pid or pid not in existing_prop_ids:
+                continue
+            # Only add the WORLD_ node once.
+            if any(n["id"] == wid for n in nodes):
+                continue
+            nodes.append({
+                "id": wid,
+                "name": trait.name,
+                "category": 3,
+                "symbol": "roundRect",
+                "symbolSize": 26,
+                "itemStyle": {"color": "#0ea5e9"},
+                "tooltip": {"formatter": (
+                    f"<b>{trait.name}</b><br/>World trait: {wid}<br/>"
+                    f"{(trait.description or '')[:80]}"
+                )},
+                "_sl_node_type": "WorldTrait",
+            })
+            links.append({
+                "source": wid,
+                "target": pid,
+                "lineStyle": {
+                    "color": "#0ea5e9",
+                    "width": 1.5,
+                    "type": "dotted",
+                    "opacity": 0.5,
+                },
+                "tooltip": {"formatter": f"World trait ← {trait.name}"},
+            })
+        # Ensure category 3 is present in the cats list.
+        if not any(c.get("name") == "World Trait" for c in cats):
+            cats.append({"name": "World Trait"})
+
+    # --- Current-event entity filter -------------------------------------
+    # When event_t is set (pinned cursor, not live) restrict entity nodes
+    # to those directly involved in events at that exact fabula time, plus
+    # their immediate social-relationship neighbours.  Live mode
+    # (event_t is None) leaves all entities visible.
+    if event_t is not None and ws.events:
+        _evts_now = [e for e in ws.events if e.fabula_time == event_t]
+        if not _evts_now:
+            _all_times = sorted({e.fabula_time for e in ws.events})
+            if _all_times:
+                _nearest = min(_all_times, key=lambda _t: abs(_t - event_t))
+                _evts_now = [e for e in ws.events if e.fabula_time == _nearest]
+        if _evts_now:
+            _active: set[str] = set()
+            for _e in _evts_now:
+                _active.update(_e.actor_ids or [])
+                _active.update(_e.target_ids or [])
+                if getattr(_e, "speaker_id", None):
+                    _active.add(_e.speaker_id)
+                _active.update(_e.addressee_ids or [])
+            _active &= ws.entities.keys()
+            # Always retain focus entities so per-mode filters still
+            # have a valid anchor node.
+            if ego_id:
+                _active.add(ego_id)
+            if pov_id:
+                _active.add(pov_id)
+            if intermental_ids:
+                _active.update(intermental_ids)
+            _active &= ws.entities.keys()
+            if _active:
+                # Pull in direct social-relationship neighbours.
+                for _rel in ws.social_topology:
+                    if _rel.source_entity_id in _active:
+                        _active.add(_rel.target_entity_id)
+                    if _rel.target_entity_id in _active:
+                        _active.add(_rel.source_entity_id)
+                _active &= ws.entities.keys()
+                nodes = [
+                    n for n in nodes
+                    if n.get("_sl_node_type") not in ("Entity", "Concern")
+                    or (n.get("_sl_node_type") == "Entity" and n["id"] in _active)
+                    or (
+                        n.get("_sl_node_type") == "Concern"
+                        and any(
+                            n["id"].startswith(f"{_eid}::")
+                            for _eid in _active
+                        )
+                    )
+                ]
+                _ce_node_ids = {n["id"] for n in nodes}
+                links = [
+                    l for l in links
+                    if l["source"] in _ce_node_ids
+                    and l["target"] in _ce_node_ids
+                ]
+
+    # --- Remove isolated nodes -------------------------------------------
+    # Nodes with no edges are visual noise: drop them *before* the ego /
+    # POV / intermental filters (which do their own structural pruning).
+    # Note: ego_id / pov_id / intermental filters run after this block
+    # so they see only the connected subgraph.
+    if not (ego_id is not None or pov_id is not None or intermental_ids):
+        connected_ids: set[str] = set()
+        for lnk in links:
+            connected_ids.add(lnk["source"])
+            connected_ids.add(lnk["target"])
+        nodes = [n for n in nodes if n["id"] in connected_ids]
 
     # --- Ego filter ----------------------------------------------------
     # Restrict to the BFS neighbourhood of ``ego_id`` (over the
