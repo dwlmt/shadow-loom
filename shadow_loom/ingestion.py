@@ -2203,6 +2203,13 @@ def _merge_catalogues(
     """
     by_id: Dict[str, Proposition] = {}
     by_desc: Dict[str, str] = {}  # normalised description -> proposition_id
+    # Remap of *dropped* PROP_ ids -> the canonical id they collapsed onto.
+    # Used to rewire concern seeds whose proposition was absorbed by an
+    # earlier-seen, identically-described proposition under a different id.
+    # Without this rewire, every seed referencing the dropped id was
+    # silently nuked downstream — the cause of the 0-seed catalogue
+    # observed in chunked-extraction runs (May 2026).
+    prop_id_remap: Dict[str, str] = {}
 
     def _norm(s: str) -> str:
         return " ".join((s or "").lower().split())
@@ -2223,6 +2230,8 @@ def _merge_catalogues(
                     by_id[first_id] = first.model_copy(update={
                         "referent_ids": merged_refs,
                     })
+                # Record the remap so downstream seed merge can rewire.
+                prop_id_remap[p.proposition_id] = first_id
                 continue
             if existing is not None:
                 # Same id, second sighting — union referents only.
@@ -2240,16 +2249,20 @@ def _merge_catalogues(
 
     valid_prop_ids = set(by_id)
     seeds_by_key: Dict[Tuple[str, str, str], ConcernSeed] = {}
+    rewired = 0
+    dropped = 0
     for cat in catalogues:
         for s in cat.concern_seeds:
-            if s.proposition_id not in valid_prop_ids:
-                # Could happen when a per-chunk catalogue's prop was
-                # absorbed into another id via the description-collapse
-                # branch above; remap the seed's proposition_id.
-                # Attempt rewire by description similarity — but the
-                # seed only carries a PROP id, not text, so we drop.
+            pid = s.proposition_id
+            if pid not in valid_prop_ids and pid in prop_id_remap:
+                # Rewire onto the canonical id this seed's prop collapsed onto.
+                pid = prop_id_remap[pid]
+                s = s.model_copy(update={"proposition_id": pid})
+                rewired += 1
+            if pid not in valid_prop_ids:
+                dropped += 1
                 continue
-            key = (s.entity_id, s.proposition_id, s.polarity)
+            key = (s.entity_id, pid, s.polarity)
             existing = seeds_by_key.get(key)
             if existing is None:
                 seeds_by_key[key] = s
@@ -2257,6 +2270,12 @@ def _merge_catalogues(
                 # Bump baseline_salience to max across sightings.
                 if s.baseline_salience > existing.baseline_salience:
                     seeds_by_key[key] = s
+    if rewired or dropped:
+        logger.info(
+            "[Step 2.5] Catalogue merge: rewired %d concern seeds onto "
+            "collapsed PROP_ ids; dropped %d seeds with no resolvable "
+            "proposition.", rewired, dropped,
+        )
 
     return PropositionCatalogue(
         propositions=list(by_id.values()),
@@ -2409,10 +2428,17 @@ async def extract_proposition_catalogue_async(
         async def _one(idx: int, chunk: str) -> Optional[PropositionCatalogue]:
             async with sem:
                 msg = (
-                    f"Chunk {idx + 1} of {n} of the source text. Emit ONLY "
-                    f"propositions and concern seeds whose evidence appears "
-                    f"in this chunk; the orchestrator unions all chunks' "
-                    f"catalogues into a single global registry.\n\n{chunk}"
+                    f"Chunk {idx + 1} of {n} of the source text. Emit "
+                    f"propositions whose evidence appears in this chunk, "
+                    f"AND the concern_seeds (standing fears/desires) of "
+                    f"any character who acts, speaks, or is named in "
+                    f"this chunk — concerns are character-level standing "
+                    f"states, so a chunk that introduces or develops a "
+                    f"character SHOULD emit their concern_seeds even if "
+                    f"the concern is not 'resolved' within this chunk. "
+                    f"The orchestrator unions all chunks' catalogues "
+                    f"into a single global registry and dedupes by "
+                    f"(entity, proposition, polarity).\n\n{chunk}"
                 )
                 try:
                     res = await _run_with_retry_async(
