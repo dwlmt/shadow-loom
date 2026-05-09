@@ -18,6 +18,7 @@ from shadow_loom.models import (
     CausalEdge, SpatialEdge, RelationshipEdge, RelationshipMetric, TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
     GlobalTrait, WorldTraitSnapshot,
     NarrativeStyle,
+    Concern, Proposition, ConcernSnapshot, PropositionSnapshot,
 )
 
 world_state = WorldStateV1(
@@ -129,16 +130,56 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_ORANGE",
-                       perceived_state="Orange is a good kid who can be saved; not a cop",
+                       perceived_state="Orange is a good kid who can be saved; not a cop", proposition_id="PROP_WHITE_KNOWS_TRUTH",
                        confidence=0.85, inertia=0.5, established_at_fabula=1000, evidence_strength="strong"),
                 Belief(target_id="ENT_BLONDE",
-                       perceived_state="Blonde is a psychopath who blew the heist by shooting civilians",
+                       perceived_state="Blonde is a psychopath who blew the heist by shooting civilians", proposition_id="PROP_BLONDE_PSYCHO",
                        confidence=0.85, inertia=0.5, established_at_fabula=5000, evidence_strength="strong"),
                 Belief(target_id="ENT_JOE",
-                       perceived_state="Joe is an old friend whose judgment I trust — though employing Blonde was a mistake",
+                       perceived_state="Joe is an old friend whose judgment I trust — though employing Blonde was a mistake", proposition_id="PROP_HEIST_CLEAN",
                        confidence=0.75, inertia=0.55, established_at_fabula=1000, evidence_strength="moderate"),
             ],
             constants=["career_criminal", "joes_old_friend"],
+            concerns=[
+                # Sternberg passionate-bond — surrogate-paternal love that
+                # White invests in the dying Orange in the back of the car.
+                # Counter-link: when Orange is revealed AS the rat, his betrayal-fear
+                # collides with this love — the central tragic dilemma.
+                Concern(concern_id="CCN_WHITE_LOVES_ORANGE", proposition_id="PROP_ORANGE_LIVES",
+                        polarity="desire", kind="love", salience=1.0,
+                        activation_fabula_window=[4000, 10000],
+                        counter_concern_ids=["CCN_WHITE_FEARS_RAT", "CCN_WHITE_DESIRES_VENGEANCE_ON_RAT"],
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=9000, triggered_by="EVT_ORANGE_REVEALED",
+                                            salience=0.25),
+                        ]),
+                Concern(concern_id="CCN_WHITE_DESIRES_HOSPITAL", proposition_id="PROP_ORANGE_HOSPITALISED",
+                        polarity="desire", kind="survival", salience=0.9,
+                        activation_fabula_window=[4000, 9500]),
+                # Lazarus appraisal — the heist as professional pride.
+                Concern(concern_id="CCN_WHITE_DESIRES_CLEAN_HEIST", proposition_id="PROP_HEIST_CLEAN",
+                        polarity="desire", kind="loyalty", salience=0.7,
+                        activation_fabula_window=[1000, 3000]),
+                # Averill normative-violation rage — once the rat is named,
+                # the moral injury that drives the standoff and the killing.
+                # Counter-linked to White's love for Orange (the rat IS Orange).
+                Concern(concern_id="CCN_WHITE_FEARS_RAT", proposition_id="PROP_RAT_EXISTS",
+                        polarity="fear", kind="betrayal", salience=0.95,
+                        activation_fabula_window=[3000, 10000],
+                        counter_concern_ids=["CCN_WHITE_LOVES_ORANGE"]),
+                Concern(concern_id="CCN_WHITE_DESIRES_VENGEANCE_ON_RAT", proposition_id="PROP_RAT_PUNISHED",
+                        polarity="desire", kind="vengeance", salience=0.95,
+                        activation_fabula_window=[8000, 10000],
+                        counter_concern_ids=["CCN_WHITE_LOVES_ORANGE"],
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=9000, triggered_by="EVT_ORANGE_REVEALED",
+                                            salience=1.0),
+                        ]),
+                # OCC fear — Blonde is the agent of chaos in the warehouse.
+                Concern(concern_id="CCN_WHITE_FEARS_BLONDE", proposition_id="PROP_BLONDE_PSYCHO",
+                        polarity="fear", kind="mortal_threat", salience=0.7,
+                        activation_fabula_window=[3000, 7000]),
+            ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=4000, triggered_by="EVT_ORANGE_SHOT",
                     location_id="LOC_ORANGE_CAR",
@@ -160,6 +201,7 @@ world_state = WorldStateV1(
                     beliefs_added=[
                         Belief(target_id="ENT_ORANGE",
                                perceived_state="he was the rat the whole time; my paternal love was a lie",
+                               proposition_id="PROP_RAT_IDENTIFIED",
                                confidence=0.95, inertia=0.7, established_at_fabula=9000, evidence_strength="strong"),
                     ]),
                 EntityStateSnapshot(fabula_time=9500, triggered_by="EVT_WHITE_KILLS_ORANGE",
@@ -182,10 +224,31 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_WHITE",
-                       perceived_state="White genuinely cares about me — which makes the betrayal worse",
+                       perceived_state="White genuinely cares about me — which makes the betrayal worse", proposition_id="PROP_WHITE_KNOWS_TRUTH",
                        confidence=0.85, inertia=0.5, established_at_fabula=4000, evidence_strength="strong"),
             ],
             constants=["undercover_cop", "uses_alias_freddy_newandyke"],
+            concerns=[
+                # Lazarus appraisal — LAPD duty drives the cover.
+                Concern(concern_id="CCN_ORANGE_DESIRES_BUST", proposition_id="PROP_HEIST_BUSTED",
+                        polarity="desire", kind="loyalty", salience=0.95,
+                        activation_fabula_window=[500, 9000]),
+                Concern(concern_id="CCN_ORANGE_FEARS_DISCOVERY", proposition_id="PROP_RAT_IDENTIFIED",
+                        polarity="fear", kind="exposure", salience=0.95,
+                        activation_fabula_window=[3000, 9000]),
+                Concern(concern_id="CCN_ORANGE_LOVES_WHITE", proposition_id="PROP_WHITE_LIVES",
+                        polarity="desire", kind="love", salience=0.85,
+                        activation_fabula_window=[4000, 10000]),
+                # Sternberg/Averill — Orange's confessional regret-as-injury
+                # impels him to tell White the truth even at the cost of being shot.
+                Concern(concern_id="CCN_ORANGE_DESIRES_CONFESS", proposition_id="PROP_WHITE_KNOWS_TRUTH",
+                        polarity="desire", kind="truth", salience=0.9,
+                        activation_fabula_window=[8000, 10000],
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=8000, triggered_by="EVT_MEXICAN_STANDOFF",
+                                            salience=1.0),
+                        ]),
+            ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=4000, triggered_by="EVT_ORANGE_SHOT",
                     status="injured", location_id="LOC_ORANGE_CAR",
@@ -211,6 +274,7 @@ world_state = WorldStateV1(
                     beliefs_added=[
                         Belief(target_id="ENT_WHITE",
                                perceived_state="he loves me enough to risk dying for me; he deserves the truth",
+                               proposition_id="PROP_WHITE_KNOWS_TRUTH",
                                confidence=0.95, inertia=0.7, established_at_fabula=9000, evidence_strength="strong"),
                     ]),
                 EntityStateSnapshot(fabula_time=10000, triggered_by="EVT_WHITE_KILLS_ORANGE",
@@ -228,7 +292,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_JOE",
-                       perceived_state="Joe took care of me while I did time; I owe him absolutely",
+                       perceived_state="Joe took care of me while I did time; I owe him absolutely", proposition_id="PROP_BLONDE_LOYAL",
                        confidence=0.95, inertia=0.75, established_at_fabula=500, evidence_strength="strong"),
             ],
             constants=["ex_convict", "vega_brother", "psychopath"],
@@ -256,9 +320,18 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_JOE",
                        perceived_state="someone set us up — possibly from the inside",
+                       proposition_id="PROP_RAT_EXISTS",
                        confidence=0.85, inertia=0.55, established_at_fabula=5000, evidence_strength="strong"),
             ],
             constants=["paranoid_neurotic", "tipping_refusenik"],
+            concerns=[
+                Concern(concern_id="CCN_PINK_DESIRES_ESCAPE", proposition_id="PROP_PINK_ESCAPES",
+                        polarity="desire", kind="survival", salience=0.99,
+                        activation_fabula_window=[3000, 8000]),
+                Concern(concern_id="CCN_PINK_FEARS_RAT", proposition_id="PROP_RAT_EXISTS",
+                        polarity="fear", kind="betrayal", salience=0.85,
+                        activation_fabula_window=[3000, 8000]),
+            ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=5000, triggered_by="EVT_WAREHOUSE_REGROUP",
                     traits={
@@ -266,7 +339,7 @@ world_state = WorldStateV1(
                     },
                     beliefs_added=[
                         Belief(target_id="ENT_BLONDE",
-                               perceived_state="Joe should never have hired this lunatic",
+                               perceived_state="Joe should never have hired this lunatic", proposition_id="PROP_BLONDE_PSYCHO",
                                confidence=0.85, inertia=0.5, established_at_fabula=5000, evidence_strength="strong"),
                     ]),
                 EntityStateSnapshot(fabula_time=8000, triggered_by="EVT_MEXICAN_STANDOFF",
@@ -287,15 +360,28 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_BLONDE",
-                       perceived_state="Blonde is loyal — he did four years rather than name me",
+                       perceived_state="Blonde is loyal — he did four years rather than name me", proposition_id="PROP_BLONDE_LOYAL",
                        confidence=0.95, inertia=0.7, established_at_fabula=500, evidence_strength="strong"),
             ],
             constants=["crime_boss", "old_school"],
+            concerns=[
+                Concern(concern_id="CCN_JOE_LOVES_BLONDE", proposition_id="PROP_BLONDE_LOYAL",
+                        polarity="desire", kind="love", salience=0.85,
+                        activation_fabula_window=[1, 8000]),
+                # Averill betrayal-rage — fires the standoff that kills him.
+                Concern(concern_id="CCN_JOE_DESIRES_RAT_DEAD", proposition_id="PROP_RAT_PUNISHED",
+                        polarity="desire", kind="vengeance", salience=0.95,
+                        activation_fabula_window=[5000, 8000]),
+                Concern(concern_id="CCN_JOE_DESIRES_DIAMONDS", proposition_id="PROP_HEIST_CLEAN",
+                        polarity="desire", kind="power", salience=0.7,
+                        activation_fabula_window=[1000, 3000]),
+            ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=8000, triggered_by="EVT_MEXICAN_STANDOFF",
                     beliefs_added=[
                         Belief(target_id="ENT_ORANGE",
                                perceived_state="Orange is the rat — my instinct never lies",
+                               proposition_id="PROP_RAT_IDENTIFIED",
                                confidence=0.95, inertia=0.7, established_at_fabula=8000, evidence_strength="strong"),
                     ]),
                 EntityStateSnapshot(fabula_time=8000, triggered_by="EVT_MEXICAN_STANDOFF",
@@ -316,10 +402,10 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_JOE",
-                       perceived_state="Dad is always right; his judgment defines mine",
+                       perceived_state="Dad is always right; his judgment defines mine", proposition_id="PROP_BLONDE_LOYAL",
                        confidence=0.95, inertia=0.8, established_at_fabula=500, evidence_strength="strong"),
                 Belief(target_id="ENT_BLONDE",
-                       perceived_state="Vic is family — he proved his loyalty in prison",
+                       perceived_state="Vic is family — he proved his loyalty in prison", proposition_id="PROP_BLONDE_LOYAL",
                        confidence=0.9, inertia=0.7, established_at_fabula=500, evidence_strength="strong"),
             ],
             constants=["joes_son"],
@@ -342,7 +428,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_ORANGE",
-                       perceived_state="this man is one of ours; I will not blow his cover even under torture",
+                       perceived_state="this man is one of ours; I will not blow his cover even under torture", proposition_id="PROP_RAT_IDENTIFIED",
                        confidence=0.95, inertia=0.75, established_at_fabula=3000, evidence_strength="strong"),
             ],
             constants=["police_officer", "lapd"],
@@ -777,6 +863,47 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_HEIST_PLANNED", target_id="ENT_JOE", rel_counterpart_id="ENT_EDDIE", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.65, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=1000, propagation_delay=0),
         CausalEdge(source_id="EVT_HEIST_PLANNED", target_id="ENT_BROWN", rel_counterpart_id="ENT_JOE", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.6, mechanism="social", evidence_strength="moderate", causal_force=6.0, fabula_time=1000, propagation_delay=0),
         CausalEdge(source_id="EVT_HEIST_PLANNED", target_id="ENT_BLUE", rel_counterpart_id="ENT_JOE", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.6, mechanism="social", evidence_strength="moderate", causal_force=6.0, fabula_time=1000, propagation_delay=0),
+        # ── auto-backfilled per-axis mutation_social ──
+        CausalEdge(source_id="EVT_DINER_BREAKFAST", target_id="ENT_BLONDE", rel_counterpart_id="ENT_WHITE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.12,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_DINER_BREAKFAST", target_id="ENT_BLONDE", rel_counterpart_id="ENT_ORANGE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.06,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_BLONDE_TORTURES_COP", target_id="ENT_BLONDE", rel_counterpart_id="ENT_MARVIN",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.18,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=6000, propagation_delay=0),
+        CausalEdge(source_id="EVT_HEIST_PLANNED", target_id="ENT_JOE", rel_counterpart_id="ENT_BROWN",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.09,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_HEIST_PLANNED", target_id="ENT_JOE", rel_counterpart_id="ENT_BLUE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.12,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_DINER_BREAKFAST", target_id="ENT_BLONDE", rel_counterpart_id="ENT_WHITE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.09,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_DINER_BREAKFAST", target_id="ENT_BLONDE", rel_counterpart_id="ENT_ORANGE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.12,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_BLONDE_TORTURES_COP", target_id="ENT_BLONDE", rel_counterpart_id="ENT_MARVIN",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.28,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=6000, propagation_delay=0),
+        CausalEdge(source_id="EVT_HEIST_PLANNED", target_id="ENT_JOE", rel_counterpart_id="ENT_BROWN",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.18,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_HEIST_PLANNED", target_id="ENT_JOE", rel_counterpart_id="ENT_BLUE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.18,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+
+        # ── WORLD_ → WORLD_ (named-latent forces destabilising one another) ──
+        CausalEdge(source_id="WORLD_POLICE_INFILTRATION", target_id="WORLD_CRIMINAL_CODE",
+                   causality_type="chain_reaction", mechanism="betrayal", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=5000,
+                   description="Hidden infiltration is precisely the corrosive that fractures the criminal honour code — every shared moment with Orange retroactively becomes a violation of it."),
+        CausalEdge(source_id="WORLD_CRIMINAL_CODE", target_id="WORLD_POLICE_INFILTRATION",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=1000,
+                   description="The code's insistence on personal trust over verification is exactly the channel infiltration exploits — Joe's trust in White's vouching for Orange is the whole attack surface."),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -819,6 +946,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.85, inertia=0.75, evidence_strength="strong"),
             affected_domains=["social", "psychological"],
+            proposition_id="PROP_CODE_PROTECTS_LOYAL",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=5000, triggered_by="EVT_WAREHOUSE_REGROUP",
                     magnitude=TraitVector(value=0.55, inertia=0.5, evidence_strength="strong"),
@@ -835,6 +963,7 @@ world_state = WorldStateV1(
             category="governance",
             magnitude=TraitVector(value=0.65, inertia=0.85, evidence_strength="strong"),
             affected_domains=["epistemic", "psychological", "social"],
+            proposition_id="PROP_RAT_EXISTS",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=9000, triggered_by="EVT_ORANGE_REVEALED",
                     magnitude=TraitVector(value=1.0, inertia=0.95, evidence_strength="strong"),
@@ -1030,5 +1159,75 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=0.6, inertia=0.65, evidence_strength="moderate", last_updated_fabula=1000),
             },
         ),
+    ],
+
+    # ── PROPOSITIONS ────────────────────────────────────────────────────
+    propositions=[
+        Proposition(proposition_id="PROP_ORANGE_LIVES", kind="trait_holds",
+                    referent_ids=["ENT_ORANGE"],
+                    description="Mr. Orange survives his gut wound.",
+                    audience_default_prior=0.3, stakes=0.85,
+                    truth_at_fabula={10000: False}),
+        Proposition(proposition_id="PROP_ORANGE_HOSPITALISED", kind="event_occurs",
+                    referent_ids=["ENT_ORANGE"],
+                    description="Mr. White gets Orange to a hospital.",
+                    audience_default_prior=0.3, stakes=0.7,
+                    truth_at_fabula={10000: False}),
+        Proposition(proposition_id="PROP_HEIST_CLEAN", kind="outcome",
+                    referent_ids=["EVT_HEIST_GOES_WRONG"],
+                    description="The diamond heist goes off without complications.",
+                    audience_default_prior=0.4, stakes=0.85,
+                    truth_at_fabula={3000: False}),
+        Proposition(proposition_id="PROP_RAT_EXISTS", kind="trait_holds",
+                    referent_ids=["ENT_ORANGE"],
+                    description="One of the crew is an undercover police informant.",
+                    audience_default_prior=0.5, stakes=0.95,
+                    truth_at_fabula={1: True}),
+        Proposition(proposition_id="PROP_RAT_PUNISHED", kind="event_occurs",
+                    referent_ids=["EVT_WHITE_KILLS_ORANGE"],
+                    description="The rat is identified and executed.",
+                    audience_default_prior=0.4, stakes=0.85,
+                    truth_at_fabula={10000: True}),
+        Proposition(proposition_id="PROP_RAT_IDENTIFIED", kind="event_occurs",
+                    referent_ids=["EVT_ORANGE_REVEALED"],
+                    description="The rat's true identity is exposed to the crew.",
+                    audience_default_prior=0.55, stakes=0.9,
+                    truth_at_fabula={9000: True}),
+        Proposition(proposition_id="PROP_BLONDE_PSYCHO", kind="trait_holds",
+                    referent_ids=["ENT_BLONDE"],
+                    description="Mr. Blonde is uncontrollable and homicidal under pressure.",
+                    audience_default_prior=0.6, stakes=0.7,
+                    truth_at_fabula={6000: True}),
+        Proposition(proposition_id="PROP_HEIST_BUSTED", kind="event_occurs",
+                    referent_ids=["EVT_HEIST_GOES_WRONG"],
+                    description="The LAPD busts the diamond heist (Orange's mission objective).",
+                    audience_default_prior=0.45, stakes=0.85,
+                    truth_at_fabula={3000: True}),
+        Proposition(proposition_id="PROP_WHITE_LIVES", kind="trait_holds",
+                    referent_ids=["ENT_WHITE"],
+                    description="Mr. White survives the warehouse standoff.",
+                    audience_default_prior=0.55, stakes=0.7,
+                    truth_at_fabula={10000: False}),
+        Proposition(proposition_id="PROP_WHITE_KNOWS_TRUTH", kind="event_occurs",
+                    referent_ids=["EVT_ORANGE_REVEALED"],
+                    description="Orange confesses his true identity to White before he dies.",
+                    audience_default_prior=0.4, stakes=0.85,
+                    truth_at_fabula={10000: True}),
+        Proposition(proposition_id="PROP_PINK_ESCAPES", kind="event_occurs",
+                    referent_ids=["ENT_PINK"],
+                    description="Mr. Pink escapes the warehouse with the diamonds.",
+                    audience_default_prior=0.4, stakes=0.6,
+                    truth_at_fabula={10000: True}),
+        Proposition(proposition_id="PROP_BLONDE_LOYAL", kind="trait_holds",
+                    referent_ids=["ENT_BLONDE", "ENT_JOE"],
+                    description="Vic Vega (Blonde) is the loyal ex-con Joe trusts most.",
+                    audience_default_prior=0.7, stakes=0.55,
+                    truth_at_fabula={7000: False}),
+        # WORLD_ trait Pearl-Rung-2 reification (Criminal Code).
+        Proposition(proposition_id="PROP_CODE_PROTECTS_LOYAL", kind="trait_holds",
+                    referent_ids=["WORLD_CRIMINAL_CODE", "ENT_WHITE", "ENT_JOE"],
+                    description="The criminal honour code still protects the loyal: Joe's professionalism, White's mentor-bond, and the rat-must-die rule all hold.",
+                    audience_default_prior=0.6, stakes=0.85,
+                    truth_at_fabula={5000: False, 10000: True}),
     ],
 )

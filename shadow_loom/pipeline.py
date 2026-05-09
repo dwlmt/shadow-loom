@@ -50,7 +50,12 @@ from shadow_loom.generation import (
     GenerationConfig,
     render_from_query,
 )
-from shadow_loom.ingestion import ExtractionConfig, run_extraction_async
+from shadow_loom.ingestion import (
+    ExtractionConfig,
+    run_extraction_async,
+    validate_and_correct_world_state,
+    validate_and_correct_world_state_async,
+)
 from shadow_loom.ingestion_diagnostics import capture_ingestion_warnings
 
 if TYPE_CHECKING:
@@ -340,6 +345,33 @@ class PipelineResult(BaseModel):
         description="Short error message when reextraction_failed is True.",
     )
 
+    # --- Continuation quality bridge (rung-1/2/3 + directive +
+    # manual-edit re-extraction) ---
+    continuation_quality_report: Optional[Any] = Field(
+        default=None,
+        description=(
+            "ValidationReport produced by the continuation-quality "
+            "bridge after re-extraction + merge. ``None`` when the "
+            "bridge did not run (skip_reextraction, generation "
+            "failure, or reextraction exception). ``is_valid=False`` "
+            "means structural errors persist after auto-repair + the "
+            "correction loop; the version is still persisted (current "
+            "behaviour) but ``continuation_quarantined`` is set so "
+            "downstream UIs/MCP can flag it."
+        ),
+    )
+    continuation_quarantined: bool = Field(
+        default=False,
+        description=(
+            "True when the continuation-quality bridge could not bring "
+            "the merged world to a clean state. The world model is "
+            "still returned (parity with current behaviour) but its "
+            "VersionRow is tagged with a ``_quarantined`` source so "
+            "operators can filter it out. When False, the merged world "
+            "passed structural validation."
+        ),
+    )
+
 
 # =====================================================================
 # Lay-user summary
@@ -569,6 +601,95 @@ def _stamp_brief_branch(
 _PRECEDING_PROSE_BUDGET_CHARS = 8000
 
 
+# =====================================================================
+# Continuation Quality Bridge — pipeline glue
+# =====================================================================
+#
+# After ``vwm.merge`` folds re-extracted topology into the parent world,
+# pipe the merged world state through the same auto-repair +
+# programmatic-validation + LLM-correction loop raw-text ingestion
+# uses. Without this bridge, structural regressions introduced by the
+# generator (orphan events, dangling ids, retrograde fabula_times,
+# dead actors emitting events, …) would silently land on the canonical
+# (or shadow) branch.
+#
+# Honours the user-stated constraint: NO merging into parent — the
+# continuation already lives in ``vwm_next.current``, which is a fresh
+# WorldStateV1 with ``ancestor_id`` lineage preserved by
+# ``VersionedWorldModel.merge``. We only *correct* it in place; the
+# version chain is unchanged.
+#
+# Uses the EXTRACTION model (``cfg.extraction_config.model`` =
+# ``EXTRACTION_MODEL`` env var with ``DEFAULT_MODEL`` fallback) — the
+# same LLM raw-text ingestion uses, never ``GENERATION_MODEL`` /
+# ``AUDITOR_MODEL``.
+
+def _run_continuation_quality_bridge_sync(
+    vwm_next: "VersionedWorldModel",
+    cfg: "PipelineConfig",
+    result: "PipelineResult",
+    *,
+    log_prefix: str,
+) -> "VersionedWorldModel":
+    """Validate-and-correct the merged continuation world (sync path).
+
+    Returns a possibly-rewritten ``VersionedWorldModel`` whose
+    ``current`` field is the corrected world state. Records the
+    quality report on ``result.continuation_quality_report`` and sets
+    ``result.continuation_quarantined`` when errors persist.
+    """
+    if cfg.extraction_config is None:
+        return vwm_next
+    try:
+        corrected_ws, report = validate_and_correct_world_state(
+            vwm_next.current,
+            cfg.extraction_config,
+            log_prefix=log_prefix,
+        )
+    except Exception:
+        logger.exception(
+            "%s Continuation quality bridge raised; persisting "
+            "un-validated merge result.",
+            log_prefix,
+        )
+        return vwm_next
+    result.continuation_quality_report = report
+    result.continuation_quarantined = not report.is_valid
+    if corrected_ws is vwm_next.current:
+        return vwm_next
+    return vwm_next.model_copy(update={"current": corrected_ws})
+
+
+async def _run_continuation_quality_bridge_async(
+    vwm_next: "VersionedWorldModel",
+    cfg: "PipelineConfig",
+    result: "PipelineResult",
+    *,
+    log_prefix: str,
+) -> "VersionedWorldModel":
+    """Async sibling of :func:`_run_continuation_quality_bridge_sync`."""
+    if cfg.extraction_config is None:
+        return vwm_next
+    try:
+        corrected_ws, report = await validate_and_correct_world_state_async(
+            vwm_next.current,
+            cfg.extraction_config,
+            log_prefix=log_prefix,
+        )
+    except Exception:
+        logger.exception(
+            "%s Continuation quality bridge raised; persisting "
+            "un-validated merge result.",
+            log_prefix,
+        )
+        return vwm_next
+    result.continuation_quality_report = report
+    result.continuation_quarantined = not report.is_valid
+    if corrected_ws is vwm_next.current:
+        return vwm_next
+    return vwm_next.model_copy(update={"current": corrected_ws})
+
+
 def _gather_preceding_prose(
     vwm: Optional[VersionedWorldModel],
     *,
@@ -745,6 +866,138 @@ def _stamp_brief_full(
     return brief
 
 
+def _render_engine_priors(
+    physics_result: Dict[str, Any],
+    *,
+    max_items_per_section: int = 12,
+) -> Optional[str]:
+    """Compact one-shot summary of deterministic engine output.
+
+    Renders the trait mutations, hidden-deltas (rung-3 abduction),
+    social mutations, blocked interventions, and intervened nodes a
+    :class:`CausalPhysicsEngine` produced into a short text block the
+    Physics / Social extractors can use as ground-truth priors when
+    parsing continuation prose. Returns ``None`` when ``physics_result``
+    has no actionable engine output (rung-1 / observation, or sandbox
+    skipped) so the caller can omit the priors block entirely rather
+    than emit an empty section.
+    """
+    if not physics_result:
+        return None
+
+    mutations = physics_result.get("mutations") or []
+    hidden = physics_result.get("hidden_deltas") or {}
+    social_muts = physics_result.get("social_mutations") or []
+    blocked = physics_result.get("blocked") or []
+    intervened = physics_result.get("intervened_nodes") or []
+
+    sections: List[str] = []
+
+    def _coerce_field(item: Any, name: str) -> Any:
+        if isinstance(item, dict):
+            return item.get(name)
+        return getattr(item, name, None)
+
+    if intervened:
+        ids = [str(n) for n in intervened[:max_items_per_section]]
+        sections.append(
+            "Intervened nodes (do-operator targets): "
+            + ", ".join(ids)
+            + (
+                ""
+                if len(intervened) <= max_items_per_section
+                else f" (+{len(intervened) - max_items_per_section} more)"
+            )
+        )
+
+    if mutations:
+        lines = ["Trait mutations declared by the engine:"]
+        for m in mutations[:max_items_per_section]:
+            node = _coerce_field(m, "node_id")
+            trait = _coerce_field(m, "trait")
+            new_val = _coerce_field(m, "new_value")
+            try:
+                new_val_str = f"{float(new_val):+.2f}"
+            except (TypeError, ValueError):
+                new_val_str = str(new_val)
+            lines.append(f"  - {node}.{trait} \u2192 {new_val_str}")
+        if len(mutations) > max_items_per_section:
+            lines.append(
+                f"  ... (+{len(mutations) - max_items_per_section} more)"
+            )
+        sections.append("\n".join(lines))
+
+    if hidden:
+        lines = [
+            "Hidden deltas (Rung-3 abduction \u2014 backstory commits):"
+        ]
+        count = 0
+        for node, trait_dict in hidden.items():
+            if not isinstance(trait_dict, dict):
+                continue
+            for trait, val in trait_dict.items():
+                try:
+                    val_str = f"{float(val):+.2f}"
+                except (TypeError, ValueError):
+                    val_str = str(val)
+                lines.append(f"  - {node}.{trait} \u2192 {val_str}")
+                count += 1
+                if count >= max_items_per_section:
+                    break
+            if count >= max_items_per_section:
+                break
+        sections.append("\n".join(lines))
+
+    if social_muts:
+        lines = ["Social mutations declared by the engine:"]
+        for s in social_muts[:max_items_per_section]:
+            src = (
+                _coerce_field(s, "source_entity_id")
+                or _coerce_field(s, "source_id")
+            )
+            tgt = (
+                _coerce_field(s, "target_entity_id")
+                or _coerce_field(s, "target_id")
+            )
+            metric = _coerce_field(s, "metric")
+            new_val = _coerce_field(s, "new_value")
+            try:
+                new_val_str = f"{float(new_val):+.2f}"
+            except (TypeError, ValueError):
+                new_val_str = str(new_val)
+            lines.append(
+                f"  - {src} \u2192 {tgt} ({metric}) = {new_val_str}"
+            )
+        if len(social_muts) > max_items_per_section:
+            lines.append(
+                f"  ... (+{len(social_muts) - max_items_per_section} more)"
+            )
+        sections.append("\n".join(lines))
+
+    if blocked:
+        lines = [
+            "Interventions blocked by physics (do NOT extract events "
+            "that contradict these blocks):"
+        ]
+        for b in blocked[:max_items_per_section]:
+            node = _coerce_field(b, "node_id")
+            reason = (
+                _coerce_field(b, "reason")
+                or _coerce_field(b, "detail")
+                or "blocked"
+            )
+            lines.append(f"  - {node}: {reason}")
+        if len(blocked) > max_items_per_section:
+            lines.append(
+                f"  ... (+{len(blocked) - max_items_per_section} more)"
+            )
+        sections.append("\n".join(lines))
+
+    if not sections:
+        return None
+    return "\n\n".join(sections)
+
+
 def _augment_topology_with_sandbox_deltas(
     topology: "ChunkTopology",
     *,
@@ -848,13 +1101,18 @@ def _augment_topology_with_sandbox_deltas(
                 inertia=inertia,
             ),
         )
-        # Skip duplicate snapshots at the same (fabula_time, world_id)
-        # so re-runs don't pile up identical entries.
+        # Skip duplicate snapshots at the same (fabula_time, world_id,
+        # triggered_by) so per-chunk Consequences-fold snapshots (already
+        # appended to ``base_wt.state_timeline`` during
+        # ``assemble_world_state``) are not re-stamped by post-assembly
+        # engine cycles writing through this helper. Including
+        # ``triggered_by`` lets two genuinely distinct events at the
+        # same tick still both land.
         existing_keys = {
-            (s.fabula_time, getattr(s, "world_id", "factual"))
+            (s.fabula_time, getattr(s, "world_id", "factual"), getattr(s, "triggered_by", None))
             for s in base_wt.state_timeline
         }
-        if (snap.fabula_time, snap.world_id) in existing_keys:
+        if (snap.fabula_time, snap.world_id, snap.triggered_by) in existing_keys:
             return
         wt_copy = base_wt.model_copy(update={
             "state_timeline": list(base_wt.state_timeline) + [snap],
@@ -1067,6 +1325,220 @@ def _augment_topology_with_sandbox_deltas(
                     invalidated_belief_targets=invalidated_targets,
                 ))
 
+    # --- Typed Pearl Rung-2/3 surgeries (proposition / belief / concern) ---
+    # CausalPhysicsResult emits these directly; without bridging into
+    # the topology the merge step would never persist clamps applied by
+    # ``apply_do_targets`` to the proposition / belief / concern
+    # substrate. See _apply_affect_to_world / _apply_belief_confidence_updates
+    # in extract_graph.py for the merge-side handlers.
+    from shadow_loom.ingestion import (
+        BeliefConfidenceUpdate,
+        ChunkConcernSnapshot,
+        PropositionTruthCommit,
+    )
+    from shadow_loom.models import Belief
+
+    # Proposition mutations → truth commits.
+    for pm in physics_result.get("proposition_mutations") or []:
+        pid = pm.get("proposition_id") if isinstance(pm, dict) else getattr(pm, "proposition_id", None)
+        ftt = pm.get("fabula_time") if isinstance(pm, dict) else getattr(pm, "fabula_time", None)
+        new_truth = pm.get("new_truth") if isinstance(pm, dict) else getattr(pm, "new_truth", None)
+        if not pid or ftt is None or new_truth is None:
+            continue
+        topology.proposition_truth_commits.append(PropositionTruthCommit(
+            proposition_id=pid,
+            fabula_time=int(ftt),
+            truth=bool(new_truth),
+            triggered_by="DO_OPERATOR",
+        ))
+        # Pearl-Rung-2 cross-link: if a GlobalTrait carries
+        # ``proposition_id == pid`` (set during ingestion's reconcile_affect
+        # step 8 lexical linking), the truth-clamp also moves the world
+        # trait. Magnitude tracks proposition truth: 1.0 when true, 0.0
+        # when false. The merge fold honours inertia attenuation when the
+        # snapshot lands on the canonical timeline.
+        for wt_id, wt in world_state.world_traits.items():
+            if getattr(wt, "proposition_id", None) == pid:
+                _upsert_world_trait_snapshot(
+                    wt_id, "magnitude",
+                    1.0 if bool(new_truth) else 0.0,
+                    int(ftt),
+                )
+
+    # Belief mutations → either a new Belief or a confidence overwrite.
+    for bm in physics_result.get("belief_mutations") or []:
+        if isinstance(bm, dict):
+            holder = bm.get("holder_id")
+            target = bm.get("target_id")
+            new_conf = bm.get("new_confidence")
+            created = bm.get("created", False)
+            prop_id = bm.get("proposition_id")
+        else:
+            holder = getattr(bm, "holder_id", None)
+            target = getattr(bm, "target_id", None)
+            new_conf = getattr(bm, "new_confidence", None)
+            created = getattr(bm, "created", False)
+            prop_id = getattr(bm, "proposition_id", None)
+        if not holder or not target or new_conf is None:
+            continue
+        # Locate or create an EntityUpdate at fabula_time_now for this holder.
+        eu = next(
+            (
+                e for e in topology.entity_updates
+                if e.entity_id == holder and e.fabula_time == fabula_time_now
+            ),
+            None,
+        )
+        if eu is None:
+            eu = EntityUpdate(
+                entity_id=holder, fabula_time=fabula_time_now, triggered_by=None,
+            )
+            topology.entity_updates.append(eu)
+        if created:
+            eu.new_beliefs.append(Belief(
+                target_id=target,
+                perceived_state="(do-operator)",
+                confidence=float(new_conf),
+                inertia=0.5,
+                established_at_fabula=fabula_time_now,
+                proposition_id=prop_id,
+            ))
+        else:
+            eu.belief_confidence_updates.append(BeliefConfidenceUpdate(
+                target_id=target,
+                proposition_id=prop_id,
+                new_confidence=float(new_conf),
+            ))
+
+    # Concern mutations → ConcernSnapshot routed via topology.concern_snapshots.
+    for cm in physics_result.get("concern_mutations") or []:
+        if isinstance(cm, dict):
+            ccn_id = cm.get("concern_id")
+            field = cm.get("field")
+            new_val = cm.get("new_value")
+        else:
+            ccn_id = getattr(cm, "concern_id", None)
+            field = getattr(cm, "field", None)
+            new_val = getattr(cm, "new_value", None)
+        if not ccn_id or not field:
+            continue
+        snap_kwargs: Dict[str, Any] = {
+            "concern_id": ccn_id,
+            "fabula_time": fabula_time_now,
+            "triggered_by": "DO_OPERATOR",
+        }
+        if field == "salience" and new_val is not None:
+            snap_kwargs["salience"] = float(new_val)
+        elif field == "polarity" and new_val in ("desire", "fear"):
+            snap_kwargs["polarity"] = new_val
+        elif field == "active":
+            # encode an explicit window into "active" via fabula_window
+            # only if caller supplied [lo, hi]; otherwise skip silently.
+            if isinstance(new_val, (list, tuple)) and len(new_val) == 2:
+                snap_kwargs["activation_fabula_window"] = list(new_val)
+            else:
+                continue
+        else:
+            continue
+        try:
+            topology.concern_snapshots.append(ChunkConcernSnapshot(**snap_kwargs))
+        except Exception:
+            logger.debug(
+                "[Bridge] Could not build ChunkConcernSnapshot for %s.%s.", ccn_id, field,
+            )
+
+    # World-trait mutations → WorldTraitSnapshot via the merge-fold
+    # helper. Per-chunk Consequences updates and Rung-2 ``DoWorldTrait``
+    # surgeries land via the same code path so inertia attenuation and
+    # ``(fabula_time, world_id, triggered_by)`` dedup are consistent.
+    for wm in physics_result.get("world_trait_mutations") or []:
+        if isinstance(wm, dict):
+            wt_id = wm.get("world_trait_id")
+            new_val = wm.get("new_value")
+            ftt = wm.get("fabula_time")
+        else:
+            wt_id = getattr(wm, "world_trait_id", None)
+            new_val = getattr(wm, "new_value", None)
+            ftt = getattr(wm, "fabula_time", None)
+        if not wt_id or new_val is None:
+            continue
+        _upsert_world_trait_snapshot(
+            wt_id, "magnitude", float(new_val),
+            int(ftt) if ftt is not None else fabula_time_now,
+        )
+
+    # --- Observation reveals (Rung 1) -----------------------------------
+    # ``observation_facts`` is a Dict[node_id, value_str] declaring
+    # facts the POV (or audience) has now observed. Without a bridge
+    # these reveals only land if the rendered prose verbalises them
+    # clearly enough for the extractor to re-discover; many subtle
+    # reveals get lost. Materialise them deterministically:
+    #   * ``ENT_*`` → EntityUpdate with ``new_status=value``;
+    #     when the value names a known location (``LOC_...``) we
+    #     instead set ``new_location_id``.
+    #   * ``WORLD_*`` → WorldTraitSnapshot with no magnitude change
+    #     (the reveal is epistemic, not in-world); we attach a
+    #     status-style description on the snapshot's triggered_by
+    #     when the value parses as a number it's promoted to
+    #     magnitude.value (clamped to [0,1]).
+    #   * ``OBJ_*`` / ``LOC_*`` → recorded as a ``new_status``
+    #     entity_update on the carrier entity if any; otherwise a
+    #     debug log (we don't currently model object-state timelines
+    #     as snapshots).
+    obs_facts = physics_result.get("observation_facts") or {}
+    for node_id, raw_value in obs_facts.items():
+        if not isinstance(node_id, str) or raw_value is None:
+            continue
+        value = str(raw_value).strip()
+        if not value:
+            continue
+        if node_id.startswith("ENT_"):
+            ent = world_state.entities.get(node_id)
+            if ent is None:
+                continue
+            update_kwargs: Dict[str, Any] = {}
+            if value.startswith("LOC_") and value in (world_state.locations or {}):
+                update_kwargs["new_location_id"] = value
+            else:
+                update_kwargs["new_status"] = value
+            existing = next(
+                (
+                    eu for eu in topology.entity_updates
+                    if eu.entity_id == node_id
+                    and eu.fabula_time == fabula_time_now
+                ),
+                None,
+            )
+            if existing is None:
+                topology.entity_updates.append(EntityUpdate(
+                    entity_id=node_id,
+                    fabula_time=fabula_time_now,
+                    triggered_by=None,
+                    **update_kwargs,
+                ))
+            else:
+                # Don't clobber an explicit prior write at this tick.
+                for k, v in update_kwargs.items():
+                    if getattr(existing, k, None) in (None, "", []):
+                        setattr(existing, k, v)
+        elif node_id.startswith("WORLD_"):
+            # Numeric values are routed through the magnitude
+            # snapshot path; non-numeric reveals (descriptive
+            # strings) are skipped because WorldTraitSnapshot has
+            # no free-form status field today.
+            try:
+                num = float(value)
+            except ValueError:
+                continue
+            _upsert_world_trait_snapshot(
+                node_id, "magnitude", num, fabula_time_now,
+            )
+        else:
+            logger.debug(
+                "[Bridge·observe] Skipped reveal for non-ENT/WORLD node %s "
+                "(value=%r) — no snapshot path.", node_id, raw_value,
+            )
+
     return topology
 
 
@@ -1102,35 +1574,166 @@ def _resolve_manual_edit_anchor(
 
 
 def _apply_manual_edit_replacements(
-    ws: WorldStateV1, replace_event_ids: List[str],
+    ws: WorldStateV1, query: "ManualEditQuery",
 ) -> WorldStateV1:
-    """Return a deep-copy of ``ws`` with the given events (and their
-    dependent edges) removed, for *replace* manual-edit semantics.
+    """Return a deep-copy of ``ws`` with the user's replace_* targets
+    (and their dependent edges) removed, for *replace* manual-edit
+    semantics.
 
     This runs **before** the new prose is re-extracted so the LLM
-    doesn't see the events it's about to replace as "previous events"
-    and try to keep them stitched in.
+    doesn't see the about-to-be-replaced graph slice as "previous
+    context" and try to keep it stitched in. The merge step's
+    deletion pass repeats the same drop set on the post-extract
+    side so cascades (beliefs targeting removed entities, snapshots
+    referencing removed propositions, etc.) are cleaned consistently.
     """
-    if not replace_event_ids:
+    drop_events = set(query.replace_event_ids)
+    drop_entities = set(query.replace_entity_ids)
+    drop_objects = set(query.replace_object_ids)
+    drop_locations = set(query.replace_location_ids)
+    drop_traits = set(query.replace_world_trait_ids)
+    drop_channels = set(query.replace_channel_ids)
+    drop_props = set(query.replace_proposition_ids)
+    drop_concerns = {tuple(p) for p in query.replace_concern_ids}
+    if not (
+        drop_events or drop_entities or drop_objects or drop_locations
+        or drop_traits or drop_channels or drop_props or drop_concerns
+    ):
         return ws
-    drop = set(replace_event_ids)
     new_ws = ws.model_copy(deep=True)
-    new_ws.events = [e for e in new_ws.events if e.id not in drop]
-    new_ws.causal_topology = [
-        ce for ce in new_ws.causal_topology
-        if ce.source_id not in drop and ce.target_id not in drop
-    ]
-    new_ws.social_topology = [
-        re for re in new_ws.social_topology
-        if not getattr(re, "evidence_event_ids", None)
-        or not (set(re.evidence_event_ids) & drop)
-    ]
-    new_ws.spatial_topology = [
-        se for se in new_ws.spatial_topology
-        if not getattr(se, "established_by_event_id", None)
-        or se.established_by_event_id not in drop
-    ]
+    if drop_events:
+        new_ws.events = [e for e in new_ws.events if e.id not in drop_events]
+        new_ws.causal_topology = [
+            ce for ce in new_ws.causal_topology
+            if ce.source_id not in drop_events and ce.target_id not in drop_events
+        ]
+        new_ws.social_topology = [
+            re for re in new_ws.social_topology
+            if not getattr(re, "evidence_event_ids", None)
+            or not (set(re.evidence_event_ids) & drop_events)
+        ]
+        new_ws.spatial_topology = [
+            se for se in new_ws.spatial_topology
+            if not getattr(se, "established_by_event_id", None)
+            or se.established_by_event_id not in drop_events
+        ]
+        # Cascade: scrub belief provenance pointing at removed events.
+        for ent in new_ws.entities.values():
+            for b in ent.beliefs:
+                if getattr(b, "acquired_via_event_id", None) in drop_events:
+                    b.acquired_via_event_id = None
+    if drop_entities:
+        new_ws.entities = {
+            eid: e for eid, e in new_ws.entities.items()
+            if eid not in drop_entities
+        }
+        new_ws.social_topology = [
+            re for re in new_ws.social_topology
+            if re.source_id not in drop_entities and re.target_id not in drop_entities
+        ]
+        for ent in new_ws.entities.values():
+            ent.beliefs = [
+                b for b in ent.beliefs if b.target_id not in drop_entities
+            ]
+    if drop_objects:
+        new_ws.objects = {
+            oid: o for oid, o in new_ws.objects.items()
+            if oid not in drop_objects
+        }
+    if drop_locations:
+        new_ws.locations = {
+            lid: l for lid, l in new_ws.locations.items()
+            if lid not in drop_locations
+        }
+        new_ws.spatial_topology = [
+            se for se in new_ws.spatial_topology
+            if se.location_id not in drop_locations
+        ]
+    if drop_traits:
+        new_ws.world_traits = {
+            tid: t for tid, t in new_ws.world_traits.items()
+            if tid not in drop_traits
+        }
+    if drop_channels:
+        new_ws.channels = {
+            cid: c for cid, c in new_ws.channels.items()
+            if cid not in drop_channels
+        }
+        # Cascade: scrub channel pointers on events and beliefs.
+        for evt in new_ws.events:
+            if getattr(evt, "via_channel_id", None) in drop_channels:
+                evt.via_channel_id = None
+        for ent in new_ws.entities.values():
+            for b in ent.beliefs:
+                if getattr(b, "acquired_via_channel_id", None) in drop_channels:
+                    b.acquired_via_channel_id = None
+    if drop_props:
+        new_ws.propositions = [
+            p for p in new_ws.propositions
+            if p.proposition_id not in drop_props
+        ]
+        # Cascade: clear proposition refs on events and beliefs.
+        for evt in new_ws.events:
+            if getattr(evt, "asserts_proposition_id", None) in drop_props:
+                evt.asserts_proposition_id = None
+            if getattr(evt, "denies_proposition_id", None) in drop_props:
+                evt.denies_proposition_id = None
+            resolves = getattr(evt, "resolves_proposition_ids", None)
+            if resolves:
+                evt.resolves_proposition_ids = [
+                    pid for pid in resolves if pid not in drop_props
+                ]
+        for ent in new_ws.entities.values():
+            ent.concerns = [
+                c for c in ent.concerns if c.proposition_id not in drop_props
+            ]
+            for b in ent.beliefs:
+                if getattr(b, "proposition_id", None) in drop_props:
+                    b.proposition_id = None
+    if drop_concerns:
+        # Build a set of removed concern_ids regardless of entity for
+        # scrubbing counter_concern_ids on surviving concerns.
+        removed_cids = {cid for _eid, cid in drop_concerns}
+        for eid, ent in new_ws.entities.items():
+            ent.concerns = [
+                c for c in ent.concerns
+                if (eid, c.concern_id) not in drop_concerns
+            ]
+            for c in ent.concerns:
+                ccids = getattr(c, "counter_concern_ids", None)
+                if ccids:
+                    c.counter_concern_ids = [
+                        x for x in ccids if x not in removed_cids
+                    ]
     return new_ws
+
+
+def _populate_removed_fields_from_manual_edit(
+    topology: "ChunkTopology", query: "ManualEditQuery",
+) -> None:
+    """Mirror the manual-edit replace_* selections onto the topology's
+    removed_* fields so the merge's deletion pass cascades through
+    anything the pre-extract trim missed (e.g. cross-entity beliefs
+    referring to the removed proposition).
+    """
+    if query.replace_event_ids:
+        topology.removed_event_ids.extend(query.replace_event_ids)
+    if query.replace_entity_ids:
+        topology.removed_entity_ids.extend(query.replace_entity_ids)
+    if query.replace_object_ids:
+        topology.removed_object_ids.extend(query.replace_object_ids)
+    if query.replace_location_ids:
+        topology.removed_location_ids.extend(query.replace_location_ids)
+    if query.replace_world_trait_ids:
+        topology.removed_world_trait_ids.extend(query.replace_world_trait_ids)
+    if query.replace_channel_ids:
+        topology.removed_channel_ids.extend(query.replace_channel_ids)
+    if query.replace_proposition_ids:
+        topology.removed_proposition_ids.extend(query.replace_proposition_ids)
+    if query.replace_concern_ids:
+        topology.removed_concern_ids.extend(
+            tuple(p) for p in query.replace_concern_ids
+        )
 
 
 # =====================================================================
@@ -1303,6 +1906,26 @@ def run_pipeline(
         return result
 
     # =================================================================
+    # Pearl-Rung-2/3 queries also get an answer card alongside the prose
+    # so the UI / MCP surface a natural-language summary that respects
+    # the typed do_target's epistemic / ontic register (Phase-9). The
+    # prose pipeline below still runs as before.
+    # =================================================================
+    if query.query_type in ("intervention", "counterfactual"):
+        logger.info(
+            "[Pipeline] Query type '%s' \u2014 surfacing rung-aware Q&A "
+            "answer alongside prose.",
+            query.query_type,
+        )
+        try:
+            _run_answer_step(query=query, physics_result=physics_result, cfg=cfg, history=history, vwm=vwm)
+        except Exception:
+            logger.exception(
+                "[Pipeline] Rung-aware answer step failed; continuing "
+                "with prose generation."
+            )
+
+    # =================================================================
     # Evaluation query — full-story quality audit
     # =================================================================
     if query.query_type == "evaluate":
@@ -1336,9 +1959,7 @@ def run_pipeline(
         logger.info("[Pipeline] Extracting topology from manually edited prose.")
         try:
             anchor_base = _resolve_manual_edit_anchor(query, ws, cfg)
-            ws_for_extract = _apply_manual_edit_replacements(
-                ws, query.replace_event_ids,
-            )
+            ws_for_extract = _apply_manual_edit_replacements(ws, query)
             _world_id, _branch_label = _resolve_branch_policy(query, cfg, vwm)
             _preceding_prose = _gather_preceding_prose(
                 vwm,
@@ -1354,6 +1975,7 @@ def run_pipeline(
                 branch_label=_branch_label,
                 preceding_prose=_preceding_prose,
             )
+            _populate_removed_fields_from_manual_edit(topology, query)
             description = (
                 f"Manual edit: {query.description}"
                 if query.description
@@ -1364,7 +1986,12 @@ def run_pipeline(
             # come back via deep-copy of ``vwm.current``.
             vwm_for_merge = (
                 vwm.model_copy(update={"current": ws_for_extract})
-                if query.replace_event_ids
+                if (
+                    query.replace_event_ids or query.replace_entity_ids
+                    or query.replace_object_ids or query.replace_location_ids
+                    or query.replace_world_trait_ids or query.replace_channel_ids
+                    or query.replace_proposition_ids or query.replace_concern_ids
+                )
                 else vwm
             )
             vwm_next = vwm_for_merge.merge(
@@ -1383,6 +2010,13 @@ def run_pipeline(
                 entity_updates_skipped=changeset.entity_updates_skipped if changeset else [],
                 new_version=vwm_next.version,
             ))
+            # Continuation quality bridge — same auto-repair +
+            # validation + correction loop as raw-text ingestion,
+            # using the EXTRACTION_MODEL.
+            vwm_next = _run_continuation_quality_bridge_sync(
+                vwm_next, cfg, result,
+                log_prefix="[Pipeline·ManualEdit·QualityBridge]",
+            )
             result.world_model = vwm_next
             logger.info(
                 "[Pipeline] Manual edit merge complete — v%d → v%d.",
@@ -1571,6 +2205,7 @@ def run_pipeline(
         try:
             spawns = promote_sandbox_spawns(ws, physics_state)
             _world_id, _branch_label = _resolve_branch_policy(query, cfg, vwm)
+            engine_priors = _render_engine_priors(physics_result)
             topology = extract_topology_from_prose(
                 prose=result.prose,
                 world_state=ws,
@@ -1579,6 +2214,7 @@ def run_pipeline(
                 branch_world_id=_world_id,
                 branch_label=_branch_label,
                 preceding_prose=_preceding_prose,
+                engine_priors=engine_priors,
             )
             description = (
                 f"Pipeline merge after {query.query_type} query"
@@ -1597,10 +2233,19 @@ def run_pipeline(
                 (e.fabula_time for e in ws.events),
                 default=-_spacing,
             ) + _spacing
-            _ft_hist = min(
-                (e.fabula_time for e in ws.events),
-                default=0,
-            )
+            # Rung-3 abduction returns ``past_anchor`` — the actual
+            # Point-of-Divergence in fabula time. Use it so hidden
+            # deltas land at the correct historical tick. Fall back
+            # to the timeline minimum only when the physics result
+            # didn't surface one (rung-1/2 paths).
+            _ft_hist = physics_result.get("past_anchor")
+            if _ft_hist is None:
+                _ft_hist = min(
+                    (e.fabula_time for e in ws.events),
+                    default=0,
+                )
+            else:
+                _ft_hist = int(_ft_hist)
             _augment_topology_with_sandbox_deltas(
                 topology,
                 world_state=ws,
@@ -1626,6 +2271,11 @@ def run_pipeline(
                 entity_updates_skipped=changeset.entity_updates_skipped if changeset else [],
                 new_version=vwm_next.version,
             ))
+            # Continuation quality bridge.
+            vwm_next = _run_continuation_quality_bridge_sync(
+                vwm_next, cfg, result,
+                log_prefix="[Pipeline·QualityBridge]",
+            )
             result.world_model = vwm_next
             logger.info(
                 "[Pipeline] Merge complete — v%d → v%d (+%d events).",
@@ -1763,6 +2413,22 @@ async def run_pipeline_async(
         _run_answer_step(query=query, physics_result=physics_result, cfg=cfg, history=history, vwm=vwm)
         return result
 
+    # Pearl-Rung-2/3 queries also get a rung-aware answer card
+    # (Phase-9) alongside the prose pipeline below.
+    if query.query_type in ("intervention", "counterfactual"):
+        logger.info(
+            "[Pipeline\u00b7Async] Query type '%s' \u2014 surfacing rung-aware "
+            "Q&A answer alongside prose.",
+            query.query_type,
+        )
+        try:
+            _run_answer_step(query=query, physics_result=physics_result, cfg=cfg, history=history, vwm=vwm)
+        except Exception:
+            logger.exception(
+                "[Pipeline\u00b7Async] Rung-aware answer step failed; "
+                "continuing with prose generation."
+            )
+
     # Evaluation: full-story quality audit (delegates to shared sync helper)
     if query.query_type == "evaluate":
         _run_evaluation_branch(
@@ -1783,9 +2449,7 @@ async def run_pipeline_async(
         history.record("generation", GenerationStepRecord(scene=result.scene, brief=None))
         try:
             anchor_base = _resolve_manual_edit_anchor(query, ws, cfg)
-            ws_for_extract = _apply_manual_edit_replacements(
-                ws, query.replace_event_ids,
-            )
+            ws_for_extract = _apply_manual_edit_replacements(ws, query)
             _world_id, _branch_label = _resolve_branch_policy(query, cfg, vwm)
             _preceding_prose = _gather_preceding_prose(
                 vwm,
@@ -1800,10 +2464,16 @@ async def run_pipeline_async(
                 branch_label=_branch_label,
                 preceding_prose=_preceding_prose,
             )
+            _populate_removed_fields_from_manual_edit(topology, query)
             description = f"Manual edit: {query.description}" if query.description else "Manual edit"
             vwm_for_merge = (
                 vwm.model_copy(update={"current": ws_for_extract})
-                if query.replace_event_ids
+                if (
+                    query.replace_event_ids or query.replace_entity_ids
+                    or query.replace_object_ids or query.replace_location_ids
+                    or query.replace_world_trait_ids or query.replace_channel_ids
+                    or query.replace_proposition_ids or query.replace_concern_ids
+                )
                 else vwm
             )
             vwm_next = vwm_for_merge.merge(
@@ -1818,6 +2488,11 @@ async def run_pipeline_async(
                 entity_updates_skipped=changeset.entity_updates_skipped if changeset else [],
                 new_version=vwm_next.version,
             ))
+            # Continuation quality bridge (async).
+            vwm_next = await _run_continuation_quality_bridge_async(
+                vwm_next, cfg, result,
+                log_prefix="[Pipeline·Async·ManualEdit·QualityBridge]",
+            )
             result.world_model = vwm_next
         except Exception as _e:
             logger.exception("[Pipeline·Async] Manual edit re-extraction/merge failed.")
@@ -1951,12 +2626,14 @@ async def run_pipeline_async(
         try:
             spawns = promote_sandbox_spawns(ws, physics_state)
             _world_id, _branch_label = _resolve_branch_policy(query, cfg, vwm)
+            engine_priors = _render_engine_priors(physics_result)
             topology = extract_topology_from_prose(
                 prose=result.prose, world_state=ws, config=cfg.extraction_config,
                 spawns=spawns,
                 branch_world_id=_world_id,
                 branch_label=_branch_label,
                 preceding_prose=_preceding_prose,
+                engine_priors=engine_priors,
             )
             description = (
                 f"Pipeline merge after {query.query_type} query"
@@ -1970,10 +2647,19 @@ async def run_pipeline_async(
                 (e.fabula_time for e in ws.events),
                 default=-_spacing,
             ) + _spacing
-            _ft_hist = min(
-                (e.fabula_time for e in ws.events),
-                default=0,
-            )
+            # Rung-3 abduction returns ``past_anchor`` — the actual
+            # Point-of-Divergence in fabula time. Use it so hidden
+            # deltas land at the correct historical tick. Fall back
+            # to the timeline minimum only when the physics result
+            # didn't surface one (rung-1/2 paths).
+            _ft_hist = physics_result.get("past_anchor")
+            if _ft_hist is None:
+                _ft_hist = min(
+                    (e.fabula_time for e in ws.events),
+                    default=0,
+                )
+            else:
+                _ft_hist = int(_ft_hist)
             _augment_topology_with_sandbox_deltas(
                 topology,
                 world_state=ws,
@@ -1994,6 +2680,11 @@ async def run_pipeline_async(
                 entity_updates_skipped=changeset.entity_updates_skipped if changeset else [],
                 new_version=vwm_next.version,
             ))
+            # Continuation quality bridge (async).
+            vwm_next = await _run_continuation_quality_bridge_async(
+                vwm_next, cfg, result,
+                log_prefix="[Pipeline·Async·QualityBridge]",
+            )
             result.world_model = vwm_next
         except Exception as _e:
             logger.exception("[Pipeline·Async] Re-extraction/merge failed.")
@@ -2061,6 +2752,20 @@ def _run_answer_step(
         # Pass the source register so the Q&A LLM mirrors the same
         # tone / diction the renderer/auditor enforce on each chunk.
         narrative_style=getattr(getattr(vwm, "current", None), "narrative_style", None),
+        # Phase-9: forward typed Pearl-rung surgery metadata so the
+        # intervention / counterfactual answer agents can match the
+        # right epistemic / ontic register and apply the
+        # narrative-form hedge. Stamped into ``physics_result`` by
+        # ``narrative_physics._typed_target_payload`` (Phase-7).
+        do_targets=(
+            list(physics_result.get("do_targets") or [])
+            or list(physics_result.get("historical_do_targets") or [])
+            or None
+        ),
+        affected_propositions=list(physics_result.get("affected_propositions") or []) or None,
+        affected_beliefs=list(physics_result.get("affected_beliefs") or []) or None,
+        affected_concerns=list(physics_result.get("affected_concerns") or []) or None,
+        tragedy_form=physics_result.get("tragedy_form"),
     )
 
     physics_result["answer"] = card.answer

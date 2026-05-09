@@ -36,6 +36,7 @@ from shadow_loom.models import (
     WorldStateV1,
     default_relationship_metrics_dict,
     reconstruct_entity_at,
+    reconstruct_world_trait_at,
 )
 from shadow_loom.settings import get_settings as _get_settings
 
@@ -156,6 +157,61 @@ class SocialMutation(BaseModel):
     triggered_by: str  # source_id of the causal edge (usually EVT_)
 
 
+class PropositionMutation(BaseModel):
+    """Record of a Proposition truth-clamp applied via Pearl Rung-2 surgery.
+
+    Mirrors :class:`TraitMutation` for the audience-side utility layer.
+    Cascaded ``BeliefMutation`` records (when ``propagate_to_beliefs`` is
+    True) are recorded separately so the auditor can attribute downstream
+    epistemic shifts to a specific proposition clamp.
+    """
+    proposition_id: str
+    fabula_time: int
+    old_truth: Optional[bool] = None
+    new_truth: bool
+    cascaded_belief_count: int = 0
+
+
+class BeliefMutation(BaseModel):
+    """Record of a Belief confidence clamp on a single character."""
+    holder_id: str
+    target_id: str
+    proposition_id: Optional[str] = None
+    old_confidence: Optional[float] = None
+    new_confidence: float
+    created: bool = False  # True when the belief did not previously exist
+    triggered_by: str = "DO_OPERATOR"  # or PROP_X when cascaded
+
+
+class ConcernMutation(BaseModel):
+    """Record of a Concern clamp on a single character (utility layer)."""
+    holder_id: str
+    concern_id: str
+    field: str  # 'salience' | 'polarity' | 'active'
+    old_value: Any = None
+    new_value: Any = None
+
+
+class WorldTraitMutation(BaseModel):
+    """Record of a WORLD_ ``GlobalTrait`` magnitude clamp applied via
+    Pearl Rung-2 surgery.
+
+    Mirrors :class:`PropositionMutation` for the global ambient-force
+    layer. The pipeline adapter reads these and emits one
+    :class:`WorldTraitSnapshot` per mutation, honouring the per-chunk
+    merge fold's inertia attenuation so the timeline writes are
+    consistent with per-chunk ``WorldTraitUpdate`` flows.
+    """
+    world_trait_id: str
+    fabula_time: int
+    old_value: Optional[float] = None
+    new_value: float
+    inertia: Optional[float] = None
+    affected_domains_add: List[str] = Field(default_factory=list)
+    affected_domains_remove: List[str] = Field(default_factory=list)
+    triggered_by: Optional[str] = None
+
+
 class NoisyOrProbability(BaseModel):
     """Per-trait noisy-OR aggregate plus its per-edge components.
 
@@ -202,6 +258,20 @@ class CausalPhysicsResult(BaseModel):
     social_mutations: List[SocialMutation] = Field(default_factory=list)
     blocked: List[BlockedPropagation] = Field(default_factory=list)
     intervened_nodes: List[str] = Field(default_factory=list)
+    # Pearl Rung-2 typed surgeries on the proposition / belief / concern
+    # substrate. Populated by :meth:`CausalPhysicsEngine.apply_do_targets`;
+    # empty under legacy event/trait-only do-surgery.
+    proposition_mutations: List[PropositionMutation] = Field(default_factory=list)
+    belief_mutations: List[BeliefMutation] = Field(default_factory=list)
+    concern_mutations: List[ConcernMutation] = Field(default_factory=list)
+    world_trait_mutations: List[WorldTraitMutation] = Field(
+        default_factory=list,
+        description=(
+            "Pearl Rung-2 magnitude clamps on WORLD_ GlobalTraits. "
+            "The pipeline adapter folds each into a "
+            "``WorldTraitSnapshot`` on the canonical timeline."
+        ),
+    )
     hidden_deltas: Dict[str, Dict[str, float]] = Field(
         default_factory=dict,
         description="node_id → {trait_name: delta} computed during abduction",
@@ -408,6 +478,13 @@ class CausalPhysicsEngine:
         self._mutations: List[TraitMutation] = []
         self._social_mutations: List[SocialMutation] = []
         self._blocked: List[BlockedPropagation] = []
+        # Phase-1 Pearl Rung-2 typed-surgery collectors. These are appended
+        # to by :meth:`apply_do_targets` (and by its proposition cascade
+        # into beliefs); they round-trip into ``CausalPhysicsResult``.
+        self._proposition_mutations: List[PropositionMutation] = []
+        self._belief_mutations: List[BeliefMutation] = []
+        self._concern_mutations: List[ConcernMutation] = []
+        self._world_trait_mutations: List[WorldTraitMutation] = []
         # Noisy-OR per-trait records, populated only when
         # ``CausalPhysicsSettings.propagation_mode == "noisy_or"``.
         self._noisy_or_records: List[NoisyOrProbability] = []
@@ -809,6 +886,415 @@ class CausalPhysicsEngine:
         )
 
     # ------------------------------------------------------------------
+    # Rung 2 — Typed do-target dispatch (Phase 1)
+    # ------------------------------------------------------------------
+    def apply_do_targets(self, do_targets: List[Any]) -> None:
+        """Dispatch typed :class:`DoTarget` payloads to the correct surgery.
+
+        ``DoEvent`` and ``DoTrait`` are translated into the legacy
+        ``Dict[str, Any]`` shape and delegated to :meth:`apply_do_operator`
+        (one delegation per dispatch call so all event / trait pins are
+        applied atomically and the existing provenance invalidation logic
+        downstream still sees the full intervention dict via
+        ``self._last_legacy_interventions``).
+
+        ``DoBelief``, ``DoConcern`` and ``DoProposition`` are applied
+        directly to the sandbox (the proposition layer also lives on
+        ``sandbox.graph['proposition_clamps']`` for Phase 2 readers, and
+        cascades into matching beliefs when ``propagate_to_beliefs``).
+        """
+        # Local import to avoid a top-level cycle: query_models is
+        # consumer-side and may import causal_physics types in future.
+        from shadow_loom.query_models import (
+            DoEvent, DoTrait, DoProposition, DoBelief, DoConcern, DoWorldTrait,
+        )
+
+        legacy_dict: Dict[str, Any] = {}
+        for t in do_targets:
+            if isinstance(t, DoEvent):
+                # Map the typed shape onto the legacy event-prevention
+                # vocabulary the instantiator already understands.
+                legacy_dict[f"{t.event_id}.event_type"] = (
+                    "prevented" if t.occurred is False else "occurred"
+                )
+            elif isinstance(t, DoTrait):
+                legacy_dict[f"{t.holder_id}.traits.{t.trait_name}"] = float(t.value)
+
+        if legacy_dict:
+            # Delegate event/trait surgeries through the existing path so
+            # ``_intervened_nodes`` / ``_intervened_traits`` and provenance
+            # tracking are populated consistently.
+            self.apply_do_operator(legacy_dict)
+            # Stash for the result-build site so the executor can pass
+            # the same dict into ``_collect_provenance_invalidations``.
+            existing = getattr(self, "_last_legacy_interventions", {}) or {}
+            self._last_legacy_interventions = {**existing, **legacy_dict}
+
+        for t in do_targets:
+            if isinstance(t, DoProposition):
+                self._apply_do_proposition(t)
+            elif isinstance(t, DoBelief):
+                self._apply_do_belief(t, triggered_by="DO_OPERATOR")
+            elif isinstance(t, DoConcern):
+                self._apply_do_concern(t)
+            elif isinstance(t, DoWorldTrait):
+                self._apply_do_world_trait(t)
+
+        logger.log(
+            _physics_log(),
+            "[CausalPhysics·do_targets] %d targets applied "
+            "(%d prop / %d belief / %d concern / %d world_trait mutations recorded).",
+            len(do_targets),
+            len(self._proposition_mutations),
+            len(self._belief_mutations),
+            len(self._concern_mutations),
+            len(self._world_trait_mutations),
+        )
+
+    def _apply_do_proposition(self, target: Any) -> None:
+        """Clamp a ``Proposition.truth_at_fabula`` and (optionally) cascade
+        the clamp into every matching :class:`Belief` on every entity in
+        the sandbox.
+
+        The audience-side proposition layer is recorded on
+        ``sandbox.graph['proposition_clamps']`` (a list of dicts), so
+        Phase 2 readers can recover the surgery without re-walking the
+        engine. The clamp is also written back to the live
+        ``world_state.propositions`` list so downstream consumers reading
+        the world state observe the pinned truth value.
+        """
+        ft = target.fabula_time
+        if ft is None:
+            ft = self._default_fabula_time()
+
+        old_truth: Optional[bool] = None
+        # Mirror the clamp onto the live world-state proposition.
+        for prop in (self.world_state.propositions or []):
+            if prop.proposition_id != target.proposition_id:
+                continue
+            if isinstance(prop.truth_at_fabula, dict):
+                # truth_at_fabula keys are ints (fabula_time) → bool
+                # Snapshot the most recent prior truth as `old_truth`.
+                prior = [v for k, v in prop.truth_at_fabula.items() if int(k) <= int(ft)]
+                old_truth = prior[-1] if prior else None
+                prop.truth_at_fabula[int(ft)] = bool(target.truth)
+            break
+
+        # Persist the clamp on the sandbox graph for Phase-2 consumers.
+        clamps = self.sandbox.graph.setdefault("proposition_clamps", [])
+        clamps.append({
+            "proposition_id": target.proposition_id,
+            "fabula_time": int(ft),
+            "truth": bool(target.truth),
+        })
+
+        cascaded = 0
+        if target.propagate_to_beliefs:
+            cascaded = self._cascade_proposition_to_beliefs(target)
+
+        self._proposition_mutations.append(PropositionMutation(
+            proposition_id=target.proposition_id,
+            fabula_time=int(ft),
+            old_truth=old_truth,
+            new_truth=bool(target.truth),
+            cascaded_belief_count=cascaded,
+        ))
+
+    def _cascade_proposition_to_beliefs(self, target: Any) -> int:
+        """Clamp every belief whose ``proposition_id`` matches the
+        proposition being intervened on. Confidence is set to 1.0 when the
+        belief's ``perceived_state`` aligns with the new truth, else 0.0,
+        gated by the belief's ``evidence_strength`` (so weakly-evidenced
+        beliefs swing less than confidently held ones).
+
+        Returns the number of beliefs cascaded.
+        """
+        from shadow_loom.query_models import DoBelief
+        count = 0
+        for nid, ndata in self.sandbox.nodes(data=True):
+            if ndata.get("node_type") != "Entity":
+                continue
+            beliefs = ndata.get("beliefs")
+            if not isinstance(beliefs, list):
+                continue
+            for b in beliefs:
+                if not isinstance(b, dict):
+                    continue
+                if b.get("proposition_id") != target.proposition_id:
+                    continue
+                # Default cascade rule: align belief confidence with the
+                # clamped truth, scaled by evidence_strength (default 1.0).
+                # Belief.evidence_strength is a Literal["weak","moderate",
+                # "strong"]; map through the engine's strength multiplier.
+                es_raw = b.get("evidence_strength")
+                if isinstance(es_raw, str):
+                    evidence = float(_strength_weight(es_raw))
+                elif es_raw is None:
+                    evidence = 1.0
+                else:
+                    evidence = float(es_raw)
+                aligned = self._belief_aligned_with_truth(b, bool(target.truth))
+                new_conf = (1.0 if aligned else 0.0) * max(0.0, min(1.0, evidence))
+                # Use the belief-clamp helper so the mutation is recorded
+                # consistently and provenance is set to the proposition.
+                self._apply_do_belief(
+                    DoBelief(
+                        holder_id=nid,
+                        target_id=b.get("target_id", ""),
+                        confidence=new_conf,
+                        proposition_id=target.proposition_id,
+                    ),
+                    triggered_by=target.proposition_id,
+                )
+                count += 1
+        return count
+
+    @staticmethod
+    def _belief_aligned_with_truth(belief: Dict[str, Any], truth: bool) -> bool:
+        """Best-effort alignment: a belief whose ``perceived_state`` /
+        polarity affirms the proposition increases with truth=True; a
+        belief that denies the proposition decreases with truth=True.
+
+        Conservative default when polarity cannot be inferred: treat the
+        belief as affirming (so confidence tracks the clamped truth).
+        """
+        polarity = belief.get("polarity") or belief.get("affirms")
+        if isinstance(polarity, bool):
+            return polarity == truth
+        ps = (belief.get("perceived_state") or "").lower()
+        if any(k in ps for k in ("not ", "no ", "false", "denies", "rejects")):
+            return (not truth)
+        return bool(truth)
+
+    def _apply_do_belief(self, target: Any, *, triggered_by: str = "DO_OPERATOR") -> None:
+        """Locate-or-create the belief on the holder entity and clamp
+        confidence. Marks ``acquired_via_event_id`` so downstream
+        propagation can see the do-operator provenance and so the
+        provenance-pruner does not strip it.
+
+        Does *not* cascade — belief surgeries are epistemic-only by
+        design; downstream effects flow naturally through the standard
+        propagate step which already reads beliefs.
+        """
+        if not self.sandbox.has_node(target.holder_id):
+            logger.warning(
+                "[CausalPhysics·do_belief] Holder %s missing from sandbox; "
+                "skipping clamp on %s.",
+                target.holder_id, target.target_id,
+            )
+            return
+        ndata = self.sandbox.nodes[target.holder_id]
+        if ndata.get("node_type") != "Entity":
+            return
+        beliefs = ndata.setdefault("beliefs", [])
+        # Locate by (target_id, proposition_id) — proposition_id wins when
+        # both sides supply one.
+        existing = None
+        for b in beliefs:
+            if not isinstance(b, dict):
+                continue
+            if target.proposition_id and b.get("proposition_id") == target.proposition_id:
+                existing = b
+                break
+            if b.get("target_id") == target.target_id and not target.proposition_id:
+                existing = b
+                break
+
+        old_conf: Optional[float] = None
+        created = False
+        if existing is None:
+            created = True
+            existing = {
+                "target_id": target.target_id,
+                "perceived_state": target.perceived_state or "",
+                "confidence": float(target.confidence),
+                "evidence_strength": 1.0,
+                "proposition_id": target.proposition_id,
+                "acquired_via_event_id": triggered_by,
+            }
+            beliefs.append(existing)
+        else:
+            old_conf = float(existing.get("confidence", 0.0))
+            existing["confidence"] = float(target.confidence)
+            existing["acquired_via_event_id"] = triggered_by
+            if target.perceived_state and not existing.get("perceived_state"):
+                existing["perceived_state"] = target.perceived_state
+            if target.proposition_id and not existing.get("proposition_id"):
+                existing["proposition_id"] = target.proposition_id
+
+        # Pin the holder so propagation does not silently overwrite the
+        # belief via downstream cascades.
+        self._intervened_nodes.add(target.holder_id)
+
+        self._belief_mutations.append(BeliefMutation(
+            holder_id=target.holder_id,
+            target_id=target.target_id,
+            proposition_id=target.proposition_id or existing.get("proposition_id"),
+            old_confidence=old_conf,
+            new_confidence=float(target.confidence),
+            created=created,
+            triggered_by=triggered_by,
+        ))
+
+    def _apply_do_concern(self, target: Any) -> None:
+        """Clamp salience / polarity / activation on a single
+        :class:`Concern` belonging to ``target.holder_id``.
+
+        Records one :class:`ConcernMutation` per field actually changed so
+        the auditor can attribute downstream affect-unification deltas to
+        a specific utility-layer surgery.
+        """
+        if not self.sandbox.has_node(target.holder_id):
+            logger.warning(
+                "[CausalPhysics·do_concern] Holder %s missing from sandbox; "
+                "skipping clamp on concern %s.",
+                target.holder_id, target.concern_id,
+            )
+            return
+        ndata = self.sandbox.nodes[target.holder_id]
+        if ndata.get("node_type") != "Entity":
+            return
+        concerns = ndata.get("concerns")
+        if not isinstance(concerns, list):
+            concerns = []
+            ndata["concerns"] = concerns
+
+        concern = next(
+            (c for c in concerns if isinstance(c, dict)
+             and c.get("concern_id") == target.concern_id),
+            None,
+        )
+        if concern is None:
+            logger.warning(
+                "[CausalPhysics·do_concern] Concern %s not found on %s; "
+                "skipping (creation requires polarity/proposition_id which "
+                "the DoConcern surface does not carry).",
+                target.concern_id, target.holder_id,
+            )
+            return
+
+        ft = self._default_fabula_time()
+
+        if target.polarity is not None and concern.get("polarity") != target.polarity:
+            old = concern.get("polarity")
+            concern["polarity"] = target.polarity
+            self._concern_mutations.append(ConcernMutation(
+                holder_id=target.holder_id, concern_id=target.concern_id,
+                field="polarity", old_value=old, new_value=target.polarity,
+            ))
+
+        if target.salience is not None:
+            old = concern.get("salience")
+            if old != target.salience:
+                concern["salience"] = float(target.salience)
+                self._concern_mutations.append(ConcernMutation(
+                    holder_id=target.holder_id, concern_id=target.concern_id,
+                    field="salience", old_value=old, new_value=float(target.salience),
+                ))
+
+        if target.active is not None:
+            old_window = concern.get("activation_fabula_window")
+            if target.active is False:
+                # Collapse the activation window past the query horizon.
+                new_window = [int(ft) + 1, int(ft) + 1]
+            else:
+                # Always-on: clear any window.
+                new_window = None
+            concern["activation_fabula_window"] = new_window
+            self._concern_mutations.append(ConcernMutation(
+                holder_id=target.holder_id, concern_id=target.concern_id,
+                field="active", old_value=old_window, new_value=new_window,
+            ))
+
+        # Pin the holder so downstream propagation does not regenerate
+        # concerns that the surgery just suppressed.
+        self._intervened_nodes.add(target.holder_id)
+
+    def _apply_do_world_trait(self, target: Any) -> None:
+        """Clamp a WORLD_ ``GlobalTrait``'s magnitude — ambient-force
+        intervention.
+
+        Mutates the sandbox node's ``magnitude`` (so the current
+        propagate step sees the new ambient value) and records a
+        :class:`WorldTraitMutation` for the pipeline adapter to fold
+        onto the canonical timeline as a
+        :class:`WorldTraitSnapshot` (honouring inertia attenuation).
+        Domain set-ops (add/remove) are applied directly to the
+        sandbox node so the runtime domain gate routes correctly on
+        the same propagate step. Pins the WORLD_ id in
+        ``_intervened_nodes`` so it stays an active source.
+        """
+        wt_id = target.world_trait_id
+        if not self.sandbox.has_node(wt_id):
+            logger.warning(
+                "[CausalPhysics·do_world_trait] Trait %s missing from sandbox; "
+                "skipping clamp.", wt_id,
+            )
+            return
+        ndata = self.sandbox.nodes[wt_id]
+        if ndata.get("node_type") != "WorldTrait":
+            logger.warning(
+                "[CausalPhysics·do_world_trait] Node %s is not a WorldTrait "
+                "(node_type=%s); skipping clamp.",
+                wt_id, ndata.get("node_type"),
+            )
+            return
+        mag = ndata.get("magnitude")
+        if not isinstance(mag, dict):
+            mag = {"value": 0.5, "inertia": 0.3}
+            ndata["magnitude"] = mag
+        old_value = float(mag.get("value", 0.5))
+        new_value = float(max(0.0, min(1.0, target.value)))
+        mag["value"] = new_value
+        if target.inertia is not None:
+            mag["inertia"] = float(max(0.0, min(0.99, target.inertia)))
+
+        # Set-ops on affected_domains. Default to canonical-7 keep-order
+        # by deduping while preserving insertion order.
+        domains = list(ndata.get("affected_domains") or [])
+        if target.affected_domains_add:
+            for d in target.affected_domains_add:
+                if d not in domains:
+                    domains.append(str(d))
+        if target.affected_domains_remove:
+            domains = [d for d in domains if d not in set(target.affected_domains_remove)]
+        ndata["affected_domains"] = domains
+
+        ft = (
+            int(target.fabula_time)
+            if getattr(target, "fabula_time", None) is not None
+            else self._default_fabula_time()
+        )
+
+        self._world_trait_mutations.append(WorldTraitMutation(
+            world_trait_id=wt_id,
+            fabula_time=ft,
+            old_value=old_value,
+            new_value=new_value,
+            inertia=mag.get("inertia"),
+            affected_domains_add=list(target.affected_domains_add or []),
+            affected_domains_remove=list(target.affected_domains_remove or []),
+            triggered_by=getattr(target, "triggered_by", None),
+        ))
+        # Pin so the trait remains an always-active ambient source for
+        # the rest of this simulation step.
+        self._intervened_nodes.add(wt_id)
+
+    def _default_fabula_time(self) -> int:
+        """Best-effort fabula_time anchor when a DoTarget omits one.
+
+        Falls back through (sandbox.graph['fabula_anchor'],
+        world_state.global_anchor.fabula_time, 0) so the dispatcher does
+        not require an explicit anchor on every typed target.
+        """
+        ft = self.sandbox.graph.get("fabula_anchor")
+        if ft is not None:
+            return int(ft)
+        anchor = getattr(self.world_state, "global_anchor", None)
+        ft = getattr(anchor, "fabula_time", None) if anchor is not None else None
+        return int(ft) if ft is not None else 0
+
+    # ------------------------------------------------------------------
     # Provenance invalidation
     # ------------------------------------------------------------------
     def _collect_provenance_invalidations(
@@ -962,23 +1448,51 @@ class CausalPhysicsEngine:
         try:
             execution_order = list(nx.topological_sort(causal_graph))
         except nx.NetworkXUnfeasible:
-            sccs = list(nx.strongly_connected_components(causal_graph))
-            cyclic_sccs = [s for s in sccs if len(s) > 1]
-            for s in cyclic_sccs:
-                cyclic_blocked |= s
-            logger.warning(
-                "[CausalPhysics·Propagate] Cyclic causal graph: %d SCC(s) with "
-                "%d node(s) total. Cyclic clusters are blocked from "
-                "propagation; only acyclic spines fire.",
-                len(cyclic_sccs), len(cyclic_blocked),
-            )
-            condensation = nx.condensation(causal_graph, sccs)
-            execution_order = []
-            for comp_idx in nx.topological_sort(condensation):
-                # ``members`` is the set of original node ids in this SCC.
-                members = condensation.nodes[comp_idx]["members"]
-                # Sort for determinism so test runs are reproducible.
-                execution_order.extend(sorted(members))
+            # ``affordance_gate`` edges (entity ENABLES event) refer to
+            # the entity's *pre-event* state, while ``mutation`` edges
+            # (event MUTATES entity) refer to the *post-event* state.
+            # Collapsed onto a single entity node those two classes
+            # form a temporal-collapse cycle that doesn't exist in
+            # fabula time. Build a cycle-detection view that excludes
+            # affordance_gate so genuine forward-causal cycles remain
+            # visible while these temporal artefacts are dissolved.
+            cycle_view = nx.DiGraph()
+            for u, v, edata in causal_graph.edges(data=True):
+                if edata.get("causality_type") == "affordance_gate":
+                    continue
+                cycle_view.add_edge(u, v, **edata)
+            try:
+                execution_order = list(nx.topological_sort(cycle_view))
+                # The cycle was an affordance/mutation temporal artefact;
+                # propagate every node in cycle_view's order, then append
+                # any nodes that only appear as affordance sources.
+                missing = [n for n in causal_graph.nodes if n not in cycle_view]
+                execution_order.extend(sorted(missing))
+                logger.info(
+                    "[CausalPhysics\u00b7Propagate] Cycle dissolved by "
+                    "excluding affordance_gate edges from cycle "
+                    "detection (temporal-collapse artefact, not a "
+                    "real causal loop)."
+                )
+            except nx.NetworkXUnfeasible:
+                sccs = list(nx.strongly_connected_components(cycle_view))
+                cyclic_sccs = [s for s in sccs if len(s) > 1]
+                for s in cyclic_sccs:
+                    cyclic_blocked |= s
+                logger.warning(
+                    "[CausalPhysics\u00b7Propagate] Cyclic causal graph: %d SCC(s) with "
+                    "%d node(s) total (after excluding affordance_gate). "
+                    "Cyclic clusters are blocked from propagation; only "
+                    "acyclic spines fire.",
+                    len(cyclic_sccs), len(cyclic_blocked),
+                )
+                condensation = nx.condensation(cycle_view, sccs)
+                execution_order = []
+                for comp_idx in nx.topological_sort(condensation):
+                    members = condensation.nodes[comp_idx]["members"]
+                    execution_order.extend(sorted(members))
+                missing = [n for n in causal_graph.nodes if n not in cycle_view]
+                execution_order.extend(sorted(missing))
 
         # 2b. Seed the active-source set. Edges only fire when their source
         #     is in this set; downstream targets get added as they mutate.
@@ -1170,9 +1684,28 @@ class CausalPhysicsEngine:
                         else:
                             contrib = w
                     elif src_data.get("node_type") == "WorldTrait":
-                        # World trait: scale impulse by magnitude intensity
-                        mag = src_data.get("magnitude", {})
-                        mag_value = mag.get("value", 0.5) if isinstance(mag, dict) else 0.5
+                        # World trait: scale impulse by *time-resolved* magnitude
+                        # intensity. The trait's ``magnitude.value`` may have
+                        # shifted via per-chunk WorldTraitUpdate (folded onto
+                        # ``GlobalTrait.state_timeline``) or the post-assembly
+                        # Step-5 timeline pass. Reading the static node attr
+                        # silently ignores those shifts. Look up the canonical
+                        # GlobalTrait and reconstruct at the simulation horizon
+                        # (the story's "now"); fall back to the sandbox copy
+                        # when the trait isn't on world_state (shadow merges).
+                        canonical = self.world_state.world_traits.get(src)
+                        if canonical is not None and canonical.state_timeline:
+                            try:
+                                resolved = reconstruct_world_trait_at(
+                                    canonical, int(horizon),
+                                )
+                                mag_value = float(resolved["magnitude"]["value"])
+                            except Exception:
+                                mag = src_data.get("magnitude", {})
+                                mag_value = mag.get("value", 0.5) if isinstance(mag, dict) else 0.5
+                        else:
+                            mag = src_data.get("magnitude", {})
+                            mag_value = mag.get("value", 0.5) if isinstance(mag, dict) else 0.5
                         contrib = mag_value * w
                     else:
                         # EventNode or other — fixed impulse from edge weight
@@ -1900,6 +2433,10 @@ class CausalPhysicsEngine:
             social_mutations=self._social_mutations,
             blocked=self._blocked,
             intervened_nodes=sorted(self._intervened_nodes),
+            proposition_mutations=self._proposition_mutations,
+            belief_mutations=self._belief_mutations,
+            concern_mutations=self._concern_mutations,
+            world_trait_mutations=self._world_trait_mutations,
             hidden_deltas=self._hidden_deltas,
             rule3_pruned_interventions=ctf_report.rule3_pruned,
             rule3_pruning_mode=rule3_mode,

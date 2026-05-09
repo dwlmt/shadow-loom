@@ -183,7 +183,10 @@ def _render_versions(state: AppState, container) -> None:
                     on_click=lambda: _open_delete_version_dialog(
                         state, tree_data, container,
                     ),
-                ).props("flat dense color=negative").tooltip(
+                ).props(
+                    'flat dense color=negative '
+                    'aria-label="Delete current version"'
+                ).tooltip(
                     "Delete current version (rejoins children to its parent)"
                 )
                 ui.button(
@@ -191,7 +194,10 @@ def _render_versions(state: AppState, container) -> None:
                     on_click=lambda: _open_reparent_dialog(
                         state, tree_data, container,
                     ),
-                ).props("flat dense color=primary").tooltip(
+                ).props(
+                    'flat dense color=primary '
+                    'aria-label="Reparent current version"'
+                ).tooltip(
                     "Move current version under a different ancestor"
                 )
                 # Branch-aware actions (only meaningful on a shadow
@@ -211,7 +217,8 @@ def _render_versions(state: AppState, container) -> None:
                         state, current, container,
                     ),
                 ).props(
-                    f"flat dense color=secondary {'' if is_shadow else 'disable'}"
+                    f"flat dense color=secondary {'' if is_shadow else 'disable'} "
+                    'aria-label="Promote shadow branch to factual"'
                 ).tooltip(
                     "Promote this shadow branch onto the factual mainline"
                 )
@@ -221,7 +228,8 @@ def _render_versions(state: AppState, container) -> None:
                         state, current, tree_data,
                     ),
                 ).props(
-                    f"flat dense {'' if is_shadow else 'disable'}"
+                    f"flat dense {'' if is_shadow else 'disable'} "
+                    'aria-label="Diff shadow version against factual head"'
                 ).tooltip("Diff this shadow version against factual head")
 
         tree_holder = ui.column().classes("w-full")
@@ -233,11 +241,47 @@ def _render_versions(state: AppState, container) -> None:
                     tree_data,
                     current_version_id=state.current_version_row_id,
                     on_click=_on_version_click,
-                    height="calc(100vh - 280px)",
+                    height="calc(100vh - 360px)",
                     orient="vertical",
                 )
 
         _draw_tree()
+
+        # Compact changeset card for the currently-selected version.
+        # Surfaces the new MergeChangeset counters (additive, affect,
+        # deletion, supersession) so users can see *what changed* in
+        # the version they just clicked without opening the full
+        # version dialog.
+        from shadow_loom_ui.components._changeset_chips import (
+            render_changeset_chips,
+        )
+        with ui.column().classes(
+            "w-full px-2 pt-2 pb-3 border-t border-slate-200 gap-1"
+        ):
+            current_v = next(
+                (v for v in tree_data
+                 if v["id"] == state.current_version_row_id),
+                None,
+            )
+            if current_v is None:
+                ui.label("Select a version to see its changeset.").classes(
+                    "text-[11px] italic text-slate-400"
+                )
+            else:
+                with ui.row().classes("w-full items-center gap-1"):
+                    ui.label(
+                        f"v{current_v['version']} changeset"
+                    ).classes(
+                        "text-[11px] uppercase tracking-wide text-slate-500"
+                    )
+                    if current_v.get("source"):
+                        ui.label(f"· {current_v['source']}").classes(
+                            "text-[11px] text-slate-400"
+                        )
+                render_changeset_chips(
+                    current_v.get("changeset_summary"),
+                    compact=True,
+                )
 
 
 def _can_mutate_versions(state: AppState) -> bool:
@@ -682,6 +726,112 @@ def _open_diff_dialog(
                     "text-sm bg-violet-50 p-2 rounded border "
                     "border-violet-200 max-h-[60vh] overflow-auto"
                 )
+
+        # ── Structural callouts ─────────────────────────────────
+        # Beyond the prose comparison, surface what *changed in the
+        # graph* between the factual head and the shadow branch:
+        # prevented / never-happened / removed events on the shadow
+        # side (the counterfactual surgery itself), and causal-edge
+        # add / drop lists. This is the audit-grade view a researcher
+        # needs to verify the Pearl rung-3 intervention actually
+        # mutated topology and not just prose.
+        try:
+            from shadow_loom.state_v1 import WorldStateV1
+
+            ws_factual = WorldStateV1.model_validate_json(
+                factual_row.world_state_json
+            )
+            ws_shadow = WorldStateV1.model_validate_json(
+                shadow_row.world_state_json
+            )
+
+            # Prevented / never-happened / removed events on the shadow.
+            blocked_types = {"prevented", "never_happened", "removed"}
+            blocked_events = [
+                evt for evt in ws_shadow.events
+                if (evt.event_type or "").lower() in blocked_types
+            ]
+
+            from shadow_loom_ui.reasoning_helpers import world_diff_data
+            diff_payload = world_diff_data(ws_factual, ws_shadow)
+            edges_added = diff_payload.get("added", {}).get(
+                "causal_edges", []
+            ) or []
+            edges_removed = diff_payload.get("removed", {}).get(
+                "causal_edges", []
+            ) or []
+
+            if blocked_events or edges_added or edges_removed:
+                ui.separator().classes("my-3")
+                ui.label("Surgery callouts").classes(
+                    "text-xs font-semibold text-slate-700"
+                )
+
+                if blocked_events:
+                    with ui.expansion(
+                        f"Prevented / never-happened events"
+                        f" \u2014 {len(blocked_events)}",
+                        icon="block",
+                        value=True,
+                    ).props("dense").classes(
+                        "w-full bg-rose-50 rounded-lg"
+                    ):
+                        ui.label(
+                            "Events the counterfactual surgery"
+                            " removed from the shadow timeline."
+                        ).classes("text-xs text-slate-600")
+                        for evt in blocked_events:
+                            with ui.row().classes(
+                                "items-baseline gap-2"
+                            ):
+                                ui.badge(
+                                    evt.event_type or "blocked",
+                                    color="red",
+                                ).props("dense outline")
+                                ui.label(
+                                    getattr(evt, "description", None)
+                                    or evt.id
+                                ).classes(
+                                    "text-xs text-slate-700"
+                                )
+                                ui.label(evt.id).classes(
+                                    "text-[10px] text-slate-500"
+                                    " font-mono"
+                                )
+
+                if edges_removed:
+                    with ui.expansion(
+                        f"Causal edges dropped"
+                        f" \u2014 {len(edges_removed)}",
+                        icon="link_off",
+                        value=False,
+                    ).props("dense").classes(
+                        "w-full bg-orange-50 rounded-lg"
+                    ):
+                        for edge_label in edges_removed:
+                            ui.label(edge_label).classes(
+                                "text-xs text-slate-700 font-mono"
+                            )
+
+                if edges_added:
+                    with ui.expansion(
+                        f"Causal edges added"
+                        f" \u2014 {len(edges_added)}",
+                        icon="add_link",
+                        value=False,
+                    ).props("dense").classes(
+                        "w-full bg-emerald-50 rounded-lg"
+                    ):
+                        for edge_label in edges_added:
+                            ui.label(edge_label).classes(
+                                "text-xs text-slate-700 font-mono"
+                            )
+        except Exception:
+            logger.exception(
+                "Shadow diff structural callouts failed; "
+                "falling back to prose-only diff"
+            )
+
         with ui.row().classes("justify-end mt-2"):
             ui.button("Close", on_click=dialog.close).props("flat")
     dialog.open()

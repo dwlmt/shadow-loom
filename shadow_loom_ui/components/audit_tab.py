@@ -969,9 +969,36 @@ def _render_query_audit_entry(index: int, result: NLQueryResult, state: AppState
         f"#{index + 1} — {query_type}",
         icon=icon,
     ).classes("w-full").props("dense"):
+        # Pearl-rung tag on the activity entry so a researcher
+        # auditing the project's epistemic posture can see at a glance
+        # whether each entry was rung-1 (Observation), rung-2
+        # (Intervention), or rung-3 (Counterfactual).
+        from shadow_loom_ui.components._pearl_chip import render_pearl_chip
+        render_pearl_chip(query_type)
         if result.summary:
             # Summary is now multi-line lay-user text (humanize_pipeline_result).
             safe_markdown(result.summary).classes("text-sm text-slate-600")
+
+        # Surface the structural changeset produced by this query so
+        # the activity log shows *what changed in the world* (events
+        # added/removed, propositions/concerns mutated, supersessions)
+        # alongside the convergence/threshold verdict.
+        try:
+            vwm = getattr(pr, "world_model", None) if pr else None
+            if vwm is not None and getattr(vwm, "history", None):
+                last = vwm.history[-1]
+                cs_obj = getattr(last, "changeset", None)
+                if cs_obj is not None:
+                    from shadow_loom_ui.components._changeset_chips import (
+                        render_changeset_chips,
+                    )
+                    render_changeset_chips(
+                        cs_obj.model_dump(),
+                        compact=True,
+                        empty_label=None,
+                    )
+        except Exception:
+            pass
 
         if result.error:
             ui.label(f"Error: {result.error}").classes("text-xs text-negative")

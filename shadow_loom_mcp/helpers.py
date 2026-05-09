@@ -186,6 +186,21 @@ def run_and_save(
         )
         response["version"] = ver.version
         response["version_row_id"] = ver.id
+        # Normalised changeset block — surfaces every MergeChangeset
+        # counter (additive + affect + deletion + supersession) on the
+        # action response so external clients don't need a follow-up
+        # ``get_history`` call to know what structurally changed.
+        if (
+            result.world_model
+            and result.world_model.history
+            and result.world_model.history[-1].changeset
+        ):
+            try:
+                response["changeset"] = (
+                    result.world_model.history[-1].changeset.model_dump()
+                )
+            except Exception:
+                logger.exception("Failed to serialise changeset for MCP response")
         # AMWN branch envelope (Story-integration plan, Step 6): tells
         # the MCP client which branch the new version landed on so it
         # can render the version DAG correctly without a follow-up call.

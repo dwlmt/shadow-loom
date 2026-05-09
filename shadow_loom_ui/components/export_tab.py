@@ -323,6 +323,127 @@ def build_export_tab(state: AppState) -> None:
                     "rounded-lg"
                 )
 
+        # ---- Research Dataset (JSONL preset) ----
+        # One-click bundling of every persisted version into a flat
+        # JSONL file: one row per generation event with the raw query
+        # ("prompt"), the parsed brief, the generated prose, the
+        # changeset summary, and any audit / source provenance the
+        # database has on the row. Targeted at researchers who want
+        # to slice the project's lineage into a fine-tunable / scored
+        # dataset without writing a custom dump script.
+        with ui.card().classes(
+            "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-6"
+        ):
+            with ui.row().classes("items-center gap-2"):
+                ui.icon("dataset", size="md", color="primary")
+                ui.label("Research dataset (JSONL)").classes(
+                    "text-lg font-semibold text-slate-800"
+                )
+            ui.label(
+                "One JSON object per persisted version: prompt + parsed "
+                "brief + generated prose + changeset summary + audit / "
+                "source provenance. Suitable for fine-tuning datasets "
+                "or for offline evaluation pipelines."
+            ).classes("text-sm text-slate-500")
+
+            def _build_dataset_rows() -> list[dict] | None:
+                if state.project_id is None:
+                    ui.notify("No project loaded", type="warning")
+                    return None
+                summaries = db.list_versions(state.project_id)
+                rows: list[dict] = []
+                for s in summaries:
+                    row = db.get_version_by_id(s["id"])
+                    if row is None:
+                        continue
+                    parsed_brief = None
+                    if row.parsed_query_json:
+                        try:
+                            parsed_brief = json.loads(row.parsed_query_json)
+                        except (TypeError, ValueError):
+                            parsed_brief = row.parsed_query_json
+                    changeset = None
+                    if row.changeset_json:
+                        try:
+                            changeset = json.loads(row.changeset_json)
+                        except (TypeError, ValueError):
+                            changeset = None
+                    rows.append({
+                        "version_row_id": row.id,
+                        "version": row.version,
+                        "ancestor_id": row.ancestor_id,
+                        "world_id": row.world_id,
+                        "branch_label": row.branch_label,
+                        "source": row.source,
+                        "description": row.description,
+                        "prompt": row.raw_query,
+                        "brief": parsed_brief,
+                        "prose": row.prose,
+                        "changeset": changeset,
+                        "created_at": str(row.created_at),
+                    })
+                return rows
+
+            def _export_dataset():
+                rows = _build_dataset_rows()
+                if rows is None:
+                    return
+                if not rows:
+                    ui.notify(
+                        "No versions to export", type="warning",
+                    )
+                    return
+                lines = "\n".join(
+                    json.dumps(r, default=str, ensure_ascii=False)
+                    for r in rows
+                )
+                ui.download(
+                    lines.encode("utf-8"),
+                    filename=(
+                        f"{_world_filename_stem()}_research.jsonl"
+                    ),
+                )
+                ui.notify(
+                    f"Exported {len(rows)} rows", type="positive",
+                )
+
+            def _copy_dataset():
+                rows = _build_dataset_rows()
+                if rows is None:
+                    return
+                if not rows:
+                    ui.notify(
+                        "No versions to export", type="warning",
+                    )
+                    return
+                lines = "\n".join(
+                    json.dumps(r, default=str, ensure_ascii=False)
+                    for r in rows
+                )
+                ui.run_javascript(
+                    f"navigator.clipboard.writeText({json.dumps(lines)})"
+                )
+                ui.notify(
+                    f"Copied {len(rows)} rows to clipboard",
+                    type="positive",
+                )
+
+            with ui.row().classes("gap-2"):
+                ui.button(
+                    "Download JSONL",
+                    icon="download",
+                    on_click=_export_dataset,
+                ).props("unelevated no-caps color=primary").classes(
+                    "rounded-lg shadow-sm"
+                )
+                ui.button(
+                    "Copy to clipboard",
+                    icon="content_copy",
+                    on_click=_copy_dataset,
+                ).props("no-caps outline color=secondary").classes(
+                    "rounded-lg"
+                )
+
         # ---- Summary Stats ----
         stats_container = ui.column().classes("w-full")
 

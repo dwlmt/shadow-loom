@@ -21,6 +21,28 @@ EntityId = Annotated[
     ),
 ]
 
+# Sibling aliases for the affect-unification id namespaces. Kept as
+# separate annotated types (rather than folded into ``EntityId``) so
+# the topology-id pattern above stays a strict gate for entity /
+# object / location / event / channel references; propositions and
+# concerns live in their own namespaces and should not be cross-
+# referenced from those fields.
+PropositionId = Annotated[
+    str,
+    Field(
+        pattern=r"^PROP_[A-Z0-9_]+$",
+        description="Canonical Shadow Loom proposition id (PROP_*).",
+    ),
+]
+
+ConcernId = Annotated[
+    str,
+    Field(
+        pattern=r"^CCN_[A-Z0-9_]+$",
+        description="Canonical Shadow Loom concern id (CCN_*).",
+    ),
+]
+
 # =====================================================================
 # PART 1: THE GRAPH DATABASE (The Reality Engine)
 # =====================================================================
@@ -193,10 +215,190 @@ class Belief(BaseModel):
             "extraction. Feeds the Bayesian abduction variance."
         ),
     )
+    proposition_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional PROP_ id joining this belief to a shared ``Proposition`` "
+            "in ``WorldStateV1.propositions``. When set, the affect-unification "
+            "layer can compute KL divergence between two agents' beliefs about "
+            "the *same* proposition (dramatic irony) and Bayesian surprise "
+            "between successive belief snapshots (Itti-Baldi). Backward-"
+            "compatible: legacy beliefs without a ``proposition_id`` continue "
+            "to render via ``perceived_state`` as before."
+        ),
+    )
 
     _coerce_es = field_validator("evidence_strength", mode="before")(
         lambda v: _coerce_evidence_strength(v)
     )
+
+
+class Proposition(AMWNNode):
+    """A first-class proposition that agents hold beliefs about.
+
+    Backbone of the affect-unification layer (see
+    ``/memories/repo/affect-unification-plan.md``). Lifts the opaque
+    ``Belief.perceived_state`` string into a shared, joinable object
+    so suspense, surprise, dramatic irony, and mystery can all be
+    computed as queries on the same belief tensor.
+
+    A ``Proposition`` is the storyworld *thing under discussion*. The
+    audience (``ENT_AUDIENCE``) and each character hold per-agent
+    confidence values about it. ``truth_at_fabula`` records when the
+    proposition's ground-truth value commits in fabula time, so
+    Bayesian surprise (``-log p(P)`` at reveal) is well-defined.
+
+    Inherits ``world_id`` from :class:`AMWNNode` so a Rung-2/3
+    intervention can introduce shadow-world propositions (e.g. a
+    counterfactual ``PROP_DUNCAN_DEAD = false`` proposition tagged
+    ``world_id='shadow'`` lives alongside the factual one) without
+    overwriting the factual ledger.
+    """
+    proposition_id: str = Field(
+        description="Unique PROP_ id, e.g. PROP_DUNCAN_DEAD.",
+    )
+    kind: Literal[
+        "event_occurs", "trait_holds", "relation_holds",
+        "identity_is", "outcome",
+    ] = Field(
+        description=(
+            "Ontological kind. ``outcome`` is the Brewer-Lichtenstein "
+            "resolution-of-an-open-question class that drives suspense; "
+            "the others are background propositions whose belief-state "
+            "feeds surprise / irony / mystery."
+        ),
+    )
+    referent_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "EVT_/ENT_/OBJ_/LOC_/WORLD_/CHN_ ids the proposition is *about*. "
+            "E.g. PROP_DUNCAN_DEAD references ['ENT_DUNCAN']; "
+            "PROP_MACBETH_KILLS_DUNCAN references the murder event."
+        ),
+    )
+    description: str = Field(
+        description="Human-readable label, e.g. 'Duncan is dead'.",
+    )
+    audience_default_prior: float = Field(
+        default=0.5,
+        ge=0.0, le=1.0,
+        description=(
+            "Audience's prior confidence in the proposition before any "
+            "narrative evidence. Lower for blindsiding twists, higher "
+            "for telegraphed inevitabilities."
+        ),
+    )
+    stakes: float = Field(
+        default=0.5,
+        ge=0.0, le=1.0,
+        description=(
+            "How much resolution of this proposition matters narratively. "
+            "Multiplier on suspense / surprise / irony contributions."
+        ),
+    )
+    truth_at_fabula: Dict[int, bool] = Field(
+        default_factory=dict,
+        description=(
+            "Ground-truth commitments keyed by fabula_time. ``{1700: True}`` "
+            "means the proposition becomes true at fabula 1700; before that "
+            "the truth value is undetermined for surprise-scoring purposes."
+        ),
+    )
+    state_timeline: List["PropositionSnapshot"] = Field(
+        default_factory=list,
+        description=(
+            "Chronological snapshots of mutable framing fields (stakes, "
+            "audience_default_prior, description) through the story. Empty "
+            "= proposition's framing unchanged throughout narrative. The "
+            "separate ``truth_at_fabula`` mapping continues to carry the "
+            "ground-truth commitments."
+        ),
+    )
+
+
+class Concern(AMWNNode):
+    """A standing fear or desire on the part of a single entity.
+
+    Replaces the inferred-at-runtime ``_bucket_event_for_focal``
+    classification with a first-class ledger. Each concern names a
+    ``Proposition`` whose realisation the entity desires or dreads,
+    plus a per-entity salience that captures *this character's*
+    weighting of *this concern* (Lear cares about irrelevance more
+    than Banquo cares about it).
+
+    ``counter_concern_ids`` lets us represent ambivalence as paired
+    fear/desire concerns over the same proposition; the dashboard can
+    surface 'torn between X and ¬X' when both members are above
+    threshold.
+
+    Inherits ``world_id`` from :class:`AMWNNode` so Rung-2/3
+    interventions can install shadow-world concerns (e.g. a
+    counterfactual Macbeth who *did not* desire the crown can be
+    represented by a shadow concern with ``polarity='fear'`` over
+    ``PROP_MACBETH_BECOMES_KING``) without mutating the factual
+    character's ledger.
+    """
+    concern_id: str = Field(description="Unique CCN_ id.")
+    proposition_id: str = Field(
+        description="PROP_ id whose realisation realises or averts this concern.",
+    )
+    polarity: Literal["desire", "fear"] = Field(
+        description="Whether this entity wants the proposition true (desire) or false (fear).",
+    )
+    kind: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional harm/benefit-kind label (e.g. 'betrayal', 'abandonment', "
+            "'irrelevance', 'death'). Drawn from the same vocabulary as the "
+            "causal-physics ``MECHANISM_TRAIT_MAP`` plus narrative-affect "
+            "extensions. Feeds per-entity salience overrides."
+        ),
+    )
+    salience: float = Field(
+        default=0.5,
+        ge=0.0, le=1.0,
+        description="This entity's personal weighting of this concern.",
+    )
+    activation_fabula_window: Optional[List[int]] = Field(
+        default=None,
+        description=(
+            "Optional [start, end] fabula-time window during which this concern "
+            "is active. None = always active. Lets us model concerns that arise "
+            "mid-story (Lear's irrelevance only after the abdication)."
+        ),
+    )
+    counter_concern_ids: List[str] = Field(
+        default_factory=list,
+        description="Other CCN_ ids forming an ambivalent pair with this concern.",
+    )
+    state_timeline: List["ConcernSnapshot"] = Field(
+        default_factory=list,
+        description=(
+            "Chronological snapshots of mutable concern fields (salience, "
+            "polarity, activation_fabula_window, counter_concern_ids, kind) "
+            "through the story. Empty = concern unchanged throughout narrative."
+        ),
+    )
+
+
+class BeliefConfidenceShift(BaseModel):
+    """Confidence/inertia overwrite on a single existing :class:`Belief`,
+    folded onto :class:`EntityStateSnapshot` so the per-fabula timeline
+    carries Affect-driven confidence drift alongside Consequences-driven
+    creates / invalidates.
+
+    Match is by ``target_id`` (and ``proposition_id`` when supplied). When
+    no matching belief exists at the snapshot's fabula tick the entry is
+    skipped during reconstruction — Affect must not forge new beliefs;
+    that's Consequences' job via ``new_beliefs``.
+    """
+    target_id: str = Field(description="target_id of the belief to update.")
+    proposition_id: Optional[str] = Field(
+        default=None,
+        description="Optional PROP_ id discriminator when target_id is ambiguous.",
+    )
+    new_confidence: float = Field(ge=0.0, le=1.0)
+    new_inertia: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
 
 class EntityStateSnapshot(BaseModel):
@@ -227,6 +429,20 @@ class EntityStateSnapshot(BaseModel):
     beliefs_invalidated: List[str] = Field(
         default_factory=list,
         description="target_ids of beliefs shattered/superseded at this point.",
+    )
+    belief_confidence_updates: List["BeliefConfidenceShift"] = Field(
+        default_factory=list,
+        description=(
+            "Per-belief confidence (and optional inertia) overwrites at "
+            "this fabula tick. Authored by the Phase B4 Affect Agent's "
+            "``belief_snapshots`` channel — confidence drift on existing "
+            "beliefs triggered by emotional / framing events. Distinct "
+            "from ``beliefs_added`` (Consequences creates a new belief) "
+            "and ``beliefs_invalidated`` (Consequences shatters a belief). "
+            "Replayed by :func:`reconstruct_entity_at` so per-character "
+            "Bayesian-surprise diagnostics see the drift at the right "
+            "fabula_time, not only the snapshot-flat overwrite."
+        ),
     )
     status: Optional[Literal["healthy", "injured", "ill", "dead", "unconscious"]] = Field(
         default=None, description="New status if changed, else null.",
@@ -260,6 +476,95 @@ class WorldTraitSnapshot(BaseModel):
     description: Optional[str] = Field(
         default=None,
         description="Updated prose description if the nature of the trait changed, else null.",
+    )
+
+
+class PropositionSnapshot(BaseModel):
+    """A point-in-time snapshot of a proposition's mutable framing fields.
+
+    Stored on ``Proposition.state_timeline`` in fabula_time order.
+    Mirrors the snapshot/replay pattern used by ``Entity`` and
+    ``GlobalTrait`` so audience-facing weights (``stakes``,
+    ``audience_default_prior``) can evolve as the narrative escalates
+    or de-escalates a question. Only *changed* fields need be
+    populated — reconstruction merges each snapshot atop the previous
+    accumulated state.
+
+    The proposition's ground-truth value continues to live on the
+    separate ``truth_at_fabula`` mapping; this timeline is for the
+    *narrative weighting* of the proposition, not its truth.
+    """
+    world_id: Literal["factual", "shadow"] = Field(
+        default="factual",
+        description=(
+            "AMWN branch this snapshot belongs to. Snapshots produced by a "
+            "shadow merge are tagged ``shadow`` so consumers walking a live "
+            "proposition's ``state_timeline`` can filter out off-branch entries."
+        ),
+    )
+    fabula_time: int = Field(description="fabula_time this snapshot is valid from.")
+    triggered_by: Optional[str] = Field(
+        default=None,
+        description="EVT_ ID that caused this framing change (revelation, escalation, …).",
+    )
+    stakes: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0,
+        description="Updated narrative stakes if changed, else null.",
+    )
+    audience_default_prior: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0,
+        description="Updated audience prior if the narrator has reframed the proposition, else null.",
+    )
+    description: Optional[str] = Field(
+        default=None,
+        description="Updated human-readable label if the proposition's framing shifted, else null.",
+    )
+
+
+class ConcernSnapshot(BaseModel):
+    """A point-in-time snapshot of a concern's mutable fields.
+
+    Stored on ``Concern.state_timeline`` in fabula_time order.
+    Mirrors the snapshot/replay pattern used by ``Entity`` and
+    ``GlobalTrait`` so per-entity ``salience`` can ramp / decay,
+    ``polarity`` can flip on a desire→fear reversal, and the
+    activation window or counter-concern set can be rewritten
+    mid-story without losing the original baseline. Only *changed*
+    fields need be populated — reconstruction merges each snapshot
+    atop the previous accumulated state.
+    """
+    world_id: Literal["factual", "shadow"] = Field(
+        default="factual",
+        description=(
+            "AMWN branch this snapshot belongs to. Snapshots produced by a "
+            "shadow merge are tagged ``shadow`` so consumers walking a live "
+            "concern's ``state_timeline`` can filter out off-branch entries."
+        ),
+    )
+    fabula_time: int = Field(description="fabula_time this snapshot is valid from.")
+    triggered_by: Optional[str] = Field(
+        default=None,
+        description="EVT_ ID that caused this concern shift.",
+    )
+    salience: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0,
+        description="Updated personal salience if changed, else null.",
+    )
+    polarity: Optional[Literal["desire", "fear"]] = Field(
+        default=None,
+        description="Updated polarity if a desire→fear (or vice versa) reversal occurred, else null.",
+    )
+    activation_fabula_window: Optional[List[int]] = Field(
+        default=None,
+        description="Updated [start, end] activation window if rewritten, else null.",
+    )
+    counter_concern_ids: Optional[List[str]] = Field(
+        default=None,
+        description="Updated set of counter-concern CCN_ ids if the ambivalence pairing changed, else null.",
+    )
+    kind: Optional[str] = Field(
+        default=None,
+        description="Updated harm/benefit-kind label if the concern was reclassified, else null.",
     )
 
 
@@ -299,6 +604,18 @@ class GlobalTrait(AMWNNode):
         description="Chronological snapshots of state changes through the story. "
                     "Empty = trait unchanged throughout narrative.",
     )
+    proposition_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional PROP_ id this world trait reifies. When set, the trait"
+            " doubles as a first-class proposition the audience can hold beliefs"
+            " about (e.g. 'the prophecy is binding', 'the empire is watching')."
+            " Pearl-Rung-2 BeliefMutation clamps on the linked proposition"
+            " surface as additional WorldTraitSnapshot entries so propagation"
+            " reflects the surgical change. Concerns/beliefs may target either id;"
+            " the reconciler resolves cross-references at merge time."
+        ),
+    )
 
     _coerce_domains = field_validator("affected_domains", mode="before")(
         lambda v: _coerce_domain_list(v)
@@ -327,6 +644,15 @@ class Entity(AMWNNode):
     status: Literal["healthy", "injured", "ill", "dead", "unconscious"]
     traits: Dict[str, TraitVector] = Field(description="Initial multidimensional psychology (pre-story baseline).")
     beliefs: List[Belief] = Field(default_factory=list, description="Initial epistemic state.")
+    concerns: List[Concern] = Field(
+        default_factory=list,
+        description=(
+            "Standing fears and desires this entity carries through the "
+            "narrative. Drives the affective-physics layer's threat / hope "
+            "surfacing per entity. Empty for legacy worlds; populated by "
+            "the optional concern-extraction ingestion step."
+        ),
+    )
     constants: List[str] = Field(default_factory=list, description="Immutable boolean tags, e.g., ['blind', 'undead']")
     state_timeline: List[EntityStateSnapshot] = Field(
         default_factory=list,
@@ -357,7 +683,17 @@ class EventNode(AMWNNode):
         ),
     )
     actor_ids: List[str] = Field(default_factory=list, description="Who did it? Empty if natural event. Supports joint actions (e.g., ['ENT_MACBETH', 'ENT_LADY_MACBETH']).")
-    target_ids: List[str] = Field(default_factory=list, description="Who/what was acted upon? e.g., ['ENT_DUNCAN'] in a murder event. Supports diffuse effects.")
+    target_ids: List[str] = Field(default_factory=list, description=(
+        "Who/what was acted upon? e.g., ['ENT_DUNCAN'] in a murder event. "
+        "Supports diffuse effects. For ``event_type='utterance'``, "
+        "``target_ids`` is the set of entities/objects/EVENTS the speech-act "
+        "is *about* (the utterance's referents) — not its downstream causal "
+        "effects. Any EVT_ id in an utterance's ``target_ids`` must have "
+        "``fabula_time <= utterance.fabula_time`` UNLESS the utterance is "
+        "``truth_value='performative'`` (prophecies, vows, orders may "
+        "reference future events they posit/commit to). Causal effects of an "
+        "utterance belong in ``causal_topology`` as ``chain_reaction`` edges."
+    ))
     description: str
 
     # --- Utterance / revelation payload (optional, mainly for event_type='utterance' or 'revelation') ---
@@ -419,6 +755,47 @@ class EventNode(AMWNNode):
             "a pivotal beat (a confession, a death, a betrayal); 5.0+ is "
             "reserved for cataclysmic plot-turns (the murder of Duncan, the "
             "dropping of the bomb). Scenic / connective beats sit at 0.5–1.0."
+        ),
+    )
+
+    # --- Proposition links (optional, populated by the affect sub-stage) ---
+    resolves_proposition_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "PROP_ ids whose ``truth_at_fabula`` this event commits. Set by "
+            "the per-chunk affect sub-stage when an outcome event resolves "
+            "an open question (e.g. EVT_DUNCAN_MURDER resolves "
+            "PROP_DUNCAN_DEAD = True). The reconciler reads this list to "
+            "populate ``Proposition.truth_at_fabula``."
+        ),
+    )
+    asserts_proposition_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "For utterance / revelation events: the PROP_ id whose truth "
+            "the event asserts. Combined with ``truth_value`` the affect "
+            "layer derives per-agent belief deltas without re-parsing "
+            "``content``."
+        ),
+    )
+    denies_proposition_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "For utterance / revelation events: the PROP_ id whose truth "
+            "the event denies. Mutually exclusive with "
+            "``asserts_proposition_id``; an utterance that both asserts P "
+            "and denies Q should split into two events."
+        ),
+    )
+    superseded_by_event_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "When non-null, this event has been overridden by another event "
+            "(typically because a counterfactual was promoted onto the "
+            "factual mainline via ``branch_policy='mainline'`` with an "
+            "explicit supersession map). Downstream physics, audit and "
+            "render readers should treat the named successor as canonical "
+            "while preserving the historical event for replay / audit."
         ),
     )
 
@@ -525,6 +902,21 @@ class Channel(AMWNNode):
         description=(
             "Fabula tick the channel is severed (line cut, bond broken, courier killed). "
             "Null = still active at the end of the narrative."
+        ),
+    )
+    discovered_at_syuzhet: Optional[int] = Field(
+        default=None,
+        description=(
+            "Syuzhet index at which the audience (or POV entity) first "
+            "becomes aware of this channel. ``None`` means the channel "
+            "is overt from the start of the narrative; a positive value "
+            "marks the reveal beat at which a previously-hidden channel "
+            "(an undisclosed cipher line, a secret pact, a back-channel "
+            "tip-off) is brought on-page. Distinct from "
+            "``established_at_fabula`` (when the channel exists in the "
+            "storyworld) so dramatic-irony and mystery scoring can "
+            "reason about *audience knowledge* of the channel without "
+            "touching its in-world lifecycle."
         ),
     )
     evidence_strength: Literal["weak", "moderate", "strong"] = Field(
@@ -659,15 +1051,34 @@ class CausalEdge(AMWNEdge):
                 f"source_id '{self.source_id}' is a world trait — causality_type must be "
                 f"'affordance_gate', 'ambient_propagation', 'mutation', or 'chain_reaction', got '{ct}'."
             )
+        # WORLD_ → WORLD_ cross-trait dependencies (e.g. WARTIME → SURVEILLANCE_STATE).
+        # The destination is a state node, not an event, so chain_reaction / mutation
+        # both behave structurally; the runtime treats them like any other state-to-state
+        # edge. Permit them explicitly so the validator does not block authored W→W edges.
+        tgt_is_world = self.target_id.startswith("WORLD_")
+        if src_is_world and tgt_is_world and ct not in ("chain_reaction", "mutation"):
+            raise ValueError(
+                f"WORLD_→WORLD_ edge '{self.source_id}'→'{self.target_id}' must use "
+                f"causality_type 'chain_reaction' or 'mutation', got '{ct}'."
+            )
         if tgt_is_event and ct not in ("chain_reaction", "affordance_gate"):
             raise ValueError(
                 f"target_id '{self.target_id}' is an event — causality_type must be "
                 f"'chain_reaction' or 'affordance_gate', got '{ct}'."
             )
-        if not tgt_is_event and ct not in ("mutation", "mutation_social", "ambient_propagation"):
+        if not tgt_is_event and ct not in ("mutation", "mutation_social", "ambient_propagation", "chain_reaction"):
             raise ValueError(
                 f"target_id '{self.target_id}' is a state node — causality_type must be "
-                f"'mutation', 'mutation_social', or 'ambient_propagation', got '{ct}'."
+                f"'mutation', 'mutation_social', 'ambient_propagation', or 'chain_reaction', got '{ct}'."
+            )
+        # ``chain_reaction`` against a state-node target is only legal when the
+        # source is also a WORLD_ trait (cross-trait dependency, e.g.
+        # WARTIME → SURVEILLANCE_STATE). Forbid it for entity/event sources to
+        # keep the structural contract tight.
+        if not tgt_is_event and ct == "chain_reaction" and not src_is_world:
+            raise ValueError(
+                f"chain_reaction into state-node target '{self.target_id}' is only "
+                f"permitted from a WORLD_ source; got source '{self.source_id}'."
             )
         # mutation_social requires rel_counterpart_id
         if ct == "mutation_social" and not self.rel_counterpart_id:
@@ -1016,6 +1427,20 @@ def reconstruct_entity_at(entity: "Entity", fabula_time: int) -> dict:
         # Add new beliefs
         for b in snap.beliefs_added:
             beliefs.append(b.model_dump())
+        # Apply Affect-side confidence drift on existing beliefs.
+        # Match by (target_id, proposition_id when set); silently skip
+        # entries that don't match a current belief — Affect must not
+        # forge new beliefs (that's Consequences' job).
+        for shift in getattr(snap, "belief_confidence_updates", []) or []:
+            for b in beliefs:
+                if b.get("target_id") != shift.target_id:
+                    continue
+                if shift.proposition_id and b.get("proposition_id") not in (None, shift.proposition_id):
+                    continue
+                b["confidence"] = float(shift.new_confidence)
+                if shift.new_inertia is not None:
+                    b["inertia"] = float(shift.new_inertia)
+                break
         if snap.status is not None:
             status = snap.status
         if snap.location_id is not None:
@@ -1055,6 +1480,97 @@ def reconstruct_world_trait_at(trait: "GlobalTrait", fabula_time: int) -> dict:
     return {
         "magnitude": magnitude,
         "description": description,
+    }
+
+
+def reconstruct_proposition_at(prop: "Proposition", fabula_time: int) -> dict:
+    """Reconstruct a proposition's mutable framing state at a given fabula_time.
+
+    Starts from the Proposition's initial fields and replays
+    ``PropositionSnapshot`` entries up to *fabula_time* inclusive.
+    Mirrors :func:`reconstruct_entity_at` and
+    :func:`reconstruct_world_trait_at` so engines can read
+    fabula-time-aware ``stakes`` / ``audience_default_prior`` /
+    ``description`` rather than only the static initial values.
+
+    The returned ``truth_at`` value is the latest committed truth from
+    ``Proposition.truth_at_fabula`` at or before *fabula_time*; ``None``
+    if the proposition has not yet committed at that time.
+    """
+    stakes = prop.stakes
+    audience_default_prior = prop.audience_default_prior
+    description = prop.description
+
+    for snap in sorted(prop.state_timeline, key=lambda s: s.fabula_time):
+        if snap.fabula_time > fabula_time:
+            break
+        if snap.stakes is not None:
+            stakes = snap.stakes
+        if snap.audience_default_prior is not None:
+            audience_default_prior = snap.audience_default_prior
+        if snap.description is not None:
+            description = snap.description
+
+    truth_at: Optional[bool] = None
+    for t in sorted(prop.truth_at_fabula.keys()):
+        if t > fabula_time:
+            break
+        truth_at = prop.truth_at_fabula[t]
+
+    return {
+        "stakes": stakes,
+        "audience_default_prior": audience_default_prior,
+        "description": description,
+        "truth_at": truth_at,
+    }
+
+
+def reconstruct_concern_at(concern: "Concern", fabula_time: int) -> dict:
+    """Reconstruct a concern's mutable state at a given fabula_time.
+
+    Starts from the Concern's initial fields and replays
+    ``ConcernSnapshot`` entries up to *fabula_time* inclusive.
+    Mirrors :func:`reconstruct_entity_at` so engines can read
+    fabula-time-aware ``salience`` / ``polarity`` /
+    ``activation_fabula_window`` / ``counter_concern_ids`` / ``kind``
+    rather than only the static initial values.
+
+    Returns an ``active`` flag honoring the (possibly updated)
+    ``activation_fabula_window`` so callers don't need to repeat the
+    window check.
+    """
+    salience = concern.salience
+    polarity = concern.polarity
+    activation_fabula_window = concern.activation_fabula_window
+    counter_concern_ids = list(concern.counter_concern_ids)
+    kind = concern.kind
+
+    for snap in sorted(concern.state_timeline, key=lambda s: s.fabula_time):
+        if snap.fabula_time > fabula_time:
+            break
+        if snap.salience is not None:
+            salience = snap.salience
+        if snap.polarity is not None:
+            polarity = snap.polarity
+        if snap.activation_fabula_window is not None:
+            activation_fabula_window = snap.activation_fabula_window
+        if snap.counter_concern_ids is not None:
+            counter_concern_ids = list(snap.counter_concern_ids)
+        if snap.kind is not None:
+            kind = snap.kind
+
+    active = True
+    if activation_fabula_window:
+        lo, hi = activation_fabula_window
+        active = lo <= fabula_time <= hi
+
+    return {
+        "salience": salience,
+        "polarity": polarity,
+        "activation_fabula_window": activation_fabula_window,
+        "counter_concern_ids": counter_concern_ids,
+        "kind": kind,
+        "active": active,
     }
 
 
@@ -1173,6 +1689,16 @@ class WorldStateV1(BaseModel):
         ),
     )
     social_topology: List[RelationshipEdge] = Field(default_factory=list)
+    propositions: List[Proposition] = Field(
+        default_factory=list,
+        description=(
+            "Shared proposition registry for the affect-unification layer. "
+            "Audience and characters hold per-agent ``Belief`` confidences "
+            "about these propositions; suspense/surprise/irony/mystery are "
+            "all computed as queries over this registry. Empty for legacy "
+            "worlds; populated by ``synthesise_propositions`` after ingestion."
+        ),
+    )
     world_facts: List["WorldFact"] = Field(
         default_factory=list,
         description=(

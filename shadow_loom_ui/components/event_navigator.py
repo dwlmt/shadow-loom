@@ -57,10 +57,16 @@ def build_event_navigator(state: AppState) -> None:
         return
 
     selected_event = {"id": ""}
-    # User-toggled order: "syuzhet" (narrative-text order) vs
-    # "fabula" (in-world chronological order). They differ for any
-    # story with flashbacks, framing devices, or in medias res.
-    order_state = {"mode": "syuzhet"}
+    # Order is bound to the global ``state.time_axis`` so flipping the
+    # workspace toolbar's Fabula/Syuzhet picker also reorders this
+    # rail (and vice-versa). The local ``order_state`` shim is kept
+    # only as a read-through helper for the existing render code.
+    order_state = {"mode": state.time_axis or "syuzhet"}
+    # Whether to filter out events that have been superseded by a
+    # promoted counterfactual (Tier-6 supersession UX). Default False
+    # so historical context is visible; toggle on to read the canonical
+    # post-merge mainline only.
+    hide_superseded = {"v": False}
 
     with ui.splitter(value=28).classes("w-full").style(
         "height: calc(100vh - 280px); min-height: 480px"
@@ -78,14 +84,25 @@ def build_event_navigator(state: AppState) -> None:
                         "text-[10px] text-slate-400 uppercase"
                     )
 
-                # Order toggle: syuzhet (text) vs fabula (chronology)
+                # Order toggle: syuzhet (text) vs fabula (chronology).
+                # Bound to the global ``state.time_axis`` so changes
+                # propagate to every other axis-aware panel.
                 order_toggle = ui.toggle(
                     {"syuzhet": "Narrative", "fabula": "Chronology"},
-                    value="syuzhet",
+                    value=order_state["mode"],
                 ).props("dense no-caps spread").classes("w-full px-2 q-mt-xs").tooltip(
                     "Narrative = syuzhet (order events appear in the text). "
-                    "Chronology = fabula (order events happen in the world)."
+                    "Chronology = fabula (order events happen in the world). "
+                    "Bound to the global time-axis picker."
                 )
+
+                # Hide-superseded switch — filters events with a
+                # non-null ``superseded_by_event_id`` so the rail
+                # shows only the canonical post-merge mainline.
+                hide_sw = ui.switch(
+                    "Hide superseded events",
+                    value=False,
+                ).props("dense").classes("w-full px-2 text-xs")
 
                 # Search box
                 search = ui.input(
@@ -122,6 +139,8 @@ def build_event_navigator(state: AppState) -> None:
                             or ft in r["id"].lower()
                             or ft in r["event_type"].lower()
                         ]
+                    if hide_superseded["v"]:
+                        rows = [r for r in rows if not r.get("superseded")]
 
                     if not rows:
                         with list_container:
@@ -169,16 +188,60 @@ def build_event_navigator(state: AppState) -> None:
                                         ui.label(secondary).classes(
                                             "text-[10px] text-slate-400 font-mono"
                                         )
+                                        if r.get("superseded"):
+                                            ui.badge(
+                                                f"⤳ {r['superseded_by_event_id']}",
+                                                color="amber",
+                                            ).props("outline dense").classes(
+                                                "text-[9px]"
+                                            ).tooltip(
+                                                "Superseded by a promoted "
+                                                "counterfactual; click the "
+                                                "successor in the rail."
+                                            )
+                                    desc_classes = (
+                                        "text-xs leading-tight "
+                                        + ("line-through text-slate-400"
+                                           if r.get("superseded")
+                                           else "text-slate-700")
+                                    )
                                     ui.label(r["description"][:80] or r["id"]).classes(
-                                        "text-xs text-slate-700 leading-tight"
+                                        desc_classes
                                     ).style("overflow-wrap:anywhere")
 
                 def _on_order_change() -> None:
-                    order_state["mode"] = order_toggle.value or "syuzhet"
+                    new_axis = order_toggle.value or "syuzhet"
+                    order_state["mode"] = new_axis
+                    # Push to global so other tabs follow.
+                    if state.time_axis != new_axis:
+                        state.set_time_axis(new_axis)
+                    _refresh_list()
+
+                def _on_global_axis_change(**_kw) -> None:
+                    new_axis = state.time_axis or "syuzhet"
+                    if order_state["mode"] == new_axis:
+                        return
+                    order_state["mode"] = new_axis
+                    if order_toggle.value != new_axis:
+                        order_toggle.value = new_axis
+                        try:
+                            order_toggle.update()
+                        except RuntimeError:
+                            return
                     _refresh_list()
 
                 order_toggle.on("update:model-value", lambda _e: _on_order_change())
                 search.on("update:model-value", lambda _e: _refresh_list())
+                state.on(StateEvent.TIME_AXIS_CHANGED, _on_global_axis_change)
+
+                def _on_hide_superseded_change(e: Any) -> None:
+                    hide_superseded["v"] = bool(getattr(e, "value", False))
+                    _refresh_list()
+
+                hide_sw.on(
+                    "update:model-value",
+                    lambda e: _on_hide_superseded_change(e),
+                )
 
         # ── Right: detail dossier ─────────────────────────────────
         with split.after:
@@ -259,6 +322,52 @@ def _render_event_dossier(state: AppState, ctx: Dict[str, Any]) -> None:
             ui.label(f"fabula t={evt['fabula_time']}").classes(
                 "text-xs text-slate-500"
             )
+            # Per-event affective badges — KL-style surprise + dramatic
+            # irony at this event's syuzhet anchor. Computed via the
+            # cached gauge scorer so repeat scrubs are O(1). Hidden
+            # silently when the engine cannot score (no focus entities,
+            # missing syuzhet index, etc.) so the dossier stays clean
+            # for early/utterance-only events.
+            try:
+                from shadow_loom_ui.viz_helpers import (
+                    compute_affective_scores,
+                    _top_entity_ids_by_event_degree,
+                )
+
+                ws_full = state.world_state
+                anchor = evt.get("syuzhet_index")
+                if ws_full is not None and anchor is not None:
+                    eids = _top_entity_ids_by_event_degree(ws_full, limit=20)
+                    if eids:
+                        affect = compute_affective_scores(
+                            ws_full,
+                            entity_ids=eids,
+                            syuzhet_anchor=int(anchor),
+                            ws_for_engine=ws_full,
+                            surprise_local=True,
+                        )
+                        surprise = affect.get("surprise")
+                        irony = affect.get("dramatic_irony")
+                        if surprise is not None:
+                            ui.badge(
+                                f"surprise {float(surprise):.2f}",
+                                color="amber",
+                            ).props("dense outline").tooltip(
+                                "KL(actual || reader prior) — "
+                                "Itti-Baldi Bayesian surprise scored at "
+                                "this event's syuzhet anchor."
+                            )
+                        if irony is not None:
+                            ui.badge(
+                                f"irony {float(irony):.2f}",
+                                color="indigo",
+                            ).props("dense outline").tooltip(
+                                "Dramatic irony — reader/character "
+                                "knowledge asymmetry at this event."
+                            )
+            except Exception:
+                # Engine scoring is best-effort; never break the dossier.
+                pass
             ui.space()
             ui.label(evt["id"]).classes(
                 "text-[10px] text-slate-400 font-mono"
@@ -267,6 +376,27 @@ def _render_event_dossier(state: AppState, ctx: Dict[str, Any]) -> None:
         ui.label(evt["description"] or "(no description)").classes(
             "text-base text-slate-800 mt-2"
         )
+
+        # Supersession callout: when this event has been overridden
+        # by a promoted counterfactual, surface the successor as a
+        # clickable link so the reader can jump to the canonical
+        # post-merge mainline beat.
+        successor = evt.get("superseded_by_event_id")
+        if successor:
+            with ui.row().classes(
+                "items-center gap-2 mt-2 px-3 py-2 rounded-md "
+                "bg-amber-50 border border-amber-200"
+            ):
+                ui.icon("auto_awesome_motion", color="amber-9", size="sm")
+                ui.label("Superseded by").classes("text-xs text-amber-900 font-semibold")
+                ui.button(
+                    successor,
+                    on_click=lambda eid=successor: state.select_node(eid, "EventNode"),
+                ).props("dense flat color=amber-9 size=sm no-caps")
+                ui.label(
+                    "(this beat has been overridden by a promoted "
+                    "counterfactual; read the successor as canonical)"
+                ).classes("text-[10px] text-amber-800 italic")
 
         # Cross-links bar
         with ui.row().classes("items-center gap-2 mt-3 flex-wrap"):

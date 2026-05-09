@@ -18,7 +18,131 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from shadow_loom.models import Channel, EventNode, WorldStateV1
+from shadow_loom.models import (
+    Channel,
+    EventNode,
+    WorldStateV1,
+    reconstruct_entity_at,
+    reconstruct_world_trait_at,
+)
+
+
+def reconstruct_entity_at_causal(
+    ws: WorldStateV1,
+    entity_id: str,
+    fabula_time: int,
+) -> Dict[str, Any]:
+    """Reconstruct an entity at ``fabula_time`` overlaying causal mutations.
+
+    1. Seed traits from ``Entity.traits`` (pre-story baseline).
+    2. Replay every ``mutation`` / ``mutation_social`` :class:`CausalEdge`
+       whose ``target_id`` is this entity, ``trait_target`` is set, and
+       ``fabula_time <= fabula_time`` — accumulating signed
+       ``trait_delta`` per axis (clamped to ``[-1, 1]``).
+    3. Apply the snapshot replay on top — authored
+       :class:`EntityStateSnapshot` values override the running causal
+       values at their tick.
+
+    Mirrors ``reconstruct_entity_at`` shape so callers can swap.
+    """
+    ent = ws.entities.get(entity_id)
+    if ent is None:
+        return {"traits": {}, "beliefs": [], "status": "healthy", "location_id": ""}
+
+    running: Dict[str, Dict[str, Any]] = {
+        k: {
+            "value": v.value,
+            "inertia": v.inertia,
+            "evidence_strength": v.evidence_strength,
+        }
+        for k, v in ent.traits.items()
+    }
+    mutations = sorted(
+        (
+            ce for ce in ws.causal_topology
+            if ce.causality_type in ("mutation", "mutation_social")
+            and ce.target_id == entity_id
+            and ce.trait_target
+            and ce.trait_delta is not None
+            and ce.fabula_time <= fabula_time
+        ),
+        key=lambda c: c.fabula_time,
+    )
+    for ce in mutations:
+        cur = running.get(
+            ce.trait_target,
+            {"value": 0.0, "inertia": 0.5, "evidence_strength": "moderate"},
+        )
+        new_val = max(-1.0, min(1.0, cur["value"] + (ce.trait_delta or 0.0)))
+        running[ce.trait_target] = {
+            "value": new_val,
+            "inertia": cur["inertia"],
+            "evidence_strength": cur.get("evidence_strength", "moderate"),
+        }
+
+    snap = reconstruct_entity_at(ent, fabula_time)
+    for tn, tv in snap.get("traits", {}).items():
+        if tn in ent.traits or tn in running:
+            running[tn] = (
+                tv if isinstance(tv, dict)
+                else {"value": float(tv), "inertia": 0.5, "evidence_strength": "moderate"}
+            )
+
+    return {
+        "traits": running,
+        "beliefs": snap.get("beliefs", []),
+        "status": snap.get("status", ent.status),
+        "location_id": snap.get("location_id", ent.location_id),
+    }
+
+
+def reconstruct_world_trait_at_causal(
+    ws: WorldStateV1,
+    world_id: str,
+    fabula_time: int,
+) -> Dict[str, Any]:
+    """Reconstruct a :class:`GlobalTrait` at ``fabula_time`` overlaying
+    causal mutations on top of the snapshot replay.
+
+    Mirrors ``reconstruct_world_trait_at`` shape.
+    """
+    wt = ws.world_traits.get(world_id)
+    if wt is None:
+        return {"magnitude": {"value": 0.0, "inertia": 0.0}, "description": ""}
+
+    value = wt.magnitude.value
+    inertia = wt.magnitude.inertia
+    evidence_strength = wt.magnitude.evidence_strength
+    mutations = sorted(
+        (
+            ce for ce in ws.causal_topology
+            if ce.causality_type in ("mutation", "mutation_social")
+            and ce.target_id == world_id
+            and ce.trait_delta is not None
+            and ce.fabula_time <= fabula_time
+        ),
+        key=lambda c: c.fabula_time,
+    )
+    for ce in mutations:
+        value = max(0.0, min(1.0, value + (ce.trait_delta or 0.0)))
+
+    snap = reconstruct_world_trait_at(wt, fabula_time)
+    snap_mag = snap.get("magnitude") or {}
+    if snap_mag and (
+        snap_mag.get("value") != wt.magnitude.value
+        or snap_mag.get("inertia") != wt.magnitude.inertia
+    ):
+        value = snap_mag.get("value", value)
+        inertia = snap_mag.get("inertia", inertia)
+
+    return {
+        "magnitude": {
+            "value": value,
+            "inertia": inertia,
+            "evidence_strength": evidence_strength,
+        },
+        "description": snap.get("description", wt.description),
+    }
 
 
 def _resolve_names(ws: WorldStateV1, ids: List[str]) -> List[Dict[str, str]]:
@@ -72,6 +196,7 @@ def project_event(ws: WorldStateV1, evt: EventNode) -> Dict[str, Any]:
         "targets": _resolve_names(ws, evt.target_ids),
         "caused_by": causes,
         "causes": effects,
+        "superseded_by_event_id": getattr(evt, "superseded_by_event_id", None),
     }
 
     has_utterance_payload = (
@@ -316,15 +441,27 @@ def filter_world_state_for_pov(
 ) -> WorldStateV1:
     """Return ``ws`` filtered through ``pov_entity_id``'s epistemic lens.
 
-    Scaffold: currently restricts ``ws.events`` to those visible to the POV
-    via :func:`pov_visible_event_ids` and prunes channels the POV does not
-    participate in. Callers that pass ``pov_entity_id=None`` get the world
-    unchanged.
+    Restricts the world to what the POV character could plausibly know:
 
-    TODO: also filter
-      * other entities' ``beliefs`` (the POV cannot read minds);
-      * ``causal_topology`` edges where both endpoints are POV-invisible;
-      * ``Channel.intelligibility`` map entries for non-POV participants.
+      * ``events`` — only those visible via :func:`pov_visible_event_ids`.
+      * ``channels`` — only those the POV participates in; the
+        ``intelligibility`` map is also stripped to the POV's own entry
+        so other participants' decode probabilities don't leak.
+      * ``causal_topology`` — only edges with at least one endpoint the
+        POV could plausibly know (a visible event, the POV themself, an
+        object held / co-located with the POV, or a world trait the POV
+        already has a belief about).
+      * ``entities`` — the POV keeps their full record. Every other
+        entity is reduced: ``beliefs`` are stripped (POV can't read
+        minds), ``concerns`` are stripped (private interior state),
+        and ``state_timeline`` snapshots are kept only at fabula ticks
+        the POV could witness via a visible event.
+      * ``propositions`` — kept (they are audience-level claims), but
+        ``truth_at_fabula`` is filtered to ticks the POV could witness.
+
+    Callers that pass ``pov_entity_id=None`` get the world unchanged.
+    This is intentionally conservative: a richer implementation would
+    also gate on spatial co-location and existing belief provenance.
     """
     if not pov_entity_id or pov_entity_id not in ws.entities:
         return ws
@@ -336,9 +473,85 @@ def filter_world_state_for_pov(
         cid for cid, ch in ws.channels.items()
         if pov_entity_id in ch.participant_ids
     }
+    # Fabula ticks the POV could plausibly witness — used to gate
+    # off-screen state-timeline drift on other entities/world traits.
+    visible_fabula_ticks: set[int] = {
+        e.fabula_time for e in ws.events if e.id in visible_evt_ids
+    }
+
     filtered = ws.model_copy(deep=True)
     filtered.events = [e for e in filtered.events if e.id in visible_evt_ids]
-    filtered.channels = {
-        cid: ch for cid, ch in filtered.channels.items() if cid in visible_chn_ids
+
+    # Channels: prune non-participant channels; on surviving channels
+    # strip the intelligibility map to the POV's own entry so other
+    # participants' decode probabilities aren't readable.
+    pruned_channels: Dict[str, Channel] = {}
+    for cid, ch in filtered.channels.items():
+        if cid not in visible_chn_ids:
+            continue
+        own = ch.intelligibility.get(pov_entity_id)
+        ch.intelligibility = {pov_entity_id: own} if own is not None else {}
+        pruned_channels[cid] = ch
+    filtered.channels = pruned_channels
+
+    # Causal topology: keep an edge if either endpoint is something
+    # the POV could plausibly observe — a visible event, the POV
+    # themself, an object the POV holds or shares a location with, or
+    # a world trait. World traits are global and audience-readable so
+    # we keep all WORLD_-keyed edges.
+    pov_ent = filtered.entities.get(pov_entity_id)
+    pov_loc = pov_ent.location_id if pov_ent else None
+    pov_known_objects = {
+        oid for oid, obj in filtered.objects.items()
+        if obj.owner_id == pov_entity_id or (pov_loc and obj.location_id == pov_loc)
     }
+    pov_known_node_ids = (
+        visible_evt_ids
+        | {pov_entity_id}
+        | pov_known_objects
+        | set(filtered.world_traits.keys())
+    )
+    filtered.causal_topology = [
+        ce for ce in filtered.causal_topology
+        if ce.source_id in pov_known_node_ids or ce.target_id in pov_known_node_ids
+    ]
+
+    # Entities: POV keeps full record; everyone else has interior
+    # state stripped (beliefs, concerns) and timelines clipped to
+    # fabula ticks the POV could witness.
+    for eid, ent in filtered.entities.items():
+        if eid == pov_entity_id:
+            continue
+        ent.beliefs = []
+        ent.concerns = []
+        if ent.state_timeline:
+            ent.state_timeline = [
+                snap for snap in ent.state_timeline
+                if snap.fabula_time in visible_fabula_ticks
+            ]
+
+    # World traits: drift snapshots gated to visible ticks — POV can't
+    # know about silent off-screen world drift. The trait itself stays
+    # (it's a global background fact).
+    for wt in filtered.world_traits.values():
+        if wt.state_timeline:
+            wt.state_timeline = [
+                snap for snap in wt.state_timeline
+                if snap.fabula_time in visible_fabula_ticks
+            ]
+
+    # Propositions: clip truth_at_fabula commits to ticks the POV
+    # witnessed; clip state_timeline likewise.
+    for prop in filtered.propositions:
+        if prop.truth_at_fabula:
+            prop.truth_at_fabula = {
+                t: v for t, v in prop.truth_at_fabula.items()
+                if t in visible_fabula_ticks
+            }
+        if prop.state_timeline:
+            prop.state_timeline = [
+                snap for snap in prop.state_timeline
+                if snap.fabula_time in visible_fabula_ticks
+            ]
+
     return filtered

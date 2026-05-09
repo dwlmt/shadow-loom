@@ -379,9 +379,22 @@ def _render_prose(state: AppState, container) -> None:
     # prose; otherwise the reader pools every version's prose across
     # every fork of the project, which made branch deletes / selects
     # look like no-ops in the Story panel.
+    # Map version_row_id → changeset_summary so per-card chips can
+    # surface what structurally changed in each version (additive,
+    # deletion, supersession, affect counters).
+    cs_by_row: dict[int, dict] = {}
+    # Parallel list of version_row_ids for each prose entry (0 for
+    # session-only entries that aren't yet persisted as a version).
+    prose_row_ids: list[int] = []
     if state.project_id:
         try:
-            from shadow_loom_ui.db import get_all_prose, get_version_by_id, get_version_lineage
+            from shadow_loom_ui.db import get_all_prose, get_version_by_id, get_version_lineage, get_version_tree
+            try:
+                for v in get_version_tree(state.project_id):
+                    if v.get("changeset_summary") and v.get("id") is not None:
+                        cs_by_row[int(v["id"])] = v["changeset_summary"]
+            except Exception:
+                logger.exception("Failed to load version tree for changeset chips")
             branch_path: list[int] | None = None
             if state.current_version_row_id is not None:
                 cur_row = get_version_by_id(state.current_version_row_id)
@@ -406,6 +419,7 @@ def _render_prose(state: AppState, container) -> None:
                     None,  # DB doesn't store convergence directly
                     0,
                 ))
+                prose_row_ids.append(int(entry.get("version_row_id") or 0))
         except Exception:
             logger.exception("Failed to load prose from DB")
 
@@ -425,6 +439,9 @@ def _render_prose(state: AppState, container) -> None:
             key = pr.prose[:200]
             if key not in {p[1][:200] for p in prose_entries}:
                 prose_entries.append((pr.query_type, pr.prose, pr.converged, pr.audit_iterations))
+                # No DB row id for in-session results; pad to keep
+                # parallel arrays aligned.
+                prose_row_ids.append(0)
             session_prose_set.add(key)
 
     if not prose_entries:
@@ -439,10 +456,34 @@ def _render_prose(state: AppState, container) -> None:
                 # Header with badges
                 with ui.row().classes("items-center gap-2 mb-3"):
                     ui.badge(qtype, color="primary").props("dense")
+                    from shadow_loom_ui.components._pearl_chip import (
+                        render_pearl_chip,
+                    )
+                    render_pearl_chip(qtype)
                     if converged is not None:
                         color = "positive" if converged else "warning"
                         label = "converged" if converged else f"unconverged ({iters} iters)"
                         ui.badge(label, color=color).props("dense outline")
+                    # Per-card structural-change chips, when this prose
+                    # came from a persisted version with a recorded
+                    # changeset.
+                    row_id = prose_row_ids[i] if i < len(prose_row_ids) else 0
+                    cs_summary = cs_by_row.get(row_id) if row_id else None
+                    if cs_summary:
+                        from shadow_loom_ui.components._changeset_chips import (
+                            render_changeset_chips,
+                        )
+                        render_changeset_chips(
+                            cs_summary, compact=True, empty_label=None,
+                        )
+                    ui.space()
+                    # Per-card copy-to-clipboard so a researcher can
+                    # pull the generated paragraph straight into notes
+                    # without scrubbing the export tab.
+                    from shadow_loom_ui.components._copy_button import (
+                        copy_button,
+                    )
+                    copy_button(prose, tooltip="Copy prose to clipboard")
 
                 # Prose content
                 safe_markdown(prose)

@@ -329,6 +329,216 @@ def render_node_legend() -> None:
                 )
 
 
+def render_social_layer_legend() -> None:
+    """Chip strip explaining the combined social-layer graph encoding.
+
+    Covers nodes (character / proposition / desire / fear) *and* edges
+    (relationship affinity, belief confidence, concern-of). Mirrors the
+    encoding actually used by :func:`render_social_layer_graph`.
+    """
+    def _swatch(color: str, shape: str = "circle") -> None:
+        radius = "999px" if shape == "circle" else "2px"
+        if shape == "diamond":
+            ui.element("div").style(
+                f"width:12px;height:12px;background:{color};"
+                "transform:rotate(45deg);"
+            )
+            return
+        if shape == "tri":
+            ui.element("div").style(
+                "width:0;height:0;border-left:6px solid transparent;"
+                "border-right:6px solid transparent;"
+                f"border-bottom:11px solid {color};"
+            )
+            return
+        if shape == "line":
+            ui.element("div").style(
+                f"width:18px;height:3px;background:{color};border-radius:2px;"
+            )
+            return
+        ui.element("div").style(
+            f"width:11px;height:11px;border-radius:{radius};background:{color};"
+        )
+
+    def _chip(shape: str, color: str, text: str) -> None:
+        with ui.row().classes("items-center gap-1"):
+            _swatch(color, shape)
+            ui.label(text).classes("text-xs text-slate-600")
+
+    with ui.column().classes(
+        "w-full gap-1 px-3 py-2 bg-slate-50 border-b border-slate-200"
+    ):
+        with ui.row().classes("items-center gap-3 flex-wrap"):
+            ui.label("Nodes:").classes("text-xs font-semibold text-slate-700")
+            _chip("circle", "#F26B5E", "Character")
+            _chip("diamond", "#8a5cf0", "Proposition (size = stakes)")
+            _chip("tri", "#16a34a", "Desire (size = salience)")
+            _chip("circle", "#dc2626", "Fear (size = salience)")
+        with ui.row().classes("items-center gap-3 flex-wrap"):
+            ui.label("Edges:").classes("text-xs font-semibold text-slate-700")
+            _chip("line", "#16a34a", "Affinity +  /  ")
+            _chip("line", "#dc2626", "  Affinity \u2212")
+            _chip("line", "#6FBF3A", "Belief (high conf)")
+            _chip("line", "#3A7BD5", "Belief (mid conf)")
+            _chip("line", "#94a3b8", "Belief (low) / concern\u2192prop")
+
+
+# ── Knowledge-asymmetry heatmap ───────────────────────────────────
+
+def render_knowledge_asymmetry_heatmap(
+    ws: WorldStateV1,
+    *,
+    fabula_t: int | None = None,
+    height: str = "100%",
+    on_click: OnClick = None,
+) -> ui.element:
+    """Character × proposition asymmetry heatmap (Sternberg lens).
+
+    Cell value:
+      * **+conf (green)**  character believes \u2192 truth==True at @t
+        (aligned knowledge).
+      * **\u2212conf (red)** character believes \u2192 truth==False at @t
+        (dramatic-irony / mistaken belief).
+      * **blank**          no belief held (curiosity gap).
+
+    A header strip above the heatmap shows the audience prior per
+    proposition (white\u2192iris) so the viewer can also see the
+    audience's expected stance. The combination encodes the gap /
+    suspense / surprise triad in a single panel.
+    """
+    from shadow_loom_ui.viz_helpers import ws_to_knowledge_asymmetry_matrix
+
+    ent_names, prop_labels, cells, meta = (
+        ws_to_knowledge_asymmetry_matrix(ws, fabula_t=fabula_t)
+    )
+    if not ent_names or not prop_labels:
+        return ui.label(
+            "No characters and propositions to compare."
+        ).classes("text-grey q-pa-md")
+
+    # Tooltip enrichment: build a parallel index for nice hover.
+    truth_str = ["true" if m["truth_at"] is True
+                 else "false" if m["truth_at"] is False
+                 else "—" for m in meta]
+    prior_vals = [round(m["audience_prior"], 2) for m in meta]
+
+    # Audience-prior strip is rendered as a 1-row heatmap above the
+    # main matrix. We stack two ECharts grids in one chart.
+    main_data = cells
+    prior_data = [[c, 0, prior_vals[c]] for c in range(len(prop_labels))]
+
+    chart = ui.echart({
+        "backgroundColor": _CHART_BG,
+        "tooltip": {
+            **_CHART_TOOLTIP,
+            "position": "top",
+            "formatter": (
+                "function(p){"
+                "var rows=" + str(ent_names).replace("'", '"') + ";"
+                "var cols=" + str(prop_labels).replace("'", '"') + ";"
+                "var truth=" + str(truth_str).replace("'", '"') + ";"
+                "var prior=" + str(prior_vals) + ";"
+                "if(p.seriesIndex===0){"
+                "  return '<b>Audience prior</b><br/>'+cols[p.data[0]]"
+                "    +'<br/>prior: '+prior[p.data[0]];"
+                "}"
+                "var v=p.data[2];"
+                "var stance=v>0?'aligned':(v<0?'mistaken':'unresolved');"
+                "return rows[p.data[1]]+'<br/>'+cols[p.data[0]]"
+                "  +'<br/>truth@t: '+truth[p.data[0]]"
+                "  +'<br/>belief: '+stance+' (|'+Math.abs(v).toFixed(2)+'|)';"
+                "}"
+            ),
+        },
+        "grid": [
+            {"top": 30, "height": 22, "left": 180, "right": 30},  # prior strip
+            {"top": 70, "bottom": 130, "left": 180, "right": 30},  # matrix
+        ],
+        "xAxis": [
+            {
+                "gridIndex": 0,
+                "type": "category",
+                "data": prop_labels,
+                "axisLabel": {"show": False},
+                "axisTick": {"show": False},
+            },
+            {
+                "gridIndex": 1,
+                "type": "category",
+                "data": prop_labels,
+                "axisLabel": {
+                    "rotate": 45,
+                    "color": _CHART_TEXT,
+                    "fontSize": 10,
+                    "width": 110,
+                    "overflow": "truncate",
+                    "ellipsis": "…",
+                },
+                "splitArea": {"show": True},
+            },
+        ],
+        "yAxis": [
+            {
+                "gridIndex": 0,
+                "type": "category",
+                "data": ["Audience"],
+                "axisLabel": {"color": _CHART_TEXT, "fontSize": 10},
+            },
+            {
+                "gridIndex": 1,
+                "type": "category",
+                "data": ent_names,
+                "axisLabel": {
+                    "color": _CHART_TEXT,
+                    "fontSize": 10,
+                    "width": 160,
+                    "overflow": "truncate",
+                    "ellipsis": "…",
+                },
+                "splitArea": {"show": True},
+            },
+        ],
+        "visualMap": [
+            {
+                "seriesIndex": 0,
+                "min": 0.0, "max": 1.0,
+                "show": False,
+                "inRange": {"color": ["#ffffff", "#8a5cf0"]},
+            },
+            {
+                "seriesIndex": 1,
+                "min": -1.0, "max": 1.0,
+                "calculable": True,
+                "orient": "horizontal",
+                "left": "center", "bottom": 10,
+                "inRange": {"color": [
+                    "#dc2626", "#fca5a5", "#f1f5f9", "#86efac", "#16a34a"
+                ]},
+                "textStyle": {"color": _CHART_TEXT},
+            },
+        ],
+        "series": [
+            {
+                "name": "audience_prior",
+                "type": "heatmap",
+                "xAxisIndex": 0, "yAxisIndex": 0,
+                "data": prior_data,
+                "label": {"show": False},
+            },
+            {
+                "name": "asymmetry",
+                "type": "heatmap",
+                "xAxisIndex": 1, "yAxisIndex": 1,
+                "data": main_data,
+                "label": {"show": len(prop_labels) <= 12, "fontSize": 9},
+            },
+        ],
+    }).classes("w-full").style(f"height:{height}")
+    if on_click:
+        chart.on("click", on_click)
+    return chart
+
+
 # ── Loading skeleton ───────────────────────────────────────────────
 
 def render_chart_skeleton(height: str = "300px") -> None:
@@ -351,9 +561,10 @@ def render_world_graph(
     *,
     on_click: OnClick = None,
     height: str = "100%",
+    fabula_t: int | None = None,
 ) -> ui.echart:
     """Full world graph — force layout with adjacency highlighting."""
-    nodes, links, cats = ws_to_graph_data(ws)
+    nodes, links, cats = ws_to_graph_data(ws, fabula_t=fabula_t)
     # Always-on labels collapse into illegible noise once the graph
     # holds more than ~25 nodes. Above that, hide them and let users
     # hover/click for the name; below, keep them on for readability.
@@ -402,9 +613,10 @@ def render_ego_graph(
     max_hops: int = 2,
     on_click: OnClick = None,
     height: str = "100%",
+    fabula_t: int | None = None,
 ) -> ui.echart:
     """Ego-graph centered on *focus_ids* with gold-bordered focus nodes."""
-    nodes, links, cats = ws_to_ego_graph_data(ws, focus_ids, max_hops=max_hops)
+    nodes, links, cats = ws_to_ego_graph_data(ws, focus_ids, max_hops=max_hops, fabula_t=fabula_t)
     show_labels = len(nodes) <= 25
     chart = ui.echart({
         "backgroundColor": _CHART_BG,
@@ -714,12 +926,24 @@ def render_relationship_heatmap(
     # + tooltip instead. Axis labels also need thinning at scale.
     n = len(names)
     show_labels = n <= 12
-    label_interval = 0 if n <= 25 else max(0, n // 25)
+    # Thin axis labels well before they visually collide. fontSize=10 +
+    # 45° rotation needs ~14px per label; below ~15 entities every
+    # label fits, between 15 and 25 we drop every other, beyond that
+    # we widen the stride. ECharts ``interval`` is "how many to skip"
+    # so 1 = show every other, 2 = every third, etc.
+    if n <= 15:
+        label_interval = 0
+    elif n <= 25:
+        label_interval = 1
+    else:
+        label_interval = max(1, n // 20)
 
     chart = ui.echart({
         "backgroundColor": _CHART_BG,
         "tooltip": {**_CHART_TOOLTIP, "position": "top"},
-        "grid": {"top": 30, "bottom": 80, "left": 100, "right": 30},
+        # Bottom: rotated 45° names need ~70px; visualMap bar takes ~45px;
+        # 10px breathing room between them.
+        "grid": {"top": 30, "bottom": 125, "left": 130, "right": 30},
         "xAxis": {
             "type": "category",
             "data": names,
@@ -728,6 +952,12 @@ def render_relationship_heatmap(
                 "color": _CHART_TEXT,
                 "fontSize": 10,
                 "interval": label_interval,
+                # Keep long character names from spilling into adjacent
+                # cells / the visualMap bar by truncating with an
+                # ellipsis. Tooltip still shows the full name on hover.
+                "width": 110,
+                "overflow": "truncate",
+                "ellipsis": "…",
             },
             "splitArea": {"show": True},
         },
@@ -738,6 +968,9 @@ def render_relationship_heatmap(
                 "color": _CHART_TEXT,
                 "fontSize": 10,
                 "interval": label_interval,
+                "width": 120,
+                "overflow": "truncate",
+                "ellipsis": "…",
             },
             "splitArea": {"show": True},
         },
@@ -747,7 +980,7 @@ def render_relationship_heatmap(
             "calculable": True,
             "orient": "horizontal",
             "left": "center",
-            "bottom": 0,
+            "bottom": 10,
             "inRange": {"color": ramp},
             "textStyle": {"color": _CHART_TEXT},
         },
@@ -765,6 +998,282 @@ def render_relationship_heatmap(
     return chart
 
 
+# ── Affinity × power scatter (Greimas actantial quadrants) ────────
+
+def render_relationship_quadrant(
+    ws: WorldStateV1,
+    *,
+    fabula_t: int | None = None,
+    height: str = "100%",
+    on_click: OnClick = None,
+) -> ui.element:
+    """Per-dyad scatter on (affinity, power_dynamic), size = fear.
+
+    Reads the four Greimas actantial roles directly off the plane:
+
+      * top-right    \u2192 ally / helper (power\u2191, affinity+)
+      * bottom-right \u2192 dependent / protege (power\u2193, affinity+)
+      * top-left     \u2192 rival / threat (power\u2191, affinity\u2212)
+      * bottom-left  \u2192 victim (power\u2193, affinity\u2212)
+
+    A faint cross at (0,0) divides the quadrants. Each point is
+    labelled ``source\u2192target`` and tooltipped with the underlying
+    metrics.
+    """
+    points: list[dict] = []
+    for rel in ws.social_topology:
+        if fabula_t is not None and rel.last_updated_fabula > fabula_t:
+            continue
+        src = ws.entities.get(rel.source_entity_id)
+        tgt = ws.entities.get(rel.target_entity_id)
+        if not src or not tgt:
+            continue
+        aff = float(rel.affinity)
+        power = float(rel.power_dynamic)
+        fear = float(rel.fear)
+        label = f"{src.name}\u2192{tgt.name}"
+        points.append({
+            "name": label,
+            "value": [aff, power, max(8.0, 8.0 + fear * 30.0), fear],
+            "itemStyle": {
+                "color": (
+                    "#16a34a" if aff > 0.1
+                    else "#dc2626" if aff < -0.1
+                    else "#94a3b8"
+                ),
+                "opacity": 0.75,
+            },
+            "_tip": (
+                f"<b>{label}</b><br/>affinity: {aff:+.2f}<br/>"
+                f"power: {power:+.2f}<br/>fear: {fear:.2f}"
+            ),
+        })
+    if not points:
+        return ui.label("No relationships to plot.").classes(
+            "text-grey q-pa-md"
+        )
+
+    chart = ui.echart({
+        "backgroundColor": _CHART_BG,
+        "tooltip": {
+            **_CHART_TOOLTIP,
+            "trigger": "item",
+            "formatter": "function(p){return p.data._tip;}",
+        },
+        "grid": {"top": 30, "left": 60, "right": 30, "bottom": 60},
+        "xAxis": {
+            "name": "affinity \u2192",
+            "min": -1, "max": 1,
+            "axisLine": {"onZero": True},
+            "splitLine": {"show": True},
+            "axisLabel": {"color": _CHART_TEXT, "fontSize": 10},
+        },
+        "yAxis": {
+            "name": "\u2191 power",
+            "min": -1, "max": 1,
+            "axisLine": {"onZero": True},
+            "splitLine": {"show": True},
+            "axisLabel": {"color": _CHART_TEXT, "fontSize": 10},
+        },
+        "series": [{
+            "type": "scatter",
+            "data": points,
+            "symbolSize": "function(d){return d[2];}",
+            "label": {
+                "show": len(points) <= 30,
+                "formatter": "{b}",
+                "position": "right",
+                "fontSize": 9,
+                "color": _CHART_TEXT,
+            },
+            "markArea": {
+                "silent": True,
+                "itemStyle": {"opacity": 0.04},
+                "data": [
+                    [{"name": "ally", "xAxis": 0, "yAxis": 0,
+                      "itemStyle": {"color": "#16a34a"}},
+                     {"xAxis": 1, "yAxis": 1}],
+                    [{"name": "rival", "xAxis": -1, "yAxis": 0,
+                      "itemStyle": {"color": "#dc2626"}},
+                     {"xAxis": 0, "yAxis": 1}],
+                    [{"name": "dependent", "xAxis": 0, "yAxis": -1,
+                      "itemStyle": {"color": "#3A7BD5"}},
+                     {"xAxis": 1, "yAxis": 0}],
+                    [{"name": "victim", "xAxis": -1, "yAxis": -1,
+                      "itemStyle": {"color": "#7c3aed"}},
+                     {"xAxis": 0, "yAxis": 0}],
+                ],
+                "label": {"position": "insideTopLeft", "fontSize": 10,
+                          "color": _CHART_TEXT, "opacity": 0.6},
+            },
+        }],
+    }).classes("w-full").style(f"height:{height}")
+    if on_click:
+        chart.on("click", on_click)
+    return chart
+
+
+# ── Concern activation timeline strip ─────────────────────────────
+
+def render_concern_timeline(
+    ws: WorldStateV1,
+    *,
+    height: str = "100%",
+    on_click: OnClick = None,
+    axis: str = "fabula",
+) -> ui.element:
+    """Per-concern horizon-style strip showing salience over fabula time.
+
+    Each row is one ``(entity, concern)`` pair. The bar's left/right
+    edges mark the activation window
+    (``activation_window_start``\u2192``activation_window_end`` if set,
+    else the concern's full lifespan); colour encodes polarity (green
+    desire / red fear); opacity / width encodes salience replayed at
+    each fabula time. A vertical dotted line marks the current cursor
+    when present.
+
+    ``axis`` selects the time axis for the x-axis label / sample
+    points: ``"fabula"`` (default) plots over story-world time;
+    ``"syuzhet"`` plots over reading order. Concern *replay* itself
+    is fabula-native, so on the syuzhet axis we resolve each syuzhet
+    sample point to its corresponding fabula time before reconstruction.
+    """
+    from shadow_loom.models import reconstruct_concern_at
+    from shadow_loom_ui.viz_helpers import resolve_cursor
+
+    use_syuzhet = (axis or "fabula").lower() == "syuzhet"
+    if use_syuzhet:
+        sample_axis_values: list[int] = sorted({
+            int(evt.syuzhet_index) for evt in (ws.events or [])
+        })
+        # Map each syuzhet point back to the fabula time at-or-before
+        # so concern replay still reflects story-world causality.
+        time_pairs: list[tuple[int, int]] = [
+            (s, int(resolve_cursor(ws, "syuzhet", s) or 0))
+            for s in sample_axis_values
+        ]
+        axis_label = "syuzhet index \u2192"
+    else:
+        sample_axis_values = sorted({
+            int(evt.fabula_time) for evt in (ws.events or [])
+        })
+        time_pairs = [(t, t) for t in sample_axis_values]
+        axis_label = "fabula time \u2192"
+
+    if not time_pairs:
+        return ui.label(
+            "No fabula events to plot concerns against."
+        ).classes("text-grey q-pa-md")
+    tmin, tmax = sample_axis_values[0], sample_axis_values[-1]
+    if tmax == tmin:
+        # Degenerate single-point axis would make every bar zero-width.
+        # Pad the range so users see at least one cell per concern.
+        tmax = tmin + 1
+
+    rows: list[str] = []  # y-axis labels
+    bars: list[dict] = []
+
+    for ent in ws.entities.values():
+        for c in ent.concerns:
+            label = f"{ent.name} \u2014 {c.kind or c.concern_id}"
+            rows.append(label)
+            # Sample salience at each axis point and emit a bar
+            # segment per consecutive identical-polarity active span.
+            samples: list[tuple[int, str, float, bool]] = []
+            for axis_t, fabula_t in time_pairs:
+                snap = reconstruct_concern_at(c, fabula_t)
+                samples.append((
+                    axis_t, snap["polarity"],
+                    float(snap["salience"]),
+                    bool(snap["active"]),
+                ))
+            # Compress into runs.
+            i = 0
+            while i < len(samples):
+                t0, pol0, sal0, act0 = samples[i]
+                if not act0:
+                    i += 1
+                    continue
+                j = i + 1
+                while j < len(samples):
+                    tj, polj, salj, actj = samples[j]
+                    if not actj or polj != pol0:
+                        break
+                    j += 1
+                t1 = samples[j - 1][0]
+                # Mean salience across the run.
+                run_sal = sum(s[2] for s in samples[i:j]) / max(1, j - i)
+                color = "#16a34a" if pol0 == "desire" else "#dc2626"
+                bars.append({
+                    "name": f"{label} ({pol0})",
+                    # value[1] MUST be the category label string, not
+                    # an integer index — ECharts custom series + category
+                    # yAxis coerces to string for the category lookup,
+                    # and integer indices don't match the string
+                    # ``rows`` data so every bar drops out silently.
+                    "value": [t0, label, t1, run_sal],
+                    "itemStyle": {
+                        "color": color,
+                        "opacity": 0.25 + 0.6 * run_sal,
+                    },
+                })
+                i = j
+
+    if not bars:
+        return ui.label(
+            "No active concerns in this fabula range."
+        ).classes("text-grey q-pa-md")
+
+    # Render as a custom series of rectangles.
+    height_px_per_row = max(14, min(28, int(420 / max(1, len(rows)))))
+
+    chart = ui.echart({
+        "backgroundColor": _CHART_BG,
+        "tooltip": {
+            **_CHART_TOOLTIP,
+            "trigger": "item",
+            "formatter": (
+                "function(p){var d=p.data.value;"
+                "return p.name+'<br/>t '+d[0]+'\u2192'+d[2]"
+                "+'<br/>mean salience: '+d[3].toFixed(2);}"
+            ),
+        },
+        "grid": {"top": 24, "left": 220, "right": 30, "bottom": 50},
+        "xAxis": {
+            "type": "value",
+            "min": tmin, "max": tmax,
+            "name": axis_label,
+            "axisLabel": {"color": _CHART_TEXT, "fontSize": 10},
+        },
+        "yAxis": {
+            "type": "category",
+            "data": rows,
+            "axisLabel": {"color": _CHART_TEXT, "fontSize": 10},
+        },
+        "series": [{
+            "type": "custom",
+            "renderItem": (
+                "function(params, api){"
+                "var t0 = api.value(0); var row = api.value(1);"
+                "var t1 = api.value(2);"
+                "var p0 = api.coord([t0, row]);"
+                "var p1 = api.coord([t1, row]);"
+                "var h = " + str(height_px_per_row) + ";"
+                "return {type:'rect', shape:{"
+                "  x: p0[0], y: p0[1] - h/2,"
+                "  width: Math.max(2, p1[0]-p0[0]), height: h"
+                "}, style: api.style()};"
+                "}"
+            ),
+            "encode": {"x": [0, 2], "y": 1, "tooltip": [0, 2, 3]},
+            "data": bars,
+        }],
+    }).classes("w-full").style(f"height:{height}")
+    if on_click:
+        chart.on("click", on_click)
+    return chart
+
+
 # ── Relationship heatmap over time (animated) ─────────────────────
 
 def render_relationship_heatmap_timeline(
@@ -773,13 +1282,17 @@ def render_relationship_heatmap_timeline(
     metric: str = "affinity",
     num_frames: int = 12,
     height: str = "100%",
+    axis: str = "fabula",
 ) -> ui.echart:
-    """Animated entity×entity heatmap scrubbing across fabula time.
+    """Animated entity×entity heatmap scrubbing across time.
 
     Same colour scale and axes as :func:`render_relationship_heatmap`,
     but wrapped in an ECharts ``timeline`` so each step shows the dyad
-    matrix as it stood at that fabula tick. Frames are reconstructed
-    via :func:`relationship_heatmap_frames`, which layers
+    matrix as it stood at that tick. ``axis`` selects whether the
+    timeline scrubs fabula chronology or syuzhet reading order; in
+    syuzhet mode each frame is reconstructed at the latest revealed
+    fabula tick via :func:`viz_helpers.resolve_cursor`. Frames come
+    from :func:`relationship_heatmap_frames`, which layers
     ``mutation_social`` causal edges and authored snapshots on top of
     the steady-state ``RelationshipEdge`` baseline (see
     :func:`viz_helpers.reconstruct_relationship_with_causal`).
@@ -787,15 +1300,19 @@ def render_relationship_heatmap_timeline(
     from shadow_loom_ui.viz_helpers import relationship_heatmap_frames
 
     payload = relationship_heatmap_frames(
-        ws, metric=metric, num_frames=num_frames
+        ws, metric=metric, num_frames=num_frames, axis=axis,
     )
     names = payload["names"]
     times = payload["times"]
+    fabula_times = payload.get("fabula_times") or times
     frames = payload["frames"]
+    axis_used = payload.get("axis", axis)
     if not names or not frames:
         return ui.label(
             f"No {metric} data over time — no social edges between entities."
         ).classes("text-grey q-pa-md")
+
+    cursor_glyph = "s" if axis_used == "syuzhet" else "t"
 
     if metric == "fear":
         vmin, vmax = 0.0, 1.0
@@ -809,13 +1326,20 @@ def render_relationship_heatmap_timeline(
 
     n = len(names)
     show_labels = n <= 12
-    label_interval = 0 if n <= 25 else max(0, n // 25)
+    if n <= 15:
+        label_interval = 0
+    elif n <= 25:
+        label_interval = 1
+    else:
+        label_interval = max(1, n // 20)
 
     base_option = {
         "backgroundColor": _CHART_BG,
         "tooltip": {**_CHART_TOOLTIP, "position": "top"},
-        # Bottom space: ~50px for visualMap + ~60px for the timeline.
-        "grid": {"top": 30, "bottom": 130, "left": 100, "right": 30},
+        # Bottom: ~70px x-axis names + ~45px visualMap + ~60px timeline
+        # + breathing room. Without this the rotated labels collide with
+        # the visualMap, which in turn collides with the timeline strip.
+        "grid": {"top": 30, "bottom": 185, "left": 130, "right": 30},
         "xAxis": {
             "type": "category",
             "data": names,
@@ -824,6 +1348,9 @@ def render_relationship_heatmap_timeline(
                 "color": _CHART_TEXT,
                 "fontSize": 10,
                 "interval": label_interval,
+                "width": 110,
+                "overflow": "truncate",
+                "ellipsis": "…",
             },
             "splitArea": {"show": True},
         },
@@ -834,6 +1361,9 @@ def render_relationship_heatmap_timeline(
                 "color": _CHART_TEXT,
                 "fontSize": 10,
                 "interval": label_interval,
+                "width": 120,
+                "overflow": "truncate",
+                "ellipsis": "…",
             },
             "splitArea": {"show": True},
         },
@@ -843,13 +1373,13 @@ def render_relationship_heatmap_timeline(
             "calculable": True,
             "orient": "horizontal",
             "left": "center",
-            "bottom": 70,
+            "bottom": 75,
             "inRange": {"color": ramp},
             "textStyle": {"color": _CHART_TEXT},
         },
         "timeline": {
             "axisType": "category",
-            "data": [f"t={t}" for t in times],
+            "data": [f"{cursor_glyph}={t}" for t in times],
             "autoPlay": False,
             "loop": False,
             "playInterval": 1200,
@@ -868,7 +1398,11 @@ def render_relationship_heatmap_timeline(
     options = [
         {
             "title": {
-                "text": f"{metric}  @  fabula t={t}",
+                "text": (
+                    f"{metric}  @  s={t} → t={ft}"
+                    if axis_used == "syuzhet"
+                    else f"{metric}  @  fabula t={ft}"
+                ),
                 "left": "center",
                 "textStyle": {"color": _CHART_TEXT, "fontSize": 12},
             },
@@ -885,7 +1419,7 @@ def render_relationship_heatmap_timeline(
                 },
             }],
         }
-        for t, frame in zip(times, frames)
+        for t, ft, frame in zip(times, fabula_times, frames)
     ]
 
     return ui.echart({
@@ -1636,6 +2170,11 @@ def event_timeline_options(
                 "  lines.push('fabula t=' + d.value[0] +"
                 "    ', syuzhet s=' + d.value[1]);"
                 " }"
+                " if(d.superseded){"
+                "  lines.push('<span style=\"color:#F59E0B\">"
+                "\u2933 superseded by ' +"
+                "    (d.superseded_by_event_id || '?') + '</span>');"
+                " }"
                 " if(d.description){"
                 "  lines.push(d.description);"
                 " }"
@@ -2142,14 +2681,6 @@ def render_causal_force_graph(
     chart = ui.echart({
         "backgroundColor": _CHART_BG,
         "tooltip": {**_CHART_TOOLTIP, "trigger": "item"},
-        "legend": {
-            "type": "scroll",
-            "data": [c["name"] for c in cats],
-            "textStyle": {"color": _CHART_TEXT},
-            "top": 0,
-            "right": 10,
-            "orient": "vertical",
-        },
         "series": [{
             "type": "graph",
             "roam": True,
@@ -2261,13 +2792,22 @@ def render_epistemic_map(
     # confidence on hover.
     n_cells = max(len(ent_names), len(target_names))
     show_labels = n_cells <= 12
-    x_interval = 0 if len(target_names) <= 25 else max(0, len(target_names) // 25)
-    y_interval = 0 if len(ent_names) <= 25 else max(0, len(ent_names) // 25)
+    x_interval = (
+        0 if len(target_names) <= 15
+        else 1 if len(target_names) <= 25
+        else max(1, len(target_names) // 20)
+    )
+    y_interval = (
+        0 if len(ent_names) <= 15
+        else 1 if len(ent_names) <= 25
+        else max(1, len(ent_names) // 20)
+    )
 
     chart = ui.echart({
         "backgroundColor": _CHART_BG,
         "tooltip": {**_CHART_TOOLTIP, "position": "top"},
-        "grid": {"top": 30, "bottom": 80, "left": 100, "right": 30},
+        # Bottom: rotated 45° names ~70px + visualMap ~45px + breathing.
+        "grid": {"top": 30, "bottom": 130, "left": 130, "right": 30},
         "xAxis": {
             "type": "category",
             "data": target_names,
@@ -2278,6 +2818,9 @@ def render_epistemic_map(
                 "color": _CHART_TEXT,
                 "fontSize": 10,
                 "interval": x_interval,
+                "width": 110,
+                "overflow": "truncate",
+                "ellipsis": "…",
             },
             "splitArea": {"show": True},
         },
@@ -2290,6 +2833,9 @@ def render_epistemic_map(
                 "color": _CHART_TEXT,
                 "fontSize": 10,
                 "interval": y_interval,
+                "width": 120,
+                "overflow": "truncate",
+                "ellipsis": "…",
             },
             "splitArea": {"show": True},
         },
@@ -2299,7 +2845,7 @@ def render_epistemic_map(
             "calculable": True,
             "orient": "horizontal",
             "left": "center",
-            "bottom": 0,
+            "bottom": 10,
             "inRange": {"color": ["#1E2A3A", "#3A7BD5", "#6FBF3A"]},
             "textStyle": {"color": _CHART_TEXT},
         },
@@ -2519,8 +3065,14 @@ def render_world_trait_state_card(
     mag_val = float(wt.magnitude.value) if wt and wt.magnitude else 0.0
     inertia = float(wt.magnitude.inertia) if wt and wt.magnitude else 0.0
     description = (wt.description or "").strip() if wt else ""
-    domains = ", ".join(getattr(wt, "affected_domains", []) or []) if wt else ""
+    domains_list: list[str] = list(getattr(wt, "affected_domains", []) or []) if wt else []
     category = getattr(wt, "category", "") if wt else ""
+    proposition_id = getattr(wt, "proposition_id", None) if wt else None
+    # Attenuation factor (1 - inertia) is the actual fraction of an
+    # impulse that survives the per-chunk merge fold: see
+    # ``_apply_world_trait_chunk_updates`` which folds new snapshots
+    # via ``base + (1-inertia) * (target - base)``.
+    attenuation_factor = max(0.0, min(1.0, 1.0 - inertia))
 
     # Magnitude band colours match the belief-card conviction palette.
     if mag_val < 0.34:
@@ -2567,10 +3119,36 @@ def render_world_trait_state_card(
                             "px-2 py-0.5 rounded-full bg-slate-200 "
                             "text-slate-700 font-mono"
                         )
-                        if domains:
-                            ui.label(domains).classes(
-                                "text-slate-500 truncate"
+                        # Attenuation badge: shows the per-chunk merge-fold
+                        # damping factor so the reader can see at a glance
+                        # how much of an authored impulse will land.
+                        ui.label(f"attn ×{attenuation_factor:.2f}").classes(
+                            "px-2 py-0.5 rounded-full bg-amber-100 "
+                            "text-amber-800 font-mono"
+                        ).tooltip(
+                            "Per-chunk merge-fold attenuation: "
+                            f"value_after = base + {attenuation_factor:.2f} × (target − base). "
+                            "High inertia ⇒ small attenuation factor ⇒ slow movement."
+                        )
+                        if proposition_id:
+                            ui.label(f"⇄ {proposition_id}").classes(
+                                "px-2 py-0.5 rounded-full bg-indigo-100 "
+                                "text-indigo-800 font-mono"
+                            ).tooltip(
+                                f"Linked proposition: {proposition_id}. "
+                                "Pearl-Rung-2 truth clamps on this proposition "
+                                "also shift this world trait."
                             )
+                    # Per-domain chips replace the flat csv text — one
+                    # rounded pill per affected domain so the canonical
+                    # 7-domain set is visually scannable.
+                    if domains_list:
+                        with ui.row().classes("w-full flex-wrap gap-1 text-xs"):
+                            for d in domains_list:
+                                ui.label(d).classes(
+                                    "px-2 py-0.5 rounded-full bg-slate-100 "
+                                    "text-slate-600 font-mono"
+                                )
                     with ui.element("div").classes(
                         "w-full h-2 rounded-full bg-slate-200 overflow-hidden"
                     ):
@@ -2690,6 +3268,21 @@ def render_relationship_state_card(
     src_name = src.name if src else rel.source_entity_id
     tgt_name = tgt.name if tgt else rel.target_entity_id
 
+    # Detect a fully-mirrored prior (every observed metric is False).
+    # The model synthesises reverse-direction edges as weak fallback
+    # priors when only one direction was extracted; without a badge
+    # the card looks like ground truth.
+    metric_objs = [
+        m for m in (rel.metrics.values() if rel.metrics else [])
+    ]
+    is_mirror = (
+        bool(metric_objs)
+        and all(not getattr(m, "observed", True) for m in metric_objs)
+    )
+    es_color = {
+        "strong": "#16a34a", "moderate": "#f59e0b", "weak": "#94a3b8",
+    }
+
     def _signed_bar(value: float, *, neg_color: str, pos_color: str) -> None:
         # Two-half bar centered on 0. ``value`` in [-1, 1].
         v = max(-1.0, min(1.0, float(value)))
@@ -2728,9 +3321,22 @@ def render_relationship_state_card(
             "w-full items-baseline justify-between px-3 py-2 "
             "border-b border-slate-200 bg-slate-50"
         ):
-            ui.label(f"{src_name}  →  {tgt_name}").classes(
-                "text-sm font-semibold text-slate-800 truncate"
-            )
+            with ui.row().classes("items-baseline gap-2 min-w-0"):
+                ui.label(f"{src_name}  →  {tgt_name}").classes(
+                    "text-sm font-semibold text-slate-800 truncate"
+                )
+                if is_mirror:
+                    ui.label("mirrored prior").classes(
+                        "text-[10px] uppercase px-1.5 py-0.5 rounded "
+                        "bg-amber-50 text-amber-700 "
+                        "border border-amber-200"
+                    ).tooltip(
+                        "All metrics on this dyad were synthesised "
+                        "from the reverse direction as a weak prior "
+                        "(no direct extraction). Power_dynamic is "
+                        "sign-flipped; affinity/fear copy the forward "
+                        "value; inertia is halved."
+                    )
             ui.label(f"t={rel.last_updated_fabula}").classes(
                 "text-xs font-mono text-slate-500"
             )
@@ -2774,6 +3380,20 @@ def render_relationship_state_card(
                             f"i {float(getattr(m, 'inertia', 0.0)):.2f}"
                         ).classes(
                             "font-mono text-slate-500 w-10 text-right"
+                        )
+                        # Per-axis evidence dot: green/amber/grey for
+                        # strong/moderate/weak. Distinct from the
+                        # edge-level rollup so the user sees the
+                        # actual abduction variance per axis.
+                        es = getattr(m, "evidence_strength", "moderate")
+                        ui.label("●").classes(
+                            "text-[10px] w-3 text-center"
+                        ).style(
+                            f"color: {es_color.get(es, '#94a3b8')}"
+                        ).tooltip(
+                            f"Extraction evidence: {es} "
+                            f"— last_updated_fabula="
+                            f"{getattr(m, 'last_updated_fabula', 0)}"
                         )
     return container
 
@@ -4500,6 +5120,107 @@ def render_emotional_gauges_graded(
     )
 
 
+# ── Character emotion grid (OCC appraisals per character) ─────────
+
+def render_character_emotion_heatmap(
+    grid: dict[str, dict[str, float]],
+    *,
+    entity_names: dict[str, str] | None = None,
+    height: str = "320px",
+) -> ui.echart:
+    """OCC character-felt emotion heatmap (entities × emotions).
+
+    ``grid`` is the mapping returned by
+    :func:`shadow_loom_ui.viz_helpers.compute_character_emotion_grid`:
+    ``{entity_id: {emotion: scalar}}``. Cells are coloured by score
+    (white \u2192 deep crimson) so a glance reveals which character is
+    saturating which emotion at the current cursor.
+    """
+    if not grid:
+        return ui.label(
+            "No per-character emotion data."
+        ).classes("text-grey q-pa-md")
+
+    emotions = ["fear", "joy", "regret", "grief", "rage", "love"]
+    eids = list(grid.keys())
+    names = entity_names or {}
+    y_labels = [names.get(eid, eid) for eid in eids]
+
+    data = []
+    for yi, eid in enumerate(eids):
+        row = grid.get(eid, {})
+        for xi, emo in enumerate(emotions):
+            v = float(row.get(emo, 0.0) or 0.0)
+            data.append([xi, yi, round(v, 3)])
+
+    options = {
+        "tooltip": {
+            "position": "top",
+            ":formatter": (
+                "function(p){return p.marker + "
+                "p.value[2].toFixed(3);}"
+            ),
+        },
+        "grid": {
+            "left": 140, "right": 30, "top": 30, "bottom": 60,
+            "containLabel": True,
+        },
+        "xAxis": {
+            "type": "category",
+            "data": [e.title() for e in emotions],
+            "splitArea": {"show": True},
+            "axisLabel": {"fontSize": 11},
+        },
+        "yAxis": {
+            "type": "category",
+            "data": y_labels,
+            "splitArea": {"show": True},
+            "axisLabel": {
+                "fontSize": 11,
+                "width": 130,
+                "overflow": "truncate",
+                "ellipsis": "…",
+            },
+        },
+        "visualMap": {
+            "min": 0.0,
+            "max": 1.0,
+            "calculable": True,
+            "orient": "horizontal",
+            "left": "center",
+            "bottom": 5,
+            "inRange": {
+                "color": [
+                    "#ffffff", "#fde0dd", "#fa9fb5",
+                    "#dd3497", "#7a0177",
+                ],
+            },
+            "textStyle": {"fontSize": 10},
+        },
+        "series": [
+            {
+                "name": "score",
+                "type": "heatmap",
+                "data": data,
+                "label": {
+                    "show": True,
+                    "fontSize": 10,
+                    ":formatter": (
+                        "function(p){return p.value[2].toFixed(2);}"
+                    ),
+                },
+                "emphasis": {
+                    "itemStyle": {
+                        "shadowBlur": 8,
+                        "shadowColor": "rgba(0,0,0,0.3)",
+                    },
+                },
+            }
+        ],
+    }
+    return ui.echart(options).classes("w-full").style(f"height: {height};")
+
+
 # ── #18 Audit pass-rate pictorial ─────────────────────────────────
 
 def render_audit_passrate_pictorial(
@@ -4656,3 +5377,1092 @@ def open_explain_dialog(
                 pagination={"rowsPerPage": 10},
             ).props("dense flat bordered").classes("w-full")
     dlg.open()
+
+
+# =====================================================================
+# Social-layer renderers
+# (Beliefs / Concerns / Propositions / Relationships unified network +
+#  per-character cards + per-character trait trajectories)
+# =====================================================================
+
+def render_social_layer_graph(
+    ws: WorldStateV1,
+    *,
+    on_click: OnClick = None,
+    height: str = "100%",
+    layout: str = "force",
+    include_relationships: bool = True,
+    include_beliefs: bool = True,
+    include_concerns: bool = True,
+    include_propositions: bool = True,
+    fabula_t: int | None = None,
+    event_t: int | None = None,
+    ego_id: str | None = None,
+    ego_max_hops: int = 1,
+    pov_id: str | None = None,
+    intermental_ids: list[str] | None = None,
+    intermental_threshold: float = 0.4,
+) -> ui.echart:
+    """Combined entity / proposition / concern / belief / relationship graph.
+
+    Replaces the social-only graph (which only showed entity-entity
+    affinity edges) with a richer network where:
+      • Characters are circles (coral),
+      • Propositions are diamonds (iris) sized by stakes,
+      • Concerns are triangles/pins (green=desire / red=fear) sized by
+        salience, and
+      • Beliefs are entity→proposition edges coloured by confidence.
+    All time-sliced when ``fabula_t`` is provided.
+    """
+    from shadow_loom_ui.viz_helpers import ws_to_social_layer_graph
+
+    nodes, links, cats = ws_to_social_layer_graph(
+        ws,
+        include_relationships=include_relationships,
+        include_beliefs=include_beliefs,
+        include_concerns=include_concerns,
+        include_propositions=include_propositions,
+        fabula_t=fabula_t,
+        event_t=event_t,
+        ego_id=ego_id,
+        ego_max_hops=ego_max_hops,
+        pov_id=pov_id,
+        intermental_ids=intermental_ids,
+        intermental_threshold=intermental_threshold,
+    )
+    if not nodes:
+        return ui.label(
+            "No social-layer data (no characters, propositions, "
+            "concerns or beliefs in this world)."
+        ).classes("text-grey q-pa-md")
+
+    show_labels = len(nodes) <= 35
+    series_extra: dict
+    if layout == "circular":
+        series_extra = {
+            "layout": "circular",
+            "circular": {"rotateLabel": True},
+        }
+    else:
+        series_extra = {
+            "layout": "force",
+            "force": {
+                "repulsion": 320,
+                "gravity": 0.15,
+                "edgeLength": [80, 200],
+            },
+        }
+
+    chart = ui.echart({
+        "backgroundColor": _CHART_BG,
+        "tooltip": {**_CHART_TOOLTIP, "trigger": "item"},
+        # Legend intentionally omitted: ECharts' category legend would
+        # show only the three node categories and would mislead viewers
+        # into thinking that's the full visual encoding (it isn't —
+        # belief / relationship edges, polarity colours, salience and
+        # stakes sizings are all extra channels). The chip-strip
+        # legend rendered above the chart documents the real encoding.
+        "animationDuration": 600,
+        "series": [{
+            "type": "graph",
+            "roam": True,
+            "draggable": True,
+            "emphasis": {"focus": "adjacency"},
+            "categories": cats,
+            "data": nodes,
+            "links": links,
+            "label": {
+                "show": show_labels,
+                "position": "right",
+                "fontSize": 11,
+                "color": _CHART_TEXT,
+            },
+            "lineStyle": {"curveness": 0.15, "opacity": 0.7},
+            **series_extra,
+        }],
+    }).classes("w-full").style(f"height:{height}")
+    if on_click:
+        chart.on("click", on_click)
+    return chart
+
+
+def render_entity_concern_card(
+    ws: WorldStateV1,
+    entity_id: str,
+    *,
+    fabula_t: int | None = None,
+    height: str = "100%",
+) -> ui.element:
+    """One character's concerns as a textual card list.
+
+    Mirrors :func:`render_entity_belief_chart`. Each row shows the
+    referenced proposition, polarity (desire / fear) badge, salience
+    bar, kind chip, and a faint indicator if currently inactive.
+    """
+    from shadow_loom_ui.viz_helpers import ws_to_entity_concern_rows
+
+    rows = ws_to_entity_concern_rows(ws, entity_id, fabula_t=fabula_t)
+    ent = ws.entities.get(entity_id)
+    title = ent.name if ent else entity_id
+
+    container = ui.column().classes("w-full bg-white").style(
+        f"min-height:{height}"
+    )
+    with container:
+        with ui.row().classes(
+            "w-full items-baseline justify-between px-3 py-2 "
+            "border-b border-slate-200 bg-slate-50"
+        ):
+            ui.label(title).classes("text-sm font-semibold text-slate-800")
+            ui.label(
+                f"{len(rows)} concern{'s' if len(rows) != 1 else ''}"
+            ).classes("text-xs text-slate-500")
+        if not rows:
+            ui.label("No concerns.").classes(
+                "text-xs text-slate-400 italic px-3 py-3"
+            )
+            return container
+        with ui.column().classes(
+            "w-full gap-2 px-3 py-2 overflow-y-auto"
+        ).style("max-height: 360px"):
+            for r in rows:
+                pol = r["polarity"]
+                pol_color = "#16a34a" if pol == "desire" else "#dc2626"
+                pol_label = "desires" if pol == "desire" else "fears"
+                sal = float(r["salience"])
+                inactive = not r["active"]
+                with ui.column().classes(
+                    "w-full gap-1 p-2 rounded-lg border border-slate-200 "
+                    "bg-slate-50/60 hover:bg-slate-100/60 transition-colors"
+                    + (" opacity-60" if inactive else "")
+                ):
+                    ui.label(
+                        f"\u201C{r['proposition_desc']}\u201D"
+                    ).classes(
+                        "text-sm text-slate-800 leading-snug"
+                    )
+                    with ui.row().classes(
+                        "w-full items-center gap-2 text-xs"
+                    ):
+                        ui.label(pol_label).classes(
+                            "px-2 py-0.5 rounded-full text-white font-mono"
+                        ).style(f"background-color: {pol_color}")
+                        ui.label(f"sal {sal:.2f}").classes(
+                            "px-2 py-0.5 rounded-full bg-slate-200 "
+                            "text-slate-700 font-mono"
+                        )
+                        if r.get("kind"):
+                            ui.label(str(r["kind"])).classes(
+                                "px-2 py-0.5 rounded-full bg-violet-50 "
+                                "text-violet-700 border border-violet-200"
+                            )
+                        if inactive:
+                            ui.label("inactive").classes(
+                                "px-2 py-0.5 rounded-full bg-slate-300 "
+                                "text-slate-700 font-mono"
+                            )
+                    # Salience bar.
+                    with ui.element("div").classes(
+                        "w-full h-1.5 rounded-full bg-slate-200 overflow-hidden"
+                    ):
+                        ui.element("div").classes("h-full rounded-full").style(
+                            f"width: {int(sal * 100)}%; background-color: {pol_color}"
+                        )
+    return container
+
+
+def render_concern_salience_heatmap(
+    ws: WorldStateV1,
+    *,
+    fabula_t: int | None = None,
+    selected_ids: list[str] | None = None,
+    height: str = "320px",
+) -> ui.element:
+    """Entity × concern salience heatmap at the active fabula cursor.
+
+    Implements the Sternberg-triad / Frijda concern-salience lens at
+    a glance: rows are characters that hold concerns, columns are
+    each unique concern (labelled by the underlying proposition or
+    the concern's ``name``/``id``), and the cell colour encodes
+    salience replayed at ``fabula_t`` via
+    :func:`reconstruct_concern_at`. Cells render blank when a
+    character does not hold the concern, distinguishing "absent
+    concern" from "low salience" — the curiosity-vs-suspense
+    distinction in the audit lens.
+
+    Parameters mirror the surrounding concern panels so the social
+    tab can wire the same selection filter through.
+    """
+    from shadow_loom.models import reconstruct_concern_at
+
+    container = ui.column().classes("w-full gap-2")
+    with container:
+        # Collect (entity_name, concern_label, salience) triples.
+        # Rows preserve entity order; columns are unique concern
+        # labels in first-seen order.
+        sel = set(selected_ids) if selected_ids else None
+        rows: list[str] = []
+        col_index: dict[str, int] = {}
+        cells: list[tuple[int, int, float]] = []
+        ent_lookup: dict[str, str] = {}
+
+        for eid, ent in (ws.entities or {}).items():
+            if sel is not None and eid not in sel:
+                continue
+            concerns = list(getattr(ent, "concerns", None) or [])
+            if not concerns:
+                continue
+            row_idx = len(rows)
+            rows.append(ent.name or eid)
+            ent_lookup[ent.name or eid] = eid
+            for c in concerns:
+                # Column key: prefer the concern's display name,
+                # fall back to proposition_id, then concern id.
+                label = (
+                    getattr(c, "name", None)
+                    or getattr(c, "proposition_id", None)
+                    or getattr(c, "id", None)
+                    or "concern"
+                )
+                if label not in col_index:
+                    col_index[label] = len(col_index)
+                col_idx = col_index[label]
+                if fabula_t is None:
+                    sal = float(getattr(c, "salience", 0.0) or 0.0)
+                else:
+                    try:
+                        snap = reconstruct_concern_at(c, fabula_t)
+                        sal = float(snap.get("salience", 0.0) or 0.0)
+                    except Exception:
+                        sal = float(getattr(c, "salience", 0.0) or 0.0)
+                cells.append((col_idx, row_idx, sal))
+
+        if not rows or not col_index:
+            ui.label(
+                "No concerns to plot at this cursor."
+            ).classes("text-sm text-slate-500 italic q-pa-md")
+            return container
+
+        cols = sorted(col_index, key=lambda k: col_index[k])
+        ui.label(
+            f"Concern salience \u2014 {len(rows)} characters \u00d7 "
+            f"{len(cols)} concerns"
+        ).classes("text-xs font-semibold text-slate-700")
+        option = {
+            "tooltip": {
+                "position": "top",
+                "formatter": (
+                    "function(p){return p.value[2]==null?'':"
+                    "p.name+'<br/>salience: '+Number(p.value[2]).toFixed(2);}"
+                ),
+            },
+            # Top: visualMap (~30px) + breathing room. Bottom: rotated
+            # 30° column labels need ~50px so they don't clip.
+            "grid": {"left": 160, "right": 30, "top": 60, "bottom": 70},
+            "xAxis": {
+                "type": "category", "data": cols,
+                "axisLabel": {
+                    "interval": 0, "rotate": 30, "fontSize": 10,
+                    "width": 100, "overflow": "truncate", "ellipsis": "…",
+                },
+                "splitArea": {"show": True},
+            },
+            "yAxis": {
+                "type": "category", "data": rows,
+                "axisLabel": {
+                    "fontSize": 10,
+                    "width": 140, "overflow": "truncate", "ellipsis": "…",
+                },
+                "splitArea": {"show": True},
+            },
+            "visualMap": {
+                "min": 0.0, "max": 1.0,
+                "calculable": True, "orient": "horizontal",
+                "left": "center", "top": 5,
+                "inRange": {"color": ["#f1f5f9", "#3b82f6", "#1e3a8a"]},
+            },
+            "series": [{
+                "name": "salience",
+                "type": "heatmap",
+                "data": [[c, r, round(v, 3)] for (c, r, v) in cells],
+                "label": {"show": False},
+                "emphasis": {
+                    "itemStyle": {
+                        "shadowBlur": 6,
+                        "shadowColor": "rgba(0,0,0,0.4)",
+                    },
+                },
+            }],
+        }
+        ui.echart(option).classes("w-full").style(f"height: {height}")
+    return container
+
+
+def render_proposition_truth_sparkline(
+    ws: WorldStateV1,
+    proposition_id: str,
+    *,
+    height: str = "60px",
+) -> ui.element:
+    """Compact truth_at_fabula sparkline for one proposition.
+
+    Plots the discrete True/False commits in
+    :attr:`Proposition.truth_at_fabula` against fabula time so a
+    researcher can see at a glance how often (and when) the
+    storyworld committed to a value for the proposition. Distinct
+    from :func:`render_proposition_stake_timeline` which plots
+    continuous stakes / audience prior — this is just the binary
+    truth track.
+    """
+    container = ui.element("div").classes("w-full")
+    with container:
+        prop = next(
+            (p for p in (ws.propositions or [])
+             if getattr(p, "proposition_id", None) == proposition_id),
+            None,
+        )
+        if prop is None:
+            ui.label("(no proposition)").classes(
+                "text-[10px] text-slate-400 italic"
+            )
+            return container
+        commits = dict(getattr(prop, "truth_at_fabula", {}) or {})
+        if not commits:
+            ui.label("no truth commits").classes(
+                "text-[10px] text-slate-400 italic"
+            )
+            return container
+        items = sorted(commits.items(), key=lambda kv: int(kv[0]))
+        xs = [int(k) for k, _ in items]
+        ys = [1 if bool(v) else 0 for _, v in items]
+        option = {
+            "grid": {"left": 4, "right": 4, "top": 4, "bottom": 4},
+            "xAxis": {"type": "value", "show": False, "min": min(xs) - 1, "max": max(xs) + 1},
+            "yAxis": {"type": "value", "show": False, "min": -0.2, "max": 1.2},
+            "tooltip": {
+                "trigger": "axis",
+                "formatter": (
+                    "function(ps){var p=ps[0];"
+                    "return 't='+p.value[0]+'<br/>'+(p.value[1]?'true':'false');}"
+                ),
+            },
+            "series": [{
+                "type": "scatter",
+                "symbolSize": 8,
+                "data": [[x, y] for x, y in zip(xs, ys)],
+                "itemStyle": {
+                    "color": "#16a34a",
+                },
+            }],
+        }
+        ui.echart(option).classes("w-full").style(f"height: {height}")
+    return container
+
+
+def render_entity_concerns_grid(
+    ws: WorldStateV1,
+    *,
+    selected_ids: list[str] | None = None,
+    fabula_t: int | None = None,
+    chart_height: str = "260px",
+) -> ui.element:
+    """Tiled grid of per-character concern cards."""
+    from shadow_loom_ui.viz_helpers import list_concern_holders
+
+    holders = list_concern_holders(ws)
+    if selected_ids:
+        sel = set(selected_ids)
+        holders = [h for h in holders if h[0] in sel]
+    container = ui.column().classes("w-full gap-3")
+    with container:
+        if not holders:
+            ui.label(
+                "No characters carry concerns in this world model."
+            ).classes("text-sm text-slate-500 italic q-pa-lg")
+            return container
+        grid = ui.element("div").classes(
+            "w-full grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3"
+        )
+        with grid:
+            for eid, _name, _count in holders:
+                with ui.element("div").classes(
+                    "border border-slate-200 rounded-xl bg-white shadow-sm "
+                    "overflow-hidden"
+                ):
+                    render_entity_concern_card(
+                        ws, eid, fabula_t=fabula_t,
+                        height=chart_height,
+                    )
+    return container
+
+
+def render_proposition_state_card(
+    ws: WorldStateV1,
+    proposition_id: str,
+    *,
+    fabula_t: int | None = None,
+) -> ui.element:
+    """Snapshot card for one proposition at the current cursor."""
+    from shadow_loom.models import reconstruct_proposition_at
+
+    prop = next(
+        (p for p in (ws.propositions or [])
+         if p.proposition_id == proposition_id),
+        None,
+    )
+    if prop is None:
+        return ui.label(f"Unknown proposition {proposition_id}").classes(
+            "text-grey"
+        )
+    if fabula_t is not None:
+        snap = reconstruct_proposition_at(prop, fabula_t)
+        stakes = float(snap["stakes"])
+        prior = float(snap["audience_default_prior"])
+        desc = snap["description"]
+        truth = snap["truth_at"]
+    else:
+        stakes = float(prop.stakes)
+        prior = float(prop.audience_default_prior)
+        desc = prop.description
+        truth = None
+        for t in sorted(prop.truth_at_fabula.keys()):
+            truth = prop.truth_at_fabula[t]
+
+    # Count related concerns + beliefs.
+    concern_holders = [
+        ent for ent in ws.entities.values()
+        for c in ent.concerns if c.proposition_id == proposition_id
+    ]
+    believers = [
+        (ent, b) for ent in ws.entities.values()
+        for b in ent.beliefs
+        if getattr(b, "proposition_id", None) == proposition_id
+    ]
+
+    if truth is True:
+        truth_color = "#16a34a"
+        truth_text = "TRUE"
+    elif truth is False:
+        truth_color = "#dc2626"
+        truth_text = "FALSE"
+    else:
+        truth_color = "#94a3b8"
+        truth_text = "—"
+
+    container = ui.column().classes("w-full bg-white")
+    with container:
+        with ui.row().classes(
+            "w-full items-center justify-between px-3 py-2 "
+            "border-b border-slate-200 bg-slate-50"
+        ):
+            ui.label(prop.kind).classes(
+                "px-2 py-0.5 rounded-full bg-violet-50 text-violet-700 "
+                "border border-violet-200 text-xs font-mono"
+            )
+            ui.label(truth_text).classes(
+                "px-2 py-0.5 rounded-full text-white text-xs font-mono"
+            ).style(f"background-color: {truth_color}")
+        with ui.column().classes("w-full gap-2 px-3 py-3"):
+            ui.label(f"\u201C{desc}\u201D").classes(
+                "text-sm text-slate-800 leading-snug"
+            )
+            with ui.row().classes("w-full items-center gap-2 text-xs"):
+                ui.label("stakes").classes("text-slate-500 w-16")
+                with ui.element("div").classes(
+                    "flex-grow h-1.5 rounded-full bg-slate-200 overflow-hidden"
+                ):
+                    ui.element("div").classes(
+                        "h-full rounded-full"
+                    ).style(
+                        f"width: {int(stakes * 100)}%; "
+                        f"background-color: #f59e0b"
+                    )
+                ui.label(f"{stakes:.2f}").classes(
+                    "font-mono text-slate-700 w-10 text-right"
+                )
+            with ui.row().classes("w-full items-center gap-2 text-xs"):
+                ui.label("aud prior").classes("text-slate-500 w-16")
+                with ui.element("div").classes(
+                    "flex-grow h-1.5 rounded-full bg-slate-200 overflow-hidden"
+                ):
+                    ui.element("div").classes(
+                        "h-full rounded-full"
+                    ).style(
+                        f"width: {int(prior * 100)}%; "
+                        f"background-color: #3A7BD5"
+                    )
+                ui.label(f"{prior:.2f}").classes(
+                    "font-mono text-slate-700 w-10 text-right"
+                )
+            with ui.row().classes("w-full items-center gap-2 text-xs text-slate-500"):
+                ui.label(f"{len(concern_holders)} concerned").classes(
+                    "px-2 py-0.5 rounded-full bg-slate-100"
+                )
+                ui.label(f"{len(believers)} believers").classes(
+                    "px-2 py-0.5 rounded-full bg-slate-100"
+                )
+                if prop.referent_ids:
+                    ui.label(
+                        f"refs: {', '.join(prop.referent_ids[:3])}"
+                    ).classes("italic truncate")
+    return container
+
+
+def render_propositions_grid(
+    ws: WorldStateV1,
+    *,
+    fabula_t: int | None = None,
+    selected_kinds: list[str] | None = None,
+) -> ui.element:
+    """Tiled grid of per-proposition snapshot cards."""
+    props = list(ws.propositions or [])
+    if selected_kinds:
+        wanted = set(selected_kinds)
+        props = [p for p in props if p.kind in wanted]
+
+    container = ui.column().classes("w-full gap-3")
+    with container:
+        if not props:
+            ui.label(
+                "No propositions in this world model."
+            ).classes("text-sm text-slate-500 italic q-pa-lg")
+            return container
+        grid = ui.element("div").classes(
+            "w-full grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3"
+        )
+        with grid:
+            for p in props:
+                with ui.element("div").classes(
+                    "border border-slate-200 rounded-xl bg-white shadow-sm "
+                    "overflow-hidden"
+                ):
+                    render_proposition_state_card(
+                        ws, p.proposition_id, fabula_t=fabula_t,
+                    )
+    return container
+
+
+def render_entity_trait_trajectory(
+    ws: WorldStateV1,
+    entity_id: str,
+    *,
+    height: str = "260px",
+    trait_names: list[str] | None = None,
+) -> ui.echart:
+    """Multi-line trait trajectory for one character over fabula time.
+
+    The same trace the Social tab uses to show *how the inner state
+    of each character moves* alongside their concerns / beliefs.
+    """
+    from shadow_loom_ui.viz_helpers import entity_trait_trajectory
+
+    ent = ws.entities.get(entity_id)
+    times, series = entity_trait_trajectory(
+        ws, entity_id, trait_names=trait_names,
+    )
+    if not series:
+        return ui.label("No trait data.").classes("text-grey q-pa-md")
+
+    legends = list(series.keys())
+    # Event markers: vertical lines at each fabula_time tick whose
+    # event has either (a) a CausalEdge into this entity, or (b) a
+    # belief-mutation referencing this entity. This makes "which event
+    # caused which inner-state change" legible (Bremond / Todorov).
+    evt_lookup = {evt.id: evt for evt in (ws.events or [])}
+    causally_relevant_times: dict[int, list[str]] = {}
+    for ce in ws.causal_topology:
+        if ce.target_id == entity_id and ce.source_id in evt_lookup:
+            evt = evt_lookup[ce.source_id]
+            causally_relevant_times.setdefault(evt.fabula_time, []).append(
+                (evt.description or evt.id)[:48]
+            )
+    # Belief-acquisition markers from the entity itself.
+    ent_obj = ws.entities.get(entity_id)
+    if ent_obj is not None:
+        for b in ent_obj.beliefs:
+            via = getattr(b, "acquired_via_event_id", None)
+            if via and via in evt_lookup:
+                evt = evt_lookup[via]
+                causally_relevant_times.setdefault(
+                    evt.fabula_time, []
+                ).append(f"belief: {(b.perceived_state or '')[:40]}")
+    # Build markLine x-axis indices (the xAxis is categorical on times).
+    time_to_idx = {t: i for i, t in enumerate(times)}
+    mark_lines: list[dict] = []
+    for ft, descs in sorted(causally_relevant_times.items()):
+        if ft not in time_to_idx:
+            continue
+        mark_lines.append({
+            "xAxis": time_to_idx[ft],
+            "label": {
+                "formatter": (descs[0] if descs else "")[:24],
+                "fontSize": 9,
+                "color": "#475569",
+                "rotate": 90,
+                "position": "insideEndTop",
+            },
+            "lineStyle": {
+                "color": "#f59e0b",
+                "type": "dashed",
+                "opacity": 0.6,
+                "width": 1,
+            },
+        })
+    chart_series = [
+        {
+            "name": name,
+            "type": "line",
+            "smooth": True,
+            "symbol": "circle",
+            "symbolSize": 5,
+            "lineStyle": {"width": 2},
+            "data": values,
+        }
+        for name, values in series.items()
+    ]
+    if mark_lines and chart_series:
+        chart_series[0]["markLine"] = {
+            "silent": False,
+            "symbol": ["none", "none"],
+            "data": mark_lines,
+        }
+    title = ent.name if ent else entity_id
+    return ui.echart({
+        "backgroundColor": _CHART_BG,
+        "color": CHART_COLORS,
+        "title": {
+            "text": f"{title} — trait trajectory",
+            "left": "center",
+            "top": 4,
+            "textStyle": {
+                "color": _CHART_TEXT,
+                "fontSize": 12,
+                "fontWeight": "normal",
+            },
+        },
+        "tooltip": {**_CHART_TOOLTIP, "trigger": "axis"},
+        "legend": {
+            "data": legends,
+            "top": 26,
+            "type": "scroll",
+            "textStyle": {"color": _CHART_TEXT, "fontSize": 10},
+        },
+        "grid": {"left": 40, "right": 20, "top": 70, "bottom": 30},
+        "xAxis": {
+            "type": "category",
+            "data": [str(t) for t in times],
+            "name": "fabula t",
+            "axisLine": {"lineStyle": {"color": _CHART_TEXT}},
+        },
+        "yAxis": {
+            "type": "value",
+            "min": 0, "max": 1,
+            "axisLine": {"lineStyle": {"color": _CHART_TEXT}},
+            "splitLine": {"lineStyle": {"color": "#e5e7eb"}},
+        },
+        "series": chart_series,
+    }).classes("w-full").style(f"height:{height}")
+
+
+def render_trait_trajectories_grid(
+    ws: WorldStateV1,
+    *,
+    selected_ids: list[str] | None = None,
+    chart_height: str = "260px",
+) -> ui.element:
+    """Tiled grid of per-character trait trajectories.
+
+    Each card is a compact inline chart with an expand button that
+    opens a full-screen version of the same trajectory (same pattern
+    used by every other chart in the UI via :func:`with_expand`).
+    """
+    if selected_ids:
+        ent_ids = [e for e in selected_ids if e in ws.entities]
+    else:
+        ent_ids = [e for e, ent in ws.entities.items() if ent.traits]
+
+    container = ui.column().classes("w-full gap-3")
+    with container:
+        if not ent_ids:
+            ui.label(
+                "No characters have traits in this world model."
+            ).classes("text-sm text-slate-500 italic q-pa-lg")
+            return container
+        grid = ui.element("div").classes(
+            "w-full grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3"
+        )
+        with grid:
+            for eid in ent_ids:
+                ent = ws.entities.get(eid)
+                title = (ent.name if ent else eid) + " — trait trajectory"
+                with ui.element("div").classes(
+                    "border border-slate-200 rounded-xl bg-white shadow-sm "
+                    "overflow-hidden p-2"
+                ):
+                    with_expand(
+                        lambda h, e=eid: render_entity_trait_trajectory(
+                            ws, e, height=h,
+                        ),
+                        title=title,
+                        height=chart_height,
+                    )
+    return container
+
+
+# =====================================================================
+# P1 ADDITIONS — Channels overlay, Proposition stake/surprise, axis-lint
+# =====================================================================
+
+def render_channels_overview(
+    ws: WorldStateV1,
+    *,
+    fabula_t: int | None = None,
+    state: "Any" = None,
+) -> ui.element:
+    """Per-channel cards exposing intelligibility, directionality, lifespan.
+
+    The :class:`Channel` model is first-class (medium, n-ary
+    participants with per-participant decode probability,
+    directionality, established/terminated ticks, evidence_strength)
+    but currently has no UI surface. This card grid renders one card
+    per channel, badging:
+
+      * **directionality** — broadcast / duplex / simplex glyph + chip
+      * **medium** — telephone / telepathy / classified pipeline / ...
+      * **intelligibility** per-participant bar (opacity = decode prob)
+      * **lifespan** — ``established_at`` ... ``terminated_at`` chip
+        with a strike-through when the channel is severed at or
+        before the active fabula cursor
+      * **evidence_strength** — extraction confidence dot
+
+    When ``state`` is provided each per-participant intelligibility
+    bar becomes an inline editor (NiceGUI slider with a Save button)
+    that calls :meth:`AppState.apply_world_state_patch` with an
+    ``update_channel_intelligibility`` op so the edit persists as a
+    new version. Click an entity chip to deep-link the inspector via
+    :data:`StateEvent.NODE_SELECTED` (handled by the social tab).
+    """
+    container = ui.column().classes("w-full gap-3")
+    with container:
+        channels = list((ws.channels or {}).values())
+        if not channels:
+            ui.label(
+                "No standing channels in this world model. "
+                "Channels model who *can* communicate (telephone, "
+                "telepathy, classified pipeline, …); discrete "
+                "messages are utterance-typed events that may "
+                "reference a channel via via_channel_id."
+            ).classes("text-sm text-slate-500 italic q-pa-lg")
+            return container
+        # Stable name-sorted order.
+        channels.sort(key=lambda c: c.name.lower())
+        grid = ui.element("div").classes(
+            "w-full grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3"
+        )
+        es_color = {"strong": "#16a34a", "moderate": "#f59e0b", "weak": "#94a3b8"}
+        dir_glyph = {"broadcast": "📢", "duplex": "↔", "simplex": "→"}
+        with grid:
+            for ch in channels:
+                terminated = (
+                    ch.terminated_at_fabula is not None
+                    and fabula_t is not None
+                    and ch.terminated_at_fabula <= fabula_t
+                )
+                with ui.element("div").classes(
+                    "border border-slate-200 rounded-xl bg-white shadow-sm "
+                    "overflow-hidden"
+                ):
+                    with ui.row().classes(
+                        "w-full items-baseline justify-between px-3 py-2 "
+                        "border-b border-slate-200 bg-slate-50"
+                    ):
+                        with ui.row().classes("items-center gap-2 min-w-0"):
+                            ui.label(
+                                dir_glyph.get(ch.directionality, "•")
+                            ).classes("text-base")
+                            name_classes = (
+                                "text-sm font-semibold truncate "
+                                + ("line-through text-slate-400"
+                                   if terminated else "text-slate-800")
+                            )
+                            ui.label(ch.name).classes(name_classes)
+                        ui.label(
+                            "●"
+                        ).classes("text-xs").style(
+                            f"color: {es_color.get(ch.evidence_strength, '#94a3b8')}"
+                        ).tooltip(
+                            f"Extraction evidence: {ch.evidence_strength}"
+                        )
+                    with ui.column().classes("w-full gap-2 px-3 py-3"):
+                        with ui.row().classes("items-center gap-2 text-xs flex-wrap"):
+                            ui.label(ch.medium).classes(
+                                "px-2 py-0.5 rounded-full bg-violet-50 "
+                                "text-violet-700 border border-violet-200 "
+                                "font-mono"
+                            )
+                            ui.label(ch.directionality).classes(
+                                "px-2 py-0.5 rounded-full bg-slate-100 "
+                                "text-slate-600 font-mono"
+                            )
+                            life = (
+                                f"t {ch.established_at_fabula}"
+                                + (f"–{ch.terminated_at_fabula}"
+                                   if ch.terminated_at_fabula is not None
+                                   else "–…")
+                            )
+                            life_classes = (
+                                "px-2 py-0.5 rounded-full font-mono "
+                                + ("bg-amber-50 text-amber-700 line-through"
+                                   if terminated
+                                   else "bg-slate-100 text-slate-600")
+                            )
+                            ui.label(life).classes(life_classes)
+                        # Per-participant intelligibility (opacity ∝ decode prob).
+                        with ui.column().classes("w-full gap-1 mt-1"):
+                            ui.label("Participants & intelligibility").classes(
+                                "text-[10px] uppercase text-slate-500 tracking-wide"
+                            )
+                            for pid in ch.participant_ids:
+                                ent = ws.entities.get(pid)
+                                obj = (ws.objects or {}).get(pid)
+                                pname = (
+                                    ent.name if ent
+                                    else (obj.name if obj else pid)
+                                )
+                                # 1.0 when key absent (fully intelligible).
+                                decode = float(ch.intelligibility.get(pid, 1.0))
+                                if state is None:
+                                    with ui.row().classes(
+                                        "w-full items-center gap-2 text-xs"
+                                    ):
+                                        ui.label(pname).classes(
+                                            "text-slate-700 truncate w-32 shrink-0"
+                                        )
+                                        with ui.element("div").classes(
+                                            "flex-grow h-2 rounded-full bg-slate-200 "
+                                            "overflow-hidden"
+                                        ):
+                                            # Opacity ∝ decode probability so
+                                            # opaque participants (decode=0)
+                                            # render as faint bars — visually
+                                            # encoding "can't read this channel".
+                                            opacity = max(0.15, decode)
+                                            ui.element("div").classes(
+                                                "h-full rounded-full"
+                                            ).style(
+                                                f"width: {int(decode * 100)}%; "
+                                                f"background-color: #3A7BD5; "
+                                                f"opacity: {opacity:.2f}"
+                                            )
+                                        ui.label(f"{decode:.2f}").classes(
+                                            "font-mono text-slate-600 w-10 text-right"
+                                        )
+                                else:
+                                    # Editable slider: writes through
+                                    # ``state.apply_world_state_patch`` with
+                                    # an ``update_channel_intelligibility``
+                                    # op so the edit persists as a new
+                                    # version.
+                                    with ui.row().classes(
+                                        "w-full items-center gap-2 text-xs"
+                                    ):
+                                        ui.label(pname).classes(
+                                            "text-slate-700 truncate w-28 shrink-0"
+                                        )
+                                        slider = ui.slider(
+                                            min=0.0, max=1.0, step=0.05,
+                                            value=decode,
+                                        ).props(
+                                            "label-always color=primary "
+                                            "dense"
+                                        ).classes("flex-grow")
+                                        readout = ui.label(f"{decode:.2f}").classes(
+                                            "font-mono text-slate-600 w-10 text-right"
+                                        )
+
+                                        def _on_change(
+                                            _e=None,
+                                            *,
+                                            s=slider,
+                                            r=readout,
+                                            cid=ch.id,
+                                            participant=pid,
+                                            pretty=pname,
+                                        ) -> None:
+                                            try:
+                                                v = float(s.value)
+                                            except (TypeError, ValueError):
+                                                return
+                                            v = max(0.0, min(1.0, v))
+                                            r.text = f"{v:.2f}"
+                                            ok, log = state.apply_world_state_patch(
+                                                {
+                                                    "update_channel_intelligibility": {
+                                                        cid: {participant: v},
+                                                    }
+                                                },
+                                                description=(
+                                                    f"Channel intelligibility: "
+                                                    f"{cid}[{pretty}] = {v:.2f}"
+                                                ),
+                                            )
+                                            if ok:
+                                                ui.notify(
+                                                    "Intelligibility updated",
+                                                    type="positive",
+                                                    position="top-right",
+                                                    timeout=1500,
+                                                )
+                                            else:
+                                                ui.notify(
+                                                    "Update failed: "
+                                                    + (log[0] if log else "unknown"),
+                                                    type="negative",
+                                                )
+
+                                        slider.on(
+                                            "change",
+                                            lambda _e=None, h=_on_change: h(),
+                                        )
+                        # Utterance count via this channel.
+                        utter_n = sum(
+                            1 for e in ws.events
+                            if getattr(e, "via_channel_id", None) == ch.id
+                        )
+                        if utter_n:
+                            ui.label(
+                                f"{utter_n} utterance"
+                                + ("s" if utter_n != 1 else "")
+                                + " carried"
+                            ).classes(
+                                "text-[10px] text-slate-500 italic"
+                            )
+    return container
+
+
+def render_proposition_stake_timeline(
+    ws: WorldStateV1,
+    proposition_id: str,
+    *,
+    height: str = "240px",
+) -> ui.element:
+    """Stake / audience-prior curve + Bayesian-surprise spike for one proposition.
+
+    Surfaces three signals on a shared fabula axis:
+
+      * **stakes** — replayed via ``reconstruct_proposition_at`` so
+        narrative escalation is visible.
+      * **audience prior** — likewise replayed; reflects how the
+        narrator has framed the question.
+      * **truth-commit spikes** — at every fabula tick where
+        ``Proposition.truth_at_fabula`` commits a value, an
+        Itti-Baldi-style ``-log p(P)`` marker. ``p`` is the audience's
+        prior at that tick, so unexpected reveals (low p) score a
+        bigger spike than telegraphed inevitabilities. This is
+        Brewer-Lichtenstein "surprise" reduced to a single number.
+
+    Returns an ECharts line chart; falls back to a label when the
+    proposition is unknown or the world has no fabula span.
+    """
+    import math
+
+    prop = next(
+        (p for p in (ws.propositions or [])
+         if p.proposition_id == proposition_id),
+        None,
+    )
+    if prop is None:
+        return ui.label(
+            f"Unknown proposition {proposition_id}"
+        ).classes("text-grey q-pa-md")
+
+    from shadow_loom.models import reconstruct_proposition_at
+    from shadow_loom_ui.viz_helpers import fabula_time_bounds
+
+    tmin, tmax = fabula_time_bounds(ws)
+    if tmax <= tmin:
+        return ui.label(
+            "Single-tick world — stake timeline needs a fabula span."
+        ).classes("text-grey q-pa-md")
+
+    # Sample evenly across the fabula span (capped) plus union the
+    # explicit truth-commit ticks so spikes always land on integer
+    # samples rather than being interpolated away.
+    n = 32
+    step = max(1, (tmax - tmin) // (n - 1))
+    sample_set = set(range(tmin, tmax + 1, step))
+    sample_set.add(tmax)
+    sample_set.update(int(t) for t in (prop.truth_at_fabula or {}).keys())
+    samples = sorted(sample_set)
+
+    stake_pts = []
+    prior_pts = []
+    surprise_pts = []
+    last_truth: bool | None = None
+    for t in samples:
+        snap = reconstruct_proposition_at(prop, t)
+        s = float(snap["stakes"])
+        p = float(snap["audience_default_prior"])
+        stake_pts.append([t, round(s, 3)])
+        prior_pts.append([t, round(p, 3)])
+        truth = snap["truth_at"]
+        # Itti-Baldi surprise on the *transition* into a new committed truth.
+        if truth is not None and truth != last_truth:
+            # p_observed = audience prior toward the realised value.
+            p_obs = p if truth else (1.0 - p)
+            p_obs = max(min(p_obs, 1 - 1e-6), 1e-6)
+            surprise = -math.log(p_obs)
+            surprise_pts.append([t, round(surprise, 3)])
+        last_truth = truth
+
+    return ui.echart({
+        "backgroundColor": _CHART_BG,
+        "tooltip": {**_CHART_TOOLTIP, "trigger": "axis"},
+        "legend": {
+            "data": ["stakes", "aud. prior", "−log p (surprise)"],
+            "textStyle": {"color": _CHART_TEXT}, "top": 0,
+        },
+        "grid": {"top": 30, "left": 50, "right": 50, "bottom": 40},
+        "xAxis": {
+            "type": "value",
+            "name": "fabula t",
+            "axisLabel": {"color": _CHART_TEXT, "fontSize": 10},
+            "nameTextStyle": {"color": _CHART_TEXT},
+        },
+        "yAxis": [
+            {
+                "type": "value", "min": 0, "max": 1,
+                "name": "stakes / prior",
+                "axisLabel": {"color": _CHART_TEXT, "fontSize": 10},
+                "nameTextStyle": {"color": _CHART_TEXT},
+            },
+            {
+                "type": "value", "min": 0,
+                "name": "−log p", "position": "right",
+                "axisLabel": {"color": _CHART_TEXT, "fontSize": 10},
+                "nameTextStyle": {"color": _CHART_TEXT},
+                "splitLine": {"show": False},
+            },
+        ],
+        "series": [
+            {
+                "name": "stakes", "type": "line",
+                "data": stake_pts, "smooth": True,
+                "lineStyle": {"color": "#f59e0b", "width": 2},
+                "itemStyle": {"color": "#f59e0b"},
+            },
+            {
+                "name": "aud. prior", "type": "line",
+                "data": prior_pts, "smooth": True,
+                "lineStyle": {"color": "#3A7BD5", "width": 2,
+                              "type": "dashed"},
+                "itemStyle": {"color": "#3A7BD5"},
+            },
+            {
+                "name": "−log p (surprise)", "type": "scatter",
+                "yAxisIndex": 1, "data": surprise_pts,
+                "symbolSize": 14,
+                "itemStyle": {"color": "#dc2626"},
+            },
+        ],
+    }).classes("w-full").style(f"height: {height}")

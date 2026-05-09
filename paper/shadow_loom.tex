@@ -738,10 +738,10 @@ typed state each carries. All six share a common
 Node ID prefix & Pydantic class & Distinctive state \\
 \midrule
 \texttt{ENT\_} & \texttt{Entity} & \texttt{traits: Dict[str, TraitVector]}; \texttt{beliefs: List[Belief]}; \texttt{constants: List[str]}; \texttt{location\_id}; \texttt{status}; \texttt{state\_timeline} of \texttt{EntityStateSnapshot} deltas. \\
-\texttt{EVT\_} & \texttt{EventNode} & \texttt{event\_type} (\texttt{action} / \texttt{utterance} / \texttt{outcome} / \texttt{revelation} / \texttt{choice} / \dots); \texttt{actor\_ids}, \texttt{target\_ids}; \texttt{fabula\_time}, \texttt{syuzhet\_index}; for \texttt{utterance}: \texttt{speaker\_id}, \texttt{addressee\_ids}, \texttt{via\_channel\_id}, \texttt{content}, \texttt{truth\_value} $\in$ \{\texttt{true}, \texttt{false}, \texttt{uncertain}\}. \\
+\texttt{EVT\_} & \texttt{EventNode} & \texttt{event\_type} $\in$ \{\texttt{choice}, \texttt{outcome}, \texttt{revelation}, \texttt{utterance}\}; \texttt{actor\_ids}, \texttt{target\_ids}; \texttt{fabula\_time}, \texttt{syuzhet\_index}; for \texttt{utterance}: \texttt{speaker\_id}, \texttt{addressee\_ids}, \texttt{via\_channel\_id}, \texttt{content}, \texttt{truth\_value} $\in$ \{\texttt{true}, \texttt{false}, \texttt{unknown}, \texttt{performative}\} (the last covers prophecies / vows / orders, which alone may carry future-fabula \texttt{target\_ids}; see \S\ref{sec:utterance-temporal}). \\
 \texttt{LOC\_} & \texttt{Location} & \texttt{ambient\_state: Dict[str, AmbientVector]} (e.g.\ \textit{tension}, \textit{bustle}, \textit{supernatural}); \texttt{capacity}; outgoing \texttt{SpatialEdge}s. \\
 \texttt{OBJ\_} & \texttt{Object} & \texttt{location\_id} or \texttt{owner\_id}; \texttt{properties}; \texttt{affordances: List[Affordance]} (typed action/target gates). \\
-\texttt{CHN\_} & \texttt{Channel} & \texttt{medium}, \texttt{directionality}, \texttt{participant\_ids}; \texttt{intelligibility: Dict[entity\_id, float]} per-participant; \texttt{established\_at\_fabula}, \texttt{terminated\_at\_fabula}. \\
+\texttt{CHN\_} & \texttt{Channel} & \texttt{medium}, \texttt{directionality}, \texttt{participant\_ids}; \texttt{intelligibility: Dict[entity\_id, float]} per-participant; \texttt{established\_at\_fabula}, \texttt{terminated\_at\_fabula}; \texttt{discovered\_at\_syuzhet} (optional, marks reader-facing channel reveals). \\
 \texttt{WORLD\_} & \texttt{GlobalTrait} & Standing pressure (e.g.\ \texttt{WORLD\_REGENCY\_RANK} in Persuasion, \texttt{WORLD\_SOVIET\_PENETRATION} in Tinker Tailor): a single value $v$, \texttt{inertia}, \texttt{evidence\_strength}, plus a \texttt{state\_timeline} of \texttt{WorldTraitSnapshot}s. \\
 \bottomrule
 \end{tabular}
@@ -832,7 +832,10 @@ The Inverness night reduces to a small, fully typed sub-graph:
       \texttt{participants=[\\
       ENT\_MACBETH,\ ENT\_BANQUO,\ ENT\_WITCHES]}, used by the
       utterance event \texttt{EVT\_UTT\_PROPHECY\_HEATH}
-      ($\texttt{truth\_value}=\textit{uncertain}$).
+      ($\texttt{truth\_value}=\textit{performative}$ --- the witches'
+      prophecy is a future-positing speech-act, not a fact-claim,
+      and may therefore reference future events such as
+      \texttt{EVT\_MACBETH\_CROWNED} in its \texttt{target\_ids}).
 \item \textbf{Causal sub-graph.} \texttt{EVT\_LADY\_MACBETH\_PERSUADES
       $\to$ EVT\_DUNCAN\_MURDER} (\texttt{chain\_reaction},
       $\texttt{causal\_force}=8.0$); \texttt{OBJ\_BLOODY\_DAGGERS
@@ -864,17 +867,70 @@ Given prose $P$, ingestion produces a $\mathcal{W}$ via:
 \item Five extraction agents over $P$ build a
       \texttt{GlobalRegister} of $\mathrm{WORLD}\_$, $\mathrm{ENT}\_$,
       $\mathrm{LOC}\_$, $\mathrm{OBJ}\_$ nodes plus a fuzzy alias
-      table.
+      table. A single global \emph{proposition catalogue} pass
+      then mints $\mathrm{PROP}\_$ ids for every fact-claim the
+      story will need to track --- shared targets that downstream
+      utterances and beliefs reference rather than duplicating
+      free-text \texttt{perceived\_state}s.
 \item For each chunk, a Socratic Who/What/Where/When/Why/How
       scaffold dispatches three concurrent specialist agents:
       \emph{physics} (events, causal/spatial edges), \emph{social}
-      (relationship edges, channels), \emph{consequences}
-      (authoritative entity-state deltas).
+      (relationship edges, channels, utterance \texttt{EVT\_UTT\_}
+      events), \emph{consequences} (authoritative entity-state
+      deltas). A per-chunk \emph{affect sub-stage} runs after
+      consequences to wire \texttt{asserts\_proposition\_id} /
+      \texttt{denies\_proposition\_id} / \texttt{resolves\_proposition\_ids}
+      onto the chunk's events.
 \item Output is normalised, fabula times are remapped to a
       uniform $\Delta t = 100$ spacing, and a programmatic
       validator + LLM correction loop enforces ID closure and
-      type constraints.
+      type constraints. The validator includes a temporal-coherence
+      rule on utterances: see \S\ref{sec:utterance-temporal}.
+\item Three post-assembly passes complete the world model:
+      (a) \emph{concern extraction} per entity (standing fears
+      and desires that drive the affective-physics threat / hope
+      surfacing); (b) \emph{belief proposition clustering} (an
+      LLM clusters free-text \texttt{perceived\_state} strings
+      sharing a target into the catalogue's \texttt{PROP\_} ids);
+      (c) \emph{audience entity synthesis} ---
+      \texttt{\_maybe\_synthesise\_audience\_entity} constructs an
+      \texttt{ENT\_AUDIENCE} entity carrying graded belief
+      snapshots over each \texttt{Proposition} on the syuzhet
+      timeline. \texttt{ENT\_AUDIENCE} is what the propositional
+      affect scorers (\S\ref{sec:propositional}) read when
+      computing reader-side suspense, surprise, irony, and
+      mystery.
 \end{enumerate}
+
+\subsubsection{Utterance temporal coherence}
+\label{sec:utterance-temporal}
+
+An \texttt{EventNode} with \texttt{event\_type="utterance"} carries
+a \texttt{target\_ids} list naming the entities, objects, and
+events the speech-act is \emph{about}. The schema enforces a
+temporal-coherence invariant: every $\mathrm{EVT}\_$ id appearing
+in an utterance's \texttt{target\_ids} must satisfy
+$\texttt{fabula\_time}_{\text{target}} \le
+\texttt{fabula\_time}_{\text{utterance}}$, \emph{unless} the
+utterance carries $\texttt{truth\_value} = \texttt{performative}$.
+The exemption is grounded in the speech-act tradition of
+\citet{austin1962how} and \citet{searle1969speech}: prophecies,
+vows, oaths, orders, and declarations are not fact-claims about
+the world but illocutionary acts that posit, commit to, or
+predict future states. They are accordingly the only utterance
+class that may legitimately reference an event whose
+\texttt{fabula\_time} lies in their own future. The witches'
+prophecy (\texttt{EVT\_UTT\_PROPHECY\_HEATH} in
+\emph{Macbeth}, $\texttt{truth\_value}=\texttt{performative}$,
+\texttt{target\_ids} = \texttt{[EVT\_MACBETH\_CROWNED]}) is the
+canonical example. The constraint is enforced by
+\texttt{shadow\_loom.ingestion.\_validate\_time\_ordering} (Rule~5,
+\texttt{severity="error"}) and authored into the social-extraction
+prompt (\texttt{prompts/social\_extraction.md} Rule 8).
+Causal effects \emph{produced} by an utterance are expressed in
+\texttt{causal\_topology} as \texttt{chain\_reaction} edges
+$(\mathrm{EVT}\_\mathrm{UTT}\_X \to \mathrm{EVT}\_Y)$, distinct
+from referential targets in \texttt{target\_ids}.
 
 \subsection{Ego-graph slicing and AMWN sandbox}
 \label{app:amwn}
@@ -1547,6 +1603,174 @@ misinterpretation: cumulative surprise is a state quantity
 local surprise is its temporal derivative (``which revelation
 moments most shift the reader's beliefs'').
 
+\paragraph{Propositional belief-state affect (\texttt{affect\_unification.py}).}
+The four scorers above operate on \emph{trait} and \emph{event}
+mass --- graph geometry, calibrated to behave well as a
+directive-assembly loss. Alongside them, the post-2026 ingestion
+pipeline lays down a typed \texttt{Proposition} registry (with
+\texttt{audience\_default\_prior} $\in [0, 1]$,
+\texttt{stakes} $\in [0, 1]$, time-indexed
+\texttt{truth\_at\_fabula}, and a sparse \texttt{state\_timeline})
+and per-entity \texttt{Concern} rows (polarity desire/fear,
+salience, activation window, counter-concern pairs). On top of
+those, \texttt{shadow\_loom/affect\_unification.py} exposes a
+second, \emph{propositional / Bayesian} scoring layer that
+operates directly on belief revision over named claims rather
+than on graph geometry. Letting $p_{\mathrm{aud}}(P, t_f)$ denote
+the audience belief on proposition $P$ at fabula time $t_f$
+(reconstructed from a synthesised \texttt{ENT\_AUDIENCE} entity's
+belief replay, falling back to $P$'s
+\texttt{audience\_default\_prior} when no belief exists) and
+$p_c(P, t_f)$ the analogous belief of focal character $c$:
+\begin{align}
+\label{eq:susp-prop}
+\mathrm{Susp}^{\mathrm{prop}}(t_f) &= \!\!\!\sum_{P \in \mathrm{open\,outcomes}}\!\!\! H\!\big(p_{\mathrm{aud}}(P, t_f)\big) \cdot \mathrm{stakes}(P, t_f) \cdot e^{-\Delta t_f / \tau}, \\
+\label{eq:sur-prop}
+\mathrm{Sur}^{\mathrm{prop}}(t_f \,\|\, t_f') &= \sum_P D_{\mathrm{KL}}\!\big(p_{\mathrm{aud}}(P, t_f) \,\|\, p_{\mathrm{aud}}(P, t_f')\big) \cdot \mathrm{stakes}(P, t_f), \\
+\label{eq:iro-prop}
+\mathrm{Iro}^{\mathrm{prop}}(c, t_f) &= \sum_P D_{\mathrm{KL}}\!\big(p_{\mathrm{aud}}(P, t_f) \,\|\, p_c(P, t_f)\big) \cdot \mathrm{stakes}(P, t_f), \\
+\label{eq:mys-prop}
+\mathrm{Mys}^{\mathrm{prop}}(t_f) &= \!\!\!\sum_{e \in \mathrm{known\,effects}}\!\!\! H\!\big(\mathrm{softmax}_a \,\mathrm{path}(a, e)\big),
+\end{align}
+where $H$ is binary Shannon entropy, the suspense sum runs over
+propositions with \texttt{kind=\textquotesingle outcome\textquotesingle}
+whose \texttt{truth\_at\_fabula} has not yet committed, the kernel
+$e^{-\Delta t_f/\tau}$ is the Comisky--Bryant imminence factor on the
+fabula axis with $\tau$ defaulting to the world's median inter-event
+fabula gap, the surprise form is \citeauthor{ittibaldi2009surprise}'s
+definition lifted to the proposition layer (and formally equivalent
+to \citeauthor{schmidhuber1995rdia}'s belief-state KL), and the
+mystery form is \citeauthor{carroll2007closure}'s erotetic mystery:
+softmax-normalised candidate-cause path strengths in the
+proposition graph induced by
+\texttt{EventNode.resolves\_proposition\_ids} and
+\texttt{asserts}/\texttt{denies\_proposition\_id}, summed over
+effect propositions whose audience confidence already exceeds the
+known-effect threshold (default $0.7$). The trait layer (above)
+and the propositional layer coexist: the directive-assembly
+optimiser consumes the trait scorers because their graph-geometry
+loss is defined for every world; the propositional layer is what
+surfaces in the affective dashboard for any consumer asking the
+Bayesian-narratology question \emph{``how surprised should the
+reader have been by this beat, given the stated audience prior on
+this proposition?''}, which is undefined for worlds whose
+ingestion never produced a Phase A3 proposition catalogue.
+Valence-decomposed variants are also exposed:
+\texttt{compute\_surprise\_breakdown} returns a Tan/Ortony
+pleasant/unpleasant split per focal entity (using the entity's
+\texttt{Concern} polarity to decide whether a positive belief
+shift on a desired proposition is pleasant surprise vs.\
+pleasant relief), and \texttt{compute\_irony\_breakdown} returns
+Sternberg's three irony modes (suspense-irony, curiosity-irony,
+surprise-irony).
+
+\paragraph{Theory-driven refinements (May 2026).}
+A re-reading of the primary sources against corpus output
+identified five gaps closed by small, interpretable factors on
+top of the scorers above; each is anchored to a specific
+literature claim rather than a calibration heuristic.
+
+\emph{(i) Audience-concern weighting on suspense and dramatic
+irony \citep{tan1996emotion}.} Brewer--Lichtenstein establishes
+\emph{whether} a future outcome is suspenseful (outcome
+ambiguity); Tan's \emph{F-emotions} supply \emph{which} outcomes
+the audience cares about. Without a concern gate, two non-focal
+NPCs arguing weighted as much as the protagonist on trial. We
+introduce a per-event multiplier
+\begin{equation}
+\omega_{\mathrm{con}}(e) = 0.2 + 0.8 \cdot \frac{S_e}{1 + S_e},
+\qquad
+S_e = \!\!\!\!\sum_{c \in C_{\mathrm{aud}}: \mathrm{ref}(c) \cap \mathrm{part}(e) \neq \emptyset}\!\!\!\!\! s_c,
+\end{equation}
+where $C_{\mathrm{aud}}$ is the audience's concern set,
+$\mathrm{ref}(c)$ the referent set of the proposition behind
+concern $c$, $\mathrm{part}(e)$ the actor/target set of $e$, and
+$s_c$ the concern salience. The 0.2 floor avoids
+zero-weighting orphan events; the saturation maps a single
+high-salience concern to the ceiling. $\omega_{\mathrm{con}}$
+multiplies $w_e$ in both Eq.~\ref{eq:irony} (gap mass) and the
+EFK / classic suspense ledgers (Eq.~\ref{eq:suspense}), making
+both surface and gap forms of structural affect uniformly
+F-emotion gated.
+
+\emph{(ii) Carroll erotetic recency on mystery
+\citep{carroll1990philosophy}.} Carroll's erotetic narrative
+theory holds that the mystery salient at any reader position
+is the set of \emph{live} questions (those raised by recent
+surface events). The curiosity-proximity decay
+$\rho_e = \exp(-(t_s - s(e))/\tau_{\mathrm{cur}})$ in
+Eq.~\ref{eq:mystery} already implements this directly; the
+May-2026 audit confirmed the alignment and re-anchored the
+docstring to Carroll's primary claim rather than the previous
+Iser citation alone.
+
+\emph{(iii) False-lead mystery \citep{sayers1929omnibus,
+knox1929decalogue}.} Detective-fiction theory (Sayers' \emph{Omnibus
+of Crime} introduction; Knox's \emph{Decalogue}) frames mystery
+intensity as tracking not only the number of unrevealed causes
+but the number of \emph{plausible-but-wrong} hypotheses the
+reader is actively entertaining. Red-herring-rich worlds
+(Christie, \emph{Gone Girl}) read as more mysterious than worlds
+with the same hidden-ancestor count but no plausible alternates.
+Approximating the live-hypothesis count as
+\begin{equation}
+n_{\mathrm{fl}}(t_s) = \big|\{ P \in \mathrm{open} : 0.3 \le p_{\mathrm{aud}}(P, t_f(t_s)) \le 0.7 \}\big|,
+\end{equation}
+the gauge of Eq.~\ref{eq:mystery} is blended with a saturating
+false-lead term:
+\begin{equation}
+\mathrm{Mys}^{*} = 0.75 \cdot \mathrm{Mys} + 0.25 \cdot \frac{n_{\mathrm{fl}}}{n_{\mathrm{fl}} + 4}.
+\end{equation}
+
+\emph{(iv) Correlation-aware surprise aggregator
+\citep{friston2010freeenergy}.} Friston's free-energy /
+predictive-coding framework treats surprise as the
+precision-weighted prediction error on a single information
+unit. The naive aggregator double-counts when simultaneously-
+revealed propositions are causally connected --- the audience
+perceives the joint reveal as a single update, not several. We
+deflate each per-step KL contribution by
+\begin{equation}
+w_P = \frac{1}{1 + \kappa \cdot n_{\mathrm{kin}}(P)}, \qquad \kappa = 0.5,
+\end{equation}
+where $n_{\mathrm{kin}}(P)$ counts $P$'s causal-graph neighbours
+that \emph{also} moved this step. One co-moving kin halves the
+contribution, three quarters it. Applied inside the local form
+of $\mathrm{Sur}_{\mathrm{KL}}$ where joint-reveal double-counting
+is the dominant systematic bias.
+
+\emph{(v) Composite narrative tension
+\citep{brewer1982stories,sternberg1978expositional,vorderer1996suspense}.}
+The four scorers measure orthogonal facets of structural affect,
+but readers experience a single felt \emph{tension}, the quantity
+Brewer \& Lichtenstein originally framed as a \textbf{triad}
+(suspense $+$ curiosity $+$ surprise). Sternberg frames the same
+construct as the \emph{disequilibrium} between what the reader
+knows, suspects, and is owed; \citet{vorderer1996suspense} as
+the running integral of moment-to-moment uncertainty. We
+aggregate
+\begin{equation}
+\label{eq:tension}
+T = 0.40 \cdot \mathrm{Susp} + 0.25 \cdot \mathrm{Mys}^{*} + 0.20 \cdot \mathrm{Iro} + 0.10 \cdot \dot{\mathrm{Sur}} + 0.05 \cdot D_{\mathrm{unp}},
+\end{equation}
+with the surprise term as its first derivative
+$\dot{\mathrm{Sur}}$ (the local form: the disequilibrium kick),
+and
+$D_{\mathrm{unp}} = n_{\mathrm{unp}} / (n_{\mathrm{unp}} + 4)$
+counting foreshadowing arcs whose payoff event has not yet been
+revealed at the anchor (Chekhov's-gun overhang). The weight
+vector is calibrated against the \texttt{example\_worlds/}
+corpus so canonical mid-arc tension peaks land in the
+$[0.5, 0.7]$ band; on \emph{Macbeth} at the Duncan-murder
+anchor $T \approx 0.49$, rising to $0.51$ at the Banquo banquet
+and decaying toward $0.28$ at the denouement. Implemented as
+\texttt{DirectiveAssembler.compute\_tension\_score} and surfaced
+as the \texttt{narrative\_tension} series in the affective-curve
+plot, gauge strip, and \texttt{compute\_affective\_score}
+dispatch table; also exposed via the MCP server's
+\texttt{target\_effect} whitelist and the
+\texttt{DirectiveQuery} schema.
+
 \subsection{Generation}
 \label{app:generation}
 
@@ -1567,20 +1791,91 @@ within the envelope.
 \label{app:audit}
 
 The auditor \citep[an LLM-as-judge in the sense of][]{gu2024judge}
-runs three passes over the rendered prose:
-(i)~\textbf{causal} --- reverse-engineers prose into causal claims
-and flags ``miracle steps'' (state changes with no licensing edge
-in the brief); (ii)~\textbf{abduction} --- runs counterfactual
-probes against the prose to check that implicit events hold;
-(iii)~\textbf{affective} --- measures the realised epistemic gap
-in the prose against the target. If the structured loss is
-non-zero, generation is re-run with the auditor's feedback
-appended, up to \texttt{max\_correction\_retries}. On success the
-re-extracted prose is merged into a new \texttt{VersionRow}, with
-\texttt{world\_id} set by the branch policy
-($\texttt{auto} \mid \texttt{mainline} \mid \texttt{shadow}$);
-counterfactual queries default to a fresh \texttt{shadow} branch,
-preserving canon.
+runs a single \emph{categorical} pass per iteration whose prompt
+is assembled from a target-effect-gated category set
+($\texttt{epistemic} \mid \texttt{probabilistic} \mid
+\texttt{counterfactual} \mid \texttt{physics} \mid \texttt{meta}
+\mid \texttt{style}$). Three logical check families are bundled
+into that pass: (i)~\textbf{causal} --- reverse-engineers prose
+into causal claims and flags ``miracle steps'' (state changes
+with no licensing edge in the brief); (ii)~\textbf{abduction}
+--- runs counterfactual probes against the prose to check that
+implicit events hold; (iii)~\textbf{affective} --- measures the
+realised epistemic gap in the prose against the target. Bundling
+the three families into one prompt rather than three sequential
+LLM calls trades a small loss of focus for a $3\times$ reduction
+in LLM cost and round-trip latency, and lets each iteration
+reason jointly about cross-family interactions (a miracle step is
+usually \emph{also} an abduction failure). If the structured
+loss is non-zero, generation is re-run with the auditor's
+feedback appended, up to \texttt{max\_correction\_retries}. On
+success the re-extracted prose is merged into a new
+\texttt{VersionRow}, with \texttt{world\_id} set by the branch
+policy ($\texttt{auto} \mid \texttt{mainline} \mid
+\texttt{shadow}$); counterfactual queries default to a fresh
+\texttt{shadow} branch, preserving canon.
+
+\paragraph{Convergence safeguards.} The naive iterate-until-the-auditor-passes
+loop has two failure modes that surface as non-convergence on
+densely-constrained queries: (a)~the rewriter \emph{regresses} ---
+closing the latest violation while reintroducing one that an
+earlier iteration had already fixed --- and (b)~the rewriter
+\emph{flips the rendering mode} (e.g.\ \texttt{counterfactual}
+$\rightarrow$ \texttt{observation}), so each subsequent audit
+evaluates a different rubric than the prose was written under.
+The implementation defends against both: each iteration's
+violation set $\{(\text{type},\text{evidence})\}$ is snapshotted,
+and if iteration $n{+}1$ both \emph{strictly increases} the
+violation count \emph{and} introduces a previously-unseen
+violation type, the loop rolls back to the iteration-$n$ prose
+and exits with a structured \texttt{correction\_error};
+independently, the brief's \texttt{rendering\_mode} is treated as
+immutable across the loop, and any rewrite that returns a
+mismatching mode is rejected as a generation error. Composition-
+level safeguards run upstream, in the directive assembler:
+when the brief simultaneously requests a POV-locked perspective
+\emph{and} a summary source-form (\texttt{plot\_summary},
+\texttt{synopsis}, \texttt{outline}) the two constraints are
+mutually unsatisfiable, so the assembler resolves the mutex
+deterministically (POV wins for epistemic / affective effects
+that depend on a perspective anchor; summary wins otherwise) and
+records the decision on the brief so the auditor enforces
+exactly one. The renderer also drops the \emph{abducted-cue}
+sub-directive whenever the Rung-3 abduction posterior is flat
+($|\Delta| < 0.10$ on every trait), so the prose is no longer
+asked to dramatise observable behaviour for shifts the simulator
+itself called negligible. Finally, the
+\texttt{ERASED~UTTERANCES~(HARD)} constraint block carries a
+\emph{structural fingerprint} of each erased speech act
+(speaker, addressees, target ids, truth-value, channel) rather
+than the canonical content: showing the verbatim text in a ``do
+not echo this'' instruction is the classic pink-elephant
+anti-pattern that makes the line the most salient phrase in the
+renderer's context, and the rewriter either reproduces it or
+paraphrases its evidentiary logic. Deterministic leak detection
+still reads the canonical \texttt{content} from the world state
+directly, so removing it from the brief weakens neither the
+constraint nor the audit.
+
+\paragraph{Cycle handling.} The propagator and the ingestion
+auto-repair pass distinguish \emph{temporal-collapse} cycles
+from \emph{genuine} causal loops. An \texttt{affordance\_gate}
+edge $\text{Entity} \rightarrow \text{Event}$ refers to the
+entity's pre-event state, while a \texttt{mutation} edge
+$\text{Event} \rightarrow \text{Entity}$ refers to the
+post-event state; collapsed onto a single entity node those two
+classes form a strongly-connected component (SCC) that does not
+exist in fabula time. Cycle detection therefore runs on the
+\texttt{affordance\_gate}-excluded sub-graph; any SCC that
+survives is treated as a real defect, and the ingestion repair
+pass iteratively breaks the lowest-\texttt{causal\_force} edge
+in each surviving SCC until the propagation graph is acyclic
+(or a configurable iteration cap is hit, which is logged as a
+warning). Genuine forward-causal loops between events thus
+remain visible to the auditor while characteristic
+extraction artefacts (e.g.\ Vader as both cause and consequence
+of the duel that mutates him) dissolve without losing causal
+information.
 
 
 \section{Worked examples on real plot fixtures}
@@ -2097,8 +2392,9 @@ dictionaries in \texttt{docs/settings.md~\S 8}).}
 Gone Girl is the system's lying-narrator fixture: Amy's diary is a
 sequence of \texttt{EventNode}s with \texttt{truth\_value="false"}
 broadcast through \texttt{CHN\_DIARY\_PUBLIC}. After generation,
-\texttt{auditor.run\_feedback\_loop} runs three passes in parallel.
-The \emph{causal audit} reverse-engineers the prose into
+\texttt{auditor.run\_feedback\_loop} runs a single categorical
+pass whose prompt bundles the causal, abduction, and affective
+check families. The \emph{causal} family reverse-engineers the prose into
 $(\text{source}, \text{target}, \text{modality})$ claims and
 matches each against the brief; an LLM-emitted ``Nick suddenly
 realises Amy is alive'' with no licensing causal edge is flagged
@@ -2106,7 +2402,7 @@ as a \emph{miracle step}. The \emph{abduction audit} runs
 counterfactual probes (``if the diary were truthful, would the
 prose still hold?''); a ``yes'' here means the prose has
 collapsed Amy's two faces into one, and is rejected. The
-\emph{affective audit} measures the realised dramatic-irony gap
+\emph{affective} family measures the realised dramatic-irony gap
 against the target. A \emph{style-fidelity audit} compares the
 prose against the \texttt{NarrativeStyle} profile recovered at
 ingestion --- word-count budget, prose density, register, POV,
@@ -2380,16 +2676,17 @@ a graph.
 \subsection{Step 8: audit, re-extraction, and merge}
 \label{app:wk-audit}
 
-The auditor runs three passes in parallel. The \emph{causal audit}
+The auditor runs a single categorical pass whose prompt bundles
+three check families. The \emph{causal} family
 reverse-engineers the prose into $(\text{source}, \text{target},
 \text{modality})$ triples and matches each against the brief; an
 LLM-emitted ``Banquo's ghost rises behind Macbeth'' would be
 flagged as a \emph{miracle step} (no licensing edge), but in this
-run nothing of the kind appears. The \emph{abduction audit} runs
+run nothing of the kind appears. The \emph{abduction} family runs
 counterfactual probes against the prose --- ``if Banquo had
 suspected the prophecy, would the prose still hold?'' --- and
 checks the answers against the brief's belief envelope. The
-\emph{affective audit} re-runs the four scorers on the prose and
+\emph{affective} family re-runs the four scorers on the prose and
 compares them to the brief's targets. If any pass fails the
 \texttt{engine\_thresholds} gate or the \texttt{llm\_pass} gate,
 the renderer is re-invoked with the structured feedback appended,
@@ -2579,11 +2876,15 @@ The \textsc{Reasoning} tab
 (\texttt{components/reasoning\_tab.py}) is where queries are
 typed and where intervention / counterfactual traces are
 inspected. The chat box accepts natural-language queries that are
-parsed into one of the eight typed query objects
+parsed into one of the typed query objects
 (\texttt{ObservationQuery}, \texttt{InterventionQuery},
 \texttt{CounterfactualQuery}, \texttt{DirectiveQuery},
-\texttt{InterrogationQuery}, \texttt{GeneralQuery},
-\texttt{ManualEditQuery}, \texttt{EvaluationQuery}).
+\texttt{InterrogationQuery},
+\texttt{ManualEditQuery}, \texttt{EvaluationQuery}; a
+\texttt{GeneralQuery} fallback type also exists in the codebase
+but is no longer surfaced as an explicit chat mode \textemdash{}
+free-form questions are routed through
+\texttt{InterrogationQuery} instead).
 Write-mode queries route their result into this tab, where
 \texttt{reasoning\_helpers.py} formats the
 \texttt{CausalPhysicsResult}: each mutation is shown with its
@@ -2591,8 +2892,8 @@ $(I, \iota, \Delta)$ triple, each blocked propagation with the
 reason (inertia, affordance, spatial), each abduction back-fill
 with the evidence weight, and any hidden deltas with the
 syuzhet window in which they will be revealed.
-Read-mode queries (\texttt{InterrogationQuery},
-\texttt{GeneralQuery}) skip this tab entirely: they are dispatched
+Read-mode queries (\texttt{InterrogationQuery}) skip this tab
+entirely: they are dispatched
 through \texttt{shadow\_loom/answer.py} and surface in the
 dedicated \emph{Answer panel} above the chat bar
 (\texttt{components/answer\_panel.py}) as a card with the model's

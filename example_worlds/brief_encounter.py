@@ -16,6 +16,7 @@ from shadow_loom.models import (
     CausalEdge, SpatialEdge, RelationshipEdge, RelationshipMetric, TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
     GlobalTrait, WorldTraitSnapshot,
     NarrativeStyle,
+    Concern, Proposition, ConcernSnapshot, PropositionSnapshot,
 )
 
 world_state = WorldStateV1(
@@ -36,6 +37,10 @@ world_state = WorldStateV1(
             ambient_state={
                 "respectability_under_glass": AmbientVector(value=0.9, volatility=0.2, evidence_strength="strong"),
                 "constant_supervision":       AmbientVector(value=0.85, volatility=0.2, evidence_strength="strong"),
+                # Frijda action-readiness: Dolly's interruption is the social
+                # trap par excellence — physical exits exist but every gesture
+                # is observed; flight from feeling, not from the room, denied.
+                "connected_to": AmbientVector(value=0.4, volatility=0.2, evidence_strength="strong"),
             },
         ),
         "LOC_PLATFORM": Location(
@@ -66,6 +71,8 @@ world_state = WorldStateV1(
             ambient_state={
                 "borrowed_secrecy":   AmbientVector(value=0.85, volatility=0.4, evidence_strength="strong"),
                 "humiliation_risk":   AmbientVector(value=0.85, volatility=0.4, evidence_strength="strong"),
+                # Stephen's key is in the door; flight from exposure unavailable.
+                "connected_to": AmbientVector(value=0.0, volatility=0.4, evidence_strength="strong"),
             },
         ),
         "LOC_MILFORD_STREETS": Location(
@@ -82,6 +89,8 @@ world_state = WorldStateV1(
             ambient_state={
                 "married_routine":    AmbientVector(value=0.95, volatility=0.05, evidence_strength="strong"),
                 "domestic_safety":    AmbientVector(value=0.85, volatility=0.1, evidence_strength="strong"),
+                # Marriage as gentle gaol — physically open but morally sealed.
+                "connected_to": AmbientVector(value=0.4, volatility=0.05, evidence_strength="strong"),
             },
         ),
     },
@@ -135,8 +144,45 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_FRED",
-                       perceived_state="kind, settled husband — utterly familiar",
+                       perceived_state="kind, settled husband — utterly familiar", proposition_id="PROP_LAURA_LEAVES_FRED",
                        confidence=0.95, inertia=0.85, established_at_fabula=0, evidence_strength="strong"),
+            ],
+            concerns=[
+                # Sternberg/Berscheid passionate attachment that ignites at the
+                # cinema and never quite extinguishes.
+                Concern(concern_id="CCN_LAURA_DESIRES_ALEC", proposition_id="PROP_ALEC_LOVES_LAURA",
+                        polarity="desire", kind="love", salience=1.0,
+                        activation_fabula_window=[3000, 12000],
+                        counter_concern_ids=["CCN_LAURA_FEARS_ABANDONING_FRED"]),
+                # Bowlby attachment + moral identity — Laura's marriage is the
+                # counterweight that prevents the elopement.
+                Concern(concern_id="CCN_LAURA_FEARS_ABANDONING_FRED", proposition_id="PROP_LAURA_LEAVES_FRED",
+                        polarity="fear", kind="abandonment", salience=0.95,
+                        activation_fabula_window=[4000, 12000],
+                        counter_concern_ids=["CCN_LAURA_DESIRES_ALEC", "CCN_LAURA_DESIRES_ESCAPE"]),
+                # Averill normative-violation rage substrate — exposure / shame
+                # if their meetings are observed; intensified by the cinema sighting.
+                Concern(concern_id="CCN_LAURA_FEARS_EXPOSURE", proposition_id="PROP_AFFAIR_EXPOSED",
+                        polarity="fear", kind="humiliation", salience=0.9,
+                        activation_fabula_window=[5000, 12000],
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=5000, triggered_by="EVT_FRIENDS_SEE_THEM",
+                                            salience=1.0),
+                        ]),
+                # Lazarus appraisal — Stephen's flat as the moral chasm that
+                # Laura wants the affair to *not* cross.
+                Concern(concern_id="CCN_LAURA_FEARS_CONSUMMATION", proposition_id="PROP_AFFAIR_CONSUMMATED",
+                        polarity="fear", kind="injustice", salience=0.85,
+                        activation_fabula_window=[6000, 9000]),
+                # Kahneman/Miller foreshadowed regret — the road not taken.
+                Concern(concern_id="CCN_LAURA_DESIRES_ESCAPE", proposition_id="PROP_LAURA_LEAVES_FRED",
+                        polarity="desire", kind="freedom", salience=0.6,
+                        activation_fabula_window=[6000, 10500],
+                        counter_concern_ids=["CCN_LAURA_FEARS_ABANDONING_FRED"],
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=9000, triggered_by="EVT_AGREE_TO_END",
+                                            salience=0.2, kind="regret"),
+                        ]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_GRIT_IN_EYE",
@@ -184,7 +230,7 @@ world_state = WorldStateV1(
                     },
                     beliefs_added=[
                         Belief(target_id="ENT_FRED",
-                               perceived_state="he knows, more or less, and still wants me back",
+                               perceived_state="he knows, more or less, and still wants me back", proposition_id="PROP_LAURA_LEAVES_FRED",
                                confidence=0.85, inertia=0.7, established_at_fabula=12000, evidence_strength="strong"),
                     ]),
             ],
@@ -200,6 +246,28 @@ world_state = WorldStateV1(
                 "marital_duty":         TraitVector(value=0.85, inertia=0.85, evidence_strength="strong"),
             },
             beliefs=[],
+            concerns=[
+                Concern(concern_id="CCN_ALEC_DESIRES_LAURA", proposition_id="PROP_LAURA_LOVES_ALEC",
+                        polarity="desire", kind="love", salience=1.0,
+                        activation_fabula_window=[3000, 11000],
+                        counter_concern_ids=["CCN_ALEC_FEARS_LOSING_FAMILY"]),
+                Concern(concern_id="CCN_ALEC_FEARS_LOSING_FAMILY", proposition_id="PROP_ALEC_LEAVES_FAMILY",
+                        polarity="fear", kind="abandonment", salience=0.9,
+                        activation_fabula_window=[4000, 11000],
+                        counter_concern_ids=["CCN_ALEC_DESIRES_LAURA"]),
+                # Averill normative violation — Stephen's chastisement at the flat.
+                Concern(concern_id="CCN_ALEC_FEARS_HUMILIATION", proposition_id="PROP_AFFAIR_EXPOSED",
+                        polarity="fear", kind="humiliation", salience=0.85,
+                        activation_fabula_window=[6000, 11000]),
+                # Lazarus appraisal — the Johannesburg post as Frijda flight.
+                Concern(concern_id="CCN_ALEC_DESIRES_NEW_LIFE", proposition_id="PROP_ALEC_TAKES_POST",
+                        polarity="desire", kind="freedom", salience=0.7,
+                        activation_fabula_window=[9000, 11000],
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=9000, triggered_by="EVT_AGREE_TO_END",
+                                            salience=0.95),
+                        ]),
+            ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=4000, triggered_by="EVT_KARDOMAH_CINEMA",
                     traits={
@@ -217,6 +285,7 @@ world_state = WorldStateV1(
                     beliefs_added=[
                         Belief(target_id="ENT_LAURA",
                                perceived_state="she must be allowed to keep her family",
+                               proposition_id="PROP_LAURA_LEAVES_FRED",
                                confidence=0.95, inertia=0.85, established_at_fabula=9000, evidence_strength="strong"),
                     ]),
                 EntityStateSnapshot(fabula_time=11000, triggered_by="EVT_ALEC_DEPARTS",
@@ -237,7 +306,7 @@ world_state = WorldStateV1(
                 EntityStateSnapshot(fabula_time=12000, triggered_by="EVT_RETURN_TO_FRED",
                     beliefs_added=[
                         Belief(target_id="ENT_LAURA",
-                               perceived_state="something happened, but she has come back",
+                               perceived_state="something happened, but she has come back", proposition_id="PROP_AFFAIR_EXPOSED",
                                confidence=0.7, inertia=0.7, established_at_fabula=12000, evidence_strength="moderate"),
                     ]),
             ],
@@ -261,7 +330,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_ALEC",
-                       perceived_state="my colleague is breaking the rules and dragging me into it",
+                       perceived_state="my colleague is breaking the rules and dragging me into it", proposition_id="PROP_AFFAIR_EXPOSED",
                        confidence=0.95, inertia=0.8, established_at_fabula=7000, evidence_strength="strong"),
             ],
         ),
@@ -670,6 +739,26 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_UTT_STEPHEN_CHASTISES_ALEC", target_id="ENT_ALEC", rel_counterpart_id="ENT_STEPHEN", causality_type="mutation_social", trait_target="fear", trait_delta=0.3, mechanism="psychological", evidence_strength="strong", causal_force=6.0, fabula_time=7000, propagation_delay=0),
         CausalEdge(source_id="EVT_UTT_STEPHEN_CHASTISES_ALEC", target_id="ENT_STEPHEN", rel_counterpart_id="ENT_ALEC", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.3, mechanism="psychological", evidence_strength="strong", causal_force=6.0, fabula_time=7000, propagation_delay=0),
         CausalEdge(source_id="EVT_STAFF_FLIRTATION_ARC", target_id="ENT_MYRTLE_PALMER", rel_counterpart_id="ENT_ALBERT_GODBY", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.5, mechanism="social", evidence_strength="moderate", causal_force=5.0, fabula_time=6000, propagation_delay=0),
+        # ── auto-backfilled per-axis mutation_social ──
+        CausalEdge(source_id="EVT_FINAL_MEETING", target_id="ENT_DOLLY", rel_counterpart_id="ENT_LAURA",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.21,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=10000, propagation_delay=0),
+        CausalEdge(source_id="EVT_CHEMIST_MEETING", target_id="ENT_LAURA", rel_counterpart_id="ENT_ALEC",  # auto-backfill
+                   causality_type="mutation_social", trait_target="fear", trait_delta=0.09,
+                   mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_GRIT_IN_EYE", target_id="ENT_ALEC", rel_counterpart_id="ENT_LAURA",  # auto-backfill
+                   causality_type="mutation_social", trait_target="fear", trait_delta=0.05,
+                   mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+
+        # ── WORLD_ → WORLD_ (named-latent forces destabilising one another) ──
+        CausalEdge(source_id="WORLD_INTERWAR_RESPECTABILITY", target_id="WORLD_DOMESTICITY",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=12000,
+                   description="Respectability enforces domesticity — the social cost of leaving Fred is what returns Laura to the wireless and the crossword."),
+        CausalEdge(source_id="WORLD_TIMETABLE", target_id="WORLD_DOMESTICITY",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=11500,
+                   description="The railway timetable structures the Thursdays — and, by ending Alec's last train, returns Laura to the domestic schedule on time."),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -722,6 +811,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.95, inertia=0.95, evidence_strength="strong"),
             affected_domains=["social", "psychological"],
+            proposition_id="PROP_AFFAIR_CONSUMMATED",
         ),
         "WORLD_DOMESTICITY": GlobalTrait(
             id="WORLD_DOMESTICITY",
@@ -730,6 +820,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.9, inertia=0.95, evidence_strength="strong"),
             affected_domains=["social", "psychological"],
+            proposition_id="PROP_LAURA_RETURNS_TO_FRED",
         ),
         "WORLD_TIMETABLE": GlobalTrait(
             id="WORLD_TIMETABLE",
@@ -738,6 +829,7 @@ world_state = WorldStateV1(
             category="cosmology",
             magnitude=TraitVector(value=0.85, inertia=0.95, evidence_strength="strong"),
             affected_domains=["social"],
+            proposition_id="PROP_ALEC_TAKES_POST",
         ),
     },
 
@@ -826,5 +918,54 @@ world_state = WorldStateV1(
                 "affinity": RelationshipMetric(value=0.6, inertia=0.5, evidence_strength="moderate", last_updated_fabula=6000),
             },
         ),
+    ],
+    propositions=[
+        # The mutual romantic attachment — central trait the affair tests.
+        Proposition(proposition_id="PROP_ALEC_LOVES_LAURA", kind="trait_holds",
+                    referent_ids=["ENT_ALEC", "ENT_LAURA"],
+                    description="Alec is genuinely in love with Laura, not merely infatuated.",
+                    audience_default_prior=0.7, stakes=0.9,
+                    truth_at_fabula={3000: True}),
+        Proposition(proposition_id="PROP_LAURA_LOVES_ALEC", kind="trait_holds",
+                    referent_ids=["ENT_LAURA", "ENT_ALEC"],
+                    description="Laura is genuinely in love with Alec, not merely flattered.",
+                    audience_default_prior=0.7, stakes=0.9,
+                    truth_at_fabula={3000: True}),
+        # The Bowlby-attachment fork — Laura's marriage to Fred as the moral counterweight.
+        Proposition(proposition_id="PROP_LAURA_LEAVES_FRED", kind="event_occurs",
+                    referent_ids=["ENT_LAURA", "ENT_FRED"],
+                    description="Laura leaves her husband Fred for Alec.",
+                    audience_default_prior=0.2, stakes=0.95,
+                    truth_at_fabula={12000: False}),
+        # The mirroring fork on Alec's side.
+        Proposition(proposition_id="PROP_ALEC_LEAVES_FAMILY", kind="event_occurs",
+                    referent_ids=["ENT_ALEC"],
+                    description="Alec leaves his wife and children for Laura.",
+                    audience_default_prior=0.2, stakes=0.9,
+                    truth_at_fabula={12000: False}),
+        # Public exposure — the social-shame axis (humiliation kind).
+        Proposition(proposition_id="PROP_AFFAIR_EXPOSED", kind="event_occurs",
+                    referent_ids=["ENT_LAURA", "ENT_ALEC"],
+                    description="The affair becomes publicly known and the social cost lands.",
+                    audience_default_prior=0.3, stakes=0.85,
+                    truth_at_fabula={12000: False}),
+        # The Stephen Lynn flat scene — would have been physical consummation.
+        Proposition(proposition_id="PROP_AFFAIR_CONSUMMATED", kind="event_occurs",
+                    referent_ids=["ENT_LAURA", "ENT_ALEC"],
+                    description="The affair is physically consummated at Stephen's flat.",
+                    audience_default_prior=0.4, stakes=0.8,
+                    truth_at_fabula={9000: False}),
+        # Alec's escape — taking the medical post in Johannesburg ends the affair.
+        Proposition(proposition_id="PROP_ALEC_TAKES_POST", kind="event_occurs",
+                    referent_ids=["ENT_ALEC"],
+                    description="Alec accepts the post in Johannesburg and emigrates.",
+                    audience_default_prior=0.5, stakes=0.85,
+                    truth_at_fabula={11500: True}),
+        # WORLD_ trait Pearl-Rung-2 reification (Domesticity).
+        Proposition(proposition_id="PROP_LAURA_RETURNS_TO_FRED", kind="trait_holds",
+                    referent_ids=["WORLD_DOMESTICITY", "ENT_LAURA", "ENT_FRED"],
+                    description="Laura returns to and stays within the suburban-married domesticity she briefly threatened to leave.",
+                    audience_default_prior=0.85, stakes=0.85,
+                    truth_at_fabula={12000: True}),
     ],
 )

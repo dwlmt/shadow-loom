@@ -21,6 +21,7 @@ from shadow_loom.models import (
     CausalEdge, SpatialEdge, RelationshipEdge, RelationshipMetric, TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
     GlobalTrait, WorldTraitSnapshot,
     NarrativeStyle,
+    Concern, Proposition, ConcernSnapshot, PropositionSnapshot,
 )
 
 world_state = WorldStateV1(
@@ -133,13 +134,40 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_WILSON",
                        perceived_state="Wilson's languid charm undermines my proper authority",
-                       confidence=0.7, inertia=0.5, established_at_fabula=1000, evidence_strength="moderate"),
+                       confidence=0.7, inertia=0.5, established_at_fabula=1000, evidence_strength="moderate",
+                       proposition_id="PROP_WILSON_SOCIALLY_SUPERIOR"),
                 Belief(target_id="ENT_HODGES",
                        perceived_state="Hodges is a petty rival who must not be allowed to win",
-                       confidence=0.85, inertia=0.6, established_at_fabula=5000, evidence_strength="strong"),
+                       confidence=0.85, inertia=0.6, established_at_fabula=5000, evidence_strength="strong",
+                       proposition_id="PROP_HODGES_GRANTS_RESPECT"),
                 Belief(target_id="ENT_FULLARD",
                        perceived_state="the Major-General persists in mistaking me for a mere bank clerk",
-                       confidence=0.9, inertia=0.55, established_at_fabula=2000, evidence_strength="strong"),
+                       confidence=0.9, inertia=0.55, established_at_fabula=2000, evidence_strength="strong",
+                       proposition_id="PROP_MAINWARING_LOSES_COMMAND"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_MAINWARING_DESIRE_PLATOON_TRIUMPHS", proposition_id="PROP_PLATOON_TRIUMPHS",
+                        polarity="desire", kind="public_validation", salience=0.9,
+                        activation_fabula_window=(1000, 15000)),
+                Concern(concern_id="CCN_MAINWARING_FEAR_LOSES_COMMAND", proposition_id="PROP_MAINWARING_LOSES_COMMAND",
+                        polarity="fear", kind="status_loss", salience=0.95,
+                        activation_fabula_window=(2000, 11000)),
+                Concern(concern_id="CCN_MAINWARING_FEAR_WILSON_SUPERIOR", proposition_id="PROP_WILSON_SOCIALLY_SUPERIOR",
+                        polarity="fear", kind="class_humiliation", salience=0.9,
+                        activation_fabula_window=(1000, 15000),
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=7000, triggered_by="EVT_WILSON_OUTRANKS_REVELATION",
+                                            salience=1.0),
+                        ]),
+                Concern(concern_id="CCN_MAINWARING_DESIRE_HODGES_RESPECT", proposition_id="PROP_HODGES_GRANTS_RESPECT",
+                        polarity="desire", kind="rivalry_victory", salience=0.7,
+                        activation_fabula_window=(5000, 14000)),
+                Concern(concern_id="CCN_MAINWARING_DESIRE_FULLARD_REVERSES", proposition_id="PROP_FULLARD_REVERSES_JUDGMENT",
+                        polarity="desire", kind="institutional_validation", salience=0.8,
+                        activation_fabula_window=(2000, 11000)),
+                Concern(concern_id="CCN_MAINWARING_FEAR_BRITAIN_INVADED", proposition_id="PROP_BRITAIN_INVADED",
+                        polarity="fear", kind="wartime_safety", salience=0.85,
+                        activation_fabula_window=(1000, 15000)),
             ],
             constants=["bank_manager", "platoon_commander", "lower_middle_class"],
             state_timeline=[
@@ -153,7 +181,8 @@ world_state = WorldStateV1(
                     beliefs_added=[
                         Belief(target_id="ENT_WILSON",
                                perceived_state="he is socially my superior and I shall never live it down",
-                               confidence=0.9, inertia=0.7, established_at_fabula=7000, evidence_strength="strong"),
+                               confidence=0.9, inertia=0.7, established_at_fabula=7000, evidence_strength="strong",
+                               proposition_id="PROP_WILSON_SOCIALLY_SUPERIOR"),
                     ]),
                 EntityStateSnapshot(fabula_time=11000, triggered_by="EVT_MAINWARING_STANDS_FIRM",
                     traits={
@@ -177,7 +206,22 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_MAINWARING",
                        perceived_state="Mainwaring means well but is faintly absurd",
-                       confidence=0.85, inertia=0.6, established_at_fabula=1000, evidence_strength="strong"),
+                       confidence=0.85, inertia=0.6, established_at_fabula=1000, evidence_strength="strong",
+                       proposition_id="PROP_PLATOON_TRIUMPHS"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_WILSON_DESIRE_PLATOON_TRIUMPHS", proposition_id="PROP_PLATOON_TRIUMPHS",
+                        polarity="desire", kind="quiet_competence", salience=0.5,
+                        activation_fabula_window=(1000, 15000)),
+                Concern(concern_id="CCN_WILSON_FEAR_MAINWARING_LOSES_COMMAND", proposition_id="PROP_MAINWARING_LOSES_COMMAND",
+                        polarity="fear", kind="loyalty_to_friend", salience=0.45,
+                        activation_fabula_window=(2000, 11000)),
+                Concern(concern_id="CCN_WILSON_FEAR_BRITAIN_INVADED", proposition_id="PROP_BRITAIN_INVADED",
+                        polarity="fear", kind="wartime_safety", salience=0.6,
+                        activation_fabula_window=(1000, 15000)),
+                Concern(concern_id="CCN_WILSON_DESIRE_PIKE_SAFE", proposition_id="PROP_PIKE_GIVES_NAME",
+                        polarity="fear", kind="avuncular_protection", salience=0.55,
+                        activation_fabula_window=(10000, 13000)),
             ],
             constants=["public_school_educated", "former_officer_class"],
             state_timeline=[
@@ -197,7 +241,22 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_MAINWARING",
                        perceived_state="Captain Mainwaring is a great leader and deserves my unquestioning support",
-                       confidence=0.95, inertia=0.85, established_at_fabula=1000, evidence_strength="strong"),
+                       confidence=0.95, inertia=0.85, established_at_fabula=1000, evidence_strength="strong",
+                       proposition_id="PROP_MAINWARING_LOSES_COMMAND"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_JONES_FEAR_MAINWARING_LOSES_COMMAND", proposition_id="PROP_MAINWARING_LOSES_COMMAND",
+                        polarity="fear", kind="loyalty_to_captain", salience=0.95,
+                        activation_fabula_window=(2000, 11000)),
+                Concern(concern_id="CCN_JONES_DESIRE_PARACHUTISTS_CAPTURED", proposition_id="PROP_PARACHUTISTS_CAPTURED",
+                        polarity="desire", kind="bayonet_glory", salience=0.85,
+                        activation_fabula_window=(8000, 11000)),
+                Concern(concern_id="CCN_JONES_FEAR_BRITAIN_INVADED", proposition_id="PROP_BRITAIN_INVADED",
+                        polarity="fear", kind="wartime_safety", salience=0.9,
+                        activation_fabula_window=(1000, 15000)),
+                Concern(concern_id="CCN_JONES_DESIRE_PLATOON_TRIUMPHS", proposition_id="PROP_PLATOON_TRIUMPHS",
+                        polarity="desire", kind="platoon_pride", salience=0.85,
+                        activation_fabula_window=(1000, 15000)),
             ],
             constants=["sudan_veteran", "butcher", "old_campaigner"],
             state_timeline=[
@@ -220,7 +279,19 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_MAINWARING",
                        perceived_state="Mainwaring is doomed to fail — we're all doomed",
-                       confidence=0.7, inertia=0.55, established_at_fabula=1000, evidence_strength="moderate"),
+                       confidence=0.7, inertia=0.55, established_at_fabula=1000, evidence_strength="moderate",
+                       proposition_id="PROP_PLATOON_TRIUMPHS"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_FRAZER_FEAR_BRITAIN_INVADED", proposition_id="PROP_BRITAIN_INVADED",
+                        polarity="fear", kind="apocalyptic_dread", salience=0.85,
+                        activation_fabula_window=(1000, 15000)),
+                Concern(concern_id="CCN_FRAZER_FEAR_DRILL_FIASCO", proposition_id="PROP_DRILL_FIASCO",
+                        polarity="fear", kind="we_are_doomed", salience=0.7,
+                        activation_fabula_window=(2000, 9000)),
+                Concern(concern_id="CCN_FRAZER_DESIRE_PLATOON_TRIUMPHS", proposition_id="PROP_PLATOON_TRIUMPHS",
+                        polarity="desire", kind="reluctant_loyalty", salience=0.4,
+                        activation_fabula_window=(1000, 15000)),
             ],
             constants=["undertaker", "scottish", "former_navy_rating"],
             state_timeline=[
@@ -240,7 +311,19 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_MAINWARING",
                        perceived_state="Mainwaring is doing his best in trying circumstances",
-                       confidence=0.7, inertia=0.5, established_at_fabula=1000, evidence_strength="moderate"),
+                       confidence=0.7, inertia=0.5, established_at_fabula=1000, evidence_strength="moderate",
+                       proposition_id="PROP_PLATOON_TRIUMPHS"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_GODFREY_FEAR_BRITAIN_INVADED", proposition_id="PROP_BRITAIN_INVADED",
+                        polarity="fear", kind="wartime_safety", salience=0.7,
+                        activation_fabula_window=(1000, 15000)),
+                Concern(concern_id="CCN_GODFREY_DESIRE_PLATOON_TRIUMPHS", proposition_id="PROP_PLATOON_TRIUMPHS",
+                        polarity="desire", kind="quiet_duty", salience=0.55,
+                        activation_fabula_window=(1000, 15000)),
+                Concern(concern_id="CCN_GODFREY_DESIRE_PARACHUTISTS_CAPTURED", proposition_id="PROP_PARACHUTISTS_CAPTURED",
+                        polarity="desire", kind="medical_orderly_duty", salience=0.55,
+                        activation_fabula_window=(9000, 11000)),
             ],
             constants=["conscientious_objector_medal", "first_world_war_medic", "elderly"],
             state_timeline=[
@@ -249,7 +332,8 @@ world_state = WorldStateV1(
                     beliefs_added=[
                         Belief(target_id="ENT_MAINWARING",
                                perceived_state="he understands now that quiet men can also be brave",
-                               confidence=0.8, inertia=0.6, established_at_fabula=12000, evidence_strength="moderate"),
+                               confidence=0.8, inertia=0.6, established_at_fabula=12000, evidence_strength="moderate",
+                               proposition_id="PROP_GODFREY_IS_DECORATED_HERO"),
                     ]),
             ],
         ),
@@ -264,7 +348,26 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_WILSON",
                        perceived_state="Uncle Arthur looks after me and Mum says I must do as he says",
-                       confidence=0.95, inertia=0.6, established_at_fabula=1000, evidence_strength="strong"),
+                       confidence=0.95, inertia=0.6, established_at_fabula=1000, evidence_strength="strong",
+                       proposition_id="PROP_WILSON_SOCIALLY_SUPERIOR"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_PIKE_DESIRE_PLATOON_TRIUMPHS", proposition_id="PROP_PLATOON_TRIUMPHS",
+                        polarity="desire", kind="boyish_glory", salience=0.85,
+                        activation_fabula_window=(1000, 15000)),
+                Concern(concern_id="CCN_PIKE_FEAR_GIVES_NAME", proposition_id="PROP_PIKE_GIVES_NAME",
+                        polarity="fear", kind="follow_orders", salience=0.5,
+                        activation_fabula_window=(13000, 13500),
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=13000, triggered_by="EVT_PIKE_REFUSES_NAME",
+                                            salience=0.05),
+                        ]),
+                Concern(concern_id="CCN_PIKE_DESIRE_UNCLE_ARTHUR_APPROVAL", proposition_id="PROP_WILSON_SOCIALLY_SUPERIOR",
+                        polarity="desire", kind="filial_attachment", salience=0.7,
+                        activation_fabula_window=(1000, 15000)),
+                Concern(concern_id="CCN_PIKE_FEAR_BRITAIN_INVADED", proposition_id="PROP_BRITAIN_INVADED",
+                        polarity="fear", kind="wartime_safety", salience=0.6,
+                        activation_fabula_window=(1000, 15000)),
             ],
             constants=["bank_clerk", "wears_scarf", "mothers_boy"],
             state_timeline=[
@@ -290,7 +393,25 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_MAINWARING",
                        perceived_state="Mainwaring's platoon is a joke that endangers proper civil defence",
-                       confidence=0.85, inertia=0.55, established_at_fabula=5000, evidence_strength="strong"),
+                       confidence=0.85, inertia=0.55, established_at_fabula=5000, evidence_strength="strong",
+                       proposition_id="PROP_PLATOON_TRIUMPHS"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_HODGES_DESIRE_MAINWARING_LOSES_COMMAND", proposition_id="PROP_MAINWARING_LOSES_COMMAND",
+                        polarity="desire", kind="rivalry_victory", salience=0.85,
+                        activation_fabula_window=(5000, 11000)),
+                Concern(concern_id="CCN_HODGES_FEAR_PLATOON_TRIUMPHS", proposition_id="PROP_PLATOON_TRIUMPHS",
+                        polarity="fear", kind="rival_supremacy", salience=0.8,
+                        activation_fabula_window=(5000, 15000),
+                        counter_concern_ids=["CCN_HODGES_FEAR_BRITAIN_INVADED"],
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=14000, triggered_by="EVT_HODGES_GRUDGING_RESPECT",
+                                            salience=0.3, kind="rivalry_fading"),
+                        ]),
+                Concern(concern_id="CCN_HODGES_FEAR_BRITAIN_INVADED", proposition_id="PROP_BRITAIN_INVADED",
+                        polarity="fear", kind="civic_safety", salience=0.6,
+                        activation_fabula_window=(1000, 15000),
+                        counter_concern_ids=["CCN_HODGES_FEAR_PLATOON_TRIUMPHS"]),
             ],
             constants=["greengrocer", "arp_warden", "rival_authority"],
             state_timeline=[
@@ -302,7 +423,8 @@ world_state = WorldStateV1(
                     beliefs_added=[
                         Belief(target_id="ENT_MAINWARING",
                                perceived_state="the bank manager actually held his nerve under fire",
-                               confidence=0.65, inertia=0.4, established_at_fabula=14000, evidence_strength="moderate"),
+                               confidence=0.65, inertia=0.4, established_at_fabula=14000, evidence_strength="moderate",
+                               proposition_id="PROP_HODGES_GRANTS_RESPECT"),
                     ]),
                 
             ],
@@ -319,7 +441,19 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_MAINWARING",
                        perceived_state="Mainwaring is a useful straight man for my schemes",
-                       confidence=0.7, inertia=0.45, established_at_fabula=1000, evidence_strength="moderate"),
+                       confidence=0.7, inertia=0.45, established_at_fabula=1000, evidence_strength="moderate",
+                       proposition_id="PROP_PLATOON_TRIUMPHS"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_WALKER_FEAR_BRITAIN_INVADED", proposition_id="PROP_BRITAIN_INVADED",
+                        polarity="fear", kind="livelihood_preservation", salience=0.55,
+                        activation_fabula_window=(1000, 15000)),
+                Concern(concern_id="CCN_WALKER_DESIRE_PLATOON_TRIUMPHS", proposition_id="PROP_PLATOON_TRIUMPHS",
+                        polarity="desire", kind="self_interest_camouflage", salience=0.4,
+                        activation_fabula_window=(1000, 15000)),
+                Concern(concern_id="CCN_WALKER_FEAR_DRILL_FIASCO", proposition_id="PROP_DRILL_FIASCO",
+                        polarity="fear", kind="self_preservation", salience=0.5,
+                        activation_fabula_window=(2000, 9000)),
             ],
             constants=["black_marketeer", "exempt_from_call_up", "wide_boy"],
         ),
@@ -334,7 +468,16 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_MAINWARING",
                        perceived_state="Mainwaring is an incompetent bank clerk unfit to command",
-                       confidence=0.85, inertia=0.6, established_at_fabula=2000, evidence_strength="strong"),
+                       confidence=0.85, inertia=0.6, established_at_fabula=2000, evidence_strength="strong",
+                       proposition_id="PROP_MAINWARING_LOSES_COMMAND"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_FULLARD_DESIRE_MAINWARING_LOSES_COMMAND", proposition_id="PROP_MAINWARING_LOSES_COMMAND",
+                        polarity="desire", kind="regular_army_pride", salience=0.85,
+                        activation_fabula_window=(2000, 11000)),
+                Concern(concern_id="CCN_FULLARD_FEAR_BRITAIN_INVADED", proposition_id="PROP_BRITAIN_INVADED",
+                        polarity="fear", kind="strategic_concern", salience=0.7,
+                        activation_fabula_window=(1000, 15000)),
             ],
             constants=["regular_army", "general_staff", "upper_class"],
             state_timeline=[
@@ -345,7 +488,8 @@ world_state = WorldStateV1(
                     beliefs_added=[
                         Belief(target_id="ENT_MAINWARING",
                                perceived_state="the platoon may have been underestimated after all",
-                               confidence=0.6, inertia=0.4, established_at_fabula=10000, evidence_strength="moderate"),
+                               confidence=0.6, inertia=0.4, established_at_fabula=10000, evidence_strength="moderate",
+                               proposition_id="PROP_FULLARD_REVERSES_JUDGMENT"),
                     ]),
             ],
         ),
@@ -360,7 +504,16 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_MAINWARING",
                        perceived_state="Mainwaring monopolises my church hall with his absurd parading",
-                       confidence=0.85, inertia=0.55, established_at_fabula=4000, evidence_strength="strong"),
+                       confidence=0.85, inertia=0.55, established_at_fabula=4000, evidence_strength="strong",
+                       proposition_id="PROP_VICAR_RECLAIMS_HALL"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_VICAR_DESIRE_RECLAIMS_HALL", proposition_id="PROP_VICAR_RECLAIMS_HALL",
+                        polarity="desire", kind="parish_authority", salience=0.85,
+                        activation_fabula_window=(1000, 15000)),
+                Concern(concern_id="CCN_VICAR_FEAR_BRITAIN_INVADED", proposition_id="PROP_BRITAIN_INVADED",
+                        polarity="fear", kind="parish_safety", salience=0.5,
+                        activation_fabula_window=(1000, 15000)),
             ],
             constants=["clergyman", "civilian"],
         ),
@@ -379,7 +532,16 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_MAINWARING",
                        perceived_state="the British defenders are stupid and easy to outwit",
-                       confidence=0.7, inertia=0.5, established_at_fabula=10000, evidence_strength="moderate"),
+                       confidence=0.7, inertia=0.5, established_at_fabula=10000, evidence_strength="moderate",
+                       proposition_id="PROP_BRITAIN_INVADED"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_GERMAN_DESIRE_BRITAIN_INVADED", proposition_id="PROP_BRITAIN_INVADED",
+                        polarity="desire", kind="reich_victory", salience=0.85,
+                        activation_fabula_window=(10000, 15000)),
+                Concern(concern_id="CCN_GERMAN_FEAR_PARACHUTISTS_CAPTURED", proposition_id="PROP_PARACHUTISTS_CAPTURED",
+                        polarity="fear", kind="prisoner_status", salience=0.95,
+                        activation_fabula_window=(10000, 11000)),
             ],
             constants=["wehrmacht_officer", "downed_airman"],
             state_timeline=[
@@ -798,6 +960,53 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_UTT_FULLARD_DRESSDOWN", target_id="ENT_FULLARD", rel_counterpart_id="ENT_MAINWARING", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.65, mechanism="social", evidence_strength="strong", causal_force=8.0, fabula_time=9500, propagation_delay=0),
         CausalEdge(source_id="EVT_VICAR_COMPLAINS", target_id="ENT_VICAR", rel_counterpart_id="ENT_MAINWARING", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.2, mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=4000, propagation_delay=0),
         CausalEdge(source_id="EVT_MAINWARING_STANDS_FIRM", target_id="ENT_GERMAN_OFFICER", rel_counterpart_id="ENT_MAINWARING", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.4, mechanism="social", evidence_strength="strong", causal_force=8.0, fabula_time=11000, propagation_delay=0),
+        # ── auto-backfilled per-axis mutation_social ──
+        CausalEdge(source_id="EVT_PARACHUTIST_CAPTURED", target_id="ENT_MAINWARING", rel_counterpart_id="ENT_FRAZER",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.07,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=10000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PIKE_SCARF_INCIDENT", target_id="ENT_PIKE", rel_counterpart_id="ENT_MAINWARING",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.17,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=6000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PLATOON_FORMED", target_id="ENT_WALKER", rel_counterpart_id="ENT_MAINWARING",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.05,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PLATOON_FORMED", target_id="ENT_MAINWARING", rel_counterpart_id="ENT_WALKER",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.05,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PLATOON_FORMED", target_id="ENT_MAINWARING", rel_counterpart_id="ENT_VICAR",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.14,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PARACHUTIST_CAPTURED", target_id="ENT_MAINWARING", rel_counterpart_id="ENT_GERMAN_OFFICER",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.21,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=10000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PIKE_SCARF_INCIDENT", target_id="ENT_PIKE", rel_counterpart_id="ENT_MAINWARING",  # auto-backfill
+                   causality_type="mutation_social", trait_target="fear", trait_delta=0.1,
+                   mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=6000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PARACHUTIST_CAPTURED", target_id="ENT_MAINWARING", rel_counterpart_id="ENT_FRAZER",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.07,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=10000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PARACHUTIST_CAPTURED", target_id="ENT_MAINWARING", rel_counterpart_id="ENT_GODFREY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.09,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=10000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PIKE_SCARF_INCIDENT", target_id="ENT_PIKE", rel_counterpart_id="ENT_MAINWARING",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.17,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=6000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PLATOON_FORMED", target_id="ENT_MAINWARING", rel_counterpart_id="ENT_VICAR",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.06,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PARACHUTIST_CAPTURED", target_id="ENT_MAINWARING", rel_counterpart_id="ENT_GERMAN_OFFICER",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.12,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=10000, propagation_delay=0),
+
+        # ── WORLD_ → WORLD_ (named-latent forces destabilising one another) ──
+        CausalEdge(source_id="WORLD_HOME_FRONT", target_id="WORLD_CLASS_COMEDY",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=1000,
+                   description="Home-front mobilisation throws strangers from every class into one platoon — the social mixing is exactly the comedy's necessary precondition."),
+        CausalEdge(source_id="WORLD_CLASS_COMEDY", target_id="WORLD_HOME_FRONT",
+                   causality_type="chain_reaction", mechanism="psychological", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=15000,
+                   description="The platoon's class jostling is the very texture of home-front spirit — it is what 'Britain on parade' looks like in 1940."),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -855,6 +1064,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.7, inertia=0.65, evidence_strength="strong"),
             affected_domains=["social", "psychological"],
+            proposition_id="PROP_BRITAIN_INVADED",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=10000, triggered_by="EVT_PARACHUTIST_CAPTURED",
                     magnitude=TraitVector(value=0.85, inertia=0.7, evidence_strength="strong"),
@@ -871,6 +1081,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.85, inertia=0.85, evidence_strength="strong"),
             affected_domains=["social", "psychological"],
+            proposition_id="PROP_WILSON_SOCIALLY_SUPERIOR",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=7000, triggered_by="EVT_WILSON_OUTRANKS_REVELATION",
                     magnitude=TraitVector(value=0.95, inertia=0.9, evidence_strength="strong"),
@@ -1068,6 +1279,140 @@ world_state = WorldStateV1(
                 "affinity":      RelationshipMetric(value=-0.7, inertia=0.5,  evidence_strength="strong",   last_updated_fabula=10000),
                 "power_dynamic": RelationshipMetric(value=0.4,  inertia=0.65, evidence_strength="strong",   last_updated_fabula=11000),
             },
+        ),
+    ],
+
+    # ── PROPOSITIONS ────────────────────────────────────────────────────
+    # Audience-facing dramatic questions whose truth is in suspense or dramatic-irony
+    # play. Concerns above pivot on these PROP_ ids; Beliefs link via proposition_id.
+    propositions=[
+        Proposition(
+            proposition_id="PROP_PLATOON_FORMED",
+            kind="event_occurs",
+            referent_ids=["EVT_PLATOON_FORMED", "ENT_MAINWARING"],
+            description="Mainwaring successfully forms the Walmington-on-Sea Home Guard platoon at the church hall.",
+            audience_default_prior=0.85, stakes=0.5,
+            truth_at_fabula={1000: True},
+        ),
+        Proposition(
+            proposition_id="PROP_WEAPONS_ACQUIRED",
+            kind="event_occurs",
+            referent_ids=["EVT_WEAPONS_DISTRIBUTED", "OBJ_RIFLES"],
+            description="The platoon obtains rifles for drill and defence.",
+            audience_default_prior=0.7, stakes=0.45,
+            truth_at_fabula={2000: True},
+        ),
+        Proposition(
+            proposition_id="PROP_DRILL_FIASCO",
+            kind="event_occurs",
+            referent_ids=["EVT_DRILL_FIASCO"],
+            description="The platoon's drill collapses into chain-reaction comic catastrophe.",
+            audience_default_prior=0.65, stakes=0.4,
+            truth_at_fabula={3000: True},
+        ),
+        Proposition(
+            proposition_id="PROP_WILSON_SOCIALLY_SUPERIOR",
+            kind="trait_holds",
+            referent_ids=["ENT_WILSON", "ENT_MAINWARING"],
+            description="Sergeant Wilson is socially Mainwaring's superior — public-school, officer-class breeding above the bank manager's lower-middle-class anxiety.",
+            audience_default_prior=0.4, stakes=0.7,
+            truth_at_fabula={1000: True, 7000: True},
+        ),
+        Proposition(
+            proposition_id="PROP_MAINWARING_LOSES_COMMAND",
+            kind="event_occurs",
+            referent_ids=["ENT_MAINWARING", "ENT_FULLARD"],
+            description="Major-General Fullard succeeds in having Mainwaring relieved of platoon command.",
+            audience_default_prior=0.45, stakes=0.95,
+            truth_at_fabula={2000: False, 11000: False},
+        ),
+        Proposition(
+            proposition_id="PROP_PARACHUTISTS_CAPTURED",
+            kind="event_occurs",
+            referent_ids=["EVT_PARACHUTIST_CAPTURED", "ENT_GERMAN_OFFICER"],
+            description="The Home Guard platoon captures the downed Luftwaffe crew inside the church hall.",
+            audience_default_prior=0.5, stakes=0.9,
+            truth_at_fabula={10000: True},
+        ),
+        Proposition(
+            proposition_id="PROP_GODFREY_IS_DECORATED_HERO",
+            kind="identity_is",
+            referent_ids=["ENT_GODFREY"],
+            description="Private Godfrey is a decorated Great-War hero — quietly carries a medal for bravery as a stretcher-bearer.",
+            audience_default_prior=0.05, stakes=0.55,
+            truth_at_fabula={1000: True, 12000: True},
+        ),
+        Proposition(
+            proposition_id="PROP_GERMAN_PISTOL_EMPTY",
+            kind="trait_holds",
+            referent_ids=["ENT_GERMAN_OFFICER"],
+            description="The Luftwaffe officer's Luger pistol is empty during the count-of-three standoff.",
+            audience_default_prior=0.1, stakes=0.65,
+            truth_at_fabula={10000: True, 14900: True},
+        ),
+        Proposition(
+            proposition_id="PROP_MAINWARING_PISTOL_EMPTY",
+            kind="trait_holds",
+            referent_ids=["ENT_MAINWARING"],
+            description="Mainwaring's revolver is also empty during the count-of-three standoff — the final closing twist.",
+            audience_default_prior=0.05, stakes=0.6,
+            truth_at_fabula={11000: True, 15000: True},
+        ),
+        Proposition(
+            proposition_id="PROP_PIKE_GIVES_NAME",
+            kind="event_occurs",
+            referent_ids=["EVT_PIKE_REFUSES_NAME", "ENT_PIKE", "ENT_GERMAN_OFFICER"],
+            description="Pike gives his name to the captured German officer (negation of Mainwaring's order).",
+            audience_default_prior=0.55, stakes=0.45,
+            truth_at_fabula={13000: False},
+        ),
+        Proposition(
+            proposition_id="PROP_HODGES_GRANTS_RESPECT",
+            kind="event_occurs",
+            referent_ids=["EVT_HODGES_GRUDGING_RESPECT", "ENT_HODGES", "ENT_MAINWARING"],
+            description="ARP Warden Hodges grants Mainwaring grudging public respect for the platoon's performance.",
+            audience_default_prior=0.2, stakes=0.55,
+            truth_at_fabula={5000: False, 14000: True},
+        ),
+        Proposition(
+            proposition_id="PROP_FULLARD_REVERSES_JUDGMENT",
+            kind="event_occurs",
+            referent_ids=["ENT_FULLARD", "ENT_MAINWARING", "EVT_PARACHUTIST_CAPTURED"],
+            description="Major-General Fullard reverses his contempt for Mainwaring after the German surrender.",
+            audience_default_prior=0.2, stakes=0.7,
+            truth_at_fabula={2000: False, 10000: True},
+        ),
+        Proposition(
+            proposition_id="PROP_PLATOON_TRIUMPHS",
+            kind="outcome",
+            referent_ids=["EVT_PLATOON_MARCHES", "ENT_MAINWARING"],
+            description="The Walmington Home Guard platoon emerges as the pride of the town, vindicated as effective defenders.",
+            audience_default_prior=0.3, stakes=0.85,
+            truth_at_fabula={1000: False, 15000: True},
+        ),
+        Proposition(
+            proposition_id="PROP_BRITAIN_INVADED",
+            kind="event_occurs",
+            referent_ids=["WORLD_HOME_FRONT"],
+            description="Nazi Germany successfully invades Britain across the Channel.",
+            audience_default_prior=0.35, stakes=1.0,
+            truth_at_fabula={1000: False, 15000: False},
+        ),
+        Proposition(
+            proposition_id="PROP_VICAR_RECLAIMS_HALL",
+            kind="event_occurs",
+            referent_ids=["ENT_VICAR", "LOC_CHURCH_HALL"],
+            description="The Vicar succeeds in reclaiming the church hall from the Home Guard's monopoly.",
+            audience_default_prior=0.2, stakes=0.4,
+            truth_at_fabula={4000: False, 15000: False},
+        ),
+        Proposition(
+            proposition_id="PROP_MAINWARING_FACES_DOWN_GERMAN",
+            kind="event_occurs",
+            referent_ids=["EVT_MAINWARING_STANDS_FIRM", "ENT_MAINWARING", "ENT_GERMAN_OFFICER"],
+            description="Mainwaring stands firm at the count-of-three standoff and forces the Luftwaffe officer to surrender.",
+            audience_default_prior=0.4, stakes=0.95,
+            truth_at_fabula={11000: True},
         ),
     ],
 )

@@ -3,10 +3,13 @@
 
 """World tab — multi-view ECharts exploration with click-to-inspect.
 
-View modes: Overview | Social | Spatial | Ego | Temporal | Composition |
-            Epistemic | Comparison
+View modes: Overview | Spatial | Information | Ego | Temporal |
+            Composition | World State | Comparison
 Clicking a node updates the left-panel inspector.
 Bottom expansion shows filterable topology edge tables.
+
+Note: the Beliefs / Concerns / Propositions / Relationships views
+live on the dedicated **Social** tab.
 """
 
 from __future__ import annotations
@@ -23,16 +26,11 @@ from shadow_loom_ui.viz import (
     render_ego_graph,
     render_entity_lifelines,
     render_entity_state_timeline,
-    render_epistemic_grid,
     render_event_gantt,
     render_event_type_bar,
     render_location_occupancy_bar,
     render_object_ownership_bar,
     render_population_summary,
-    render_relationship_heatmap,
-    render_relationship_heatmap_timeline,
-    render_relationship_state_grid,
-    render_social_graph,
     render_spatial_map,
     render_status_donut,
     render_sunburst,
@@ -45,7 +43,9 @@ from shadow_loom_ui.viz import (
 )
 from shadow_loom_ui.viz_helpers import (
     _set_slider_bounds,
-    fabula_time_bounds,
+    axis_bounds,
+    event_axis_value,
+    resolve_cursor,
     snapshot_world_at,
     ws_to_causal_rows,
     ws_to_entity_rows,
@@ -66,15 +66,12 @@ logger = logging.getLogger(__name__)
 
 _VIEW_MODES = {
     "overview": "Overview",
-    "social": "Social",
     "spatial": "Spatial",
     "information": "Information",
     "ego": "Ego-Graph",
     "temporal": "Temporal",
     "composition": "Composition",
-    "epistemic": "Character Beliefs",
     "world_state": "World State",
-    "relationships": "Relationships",
     "comparison": "Comparison",
 }
 
@@ -100,17 +97,6 @@ def build_world_tab(state: AppState) -> None:
                     "- **Overview** — high-level summary: counts of"
                     " entities/locations/events, status distribution,"
                     " current-location heatmap.\n"
-                    "- **Social** — graph of relationships between"
-                    " entities, weighted by relationship strength /"
-                    " type. Force or circular layout. Pick a *metric*"
-                    " to colour edges (trust, hostility, kinship…)."
-                    " Below the graph is an entity\u00d7entity"
-                    " heatmap of the chosen metric; tick"
-                    " *Animate over fabula time* to replace it with a"
-                    " timeline-scrubber heatmap that shows how the"
-                    " same matrix evolves tick by tick (causal-aware,"
-                    " uses ``mutation_social`` edges plus authored"
-                    " snapshots).\n"
                     "- **Spatial** — location graph (rooms / regions)"
                     " with the doors/paths between them, plus current"
                     " entity positions.\n"
@@ -127,23 +113,20 @@ def build_world_tab(state: AppState) -> None:
                     " fabula time.\n"
                     "- **Composition** — trait-vector composition"
                     " breakdowns (what makes Macbeth *Macbeth*).\n"
-                    "- **Epistemic** — belief panels: who believes"
-                    " what, where the belief came from (utterance,"
-                    " observation, inference), and where divergent"
-                    " beliefs create dramatic irony.\n"
                     "- **World State** — per-world-trait"
                     " **snapshot cards** at the current fabula"
                     " cursor (magnitude, inertia, affected"
                     " domains) with a small inline sparkline of the"
                     " trajectory. Drag the time cursor to watch each"
                     " card update in lockstep.\n"
-                    "- **Relationships** — every dyad's"
-                    " *affinity*, *fear* and *power_dynamic* at the"
-                    " cursor as snapshot cards, plus the"
-                    " entity×entity heatmap of the chosen metric"
-                    " (static or animated over fabula time).\n"
                     "- **Comparison** — side-by-side trait /"
                     " relationship table for 2–6 picked entities.\n\n"
+                    "### Looking for beliefs / concerns / propositions"
+                    " / relationships?\n"
+                    "They live on the **Social** tab now — unified"
+                    " network graph + per-character cards + trait"
+                    " trajectories, all time-sliced by the same"
+                    " fabula cursor.\n\n"
                     "### Reading the diagrams\n"
                     "- Node colour usually encodes **type** (entity,"
                     " location, object) or **status** (alive, dead,"
@@ -177,17 +160,6 @@ def build_world_tab(state: AppState) -> None:
             ).classes("w-48")
             temporal_select.set_visibility(False)
 
-            # Epistemic believer filter (multi-select)
-            epistemic_select = ui.select(
-                options=[],
-                label="Believers",
-                multiple=True,
-            ).classes("w-64").props("use-chips clearable")
-            epistemic_select.set_visibility(False)
-            epistemic_select.tooltip(
-                "Filter which characters' belief panels are shown"
-            )
-
             # World-state world-trait filter (multi-select).
             world_state_select = ui.select(
                 options=[],
@@ -214,28 +186,6 @@ def build_world_tab(state: AppState) -> None:
                 "flat dense"
             )
 
-            social_layout = ui.toggle(
-                {"force": "Force", "circular": "Circular"},
-                value="force",
-            ).props("dense no-caps").tooltip("Social graph layout")
-            social_layout.set_visibility(False)
-            social_metric = ui.select(
-                {
-                    "affinity": "Affinity  (-1 hate ↔ +1 love)",
-                    "fear": "Fear  (0 calm → 1 terrified)",
-                    "power_dynamic": "Power dynamic  (-1 subservient ↔ +1 dominant)",
-                },
-                value="affinity",
-                label="Heatmap metric",
-            ).classes("w-64").props("dense outlined")
-            social_metric.set_visibility(False)
-            social_over_time = ui.checkbox(
-                "Animate over fabula time", value=False,
-            ).tooltip(
-                "Replace the snapshot heatmap with an ECharts timeline "
-                "that scrubs through fabula ticks (causal-aware)."
-            )
-            social_over_time.set_visibility(False)
             spatial_animated = ui.checkbox("Animated", value=True).tooltip(
                 "Animate location nodes (rippleEffect)"
             )
@@ -245,23 +195,12 @@ def build_world_tab(state: AppState) -> None:
                 mode = view_mode.value
                 ego_select.set_visibility(mode == "ego")
                 temporal_select.set_visibility(mode == "temporal")
-                epistemic_select.set_visibility(mode == "epistemic")
                 world_state_select.set_visibility(mode == "world_state")
                 compare_select.set_visibility(mode == "comparison")
-                social_layout.set_visibility(mode == "social")
-                social_metric.set_visibility(
-                    mode in ("social", "relationships")
-                )
-                social_over_time.set_visibility(
-                    mode in ("social", "relationships")
-                )
                 spatial_animated.set_visibility(mode == "spatial")
                 _refresh()
 
             view_mode.on("update:model-value", _on_mode_change)
-            social_layout.on("update:model-value", lambda _e: _refresh())
-            social_metric.on("update:model-value", lambda _e: _refresh())
-            social_over_time.on("update:model-value", lambda _e: _refresh())
             spatial_animated.on("update:model-value", lambda _e: _refresh())
 
         # ── Fabula timeline slider ────────────────────────────────
@@ -294,7 +233,10 @@ def build_world_tab(state: AppState) -> None:
         )
         with slider_row:
             ui.icon("schedule", color="primary")
-            ui.label("Fabula time:").classes("text-sm text-slate-600")
+            time_axis_label = ui.label(
+                "Syuzhet idx:" if state.time_axis == "syuzhet"
+                else "Fabula time:"
+            ).classes("text-sm text-slate-600")
             time_label = ui.label("live").classes(
                 "text-sm font-mono text-slate-700 w-12"
             )
@@ -312,40 +254,44 @@ def build_world_tab(state: AppState) -> None:
 
         def _set_live():
             # Route through the official setter so every other panel
-            # subscribed to FABULA_CURSOR_CHANGED re-renders in lockstep.
+            # subscribed to FABULA_CURSOR_CHANGED / SYUZHET_CURSOR_CHANGED
+            # re-renders in lockstep. Dispatch by active axis so a syuzhet
+            # axis flip back to live clears the syuzhet cursor (not the
+            # fabula one), keeping Genette's two clocks decoupled.
             _slider_state["local_origin"] = False
-            state.set_fabula_cursor(None)
+            state.set_active_cursor(None)
 
         def _on_slider_change():
             try:
                 t = int(time_slider.value)
             except (TypeError, ValueError):
                 return
-            if state.fabula_cursor == t:
+            if state.active_cursor == t:
                 return
-            # Mark this change as ours so the FABULA_CURSOR_CHANGED
-            # listener doesn't bounce the slider value back at us.
+            # Mark this change as ours so the cursor-change listener
+            # doesn't bounce the slider value back at us.
             _slider_state["local_origin"] = True
-            state.set_fabula_cursor(t)
+            state.set_active_cursor(t)
 
         def _nearest_event_label(t: int) -> str:
             """Return ``"t=N \u2014 nearest event description"`` for the slider tooltip.
 
-            Picks the event whose ``fabula_time`` is closest to ``t``;
+            Picks the event whose axis value is closest to ``t``;
             on ties, prefers the one at-or-before ``t`` so the label
             tells the user *what has just happened*, which matches how
             the rest of the world view interprets a cursor (everything
             up to and including ``t`` is considered current).
             """
             idx = _slider_state["event_index"]
+            prefix = "s" if state.time_axis == "syuzhet" else "t"
             if not idx:
-                return f"t={t}"
+                return f"{prefix}={t}"
             # Min by (abs distance, prefer at-or-before via sign tiebreak).
             best = min(idx, key=lambda et: (abs(et[0] - t), 0 if et[0] <= t else 1))
             label = best[1]
             if len(label) > 80:
                 label = label[:77] + "\u2026"
-            return f"t={t} \u2014 {label}"
+            return f"{prefix}={t} \u2014 {label}"
 
         def _push_label_value(text: str) -> None:
             """Update the slider's Quasar ``label-value`` prop in place."""
@@ -362,7 +308,8 @@ def build_world_tab(state: AppState) -> None:
             except (TypeError, ValueError):
                 return
             _push_label_value(_nearest_event_label(t))
-            label_text = f"t={t}"
+            prefix = "s" if state.time_axis == "syuzhet" else "t"
+            label_text = f"{prefix}={t}"
             if time_label.text != label_text:
                 time_label.text = label_text
 
@@ -404,18 +351,19 @@ def build_world_tab(state: AppState) -> None:
             differs. This avoids the write-back echo loop that froze the
             UI on every drag.
             """
-            tmin, tmax = fabula_time_bounds(ws)
+            axis = state.time_axis
+            tmin, tmax = axis_bounds(ws, axis)
             if tmax <= tmin:
                 slider_row.set_visibility(False)
                 return
             slider_row.set_visibility(True)
             _set_slider_bounds(time_slider, tmin, tmax)
-            # Refresh the (fabula_time, label) lookup the live-drag
-            # tooltip uses. Sorted by fabula_time so a future caller
+            # Refresh the (axis_value, label) lookup the live-drag
+            # tooltip uses. Sorted by axis value so a future caller
             # that wants nearest-event-by-position can binary-search.
             event_index = []
             for evt in (getattr(ws, "events", None) or []):
-                ft = getattr(evt, "fabula_time", None)
+                ft = event_axis_value(evt, axis)
                 if ft is None:
                     continue
                 desc = (
@@ -429,12 +377,14 @@ def build_world_tab(state: AppState) -> None:
                 event_index.append((int(ft), desc))
             event_index.sort(key=lambda x: x[0])
             _slider_state["event_index"] = event_index
-            if state.fabula_cursor is None:
+            cur_prefix = "s" if axis == "syuzhet" else "t"
+            cursor_value = state.active_cursor
+            if cursor_value is None:
                 desired = tmax
                 label_text = "live"
             else:
-                desired = max(tmin, min(tmax, state.fabula_cursor))
-                label_text = f"t={desired}"
+                desired = max(tmin, min(tmax, cursor_value))
+                label_text = f"{cur_prefix}={desired}"
             if not _slider_state["local_origin"]:
                 try:
                     cur = int(time_slider.value or 0)
@@ -482,12 +432,20 @@ def build_world_tab(state: AppState) -> None:
                 return
 
             _sync_slider_widget(ws)
-            _, tmax = fabula_time_bounds(ws)
+            axis = state.time_axis
+            _, tmax = axis_bounds(ws, axis)
 
-            # Snapshot the world model if a cursor is active
-            if state.fabula_cursor is not None and tmax > 0:
+            # Snapshot the world model if a cursor is active. The
+            # cursor value is on the active axis; resolve it back to
+            # a fabula time for the entity/state replay.
+            cursor_value = state.active_cursor
+            fabula_t_eff: int | None = None
+            if cursor_value is not None and tmax > 0:
                 try:
-                    ws = snapshot_world_at(ws, state.fabula_cursor)
+                    eff = resolve_cursor(ws, axis, cursor_value)
+                    if eff is not None:
+                        ws = snapshot_world_at(ws, eff)
+                        fabula_t_eff = eff
                 except Exception:
                     logger.exception("Snapshot failed; falling back to live")
 
@@ -496,13 +454,6 @@ def build_world_tab(state: AppState) -> None:
             ego_select.options = entity_opts
             temporal_select.options = entity_opts
             compare_select.options = entity_opts
-            # Epistemic believer options: only entities that hold beliefs.
-            believer_opts = {
-                eid: ent.name
-                for eid, ent in ws.entities.items()
-                if ent.beliefs
-            }
-            epistemic_select.options = believer_opts
             # World-state world-trait options.
             world_trait_opts = {
                 wid: wt.name for wid, wt in ws.world_traits.items()
@@ -514,70 +465,12 @@ def build_world_tab(state: AppState) -> None:
                 try:
                     if mode == "overview":
                         with_expand(
-                            lambda h: render_world_graph(
-                                ws, on_click=_on_graph_click, height=h
+                            lambda h, ft=fabula_t_eff: render_world_graph(
+                                ws, on_click=_on_graph_click, height=h,
+                                fabula_t=ft,
                             ),
                             title="World graph \u2014 overview",
                         )
-                    elif mode == "social":
-                        chosen_metric = social_metric.value or "affinity"
-                        _metric_titles = {
-                            "affinity": "Affinity heatmap  (–1 hate ↔ +1 love)",
-                            "fear": "Fear heatmap  (0 calm → 1 terrified)",
-                            "power_dynamic": "Power dynamic  (–1 subservient ↔ +1 dominant)",
-                        }
-                        with ui.expansion(
-                            "Social Graph",
-                            icon="hub",
-                            value=True,
-                        ).classes(
-                            "w-full bg-white border border-slate-200 rounded-xl mb-2"
-                        ):
-                            with_expand(
-                                lambda h, lay=social_layout.value or "force": (
-                                    render_social_graph(
-                                        ws,
-                                        on_click=_on_graph_click,
-                                        height=h,
-                                        layout=lay,
-                                    )
-                                ),
-                                title="Social graph (relationships)",
-                                height="420px",
-                            )
-                        animate = bool(social_over_time.value)
-                        heatmap_title = _metric_titles.get(
-                            chosen_metric, "Relationship heatmap"
-                        )
-                        if animate:
-                            heatmap_title = f"{heatmap_title} — over fabula time"
-                        with ui.expansion(
-                            heatmap_title,
-                            icon="grid_on",
-                            value=True,
-                        ).classes(
-                            "w-full bg-white border border-slate-200 rounded-xl mb-2"
-                        ):
-                            if animate:
-                                with_expand(
-                                    lambda h, m=chosen_metric: (
-                                        render_relationship_heatmap_timeline(
-                                            ws, metric=m, height=h,
-                                        )
-                                    ),
-                                    title=heatmap_title,
-                                    height="520px",
-                                )
-                            else:
-                                with_expand(
-                                    lambda h, m=chosen_metric: (
-                                        render_relationship_heatmap(
-                                            ws, metric=m, height=h,
-                                        )
-                                    ),
-                                    title=heatmap_title,
-                                    height="420px",
-                                )
                     elif mode == "spatial":
                         with_expand(
                             lambda h, an=bool(spatial_animated.value): (
@@ -609,10 +502,11 @@ def build_world_tab(state: AppState) -> None:
                         if focus:
                             ids = focus if isinstance(focus, list) else [focus]
                             with_expand(
-                                lambda h, ids=ids: render_ego_graph(
+                                lambda h, ids=ids, ft=fabula_t_eff: render_ego_graph(
                                     ws, ids,
                                     on_click=_on_graph_click,
                                     height=h,
+                                    fabula_t=ft,
                                 ),
                                 title=f"Ego graph \u2014 {', '.join(ids)}",
                             )
@@ -750,18 +644,13 @@ def build_world_tab(state: AppState) -> None:
                                             title="World treemap",
                                         )
                     elif mode == "epistemic":
-                        # Per-character belief panels (one tile per
-                        # believer) — reads more naturally than the old
-                        # single who-knows-what heatmap because each
-                        # character's worldview can be inspected on its
-                        # own, with the actual ``perceived_state`` text.
-                        sel = epistemic_select.value
-                        sel_ids: list[str] | None
-                        if isinstance(sel, list) and sel:
-                            sel_ids = list(sel)
-                        else:
-                            sel_ids = None
-                        render_epistemic_grid(ws, selected_ids=sel_ids)
+                        # Migrated to Social tab. Kept as a no-op so
+                        # any stale URL hash referring to this view
+                        # mode lands on a friendly hint instead of a
+                        # KeyError.
+                        ui.label(
+                            "Belief panels moved to the Social tab."
+                        ).classes("text-sm text-slate-500 italic")
                     elif mode == "world_state":
                         # Per-world-trait timeline panels — mirrors the
                         # Character Beliefs grid but for global
@@ -775,90 +664,9 @@ def build_world_tab(state: AppState) -> None:
                             wt_ids = None
                         render_world_state_grid(ws, selected_ids=wt_ids)
                     elif mode == "relationships":
-                        # Per-dyad snapshot cards (affinity / fear /
-                        # power_dynamic at the cursor) plus the
-                        # entity\u00d7entity heatmap of the selected
-                        # metric. This is where power / affinity
-                        # numbers actually surface in the UI.
-                        chosen_metric = social_metric.value or "affinity"
-                        _metric_titles = {
-                            "affinity": "Affinity heatmap  (\u20131 hate \u2194 +1 love)",
-                            "fear": "Fear heatmap  (0 calm \u2192 1 terrified)",
-                            "power_dynamic": "Power dynamic  (\u20131 subservient \u2194 +1 dominant)",
-                        }
-                        animate = bool(social_over_time.value)
-                        heatmap_title = _metric_titles.get(
-                            chosen_metric, "Relationship heatmap"
-                        )
-                        if animate:
-                            heatmap_title = (
-                                f"{heatmap_title} \u2014 over fabula time"
-                            )
-                        with ui.expansion(
-                            heatmap_title,
-                            icon="grid_on",
-                            value=True,
-                        ).classes(
-                            "w-full bg-white border border-slate-200 "
-                            "rounded-xl mb-2"
-                        ):
-                            # Inline metric picker so the affinity /
-                            # fear / power_dynamic switch is
-                            # discoverable right next to the heatmap
-                            # (the toolbar control still works and
-                            # stays in sync).
-                            with ui.row().classes(
-                                "w-full items-center q-px-md q-pt-sm gap-3"
-                            ):
-                                inline_metric = ui.select(
-                                    {
-                                        "affinity": "Affinity  (\u20131 hate \u2194 +1 love)",
-                                        "fear": "Fear  (0 calm \u2192 1 terrified)",
-                                        "power_dynamic": "Power dynamic  (\u20131 subservient \u2194 +1 dominant)",
-                                    },
-                                    value=chosen_metric,
-                                    label="Heatmap metric",
-                                ).classes("w-72").props("dense outlined")
-
-                                def _on_inline_metric(_e=None):
-                                    new_val = inline_metric.value or "affinity"
-                                    if social_metric.value != new_val:
-                                        social_metric.value = new_val
-                                        _refresh()
-
-                                inline_metric.on(
-                                    "update:model-value", _on_inline_metric
-                                )
-                            if animate:
-                                with_expand(
-                                    lambda h, m=chosen_metric: (
-                                        render_relationship_heatmap_timeline(
-                                            ws, metric=m, height=h,
-                                        )
-                                    ),
-                                    title=heatmap_title,
-                                    height="520px",
-                                )
-                            else:
-                                with_expand(
-                                    lambda h, m=chosen_metric: (
-                                        render_relationship_heatmap(
-                                            ws, metric=m, height=h,
-                                        )
-                                    ),
-                                    title=heatmap_title,
-                                    height="420px",
-                                )
-                        with ui.expansion(
-                            "Per-dyad snapshot cards "
-                            "(affinity \u2022 fear \u2022 power)",
-                            icon="favorite",
-                            value=True,
-                        ).classes(
-                            "w-full bg-white border border-slate-200 "
-                            "rounded-xl mb-2"
-                        ):
-                            render_relationship_state_grid(ws)
+                        ui.label(
+                            "Relationship cards moved to the Social tab."
+                        ).classes("text-sm text-slate-500 italic")
                     elif mode == "comparison":
                         # Side-by-side multi-entity comparison: radar
                         # overlay + grouped trait bars + ranked table.
@@ -897,8 +705,14 @@ def build_world_tab(state: AppState) -> None:
 
         ego_select.on("update:model-value", lambda: _refresh_sync_world())
         temporal_select.on("update:model-value", lambda: _refresh_sync_world())
-        epistemic_select.on("update:model-value", lambda: _refresh_sync_world())
         compare_select.on("update:model-value", lambda: _refresh_sync_world())
+        def _on_world_axis_change(**_kw):
+            time_axis_label.text = (
+                "Syuzhet idx:" if state.time_axis == "syuzhet"
+                else "Fabula time:"
+            )
+            _world_gated()
+
         state.on(StateEvent.WORLD_STATE_CHANGED, _world_gated)
         state.on(StateEvent.ACTIVE_PATH_CHANGED, _on_world_path)
         # Cross-tab cursor sync: when any other panel moves the global
@@ -906,6 +720,8 @@ def build_world_tab(state: AppState) -> None:
         # Graph snapshot, URL hydration) the World view re-snapshots to
         # match. Without this the slider thumbs would appear stuck.
         state.on(StateEvent.FABULA_CURSOR_CHANGED, _world_gated)
+        state.on(StateEvent.SYUZHET_CURSOR_CHANGED, _world_gated)
+        state.on(StateEvent.TIME_AXIS_CHANGED, _on_world_axis_change)
 
 
 # =====================================================================
@@ -950,6 +766,16 @@ def _build_data_tables(state: AppState) -> None:
 
         with ui.tab_panel("events"):
             subtab_help("world.events")
+            # Hide-superseded toggle: when True, the supersession-aware
+            # transformer filters out events with a non-null
+            # ``superseded_by_event_id``. Stored on the closure so the
+            # refresh handler can re-apply it.
+            hide_superseded_state = {"v": False}
+            with ui.row().classes("w-full items-center gap-2 mb-1"):
+                _hide_sw = ui.switch(
+                    "Hide superseded events",
+                    value=False,
+                ).props("dense").classes("text-xs")
             event_table = ui.table(
                 columns=[
                     {"name": "id", "label": "ID", "field": "id", "sortable": True},
@@ -959,6 +785,7 @@ def _build_data_tables(state: AppState) -> None:
                     {"name": "actors", "label": "Actors", "field": "actors"},
                     {"name": "targets", "label": "Targets", "field": "targets"},
                     {"name": "description", "label": "Description", "field": "description"},
+                    {"name": "superseded_by_event_id", "label": "Superseded by", "field": "superseded_by_event_id", "sortable": True},
                     {"name": "world_id", "label": "Branch", "field": "world_id", "sortable": True},
                 ],
                 rows=[],
@@ -1115,7 +942,10 @@ def _build_data_tables(state: AppState) -> None:
         if ws is None:
             return
         entity_table.rows = ws_to_entity_rows(ws)
-        event_table.rows = ws_to_event_rows(ws)
+        evt_rows = ws_to_event_rows(ws)
+        if hide_superseded_state.get("v"):
+            evt_rows = [r for r in evt_rows if not r.get("superseded")]
+        event_table.rows = evt_rows
         object_table.rows = ws_to_object_rows(ws)
         world_trait_table.rows = ws_to_world_trait_rows(ws)
         trait_stats_table.rows = ws_to_trait_stats_rows(ws)
@@ -1124,6 +954,12 @@ def _build_data_tables(state: AppState) -> None:
         social_table.rows = ws_to_social_rows(ws)
         channel_table.rows = ws_to_channel_rows(ws)
         utterance_table.rows = ws_to_utterance_rows(ws)
+
+    def _on_hide_superseded(e):
+        hide_superseded_state["v"] = bool(e.value)
+        _refresh_tables()
+
+    _hide_sw.on_value_change(_on_hide_superseded)
 
     _refresh_tables()
     state.on(StateEvent.WORLD_STATE_CHANGED, _refresh_tables)

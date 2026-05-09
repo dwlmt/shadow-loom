@@ -9,6 +9,7 @@ import networkx as nx
 from shadow_loom.models import (
     WorldStateV1,
     default_relationship_metrics_dict,
+    reconstruct_concern_at,
     reconstruct_entity_at,
 )
 from shadow_loom.query_models import UserRequest
@@ -151,6 +152,116 @@ def _check_engine_vacuity(
     }
 
 
+# =====================================================================
+# Phase 2 — Sandbox utility-layer preservation
+# =====================================================================
+def _stamp_utility_layer(
+    sandbox: nx.MultiDiGraph,
+    global_world_state: WorldStateV1,
+    *,
+    fabula_anchor: Optional[int] = None,
+) -> None:
+    """Annotate ``sandbox.graph`` with the audience-side utility layer.
+
+    Phase-2 contract: every Rung-2 / Rung-3 sandbox carries the
+    proposition list and a back-pointer to its parent factual world so
+    downstream consumers (directive assembler, affect unification,
+    renderer) can reconstruct the satisfied/unsatisfied utility delta
+    without re-walking the global ``WorldStateV1``.
+
+    Concerns are already serialised on entity nodes by the instantiator
+    (they are plain attributes on :class:`Entity`); we only need to
+    surface the proposition layer plus the parent back-pointer plus the
+    fabula anchor so consumers can resolve ``truth_at_fabula`` lookups
+    against the right time slice.
+    """
+    sandbox.graph["parent_world_id"] = id(global_world_state)
+    sandbox.graph["propositions"] = [
+        p.model_dump() for p in (global_world_state.propositions or [])
+    ]
+    if fabula_anchor is not None:
+        sandbox.graph["fabula_anchor"] = int(fabula_anchor)
+
+
+def _load_propositions_from_sandbox(sandbox_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Recover the proposition list from a serialised sandbox payload.
+
+    Returns the raw dicts (not :class:`Proposition` instances) so
+    consumers that only need ``proposition_id`` / ``truth_at_fabula`` /
+    ``referent_ids`` lookups don't pay the model-construction cost.
+    Callers that need typed objects can ``Proposition(**d)`` themselves.
+    """
+    if not isinstance(sandbox_data, dict):
+        return []
+    graph_attrs = sandbox_data.get("graph") or {}
+    if isinstance(graph_attrs, dict):
+        props = graph_attrs.get("propositions")
+        if isinstance(props, list):
+            return list(props)
+    # NetworkX serialises graph attrs differently across versions; check
+    # the top-level key as a fallback.
+    props = sandbox_data.get("propositions")
+    return list(props) if isinstance(props, list) else []
+
+
+def _typed_target_payload(
+    request: UserRequest,
+    physics_result: Any = None,
+) -> Dict[str, Any]:
+    """Phase-7 helper: pack the typed Pearl-rung surgery metadata into a
+    dict slice safe to merge into the rung-2/rung-3 result.
+
+    Surfaces:
+      * ``do_targets`` (rung-2) / ``historical_do_targets`` (rung-3) —
+        verbatim model-dumps of the typed :class:`DoTarget` payload
+        the parser produced (empty list when the caller used the
+        legacy dict surface only).
+      * ``proposition_mutations`` / ``belief_mutations`` /
+        ``concern_mutations`` — engine-collected per-target diffs
+        (Phase-1 collectors; empty when the legacy non-engine path
+        ran or no typed surgery touched the utility layer).
+      * ``affected_propositions`` / ``affected_beliefs`` /
+        ``affected_concerns`` — flat ID lists derived from the
+        mutations above so the renderer / answer surface can
+        ask "did the surgery touch X?" without iterating the
+        structured mutation lists.
+    """
+    out: Dict[str, Any] = {}
+
+    qt = getattr(request, "query_type", None)
+    if qt == "intervention":
+        do_targets = list(getattr(request, "do_targets", None) or [])
+        out["do_targets"] = [t.model_dump() for t in do_targets]
+    elif qt == "counterfactual":
+        do_targets = list(getattr(request, "historical_do_targets", None) or [])
+        out["historical_do_targets"] = [t.model_dump() for t in do_targets]
+    else:
+        return out
+
+    pm = list(getattr(physics_result, "proposition_mutations", None) or [])
+    bm = list(getattr(physics_result, "belief_mutations", None) or [])
+    cm = list(getattr(physics_result, "concern_mutations", None) or [])
+    out["proposition_mutations"] = [m.model_dump() for m in pm]
+    out["belief_mutations"] = [m.model_dump() for m in bm]
+    out["concern_mutations"] = [m.model_dump() for m in cm]
+
+    out["affected_propositions"] = sorted({
+        getattr(m, "proposition_id", None) for m in pm
+        if getattr(m, "proposition_id", None)
+    })
+    # Belief mutations key off (holder_id, target_id) — surface as
+    # "ENT_X→ENT_Y" so the renderer can phrase epistemic shifts.
+    out["affected_beliefs"] = sorted({
+        f"{getattr(m, 'holder_id', '?')}\u2192{getattr(m, 'target_id', '?')}"
+        for m in bm
+    })
+    out["affected_concerns"] = sorted({
+        getattr(m, "concern_id", None) for m in cm
+        if getattr(m, "concern_id", None)
+    })
+    return out
+
+
 def calculate_narrative_physics(
     request: UserRequest,
     global_world_state: WorldStateV1,
@@ -186,7 +297,12 @@ def calculate_narrative_physics(
                 "status": "success",
                 "query_type": "observation",
                 "physics_state": full_state,
-                "directives": request.observations
+                "directives": request.observations,
+                # Surface the structured ``observations`` mapping so the
+                # pipeline merge bridge can materialise reveals as
+                # deterministic EntityUpdate / WorldTraitSnapshot rows
+                # instead of relying on prose extraction to recover them.
+                "observation_facts": dict(request.observations or {}),
             }
 
         logger.info("[Observation] Multi-Ego extraction for POV: %s", request.focus_entity_ids)
@@ -196,7 +312,9 @@ def calculate_narrative_physics(
             "status": "success",
             "query_type": "observation",
             "physics_state": ego_graph.model_dump(),
-            "directives": request.observations
+            "directives": request.observations,
+            # See above — same bridge contract for the POV path.
+            "observation_facts": dict(request.observations or {}),
         }
 
     # ==========================================
@@ -231,6 +349,13 @@ def calculate_narrative_physics(
 
         # 2. Build Sandbox & Apply Math
         shadow_graph = AMWNInstantiator.create_sandbox(ego_graph.model_dump(), "intervention")
+        # Phase-2: surface the audience-side utility layer (propositions +
+        # parent-world back-pointer + fabula anchor) so the engine, the
+        # directive assembler and the renderer can read it back without
+        # re-walking the global world state.
+        _stamp_utility_layer(
+            shadow_graph, global_world_state, fabula_anchor=temporal_anchor,
+        )
         logger.info("[Intervention] Sandbox built — %d nodes, %d edges. Applying surgeries.",
                      shadow_graph.number_of_nodes(), shadow_graph.number_of_edges())
 
@@ -352,6 +477,12 @@ def calculate_narrative_physics(
             result["implausibility_warning"] = _forced_warning["reason"]
             result["implausibility_details"] = _forced_warning
 
+        # Phase-7: surface typed Pearl-rung surgery metadata.
+        result.update(_typed_target_payload(
+            request,
+            physics_result=result.get("_causal_physics_result"),
+        ))
+
         return result
 
     # ==========================================
@@ -416,6 +547,13 @@ def calculate_narrative_physics(
         logger.info("[Counterfactual] Point of Divergence: T=%d | Focus: %s", past_anchor, focus_ids)
         ego_graph = extract_ego_graph_from_memory(global_world_state, focus_ids, past_anchor, syuzhet_anchor=syuzhet_anchor)
         shadow_graph = AMWNInstantiator.create_sandbox(ego_graph.model_dump(), "counterfactual")
+        # Phase-2: surface the audience-side utility layer onto the
+        # historical sandbox; ``past_anchor`` is the Point of Divergence
+        # so consumers reading ``truth_at_fabula`` resolve against the
+        # right slice.
+        _stamp_utility_layer(
+            shadow_graph, global_world_state, fabula_anchor=past_anchor,
+        )
         logger.info("[Counterfactual] Historical sandbox built — %d nodes. Applying surgeries.",
                      shadow_graph.number_of_nodes())
 
@@ -540,9 +678,22 @@ def calculate_narrative_physics(
         if physics_override:
             result["physics_override"] = physics_override
 
+        # Surface the Point-of-Divergence so the pipeline can stamp
+        # rung-3 hidden_deltas snapshots at the actual historical
+        # anchor instead of falling back to the global event-timeline
+        # minimum (which would write abducted state at the start of
+        # the story).
+        result["past_anchor"] = int(past_anchor)
+
         if _forced_warning is not None:
             result["implausibility_warning"] = _forced_warning["reason"]
             result["implausibility_details"] = _forced_warning
+
+        # Phase-7: surface typed Pearl-rung surgery metadata.
+        result.update(_typed_target_payload(
+            request,
+            physics_result=result.get("_causal_physics_result"),
+        ))
 
         return result
 
@@ -1473,5 +1624,431 @@ def _apply_social_cascade(
             sandbox.add_edge(target_id, counterpart_id, **edge_attrs)
             logger.info("[SocialCascade] Created relationship %s→%s with %s=%.3f (trigger=%s)",
                         target_id, counterpart_id, metric, edge_attrs[metric], ce.source_id)
+
+
+# =====================================================================
+# Phase 3 — Public typed-target Pearl-Rung facades
+#
+# ``apply_intervention`` and ``find_pod`` are thin wrappers over the
+# existing rung-2 / rung-3 logic. They accept the typed
+# :class:`DoTarget` discriminated union (Phase 0) and delegate into the
+# typed-dispatch layer on the causal engine (Phase 1) so callers can
+# request proposition / belief / concern surgeries without round-
+# tripping through the legacy ``Dict[str, Any]`` shape.
+# =====================================================================
+
+from pydantic import BaseModel as _PdBaseModel  # local alias to avoid header pollution
+
+
+class PointOfDivergence(_PdBaseModel):
+    """The historical anchor a Rung-3 counterfactual rolls back to.
+
+    ``fabula_time`` is the earliest fabula time that would need to be
+    re-simulated to alter ``target_outcome``. ``candidate_event_ids`` is
+    the ranked list of events that could plausibly serve as the divergent
+    pivot (Phase 5 will re-rank by the Kahneman-Miller × concern-load
+    mutability prior; Phase 3 emits them in temporal order, earliest
+    first).
+    """
+    fabula_time: int
+    candidate_event_ids: List[str] = []
+    target_kind: str = "event"
+    target_id: Optional[str] = None
+    mutability_prior_used: bool = False
+
+
+def _resolve_focus_from_do_targets(do_targets: List[Any], world_state: WorldStateV1) -> List[str]:
+    """Best-effort focus-entity resolution for a typed-target list.
+
+    DoBelief / DoConcern / DoTrait carry an explicit ``holder_id``;
+    DoEvent's actor / target ids are looked up on the event;
+    DoProposition contributes the proposition's ``referent_ids``.
+    Falls back to a single arbitrary entity when nothing matches so the
+    ego-graph extractor always has *something* to anchor on.
+    """
+    from shadow_loom.query_models import (
+        DoEvent, DoTrait, DoBelief, DoConcern, DoProposition,
+    )
+    focus: List[str] = []
+    seen: set[str] = set()
+
+    def _add(eid: Optional[str]) -> None:
+        if eid and eid in world_state.entities and eid not in seen:
+            focus.append(eid)
+            seen.add(eid)
+
+    for t in do_targets:
+        if isinstance(t, (DoTrait, DoBelief, DoConcern)):
+            _add(t.holder_id)
+        elif isinstance(t, DoEvent):
+            evt = next((e for e in world_state.events if e.id == t.event_id), None)
+            if evt:
+                for eid in (evt.actor_ids or []):
+                    _add(eid)
+                for eid in (evt.target_ids or []):
+                    _add(eid)
+        elif isinstance(t, DoProposition):
+            prop = next(
+                (p for p in (world_state.propositions or [])
+                 if p.proposition_id == t.proposition_id),
+                None,
+            )
+            if prop:
+                for eid in (prop.referent_ids or []):
+                    _add(eid)
+
+    if not focus and world_state.entities:
+        focus.append(next(iter(world_state.entities)))
+    return focus
+
+
+def apply_intervention(
+    do_targets: List[Any],
+    global_world_state: WorldStateV1,
+    *,
+    fabula_anchor: Optional[int] = None,
+    syuzhet_anchor: Optional[int] = None,
+    use_causal_engine: bool = True,
+    target_node_ids: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Public typed-target facade over the Rung-2 (do-operator) pipeline.
+
+    Builds the ego graph, instantiates the sandbox (with the Phase-2
+    utility-layer stamp), and dispatches every typed
+    :class:`DoTarget` through :meth:`CausalPhysicsEngine.apply_do_targets`.
+
+    Returns the same dict shape as the rung-2 branch of
+    :func:`calculate_narrative_physics` so existing downstream consumers
+    (directive assembler, generator, MCP) can opt in incrementally.
+    Adds ``do_targets`` (model-dumped) and the new typed mutation lists
+    (belief / concern / proposition) for callers that need them.
+    """
+    if not do_targets:
+        return {
+            "status": "implausible",
+            "query_type": "intervention",
+            "physics_state": {},
+            "implausibility_reason": "Empty do_targets list \u2014 nothing to apply.",
+        }
+
+    focus_ids = _resolve_focus_from_do_targets(do_targets, global_world_state)
+    ego_graph = extract_ego_graph_from_memory(
+        global_world_state, focus_ids, fabula_anchor,
+        syuzhet_anchor=syuzhet_anchor,
+    )
+    shadow_graph = AMWNInstantiator.create_sandbox(ego_graph.model_dump(), "intervention")
+    _stamp_utility_layer(shadow_graph, global_world_state, fabula_anchor=fabula_anchor)
+
+    if use_causal_engine:
+        engine = CausalPhysicsEngine(shadow_graph, global_world_state)
+        engine.apply_do_targets(do_targets)
+        # ``apply_do_targets`` stashed the legacy event/trait dict it
+        # constructed; pass it (possibly empty) through ``execute`` so
+        # provenance invalidation, propagation, and Rule-3 pre-flight
+        # all see the surgeries the typed dispatch performed.
+        legacy = getattr(engine, "_last_legacy_interventions", {}) or {}
+        physics_result = engine.execute(
+            rung=2,
+            interventions=legacy,
+            target_node_ids=target_node_ids or [],
+        )
+        return {
+            "status": "success",
+            "query_type": "intervention",
+            "physics_state": physics_result.sandbox_data,
+            "do_targets": [t.model_dump() for t in do_targets],
+            "math_changes": legacy,
+            "mutations": [m.model_dump() for m in physics_result.mutations],
+            "social_mutations": [m.model_dump() for m in physics_result.social_mutations],
+            "blocked": [b.model_dump() for b in physics_result.blocked],
+            "intervened_nodes": physics_result.intervened_nodes,
+            "belief_mutations": [m.model_dump() for m in physics_result.belief_mutations],
+            "concern_mutations": [m.model_dump() for m in physics_result.concern_mutations],
+            "proposition_mutations": [m.model_dump() for m in physics_result.proposition_mutations],
+            "_causal_physics_result": physics_result,
+        }
+
+    # Legacy non-engine path: only event / trait targets are supported.
+    from shadow_loom.query_models import DoEvent, DoTrait
+    legacy: Dict[str, Any] = {}
+    for t in do_targets:
+        if isinstance(t, DoEvent):
+            legacy[f"{t.event_id}.event_type"] = (
+                "prevented" if t.occurred is False else "occurred"
+            )
+        elif isinstance(t, DoTrait):
+            legacy[f"{t.holder_id}.traits.{t.trait_name}"] = float(t.value)
+    if legacy:
+        AMWNInstantiator.execute_interventions(shadow_graph, legacy)
+    return {
+        "status": "success",
+        "query_type": "intervention",
+        "physics_state": nx.node_link_data(shadow_graph),
+        "do_targets": [t.model_dump() for t in do_targets],
+        "math_changes": legacy,
+    }
+
+
+def _mutability_score(
+    event: Any,
+    global_world_state: WorldStateV1,
+) -> float:
+    """Phase-5 mutability prior: Kahneman-Miller atypicality × Roese
+    concern-load.
+
+    Sums, over every concern in the world that targets a proposition
+    whose ``referent_ids`` intersect ``event.actor_ids ∪ event.target_ids``:
+
+        salience(concern) × (1 - typicality(event, concern))
+
+    where ``typicality`` is 0.5 when the event falls inside the concern's
+    activation window (so the concern is "expecting" something like this
+    to happen — Kahneman-Miller's *normal* line) and 1.0 when the event
+    is outside the window or the concern has no window (so an event
+    inside an "always-on" concern is *typical*; events outside any
+    relevant window are maximally atypical and therefore most mutable).
+
+    Returns 0.0 when no concern in the world is utility-coupled to
+    ``event``'s referents — a temporally-earliest fallback ordering then
+    takes precedence.
+    """
+    referents = set(event.actor_ids or []) | set(event.target_ids or [])
+    if not referents:
+        return 0.0
+    score = 0.0
+    propositions = global_world_state.propositions or []
+    prop_by_id = {p.proposition_id: p for p in propositions}
+    for ent in (global_world_state.entities or {}).values():
+        for c in (getattr(ent, "concerns", None) or []):
+            prop = prop_by_id.get(c.proposition_id)
+            if prop is None:
+                continue
+            if not (set(prop.referent_ids or []) & referents):
+                continue
+            # Resolve concern state at the event's fabula_time so the
+            # mutability scorer respects ``ConcernSnapshot`` updates
+            # (salience / window can evolve over the story the same
+            # way Entity / GlobalTrait state does).
+            if c.state_timeline:
+                _resolved = reconstruct_concern_at(c, event.fabula_time)
+                window = _resolved["activation_fabula_window"]
+                _salience = float(_resolved["salience"])
+            else:
+                window = c.activation_fabula_window
+                _salience = float(c.salience)
+            if window:
+                lo, hi = window
+                inside = (lo <= event.fabula_time <= hi)
+                # Inside: this is the "expected line" for this concern
+                # (typical, low mutability bonus). Outside: the event
+                # violates the concern's window (atypical, high bonus).
+                typicality = 0.5 if inside else 1.0
+            else:
+                # Always-on concern: every event is "in scope" → typical.
+                typicality = 0.5
+            score += _salience * (1.0 - typicality)
+    return score
+
+
+def _rerank_candidates_by_mutability(
+    candidate_event_ids: List[str],
+    global_world_state: WorldStateV1,
+) -> List[str]:
+    """Stable-sort candidates by descending mutability score.
+
+    Ties (and zero-score candidates, which is the common case when no
+    concern is utility-coupled to the event's referents) preserve the
+    upstream temporal ordering produced by :func:`find_pod`.
+    """
+    by_id = {e.id: e for e in (global_world_state.events or [])}
+    indexed = list(enumerate(candidate_event_ids))
+    def _key(pair):
+        i, eid = pair
+        evt = by_id.get(eid)
+        s = _mutability_score(evt, global_world_state) if evt is not None else 0.0
+        # Negative score so descending; index keeps ties stable.
+        return (-s, i)
+    return [eid for _, eid in sorted(indexed, key=_key)]
+
+
+def find_pod(
+    target_outcome: Any,
+    global_world_state: WorldStateV1,
+    *,
+    fabula_anchor: Optional[int] = None,
+    mutability_prior: bool = False,
+) -> PointOfDivergence:
+    """Locate the historical fabula_time a Rung-3 counterfactual must
+    roll back to in order to alter ``target_outcome``.
+
+    ``target_outcome`` is a typed :class:`DoTarget` describing the
+    outcome the caller wants to perturb (an event being prevented, a
+    proposition's truth flipped, a belief clamped, etc).
+
+    Ranking of ``candidate_event_ids``:
+      * ``mutability_prior=False`` (default): temporal — earliest
+        relevant event first.
+      * ``mutability_prior=True``: re-rank by the Kahneman-Miller ×
+        Roese concern-load score (see :func:`_mutability_score`), with
+        temporal order as tie-break. Sets
+        ``PointOfDivergence.mutability_prior_used=True``.
+    """
+    from shadow_loom.query_models import (
+        DoEvent, DoProposition, DoBelief, DoConcern, DoTrait,
+    )
+
+    candidate_event_ids: List[str] = []
+    target_kind = getattr(target_outcome, "target_kind", "event")
+    target_id: Optional[str] = None
+
+    if isinstance(target_outcome, DoEvent):
+        target_id = target_outcome.event_id
+        evt = next((e for e in global_world_state.events if e.id == target_id), None)
+        if evt is None:
+            raise ValueError(
+                f"find_pod: event {target_id} not in world state."
+            )
+        # Anchor at the event itself; any earlier event in its causal
+        # ancestry is a candidate divergence pivot.
+        anchor_ft = int(evt.fabula_time)
+        ancestor_ids = {
+            ce.source_id for ce in (global_world_state.causal_topology or [])
+            if ce.target_id == target_id
+        }
+        ancestor_events = [
+            e for e in global_world_state.events
+            if e.id in ancestor_ids and e.fabula_time < anchor_ft
+        ]
+        ancestor_events.sort(key=lambda e: e.fabula_time)
+        candidate_event_ids = [e.id for e in ancestor_events] + [target_id]
+        if mutability_prior:
+            candidate_event_ids = _rerank_candidates_by_mutability(
+                candidate_event_ids, global_world_state,
+            )
+        return PointOfDivergence(
+            fabula_time=anchor_ft,
+            candidate_event_ids=candidate_event_ids,
+            target_kind="event", target_id=target_id,
+            mutability_prior_used=mutability_prior,
+        )
+
+    if isinstance(target_outcome, DoProposition):
+        target_id = target_outcome.proposition_id
+        prop = next(
+            (p for p in (global_world_state.propositions or [])
+             if p.proposition_id == target_id),
+            None,
+        )
+        if prop is None:
+            raise ValueError(f"find_pod: proposition {target_id} not in world state.")
+        # Anchor at the latest fabula_time the proposition's truth was
+        # asserted before the requested anchor (or before the simulation
+        # horizon).
+        horizon = (
+            int(fabula_anchor) if fabula_anchor is not None
+            else int(max((e.fabula_time for e in global_world_state.events), default=0))
+        )
+        truth_keys = sorted(int(k) for k in (prop.truth_at_fabula or {}).keys() if int(k) <= horizon)
+        anchor_ft = truth_keys[-1] if truth_keys else 0
+        # Candidate events: any event touching one of the proposition's referents
+        # before the anchor.
+        ref_set = set(prop.referent_ids or [])
+        cand = [
+            e for e in global_world_state.events
+            if (set(e.actor_ids or []) | set(e.target_ids or [])) & ref_set
+            and e.fabula_time <= horizon
+        ]
+        cand.sort(key=lambda e: e.fabula_time)
+        candidate_event_ids = [e.id for e in cand]
+        if mutability_prior:
+            candidate_event_ids = _rerank_candidates_by_mutability(
+                candidate_event_ids, global_world_state,
+            )
+        return PointOfDivergence(
+            fabula_time=anchor_ft,
+            candidate_event_ids=candidate_event_ids,
+            target_kind="proposition", target_id=target_id,
+            mutability_prior_used=mutability_prior,
+        )
+
+    if isinstance(target_outcome, DoBelief):
+        # Anchor: latest event involving the belief's target before fabula_anchor.
+        target_id = f"{target_outcome.holder_id}\u2192{target_outcome.target_id}"
+        horizon = (
+            int(fabula_anchor) if fabula_anchor is not None
+            else int(max((e.fabula_time for e in global_world_state.events), default=0))
+        )
+        cand = [
+            e for e in global_world_state.events
+            if (target_outcome.target_id in (e.actor_ids or [])
+                or target_outcome.target_id in (e.target_ids or []))
+            and e.fabula_time <= horizon
+        ]
+        cand.sort(key=lambda e: e.fabula_time)
+        anchor_ft = cand[-1].fabula_time if cand else 0
+        candidate_event_ids = [e.id for e in cand]
+        if mutability_prior:
+            candidate_event_ids = _rerank_candidates_by_mutability(
+                candidate_event_ids, global_world_state,
+            )
+        return PointOfDivergence(
+            fabula_time=int(anchor_ft),
+            candidate_event_ids=candidate_event_ids,
+            target_kind="belief", target_id=target_id,
+            mutability_prior_used=mutability_prior,
+        )
+
+    if isinstance(target_outcome, DoConcern):
+        # Anchor: start of the concern's activation window, or 0 if always-on.
+        target_id = target_outcome.concern_id
+        ent = global_world_state.entities.get(target_outcome.holder_id)
+        if ent is None:
+            raise ValueError(f"find_pod: holder {target_outcome.holder_id} not in world state.")
+        concern = next(
+            (c for c in (ent.concerns or []) if c.concern_id == target_id),
+            None,
+        )
+        if concern is None:
+            raise ValueError(
+                f"find_pod: concern {target_id} not on {target_outcome.holder_id}."
+            )
+        window = concern.activation_fabula_window
+        anchor_ft = int(window[0]) if window else 0
+        return PointOfDivergence(
+            fabula_time=anchor_ft,
+            candidate_event_ids=[],
+            target_kind="concern", target_id=target_id,
+            mutability_prior_used=False,
+        )
+
+    if isinstance(target_outcome, DoTrait):
+        target_id = f"{target_outcome.holder_id}.{target_outcome.trait_name}"
+        horizon = (
+            int(fabula_anchor) if fabula_anchor is not None
+            else int(max((e.fabula_time for e in global_world_state.events), default=0))
+        )
+        cand = [
+            e for e in global_world_state.events
+            if target_outcome.holder_id in ((e.actor_ids or []) + (e.target_ids or []))
+            and e.fabula_time <= horizon
+        ]
+        cand.sort(key=lambda e: e.fabula_time)
+        anchor_ft = cand[0].fabula_time if cand else 0
+        candidate_event_ids = [e.id for e in cand]
+        if mutability_prior:
+            candidate_event_ids = _rerank_candidates_by_mutability(
+                candidate_event_ids, global_world_state,
+            )
+        return PointOfDivergence(
+            fabula_time=int(anchor_ft),
+            candidate_event_ids=candidate_event_ids,
+            target_kind="trait", target_id=target_id,
+            mutability_prior_used=mutability_prior,
+        )
+
+    raise TypeError(
+        f"find_pod: unsupported target type {type(target_outcome).__name__}"
+    )
+
 
     logger.info("[Social Cascade] Propagation complete.")

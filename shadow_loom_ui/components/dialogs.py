@@ -449,11 +449,13 @@ def build_version_dialog(state: AppState) -> ui.dialog:
                             desc = entry.get("description") or ""
                             ui.label(desc[:50]).classes("text-xs text-slate-600 flex-grow")
                             if entry.get("changeset_summary"):
-                                cs = entry["changeset_summary"]
-                                ui.label(
-                                    f"+{cs.get('events_added', 0)}evt "
-                                    f"+{cs.get('causal_edges_added', 0)}ce"
-                                ).classes("text-xs text-secondary")
+                                from shadow_loom_ui.components._changeset_chips import (
+                                    render_changeset_chips,
+                                )
+                                render_changeset_chips(
+                                    entry["changeset_summary"],
+                                    compact=True, empty_label=None,
+                                )
 
                             def _load_version(v=entry["version"], pid=state.project_id):
                                 ver = db.get_version(pid, v)
@@ -491,10 +493,13 @@ def build_version_dialog(state: AppState) -> ui.dialog:
                             )
                             ui.label(entry.description[:60]).classes("text-xs text-slate-600 flex-grow")
                             if entry.changeset:
-                                cs = entry.changeset
-                                ui.label(
-                                    f"+{cs.events_added}evt +{cs.causal_edges_added}ce"
-                                ).classes("text-xs text-secondary")
+                                from shadow_loom_ui.components._changeset_chips import (
+                                    render_changeset_chips,
+                                )
+                                render_changeset_chips(
+                                    entry.changeset.model_dump(),
+                                    compact=True, empty_label=None,
+                                )
                             if not is_current and entry.version in {
                                 s.version for s in state.versioned_model.snapshots
                             }:

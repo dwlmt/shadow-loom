@@ -2000,11 +2000,42 @@ def get_version_tree(project_id: int) -> list[dict]:
             if r.changeset_json:
                 try:
                     cs = json.loads(r.changeset_json)
+                    # Pass through every MergeChangeset counter so UI
+                    # surfaces (version sidebar, story-card badges,
+                    # audit log, dialogs) can render the full
+                    # additive + deletion + affect + supersession
+                    # picture without re-reading the raw changeset.
+                    _counter_keys = (
+                        # Additive
+                        "events_added", "causal_edges_added", "spatial_edges_added",
+                        "social_edges_added", "information_edges_added",
+                        "entity_updates_applied",
+                        "entities_added", "objects_added", "locations_added",
+                        "world_traits_added",
+                        # Affect / belief
+                        "propositions_added", "proposition_truths_committed",
+                        "proposition_snapshots_added", "concerns_added",
+                        "concern_snapshots_added",
+                        "belief_confidence_updates_applied",
+                        # Deletion
+                        "events_removed", "causal_edges_removed",
+                        "spatial_edges_removed", "social_edges_removed",
+                        "channels_removed", "entities_removed",
+                        "objects_removed", "locations_removed",
+                        "world_traits_removed", "propositions_removed",
+                        "concerns_removed",
+                        # Supersession
+                        "events_superseded",
+                    )
                     changeset_summary = {
-                        "events_added": cs.get("events_added", 0),
-                        "causal_edges_added": cs.get("causal_edges_added", 0),
-                        "entity_updates_applied": cs.get("entity_updates_applied", 0),
+                        k: cs.get(k, 0) for k in _counter_keys
                     }
+                    # Preserve the skipped-updates list verbatim — useful
+                    # for the audit tab to surface entity-update misses.
+                    if cs.get("entity_updates_skipped"):
+                        changeset_summary["entity_updates_skipped"] = cs.get(
+                            "entity_updates_skipped"
+                        )
                 except (json.JSONDecodeError, TypeError):
                     pass
             result.append(

@@ -18,6 +18,7 @@ from shadow_loom.models import (
     TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
     GlobalTrait,
     NarrativeStyle,
+    Concern, Proposition, ConcernSnapshot, PropositionSnapshot,
 )
 
 world_state = WorldStateV1(
@@ -146,8 +147,39 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_MIRANDA",
                        perceived_state="terrifying boss; key to the New Yorker if I survive a year",
+                       proposition_id="PROP_ANDREA_GETS_NEW_YORKER",
                        confidence=0.7, inertia=0.6,
                        established_at_fabula=2500, evidence_strength="strong"),
+            ],
+            concerns=[
+                # Bildungsroman desire: the New Yorker is the proxy for
+                # Andrea's professional self-realisation.
+                Concern(concern_id="CCN_ANDREA_NEW_YORKER", proposition_id="PROP_ANDREA_GETS_NEW_YORKER",
+                        polarity="desire", kind="recognition", salience=0.95),
+                # The film's central anxiety — will the job consume her?
+                Concern(concern_id="CCN_ANDREA_LOSE_SELF", proposition_id="PROP_ANDREA_BECOMES_MIRANDA",
+                        polarity="fear", kind="loss_of_status", salience=0.85,
+                        activation_fabula_window=[4500, 9000],
+                        counter_concern_ids=["CCN_ANDREA_NEW_YORKER"]),
+                # The friendship Andrea is hollowing out without realising.
+                Concern(concern_id="CCN_ANDREA_KEEPS_LILY", proposition_id="PROP_ANDREA_LILY_FRIENDSHIP",
+                        polarity="desire", kind="love", salience=0.7,
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=7500, triggered_by="EVT_LILY_DUI_COMA",
+                                            salience=1.0),
+                        ]),
+                # The romantic relationship she keeps trying to protect.
+                Concern(concern_id="CCN_ANDREA_KEEPS_ALEX", proposition_id="PROP_ANDREA_ALEX_LASTS",
+                        polarity="desire", kind="love", salience=0.7,
+                        activation_fabula_window=[1000, 9500]),
+                # Pragmatic survival inside Runway during the year.
+                Concern(concern_id="CCN_ANDREA_AVOIDS_FIRING", proposition_id="PROP_ANDREA_GETS_FIRED",
+                        polarity="fear", kind="failure", salience=0.65,
+                        activation_fabula_window=[2500, 8000],
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=8200, triggered_by="EVT_ANDREA_REFUSES",
+                                            salience=0.05),
+                        ]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=2500, triggered_by="EVT_HIRED_AS_JR_ASSISTANT",
@@ -165,6 +197,7 @@ world_state = WorldStateV1(
                     beliefs_added=[
                         Belief(target_id="ENT_MIRANDA",
                                perceived_state="not a monster; a lonely professional who actually values me",
+                               proposition_id="PROP_MIRANDA_RESPECTS_ANDREA",
                                confidence=0.8, inertia=0.5,
                                established_at_fabula=7000, evidence_strength="strong",
                                acquired_via_event_id="EVT_UTT_MIRANDA_PROMISES_NEW_YORKER",
@@ -177,6 +210,7 @@ world_state = WorldStateV1(
                     beliefs_added=[
                         Belief(target_id="ENT_LILY",
                                perceived_state="seriously harmed while I was abroad chasing a job",
+                               proposition_id="PROP_LILY_HARMED",
                                confidence=0.95, inertia=0.85,
                                established_at_fabula=7500, evidence_strength="strong",
                                acquired_via_event_id="EVT_LILY_DUI_COMA",
@@ -207,8 +241,27 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_ANDREA",
                        perceived_state="another assistant, until she proves otherwise",
+                       proposition_id="PROP_ANDREA_SURVIVES_RUNWAY",
                        confidence=0.7, inertia=0.6,
                        established_at_fabula=2500, evidence_strength="moderate"),
+            ],
+            concerns=[
+                # Miranda's defining standing concern — the Runway issue,
+                # every issue, must be flawless.
+                Concern(concern_id="CCN_MIRANDA_PERFECT_RUNWAY", proposition_id="PROP_RUNWAY_PERFECTION",
+                        polarity="desire", kind="power", salience=1.0),
+                # Lower-salience desire that Andrea actually become useful.
+                Concern(concern_id="CCN_MIRANDA_GOOD_ASSISTANT", proposition_id="PROP_ANDREA_SURVIVES_RUNWAY",
+                        polarity="desire", kind="loyalty", salience=0.55,
+                        activation_fabula_window=[2500, 8200],
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=8200, triggered_by="EVT_ANDREA_REFUSES",
+                                            salience=0.1),
+                        ]),
+                # Background: the loneliness Miranda lets slip in Paris.
+                Concern(concern_id="CCN_MIRANDA_NOT_LONELY", proposition_id="PROP_MIRANDA_RESPECTS_ANDREA",
+                        polarity="desire", kind="love", salience=0.4,
+                        activation_fabula_window=[7000, 8200]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=7000, triggered_by="EVT_MIRANDA_OPENS_UP",
@@ -219,6 +272,7 @@ world_state = WorldStateV1(
                     beliefs_added=[
                         Belief(target_id="ENT_ANDREA",
                                perceived_state="capable of writing for the New Yorker; worth a phone call",
+                               proposition_id="PROP_MIRANDA_RESPECTS_ANDREA",
                                confidence=0.8, inertia=0.5,
                                established_at_fabula=7000, evidence_strength="strong"),
                     ]),
@@ -240,8 +294,18 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_ANDREA",
                        perceived_state="my best friend, increasingly absent",
+                       proposition_id="PROP_ANDREA_LILY_FRIENDSHIP",
                        confidence=0.85, inertia=0.7,
                        established_at_fabula=2500, evidence_strength="strong"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_LILY_KEEPS_ANDREA", proposition_id="PROP_ANDREA_LILY_FRIENDSHIP",
+                        polarity="desire", kind="love", salience=0.85),
+                Concern(concern_id="CCN_LILY_SURVIVES", proposition_id="PROP_LILY_RECOVERS",
+                        polarity="desire", kind="survival", salience=0.95,
+                        activation_fabula_window=[7500, 10000]),
+                Concern(concern_id="CCN_LILY_ESCAPE_PRESSURE", proposition_id="PROP_LILY_HARMED",
+                        polarity="fear", kind="failure", salience=0.55),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=4000, triggered_by="EVT_LILY_DRINKS",
@@ -269,8 +333,19 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_ANDREA",
                        perceived_state="my serious girlfriend, swallowed by a job that isn't her",
+                       proposition_id="PROP_ANDREA_BECOMES_MIRANDA",
                        confidence=0.8, inertia=0.7,
                        established_at_fabula=4500, evidence_strength="strong"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_ALEX_KEEPS_ANDREA", proposition_id="PROP_ANDREA_ALEX_LASTS",
+                        polarity="desire", kind="love", salience=0.95),
+                Concern(concern_id="CCN_ALEX_FEARS_RUNWAY_CHANGE", proposition_id="PROP_ANDREA_BECOMES_MIRANDA",
+                        polarity="fear", kind="abandonment", salience=0.85,
+                        activation_fabula_window=[4000, 9500],
+                        counter_concern_ids=["CCN_ALEX_KEEPS_ANDREA"]),
+                Concern(concern_id="CCN_ALEX_OWN_VOCATION", proposition_id="PROP_RUNWAY_PERFECTION",
+                        polarity="fear", kind="irrelevance", salience=0.5),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=4500, triggered_by="EVT_ALEX_FRUSTRATED",
@@ -295,8 +370,16 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_ANDREA",
                        perceived_state="bright provincial girl in over her head — opportunity",
+                       proposition_id="PROP_CHRISTIAN_PURSUES_ANDREA",
                        confidence=0.8, inertia=0.6,
                        established_at_fabula=3500, evidence_strength="strong"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_CHRISTIAN_BEDS_ANDREA", proposition_id="PROP_ANDREA_GIVES_IN_TO_CHRISTIAN",
+                        polarity="desire", kind="lust", salience=0.7,
+                        activation_fabula_window=[3500, 6500]),
+                Concern(concern_id="CCN_CHRISTIAN_KEEPS_GLAMOUR", proposition_id="PROP_RUNWAY_PERFECTION",
+                        polarity="desire", kind="recognition", salience=0.5),
             ],
         ),
         "ENT_EMILY": Entity(
@@ -310,8 +393,18 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_ANDREA",
                        perceived_state="hopeless interloper who somehow hasn't been fired",
+                       proposition_id="PROP_ANDREA_SURVIVES_RUNWAY",
                        confidence=0.85, inertia=0.7,
                        established_at_fabula=2500, evidence_strength="strong"),
+            ],
+            concerns=[
+                # Emily's defining concern — the Paris trip is the prize at
+                # the end of the apprenticeship.
+                Concern(concern_id="CCN_EMILY_GOES_TO_PARIS", proposition_id="PROP_EMILY_KEEPS_PARIS_SLOT",
+                        polarity="desire", kind="recognition", salience=1.0),
+                Concern(concern_id="CCN_EMILY_DISPLACED", proposition_id="PROP_ANDREA_SURVIVES_RUNWAY",
+                        polarity="fear", kind="irrelevance", salience=0.7,
+                        activation_fabula_window=[2500, 5500]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=5500, triggered_by="EVT_EMILY_MONONUCLEOSIS",
@@ -339,8 +432,15 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_ANDREA",
                        perceived_state="our daughter, working impossible hours at a job we don't recognise",
+                       proposition_id="PROP_ANDREA_BECOMES_MIRANDA",
                        confidence=0.9, inertia=0.85,
                        established_at_fabula=5000, evidence_strength="strong"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_PARENTS_DAUGHTER_INTACT", proposition_id="PROP_ANDREA_BECOMES_MIRANDA",
+                        polarity="fear", kind="loss_of_loved_one", salience=0.95),
+                Concern(concern_id="CCN_PARENTS_FAMILY_INTACT", proposition_id="PROP_ANDREA_FAMILY_INTACT",
+                        polarity="desire", kind="love", salience=0.85),
             ],
         ),
     },
@@ -712,6 +812,20 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_MOVE_TO_NYC", target_id="ENT_ANDREAS_PARENTS", rel_counterpart_id="ENT_ANDREA", causality_type="mutation_social", trait_target="affinity", trait_delta=0.95, mechanism="emotional", evidence_strength="strong", causal_force=5.0, fabula_time=2000, propagation_delay=0),
         CausalEdge(source_id="EVT_PARIS_CHRISTIAN_ENCOUNTER", target_id="ENT_CHRISTIAN", rel_counterpart_id="ENT_ANDREA", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.4, mechanism="social", evidence_strength="moderate", causal_force=5.0, fabula_time=7800, propagation_delay=0),
         CausalEdge(source_id="EVT_HIRED_AS_JR_ASSISTANT", target_id="ENT_EMILY", rel_counterpart_id="ENT_ANDREA", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.4, mechanism="social", evidence_strength="strong", causal_force=6.0, fabula_time=2500, propagation_delay=0),
+
+        # ── WORLD_ → WORLD_ (named-latent forces destabilising one another) ──
+        CausalEdge(source_id="WORLD_FASHION_STATUS_ECONOMY", target_id="WORLD_CAREER_VS_LIFE",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=2500,
+                   description="The status economy at Runway is exactly what makes the career-vs-life trade-off feel non-negotiable — the rung is too valuable to refuse a midnight call."),
+        CausalEdge(source_id="WORLD_ALWAYS_ON_PHONE", target_id="WORLD_CAREER_VS_LIFE",
+                   causality_type="chain_reaction", mechanism="informational", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=3000,
+                   description="The always-on phone is the literal infrastructural mechanism by which the career machine reaches into the personal-life domain."),
+        CausalEdge(source_id="WORLD_FASHION_STATUS_ECONOMY", target_id="WORLD_ALWAYS_ON_PHONE",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=2500,
+                   description="Status proximity to Miranda is granted via the phone — the device's centrality is itself a status-economy artefact."),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -769,7 +883,8 @@ world_state = WorldStateV1(
             description="The cosmology of Runway: a hierarchy of taste, surveillance, and proximity-to-Miranda in which a million girls would die for the bottom rung. Operates as common-cause parent over every demand, every sneer, and the public break at Dior.",
             category="social_structure",
             magnitude=TraitVector(value=0.95, inertia=0.95, evidence_strength="strong"),
-            affected_domains=["social", "economic"],
+            affected_domains=["social", "psychological"],
+            proposition_id="PROP_RUNWAY_PERFECTION",
         ),
         "WORLD_CAREER_VS_LIFE": GlobalTrait(
             id="WORLD_CAREER_VS_LIFE",
@@ -778,6 +893,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.9, inertia=0.9, evidence_strength="strong"),
             affected_domains=["social", "psychological"],
+            proposition_id="PROP_ANDREA_BECOMES_MIRANDA",
         ),
         "WORLD_ALWAYS_ON_PHONE": GlobalTrait(
             id="WORLD_ALWAYS_ON_PHONE",
@@ -786,6 +902,7 @@ world_state = WorldStateV1(
             category="cosmology",
             magnitude=TraitVector(value=0.9, inertia=0.9, evidence_strength="strong"),
             affected_domains=["social"],
+            proposition_id="PROP_PHONE_NEVER_SILENT",
         ),
     },
 
@@ -874,5 +991,111 @@ world_state = WorldStateV1(
                 "affinity": RelationshipMetric(value=0.95, inertia=0.9, evidence_strength="strong", last_updated_fabula=9000),
             },
         ),
+    ],
+
+    # ── PROPOSITIONS (affect-unification substrate) ─────────────────────
+    # Calibrated for Weisberger's bildungsroman: the New Yorker prize is
+    # high-stakes; the *becoming Miranda* threat is the audience's
+    # foreshadowed fear; the Dior ultimatum is the load-bearing outcome.
+    propositions=[
+        # The protagonist's stated goal — proxy for self-realisation.
+        Proposition(proposition_id="PROP_ANDREA_GETS_NEW_YORKER", kind="outcome",
+                    referent_ids=["ENT_ANDREA"],
+                    description="Andrea lands a writing job at The New Yorker after her year at Runway.",
+                    audience_default_prior=0.4, stakes=0.9),
+        # The whisper-threat the audience tracks: she is becoming Miranda.
+        Proposition(proposition_id="PROP_ANDREA_BECOMES_MIRANDA", kind="trait_holds",
+                    referent_ids=["ENT_ANDREA", "ENT_MIRANDA"],
+                    description="Andrea has assimilated to Runway's status economy and lost her moral seriousness.",
+                    audience_default_prior=0.5, stakes=0.9,
+                    truth_at_fabula={4500: True, 8200: False}),
+        # The bargain question: does she survive the year intact?
+        Proposition(proposition_id="PROP_ANDREA_SURVIVES_RUNWAY", kind="outcome",
+                    referent_ids=["ENT_ANDREA", "ENT_MIRANDA"],
+                    description="Andrea completes her year as Miranda's assistant.",
+                    audience_default_prior=0.45, stakes=0.7,
+                    truth_at_fabula={8300: False}),
+        # The mid-Paris reveal: Miranda is human and offers help.
+        Proposition(proposition_id="PROP_MIRANDA_RESPECTS_ANDREA", kind="relation_holds",
+                    referent_ids=["ENT_MIRANDA", "ENT_ANDREA"],
+                    description="Miranda genuinely values Andrea's work and is willing to call in favours for her.",
+                    audience_default_prior=0.2, stakes=0.65,
+                    truth_at_fabula={7000: True, 8200: False}),
+        # Runway-as-machine.
+        Proposition(proposition_id="PROP_RUNWAY_PERFECTION", kind="trait_holds",
+                    referent_ids=["LOC_RUNWAY_OFFICES", "ENT_MIRANDA"],
+                    description="Every detail of Runway under Miranda's hand is flawless.",
+                    audience_default_prior=0.85, stakes=0.85),
+        # The two key personal-life propositions Andrea is failing to protect.
+        Proposition(proposition_id="PROP_ANDREA_LILY_FRIENDSHIP", kind="relation_holds",
+                    referent_ids=["ENT_ANDREA", "ENT_LILY"],
+                    description="Andrea and Lily's best-friendship survives the Runway year.",
+                    audience_default_prior=0.55, stakes=0.7,
+                    truth_at_fabula={10000: True}),
+        Proposition(proposition_id="PROP_ANDREA_ALEX_LASTS", kind="outcome",
+                    referent_ids=["ENT_ANDREA", "ENT_ALEX"],
+                    description="Andrea and Alex remain a couple at year's end.",
+                    audience_default_prior=0.4, stakes=0.6,
+                    truth_at_fabula={9500: False}),
+        Proposition(proposition_id="PROP_ANDREA_FAMILY_INTACT", kind="relation_holds",
+                    referent_ids=["ENT_ANDREA", "ENT_ANDREAS_PARENTS"],
+                    description="Andrea's relationship with her parents survives the year of absences.",
+                    audience_default_prior=0.55, stakes=0.55,
+                    truth_at_fabula={9000: True}),
+        # Lily's accident arc.
+        Proposition(proposition_id="PROP_LILY_HARMED", kind="event_occurs",
+                    referent_ids=["EVT_LILY_DUI_COMA", "ENT_LILY"],
+                    description="Lily wrecks a car drunk and ends up comatose.",
+                    audience_default_prior=0.2, stakes=0.85,
+                    truth_at_fabula={7500: True}),
+        Proposition(proposition_id="PROP_LILY_RECOVERS", kind="outcome",
+                    referent_ids=["ENT_LILY", "EVT_LILY_RECOVERS"],
+                    description="Lily recovers from the coma and faces only community service.",
+                    audience_default_prior=0.5, stakes=0.7,
+                    truth_at_fabula={10000: True}),
+        # Christian temptation.
+        Proposition(proposition_id="PROP_CHRISTIAN_PURSUES_ANDREA", kind="relation_holds",
+                    referent_ids=["ENT_CHRISTIAN", "ENT_ANDREA"],
+                    description="Christian is actively pursuing Andrea.",
+                    audience_default_prior=0.5, stakes=0.4,
+                    truth_at_fabula={3500: True}),
+        Proposition(proposition_id="PROP_ANDREA_GIVES_IN_TO_CHRISTIAN", kind="outcome",
+                    referent_ids=["ENT_ANDREA", "ENT_CHRISTIAN", "EVT_PARIS_CHRISTIAN_ENCOUNTER"],
+                    description="Andrea sleeps with Christian in Paris.",
+                    audience_default_prior=0.5, stakes=0.55,
+                    truth_at_fabula={6500: True}),
+        # Emily's rival arc.
+        Proposition(proposition_id="PROP_EMILY_KEEPS_PARIS_SLOT", kind="outcome",
+                    referent_ids=["ENT_EMILY", "EVT_PARIS_TRIP"],
+                    description="Emily makes the Paris Fashion Week trip with Miranda.",
+                    audience_default_prior=0.7, stakes=0.7,
+                    truth_at_fabula={5500: False}),
+        # The Paris-hotel and Dior pivot.
+        Proposition(proposition_id="PROP_MIRANDA_OFFERS_NEW_YORKER", kind="event_occurs",
+                    referent_ids=["EVT_MIRANDA_OPENS_UP", "ENT_MIRANDA", "ENT_ANDREA"],
+                    description="Miranda promises to call the New Yorker on Andrea's behalf.",
+                    audience_default_prior=0.15, stakes=0.7,
+                    truth_at_fabula={7000: True}),
+        Proposition(proposition_id="PROP_ANDREA_REFUSES_DEMAND", kind="event_occurs",
+                    referent_ids=["EVT_ANDREA_REFUSES", "ENT_ANDREA", "ENT_MIRANDA"],
+                    description="Andrea publicly refuses Miranda's Dior ultimatum.",
+                    audience_default_prior=0.3, stakes=0.95,
+                    truth_at_fabula={8200: True}),
+        Proposition(proposition_id="PROP_ANDREA_GETS_FIRED", kind="event_occurs",
+                    referent_ids=["EVT_FIRED", "ENT_ANDREA", "ENT_MIRANDA"],
+                    description="Miranda fires Andrea on the spot at Dior.",
+                    audience_default_prior=0.35, stakes=0.7,
+                    truth_at_fabula={8300: True}),
+        Proposition(proposition_id="PROP_ANDREA_GOES_HOME", kind="outcome",
+                    referent_ids=["ENT_ANDREA", "LOC_ANDREA_PARENTS_HOME"],
+                    description="Andrea returns to her family and the moral baseline.",
+                    audience_default_prior=0.5, stakes=0.7,
+                    truth_at_fabula={9000: True}),
+        # WORLD_ trait Pearl-Rung-2 reification (Always-On Phone).
+        Proposition(proposition_id="PROP_PHONE_NEVER_SILENT", kind="trait_holds",
+                    referent_ids=["WORLD_ALWAYS_ON_PHONE", "ENT_ANDREA"],
+                    description="The assistant phone is the standing material substrate — it may ring at any moment and must be answered.",
+                    audience_default_prior=0.85, stakes=0.6,
+                    truth_at_fabula={2500: True, 8500: False}),
     ],
 )

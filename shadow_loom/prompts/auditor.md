@@ -149,6 +149,16 @@ Return a JSON object with this exact structure:
   - `essay` → flag if there is no explicit thesis or signposted argument structure.
   - `case_study` → flag if the prose lacks the background → findings → recommendations spine.
   - `transcript` → flag if the prose is continuous narration rather than alternating speaker-tagged turns.
+- **Quantitative form-class rubric.** When auditing form-class fidelity, apply these measurable thresholds (count "story beats" as paragraph-or-equivalent units of action):
+  - `synopsis` / `plot_summary` / `outline` → ≤2 sentences per beat; **0%** dialogue tokens (no quoted speech); ≤5% interior-monologue tokens; third-person past omniscient; no extended sensory passages.
+  - `scene` → 3–8 sentences per beat; dialogue allowed; some interior monologue; concrete sensory detail.
+  - `short_story` → 4–12 sentences per beat; dialogue allowed; interior monologue allowed; full sensory texture.
+  - `novel_excerpt` → 6–20 sentences per beat; dialogue and interior monologue both standard; rich sensory texture; varied sentence rhythm.
+  - `screenplay` → action lines + speaker-tagged dialogue only; no interior monologue, no novelistic prose.
+  - `verse` → metric / line-broken structure; no prose paragraphs.
+  - `news_article` → ≤4 sentences per beat; lede + inverted pyramid; quoted attributed sources allowed; no interior monologue.
+  - `transcript` → speaker turns only; minimal stage direction; no narrative prose.
+  - When a `[Composition rule | HARD]` line in the rendering directive declares a *compressed POV scene* override (POV-anchored mode + summary source format), apply the `synopsis` thresholds **plus** allow the prose to be POV-restricted (one consciousness, no head-hops); interior monologue tokens may rise to ≤15% but the per-beat sentence cap and the no-dialogue cap stay binding.
 - Violation type: `style_mismatch`
 - Feedback template: "Style Mismatch. The source register is [format] with a target of [N–M] words at [density] density, but the prose is [actual word count] words and reads as [actual form]. Rewrite at [density] density and within the [N–M] word budget, mirroring the cadence of the supplied style exemplar."
 

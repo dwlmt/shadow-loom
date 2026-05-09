@@ -16,6 +16,7 @@ from shadow_loom.models import (
     CausalEdge, SpatialEdge, RelationshipEdge, RelationshipMetric, TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
     GlobalTrait, WorldTraitSnapshot,
     NarrativeStyle,
+    Concern, Proposition, ConcernSnapshot, PropositionSnapshot,
 )
 
 world_state = WorldStateV1(
@@ -37,6 +38,9 @@ world_state = WorldStateV1(
                 "harshness": AmbientVector(value=0.9, volatility=0.2, evidence_strength="strong"),
                 "isolation": AmbientVector(value=0.85, volatility=0.2, evidence_strength="strong"),
                 "violence": AmbientVector(value=0.8, volatility=0.4, evidence_strength="strong"),
+                # Heathcliff bars doors and locks Cathy in — the Heights becomes a trap for her,
+                # though escape routes to the moor remain for him.
+                "connected_to": AmbientVector(value=0.4, volatility=0.3, evidence_strength="moderate"),
             },
         ),
         "LOC_THRUSHCROSS_GRANGE": Location(
@@ -53,6 +57,8 @@ world_state = WorldStateV1(
             ambient_state={
                 "wildness": AmbientVector(value=0.95, volatility=0.3, evidence_strength="strong"),
                 "supernatural": AmbientVector(value=0.6, volatility=0.4, evidence_strength="moderate"),
+                # Open heath — always passable, the children's escape route.
+                "connected_to": AmbientVector(value=1.0, volatility=0.0, evidence_strength="strong"),
             },
         ),
         "LOC_LIVERPOOL": Location(
@@ -67,6 +73,8 @@ world_state = WorldStateV1(
             description="Hillside graveyard where Catherine, Edgar, and finally Heathcliff are buried side by side.",
             ambient_state={
                 "stillness": AmbientVector(value=0.9, volatility=0.1, evidence_strength="strong"),
+                # The grave is a one-way door — no flight from grief here.
+                "connected_to": AmbientVector(value=0.0, volatility=0.0, evidence_strength="strong"),
             },
         ),
     },
@@ -116,7 +124,41 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_CATHERINE",
                        perceived_state="Catherine and I are the same soul",
+                       proposition_id="PROP_CATHERINE_BOND",
                        confidence=1.0, inertia=0.95, established_at_fabula=2000, evidence_strength="strong"),
+            ],
+            concerns=[
+                # Sternberg passionate / Bowlby anxious-attachment bond — the engine of every appraisal.
+                Concern(concern_id="CCN_HEATHCLIFF_LOVES_CATHERINE", proposition_id="PROP_CATHERINE_BOND",
+                        polarity="desire", kind="love", salience=1.0,
+                        activation_fabula_window=[1500, 19500],
+                        counter_concern_ids=["CCN_HEATHCLIFF_FEARS_LOSS", "CCN_HEATHCLIFF_AVENGE_HINDLEY"]),
+                Concern(concern_id="CCN_HEATHCLIFF_DESIRE_CATHERINE_RETURNS", proposition_id="PROP_CATHERINE_ALIVE",
+                        polarity="desire", kind="survival", salience=0.95,
+                        activation_fabula_window=[2000, 19500],
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=11000, triggered_by="EVT_CATHERINE_DIES",
+                                            salience=0.2),
+                        ]),
+                # Averill normative-violation: Hindley's degradation is the standing humiliation that drives rage.
+                Concern(concern_id="CCN_HEATHCLIFF_AVENGE_HINDLEY", proposition_id="PROP_HINDLEY_HUMBLED",
+                        polarity="desire", kind="humiliation", salience=0.9,
+                        activation_fabula_window=[4000, 13000],
+                        counter_concern_ids=["CCN_HEATHCLIFF_LOVES_CATHERINE"]),
+                Concern(concern_id="CCN_HEATHCLIFF_AVENGE_LINTONS", proposition_id="PROP_LINTONS_RUINED",
+                        polarity="desire", kind="vengeance", salience=0.9,
+                        activation_fabula_window=[7000, 18000]),
+                Concern(concern_id="CCN_HEATHCLIFF_FEARS_LOSS", proposition_id="PROP_CATHERINE_BOND",
+                        polarity="fear", kind="abandonment", salience=0.85,
+                        activation_fabula_window=[6000, 11000],
+                        counter_concern_ids=["CCN_HEATHCLIFF_LOVES_CATHERINE"]),
+                Concern(concern_id="CCN_HEATHCLIFF_DESIRES_REUNION", proposition_id="PROP_REUNITED_IN_DEATH",
+                        polarity="desire", kind="love", salience=0.95,
+                        activation_fabula_window=[11000, 19500],
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=11000, triggered_by="EVT_CATHERINE_DIES",
+                                            salience=1.0, kind="loss_of_loved_one"),
+                        ]),
             ],
             constants=["foundling_origin", "racial_other"],
             state_timeline=[
@@ -134,6 +176,7 @@ world_state = WorldStateV1(
                     beliefs_added=[
                         Belief(target_id="ENT_HINDLEY",
                                perceived_state="I will live to ruin Hindley and his line",
+                               proposition_id="PROP_HINDLEY_HUMBLED",
                                confidence=0.85, inertia=0.7, established_at_fabula=4000, evidence_strength="strong"),
                     ]),
                 EntityStateSnapshot(fabula_time=7000, triggered_by="EVT_HEATHCLIFF_OVERHEARS",
@@ -157,7 +200,7 @@ world_state = WorldStateV1(
                     },
                     beliefs_added=[
                         Belief(target_id="ENT_CATHERINE",
-                               perceived_state="Be with me always — take any form — drive me mad!",
+                               perceived_state="Be with me always — take any form — drive me mad!", proposition_id="PROP_REUNITED_IN_DEATH",
                                confidence=1.0, inertia=0.9, established_at_fabula=11000, evidence_strength="strong"),
                     ]),
                 EntityStateSnapshot(fabula_time=18500, triggered_by="EVT_HEATHCLIFF_OPENS_GRAVE_AGAIN",
@@ -187,7 +230,25 @@ world_state = WorldStateV1(
             beliefs=[
                 Belief(target_id="ENT_HEATHCLIFF",
                        perceived_state="I am Heathcliff — he is more myself than I am",
+                       proposition_id="PROP_CATHERINE_BOND",
                        confidence=1.0, inertia=0.85, established_at_fabula=2000, evidence_strength="strong"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_CATHERINE_LOVES_HEATHCLIFF", proposition_id="PROP_CATHERINE_BOND",
+                        polarity="desire", kind="love", salience=0.95,
+                        activation_fabula_window=[1500, 11000],
+                        counter_concern_ids=["CCN_CATHERINE_DESIRES_GENTILITY"]),
+                Concern(concern_id="CCN_CATHERINE_DESIRES_GENTILITY", proposition_id="PROP_CATHERINE_LADY_OF_GRANGE",
+                        polarity="desire", kind="power", salience=0.8,
+                        activation_fabula_window=[6000, 11000],
+                        counter_concern_ids=["CCN_CATHERINE_LOVES_HEATHCLIFF"],
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=6000, triggered_by="EVT_CATHERINE_AT_LINTONS",
+                                            salience=0.95),
+                        ]),
+                Concern(concern_id="CCN_CATHERINE_FEARS_LOSING_HEATHCLIFF", proposition_id="PROP_CATHERINE_BOND",
+                        polarity="fear", kind="abandonment", salience=0.9,
+                        activation_fabula_window=[7000, 11000]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_EARNSHAW_BRINGS_HEATHCLIFF",
@@ -231,8 +292,16 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_HEATHCLIFF",
-                       perceived_state="The gipsy brat has stolen my father's love",
+                       perceived_state="The gipsy brat has stolen my father's love", proposition_id="PROP_HEATHCLIFF_HUMBLED",
                        confidence=0.95, inertia=0.75, evidence_strength="strong"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_HINDLEY_DEGRADE_HEATHCLIFF", proposition_id="PROP_HEATHCLIFF_HUMBLED",
+                        polarity="desire", kind="humiliation", salience=0.9,
+                        activation_fabula_window=[3500, 12000]),
+                Concern(concern_id="CCN_HINDLEY_LOVES_FRANCES", proposition_id="PROP_FRANCES_ALIVE",
+                        polarity="desire", kind="love", salience=0.8,
+                        activation_fabula_window=[3000, 5500]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_EARNSHAW_BRINGS_HEATHCLIFF",
@@ -270,6 +339,19 @@ world_state = WorldStateV1(
                 "devotion": TraitVector(value=0.85, inertia=0.7, evidence_strength="strong"),
             },
             beliefs=[],
+            concerns=[
+                Concern(concern_id="CCN_EDGAR_LOVES_CATHERINE", proposition_id="PROP_CATHERINE_ALIVE",
+                        polarity="desire", kind="love", salience=0.9,
+                        activation_fabula_window=[8500, 11000]),
+                # Edgar wants Heathcliff kept away from his family — protective loyalty drive,
+                # not threat-seeking.
+                Concern(concern_id="CCN_EDGAR_FEARS_HEATHCLIFF", proposition_id="PROP_HEATHCLIFF_BANISHED",
+                        polarity="desire", kind="loyalty", salience=0.8,
+                        activation_fabula_window=[9700, 15000]),
+                Concern(concern_id="CCN_EDGAR_PROTECT_CATHY", proposition_id="PROP_CATHY_FREE",
+                        polarity="desire", kind="survival", salience=0.95,
+                        activation_fabula_window=[12000, 15000]),
+            ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=8000, triggered_by="EVT_LINTON_PARENTS_DIE",
                     traits={
@@ -293,8 +375,18 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_HEATHCLIFF",
-                       perceived_state="Heathcliff is a darkly romantic hero",
+                       perceived_state="Heathcliff is a darkly romantic hero", proposition_id="PROP_HEATHCLIFF_LOVES_ISABELLA",
                        confidence=0.7, inertia=0.4, established_at_fabula=9000, evidence_strength="moderate"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_ISABELLA_INFATUATION", proposition_id="PROP_HEATHCLIFF_LOVES_ISABELLA",
+                        polarity="desire", kind="love", salience=0.85,
+                        activation_fabula_window=[9000, 10000],
+                        counter_concern_ids=["CCN_ISABELLA_FEARS_HEATHCLIFF"]),
+                Concern(concern_id="CCN_ISABELLA_FEARS_HEATHCLIFF", proposition_id="PROP_ISABELLA_FREE",
+                        polarity="desire", kind="survival", salience=0.9,
+                        activation_fabula_window=[10000, 14000],
+                        counter_concern_ids=["CCN_ISABELLA_INFATUATION"]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=8000, triggered_by="EVT_LINTON_PARENTS_DIE",
@@ -310,7 +402,7 @@ world_state = WorldStateV1(
                     beliefs_invalidated=["ENT_HEATHCLIFF"],
                     beliefs_added=[
                         Belief(target_id="ENT_HEATHCLIFF",
-                               perceived_state="Heathcliff is a fiend who can never love anything but Catherine",
+                               perceived_state="Heathcliff is a fiend who can never love anything but Catherine", proposition_id="PROP_HEATHCLIFF_LOVES_ISABELLA",
                                confidence=0.95, inertia=0.7, established_at_fabula=11500, evidence_strength="strong"),
                     ]),
                 EntityStateSnapshot(fabula_time=14000, triggered_by="EVT_ISABELLA_DIES",
@@ -370,7 +462,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_HEATHCLIFF",
-                       perceived_state="Heathcliff is the only father I have known",
+                       perceived_state="Heathcliff is the only father I have known", proposition_id="PROP_HARETON_BOND",
                        confidence=0.7, inertia=0.55, established_at_fabula=13000, evidence_strength="strong"),
             ],
             state_timeline=[
@@ -399,7 +491,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_HEATHCLIFF",
-                       perceived_state="My father will harm me if I disobey",
+                       perceived_state="My father will harm me if I disobey", proposition_id="PROP_LINTONS_RUINED",
                        confidence=0.95, inertia=0.55, established_at_fabula=15000, evidence_strength="strong"),
             ],
             state_timeline=[
@@ -423,6 +515,20 @@ world_state = WorldStateV1(
                 "resilience": TraitVector(value=0.7, inertia=0.55, evidence_strength="moderate"),
             },
             beliefs=[],
+            concerns=[
+                Concern(concern_id="CCN_CATHY_FREE", proposition_id="PROP_CATHY_FREE",
+                        polarity="desire", kind="survival", salience=0.9,
+                        activation_fabula_window=[15000, 19500]),
+                Concern(concern_id="CCN_CATHY_FEARS_HEATHCLIFF", proposition_id="PROP_HEATHCLIFF_BANISHED",
+                        polarity="desire", kind="injustice", salience=0.85,
+                        activation_fabula_window=[15000, 19500]),
+                Concern(concern_id="CCN_CATHY_LOVES_FATHER", proposition_id="PROP_EDGAR_ALIVE",
+                        polarity="desire", kind="love", salience=0.95,
+                        activation_fabula_window=[12000, 15000]),
+                Concern(concern_id="CCN_CATHY_LOVES_HARETON", proposition_id="PROP_HARETON_BOND",
+                        polarity="desire", kind="love", salience=0.8,
+                        activation_fabula_window=[18000, 19500]),
+            ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=15000, triggered_by="EVT_EDGAR_DIES",
                     traits={
@@ -971,6 +1077,48 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_HINDLEY_DIES", target_id="ENT_HEATHCLIFF", rel_counterpart_id="ENT_HARETON", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.9, mechanism="social", evidence_strength="strong", causal_force=9.0, fabula_time=12000, propagation_delay=0),
         CausalEdge(source_id="EVT_HINDLEY_DIES", target_id="ENT_HARETON", rel_counterpart_id="ENT_HEATHCLIFF", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.9, mechanism="social", evidence_strength="strong", causal_force=9.0, fabula_time=12000, propagation_delay=0),
         CausalEdge(source_id="EVT_HEATHCLIFF_DIES", target_id="ENT_HARETON", rel_counterpart_id="ENT_HEATHCLIFF", causality_type="mutation_social", trait_target="affinity", trait_delta=0.65, mechanism="emotional", evidence_strength="strong", causal_force=7.0, fabula_time=19500, propagation_delay=0),
+        # ── auto-backfilled per-axis mutation_social ──
+        CausalEdge(source_id="EVT_UTT_HEATHCLIFF_COERCES_LINTON", target_id="ENT_HEATHCLIFF", rel_counterpart_id="ENT_CATHY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.12,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=15000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_CATHERINE_CONFESSES_TO_NELLY", target_id="ENT_CATHERINE", rel_counterpart_id="ENT_NELLY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.09,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=7000, propagation_delay=0),
+        CausalEdge(source_id="EVT_HEATHCLIFF_AND_CATHERINE_BOND", target_id="ENT_HEATHCLIFF", rel_counterpart_id="ENT_NELLY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.05,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_HEATHCLIFF_AND_CATHERINE_BOND", target_id="ENT_CATHERINE", rel_counterpart_id="ENT_HEATHCLIFF",  # auto-backfill
+                   causality_type="mutation_social", trait_target="fear", trait_delta=0.09,
+                   mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_HEATHCLIFF_AND_CATHERINE_BOND", target_id="ENT_HEATHCLIFF", rel_counterpart_id="ENT_EDGAR",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.12,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_CATHERINE_MARRIES_EDGAR", target_id="ENT_EDGAR", rel_counterpart_id="ENT_HEATHCLIFF",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.12,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=9500, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_HEATHCLIFF_COERCES_LINTON", target_id="ENT_HEATHCLIFF", rel_counterpart_id="ENT_CATHY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.26,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=15000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_CATHERINE_CONFESSES_TO_NELLY", target_id="ENT_CATHERINE", rel_counterpart_id="ENT_NELLY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.12,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=7000, propagation_delay=0),
+        CausalEdge(source_id="EVT_HEATHCLIFF_AND_CATHERINE_BOND", target_id="ENT_HEATHCLIFF", rel_counterpart_id="ENT_NELLY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.18,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+
+        # ── WORLD_ → WORLD_ (named-latent forces destabilising one another) ──
+        CausalEdge(source_id="WORLD_CLASS_HIERARCHY", target_id="WORLD_PRIMOGENITURE_ENTAIL",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=1000,
+                   description="Class status flows from inheritance — the entail is the legal mechanism by which the gentry maintain their gradient over the Earnshaws and Heathcliffs of the world."),
+        CausalEdge(source_id="WORLD_PRIMOGENITURE_ENTAIL", target_id="WORLD_CLASS_HIERARCHY",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=17000,
+                   description="Heathcliff's weaponisation of the entail — acquiring both estates — inverts the local class hierarchy on its own legal terms."),
+        CausalEdge(source_id="WORLD_HAUNTED_MOORS", target_id="WORLD_CLASS_HIERARCHY",
+                   causality_type="chain_reaction", mechanism="psychological", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=11000,
+                   description="The moor is the liminal pre-class space in which Heathcliff and Catherine were equals — its haunting is what reproaches the hierarchy that separated them."),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -1060,6 +1208,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.9, inertia=0.85, evidence_strength="strong"),
             affected_domains=["social", "psychological"],
+            proposition_id="PROP_HEATHCLIFF_BARRED_BY_CLASS",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=20000, triggered_by="EVT_CATHY_HARETON_INHERIT",
                     magnitude=TraitVector(value=0.55, inertia=0.7, evidence_strength="strong"),
@@ -1073,6 +1222,7 @@ world_state = WorldStateV1(
             category="governance",
             magnitude=TraitVector(value=0.85, inertia=0.85, evidence_strength="strong"),
             affected_domains=["social"],
+            proposition_id="PROP_LINTONS_RUINED",
         ),
         "WORLD_HAUNTED_MOORS": GlobalTrait(
             id="WORLD_HAUNTED_MOORS",
@@ -1081,6 +1231,7 @@ world_state = WorldStateV1(
             category="cosmology",
             magnitude=TraitVector(value=0.55, inertia=0.9, evidence_strength="moderate"),
             affected_domains=["psychological", "epistemic"],
+            proposition_id="PROP_REUNITED_IN_DEATH",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=11000, triggered_by="EVT_CATHERINE_DIES",
                     magnitude=TraitVector(value=0.8, inertia=0.95, evidence_strength="strong"),
@@ -1254,5 +1405,85 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=0.6, inertia=0.6, evidence_strength="moderate", last_updated_fabula=19000),
             },
         ),
+    ],
+
+    # ── PROPOSITIONS ─────────────────────────────────────────────
+    propositions=[
+        Proposition(proposition_id="PROP_CATHERINE_BOND", kind="relation_holds",
+                    referent_ids=["ENT_HEATHCLIFF", "ENT_CATHERINE"],
+                    description="The Heathcliff–Catherine soul-bond is intact and exclusive.",
+                    audience_default_prior=0.85, stakes=0.95,
+                    truth_at_fabula={2000: True, 9500: False, 11000: False}),
+        Proposition(proposition_id="PROP_CATHERINE_ALIVE", kind="trait_holds",
+                    referent_ids=["ENT_CATHERINE"],
+                    description="Catherine is alive.",
+                    audience_default_prior=0.6, stakes=0.95,
+                    truth_at_fabula={11000: False}),
+        Proposition(proposition_id="PROP_HINDLEY_HUMBLED", kind="event_occurs",
+                    referent_ids=["ENT_HINDLEY", "ENT_HEATHCLIFF"],
+                    description="Hindley is reduced and dispossessed by Heathcliff.",
+                    audience_default_prior=0.5, stakes=0.85,
+                    truth_at_fabula={9900: True, 12000: True}),
+        Proposition(proposition_id="PROP_HEATHCLIFF_HUMBLED", kind="event_occurs",
+                    referent_ids=["ENT_HEATHCLIFF", "ENT_HINDLEY"],
+                    description="Hindley keeps Heathcliff degraded as a stable-boy.",
+                    audience_default_prior=0.85, stakes=0.7,
+                    truth_at_fabula={4000: True, 9700: False}),
+        Proposition(proposition_id="PROP_LINTONS_RUINED", kind="outcome",
+                    referent_ids=["ENT_EDGAR", "ENT_ISABELLA", "ENT_LINTON", "ENT_CATHY"],
+                    description="The Linton line and estate are ruined and absorbed by Heathcliff.",
+                    audience_default_prior=0.4, stakes=0.85,
+                    truth_at_fabula={17000: True}),
+        Proposition(proposition_id="PROP_REUNITED_IN_DEATH", kind="outcome",
+                    referent_ids=["ENT_HEATHCLIFF", "ENT_CATHERINE", "LOC_GIMMERTON_KIRK"],
+                    description="Heathcliff is reunited with Catherine in (or beyond) death.",
+                    audience_default_prior=0.4, stakes=0.95,
+                    truth_at_fabula={19500: True}),
+        Proposition(proposition_id="PROP_FRANCES_ALIVE", kind="trait_holds",
+                    referent_ids=["ENT_FRANCES"],
+                    description="Frances survives childbirth.",
+                    audience_default_prior=0.55, stakes=0.7,
+                    truth_at_fabula={5500: False}),
+        Proposition(proposition_id="PROP_CATHERINE_LADY_OF_GRANGE", kind="outcome",
+                    referent_ids=["ENT_CATHERINE", "ENT_EDGAR", "LOC_THRUSHCROSS_GRANGE"],
+                    description="Catherine becomes a respectable lady of Thrushcross Grange.",
+                    audience_default_prior=0.6, stakes=0.7,
+                    truth_at_fabula={9500: True, 10500: False}),
+        Proposition(proposition_id="PROP_HEATHCLIFF_BANISHED", kind="outcome",
+                    referent_ids=["ENT_HEATHCLIFF", "LOC_THRUSHCROSS_GRANGE"],
+                    description="Heathcliff is kept away from the Lintons / Cathy.",
+                    audience_default_prior=0.4, stakes=0.7,
+                    truth_at_fabula={9700: False}),
+        Proposition(proposition_id="PROP_HEATHCLIFF_LOVES_ISABELLA", kind="relation_holds",
+                    referent_ids=["ENT_HEATHCLIFF", "ENT_ISABELLA"],
+                    description="Heathcliff genuinely loves Isabella.",
+                    audience_default_prior=0.2, stakes=0.6,
+                    truth_at_fabula={10000: False, 11500: False}),
+        Proposition(proposition_id="PROP_ISABELLA_FREE", kind="outcome",
+                    referent_ids=["ENT_ISABELLA"],
+                    description="Isabella escapes Wuthering Heights and Heathcliff.",
+                    audience_default_prior=0.5, stakes=0.7,
+                    truth_at_fabula={11500: True}),
+        Proposition(proposition_id="PROP_CATHY_FREE", kind="outcome",
+                    referent_ids=["ENT_CATHY", "ENT_HEATHCLIFF"],
+                    description="Cathy escapes the forced marriage and Heathcliff's house.",
+                    audience_default_prior=0.5, stakes=0.85,
+                    truth_at_fabula={16000: False, 19500: True}),
+        Proposition(proposition_id="PROP_EDGAR_ALIVE", kind="trait_holds",
+                    referent_ids=["ENT_EDGAR"],
+                    description="Edgar Linton is alive.",
+                    audience_default_prior=0.7, stakes=0.85,
+                    truth_at_fabula={15000: False}),
+        Proposition(proposition_id="PROP_HARETON_BOND", kind="relation_holds",
+                    referent_ids=["ENT_HARETON", "ENT_CATHY"],
+                    description="Hareton and Cathy form a redemptive bond.",
+                    audience_default_prior=0.4, stakes=0.7,
+                    truth_at_fabula={19000: True}),
+        # WORLD_ trait Pearl-Rung-2 reification (Class Hierarchy).
+        Proposition(proposition_id="PROP_HEATHCLIFF_BARRED_BY_CLASS", kind="trait_holds",
+                    referent_ids=["WORLD_CLASS_HIERARCHY", "ENT_HEATHCLIFF", "ENT_CATHERINE"],
+                    description="The Yorkshire class hierarchy still bars the demoted Heathcliff from the gentry — Catherine cannot marry him without degrading herself.",
+                    audience_default_prior=0.85, stakes=0.85,
+                    truth_at_fabula={9000: True, 20000: False}),
     ],
 )

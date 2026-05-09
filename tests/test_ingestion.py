@@ -35,6 +35,7 @@ from shadow_loom.ingestion import (
     _load_prompt,
     _normalize_fabula_times,
     _programmatic_validation,
+    _sanitize_register,
     _validate_dead_actors,
     _validate_time_ordering,
     assemble_world_state,
@@ -597,8 +598,8 @@ class TestValidateDeadActors:
 
 class TestLoadPrompt:
     def test_existing_prompt_loads(self):
-        content = _load_prompt("ontology_extraction.md")
-        assert "Narrative Ontology Extractor" in content
+        content = _load_prompt("ontology_locations.md")
+        assert len(content) > 100
 
     def test_missing_prompt_raises(self):
         with pytest.raises(FileNotFoundError):
@@ -606,7 +607,7 @@ class TestLoadPrompt:
 
     def test_all_prompts_exist(self):
         """Verify all prompt files referenced by the pipeline exist."""
-        for name in ["ontology_extraction.md", "ontology_locations.md",
+        for name in ["ontology_locations.md",
                       "ontology_objects.md", "ontology_entities.md",
                       "socratic_scaffolding.md",
                       "physics_extraction.md", "social_extraction.md",
@@ -1590,6 +1591,101 @@ class TestReconcileChunkTopologies:
         # Mixed chunk untouched — at least one event ≥ prior_max.
         assert [e.fabula_time for e in result[1].events] == [5, 2500]
 
+    def test_long_range_dedup_collapses_distant_chunk_duplicates(self):
+        """Same actors+targets+event_type and high token overlap on
+        descriptions across non-adjacent chunks → collapse onto the
+        first-syuzhet occurrence regardless of chunk distance or
+        fabula offset."""
+        # Chunk 0: canonical event at fabula 1000
+        topo0 = self._make_topo(events=[
+            EventNode(id="EVT_OBI_WAN_SACRIFICE",
+                      description="Obi-Wan sacrifices himself in a lightsaber duel with Darth Vader",
+                      event_type="outcome",
+                      fabula_time=1000, syuzhet_index=0,
+                      actor_ids=["ENT_OBI_WAN"], target_ids=["ENT_VADER"]),
+        ])
+        # Chunk 1: filler so chunks 0 and 2 are non-adjacent
+        topo1 = self._make_topo(events=[
+            EventNode(id="EVT_FILLER", description="filler", event_type="choice",
+                      fabula_time=2000, syuzhet_index=1,
+                      actor_ids=["ENT_LUKE"], target_ids=[]),
+        ])
+        # Chunk 2: re-extracts the same beat at a wildly different fabula time
+        topo2 = self._make_topo(events=[
+            EventNode(id="EVT_OBIWAN_SACRIFICES_SELF",
+                      description="Obi-Wan sacrifices himself in a lightsaber duel against Vader",
+                      event_type="outcome",
+                      fabula_time=3600, syuzhet_index=2,
+                      actor_ids=["ENT_OBI_WAN"], target_ids=["ENT_VADER"]),
+        ])
+        config = ExtractionConfig(fabula_time_spacing=1000)
+        result = _reconcile_chunk_topologies([topo0, topo1, topo2], config)
+        # The duplicate in chunk 2 is dropped; the canonical id remains.
+        all_ids = [e.id for topo in result for e in topo.events]
+        assert "EVT_OBI_WAN_SACRIFICE" in all_ids
+        assert "EVT_OBIWAN_SACRIFICES_SELF" not in all_ids
+
+    def test_long_range_dedup_skips_low_overlap(self):
+        """Same actors+targets+event_type but low description overlap →
+        do NOT collapse (legitimately separate beats)."""
+        topo0 = self._make_topo(events=[
+            EventNode(id="EVT_FIGHT_1",
+                      description="Macbeth duels Banquo in the courtyard",
+                      event_type="outcome",
+                      fabula_time=1000, syuzhet_index=0,
+                      actor_ids=["ENT_MACBETH"], target_ids=["ENT_BANQUO"]),
+        ])
+        topo1 = self._make_topo(events=[
+            EventNode(id="EVT_FILLER", description="filler", event_type="choice",
+                      fabula_time=2000, syuzhet_index=1,
+                      actor_ids=["ENT_LUKE"], target_ids=[]),
+        ])
+        topo2 = self._make_topo(events=[
+            EventNode(id="EVT_FIGHT_2",
+                      description="Macbeth dispatches Banquo at the feast hall",
+                      event_type="outcome",
+                      fabula_time=3000, syuzhet_index=2,
+                      actor_ids=["ENT_MACBETH"], target_ids=["ENT_BANQUO"]),
+        ])
+        config = ExtractionConfig(fabula_time_spacing=1000)
+        result = _reconcile_chunk_topologies([topo0, topo1, topo2], config)
+        all_ids = [e.id for topo in result for e in topo.events]
+        # Both kept (different beats, low Jaccard).
+        assert "EVT_FIGHT_1" in all_ids
+        assert "EVT_FIGHT_2" in all_ids
+
+    def test_long_range_dedup_skips_utterances(self):
+        """Utterances are excluded from cross-chunk dedup — each speech
+        act is treated as distinct."""
+        topo0 = self._make_topo(events=[
+            EventNode(id="EVT_UTT_HELLO",
+                      description="Luke greets Obi-Wan with a friendly hello",
+                      event_type="utterance",
+                      fabula_time=1000, syuzhet_index=0,
+                      actor_ids=["ENT_LUKE"], target_ids=["ENT_OBI_WAN"],
+                      speaker_id="ENT_LUKE", addressee_ids=["ENT_OBI_WAN"],
+                      content="Hello"),
+        ])
+        topo1 = self._make_topo(events=[
+            EventNode(id="EVT_FILLER", description="filler", event_type="choice",
+                      fabula_time=2000, syuzhet_index=1,
+                      actor_ids=["ENT_LUKE"], target_ids=[]),
+        ])
+        topo2 = self._make_topo(events=[
+            EventNode(id="EVT_UTT_HELLO_AGAIN",
+                      description="Luke greets Obi-Wan with a friendly hello",
+                      event_type="utterance",
+                      fabula_time=3000, syuzhet_index=2,
+                      actor_ids=["ENT_LUKE"], target_ids=["ENT_OBI_WAN"],
+                      speaker_id="ENT_LUKE", addressee_ids=["ENT_OBI_WAN"],
+                      content="Hello again"),
+        ])
+        config = ExtractionConfig(fabula_time_spacing=1000)
+        result = _reconcile_chunk_topologies([topo0, topo1, topo2], config)
+        all_ids = [e.id for topo in result for e in topo.events]
+        assert "EVT_UTT_HELLO" in all_ids
+        assert "EVT_UTT_HELLO_AGAIN" in all_ids
+
 
 class TestApplyEventRenames:
     """Tests for _apply_event_renames."""
@@ -1633,6 +1729,100 @@ class TestApplyEventRenames:
         )
         result = _apply_event_renames(topo, {"EVT_OTHER": "EVT_NEW"})
         assert result.events[0].id == "EVT_KEEP"
+
+
+class TestSanitizeRegisterCrossKindCollision:
+    """Tests for the entity↔location name-collision check in _sanitize_register."""
+
+    def test_drops_entity_colliding_with_location_name(self):
+        """When an entity shares a (case-insensitive) name with a location,
+        the entity is dropped and a note is emitted."""
+        reg = GlobalRegister(
+            locations={
+                "LOC_REBEL_BASE": Location(
+                    name="Rebel Base on Yavin 4",
+                    description="Hidden HQ.",
+                    ambient_state={},
+                ),
+                "LOC_TATOOINE": Location(
+                    name="Tatooine", description="Desert planet.",
+                    ambient_state={},
+                ),
+            },
+            objects={},
+            entities={
+                "ENT_REBEL_BASE": Entity(
+                    id="ENT_REBEL_BASE", name="Rebel Base on Yavin 4",
+                    location_id="LOC_REBEL_BASE", status="healthy",
+                    traits={"hope": TraitVector(value=0.9, inertia=0.6)},
+                ),
+                "ENT_LUKE": Entity(
+                    id="ENT_LUKE", name="Luke Skywalker",
+                    location_id="LOC_TATOOINE", status="healthy",
+                    traits={"courage": TraitVector(value=0.7, inertia=0.5)},
+                ),
+            },
+        )
+        notes: list[str] = []
+        out = _sanitize_register(reg, notes)
+        assert "ENT_REBEL_BASE" not in out.entities
+        assert "ENT_LUKE" in out.entities
+        assert any("ENT_REBEL_BASE" in n and "collides with location" in n for n in notes)
+
+    def test_clears_object_owner_when_owner_is_dropped(self):
+        """An object whose owner_id pointed at the dropped entity gets
+        its owner_id cleared (a location can't own an object)."""
+        from shadow_loom.models import NarrativeObject
+        reg = GlobalRegister(
+            locations={
+                "LOC_REBEL_BASE": Location(
+                    name="Rebel Base on Yavin 4", description="HQ.",
+                    ambient_state={},
+                ),
+            },
+            objects={
+                "OBJ_PLANS": NarrativeObject(
+                    id="OBJ_PLANS", name="Death Star Plans",
+                    location_id="LOC_REBEL_BASE",
+                    owner_id="ENT_REBEL_BASE",
+                    properties={}, affordances=[],
+                ),
+            },
+            entities={
+                "ENT_REBEL_BASE": Entity(
+                    id="ENT_REBEL_BASE", name="Rebel Base on Yavin 4",
+                    location_id="LOC_REBEL_BASE", status="healthy",
+                    traits={"hope": TraitVector(value=0.9, inertia=0.6)},
+                ),
+            },
+        )
+        notes: list[str] = []
+        out = _sanitize_register(reg, notes)
+        assert "ENT_REBEL_BASE" not in out.entities
+        assert out.objects["OBJ_PLANS"].owner_id is None
+
+    def test_preserves_when_no_collision(self):
+        """No-op when entity and location names are distinct."""
+        reg = GlobalRegister(
+            locations={
+                "LOC_TATOOINE": Location(
+                    name="Tatooine", description="Desert planet.",
+                    ambient_state={},
+                ),
+            },
+            objects={},
+            entities={
+                "ENT_LUKE": Entity(
+                    id="ENT_LUKE", name="Luke Skywalker",
+                    location_id="LOC_TATOOINE", status="healthy",
+                    traits={"courage": TraitVector(value=0.7, inertia=0.5)},
+                ),
+            },
+        )
+        notes: list[str] = []
+        out = _sanitize_register(reg, notes)
+        assert "ENT_LUKE" in out.entities
+        assert not any("collides with location" in n for n in notes)
 
 
 class TestShiftFabulaTimes:
@@ -1832,3 +2022,381 @@ class TestMirrorAsymmetricRelationships:
             f"mirrored reverse edge must not demand mutation_social "
             f"coverage; got {reverse_keys}"
         )
+
+
+# =====================================================================
+# Per-chunk deterministic consistency audit
+# =====================================================================
+
+from shadow_loom.ingestion import (  # noqa: E402
+    _audit_chunk_consistency,
+    _ChunkDefect,
+    EntityUpdate,
+)
+
+
+def _audit_register() -> GlobalRegister:
+    """Minimal GlobalRegister with two entities, one location, one object."""
+    return GlobalRegister(
+        locations={
+            "LOC_A": Location(name="A", description="a", ambient_state={}),
+            "LOC_B": Location(name="B", description="b", ambient_state={}),
+        },
+        objects={
+            "OBJ_KEY": NarrativeObject(
+                id="OBJ_KEY", name="Key", location_id="LOC_A",
+                owner_id=None, properties={}, affordances=[],
+            ),
+        },
+        entities={
+            "ENT_A": Entity(
+                id="ENT_A", name="A", location_id="LOC_A", status="healthy",
+                traits={"courage": TraitVector(value=0.5, inertia=0.5)},
+            ),
+            "ENT_B": Entity(
+                id="ENT_B", name="B", location_id="LOC_A", status="healthy",
+                traits={"courage": TraitVector(value=0.5, inertia=0.5)},
+            ),
+        },
+    )
+
+
+class TestAuditChunkConsistency:
+    """Tests for ``_audit_chunk_consistency``."""
+
+    def test_clean_topology_yields_no_defects(self):
+        reg = _audit_register()
+        topo = ChunkTopology(
+            events=[
+                EventNode(
+                    id="EVT_1", description="A acts", event_type="choice",
+                    fabula_time=100, syuzhet_index=0,
+                    actor_ids=["ENT_A"], target_ids=["ENT_B"],
+                ),
+            ],
+            causal_topology=[],
+            social_topology=[],
+            spatial_topology=[],
+            entity_updates=[],
+        )
+        defects = _audit_chunk_consistency(topo, reg)
+        assert defects == []
+
+    def test_unknown_entity_id_in_actor_flagged(self):
+        reg = _audit_register()
+        topo = ChunkTopology(
+            events=[
+                EventNode(
+                    id="EVT_1", description="ghost acts", event_type="choice",
+                    fabula_time=100, syuzhet_index=0,
+                    actor_ids=["ENT_GHOST"], target_ids=[],
+                ),
+            ],
+            causal_topology=[], social_topology=[],
+            spatial_topology=[], entity_updates=[],
+        )
+        defects = _audit_chunk_consistency(topo, reg)
+        kinds = {d.kind for d in defects}
+        assert "id_unknown_entity" in kinds
+        assert any("ENT_GHOST" in d.detail for d in defects)
+
+    def test_unknown_location_in_entity_update_flagged(self):
+        reg = _audit_register()
+        topo = ChunkTopology(
+            events=[
+                EventNode(
+                    id="EVT_1", description="moves", event_type="choice",
+                    fabula_time=100, syuzhet_index=0,
+                    actor_ids=["ENT_A"], target_ids=[],
+                ),
+            ],
+            causal_topology=[], social_topology=[],
+            spatial_topology=[],
+            entity_updates=[
+                EntityUpdate(
+                    entity_id="ENT_A", fabula_time=100, triggered_by="EVT_1",
+                    new_location_id="LOC_NOWHERE",
+                ),
+            ],
+        )
+        defects = _audit_chunk_consistency(topo, reg)
+        kinds = {d.kind for d in defects}
+        assert "id_unknown_location" in kinds
+
+    def test_unknown_event_id_in_causal_edge_flagged(self):
+        reg = _audit_register()
+        topo = ChunkTopology(
+            events=[
+                EventNode(
+                    id="EVT_1", description="d", event_type="choice",
+                    fabula_time=100, syuzhet_index=0,
+                    actor_ids=["ENT_A"], target_ids=[],
+                ),
+            ],
+            causal_topology=[
+                CausalEdge(
+                    source_id="EVT_1", target_id="EVT_GHOST",
+                    causality_type="chain_reaction", mechanism="physical",
+                    fabula_time=100,
+                ),
+            ],
+            social_topology=[], spatial_topology=[], entity_updates=[],
+        )
+        defects = _audit_chunk_consistency(topo, reg)
+        kinds = {d.kind for d in defects}
+        assert "id_unknown_event" in kinds
+
+    def test_previous_event_ids_resolve_cross_chunk_references(self):
+        """An event id from a prior chunk should resolve cleanly when
+        referenced by a causal edge."""
+        reg = _audit_register()
+        topo = ChunkTopology(
+            events=[
+                EventNode(
+                    id="EVT_2", description="d", event_type="choice",
+                    fabula_time=200, syuzhet_index=1,
+                    actor_ids=["ENT_A"], target_ids=[],
+                ),
+            ],
+            causal_topology=[
+                CausalEdge(
+                    source_id="EVT_1",  # from a previous chunk
+                    target_id="EVT_2",
+                    causality_type="chain_reaction", mechanism="physical",
+                    fabula_time=200,
+                ),
+            ],
+            social_topology=[], spatial_topology=[], entity_updates=[],
+        )
+        # Without prev_event_ids: EVT_1 is unknown.
+        d_without = _audit_chunk_consistency(topo, reg)
+        assert any(d.kind == "id_unknown_event" for d in d_without)
+        # With prev_event_ids: EVT_1 resolves cleanly.
+        d_with = _audit_chunk_consistency(
+            topo, reg, previous_event_ids={"EVT_1"},
+        )
+        assert not any(d.kind == "id_unknown_event" for d in d_with)
+
+    def test_orphan_trait_update_flagged(self):
+        """EntityUpdate with a trait_updates key not declared by any
+        mutation/mutation_social edge in physics is flagged."""
+        reg = _audit_register()
+        topo = ChunkTopology(
+            events=[
+                EventNode(
+                    id="EVT_1", description="d", event_type="choice",
+                    fabula_time=100, syuzhet_index=0,
+                    actor_ids=["ENT_A"], target_ids=[],
+                ),
+            ],
+            causal_topology=[],  # no mutation edge declared
+            social_topology=[], spatial_topology=[],
+            entity_updates=[
+                EntityUpdate(
+                    entity_id="ENT_A", fabula_time=100, triggered_by="EVT_1",
+                    trait_updates={
+                        "courage": TraitVector(value=0.9, inertia=0.5),
+                    },
+                ),
+            ],
+        )
+        defects = _audit_chunk_consistency(topo, reg)
+        kinds = {d.kind for d in defects}
+        assert "orphan_trait_update" in kinds
+
+    def test_orphan_trait_update_not_flagged_when_mutation_edge_present(self):
+        reg = _audit_register()
+        topo = ChunkTopology(
+            events=[
+                EventNode(
+                    id="EVT_1", description="d", event_type="choice",
+                    fabula_time=100, syuzhet_index=0,
+                    actor_ids=["ENT_A"], target_ids=[],
+                ),
+            ],
+            causal_topology=[
+                CausalEdge(
+                    source_id="EVT_1", target_id="ENT_A",
+                    causality_type="mutation", mechanism="psychological",
+                    fabula_time=100, trait_target="courage",
+                ),
+            ],
+            social_topology=[], spatial_topology=[],
+            entity_updates=[
+                EntityUpdate(
+                    entity_id="ENT_A", fabula_time=100, triggered_by="EVT_1",
+                    trait_updates={
+                        "courage": TraitVector(value=0.9, inertia=0.5),
+                    },
+                ),
+            ],
+        )
+        defects = _audit_chunk_consistency(topo, reg)
+        assert not any(d.kind == "orphan_trait_update" for d in defects)
+
+    def test_dead_actor_resurrection_flagged(self):
+        reg = _audit_register()
+        topo = ChunkTopology(
+            events=[
+                EventNode(
+                    id="EVT_1", description="dies", event_type="outcome",
+                    fabula_time=100, syuzhet_index=0,
+                    actor_ids=["ENT_A"], target_ids=[],
+                ),
+                EventNode(
+                    id="EVT_2", description="acts post-mortem",
+                    event_type="choice",
+                    fabula_time=200, syuzhet_index=1,
+                    actor_ids=["ENT_A"], target_ids=[],
+                ),
+            ],
+            causal_topology=[], social_topology=[], spatial_topology=[],
+            entity_updates=[
+                EntityUpdate(
+                    entity_id="ENT_A", fabula_time=100, triggered_by="EVT_1",
+                    new_status="dead",
+                ),
+            ],
+        )
+        defects = _audit_chunk_consistency(topo, reg)
+        kinds = {d.kind for d in defects}
+        assert "dead_actor_resurrection" in kinds
+
+    def test_same_tick_location_conflict_flagged(self):
+        """Two EntityUpdate records placing the same entity in two
+        different locations at the same fabula_time are flagged."""
+        reg = _audit_register()
+        topo = ChunkTopology(
+            events=[
+                EventNode(
+                    id="EVT_1", description="d", event_type="choice",
+                    fabula_time=100, syuzhet_index=0,
+                    actor_ids=["ENT_A"], target_ids=[],
+                ),
+                EventNode(
+                    id="EVT_2", description="d", event_type="choice",
+                    fabula_time=100, syuzhet_index=1,
+                    actor_ids=["ENT_A"], target_ids=[],
+                ),
+            ],
+            causal_topology=[], social_topology=[], spatial_topology=[],
+            entity_updates=[
+                EntityUpdate(
+                    entity_id="ENT_A", fabula_time=100, triggered_by="EVT_1",
+                    new_location_id="LOC_A",
+                ),
+                EntityUpdate(
+                    entity_id="ENT_A", fabula_time=100, triggered_by="EVT_2",
+                    new_location_id="LOC_B",
+                ),
+            ],
+        )
+        defects = _audit_chunk_consistency(topo, reg)
+        kinds = {d.kind for d in defects}
+        assert "same_tick_location_conflict" in kinds
+
+    def test_social_mutation_orphan_flagged(self):
+        """mutation_social edge with no matching RelationshipEdge reading."""
+        reg = _audit_register()
+        topo = ChunkTopology(
+            events=[
+                EventNode(
+                    id="EVT_1", description="d", event_type="choice",
+                    fabula_time=100, syuzhet_index=0,
+                    actor_ids=["ENT_A"], target_ids=["ENT_B"],
+                ),
+            ],
+            causal_topology=[
+                CausalEdge(
+                    source_id="EVT_1", target_id="ENT_A",
+                    causality_type="mutation_social", mechanism="social",
+                    fabula_time=100, trait_target="affinity",
+                    rel_counterpart_id="ENT_B",
+                ),
+            ],
+            social_topology=[],  # no matching reading
+            spatial_topology=[], entity_updates=[],
+        )
+        defects = _audit_chunk_consistency(topo, reg)
+        kinds = {d.kind for d in defects}
+        assert "social_mutation_orphan" in kinds
+
+    def test_social_mutation_orphan_not_flagged_when_reading_present(self):
+        from shadow_loom.models import RelationshipMetric
+        reg = _audit_register()
+        topo = ChunkTopology(
+            events=[
+                EventNode(
+                    id="EVT_1", description="d", event_type="choice",
+                    fabula_time=100, syuzhet_index=0,
+                    actor_ids=["ENT_A"], target_ids=["ENT_B"],
+                ),
+            ],
+            causal_topology=[
+                CausalEdge(
+                    source_id="EVT_1", target_id="ENT_A",
+                    causality_type="mutation_social", mechanism="social",
+                    fabula_time=100, trait_target="affinity",
+                    rel_counterpart_id="ENT_B",
+                ),
+            ],
+            social_topology=[
+                RelationshipEdge(
+                    source_entity_id="ENT_A", target_entity_id="ENT_B",
+                    metrics={
+                        "affinity": RelationshipMetric(
+                            value=0.6, inertia=0.4,
+                            evidence_strength="strong",
+                            last_updated_fabula=100, observed=True,
+                        ),
+                    },
+                ),
+            ],
+            spatial_topology=[], entity_updates=[],
+        )
+        defects = _audit_chunk_consistency(topo, reg)
+        assert not any(d.kind == "social_mutation_orphan" for d in defects)
+
+    def test_genesis_new_entities_resolve_locally(self):
+        """Entities present only in topo.new_entities should resolve."""
+        reg = _audit_register()
+        new_ent = Entity(
+            id="ENT_GHOST", name="Ghost", location_id="LOC_A",
+            status="healthy",
+            traits={"presence": TraitVector(value=0.5, inertia=0.5)},
+        )
+        topo = ChunkTopology(
+            events=[
+                EventNode(
+                    id="EVT_1", description="d", event_type="choice",
+                    fabula_time=100, syuzhet_index=0,
+                    actor_ids=["ENT_GHOST"], target_ids=[],
+                ),
+            ],
+            causal_topology=[], social_topology=[],
+            spatial_topology=[], entity_updates=[],
+            new_entities={"ENT_GHOST": new_ent},
+        )
+        defects = _audit_chunk_consistency(topo, reg)
+        assert not any(d.kind == "id_unknown_entity" for d in defects)
+
+    def test_defect_returned_as_chunk_defect_dataclass(self):
+        """``_ChunkDefect`` is the return-type contract."""
+        reg = _audit_register()
+        topo = ChunkTopology(
+            events=[
+                EventNode(
+                    id="EVT_1", description="d", event_type="choice",
+                    fabula_time=100, syuzhet_index=0,
+                    actor_ids=["ENT_GHOST"], target_ids=[],
+                ),
+            ],
+            causal_topology=[], social_topology=[],
+            spatial_topology=[], entity_updates=[],
+        )
+        defects = _audit_chunk_consistency(topo, reg)
+        assert defects, "expected at least one defect"
+        assert all(isinstance(d, _ChunkDefect) for d in defects)
+        assert all(isinstance(d.kind, str) and d.kind for d in defects)
+        assert all(isinstance(d.detail, str) and d.detail for d in defects)
+

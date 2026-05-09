@@ -72,8 +72,8 @@ agent receives the resolved Object Register for belief grounding.
 | Sub-step | Agent | Output | Prompt |
 |---|---|---|---|
 | 1a | `_extract_locations` | `LocationRegister` (`LOC_*` with `ambient_state`) | `prompts/ontology_locations.md` |
-| 1b | `_extract_objects` | `ObjectRegister` (`OBJ_*` with `affordances`) | `prompts/ontology_entities.md` |
-| 1c | `_extract_entities` | `EntityRegister` (`ENT_*` with initial `TraitVector`s, `Belief`s, `status`, `location_id`) | `prompts/ontology_extraction.md` |
+| 1b | `_extract_objects` | `ObjectRegister` (`OBJ_*` with `affordances`) | `prompts/ontology_objects.md` |
+| 1c | `_extract_entities` | `EntityRegister` (`ENT_*` with initial `TraitVector`s, `Belief`s, `status`, `location_id`) | `prompts/ontology_entities.md` |
 | 1d | `_extract_world_traits` | `WorldTraitsRegister` (`WORLD_*` — magic system, regime, climate, …) | (focused world-trait prompt) |
 
 Each register feeds into the next so entities can reference real `LOC_` /
@@ -94,12 +94,15 @@ in sequence (Step 3a → 3b → 3c). Consequences depends on Social's
 extracted utterance events and channels for belief provenance, so the
 two run sequentially within a chunk; chunk-level parallelism (gated by
 `ExtractionConfig.max_concurrent_chunks`, default 12) provides the
-throughput. A per-chunk soft timeout
-(`ExtractionConfig.per_chunk_timeout_seconds`, default `600` s) wraps
-the entire Socratic→Physics→Social→Consequences chain in
-`asyncio.wait_for`; a wedged LLM call is cancelled and that chunk
-yields an empty `ChunkTopology` (with all stage flags marked failed) so
-the rest of the run can proceed. Set to `0` to disable.
+throughput. A per-agent-call soft timeout
+(`ExtractionConfig.per_agent_call_timeout_seconds`, default `600` s) wraps
+each `X_agent.run(...)` call (Socratic / Physics / Social /
+Consequences / Affect, plus all chunk-level retries) in
+`asyncio.wait_for`; on timeout only the wedged call is cancelled and
+the surrounding per-stage `try/except` records the failure so the next
+stage still runs on whatever earlier stages produced. The legacy
+whole-chunk timeout (`per_chunk_timeout_seconds`, off by default) is
+retained as an outer last-resort guard. Set either to `0` to disable.
 
 | Step | Agent | Output | Prompt |
 |---|---|---|---|
@@ -153,10 +156,26 @@ emits inflection points for each `WORLD_*` trait (regime change, war ends,
 seasons turn). These become `WorldTraitSnapshot` entries on
 `GlobalTrait.state_timeline`.
 
+### 1i–1k. Post-assembly async passes
+
+Three passes run after assembly (and world-trait timelines) complete, before validation:
+
+* **1i — Concern extraction** (`extract_entity_concerns_async`): populates each entity's `concerns` list from the proposition catalogue, resolving `ConcernSeed` entries into full `Concern` objects with `polarity`, `salience`, and `activation_fabula_window`.
+* **1j — Belief proposition clustering** (`cluster_belief_propositions_async`): groups raw belief targets into canonical `PROP_*` references so downstream affect scorers can reason over named claims rather than free-form strings.
+* **1k — Audience entity synthesis** (`_maybe_synthesise_audience_entity`): injects a reserved `ENT_AUDIENCE` entity (the omniscient-reader perspective) when none was already present — required by the dramatic-irony scorer and the reader-belief propagation path.
+
 ### 1h. Programmatic Validation + Correction Loop
 
 `validate_world_state` runs `_programmatic_validation` (hallucinated IDs,
-broken links, contradictions, duplicates, orphans). If errors remain, a
+broken links, contradictions, duplicates, orphans), which includes
+`_validate_time_ordering`. That function enforces four temporal invariants
+(contiguous unique `syuzhet_index`; reasonable `fabula_time` spacing;
+causal-edge cause-before-effect; channel `established_at_fabula ≤
+terminated_at_fabula`) plus a **fifth** (Rule 5, severity=error,
+category=temporal): non-performative utterances (`truth_value ∈ {true,
+false, unknown}`) may not place `EVT_*` ids referring to future-fabula
+events in `target_ids`. Performative utterances (prophecies, vows, orders)
+are exempt. If errors remain, a
 **correction agent** is invoked with the error summary + the current
 state. When the serialised state exceeds
 `correction_subgraph_threshold_chars` (default 400 KB) the prompt is

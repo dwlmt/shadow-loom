@@ -33,6 +33,13 @@ from shadow_loom.query_models import (
     ManualEditQuery,
     ObservationQuery,
     UserRequest,
+    DoTarget,
+    DoEvent,
+    DoTrait,
+    DoBelief,
+    DoConcern,
+    DoProposition,
+    DoWorldTrait,
 )
 
 from shadow_loom.settings import get_settings as _get_settings, resolve_model as _resolve_model
@@ -126,6 +133,21 @@ class ParsedQuery(BaseModel):
         description="For counterfactual: present-tense facts to condition on.",
     )
 
+    # --- Phase 6: typed Pearl-rung do-targets (intervention/counterfactual) ---
+    do_targets: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        description=(
+            "Phase-6 typed Pearl-rung do-targets. Each item is a flat "
+            "record with a ``target_kind`` discriminator (event, trait, "
+            "belief, concern, proposition) plus the kind-specific fields. "
+            "When set, the pipeline lifts these into a typed "
+            ":class:`DoTarget` union on the resulting "
+            "``InterventionQuery.do_targets`` / "
+            "``CounterfactualQuery.historical_do_targets``. The legacy "
+            "dotted-key dicts above remain accepted as a fallback."
+        ),
+    )
+
     # --- Shared by intervention + counterfactual ---
     target_node_ids: Optional[List[str]] = Field(
         default=None,
@@ -144,6 +166,7 @@ class ParsedQuery(BaseModel):
     )
     target_effect: Optional[Literal[
         "suspense", "surprise", "mystery", "dramatic_irony",
+        "narrative_tension",
         "grief", "rage", "joy", "regret", "love", "fear",
     ]] = Field(default=None, description="For directive: the narrative effect.")
     target_vector_id: Optional[str] = Field(
@@ -361,17 +384,92 @@ def _build_graph_summary(world_state: WorldStateV1) -> str:
                 f"domains=[{domains}] — {wt.description[:80]}"
             )
 
+    # Channels — first-class speech-act surface for utterance events
+    # and for channel-level historical surgery (sever / re-route / change
+    # intelligibility). Listing them here unlocks counterfactuals like
+    # "what if the ravens never carried the letter" without the LLM
+    # having to invent CHN_* IDs.
+    channels = getattr(world_state, "channels", None) or {}
+    if channels:
+        sections.append("CHANNELS:")
+        for cid, ch in channels.items():
+            participants = ", ".join(getattr(ch, "participant_ids", []) or [])
+            status = getattr(ch, "status", "") or ""
+            medium = getattr(ch, "medium", "") or ""
+            desc = (getattr(ch, "description", "") or "")[:60]
+            sections.append(
+                f"  {cid}: medium={medium} | status={status} | "
+                f"participants=[{participants}] — {desc}"
+            )
+
+    # Propositions — Pearl Rung-2 truth clamps target these directly via
+    # ``do_targets`` (target_kind='proposition'). Without listing them
+    # the LLM has no way to discover which PROP_ ids exist.
+    propositions = getattr(world_state, "propositions", None) or []
+    if propositions:
+        sections.append("PROPOSITIONS (PROP_*, do_targets/proposition):")
+        for prop in propositions:
+            pid = getattr(prop, "proposition_id", "?")
+            content = (getattr(prop, "content", "") or "")[:80]
+            refs = ", ".join(getattr(prop, "referenced_node_ids", []) or [])
+            sections.append(f"  {pid}: {content} | refs=[{refs}]")
+
+    # Concerns — Pearl Rung-2 utility clamps. Nested per-entity, so
+    # surface the holder so the LLM can match it back.
+    concerns_lines: list[str] = []
+    for ent in (world_state.entities or {}).values():
+        for ccn in (getattr(ent, "concerns", None) or []):
+            cid = getattr(ccn, "concern_id", None)
+            if not cid:
+                continue
+            polarity = getattr(ccn, "polarity", "?") or "?"
+            salience = getattr(ccn, "salience", None)
+            sal_str = f"{salience:.2f}" if isinstance(salience, (int, float)) else "?"
+            pid = getattr(ccn, "proposition_id", "") or ""
+            concerns_lines.append(
+                f"  {cid}: holder={ent.id} | polarity={polarity} | "
+                f"salience={sal_str} | prop={pid}"
+            )
+    if concerns_lines:
+        sections.append("CONCERNS (CCN_*, do_targets/concern):")
+        sections.extend(concerns_lines)
+
     return "\n".join(sections)
 
 
 def _collect_all_ids(world_state: WorldStateV1) -> set[str]:
-    """Collect every valid ID in the world model for validation."""
+    """Collect every valid ID in the world model for validation.
+
+    Includes every prefix the engine accepts as a query target:
+    ENT_, EVT_, OBJ_, LOC_, WORLD_, CHN_ (channels — Rung-3
+    historical surgery), PROP_ (propositions — Pearl Rung-2 truth
+    clamps via ``do_targets``), and CCN_ (concerns — Pearl Rung-2
+    utility clamps via ``do_targets``). Without the channel /
+    proposition / concern IDs the dynamic structured-output schema
+    accepts a counterfactual or do-target referencing them while the
+    follow-up validator wrongly rejects it as "not found in world
+    model".
+    """
     ids: set[str] = set()
     ids.update(world_state.entities.keys())
     ids.update(world_state.locations.keys())
     ids.update(world_state.objects.keys())
     ids.update(world_state.world_traits.keys())
     ids.update(e.id for e in world_state.events)
+    # Channel ids — first-class graph nodes for speech-act surgery.
+    ids.update(getattr(world_state, "channels", {}).keys())
+    # Proposition ids — Rung-2 truth clamps reference these directly.
+    for prop in (getattr(world_state, "propositions", None) or []):
+        pid = getattr(prop, "proposition_id", None)
+        if pid:
+            ids.add(pid)
+    # Concern ids — nested per-entity. Pearl Rung-2 utility surgery
+    # references these directly; the validator must accept them.
+    for ent in (world_state.entities or {}).values():
+        for ccn in (getattr(ent, "concerns", None) or []):
+            cid = getattr(ccn, "concern_id", None)
+            if cid:
+                ids.add(cid)
     return ids
 
 
@@ -392,6 +490,16 @@ def _collect_typed_ids(world_state: WorldStateV1) -> Dict[str, list[str]]:
         "utterance_event_ids": [
             e.id for e in world_state.events
             if getattr(e, "event_type", None) == "utterance"
+        ],
+        # Phase 6 — utility-layer IDs for typed Pearl-rung do-targets.
+        "proposition_ids": [
+            p.proposition_id
+            for p in (getattr(world_state, "propositions", None) or [])
+        ],
+        "concern_ids": [
+            c.concern_id
+            for ent in (world_state.entities or {}).values()
+            for c in (getattr(ent, "concerns", None) or [])
         ],
     }
 
@@ -435,6 +543,32 @@ def _format_valid_ids_section(world_state: WorldStateV1) -> str:
         for wid, wt in world_state.world_traits.items():
             lines.append(f"  - {wid}  ({wt.name})")
 
+    channels = getattr(world_state, "channels", None) or {}
+    if channels:
+        lines.append(f"Channels ({len(channels)}):")
+        for cid, ch in channels.items():
+            participants = ", ".join(getattr(ch, "participant_ids", []) or [])
+            lines.append(f"  - {cid}  ({participants})")
+
+    propositions = getattr(world_state, "propositions", None) or []
+    if propositions:
+        lines.append(f"Propositions ({len(propositions)}):")
+        for prop in propositions:
+            pid = getattr(prop, "proposition_id", "?")
+            content = (getattr(prop, "content", "") or "")[:50]
+            lines.append(f"  - {pid}  ({content})")
+
+    concern_pairs: list[tuple[str, str]] = []
+    for ent in (world_state.entities or {}).values():
+        for ccn in (getattr(ent, "concerns", None) or []):
+            cid = getattr(ccn, "concern_id", None)
+            if cid:
+                concern_pairs.append((cid, ent.id))
+    if concern_pairs:
+        lines.append(f"Concerns ({len(concern_pairs)}):")
+        for cid, holder in concern_pairs:
+            lines.append(f"  - {cid}  (holder={holder})")
+
     return "\n".join(lines)
 
 
@@ -455,7 +589,7 @@ def _format_valid_ids_section(world_state: WorldStateV1) -> str:
 
 #: Query types that benefit from constrained structured output.
 _CONSTRAINED_QUERY_TYPES: set[str] = {
-    "intervention", "counterfactual", "directive", "interrogate",
+    "observation", "intervention", "counterfactual", "directive", "interrogate",
 }
 
 #: Allowed property roots per node prefix, advertised to the LLM via the
@@ -482,6 +616,13 @@ _PROPERTIES_BY_PREFIX: Dict[str, list[str]] = {
         "medium", "participant_ids", "intelligibility", "directionality",
         "status", "spawn",
     ],
+    # Concrete prefix used by the engine — kept as an alias of CHAN so
+    # both ``CHN_X.status`` (real prefix) and ``CHAN_X.status`` (legacy
+    # mention) resolve to the same property whitelist.
+    "CHN": [
+        "medium", "participant_ids", "intelligibility", "directionality",
+        "status", "spawn",
+    ],
 }
 
 
@@ -500,6 +641,58 @@ def _make_id_literal(ids: list[str]):
     return Literal[tuple(ids)]  # type: ignore[valid-type]
 
 
+def _anchor_fields(world_state: WorldStateV1) -> Dict[str, Any]:
+    """Shared per-call story-point anchor fields injected into every
+    constrained dynamic output model.
+
+    Mirrors the ``_QueryBase`` surface so any query type — observation,
+    intervention, counterfactual, directive, interrogate — can be
+    pinned to a specific point in fabula / syuzhet time, or anchored
+    immediately after a known event. Without these the LLM has no
+    structured way to express "intervene at fabula_time=12" or
+    "interrogate the world after EVT_BANQUO_DEATH"; the resulting
+    queries silently used latest state.
+    """
+    typed = _collect_typed_ids(world_state)
+    evt_lit = _make_id_literal(typed["event_ids"])
+    return {
+        "temporal_anchor": (
+            Optional[int],
+            Field(
+                default=None,
+                description=(
+                    "Optional fabula_time horizon. Set when the user "
+                    "names a specific point in story time (\"after the "
+                    "murder\", \"in act 3\"). Leave null otherwise."
+                ),
+            ),
+        ),
+        "syuzhet_anchor": (
+            Optional[int],
+            Field(
+                default=None,
+                description=(
+                    "Optional syuzhet_index horizon — reader-perspective "
+                    "counterpart of temporal_anchor. Set when the user "
+                    "describes what the *reader* has been told."
+                ),
+            ),
+        ),
+        "anchor_after_event_id": (
+            Optional[evt_lit],
+            Field(
+                default=None,
+                description=(
+                    "Optional EVT_ id. Use when the user phrases the "
+                    "story point as \"after EVT_X\" / \"following the "
+                    "banquet\"; the pipeline resolves it to the "
+                    "event's fabula_time."
+                ),
+            ),
+        ),
+    }
+
+
 def _properties_help_block() -> str:
     """Plain-text reference of allowed `<id>.<property>` roots per prefix."""
     lines = ["Allowed `property` values per node-ID prefix:"]
@@ -510,6 +703,117 @@ def _properties_help_block() -> str:
         "`traits.guilt`, `beliefs.B_FOO`, `properties.locked`."
     )
     return "\n".join(lines)
+
+
+def _build_do_target_item_model(world_state: WorldStateV1):
+    """Phase 6 — per-call Pydantic model for a single typed Pearl-rung
+    do-target.
+
+    Five discriminated kinds via ``target_kind``:
+
+      * ``event``       — DoEvent(event_id, occurred)
+      * ``trait``       — DoTrait(entity_id, trait_name, trait_value)
+      * ``belief``      — DoBelief(holder_id, target_id, proposition_id, confidence)
+      * ``concern``     — DoConcern(concern_id, polarity?, salience?, active?)
+      * ``proposition`` — DoProposition(proposition_id, truth, propagate_to_beliefs?)
+      * ``world_trait`` — DoWorldTrait(world_trait_id, value, inertia?,
+        affected_domains_add?, affected_domains_remove?, fabula_time?,
+        triggered_by?)
+
+    Every kind's id field is constrained to a ``Literal`` of valid IDs
+    of the appropriate type. Other fields are Optional so a single
+    item-shape can carry any of the five kinds; the post-parse
+    converter (:func:`_do_target_items_to_typed`) drops items missing
+    their kind's required fields.
+    """
+    typed = _collect_typed_ids(world_state)
+    ent_lit = _make_id_literal(typed["entity_ids"])
+    evt_lit = _make_id_literal(typed["event_ids"])
+    prop_lit = _make_id_literal(typed.get("proposition_ids", []))
+    ccn_lit = _make_id_literal(typed.get("concern_ids", []))
+    wt_lit = _make_id_literal(typed.get("world_trait_ids", []))
+    any_actor_lit = _make_id_literal(
+        typed["entity_ids"] + typed["object_ids"]
+    )
+
+    return create_model(
+        "DoTargetItem",
+        target_kind=(
+            Literal["event", "trait", "belief", "concern", "proposition", "world_trait"],
+            Field(..., description="Discriminator for the do-target kind."),
+        ),
+        # event
+        event_id=(Optional[evt_lit], Field(default=None,
+            description="For target_kind='event': EVT_ id to clamp.")),
+        occurred=(Optional[bool], Field(default=None,
+            description="For target_kind='event': True forces the event "
+                        "to occur, False prevents it.")),
+        # trait
+        entity_id=(Optional[ent_lit], Field(default=None,
+            description="For target_kind='trait': ENT_ id whose trait is clamped.")),
+        trait_name=(Optional[str], Field(default=None,
+            description="For target_kind='trait': trait name (e.g. 'guilt').")),
+        trait_value=(Optional[float], Field(default=None,
+            description="For target_kind='trait': new trait value (0.0-1.0).")),
+        # belief
+        holder_id=(Optional[ent_lit], Field(default=None,
+            description="For target_kind='belief' or 'concern': ENT_ id of the holder.")),
+        target_id=(Optional[any_actor_lit], Field(default=None,
+            description="For target_kind='belief': ENT_/OBJ_ id the belief is *about*.")),
+        proposition_id=(Optional[prop_lit], Field(default=None,
+            description="For target_kind='belief' or 'proposition': PROP_ id. "
+                        "Optional for beliefs — leave null when the user clamps "
+                        "a belief without naming an underlying Proposition.")),
+        confidence=(Optional[float], Field(default=None,
+            description="For target_kind='belief': clamped confidence (0.0-1.0). "
+                        "1.0 = forced certainty, 0.0 = forced denial.")),
+        perceived_state=(Optional[str], Field(default=None,
+            description="For target_kind='belief': free-form belief content "
+                        "(e.g. 'Macbeth is loyal'). Required when forging a "
+                        "brand-new belief that does not yet exist in the graph.")),
+        # concern
+        concern_id=(Optional[ccn_lit], Field(default=None,
+            description="For target_kind='concern': CCN_ id to clamp.")),
+        polarity=(Optional[Literal["desire", "fear"]], Field(default=None,
+            description="For target_kind='concern': override polarity.")),
+        salience=(Optional[float], Field(default=None,
+            description="For target_kind='concern': override salience (0.0-1.0). "
+                        "0.0 disarms the concern.")),
+        active=(Optional[bool], Field(default=None,
+            description="For target_kind='concern': force concern on/off.")),
+        # proposition
+        truth=(Optional[bool], Field(default=None,
+            description="For target_kind='proposition': clamp truth value.")),
+        propagate_to_beliefs=(Optional[bool], Field(default=None,
+            description="For target_kind='proposition': also push the clamped "
+                        "truth into every belief that references this proposition. "
+                        "Defaults to True.")),
+        # world_trait
+        world_trait_id=(Optional[wt_lit], Field(default=None,
+            description="For target_kind='world_trait': WORLD_ id whose magnitude "
+                        "is clamped.")),
+        value=(Optional[float], Field(default=None,
+            description="For target_kind='world_trait': clamped magnitude.value "
+                        "(0.0 absent, 1.0 maximally present).")),
+        inertia=(Optional[float], Field(default=None,
+            description="For target_kind='world_trait': override magnitude.inertia "
+                        "(0.0–0.99). Leave null to keep the existing inertia.")),
+        affected_domains_add=(Optional[List[str]], Field(default=None,
+            description="For target_kind='world_trait': canonical domains to add "
+                        "('physical', 'psychological', 'epistemic', 'social', "
+                        "'emotional', 'informational', 'betrayal'). Set-additive.")),
+        affected_domains_remove=(Optional[List[str]], Field(default=None,
+            description="For target_kind='world_trait': canonical domains to drop "
+                        "from the trait's affected_domains set.")),
+        fabula_time=(Optional[int], Field(default=None,
+            description="For target_kind='world_trait' or 'proposition': fabula "
+                        "tick of the clamp. Defaults to the query anchor.")),
+        triggered_by=(Optional[evt_lit], Field(default=None,
+            description="For target_kind='world_trait': optional EVT_ id whose "
+                        "occurrence motivates this clamp. Surfaced on the "
+                        "WorldTraitSnapshot for audit attribution.")),
+        __base__=BaseModel,
+    )
 
 
 def _build_intervention_dynamic_model(world_state: WorldStateV1):
@@ -565,6 +869,21 @@ def _build_intervention_dynamic_model(world_state: WorldStateV1):
                 description="One or more constrained intervention items.",
             ),
         ),
+        do_targets=(
+            List[_build_do_target_item_model(world_state)],
+            Field(
+                default_factory=list,
+                description=(
+                    "Phase-6 typed Pearl-rung do-targets. Optional — "
+                    "leave empty unless the user explicitly requests a "
+                    "Rung-2 surgery on a Proposition (truth value), "
+                    "Belief (held confidence), Concern (salience / "
+                    "polarity / on-off) or Trait (numeric clamp). "
+                    "Use the legacy ``interventions`` dotted-key list "
+                    "for plain entity/event/object state changes."
+                ),
+            ),
+        ),
         target_node_ids=(
             List[target_lit],
             Field(
@@ -586,6 +905,7 @@ def _build_intervention_dynamic_model(world_state: WorldStateV1):
             Field(default_factory=list, description="Auxiliary name→ID resolutions."),
         ),
         __base__=BaseModel,
+        **_anchor_fields(world_state),
     )
 
 
@@ -616,11 +936,11 @@ def _build_counterfactual_dynamic_model(world_state: WorldStateV1):
             Field(
                 ...,
                 description=(
-                    "Event ID (EVT_*) or Channel ID (CHAN_*) to alter. "
+                    "Event ID (EVT_*) or Channel ID (CHN_*) to alter. "
                     "MUST be exact. Utterance events (event_type='utterance') "
                     "are addressed by their EVT_* id; channel-level "
                     "surgery (sever/establish/change intelligibility) uses "
-                    "the CHAN_* id."
+                    "the CHN_* id."
                 ),
             ),
         ),
@@ -652,6 +972,20 @@ def _build_counterfactual_dynamic_model(world_state: WorldStateV1):
                 description="Past events to alter, with constrained event IDs.",
             ),
         ),
+        do_targets=(
+            List[_build_do_target_item_model(world_state)],
+            Field(
+                default_factory=list,
+                description=(
+                    "Phase-6 typed Pearl-rung do-targets for the past. "
+                    "Optional — leave empty unless the user explicitly "
+                    "requests a Rung-3 surgery on a historical "
+                    "Proposition truth, Belief, Concern, or Trait. "
+                    "These are lifted onto "
+                    "``CounterfactualQuery.historical_do_targets``."
+                ),
+            ),
+        ),
         evidence_node_ids=(
             List[all_lit],
             Field(
@@ -678,6 +1012,7 @@ def _build_counterfactual_dynamic_model(world_state: WorldStateV1):
             Field(default_factory=list),
         ),
         __base__=BaseModel,
+        **_anchor_fields(world_state),
     )
 
 
@@ -697,6 +1032,7 @@ def _build_directive_dynamic_model(world_state: WorldStateV1):
 
     EffectLit = Literal[
         "suspense", "surprise", "mystery", "dramatic_irony",
+        "narrative_tension",
         "grief", "rage", "joy", "regret", "love", "fear",
     ]
 
@@ -814,10 +1150,84 @@ def _build_interrogation_dynamic_model(world_state: WorldStateV1):
             Field(default_factory=list),
         ),
         __base__=BaseModel,
+        **_anchor_fields(world_state),
+    )
+
+
+def _build_observation_dynamic_model(world_state: WorldStateV1):
+    """Per-call model for *observation*: ``focus_entity_ids`` constrained
+    to entities, ``observations`` keys constrained to any valid graph
+    ID. Without this the LLM can hallucinate entity ids when asked to
+    "show this scene from X's POV".
+    """
+    typed = _collect_typed_ids(world_state)
+    ent_lit = _make_id_literal(typed["entity_ids"])
+    all_ids = (
+        typed["entity_ids"] + typed["object_ids"] + typed["location_ids"]
+        + typed["event_ids"] + typed["world_trait_ids"]
+        + typed.get("channel_ids", [])
+    )
+    all_lit = _make_id_literal(all_ids)
+
+    ObsItem = create_model(
+        "ObservationItem",
+        target_id=(
+            all_lit,
+            Field(
+                ...,
+                description=(
+                    "Graph node ID being observed. Must match a real "
+                    "ENT_/OBJ_/LOC_/EVT_/WORLD_/CHN_ id."
+                ),
+            ),
+        ),
+        observed_state=(
+            str,
+            Field(
+                ...,
+                description=(
+                    "Free-form description of the observed state, e.g. "
+                    "'asleep', 'empty', 'visible to ENT_BANQUO'."
+                ),
+            ),
+        ),
+        __base__=BaseModel,
+    )
+
+    return create_model(
+        "DynamicObservationOutput",
+        reasoning=(str, Field(..., description="Why this interpretation.")),
+        observations=(
+            List[ObsItem],
+            Field(
+                default_factory=list,
+                description=(
+                    "Optional facts to condition the next step on. Leave "
+                    "empty for a plain 'continue the story' observation."
+                ),
+            ),
+        ),
+        focus_entity_ids=(
+            List[ent_lit],
+            Field(
+                default_factory=list,
+                description=(
+                    "POV lock — entities whose perspective the next scene "
+                    "should foreground. Empty = omniscient."
+                ),
+            ),
+        ),
+        resolved_ids=(
+            List[ResolvedID],
+            Field(default_factory=list),
+        ),
+        __base__=BaseModel,
+        **_anchor_fields(world_state),
     )
 
 
 _DYNAMIC_MODEL_BUILDERS = {
+    "observation": _build_observation_dynamic_model,
     "intervention": _build_intervention_dynamic_model,
     "counterfactual": _build_counterfactual_dynamic_model,
     "directive": _build_directive_dynamic_model,
@@ -840,20 +1250,164 @@ def _items_to_dotted_dict(items: list[Any]) -> Dict[str, Any]:
     return out
 
 
+def _do_target_items_to_typed(items: list[Any]) -> List[DoTarget]:
+    """Phase 6 — convert flat ``do_targets`` records (with ``target_kind``
+    discriminator) into the typed :class:`DoTarget` discriminated union.
+
+    Items missing required kind-specific fields are silently skipped so
+    a partial LLM emission can never crash the pipeline; callers can fall
+    back to the legacy dotted-key path.
+    """
+    out: List[DoTarget] = []
+    for item in items or []:
+        data = item if isinstance(item, dict) else item.model_dump()
+        kind = data.get("target_kind")
+        try:
+            if kind == "event":
+                eid = data.get("event_id") or data.get("target_id")
+                if not eid:
+                    continue
+                out.append(DoEvent(
+                    event_id=eid,
+                    occurred=data.get("occurred", True),
+                ))
+            elif kind == "trait":
+                eid = data.get("entity_id") or data.get("holder_id")
+                tname = data.get("trait_name")
+                tval = data.get("trait_value")
+                if tval is None:
+                    tval = data.get("value")
+                if not eid or not tname or tval is None:
+                    continue
+                out.append(DoTrait(
+                    holder_id=eid,
+                    trait_name=tname,
+                    value=float(tval),
+                ))
+            elif kind == "belief":
+                holder = data.get("holder_id")
+                tgt = data.get("target_id")
+                pid = data.get("proposition_id")
+                conf = data.get("confidence")
+                perceived = data.get("perceived_state")
+                # ``DoBelief`` makes proposition_id Optional (the engine
+                # auto-resolves it from the (holder, target) pair when a
+                # unique proposition matches) and supports a
+                # ``perceived_state`` string for forging a brand-new
+                # belief. Skip only when the structurally-required
+                # holder/target are missing — every other field is
+                # optional.
+                if not holder or not tgt:
+                    continue
+                kwargs: Dict[str, Any] = {
+                    "holder_id": holder,
+                    "target_id": tgt,
+                }
+                if conf is not None:
+                    kwargs["confidence"] = float(conf)
+                if pid:
+                    kwargs["proposition_id"] = pid
+                if perceived is not None:
+                    kwargs["perceived_state"] = str(perceived)
+                out.append(DoBelief(**kwargs))
+            elif kind == "concern":
+                cid = data.get("concern_id")
+                holder = data.get("holder_id")
+                if not cid or not holder:
+                    continue
+                out.append(DoConcern(
+                    holder_id=holder,
+                    concern_id=cid,
+                    polarity=data.get("polarity"),
+                    salience=data.get("salience"),
+                    active=data.get("active"),
+                ))
+            elif kind == "proposition":
+                pid = data.get("proposition_id")
+                truth = data.get("truth")
+                if not pid or truth is None:
+                    continue
+                out.append(DoProposition(
+                    proposition_id=pid,
+                    truth=bool(truth),
+                    propagate_to_beliefs=data.get("propagate_to_beliefs", True),
+                ))
+            elif kind == "world_trait":
+                wt_id = (
+                    data.get("world_trait_id")
+                    or data.get("target_id")
+                    or data.get("node_id")
+                )
+                wval = data.get("value")
+                if wval is None:
+                    wval = data.get("trait_value")
+                if not wt_id or wval is None:
+                    continue
+                kwargs: Dict[str, Any] = {
+                    "world_trait_id": wt_id,
+                    "value": float(wval),
+                }
+                inertia = data.get("inertia")
+                if inertia is not None:
+                    kwargs["inertia"] = float(inertia)
+                add = data.get("affected_domains_add")
+                if add:
+                    kwargs["affected_domains_add"] = list(add)
+                rem = data.get("affected_domains_remove")
+                if rem:
+                    kwargs["affected_domains_remove"] = list(rem)
+                ft = data.get("fabula_time")
+                if ft is not None:
+                    kwargs["fabula_time"] = int(ft)
+                trig = data.get("triggered_by")
+                if trig:
+                    kwargs["triggered_by"] = str(trig)
+                out.append(DoWorldTrait(**kwargs))
+            else:
+                continue
+        except Exception:
+            # Defensive: never let malformed LLM payloads crash parsing.
+            continue
+    return out
+
+
 def _normalise_dynamic_to_parsed(dynamic_output: Any, query_type: str) -> ParsedQuery:
     """Convert a constrained dynamic-model instance into a ``ParsedQuery``."""
     data = dynamic_output.model_dump()
+    # Story-point anchors are now uniform across every constrained
+    # dynamic model (see ``_anchor_fields``); thread them onto the
+    # ParsedQuery for every type so ``_QueryBase`` can pick them up.
     base = dict(
         query_type=query_type,
         reasoning=data.get("reasoning", ""),
         resolved_ids=data.get("resolved_ids", []),
+        temporal_anchor=data.get("temporal_anchor"),
+        syuzhet_anchor=data.get("syuzhet_anchor"),
+        anchor_after_event_id=data.get("anchor_after_event_id"),
     )
+
+    if query_type == "observation":
+        # Fold the constrained item-list back into the legacy
+        # ``Dict[str, str]`` shape ParsedQuery expects.
+        obs_items = data.get("observations") or []
+        obs_map: Dict[str, str] = {}
+        for item in obs_items:
+            tgt = item.get("target_id") if isinstance(item, dict) else None
+            state = item.get("observed_state") if isinstance(item, dict) else None
+            if tgt and state is not None:
+                obs_map[tgt] = str(state)
+        return ParsedQuery(
+            **base,
+            observations=obs_map,
+            focus_entity_ids=list(data.get("focus_entity_ids") or []),
+        )
 
     if query_type == "intervention":
         return ParsedQuery(
             **base,
             interventions=_items_to_dotted_dict(data.get("interventions") or []),
             target_node_ids=list(data.get("target_node_ids") or []),
+            do_targets=list(data.get("do_targets") or []) or None,
         )
 
     if query_type == "counterfactual":
@@ -864,6 +1418,7 @@ def _normalise_dynamic_to_parsed(dynamic_output: Any, query_type: str) -> Parsed
             ),
             evidence_node_ids=list(data.get("evidence_node_ids") or []),
             target_node_ids=list(data.get("target_node_ids") or []),
+            do_targets=list(data.get("do_targets") or []) or None,
         )
 
     if query_type == "directive":
@@ -877,9 +1432,6 @@ def _normalise_dynamic_to_parsed(dynamic_output: Any, query_type: str) -> Parsed
             target_effect=data.get("target_effect"),
             target_vector_id=target_vector_id,
             intensity=data.get("intensity"),
-            temporal_anchor=data.get("temporal_anchor"),
-            syuzhet_anchor=data.get("syuzhet_anchor"),
-            anchor_after_event_id=data.get("anchor_after_event_id"),
         )
 
     if query_type == "interrogate":
@@ -922,175 +1474,222 @@ QueryTypeLiteral = Literal[
 # =====================================================================
 
 _PROMPT_PREAMBLE = """\
-You are a query parsing agent for a narrative simulation engine called Shadow Loom.
+You are the query parsing agent for **Shadow Loom**, a narrative simulation \
+engine grounded in Pearl's three-rung ladder of causation:
+
+  • Rung 1 — observation     : "what happens / what was seen"
+  • Rung 2 — intervention    : "do(X = x)" — surgery on the present graph
+  • Rung 3 — counterfactual  : "what if past Y had been different",
+                                 abducted from present evidence
 
 The user's query type has already been identified as **{query_type}**. \
-Your job is to extract the structured parameters needed to execute that \
-query type from the user's natural-language request.
+Your only job is to extract the structured parameters needed to execute it. \
+Do not switch query types and do not invent IDs.
 
-## ID RESOLUTION RULES
+## ID PREFIX CHEATSHEET
 
-- Entity IDs start with ENT_ (e.g., ENT_MACBETH)
-- Event IDs start with EVT_ (e.g., EVT_DUNCAN_MURDER)
-- Object IDs start with OBJ_ (e.g., OBJ_DAGGER)
-- Location IDs start with LOC_ (e.g., LOC_CASTLE)
-- World Trait IDs start with WORLD_ (e.g., WORLD_SURVEILLANCE_STATE)
+  ENT_*    entity (a character, animal, organisation, …)
+  EVT_*    event (any change of state, including utterance events)
+  OBJ_*    object (artefact, document, weapon, …)
+  LOC_*    location
+  WORLD_*  world-level trait (intervenable exogenous context)
+  CHN_*    communication channel (speech-act surface area)
+  PROP_*   proposition (truth-bearing fact, target of Rung-2 truth clamps)
+  CCN_*    concern (utility-layer desire/fear, target of Rung-2 utility clamps)
 
-When the user mentions a character, place, object, or event by name, resolve it \
-to the correct graph ID from the provided world model summary. If no world model \
-is provided, use reasonable ID conventions (ENT_CHARACTERNAME).
+Resolve every name the user mentions to the ID listed under "MENTIONED IN \
+QUERY" or in the "VALID GRAPH IDS" block. If in doubt, prefer the ID with the \
+matching alias rather than inventing a new one.
 
-Always populate `resolved_ids` with every entity/event/object/location you resolved.
-Always provide `reasoning` explaining your interpretation of the user's intent.
-Set `query_type` to "{query_type}".
-Only populate the fields relevant to the {query_type} query type. Leave all other fields null.
+## OUTPUT RULES
+
+  • Set ``query_type`` to "{query_type}".
+  • Populate ``reasoning`` with a one-sentence justification.
+  • Populate ``resolved_ids`` with every ID you used.
+  • Leave fields irrelevant to {query_type} null / empty.
+  • Use IDs **verbatim** — they are case-sensitive and the structured-output \
+schema enforces a Literal[…] enum of valid IDs.
 """
 
 _TYPE_INSTRUCTIONS: Dict[str, str] = {
     "observation": """\
-## OBSERVATION QUERY
+## OBSERVATION QUERY (Rung 1)
 
-Advances time naturally. May condition on observed facts. May lock POV to specific entities.
-The user wants to see what happens, observe a scene, or get a character's POV.
+Advance the clock natively. May condition on observed facts and lock POV.
 
-**Fields to populate:**
-- `observations`: Optional dict of {{node_id: observed_state}} pairs — facts to condition on.
-- `focus_entity_ids`: Optional list of entity IDs to lock POV onto (omit for omniscient view).
+**Fields:**
+- `observations` (optional): list of {{target_id, observed_state}} items —
+  facts to condition on (e.g. ENT_GUARD asleep, OBJ_CUP empty, CHN_X severed).
+- `focus_entity_ids` (optional): ENT_ ids the next scene should foreground.
+  Empty = omniscient.
+- Story-point anchors (`temporal_anchor`, `syuzhet_anchor`,
+  `anchor_after_event_id`): set when the user names a specific point.
 """,
     "intervention": """\
-## INTERVENTION QUERY
+## INTERVENTION QUERY (Rung 2 — do-operator on the *present* graph)
 
-Forces variables to specific states (do-operator). Cuts incoming causal edges.
-The user wants to forcibly change something in the present moment.
+Force variables to specific states *now* and re-simulate forward. Use this \
+for "make X do Y", "set trait Z", "spawn a new object", "have ENT_A believe Q".
 
-**Fields to populate:**
-- `interventions`: Required dict of {{"node_id.property": new_value}} pairs.
-- `target_node_ids`: Optional list of downstream graph node IDs the user explicitly
-  cares about (the thing they want affected). Populate this whenever the user
-  mentions a target — e.g. "make Macbeth kill Duncan" → target_node_ids=["ENT_DUNCAN"];
-  "force the war to end" → target_node_ids=["WORLD_WAR"]. Used by the engine's
-  ctf-calculus pre-flight to detect provably-vacuous interventions.
+### Choose the right channel:
 
-**KEY FORMAT — EVERY KEY MUST CONTAIN A DOT.**
-The key is `<node_id>.<property_path>` (the property after the first dot is
-the attribute being mutated). Bare node IDs without a `.property` suffix
-are INVALID and will be rejected. Examples:
+  • Plain state / trait / location / object surgery → ``interventions`` dict
+    (legacy dotted-key form).
+  • Surgery on a Proposition truth, a Belief, a Concern, or a numeric Trait
+    clamp → emit a ``do_targets`` item with the matching ``target_kind``.
 
-  - `"ENT_MACBETH.status": "dead"`              — set entity status
-  - `"ENT_MACBETH.location_id": "LOC_HEATH"`     — move an entity
-  - `"ENT_MACBETH.traits.guilt": 0.9`            — trait override (0.0–1.0)
-  - `"OBJ_DAGGER.owner_id": "ENT_MACBETH"`       — transfer an object
-  - `"EVT_DUNCAN_MURDER.event_type": "prevented"`— alter an event
-  - `"ENT_GHOST.spawn": {{"name": "Banquo's ghost", "type": "entity"}}` — genesis
+Both channels can be combined in one query.
 
-Value semantics:
-  - String values = state / categorical changes (e.g. "dead", "healthy").
-  - Number values = trait overrides on a `.traits.<name>` path (0.0–1.0).
-  - Dict values on a `.spawn` path = genesis spawns.
+### `interventions` — KEY FORMAT (every key MUST contain a dot)
 
-At least one intervention is required.
+The key is ``<node_id>.<property_path>``. Bare node IDs without ``.property``
+are INVALID and will be rejected.
+
+  - ``"ENT_MACBETH.status": "dead"``
+  - ``"ENT_MACBETH.location_id": "LOC_HEATH"``
+  - ``"ENT_MACBETH.traits.guilt": 0.9``       (0.0–1.0)
+  - ``"OBJ_DAGGER.owner_id": "ENT_MACBETH"``
+  - ``"EVT_DUNCAN_MURDER.event_type": "prevented"``
+  - ``"WORLD_WAR.magnitude": 0.0``
+  - ``"CHN_RAVENS.status": "severed"``
+  - ``"ENT_GHOST.spawn": {{"name": "Banquo's ghost", "type": "entity"}}``
+
+Value semantics: string = state change, number = trait/magnitude override,
+dict on a ``.spawn`` path = genesis spawn.
+
+### `do_targets` — typed Pearl Rung-2 surgeries
+
+Each item is ``{{target_kind, …kind-specific fields}}``. Pick at most one
+``target_kind`` per item:
+
+  - ``event``       : event_id, occurred (true forces, false averts)
+  - ``trait``       : entity_id, trait_name, trait_value
+  - ``belief``      : holder_id, target_id, [proposition_id], confidence,
+                      [perceived_state for new beliefs]
+  - ``concern``     : holder_id, concern_id, [polarity], [salience], [active]
+  - ``proposition`` : proposition_id, truth, [propagate_to_beliefs]
+
+### `target_node_ids` (optional but RECOMMENDED)
+
+Downstream graph nodes the user explicitly cares about — the *thing they want
+affected*. Used by the engine's ctf-calculus pre-flight (Rule 3 Exclusion) to
+detect provably-vacuous interventions. Examples:
+
+  • "make Macbeth kill Duncan"   → target_node_ids=["ENT_DUNCAN"]
+  • "force the war to end"       → target_node_ids=["WORLD_WAR"]
+  • "make Banquo trust Macbeth"  → target_node_ids=["ENT_BANQUO"]
+
+Leave empty only when the user gives no downstream reference at all.
 """,
     "counterfactual": """\
-## COUNTERFACTUAL QUERY
+## COUNTERFACTUAL QUERY (Rung 3 — abduction → past surgery → re-prediction)
 
-Goes back in time, changes past events, conditions on present evidence, re-simulates.
-The user asks "what if" about PAST events.
+The user asks "what if" about the **past**. The engine abducts hidden
+variables from present evidence, applies your historical surgery, and
+re-simulates. Always present-tense evidence is required.
 
-**Fields to populate:**
-- `historical_interventions`: Required dict of {{"event_id.property": altered_outcome}}
-  — the past events to change.
-- `evidence_node_ids`: List of present-tense node IDs to condition on (recommended but optional).
-- `target_node_ids`: Optional list of present-tense graph node IDs the user wants
-  changed by the counterfactual (the things they expect to look different in the
-  re-simulated world). Used by the engine's ctf-calculus pre-flight.
+### Choose the right channel:
 
-**KEY FORMAT — EVERY KEY MUST CONTAIN A DOT.**
-The key is `<event_id>.<property_path>`. Bare event IDs without a `.property`
-suffix are INVALID and will be rejected. Common forms:
+  • Past event / channel surgery (re-route, sever, change outcome) →
+    ``historical_interventions`` dict.
+  • Surgery on a *historical* Proposition truth, Belief, Concern, or Trait
+    clamp → emit a ``do_targets`` item with the matching ``target_kind``.
 
-  - `"EVT_DUNCAN_MURDER.event_type": "prevented"`
-  - `"EVT_DUNCAN_MURDER.outcome": "Duncan survives the night"`
-  - `"EVT_GUARD_DUTY.event_type": "slept"`
+### `historical_interventions` — KEY FORMAT
 
-If you only know that an event should be "changed" or "prevented" without a
-specific attribute in mind, default to `.event_type`.
+  ``<EVT_id|CHN_id>.<property_path>``  (every key MUST contain a dot)
 
-**UTTERANCE & CHANNEL counterfactuals.**
-Past communications are first-class targets:
+Common forms:
 
-  - "What if Macbeth never told Lady M about the prophecy" →
-    `"EVT_MACBETH_TELLS_LADY.truth_value": "performative"` or
-    `"EVT_MACBETH_TELLS_LADY.event_type": "prevented"`.
-  - "What if the message had been a lie" →
-    `"EVT_LETTER_DELIVERED.truth_value": "false"`.
-  - "What if the ravens couldn't carry messages" →
-    `"CHAN_RAVENS.status": "severed"` or
-    `"CHAN_RAVENS.intelligibility": {{"ENT_LADY_M": 0.0}}`.
-  - "What if Banquo had eavesdropped" →
-    `"CHAN_PROPHECY.participant_ids": ["ENT_MACBETH","ENT_BANQUO"]`.
+  - ``"EVT_DUNCAN_MURDER.event_type": "prevented"``
+  - ``"EVT_DUNCAN_MURDER.outcome": "Duncan survives the night"``
+  - ``"EVT_GUARD_DUTY.event_type": "slept"``
+  - ``"EVT_LETTER_DELIVERED.truth_value": "false"``     (utterance event)
+  - ``"EVT_MACBETH_TELLS_LADY.event_type": "prevented"``
+  - ``"CHN_RAVENS.status": "severed"``
+  - ``"CHN_PROPHECY.participant_ids": ["ENT_MACBETH","ENT_BANQUO"]``
+  - ``"CHN_RAVENS.intelligibility": {{"ENT_LADY_M": 0.0}}``
+
+If you only know an event should be "changed" without a specific axis,
+default to ``.event_type``.
+
+### `evidence_node_ids` (REQUIRED)
+
+Present-tense node IDs to condition the abduction on. Always include any
+present-tense facts the user references (e.g. "given that Macbeth IS king
+now…" → ``["ENT_MACBETH"]``).
+
+### `target_node_ids` (optional, ctf-calculus Y-set)
+
+The present-tense things the user expects to look different in the
+re-simulated world.
 """,
     "directive": """\
-## DIRECTIVE QUERY
+## DIRECTIVE QUERY (affective optimisation)
 
-Optimises the next event to maximize a specific psychological or epistemic effect.
-The user wants to control the FEELING or EFFECT of the next scene.
+Optimise the next event to maximise a specific psychological / epistemic
+effect. Does not switch causal layers — runs at Rung 1 with affective
+guidance.
 
-**Fields to populate:**
-- `target_entity_ids`: Required list of entities experiencing the effect.
-- `target_effect`: Required — one of: suspense, surprise, mystery, dramatic_irony, grief, rage, joy, regret, love, fear.
-- `target_vector_id`: Optional — the specific trait/edge/event to target.
-- `intensity`: Optional — 0.0 to 1.0 multiplier (default 1.0).
-- `temporal_anchor`: Optional fabula_time integer. Set when the user names
-  a specific point in story time ("after the murder", "in act 3",
-  "once Banquo is dead").
-- `syuzhet_anchor`: Optional syuzhet_index integer. Use for *reader*-perspective
-  directives (suspense / surprise / mystery / dramatic_irony) when the
-  user describes what the reader has been told rather than what has
-  happened in fabula time.
-- `anchor_after_event_id`: Optional EVT_ id. Use when the user phrases the
-  story point as "after EVT_X" / "following the banquet"; the pipeline
-  resolves it to the event's fabula_time.
+**Fields:**
+- `target_entity_ids` (REQUIRED): the entities experiencing the effect.
+- `target_effect` (REQUIRED): one of suspense, surprise, mystery,
+  dramatic_irony, narrative_tension, grief, rage, joy, regret, love, fear.
+- `target_vector_id` (optional): the trait / edge / event / proposition the
+  effect rides on (e.g. ``ENT_MACBETH`` for grief about Macbeth's fall;
+  ``EVT_DUNCAN_MURDER`` for surprise about the murder; ``PROP_DUNCAN_DEAD``
+  for dramatic irony around audience knowledge of Duncan's death).
+- `target_vector_subpath` (optional): dotted sub-path appended to
+  ``target_vector_id`` (e.g. ``traits.guilt``).
+- `intensity` (optional): 0.0-1.0 multiplier (default 1.0).
+- Story-point anchors: use ``syuzhet_anchor`` for *reader*-perspective
+  effects (suspense / surprise / mystery / dramatic_irony) when the user
+  describes what the reader has been told; use ``temporal_anchor`` /
+  ``anchor_after_event_id`` for fabula-time pinning.
 """,
     "interrogate": """\
-## INTERROGATION QUERY
+## INTERROGATION QUERY (graph RAG, no time advance)
 
-Graph pathfinding / RAG query. Does NOT advance time or generate prose.
-The user wants factual answers about the graph structure.
+Pathfinding / Q&A against the AMWN. Returns a proof, not prose.
 
-**Fields to populate:**
-- `question`: Required — the question to answer.
-- `require_proof`: Optional bool — whether to require causal proof (default true).
+**Fields:**
+- `question` (REQUIRED): the question to answer.
+- `require_proof` (optional, default true): whether to surface the causal
+  bridges as mathematical proof.
+- `referenced_node_ids`: every graph ID the question mentions; the
+  pathfinder uses these to scope the search.
+- Story-point anchors: set when the user asks "as of fabula t=N" or
+  "right after EVT_X".
 """,
     "general": """\
-## GENERAL QUERY
+## GENERAL QUERY (open-ended Q&A, no time advance)
 
-Full-graph Q&A without advancing time. Open-ended question about the world state.
-Use for analytical questions that don't fit other types.
+Free-form analytical question against the full world graph. Use only when
+the request doesn't fit any other type.
 
-**Fields to populate:**
-- `question`: Required — the question to answer.
-- `include_topology`: Optional bool — include full topology in the response (default true).
+**Fields:**
+- `question` (REQUIRED).
+- `include_topology` (optional, default true).
 """,
     "manual_edit": """\
-## MANUAL EDIT QUERY
+## MANUAL EDIT QUERY (user-authored prose, bypasses generation)
 
-User-authored prose that bypasses generation. The text is re-extracted into topology.
-The user is providing actual narrative prose to inject into the story.
+The user is providing actual narrative prose to inject. The engine skips
+LLM rendering and re-extracts topology from the prose.
 
-**Fields to populate:**
-- `edited_prose`: Required — the user's narrative prose text.
-- `edit_description`: Optional description of the changes.
-- `focus_entity_ids`: Optional list of entities most affected by the edit.
+**Fields:**
+- `edited_prose` (REQUIRED): the user's narrative prose verbatim.
+- `edit_description` (optional): brief description of the changes.
+- `focus_entity_ids` (optional): entities most affected by the edit.
 """,
     "evaluate": """\
-## EVALUATION QUERY
+## EVALUATION QUERY (full-story narrative quality audit)
 
-Runs a full-story narrative quality audit. Does NOT advance time or generate new prose.
-The user wants a comprehensive scorecard of the existing story (causal soundness,
-affective trajectory, miracle-step detection, etc.).
+Runs the NarrativeOrderObject scorecard. Does not advance time or generate
+new prose.
 
-**Fields to populate:**
-- `focus_entity_ids`: Optional list of entities to focus the evaluation on (omit to use all).
+**Fields:**
+- `focus_entity_ids` (optional): entities to focus the evaluation on.
 """,
 }
 
@@ -1145,15 +1744,19 @@ parameters needed to execute that query.
 
 ## ID RESOLUTION RULES
 
-- Entity IDs start with ENT_ (e.g., ENT_MACBETH)
-- Event IDs start with EVT_ (e.g., EVT_DUNCAN_MURDER)
-- Object IDs start with OBJ_ (e.g., OBJ_DAGGER)
-- Location IDs start with LOC_ (e.g., LOC_CASTLE)
-- World Trait IDs start with WORLD_ (e.g., WORLD_SURVEILLANCE_STATE)
+- ENT_*    entity      (e.g. ENT_MACBETH)
+- EVT_*    event       (e.g. EVT_DUNCAN_MURDER, including utterances)
+- OBJ_*    object      (e.g. OBJ_DAGGER)
+- LOC_*    location    (e.g. LOC_CASTLE)
+- WORLD_*  world trait (e.g. WORLD_SURVEILLANCE_STATE)
+- CHN_*    channel     (e.g. CHN_RAVENS — speech-act surface area)
+- PROP_*   proposition (e.g. PROP_DUNCAN_DEAD — Pearl Rung-2 truth target)
+- CCN_*    concern     (e.g. CCN_AMBITION — Pearl Rung-2 utility target)
 
-When the user mentions a character, place, object, or event by name, resolve it \
-to the correct graph ID from the provided world model summary. If no world model \
-is provided, use reasonable ID conventions (ENT_CHARACTERNAME).
+When the user mentions a character, place, object, event, channel, proposition,
+or concern by name, resolve it to the correct graph ID from the provided world
+model summary. If no world model is provided, use reasonable ID conventions
+(ENT_CHARACTERNAME).
 
 ## OUTPUT RULES
 
@@ -1203,13 +1806,16 @@ def _validate_parsed_query(
                 _check_id(nid, "observations")
 
     elif qt == "intervention":
-        if not parsed.interventions:
+        if not parsed.interventions and not parsed.do_targets:
             errors.append(ValidationError(
                 field="interventions",
-                message="Intervention query requires at least one intervention.",
+                message=(
+                    "Intervention query requires at least one intervention "
+                    "or do_target."
+                ),
             ))
         else:
-            for key in parsed.interventions:
+            for key in (parsed.interventions or {}):
                 # Keys are dotted paths like 'ENT_MACBETH.status'; validate
                 # the base node ID, not the full key.
                 base_id = key.split(".", 1)[0] if "." in key else key
@@ -1231,15 +1837,23 @@ def _validate_parsed_query(
                 prop_err = _validate_property_path(key, "interventions")
                 if prop_err is not None:
                     errors.append(prop_err)
+        # Y-set used by ctf-calculus pre-flight (Rule 3 Exclusion).
+        # Validate so a hallucinated id surfaces immediately rather
+        # than silently making the pre-flight pass.
+        if parsed.target_node_ids:
+            _check_ids(parsed.target_node_ids, "target_node_ids")
 
     elif qt == "counterfactual":
-        if not parsed.historical_interventions:
+        if not parsed.historical_interventions and not parsed.do_targets:
             errors.append(ValidationError(
                 field="historical_interventions",
-                message="Counterfactual query requires at least one historical intervention.",
+                message=(
+                    "Counterfactual query requires at least one historical "
+                    "intervention or do_target."
+                ),
             ))
         else:
-            for key in parsed.historical_interventions:
+            for key in (parsed.historical_interventions or {}):
                 base_id = key.split(".", 1)[0] if "." in key else key
                 prop_root = (
                     key.split(".", 1)[1].split(".", 1)[0]
@@ -1261,6 +1875,8 @@ def _validate_parsed_query(
             ))
         elif valid_ids:
             _check_ids(parsed.evidence_node_ids, "evidence_node_ids")
+        if parsed.target_node_ids:
+            _check_ids(parsed.target_node_ids, "target_node_ids")
 
     elif qt == "directive":
         if not parsed.target_entity_ids:
@@ -1325,7 +1941,10 @@ def _validate_parsed_query(
 def _normalise_id_name(raw: str) -> str:
     """Lowercase, strip prefixes, collapse non-alphanumeric to underscores."""
     s = raw.strip().upper()
-    for prefix in ("ENT_", "EVT_", "OBJ_", "LOC_", "WORLD_"):
+    for prefix in (
+        "ENT_", "EVT_", "OBJ_", "LOC_", "WORLD_",
+        "CHN_", "PROP_", "CCN_",
+    ):
         if s.startswith(prefix):
             s = s[len(prefix):]
     return re.sub(r"[^A-Z0-9]+", "_", s).strip("_")
@@ -1462,7 +2081,10 @@ def _fuzzy_resolve_id(
 
 # Tokens that look like ID prefixes — used to skip them during alias
 # scanning so we don't double-add them.
-_ID_PREFIXES = ("ENT_", "EVT_", "OBJ_", "LOC_", "WORLD_")
+_ID_PREFIXES = (
+    "ENT_", "EVT_", "OBJ_", "LOC_", "WORLD_",
+    "CHN_", "PROP_", "CCN_",
+)
 
 
 def _extract_mentioned_ids(
@@ -1620,6 +2242,11 @@ _VALID_PROPERTY_ROOTS: Dict[str, set[str]] = {
     },
     "WORLD": {"magnitude", "description", "affected_domains", "spawn"},
     "CHAN": {
+        "medium", "participant_ids", "intelligibility", "directionality",
+        "status", "spawn",
+    },
+    # Real-prefix alias (engine emits CHN_*, not CHAN_*).
+    "CHN": {
         "medium", "participant_ids", "intelligibility", "directionality",
         "status", "spawn",
     },
@@ -1924,6 +2551,7 @@ def _build_query(
                 parsed.interventions or {}, field_name="interventions",
             ),
             target_node_ids=parsed.target_node_ids or [],
+            do_targets=_do_target_items_to_typed(parsed.do_targets or []),
             original_query=nl,
             **anchor_kwargs,
         )
@@ -1936,6 +2564,9 @@ def _build_query(
             ),
             evidence_node_ids=parsed.evidence_node_ids or [],
             target_node_ids=parsed.target_node_ids or [],
+            historical_do_targets=_do_target_items_to_typed(
+                parsed.do_targets or []
+            ),
             original_query=nl,
             **anchor_kwargs,
         )

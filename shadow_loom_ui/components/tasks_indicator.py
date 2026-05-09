@@ -35,7 +35,10 @@ _STATUS_ICON = {
 def build_tasks_indicator(state: AppState) -> None:
     """Render a header button + popover showing active and recent tasks."""
 
-    btn = ui.button().props("flat dense round color=secondary")
+    btn = ui.button().props(
+        'flat dense round color=secondary '
+        'aria-label="Background tasks"'
+    )
     with btn:
         feather("clipboard")
     badge = ui.badge("0", color="primary").props("floating")

@@ -29,6 +29,7 @@ from shadow_loom.models import (
     CausalEdge, SpatialEdge, RelationshipEdge, RelationshipMetric, TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
     GlobalTrait, WorldTraitSnapshot,
     NarrativeStyle,
+    Concern, Proposition, ConcernSnapshot, PropositionSnapshot,
 )
 
 world_state = WorldStateV1(
@@ -73,6 +74,8 @@ world_state = WorldStateV1(
             ambient_state={
                 "tension": AmbientVector(value=0.7, volatility=0.5, evidence_strength="strong"),
                 "concealment": AmbientVector(value=0.6, volatility=0.4, evidence_strength="moderate"),
+                # Frijda action-readiness: castle has gates onto Forres / Dunsinane → flight feasible.
+                "connected_to": AmbientVector(value=1.0, volatility=0.0, evidence_strength="strong"),
             },
         ),
         "LOC_DUNSINANE_CASTLE": Location(
@@ -81,6 +84,10 @@ world_state = WorldStateV1(
             ambient_state={
                 "danger": AmbientVector(value=0.8, volatility=0.3, evidence_strength="strong"),
                 "tension": AmbientVector(value=0.9, volatility=0.2, evidence_strength="strong"),
+                # Besieged in Act V — exits are technically present (Birnam road)
+                # but politically/militarily sealed; Macbeth's *dread* fires from
+                # the prophecy, not from physical entrapment.
+                "connected_to": AmbientVector(value=1.0, volatility=0.4, evidence_strength="moderate"),
             },
         ),
         "LOC_WITCHES_CAVERN": Location(
@@ -95,6 +102,10 @@ world_state = WorldStateV1(
             description="Macduff's family seat; site of the slaughter of his wife and children.",
             ambient_state={
                 "safety": AmbientVector(value=0.6, volatility=0.7, evidence_strength="moderate"),
+                # Macduff has fled to England; the women and children are
+                # without guard — Lady Macduff's flight is undermined by
+                # her belief that her husband has *already* abandoned her.
+                "connected_to": AmbientVector(value=0.4, volatility=0.5, evidence_strength="weak"),
             },
         ),
         "LOC_ENGLAND": Location(
@@ -172,12 +183,43 @@ world_state = WorldStateV1(
                 "despair": TraitVector(value=0.1, inertia=0.25, evidence_strength="weak"),
             },
             beliefs=[
-                Belief(target_id="ENT_DUNCAN", perceived_state="Duncan is my kinsman and rightful king",
+                Belief(target_id="ENT_DUNCAN", perceived_state="Duncan is my kinsman and rightful king", proposition_id="PROP_THANE_LOYALTY",
                        confidence=0.9, inertia=0.55, evidence_strength="strong"),
-                Belief(target_id="ENT_BANQUO", perceived_state="Banquo is my trusted comrade-in-arms",
+                Belief(target_id="ENT_BANQUO", perceived_state="Banquo is my trusted comrade-in-arms", proposition_id="PROP_BANQUO_LINE_KINGS",
                        confidence=0.85, inertia=0.5, evidence_strength="strong"),
-                Belief(target_id="ENT_WITCHES", perceived_state="The witches' prophecies may yet prove true",
+                Belief(target_id="ENT_WITCHES", perceived_state="The witches' prophecies may yet prove true", proposition_id="PROP_MACBETH_BECOMES_KING",
                        confidence=0.4, inertia=0.35, evidence_strength="moderate"),
+            ],
+            concerns=[
+                # Lazarus appraisal: the prophecy plants a *desire-concern* whose
+                # realisation requires regicide; OCC counter-concern with Banquo's line.
+                Concern(concern_id="CCN_MACBETH_BECOMES_KING", proposition_id="PROP_MACBETH_BECOMES_KING",
+                        polarity="desire", kind="ambition", salience=0.95,
+                        activation_fabula_window=[2000, 19000],
+                        counter_concern_ids=["CCN_MACBETH_FEARS_BANQUO_LINE", "CCN_MACBETH_FEARS_MACDUFF"]),
+                Concern(concern_id="CCN_MACBETH_FEARS_BANQUO_LINE", proposition_id="PROP_BANQUO_LINE_KINGS",
+                        polarity="fear", kind="heir_anxiety", salience=0.7,
+                        activation_fabula_window=[2000, 19000],
+                        counter_concern_ids=["CCN_MACBETH_BECOMES_KING"]),
+                Concern(concern_id="CCN_MACBETH_FEARS_MACDUFF", proposition_id="PROP_MACDUFF_THREAT",
+                        polarity="fear", kind="mortal_threat", salience=0.85,
+                        activation_fabula_window=[13000, 19000],
+                        counter_concern_ids=["CCN_MACBETH_BECOMES_KING"]),
+                Concern(concern_id="CCN_MACBETH_DESIRES_INVINCIBILITY", proposition_id="PROP_MACBETH_INVINCIBLE",
+                        polarity="desire", kind="power", salience=0.8,
+                        activation_fabula_window=[13000, 19000]),
+                Concern(concern_id="CCN_MACBETH_DESIRES_BIRNAM_STILL", proposition_id="PROP_BIRNAM_NEVER_MOVES",
+                        polarity="desire", kind="fate", salience=0.7,
+                        activation_fabula_window=[13000, 19000],
+                        counter_concern_ids=["CCN_MACBETH_FEARS_MACDUFF"],
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=18500, triggered_by="EVT_BIRNAM_WOOD_MOVES",
+                                            salience=0.95, polarity="fear", kind="doom",
+                                            counter_concern_ids=["CCN_MACBETH_BECOMES_KING"]),
+                        ]),
+                # Sternberg passionate-bond concern — anchors grief at ft ≥ 17000.
+                Concern(concern_id="CCN_MACBETH_LOVES_LADY", proposition_id="PROP_LADY_MACBETH_RESOLVE",
+                        polarity="desire", kind="love", salience=0.7),
             ],
             constants=[],
             state_timeline=[
@@ -212,6 +254,7 @@ world_state = WorldStateV1(
                     },
                     beliefs_added=[
                         Belief(target_id="ENT_MACDUFF", perceived_state="Macduff threatens me but no man of woman born can harm me",
+                               proposition_id="PROP_MACBETH_INVINCIBLE",
                                confidence=0.85, inertia=0.6, established_at_fabula=13000, evidence_strength="strong"),
                     ]),
                 EntityStateSnapshot(fabula_time=17000, triggered_by="EVT_LADY_MACBETH_DEATH",
@@ -240,9 +283,24 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_MACBETH", perceived_state="Macbeth is too full of the milk of human kindness to seize the crown alone",
+                       proposition_id="PROP_LADY_MACBETH_RESOLVE",
                        confidence=0.85, inertia=0.55, evidence_strength="strong"),
                 Belief(target_id="OBJ_CROWN", perceived_state="The crown is within our grasp tonight",
+                       proposition_id="PROP_MACBETH_BECOMES_KING",
                        confidence=0.9, inertia=0.5, evidence_strength="strong"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_LADY_DESIRES_CROWN", proposition_id="PROP_MACBETH_BECOMES_KING",
+                        polarity="desire", kind="ambition", salience=0.95,
+                        activation_fabula_window=[4000, 17000],
+                        counter_concern_ids=["CCN_LADY_FEARS_DISCOVERY"]),
+                Concern(concern_id="CCN_LADY_FEARS_DISCOVERY", proposition_id="PROP_REGICIDE_DISCOVERED",
+                        polarity="fear", kind="exposure", salience=0.85,
+                        activation_fabula_window=[5000, 17000],
+                        counter_concern_ids=["CCN_LADY_DESIRES_CROWN"]),
+                Concern(concern_id="CCN_LADY_DESIRES_MACBETH", proposition_id="PROP_MARRIAGE_BOND",
+                        polarity="desire", kind="love", salience=0.65,
+                        activation_fabula_window=[1, 17000]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=6000, triggered_by="EVT_DUNCAN_MURDER",
@@ -268,10 +326,18 @@ world_state = WorldStateV1(
                 "leadership": TraitVector(value=0.7, inertia=0.6, evidence_strength="moderate"),
             },
             beliefs=[
-                Belief(target_id="ENT_MACBETH", perceived_state="Macbeth is my loyal and valiant kinsman",
+                Belief(target_id="ENT_MACBETH", perceived_state="Macbeth is my loyal and valiant kinsman", proposition_id="PROP_THANE_LOYALTY",
                        confidence=0.95, inertia=0.65, evidence_strength="strong"),
-                Belief(target_id="ENT_MALCOLM", perceived_state="Malcolm is fit to be my heir",
+                Belief(target_id="ENT_MALCOLM", perceived_state="Malcolm is fit to be my heir", proposition_id="PROP_MALCOLM_THRONE",
                        confidence=0.85, inertia=0.7, evidence_strength="strong"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_DUNCAN_DESIRES_MALCOLM_HEIR", proposition_id="PROP_MALCOLM_THRONE",
+                        polarity="desire", kind="succession", salience=0.85,
+                        activation_fabula_window=[1, 6000]),
+                Concern(concern_id="CCN_DUNCAN_DESIRES_LOYALTY", proposition_id="PROP_THANE_LOYALTY",
+                        polarity="desire", kind="loyalty", salience=0.75,
+                        activation_fabula_window=[1, 6000]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=5500, triggered_by="EVT_DUNCAN_ARRIVES_INVERNESS",
@@ -291,7 +357,16 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_WITCHES", perceived_state="The prophecies may hold truth — my line shall be kings",
+                       proposition_id="PROP_BANQUO_LINE_KINGS",
                        confidence=0.5, inertia=0.4, evidence_strength="moderate"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_BANQUO_DESIRES_FLEANCE_SAFE", proposition_id="PROP_FLEANCE_ALIVE",
+                        polarity="desire", kind="love", salience=0.95,
+                        activation_fabula_window=[1, 11000]),
+                Concern(concern_id="CCN_BANQUO_FEARS_MACBETH_FOUL_PLAY", proposition_id="PROP_MACBETH_FOUL_PLAY",
+                        polarity="fear", kind="betrayal", salience=0.7,
+                        activation_fabula_window=[10000, 11000]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=10500, triggered_by="EVT_MACBETH_CROWNED",
@@ -300,6 +375,7 @@ world_state = WorldStateV1(
                     },
                     beliefs_added=[
                         Belief(target_id="ENT_MACBETH", perceived_state="Macbeth played most foully for the crown",
+                               proposition_id="PROP_MACBETH_FOUL_PLAY",
                                confidence=0.7, inertia=0.55, established_at_fabula=10500, evidence_strength="strong"),
                     ]),
                 EntityStateSnapshot(fabula_time=11000, triggered_by="EVT_BANQUO_MURDERED",
@@ -314,6 +390,11 @@ world_state = WorldStateV1(
                 "fear": TraitVector(value=0.4, inertia=0.25, evidence_strength="weak"),
             },
             beliefs=[],
+            concerns=[
+                Concern(concern_id="CCN_FLEANCE_FEARS_DEATH", proposition_id="PROP_FLEANCE_ALIVE",
+                        polarity="desire", kind="survival", salience=0.95,
+                        activation_fabula_window=[10500, 19000]),
+            ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=11000, triggered_by="EVT_BANQUO_MURDERED",
                     traits={
@@ -334,6 +415,19 @@ world_state = WorldStateV1(
             },
             beliefs=[],
             constants=["caesarean_birth"],
+            concerns=[
+                Concern(concern_id="CCN_MACDUFF_DESIRES_FAMILY_SAFE", proposition_id="PROP_MACDUFF_FAMILY_SAFE",
+                        polarity="desire", kind="love", salience=0.95,
+                        activation_fabula_window=[1, 14000]),
+                Concern(concern_id="CCN_MACDUFF_FEARS_TYRANT", proposition_id="PROP_MACBETH_TYRANT",
+                        polarity="fear", kind="loyalty", salience=0.75,
+                        activation_fabula_window=[7000, 19000]),
+                # Vengeance axis — Macduff's drive after the Fife slaughter (kind=vengeance,
+                # not Averill betrayal-on-self since Macduff is the avenger not the betrayed).
+                Concern(concern_id="CCN_MACDUFF_DESIRES_VENGEANCE", proposition_id="PROP_MACDUFF_AVENGED",
+                        polarity="desire", kind="vengeance", salience=0.95,
+                        activation_fabula_window=[14500, 19000]),
+            ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=7500, triggered_by="EVT_DUNCAN_DISCOVERED_MURDERED",
                     traits={
@@ -341,6 +435,7 @@ world_state = WorldStateV1(
                     },
                     beliefs_added=[
                         Belief(target_id="ENT_MACBETH", perceived_state="Macbeth's grief at Duncan's death rings false",
+                               proposition_id="PROP_MACBETH_FOUL_PLAY",
                                confidence=0.6, inertia=0.5, established_at_fabula=7500, evidence_strength="moderate"),
                     ]),
                 EntityStateSnapshot(fabula_time=12500, triggered_by="EVT_MACDUFF_FLEES_TO_ENGLAND",
@@ -360,8 +455,16 @@ world_state = WorldStateV1(
                 "anger": TraitVector(value=0.5, inertia=0.3, evidence_strength="moderate"),
             },
             beliefs=[
-                Belief(target_id="ENT_MACDUFF", perceived_state="My husband has abandoned us by fleeing to England",
+                Belief(target_id="ENT_MACDUFF", perceived_state="My husband has abandoned us by fleeing to England", proposition_id="PROP_MACDUFF_FAMILY_SAFE",
                        confidence=0.7, inertia=0.5, evidence_strength="moderate"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_LADY_MACDUFF_DESIRES_FAMILY_SAFE", proposition_id="PROP_MACDUFF_FAMILY_SAFE",
+                        polarity="desire", kind="love", salience=0.95,
+                        activation_fabula_window=[1, 14000]),
+                Concern(concern_id="CCN_LADY_MACDUFF_FEARS_ABANDONMENT", proposition_id="PROP_MACDUFF_RETURNS",
+                        polarity="fear", kind="abandonment", salience=0.8,
+                        activation_fabula_window=[12500, 14000]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=14000, triggered_by="EVT_MACDUFF_FAMILY_SLAUGHTERED",
@@ -378,8 +481,16 @@ world_state = WorldStateV1(
                 "courage": TraitVector(value=0.6, inertia=0.5, evidence_strength="moderate"),
             },
             beliefs=[
-                Belief(target_id="ENT_MACBETH", perceived_state="Macbeth or his agents may seek to kill us next",
+                Belief(target_id="ENT_MACBETH", perceived_state="Macbeth or his agents may seek to kill us next", proposition_id="PROP_MALCOLM_KILLED",
                        confidence=0.8, inertia=0.55, established_at_fabula=7500, evidence_strength="strong"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_MALCOLM_FEARS_ASSASSINATION", proposition_id="PROP_MALCOLM_KILLED",
+                        polarity="fear", kind="mortal_threat", salience=0.85,
+                        activation_fabula_window=[7000, 15000]),
+                Concern(concern_id="CCN_MALCOLM_DESIRES_THRONE", proposition_id="PROP_MALCOLM_THRONE",
+                        polarity="desire", kind="duty", salience=0.7,
+                        activation_fabula_window=[7000, 20000]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=9000, triggered_by="EVT_SONS_FLEE",
@@ -418,7 +529,7 @@ world_state = WorldStateV1(
                         "suspicion": TraitVector(value=0.8, inertia=0.5, evidence_strength="strong"),
                     },
                     beliefs_added=[
-                        Belief(target_id="ENT_MACBETH", perceived_state="Macbeth is a murdering tyrant",
+                        Belief(target_id="ENT_MACBETH", perceived_state="Macbeth is a murdering tyrant", proposition_id="PROP_MACBETH_TYRANT",
                                confidence=0.8, inertia=0.55, established_at_fabula=12000, evidence_strength="strong"),
                     ]),
             ],
@@ -434,7 +545,7 @@ world_state = WorldStateV1(
             state_timeline=[
                 EntityStateSnapshot(fabula_time=16000, triggered_by="EVT_UTT_LADY_MACBETH_SLEEPWALK_CONFESSION",
                     beliefs_added=[
-                        Belief(target_id="ENT_LADY_MACBETH", perceived_state="Her trouble is moral, not medical — she has confessed to murder",
+                        Belief(target_id="ENT_LADY_MACBETH", perceived_state="Her trouble is moral, not medical — she has confessed to murder", proposition_id="PROP_REGICIDE_DISCOVERED",
                                confidence=0.85, inertia=0.7, established_at_fabula=16000,
                                acquired_via_event_id="EVT_UTT_LADY_MACBETH_SLEEPWALK_CONFESSION",
                                evidence_strength="strong"),
@@ -449,7 +560,7 @@ world_state = WorldStateV1(
                 "discretion": TraitVector(value=0.8, inertia=0.65, evidence_strength="strong"),
             },
             beliefs=[
-                Belief(target_id="ENT_LADY_MACBETH", perceived_state="My mistress walks and talks in her sleep most nights",
+                Belief(target_id="ENT_LADY_MACBETH", perceived_state="My mistress walks and talks in her sleep most nights", proposition_id="PROP_REGICIDE_DISCOVERED",
                        confidence=0.95, inertia=0.8, established_at_fabula=15500, evidence_strength="strong"),
             ],
         ),
@@ -833,6 +944,20 @@ world_state = WorldStateV1(
                    causality_type="chain_reaction", mechanism="psychological", evidence_strength="moderate",
                    causal_force=4.0, fabula_time=16000),
 
+        # ── WORLD_ → WORLD_ (named-latent forces destabilising one another) ──
+        CausalEdge(source_id="WORLD_SUPERNATURAL_PROPHECY", target_id="WORLD_DIVINE_RIGHT",
+                   causality_type="chain_reaction", mechanism="epistemic", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=2000,
+                   description="The prophecy seduces Macbeth into regicide, weaponising fate against the divine order it transgresses."),
+        CausalEdge(source_id="WORLD_DIVINE_RIGHT", target_id="WORLD_FEUDAL_HIERARCHY",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=6000,
+                   description="Cosmic vengeance for regicide \u2014 madness, sleepwalking, sterile crown \u2014 cascades into the political collapse of the feudal compact."),
+        CausalEdge(source_id="WORLD_SUPERNATURAL_PROPHECY", target_id="WORLD_FEUDAL_HIERARCHY",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=6000,
+                   description="The prophecy directly nominates a usurper, bypassing the feudal succession the hierarchy enforces."),
+
         # ── orphan utterance wirings ──
         CausalEdge(source_id="EVT_WITCHES_PROPHECY_1", target_id="EVT_UTT_PROPHECY_HEATH",
                    causality_type="chain_reaction", mechanism="performative", evidence_strength="strong",
@@ -895,6 +1020,43 @@ world_state = WorldStateV1(
         # ─── placeholder remediation: Lady Macbeth → Duncan covert hostility ───
         CausalEdge(source_id="EVT_LADY_MACBETH_PERSUADES", target_id="ENT_LADY_MACBETH", rel_counterpart_id="ENT_DUNCAN", causality_type="mutation_social", trait_target="affinity", trait_delta=-0.9, mechanism="emotional", evidence_strength="strong", causal_force=8.0, fabula_time=5000, propagation_delay=0),
         CausalEdge(source_id="EVT_LADY_MACBETH_PERSUADES", target_id="ENT_LADY_MACBETH", rel_counterpart_id="ENT_DUNCAN", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.6, mechanism="social", evidence_strength="moderate", causal_force=5.0, fabula_time=5000, propagation_delay=0),
+        # ── auto-backfilled per-axis mutation_social ──
+        CausalEdge(source_id="EVT_CAWDOR_TITLE", target_id="ENT_DUNCAN", rel_counterpart_id="ENT_MACBETH",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.26,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=3000, propagation_delay=0),
+        CausalEdge(source_id="EVT_REBELLION_DEFEATED", target_id="ENT_MACBETH", rel_counterpart_id="ENT_MALCOLM",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.21,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_CAWDOR_TITLE", target_id="ENT_DUNCAN", rel_counterpart_id="ENT_LADY_MACBETH",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.18,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=3000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WITCHES_PROPHECY_1", target_id="ENT_WITCHES", rel_counterpart_id="ENT_MACBETH",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.09,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_REBELLION_DEFEATED", target_id="ENT_FLEANCE", rel_counterpart_id="ENT_MACBETH",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.27,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_REBELLION_DEFEATED", target_id="ENT_MACBETH", rel_counterpart_id="ENT_MALCOLM",  # auto-backfill
+                   causality_type="mutation_social", trait_target="fear", trait_delta=0.17,
+                   mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_REBELLION_DEFEATED", target_id="ENT_FLEANCE", rel_counterpart_id="ENT_MACBETH",  # auto-backfill
+                   causality_type="mutation_social", trait_target="fear", trait_delta=0.27,
+                   mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_CAWDOR_TITLE", target_id="ENT_DUNCAN", rel_counterpart_id="ENT_MACBETH",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.21,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=3000, propagation_delay=0),
+        CausalEdge(source_id="EVT_REBELLION_DEFEATED", target_id="ENT_MACBETH", rel_counterpart_id="ENT_MALCOLM",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.12,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_CAWDOR_TITLE", target_id="ENT_DUNCAN", rel_counterpart_id="ENT_LADY_MACBETH",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.18,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=3000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WITCHES_PROPHECY_1", target_id="ENT_WITCHES", rel_counterpart_id="ENT_MACBETH",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.18,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_REBELLION_DEFEATED", target_id="ENT_FLEANCE", rel_counterpart_id="ENT_MACBETH",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.21,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -955,6 +1117,7 @@ world_state = WorldStateV1(
             category="governance",
             magnitude=TraitVector(value=0.8, inertia=0.7, evidence_strength="strong"),
             affected_domains=["social", "psychological"],
+            proposition_id="PROP_FEUDAL_ORDER_INTACT",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=6000, triggered_by="EVT_DUNCAN_MURDER",
                     magnitude=TraitVector(value=0.5, inertia=0.4, evidence_strength="strong"),
@@ -971,6 +1134,7 @@ world_state = WorldStateV1(
             category="cosmology",
             magnitude=TraitVector(value=0.55, inertia=0.9, evidence_strength="moderate"),
             affected_domains=["psychological", "epistemic"],
+            proposition_id="PROP_PROPHECY_BINDING",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=2000, triggered_by="EVT_WITCHES_PROPHECY_1",
                     magnitude=TraitVector(value=0.7, inertia=0.9, evidence_strength="strong"),
@@ -990,6 +1154,7 @@ world_state = WorldStateV1(
             category="cosmology",
             magnitude=TraitVector(value=0.5, inertia=0.85, evidence_strength="moderate"),
             affected_domains=["psychological", "social"],
+            proposition_id="PROP_DIVINE_ORDER_AVENGES",
         ),
     },
 
@@ -1138,5 +1303,119 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=-0.7, inertia=0.7, evidence_strength="strong", last_updated_fabula=11000),
             },
         ),
+    ],
+
+    # ── PROPOSITIONS ────────────────────────────────────────────────────
+    # Hand-authored proposition registry. Each Concern.proposition_id
+    # above resolves into one of these. ``synthesise_propositions`` may
+    # add further auto-derived PROP_FROM_<EVT_> entries at runtime;
+    # those are additive and do not collide with these named atoms.
+    propositions=[
+        Proposition(proposition_id="PROP_MACBETH_BECOMES_KING", kind="event_occurs",
+                    referent_ids=["EVT_MACBETH_CROWNED", "ENT_MACBETH"],
+                    description="Macbeth seizes the Scottish crown.",
+                    audience_default_prior=0.4, stakes=0.95,
+                    truth_at_fabula={10000: True}),
+        Proposition(proposition_id="PROP_DUNCAN_DEAD", kind="event_occurs",
+                    referent_ids=["EVT_DUNCAN_MURDER", "ENT_DUNCAN"],
+                    description="King Duncan is dead.",
+                    audience_default_prior=0.2, stakes=0.95,
+                    truth_at_fabula={6000: True}),
+        Proposition(proposition_id="PROP_BANQUO_LINE_KINGS", kind="outcome",
+                    referent_ids=["ENT_BANQUO", "ENT_FLEANCE"],
+                    description="Banquo's bloodline will inherit the throne.",
+                    audience_default_prior=0.5, stakes=0.85,
+                    truth_at_fabula={1000: False}),
+        Proposition(proposition_id="PROP_FLEANCE_ALIVE", kind="trait_holds",
+                    referent_ids=["ENT_FLEANCE"],
+                    description="Fleance survives the assassins.",
+                    audience_default_prior=0.5, stakes=0.7,
+                    truth_at_fabula={11000: True}),
+        Proposition(proposition_id="PROP_MACBETH_FOUL_PLAY", kind="trait_holds",
+                    referent_ids=["ENT_MACBETH", "EVT_DUNCAN_MURDER"],
+                    description="Macbeth played foul to win the crown.",
+                    audience_default_prior=0.95, stakes=0.7,
+                    truth_at_fabula={6000: True}),
+        Proposition(proposition_id="PROP_MACDUFF_THREAT", kind="trait_holds",
+                    referent_ids=["ENT_MACDUFF", "ENT_MACBETH"],
+                    description="Macduff is the prophesied threat to Macbeth.",
+                    audience_default_prior=0.6, stakes=0.9,
+                    truth_at_fabula={13000: True}),
+        Proposition(proposition_id="PROP_MACBETH_INVINCIBLE", kind="trait_holds",
+                    referent_ids=["ENT_MACBETH"],
+                    description="No man of woman born can harm Macbeth.",
+                    audience_default_prior=0.3, stakes=0.85,
+                    truth_at_fabula={19000: False}),  # Macduff's caesarean birth refutes
+        Proposition(proposition_id="PROP_BIRNAM_NEVER_MOVES", kind="outcome",
+                    referent_ids=["LOC_BIRNAM_WOOD", "LOC_DUNSINANE_CASTLE"],
+                    description="Birnam Wood will never come to Dunsinane.",
+                    audience_default_prior=0.2, stakes=0.85,
+                    truth_at_fabula={18500: False}),
+        Proposition(proposition_id="PROP_REGICIDE_DISCOVERED", kind="event_occurs",
+                    referent_ids=["EVT_DUNCAN_DISCOVERED_MURDERED"],
+                    description="The regicide is publicly discovered.",
+                    audience_default_prior=0.85, stakes=0.7,
+                    truth_at_fabula={7000: True}),
+        Proposition(proposition_id="PROP_LADY_MACBETH_RESOLVE", kind="trait_holds",
+                    referent_ids=["ENT_LADY_MACBETH"],
+                    description="Lady Macbeth's resolve and sanity hold.",
+                    audience_default_prior=0.6, stakes=0.6,
+                    truth_at_fabula={16000: False, 17000: False}),
+        Proposition(proposition_id="PROP_MARRIAGE_BOND", kind="relation_holds",
+                    referent_ids=["ENT_MACBETH", "ENT_LADY_MACBETH"],
+                    description="The Macbeth marriage bond endures.",
+                    audience_default_prior=0.85, stakes=0.55,
+                    truth_at_fabula={17000: False}),
+        Proposition(proposition_id="PROP_MACDUFF_FAMILY_SAFE", kind="outcome",
+                    referent_ids=["ENT_LADY_MACDUFF", "ENT_MACDUFF"],
+                    description="Macduff's wife and children remain alive at Fife.",
+                    audience_default_prior=0.55, stakes=0.85,
+                    truth_at_fabula={14000: False}),
+        Proposition(proposition_id="PROP_MACDUFF_RETURNS", kind="event_occurs",
+                    referent_ids=["EVT_MACDUFF_FLEES_TO_ENGLAND", "ENT_MACDUFF"],
+                    description="Macduff returns to defend his family.",
+                    audience_default_prior=0.4, stakes=0.7,
+                    truth_at_fabula={14000: False}),
+        Proposition(proposition_id="PROP_MACDUFF_AVENGED", kind="event_occurs",
+                    referent_ids=["EVT_MACBETH_KILLED", "ENT_MACDUFF"],
+                    description="Macduff personally kills Macbeth and avenges his family.",
+                    audience_default_prior=0.6, stakes=0.95,
+                    truth_at_fabula={19000: True}),
+        Proposition(proposition_id="PROP_MACBETH_TYRANT", kind="trait_holds",
+                    referent_ids=["ENT_MACBETH"],
+                    description="Macbeth rules Scotland as a murdering tyrant.",
+                    audience_default_prior=0.9, stakes=0.7,
+                    truth_at_fabula={12000: True}),
+        Proposition(proposition_id="PROP_MALCOLM_KILLED", kind="event_occurs",
+                    referent_ids=["ENT_MALCOLM"],
+                    description="Macbeth's agents assassinate Malcolm.",
+                    audience_default_prior=0.2, stakes=0.85,
+                    truth_at_fabula={20000: False}),
+        Proposition(proposition_id="PROP_MALCOLM_THRONE", kind="event_occurs",
+                    referent_ids=["EVT_MALCOLM_CROWNED", "ENT_MALCOLM"],
+                    description="Malcolm is crowned King of Scotland.",
+                    audience_default_prior=0.5, stakes=0.85,
+                    truth_at_fabula={20000: True}),
+        Proposition(proposition_id="PROP_THANE_LOYALTY", kind="trait_holds",
+                    referent_ids=["ENT_MACBETH", "ENT_BANQUO", "ENT_MACDUFF"],
+                    description="The thanes remain loyal to Duncan's house.",
+                    audience_default_prior=0.85, stakes=0.65,
+                    truth_at_fabula={6000: False}),
+        # Audience-question reifications of the three WORLD_ traits (Pearl-Rung-2 cross-link).
+        Proposition(proposition_id="PROP_FEUDAL_ORDER_INTACT", kind="trait_holds",
+                    referent_ids=["WORLD_FEUDAL_HIERARCHY"],
+                    description="Scotland's feudal compact \u2014 succession through anointed lineage rather than seizure \u2014 still binds.",
+                    audience_default_prior=0.8, stakes=0.85,
+                    truth_at_fabula={6000: False, 20000: True}),
+        Proposition(proposition_id="PROP_PROPHECY_BINDING", kind="trait_holds",
+                    referent_ids=["WORLD_SUPERNATURAL_PROPHECY"],
+                    description="The witches' prophecy is fate, not metaphor: what they foretell will literally come to pass.",
+                    audience_default_prior=0.55, stakes=0.9,
+                    truth_at_fabula={18500: True}),
+        Proposition(proposition_id="PROP_DIVINE_ORDER_AVENGES", kind="trait_holds",
+                    referent_ids=["WORLD_DIVINE_RIGHT"],
+                    description="The cosmos itself avenges regicide \u2014 the murder of an anointed king returns as madness, sleeplessness and ill omens upon its perpetrators.",
+                    audience_default_prior=0.5, stakes=0.7,
+                    truth_at_fabula={17000: True}),
     ],
 )

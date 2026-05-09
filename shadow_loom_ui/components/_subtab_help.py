@@ -58,8 +58,8 @@ _HELP: Dict[str, Tuple[str, str]] = {
             " convergence outcome, and the final prose.\n\n"
             "### When it's empty\n"
             "The trace populates only after a rung-2 or rung-3 query"
-            " runs. Use the **command bar** (Intervene / What-If) or"
-            " the *What-If Workbench* in the Causality tab."
+            " runs. Use the **command bar** (Intervene / What-If)"
+            " to populate it."
         ),
     ),
     "reasoning.belief": (
@@ -359,6 +359,42 @@ _HELP: Dict[str, Tuple[str, str]] = {
             "Information topology: standing channels (capabilities)"
             " and discrete utterances (transmissions) with their"
             " medium, parties, fidelity, and reception."
+        ),
+    ),
+    "social.propositions": (
+        "Propositions \u2014 first-class storyworld facts",
+        (
+            "Each row is a Proposition with kind, current truth"
+            " value at the cursor, audience prior, narrative stakes,"
+            " and counts of concerns and beliefs that reference it."
+        ),
+    ),
+    "social.concerns": (
+        "Concerns \u2014 per-entity desires and fears",
+        (
+            "Each row is one entity's concern about a proposition"
+            " with polarity (desire/fear), salience, optional kind"
+            " label, and whether it is currently active at the"
+            " cursor."
+        ),
+    ),
+    "social.beliefs": (
+        "Beliefs \u2014 who thinks what about whom",
+        (
+            "Each row is one entity's belief about a target"
+            " (entity / object / location): the perceived state,"
+            " confidence, inertia, when it was acquired, and the"
+            " channel or event that delivered it. Filtered to"
+            " beliefs established at or before the fabula cursor."
+        ),
+    ),
+    "social.relationships": (
+        "Relationships \u2014 dyadic affinity, fear, power",
+        (
+            "Each row is one directed RelationshipEdge with the"
+            " three core metrics, evidence strength, the number of"
+            " axes actually observed (vs missing), and the fabula"
+            " time of the most recent update."
         ),
     ),
 }

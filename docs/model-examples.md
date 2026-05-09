@@ -387,6 +387,19 @@ Two further safeguards keep iteration counts bounded:
   `llm_passed=True` instead of regenerating — cosmetic density drift
   isn't worth a full re-render.
 
+> **Validator callout — utterance temporal coherence.** An utterance like
+> `EventNode(event_type='utterance', truth_value='true', fabula_time=2000, target_ids=['EVT_FUTURE_EVENT'])`
+> where `EVT_FUTURE_EVENT.fabula_time=6000` is **rejected** by the ingestion
+> validator (`_validate_time_ordering` Rule 5, severity=error). Two valid
+> alternatives: (a) set `truth_value='performative'` if the utterance
+> posits or predicts the future event (a prophecy or vow — see the Macbeth
+> witches example in §1); or (b) remove the future event from `target_ids`
+> and express the causal link via a
+> `CausalEdge(causality_type='chain_reaction')` in `causal_topology`.
+> On Gone Girl, Amy's `truth_value="false"` diary utterances reference only
+> already-occurred events; their *effect* on Nick's future actions is wired
+> through `chain_reaction` edges, not through `target_ids`.
+
 ---
 
 ## 6. 1984 — global traits and ambient propagation

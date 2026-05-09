@@ -133,20 +133,24 @@ def _render_card(
                 ui.badge(
                     f"{conf_pct}% confidence", color=conf_color,
                 ).props("dense outline")
+                from shadow_loom_ui.components._pearl_chip import (
+                    render_pearl_chip,
+                )
+                render_pearl_chip(qtype)
                 from shadow_loom_ui.components.help_popover import (
                     help_popover,
                 )
                 help_popover(
                     title="Answer panel — read-only Q&A responses",
                     body_md=(
-                        "Surfaces the latest **Ask** or"
-                        " **Interrogation** result. These modes are"
-                        " read-only: they query the world model without"
-                        " generating prose or saving a version, so the"
-                        " Story tab and version tree stay unchanged.\n\n"
+                        "Surfaces the latest **Interrogation** result."
+                        " Interrogation is read-only: it queries the"
+                        " world model without generating prose or"
+                        " saving a version, so the Story tab and"
+                        " version tree stay unchanged.\n\n"
                         "### Card layout\n"
-                        "- **Mode badge** — *Ask* (general Q&A) or"
-                        " *Interrogation* (diagnostic causal Q&A).\n"
+                        "- **Mode badge** — *Interrogation*"
+                        " (diagnostic causal Q&A).\n"
                         "- **Confidence** — how well the world state"
                         " supports the claim.\n"
                         "  - 🟢 **Green ≥ 70%** — directly stated in"
@@ -176,13 +180,23 @@ def _render_card(
                     tooltip="What does this panel show?",
                 )
                 ui.space()
+                from shadow_loom_ui.components._copy_button import (
+                    copy_button,
+                )
+                copy_button(
+                    card.get("claim") or "",
+                    tooltip="Copy answer to clipboard",
+                )
                 def _do_dismiss():
                     last_result["value"] = None
                     rerender()
                 ui.button(
                     icon="close",
                     on_click=_do_dismiss,
-                ).props("flat dense round size=sm").tooltip("Dismiss")
+                ).props(
+                    'flat dense round size=sm '
+                    'aria-label="Dismiss answer"'
+                ).tooltip("Dismiss")
 
             claim = card.get("claim") or "(no answer returned)"
             safe_markdown(claim).classes(

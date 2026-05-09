@@ -29,6 +29,7 @@ from shadow_loom.models import (
     CausalEdge, SpatialEdge, RelationshipEdge, RelationshipMetric, TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
     GlobalTrait, WorldTraitSnapshot,
     NarrativeStyle,
+    Concern, Proposition, ConcernSnapshot, PropositionSnapshot,
 )
 
 world_state = WorldStateV1(
@@ -191,7 +192,24 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_TUMNUS", perceived_state="Tumnus is my friend and I must help him",
+                       proposition_id="PROP_TUMNUS_RESCUED",
                        confidence=0.9, inertia=0.6, evidence_strength="strong"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_LUCY_DESIRES_TUMNUS_SAFE", proposition_id="PROP_TUMNUS_RESCUED",
+                        polarity="desire", kind="loyalty", salience=0.92,
+                        activation_fabula_window=[3000, 14500]),
+                Concern(concern_id="CCN_LUCY_DESIRES_BELIEVED", proposition_id="PROP_NARNIA_IS_REAL",
+                        polarity="desire", kind="belonging", salience=0.88,
+                        activation_fabula_window=[2000, 6000]),
+                Concern(concern_id="CCN_LUCY_FEARS_ASLAN_DEAD", proposition_id="PROP_ASLAN_LIVES",
+                        polarity="fear", kind="loss", salience=0.95,
+                        activation_fabula_window=[17000, 18000],
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=18000, triggered_by="EVT_ASLAN_RESURRECTION",
+                                            salience=0.0, polarity="desire", kind="hope",
+                                            counter_concern_ids=[]),
+                        ]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=2000, triggered_by="EVT_LUCY_ENTERS_NARNIA",
@@ -228,7 +246,26 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_LUCY", perceived_state="Lucy is making up stories to get attention",
+                       proposition_id="PROP_NARNIA_IS_REAL",
                        confidence=0.6, inertia=0.4, evidence_strength="moderate"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_EDMUND_DESIRES_TURKISH_DELIGHT", proposition_id="PROP_WITCH_REWARDS_EDMUND",
+                        polarity="desire", kind="obsession", salience=0.95,
+                        activation_fabula_window=[4000, 10000],
+                        counter_concern_ids=["CCN_EDMUND_FEARS_BETRAYAL_GUILT"],
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=10000, triggered_by="EVT_EDMUND_BETRAYS",
+                                            salience=0.3, polarity="fear", kind="shame",
+                                            counter_concern_ids=["CCN_EDMUND_DESIRES_REDEMPTION"]),
+                        ]),
+                Concern(concern_id="CCN_EDMUND_FEARS_BETRAYAL_GUILT", proposition_id="PROP_EDMUND_BETRAYS_SIBLINGS",
+                        polarity="fear", kind="shame", salience=0.5,
+                        activation_fabula_window=[4000, 10000],
+                        counter_concern_ids=["CCN_EDMUND_DESIRES_TURKISH_DELIGHT"]),
+                Concern(concern_id="CCN_EDMUND_DESIRES_REDEMPTION", proposition_id="PROP_EDMUND_REDEEMED",
+                        polarity="desire", kind="redemption", salience=0.9,
+                        activation_fabula_window=[10000, 19000]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=4000, triggered_by="EVT_EDMUND_TURKISH_DELIGHT",
@@ -298,7 +335,18 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_WHITE_WITCH", perceived_state="The Witch will punish me if I disobey her orders",
+                       proposition_id="PROP_WITCH_PUNISHES_DISLOYALTY",
                        confidence=0.9, inertia=0.6, evidence_strength="strong"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_TUMNUS_DESIRES_SPARE_LUCY", proposition_id="PROP_TUMNUS_SPARES_LUCY",
+                        polarity="desire", kind="compassion", salience=0.9,
+                        activation_fabula_window=[2500, 3000],
+                        counter_concern_ids=["CCN_TUMNUS_FEARS_WITCH"]),
+                Concern(concern_id="CCN_TUMNUS_FEARS_WITCH", proposition_id="PROP_WITCH_PUNISHES_DISLOYALTY",
+                        polarity="fear", kind="survival", salience=0.85,
+                        activation_fabula_window=[1, 14500],
+                        counter_concern_ids=["CCN_TUMNUS_DESIRES_SPARE_LUCY"]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=3000, triggered_by="EVT_TUMNUS_SPARES_LUCY",
@@ -323,9 +371,29 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="WORLD_PROPHECY_FOUR_THRONES", perceived_state="Four humans threaten my reign and must be eliminated",
+                       proposition_id="PROP_PROPHECY_FULFILLED",
                        confidence=0.95, inertia=0.8, evidence_strength="strong"),
             ],
             constants=["magical_power"],
+            concerns=[
+                Concern(concern_id="CCN_WITCH_DESIRES_RULE_NARNIA", proposition_id="PROP_WITCH_RULES_NARNIA",
+                        polarity="desire", kind="ambition", salience=0.98,
+                        activation_fabula_window=[1, 20000],
+                        counter_concern_ids=["CCN_WITCH_FEARS_PROPHECY"]),
+                Concern(concern_id="CCN_WITCH_FEARS_PROPHECY", proposition_id="PROP_PROPHECY_FULFILLED",
+                        polarity="fear", kind="fear", salience=0.9,
+                        activation_fabula_window=[1, 20000],
+                        counter_concern_ids=["CCN_WITCH_DESIRES_RULE_NARNIA"],
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=9000, triggered_by="EVT_BEAVERS_EXPLAIN_ASLAN",
+                                            salience=0.95),
+                            ConcernSnapshot(fabula_time=18000, triggered_by="EVT_ASLAN_RESURRECTION",
+                                            salience=0.99),
+                        ]),
+                Concern(concern_id="CCN_WITCH_DESIRES_KILL_EDMUND", proposition_id="PROP_EDMUND_DIES",
+                        polarity="desire", kind="vengeance", salience=0.85,
+                        activation_fabula_window=[10000, 16000]),
+            ],
             state_timeline=[
                 # First crack in the Witch's confidence: the Beavers' news that
                 # Aslan is on the move. Anchors the EVT_BEAVERS_EXPLAIN_ASLAN
@@ -358,6 +426,14 @@ world_state = WorldStateV1(
             },
             beliefs=[],
             constants=["divine_nature", "resurrection_power"],
+            concerns=[
+                Concern(concern_id="CCN_ASLAN_DESIRES_REDEEM_EDMUND", proposition_id="PROP_EDMUND_REDEEMED",
+                        polarity="desire", kind="sacrifice", salience=0.97,
+                        activation_fabula_window=[14000, 18000]),
+                Concern(concern_id="CCN_ASLAN_DESIRES_FREE_NARNIA", proposition_id="PROP_NARNIA_FREED",
+                        polarity="desire", kind="justice", salience=0.99,
+                        activation_fabula_window=[1, 20000]),
+            ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=16000, triggered_by="EVT_ASLAN_PACT",
                     traits={
@@ -383,7 +459,13 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_ASLAN", perceived_state="Aslan is the true king of Narnia",
+                       proposition_id="PROP_ASLAN_TRUE_KING",
                        confidence=0.95, inertia=0.85, evidence_strength="strong"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_BEAVER_DESIRES_NARNIA_FREED", proposition_id="PROP_NARNIA_FREED",
+                        polarity="desire", kind="loyalty", salience=0.93,
+                        activation_fabula_window=[1, 20000]),
             ],
         ),
         "ENT_MRS_BEAVER": Entity(
@@ -427,7 +509,13 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_LUCY", perceived_state="Lucy is telling the truth about Narnia",
+                       proposition_id="PROP_NARNIA_IS_REAL",
                        confidence=0.8, inertia=0.6, established_at_fabula=5500, evidence_strength="moderate"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_KIRKE_DESIRES_TRUTH_BELIEVED", proposition_id="PROP_NARNIA_IS_REAL",
+                        polarity="desire", kind="justice", salience=0.7,
+                        activation_fabula_window=[5500, 21000]),
             ],
         ),
         "ENT_WITCH_DWARF": Entity(
@@ -529,7 +617,7 @@ world_state = WorldStateV1(
         EventNode(id="EVT_UTT_TUMNUS_CONFESSION", event_type="utterance",
                   description="Tumnus confesses to Lucy that he is a servant of the White Witch who was supposed to capture her.",
                   speaker_id="ENT_TUMNUS", addressee_ids=["ENT_LUCY"],
-                  actor_ids=["ENT_TUMNUS"], target_ids=["EVT_TUMNUS_SPARES_LUCY"],
+                  actor_ids=["ENT_TUMNUS"], target_ids=["ENT_WHITE_WITCH", "ENT_TUMNUS"],
                   content="I am a kidnapper for the White Witch, and I was supposed to betray you — but I cannot do it.",
                   via_channel_id=None, truth_value="true",
                   fabula_time=2800, syuzhet_index=4),
@@ -543,9 +631,9 @@ world_state = WorldStateV1(
         EventNode(id="EVT_UTT_BEAVERS_PROPHECY", event_type="utterance",
                   description="Mr. Beaver tells the children about the prophecy that four humans will sit on the thrones at Cair Paravel.",
                   speaker_id="ENT_MR_BEAVER", addressee_ids=["ENT_LUCY", "ENT_PETER", "ENT_SUSAN"],
-                  actor_ids=["ENT_MR_BEAVER"], target_ids=["EVT_BEAVERS_EXPLAIN_ASLAN"],
+                  actor_ids=["ENT_MR_BEAVER"], target_ids=["ENT_LUCY", "ENT_PETER", "ENT_SUSAN", "ENT_EDMUND"],
                   content="When Adam's flesh and Adam's bone sits at Cair Paravel in throne, the evil time will be over and done.",
-                  via_channel_id="CHN_BEAVER_FIRESIDE", truth_value="true",
+                  via_channel_id="CHN_BEAVER_FIRESIDE", truth_value="performative",
                   fabula_time=9000, syuzhet_index=14),
         EventNode(id="EVT_UTT_EDMUND_WARNS_WITCH", event_type="utterance",
                   description="Edmund betrays his siblings by reporting to the Witch that Aslan has returned and the children plan to meet him.",
@@ -914,6 +1002,64 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_ASLAN_PACT", target_id="EVT_UTT_ASLAN_SECRET_PACT",
                    causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
                    causal_force=5.0, fabula_time=16000, propagation_delay=0),
+        # ── auto-backfilled per-axis mutation_social ──
+        CausalEdge(source_id="EVT_EDMUND_TURKISH_DELIGHT", target_id="ENT_WHITE_WITCH", rel_counterpart_id="ENT_EDMUND",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.18,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=4000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PEVENSIES_ARRIVE", target_id="ENT_EDMUND", rel_counterpart_id="ENT_SUSAN",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.14,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
+        CausalEdge(source_id="EVT_EDMUND_RESCUED", target_id="ENT_ASLAN", rel_counterpart_id="ENT_LUCY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.3,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=14000, propagation_delay=0),
+        CausalEdge(source_id="EVT_BATTLE", target_id="ENT_ASLAN", rel_counterpart_id="ENT_PETER",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.26,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=19000, propagation_delay=0),
+        CausalEdge(source_id="EVT_EDMUND_RESCUED", target_id="ENT_ASLAN", rel_counterpart_id="ENT_SUSAN",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.26,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=14000, propagation_delay=0),
+        CausalEdge(source_id="EVT_EDMUND_RESCUED", target_id="ENT_ASLAN", rel_counterpart_id="ENT_EDMUND",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.3,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=14000, propagation_delay=0),
+        CausalEdge(source_id="EVT_ASLAN_PACT", target_id="ENT_ASLAN", rel_counterpart_id="ENT_WHITE_WITCH",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.3,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=16000, propagation_delay=0),
+        CausalEdge(source_id="EVT_EDMUND_TURKISH_DELIGHT", target_id="ENT_WHITE_WITCH", rel_counterpart_id="ENT_EDMUND",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.24,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=4000, propagation_delay=0),
+        CausalEdge(source_id="EVT_EDMUND_RESCUED", target_id="ENT_ASLAN", rel_counterpart_id="ENT_LUCY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.24,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=14000, propagation_delay=0),
+        CausalEdge(source_id="EVT_BATTLE", target_id="ENT_ASLAN", rel_counterpart_id="ENT_PETER",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.21,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=19000, propagation_delay=0),
+        CausalEdge(source_id="EVT_EDMUND_RESCUED", target_id="ENT_ASLAN", rel_counterpart_id="ENT_SUSAN",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.21,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=14000, propagation_delay=0),
+        CausalEdge(source_id="EVT_EDMUND_RESCUED", target_id="ENT_ASLAN", rel_counterpart_id="ENT_EDMUND",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.24,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=14000, propagation_delay=0),
+        CausalEdge(source_id="EVT_ASLAN_PACT", target_id="ENT_ASLAN", rel_counterpart_id="ENT_WHITE_WITCH",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.15,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=16000, propagation_delay=0),
+
+        # ── WORLD_ → WORLD_ (named-latent forces destabilising one another) ──
+        CausalEdge(source_id="WORLD_DEEP_MAGIC", target_id="WORLD_DEEPER_MAGIC",
+                   causality_type="chain_reaction", mechanism="epistemic", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=17000,
+                   description="The Deep Magic's demand for traitor's blood is exactly the lawful trigger that activates the older Deeper Magic — willing innocent sacrifice runs death backward."),
+        CausalEdge(source_id="WORLD_DEEPER_MAGIC", target_id="WORLD_ENCHANTED_WINTER",
+                   causality_type="chain_reaction", mechanism="physical", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=18000,
+                   description="Aslan's resurrection by the Deeper Magic is the cosmological event that breaks the Witch's grip on the seasons."),
+        CausalEdge(source_id="WORLD_PROPHECY_FOUR_THRONES", target_id="WORLD_ENCHANTED_WINTER",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=11500,
+                   description="The arrival of the four children begins fulfilling the prophecy whose completion ends the Witch's winter — Father Christmas's return is the first thaw."),
+        CausalEdge(source_id="WORLD_ENCHANTED_WINTER", target_id="WORLD_DEEP_MAGIC",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=10000,
+                   description="The Witch's hold on Narnia (perpetual winter) is the political precondition for her enforcement of the Deep Magic's claim on traitors."),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -954,6 +1100,7 @@ world_state = WorldStateV1(
             category="cosmology",
             magnitude=TraitVector(value=0.85, inertia=0.9, evidence_strength="strong"),
             affected_domains=["social", "epistemic"],
+            proposition_id="PROP_DEEP_MAGIC_DEMANDS_TRAITOR_BLOOD",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=15000, triggered_by="EVT_WITCH_DEMANDS_EDMUND",
                     magnitude=TraitVector(value=0.95, inertia=0.95, evidence_strength="strong"),
@@ -969,7 +1116,8 @@ world_state = WorldStateV1(
             description="Secret law older than the Deep Magic: a willing innocent sacrifice reverses death. Drives Aslan's resurrection.",
             category="cosmology",
             magnitude=TraitVector(value=0.6, inertia=0.95, evidence_strength="moderate"),
-            affected_domains=["supernatural", "psychological"],
+            affected_domains=["psychological", "epistemic"],
+            proposition_id="PROP_ASLAN_LIVES",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=18000, triggered_by="EVT_ASLAN_RESURRECTION",
                     magnitude=TraitVector(value=0.95, inertia=0.95, evidence_strength="strong"),
@@ -983,6 +1131,7 @@ world_state = WorldStateV1(
             category="cosmology",
             magnitude=TraitVector(value=0.7, inertia=0.85, evidence_strength="strong"),
             affected_domains=["social", "psychological"],
+            proposition_id="PROP_PROPHECY_FULFILLED",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=21000, triggered_by="EVT_CORONATION",
                     magnitude=TraitVector(value=0.95, inertia=0.9, evidence_strength="strong"),
@@ -995,7 +1144,8 @@ world_state = WorldStateV1(
             description="The Witch's spell: always winter, never Christmas. Drives the frozen landscape and oppressive atmosphere until Aslan's return breaks it.",
             category="magic_system",
             magnitude=TraitVector(value=0.9, inertia=0.75, evidence_strength="strong"),
-            affected_domains=["environmental", "psychological"],
+            affected_domains=["physical", "psychological"],
+            proposition_id="PROP_NARNIA_FREED",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=11500, triggered_by="EVT_FATHER_CHRISTMAS_GIFTS",
                     magnitude=TraitVector(value=0.5, inertia=0.6, evidence_strength="strong"),
@@ -1199,5 +1349,80 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=-0.5, inertia=0.7, evidence_strength="strong", last_updated_fabula=15000),
             },
         ),
+    ],
+
+    # ── PROPOSITIONS ────────────────────────────────────────────────────
+    propositions=[
+        Proposition(proposition_id="PROP_NARNIA_IS_REAL", kind="trait_holds",
+                    referent_ids=["LOC_LANTERN_WASTE", "OBJ_WARDROBE_PORTAL"],
+                    description="Narnia is a real place reached through the wardrobe.",
+                    audience_default_prior=0.6, stakes=0.7,
+                    truth_at_fabula={2000: True}),
+        Proposition(proposition_id="PROP_TUMNUS_SPARES_LUCY", kind="event_occurs",
+                    referent_ids=["ENT_TUMNUS", "ENT_LUCY"],
+                    description="Tumnus refuses to hand Lucy over to the Witch.",
+                    audience_default_prior=0.55, stakes=0.75,
+                    truth_at_fabula={3000: True}),
+        Proposition(proposition_id="PROP_TUMNUS_RESCUED", kind="outcome",
+                    referent_ids=["ENT_TUMNUS", "ENT_LUCY", "ENT_ASLAN"],
+                    description="Tumnus is rescued from petrification.",
+                    audience_default_prior=0.5, stakes=0.65,
+                    truth_at_fabula={14500: True}),
+        Proposition(proposition_id="PROP_WITCH_PUNISHES_DISLOYALTY", kind="trait_holds",
+                    referent_ids=["ENT_WHITE_WITCH"],
+                    description="The White Witch punishes anyone who disobeys her.",
+                    audience_default_prior=0.85, stakes=0.65,
+                    truth_at_fabula={1: True}),
+        Proposition(proposition_id="PROP_WITCH_REWARDS_EDMUND", kind="outcome",
+                    referent_ids=["ENT_WHITE_WITCH", "ENT_EDMUND", "OBJ_TURKISH_DELIGHT"],
+                    description="The Witch will reward Edmund with kingship and Turkish Delight.",
+                    audience_default_prior=0.4, stakes=0.7,
+                    truth_at_fabula={10000: False}),
+        Proposition(proposition_id="PROP_EDMUND_BETRAYS_SIBLINGS", kind="event_occurs",
+                    referent_ids=["ENT_EDMUND", "ENT_LUCY", "ENT_PETER", "ENT_SUSAN"],
+                    description="Edmund betrays his siblings to the Witch.",
+                    audience_default_prior=0.4, stakes=0.85,
+                    truth_at_fabula={10000: True}),
+        Proposition(proposition_id="PROP_EDMUND_REDEEMED", kind="outcome",
+                    referent_ids=["ENT_EDMUND", "ENT_ASLAN"],
+                    description="Edmund is redeemed and restored to his siblings.",
+                    audience_default_prior=0.5, stakes=0.9,
+                    truth_at_fabula={14000: True}),
+        Proposition(proposition_id="PROP_EDMUND_DIES", kind="event_occurs",
+                    referent_ids=["ENT_EDMUND", "ENT_WHITE_WITCH"],
+                    description="Edmund is killed by the Witch under the Deep Magic.",
+                    audience_default_prior=0.25, stakes=1.0,
+                    truth_at_fabula={16000: False}),
+        Proposition(proposition_id="PROP_PROPHECY_FULFILLED", kind="outcome",
+                    referent_ids=["WORLD_PROPHECY_FOUR_THRONES", "ENT_LUCY", "ENT_EDMUND", "ENT_PETER", "ENT_SUSAN"],
+                    description="Four humans take the four thrones at Cair Paravel.",
+                    audience_default_prior=0.4, stakes=0.95,
+                    truth_at_fabula={20500: True}),
+        Proposition(proposition_id="PROP_WITCH_RULES_NARNIA", kind="trait_holds",
+                    referent_ids=["ENT_WHITE_WITCH", "WORLD_ALWAYS_WINTER"],
+                    description="The Witch's rule and her endless winter persist over Narnia.",
+                    audience_default_prior=0.7, stakes=0.95,
+                    truth_at_fabula={20000: False}),
+        Proposition(proposition_id="PROP_NARNIA_FREED", kind="outcome",
+                    referent_ids=["WORLD_ALWAYS_WINTER", "ENT_ASLAN", "LOC_LANTERN_WASTE"],
+                    description="Narnia is freed from the Witch's winter.",
+                    audience_default_prior=0.5, stakes=1.0,
+                    truth_at_fabula={20000: True}),
+        Proposition(proposition_id="PROP_ASLAN_LIVES", kind="trait_holds",
+                    referent_ids=["ENT_ASLAN"],
+                    description="Aslan is alive.",
+                    audience_default_prior=0.7, stakes=1.0,
+                    truth_at_fabula={17000: False, 18000: True}),
+        Proposition(proposition_id="PROP_ASLAN_TRUE_KING", kind="identity_is",
+                    referent_ids=["ENT_ASLAN"],
+                    description="Aslan is the true king of Narnia.",
+                    audience_default_prior=0.7, stakes=0.7,
+                    truth_at_fabula={1: True}),
+        # WORLD_ trait Pearl-Rung-2 reification (Deep Magic).
+        Proposition(proposition_id="PROP_DEEP_MAGIC_DEMANDS_TRAITOR_BLOOD", kind="trait_holds",
+                    referent_ids=["WORLD_DEEP_MAGIC", "ENT_EDMUND", "ENT_WHITE_WITCH"],
+                    description="The Deep Magic carved on the Stone Table claims every traitor's life for the Witch — the law is absolute until the Deeper Magic supersedes it.",
+                    audience_default_prior=0.65, stakes=0.95,
+                    truth_at_fabula={15000: True, 18000: False}),
     ],
 )

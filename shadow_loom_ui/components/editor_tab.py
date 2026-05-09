@@ -95,6 +95,12 @@ def build_editor_tab(state: AppState) -> None:
         )
         _render_editor(state, container)
 
+        # ── Ingestion warnings panel (moved from the removed Causality tab)
+        from shadow_loom_ui.components.causality_tab import (
+            _build_ingestion_warnings_panel,
+        )
+        _build_ingestion_warnings_panel(state)
+
         # Re-render on project / version swaps so the textarea always
         # reflects the live world.
         state.on(

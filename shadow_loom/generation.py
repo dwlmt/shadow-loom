@@ -36,9 +36,20 @@ from shadow_loom.directive_assembly import (
     CounterfactualBranch,
     CreativeBrief,
     EntanglementPair,
+    FearProfile,
+    GriefProfile,
     InterventionMechanism,
+    IronyProfile,
+    JoyProfile,
+    LoveProfile,
+    MysteryProfile,
+    RageProfile,
+    RegretProfile,
     RenderingDirective,
+    SurpriseProfile,
     ThreatProximity,
+    build_false_proposition_constraints,
+    build_prevented_event_constraints,
     compute_hidden_channels_for,
 )
 from shadow_loom.models import WorldStateV1
@@ -76,13 +87,22 @@ class GenerationConfig(BaseModel):
         description="Max retries for output validation.",
     )
     max_tokens: int = Field(
-        default=64000,
+        default=16000,
         description="Maximum tokens in the generated prose.",
     )
     temperature: float = Field(
         default=0.7,
         description="Sampling temperature for creative prose.",
     )
+    # Scene-context trimming — mirrors GenerationSettings fields.
+    scene_context_recent_events: int = Field(default=10)
+    scene_context_max_beliefs: int = Field(default=4)
+    scene_context_loc_desc_chars: int = Field(default=160)
+    scene_context_obj_desc_chars: int = Field(default=120)
+    scene_context_utterance_chars: int = Field(default=200)
+    preceding_prose_max_chars: int = Field(default=3000)
+    answer_max_entities: int = Field(default=30)
+    answer_max_events: int = Field(default=40)
 
     @model_validator(mode="before")
     @classmethod
@@ -275,6 +295,319 @@ def _format_threat_proximity(tp: ThreatProximity) -> str:
     lines.append(f"  Damage potential: {tp.damage_potential:.1f}/10")
     if tp.spatial_distance is not None:
         lines.append(f"  Spatial distance: {tp.spatial_distance} hops")
+
+    # Phase-8: Rung-2 typed Pearl-rung surgery context. Extends the
+    # threat block (it is the closest renderer-visible surface to a
+    # rung-2 brief) with the typed do_target kind so the prose
+    # foregrounds the right epistemic / ontic register.
+    do_target = getattr(tp, "do_target", None)
+    if do_target is not None:
+        kind = getattr(do_target, "target_kind", None)
+        if kind == "proposition":
+            lines.append(
+                f"  RUNG-2 SURGERY KIND: proposition \u2014 the world's "
+                f"truth about PROP {getattr(do_target, 'proposition_id', '?')} "
+                f"was clamped to {getattr(do_target, 'truth', '?')}. Render "
+                f"the threat as it stands *under that ontic clamp*."
+            )
+        elif kind == "belief":
+            lines.append(
+                f"  RUNG-2 SURGERY KIND: belief \u2014 "
+                f"{getattr(do_target, 'holder_id', '?')}'s confidence "
+                f"about PROP {getattr(do_target, 'proposition_id', '?')} "
+                f"was clamped to {getattr(do_target, 'confidence', '?')}. "
+                f"Render the threat from that holder's *epistemic* POV."
+            )
+        elif kind == "concern":
+            lines.append(
+                f"  RUNG-2 SURGERY KIND: concern \u2014 "
+                f"{getattr(do_target, 'holder_id', '?')}'s concern "
+                f"{getattr(do_target, 'concern_id', '?')} was clamped. "
+                f"Render the threat as it appears once that *motivational* "
+                f"weight is removed."
+            )
+        elif kind == "trait":
+            lines.append(
+                f"  RUNG-2 SURGERY KIND: trait \u2014 "
+                f"{getattr(do_target, 'holder_id', '?')} was clamped to "
+                f"{getattr(do_target, 'trait_name', '?')}="
+                f"{getattr(do_target, 'value', '?')}."
+            )
+        elif kind == "event":
+            occurred = getattr(do_target, "occurred", None)
+            verb = "occurred" if occurred else "did not occur"
+            lines.append(
+                f"  RUNG-2 SURGERY KIND: event \u2014 EVT "
+                f"{getattr(do_target, 'event_id', '?')} {verb}."
+            )
+
+    if getattr(tp, "affected_propositions", None):
+        lines.append(
+            "  AFFECTED PROPOSITIONS (truth flipped post-intervention): "
+            + ", ".join(tp.affected_propositions)
+        )
+    if getattr(tp, "affected_beliefs", None):
+        lines.append(
+            "  AFFECTED BELIEFS (confidence shifted): "
+            + ", ".join(tp.affected_beliefs)
+        )
+    if getattr(tp, "affected_concerns", None):
+        lines.append(
+            "  AFFECTED CONCERNS (satisfaction or salience shifted): "
+            + ", ".join(tp.affected_concerns)
+        )
+    return "\n".join(lines)
+
+
+def _format_surprise_profile(sp: SurpriseProfile) -> str:
+    """Render the unified-affect surprise payload for the renderer.
+
+    Theory:
+      * Itti & Baldi (2009) Bayesian surprise — KL divergence between
+        the audience's belief at the prior anchor and now. Drives
+        the headline ``score``.
+      * Tan (1996) / Ortony, Clore & Collins (1988) — surprise has
+        valence relative to the experiencer's concerns. Pleasant
+        vs. unpleasant split tells the renderer whether to register
+        the moment as windfall or twist.
+      * Per-focal weighting — each character's surprise is the KL
+        contribution scaled by their :class:`Concern` salience for
+        the proposition. Surfaces the character whose stake is
+        highest even if the audience's raw KL is dominated by
+        lower-stakes shifts.
+    The renderer uses the listed propositions to know *what*
+    shifted; the score itself is diagnostic and intentionally NOT
+    named in the prose (Rule 10).
+    """
+    lines = [
+        "SURPRISE (Itti-Baldi Bayesian belief revision):",
+        f"  Score: {sp.score:.3f}  (KL divergence; higher = stronger reveal)",
+    ]
+    if sp.fabula_t is not None and sp.prior_fabula_t is not None:
+        lines.append(
+            f"  Anchor shift: fabula_t {sp.prior_fabula_t} \u2192 {sp.fabula_t}"
+        )
+    if sp.pleasant_score > 0 or sp.unpleasant_score > 0:
+        lines.append(
+            f"  Valence (Tan/Ortony): pleasant={sp.pleasant_score:.3f}  "
+            f"unpleasant={sp.unpleasant_score:.3f}"
+        )
+        if sp.unpleasant_score > sp.pleasant_score * 1.5:
+            lines.append(
+                "  Render as: TWIST register — the revelation cuts "
+                "against the focal's hopes; let the prose register "
+                "the cost (small physical recoil, blunt syntax) "
+                "without commentary."
+            )
+        elif sp.pleasant_score > sp.unpleasant_score * 1.5:
+            lines.append(
+                "  Render as: WINDFALL register — the revelation "
+                "resolves a feared proposition or confirms a desired "
+                "one; the focal's body should ease before the mind "
+                "catches up."
+            )
+    if sp.per_focal_score:
+        ranked = sorted(
+            sp.per_focal_score.items(), key=lambda kv: -kv[1],
+        )[:3]
+        if any(v > 0 for _, v in ranked):
+            ladder = ", ".join(f"{eid}={v:.2f}" for eid, v in ranked)
+            lines.append(f"  Per-focal stake-weighted surprise: {ladder}")
+    if sp.revealed_descriptions:
+        lines.append("  Audience just learned:")
+        for d in sp.revealed_descriptions:
+            lines.append(f"    \u2022 {d}")
+        lines.append(
+            "  Render as: prior expectation flowing comfortably, then a "
+            "syntactic pivot at the moment one of the above lands. The "
+            "focal character must SHOW the reorientation through "
+            "behaviour, not commentary."
+        )
+    elif sp.revealed_proposition_ids:
+        lines.append("  Revealed propositions: " + ", ".join(sp.revealed_proposition_ids))
+    return "\n".join(lines)
+
+
+def _format_irony_profile(ip: IronyProfile) -> str:
+    """Render the unified-affect dramatic-irony payload for the renderer.
+
+    Theory:
+      * Pfister (1977/1988) / Sternberg (1978) dramatic irony as
+        asymmetric KL between audience and focal belief over the
+        same propositions. ``audience_advantage`` is classical
+        dramatic irony; ``focal_advantage`` is its dual
+        (audience-side mystery).
+      * Sternberg three-mode split by ``Proposition.kind``:
+        suspense-irony (outcome), curiosity-irony (identity/
+        relation), surprise-irony (event/trait).
+      * Pfister felicity-conditions \u2014 ``concern_weighted_score``
+        scales each per-prop KL by the focal's :class:`Concern`
+        salience so irony only counts where the focal *cares*.
+      * Wall (1983) discrepant-awareness gradient \u2014
+        ``most_ironised_entity_id`` flags the character whose
+        ignorance the audience feels most acutely; renderer should
+        consider spotlighting them.
+    """
+    lines = [
+        "DRAMATIC IRONY (Pfister/Sternberg audience\u2194focal divergence):",
+    ]
+    if ip.focal_id:
+        lines.append(f"  Focal: {ip.focal_id}")
+    if ip.fabula_t is not None:
+        lines.append(f"  Fabula anchor: {ip.fabula_t}")
+    lines.append(
+        f"  KL(audience \u2016 focal): {ip.audience_advantage_score:.3f}  "
+        f"(audience knows more)"
+    )
+    lines.append(
+        f"  KL(focal \u2016 audience): {ip.focal_advantage_score:.3f}  "
+        f"(focal knows more)"
+    )
+    modes = {
+        "suspense": ip.suspense_irony_score,
+        "curiosity": ip.curiosity_irony_score,
+        "surprise": ip.surprise_irony_score,
+    }
+    if any(v > 0 for v in modes.values()):
+        lines.append(
+            "  Sternberg modes (audience-advantage breakdown): "
+            f"suspense={modes['suspense']:.2f} "
+            f"curiosity={modes['curiosity']:.2f} "
+            f"surprise={modes['surprise']:.2f}"
+        )
+        dominant = max(modes.items(), key=lambda kv: kv[1])
+        if dominant[1] > 0:
+            hints = {
+                "suspense": (
+                    "Render as SUSPENSE-IRONY: audience knows the "
+                    "OUTCOME the focal is walking into; let the "
+                    "focal's plans accumulate weight the reader can "
+                    "feel about to collapse."
+                ),
+                "curiosity": (
+                    "Render as CURIOSITY-IRONY: audience knows WHO/"
+                    "WHAT someone is; let the focal's misreadings "
+                    "of identity/relation produce the friction."
+                ),
+                "surprise": (
+                    "Render as SURPRISE-IRONY: audience holds a fact "
+                    "the focal will soon discover; build the moment "
+                    "so the reader can already feel the focal's "
+                    "forthcoming reorientation."
+                ),
+            }
+            lines.append(f"  {hints[dominant[0]]}")
+    if ip.concern_weighted_score > 0:
+        lines.append(
+            f"  Concern-weighted (Pfister felicity): "
+            f"{ip.concern_weighted_score:.3f}  "
+            "(irony scaled by what the focal actually cares about)"
+        )
+    if (
+        ip.most_ironised_entity_id
+        and ip.most_ironised_entity_id != ip.focal_id
+        and ip.most_ironised_score > ip.audience_advantage_score * 1.25
+    ):
+        lines.append(
+            f"  Wall gradient: {ip.most_ironised_entity_id} is "
+            f"MORE ironised ({ip.most_ironised_score:.2f}) than "
+            f"the focal. Consider letting them carry a beat."
+        )
+    if ip.audience_advantage_propositions:
+        lines.append("  AUDIENCE knows but FOCAL does not:")
+        for d in ip.audience_advantage_propositions:
+            lines.append(f"    \u2022 {d}")
+        lines.append(
+            "  Render as: focal acting on a false sense of security \u2014 "
+            "decisions, plans, dialogue \u2014 against on-page facts the "
+            "focal has not connected. The focal MUST NOT learn these."
+        )
+    if ip.focal_advantage_propositions:
+        lines.append("  FOCAL knows but AUDIENCE does not:")
+        for d in ip.focal_advantage_propositions:
+            lines.append(f"    \u2022 {d}")
+        lines.append(
+            "  Render as: private interior texture or behavioural "
+            "tells the audience can register without the narrator "
+            "spelling them out."
+        )
+    if ip.by_other_focal:
+        diffs = ", ".join(
+            f"{eid}={v:.2f}" for eid, v in sorted(
+                ip.by_other_focal.items(), key=lambda kv: -kv[1],
+            )[:5]
+        )
+        lines.append(f"  Other characters' audience-advantage scores: {diffs}")
+    return "\n".join(lines)
+
+
+def _format_mystery_profile(mp: MysteryProfile) -> str:
+    """Render the unified-affect mystery payload for the renderer.
+
+    Theory:
+      * Carroll (1990) erotetic theory \u2014 mystery arises from open
+        questions (effects whose causes are not yet known). The
+        ``plot_gap_score`` and the ``open_questions`` list embody
+        this.
+      * Carroll macro-question \u2014 ``governing_question`` surfaces the
+        single open proposition whose resolution would commit the
+        most others (highest stakes \u00d7 causal in-degree). Treat as
+        the spine the scene's smaller mysteries orbit.
+      * Iser (1978) Leerstellen \u2014 ``character_gap_score`` and
+        ``character_gap_descriptions`` track *characterisation*
+        gaps (who is X really? is trait T true of X?), distinct
+        from causal gaps.
+      * Ryan (1991) tellability \u2014
+        ``tellability_weighted_score`` weights open questions by
+        the count and salience of :class:`Concern` records
+        referencing them, so mysteries many characters care about
+        dominate.
+    The renderer shows each listed effect as a consequence on the
+    page and SUPPRESSES its 'why' (no narrator explanation, no
+    interior speculation that would foreclose the question).
+    """
+    lines = [
+        "MYSTERY (Carroll erotetic open-question entropy):",
+        f"  Score: {mp.score:.3f}  (entropy over hidden causes; higher = more open)",
+    ]
+    if mp.fabula_t is not None:
+        lines.append(f"  Fabula anchor: {mp.fabula_t}")
+    if mp.character_gap_score > 0 or mp.tellability_weighted_score > 0:
+        lines.append(
+            f"  Plot-gap (Carroll): {mp.plot_gap_score:.3f}  "
+            f"Character-gap (Iser): {mp.character_gap_score:.3f}  "
+            f"Tellability-weighted (Ryan): {mp.tellability_weighted_score:.3f}"
+        )
+    if mp.governing_question_description:
+        lines.append(
+            f"  Governing question (Carroll macro): "
+            f"{mp.governing_question_description}"
+        )
+        lines.append(
+            "  Render as: let smaller mysteries orbit this spine \u2014 "
+            "every withheld 'why' should ultimately point back at it."
+        )
+    if mp.open_questions:
+        lines.append("  Open questions \u2014 effects whose causes the audience does NOT yet know:")
+        for d in mp.open_questions:
+            lines.append(f"    \u2022 {d}")
+        lines.append(
+            "  Render as: each effect appears on the page as concrete "
+            "sensory aftermath; do NOT name, hint at, or interiorise "
+            "its cause. Absence carries the weight."
+        )
+    if mp.character_gap_descriptions:
+        lines.append(
+            "  Characterisation gaps (Iser Leerstellen) \u2014 who/what "
+            "someone is, still ambiguous to the audience:"
+        )
+        for d in mp.character_gap_descriptions:
+            lines.append(f"    \u2022 {d}")
+        lines.append(
+            "  Render as: behavioural ambiguity \u2014 actions consistent "
+            "with multiple readings; resist any narrator gloss that "
+            "would pin down the identity or trait."
+        )
     return "\n".join(lines)
 
 
@@ -287,7 +620,103 @@ def _format_counterfactual(cf: CounterfactualBranch) -> str:
     if cf.divergence_event_id:
         lines.append(f"  POINT OF DIVERGENCE: {cf.divergence_event_id}")
     if cf.divergence_description:
-        lines.append(f"    → {cf.divergence_description}")
+        lines.append(f"    \u2192 {cf.divergence_description}")
+
+    # Phase-8: typed Pearl-rung surgery → renderer hint. The renderer
+    # uses this to pick the right epistemic / ontic register and the
+    # Aristotelian / Frye narrative-form hedge.
+    do_target = getattr(cf, "do_target", None)
+    if do_target is not None:
+        kind = getattr(do_target, "target_kind", None)
+        if kind == "proposition":
+            lines.append(
+                f"  RUNG-3 SURGERY KIND: proposition — render as "
+                f"\"if it had been the case that PROP {getattr(do_target, 'proposition_id', '?')} = "
+                f"{getattr(do_target, 'truth', '?')}\". This is an *ontic* "
+                f"counterfactual: the world's truth was different."
+            )
+        elif kind == "belief":
+            lines.append(
+                f"  RUNG-3 SURGERY KIND: belief — render as \"had "
+                f"{getattr(do_target, 'holder_id', '?')} believed "
+                f"otherwise about PROP "
+                f"{getattr(do_target, 'proposition_id', '?')}\". This is "
+                f"an *epistemic* counterfactual: the world is unchanged "
+                f"but the holder's confidence was clamped to "
+                f"{getattr(do_target, 'confidence', '?')}. Use hedged "
+                f"epistemic language (\"believed\", \"trusted\", \"knew\")."
+            )
+        elif kind == "concern":
+            lines.append(
+                f"  RUNG-3 SURGERY KIND: concern — render as \"without "
+                f"{getattr(do_target, 'holder_id', '?')}'s "
+                f"{getattr(do_target, 'concern_id', '?')}\". This is a "
+                f"*motivational* counterfactual: the holder's utility "
+                f"landscape was different. Use desire/fear language "
+                f"(Roese commission/omission frame)."
+            )
+        elif kind == "trait":
+            lines.append(
+                f"  RUNG-3 SURGERY KIND: trait — render as \"had "
+                f"{getattr(do_target, 'holder_id', '?')} been "
+                f"{getattr(do_target, 'trait_name', '?')}="
+                f"{getattr(do_target, 'value', '?')}\"."
+            )
+        elif kind == "event":
+            occurred = getattr(do_target, "occurred", None)
+            verb = "occurred" if occurred else "not occurred"
+            lines.append(
+                f"  RUNG-3 SURGERY KIND: event — render as \"had EVT "
+                f"{getattr(do_target, 'event_id', '?')} {verb}\"."
+            )
+
+    if cf.affected_propositions:
+        lines.append(
+            "  AFFECTED PROPOSITIONS (truth flipped factual\u2194counterfactual): "
+            + ", ".join(cf.affected_propositions)
+        )
+    if cf.affected_beliefs:
+        lines.append(
+            "  AFFECTED BELIEFS (confidence shifted): "
+            + ", ".join(cf.affected_beliefs)
+        )
+    if cf.affected_concerns:
+        lines.append(
+            "  AFFECTED CONCERNS (satisfaction flipped): "
+            + ", ".join(cf.affected_concerns)
+        )
+
+    if cf.tragedy_form:
+        # Aristotle/Frye narrative-form hedge — formatter is the only
+        # place sign conventions get massaged. Raw deltas are always
+        # (actual - counterfactual) regardless of the emotion they feed.
+        form_hedge = {
+            "tragic": (
+                "  NARRATIVE FORM: tragic (actual is concern-load-worse "
+                "than the counterfactual) \u2014 close with an \"and yet\" "
+                "register; foreground regret over the unchosen path."
+            ),
+            "comic": (
+                "  NARRATIVE FORM: comic (actual is concern-load-better "
+                "than the counterfactual) \u2014 close with an \"and so\" "
+                "register; foreground relief that the alternate did not "
+                "come to pass."
+            ),
+            "ironic": (
+                "  NARRATIVE FORM: ironic (mixed-sign concern flips, "
+                "near-zero net) \u2014 render the counterfactual \"as if to "
+                "mock\" the actual: same utility magnitude, rearranged "
+                "polarities."
+            ),
+            "neutral": (
+                "  NARRATIVE FORM: neutral \u2014 the counterfactual is "
+                "concern-equivalent to actual; render as \"though it would "
+                "have made no difference\"."
+            ),
+        }.get(cf.tragedy_form)
+        if form_hedge:
+            lines.append(form_hedge)
+
     return "\n".join(lines)
 
 
@@ -309,6 +738,283 @@ def _format_entanglement(pairs: List[EntanglementPair]) -> str:
     for p in pairs:
         co = " (co-located)" if p.shared_location else " (separated)"
         lines.append(f"  {p.entity_a} ↔ {p.entity_b}: coupling={p.coupling_strength:.2f}{co}")
+    return "\n".join(lines)
+
+
+def _format_fear_profile(fp: FearProfile) -> str:
+    """Render the unified-affect fear payload for the renderer.
+
+    Theory: Lazarus (1991) primary appraisal, Öhman & Mineka (2001) /
+    LeDoux (1996) object-fear vs. anxiety split, Frijda (1986)
+    action-readiness ⇒ dread when no flight is available.
+    """
+    lines = [
+        "FEAR (Lazarus appraisal × Öhman/LeDoux × Frijda):",
+        f"  Object-fear: {fp.object_fear_score:.3f}  Anxiety: {fp.anxiety_score:.3f}  Coping: {fp.coping_score:.2f}",
+    ]
+    if fp.dread:
+        lines.append(
+            "  Mode: DREAD — no flight, low coping. Render as paralytic "
+            "stillness: held breath, the body locking, peripheral "
+            "details collapsing inward. Not running, not fighting."
+        )
+    elif fp.anxiety_score > fp.object_fear_score * 1.5:
+        lines.append(
+            "  Mode: ANXIETY — diffuse, object-less. Render the threat "
+            "as everywhere and nowhere; the focal scans, can't settle. "
+            "Sentences should chase a target they can't name."
+        )
+    elif fp.object_fear_score > 0:
+        lines.append(
+            "  Mode: OBJECT-FEAR — render the focal's body marshalling "
+            "for flight or fight against a specific danger; tunnel "
+            "vision onto the threat object."
+        )
+    if fp.primary_concern_description:
+        lines.append(
+            f"  Primary fear: {fp.primary_concern_description}"
+        )
+        lines.append(
+            "  Render as: dramatise the focal's body anticipating "
+            "this specific harm; do NOT name 'fear' or the score."
+        )
+    return "\n".join(lines)
+
+
+def _format_joy_profile(jp: JoyProfile) -> str:
+    """Render the unified-affect joy payload for the renderer.
+
+    Theory: Fredrickson (2001) broaden-and-build for own joy; OCC
+    (Ortony, Clore & Collins, 1988) for happy-for and gloating;
+    Lazarus relief for fear-resolved sub-component.
+    """
+    lines = [
+        "JOY (Fredrickson × OCC × Lazarus relief):",
+        f"  Own joy: {jp.own_joy_score:.3f}  Happy-for: {jp.happy_for_score:.3f}  "
+        f"Gloating: {jp.gloating_score:.3f}  Relief: {jp.relief_score:.3f}",
+    ]
+    if jp.gloating_score > jp.own_joy_score * 0.5 and jp.gloating_score > 0:
+        lines.append(
+            "  Mode: SCHADENFREUDE — render the joy as morally "
+            "complicated; the focal's pleasure has a sharp edge, "
+            "another's misfortune in the mix. Do not soften."
+        )
+    elif jp.relief_score > jp.own_joy_score:
+        lines.append(
+            "  Mode: RELIEF — render physiological release "
+            "(unclenching, exhale, sudden warmth) BEFORE any "
+            "expansive prose. The body lets go before the mind."
+        )
+    elif jp.happy_for_score > jp.own_joy_score:
+        lines.append(
+            "  Mode: HAPPY-FOR — joy on a loved-other's behalf; "
+            "render the focal's attention turning outward to the "
+            "partner's good fortune, smile reaching the eyes."
+        )
+    elif jp.own_joy_score > 0:
+        lines.append(
+            "  Mode: BROADEN-AND-BUILD — the prose's descriptive "
+            "scope opens; brighter, broader, more vivid sensory "
+            "register. The world widens around the focal."
+        )
+    if jp.primary_concern_description:
+        lines.append(
+            f"  Primary realised desire: {jp.primary_concern_description}"
+        )
+    return "\n".join(lines)
+
+
+def _format_regret_profile(rp: RegretProfile) -> str:
+    """Render the unified-affect regret payload for the renderer.
+
+    Theory: Kahneman & Miller (1986) norm theory closeness/
+    controllability; Roese (1997) commission/omission asymmetry;
+    Gilovich & Medvec (1995) downward counterfactual relief.
+    """
+    lines = [
+        "REGRET (Kahneman-Miller × Roese × Gilovich):",
+        f"  Agentive: {rp.agentive_regret_score:.3f}  "
+        f"Disappointment: {rp.disappointment_score:.3f}  "
+        f"Commission: {rp.commission_score:.3f}  "
+        f"Omission: {rp.omission_score:.3f}  "
+        f"Downward relief: {rp.downward_relief_score:.3f}",
+    ]
+    if rp.mode == "commission":
+        lines.append(
+            "  Mode: COMMISSION REGRET — hot, acute. Render vivid "
+            "sensory recall of the act done, as though it just "
+            "happened. Tense, present-immediate texture."
+        )
+    elif rp.mode == "omission":
+        lines.append(
+            "  Mode: OMISSION REGRET — cold, brooding. Render the "
+            "absence of the unspoken word, the door not opened. "
+            "Quiet syntax, long pauses; the silence has weight."
+        )
+    elif rp.mode == "disappointment":
+        lines.append(
+            "  Mode: DISAPPOINTMENT — no controllable divergence. "
+            "Render passive grief register, NOT 'if only' interiority "
+            "(no choice was the focal's to make)."
+        )
+    if rp.downward_relief_score > 0:
+        lines.append(
+            "  Tinge with 'could have been worse' — let one beat "
+            "register the averted darker outcome before the regret "
+            "settles back in."
+        )
+    return "\n".join(lines)
+
+
+def _format_grief_profile(gp: GriefProfile) -> str:
+    """Render the unified-affect grief payload for the renderer.
+
+    Theory: Bowlby (1969/1980) attachment for coupling intensity;
+    Kübler-Ross (1969) stage model for register; Worden (1991) tasks
+    of mourning for unfinished concerns.
+    """
+    lines = [
+        "GRIEF (Bowlby × Kübler-Ross × Worden):",
+        f"  Coupling: {gp.coupling_strength:.3f}  Stage: {gp.stage}  "
+        f"Unfinished concerns: {gp.unfinished_concern_count}",
+    ]
+    if gp.lost_entity_id:
+        lines.append(f"  Lost: {gp.lost_entity_id}")
+    stage_hints = {
+        "denial": (
+            "Render as numb routine — the focal moves through "
+            "ordinary motions as if the loss hasn't fully landed; "
+            "the body knows before the mind does."
+        ),
+        "anger": (
+            "Render as directed hostility leaking into ordinary "
+            "interactions; the focal's voice sharpens at things "
+            "that don't deserve it."
+        ),
+        "bargaining": (
+            "Render intrusive 'if only' interiority — the focal's "
+            "thoughts loop on alternative timelines; small "
+            "rationalisations sneak in."
+        ),
+        "depression": (
+            "Render as fragmented absence — short sentences, "
+            "disconnected observations, the world feels wrong, "
+            "appetite and energy drained."
+        ),
+        "acceptance": (
+            "Render as quiet integration — the loss is woven into "
+            "the focal's interiority without sharp protest; a "
+            "softer, lower register."
+        ),
+    }
+    if gp.stage in stage_hints:
+        lines.append(f"  Render as: {stage_hints[gp.stage]}")
+    if gp.unfinished_concern_count > 0:
+        lines.append(
+            f"  {gp.unfinished_concern_count} unrevised concern(s) "
+            "still reference the lost figure — let the focal trip "
+            "over them mid-action (a habit, a turn of phrase, a "
+            "reflexive look toward an empty space)."
+        )
+    return "\n".join(lines)
+
+
+def _format_rage_profile(rp: RageProfile) -> str:
+    """Render the unified-affect rage payload for the renderer.
+
+    Theory: Berkowitz (1989) frustration-aggression for blocked
+    concern intensity; Averill (1982) for normative violation
+    requirement; Tedeschi & Felson (1994) coercive-action theory for
+    retributive vs. displaced classification.
+    """
+    lines = [
+        "RAGE (Berkowitz × Averill × Tedeschi-Felson):",
+        f"  Blocked concern: {rp.blocked_concern_score:.3f}  "
+        f"Attribution clarity: {rp.attribution_clarity:.2f}  "
+        f"Proximity: {rp.perpetrator_proximity}  "
+        f"Normative violation: {rp.normative_violation}",
+    ]
+    if rp.perpetrator_id:
+        lines.append(f"  Perpetrator: {rp.perpetrator_id}")
+    mode_hints = {
+        "frustration": (
+            "Render as undirected agitation — the focal can't name "
+            "what they want to hit; energy without target."
+        ),
+        "directed_rage": (
+            "Render hostility narrowing onto the perpetrator — the "
+            "focal's gaze, posture, and language sharpen toward a "
+            "single object."
+        ),
+        "retributive_rage": (
+            "Render as just-deserts intent — the focal's body "
+            "marshals action with moral conviction; the violated "
+            "norm hovers in their interior justification."
+        ),
+        "displaced_rage": (
+            "Render the misalignment — the focal lashes at a proxy "
+            "and the prose can let the reader feel it's the wrong "
+            "target without the focal noticing."
+        ),
+    }
+    if rp.mode in mode_hints:
+        lines.append(f"  Render as: {mode_hints[rp.mode]}")
+    return "\n".join(lines)
+
+
+def _format_love_profile(lp: LoveProfile) -> str:
+    """Render the unified-affect love payload for the renderer.
+
+    Theory: Sternberg (1986) triangular theory (intimacy / passion /
+    commitment); Berscheid & Hatfield (1969/1974) passionate vs.
+    companionate register; Bowlby (1969) attachment styles from the
+    relationship's affinity/fear metrics.
+    """
+    lines = [
+        "LOVE (Sternberg triangular × Berscheid-Hatfield × Bowlby):",
+        f"  Intimacy: {lp.intimacy_score:.2f}  "
+        f"Passion: {lp.passion_score:.2f}  "
+        f"Commitment: {lp.commitment_score:.2f}  "
+        f"Style: {lp.style}  Attachment: {lp.attachment_style}",
+    ]
+    if lp.primary_partner_id:
+        lines.append(f"  Partner: {lp.primary_partner_id}")
+    style_hints = {
+        "passionate": (
+            "Render yearning register — sharp-onset arousal, narrow "
+            "focus on the partner's body and presence; the world "
+            "reduces to them."
+        ),
+        "companionate": (
+            "Render quiet familiarity — wide mutual proposition "
+            "coverage shows as easy banter, anticipated gestures, "
+            "shared vocabulary the prose doesn't gloss."
+        ),
+        "balanced": (
+            "Render both registers — passion in the close-up "
+            "moments, companionate ease in the connective tissue."
+        ),
+    }
+    if lp.style in style_hints:
+        lines.append(f"  Render as: {style_hints[lp.style]}")
+    attach_hints = {
+        "anxious": (
+            "Attachment is anxious — the focal monitors the "
+            "partner's signals for threat of withdrawal; "
+            "reassurance-seeking beats."
+        ),
+        "avoidant": (
+            "Attachment is avoidant — the focal pulls back when "
+            "intimacy presses; deflecting humour, physical "
+            "withdrawal at moments of softness."
+        ),
+        "secure": (
+            "Attachment is secure — the focal's body settles in the "
+            "partner's presence; no monitoring, no withdrawal."
+        ),
+    }
+    if lp.attachment_style in attach_hints:
+        lines.append(f"  Render as: {attach_hints[lp.attachment_style]}")
     return "\n".join(lines)
 
 
@@ -560,7 +1266,15 @@ def _normalise_sandbox_to_ego_shape(ctx: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def format_scene_context_for_prompt(ctx: Dict[str, Any]) -> str:
+def format_scene_context_for_prompt(
+    ctx: Dict[str, Any],
+    *,
+    recent_events: Optional[int] = None,
+    max_beliefs: Optional[int] = None,
+    loc_desc_chars: Optional[int] = None,
+    obj_desc_chars: Optional[int] = None,
+    utterance_chars: Optional[int] = None,
+) -> str:
     """Build a rich scene-context block from the full ego-graph payload.
 
     Surfaces every field that ``extract_ego_graph_from_memory`` returns
@@ -586,12 +1300,23 @@ def format_scene_context_for_prompt(ctx: Dict[str, Any]) -> str:
 
     Returned as a single multi-line string suitable for embedding
     under a ``=== SCENE CONTEXT ===`` header.
+
+    The optional keyword arguments control how much context is emitted.
+    When ``None``, each defaults to the value from
+    ``GenerationSettings`` (read at call time from the live settings).
     """
     if not ctx:
         return "(No scene context available.)"
 
+    _s = _get_settings().generation
+    _recent_events = recent_events if recent_events is not None else _s.scene_context_recent_events
+    _max_beliefs = max_beliefs if max_beliefs is not None else _s.scene_context_max_beliefs
+    _loc_desc = loc_desc_chars if loc_desc_chars is not None else _s.scene_context_loc_desc_chars
+    _obj_desc = obj_desc_chars if obj_desc_chars is not None else _s.scene_context_obj_desc_chars
+    _utt_chars = utterance_chars if utterance_chars is not None else _s.scene_context_utterance_chars
+
     ctx = _normalise_sandbox_to_ego_shape(ctx)
-    ctx = _normalise_omniscient_to_ego_shape(ctx)
+    ctx = _normalise_omniscient_to_ego_shape(ctx, recent_event_limit=_recent_events)
     sections: List[str] = []
 
     # ------------------------------------------------------------
@@ -608,7 +1333,7 @@ def format_scene_context_for_prompt(ctx: Dict[str, Any]) -> str:
             sections.append(f"  - {lname} ({lid}){parent_str}")
             desc = (loc.get("description") or "").strip()
             if desc:
-                sections.append(f"      {desc[:240]}")
+                sections.append(f"      {desc[:_loc_desc]}")
 
     spatial = ctx.get("relevant_spatial_edges") or []
     if spatial:
@@ -655,7 +1380,7 @@ def format_scene_context_for_prompt(ctx: Dict[str, Any]) -> str:
             status = ent.get("status", "unknown")
             sections.append(f"  - {name} ({eid}) — {status}, present at {loc}")
             sections.append(f"      traits: {_fmt_traits(ent.get('traits') or {})}")
-            sections.extend(_fmt_beliefs(ent.get("beliefs") or []))
+            sections.extend(_fmt_beliefs(ent.get("beliefs") or [], max_items=_max_beliefs))
 
     # ------------------------------------------------------------
     # Co-present entities — also need traits / status so the renderer
@@ -689,7 +1414,7 @@ def format_scene_context_for_prompt(ctx: Dict[str, Any]) -> str:
             sections.append(f"  - {oname} ({oid}) — {where}")
             desc = (obj.get("description") or "").strip()
             if desc:
-                sections.append(f"      {desc[:200]}")
+                sections.append(f"      {desc[:_obj_desc]}")
             # Affordances — what this object lets characters DO. Without
             # surfacing these the renderer can't reason about a key
             # unlocking a door, a weapon enabling a kill, a vehicle
@@ -858,9 +1583,9 @@ def format_scene_context_for_prompt(ctx: Dict[str, Any]) -> str:
                 f"  - {time_blob}{uid} — {speaker} → {addressees}{via_blob}{tv}"
             )
             if desc:
-                sections.append(f"      {desc[:200]}")
+                sections.append(f"      {desc[:_utt_chars]}")
             if content:
-                sections.append(f"      content: {content[:300]}")
+                sections.append(f"      content: {content[:_utt_chars]}")
 
     # ------------------------------------------------------------
     # Causal edges between in-scene nodes
@@ -974,14 +1699,21 @@ def assemble_rendering_prompt(
 
     # === Story so far (narrative continuity) ===
     # Concatenated prose from prior versions in the current session's
-    # lineage so a chain of queries (counterfactual \u2192 intervention
-    # \u2192 observation, etc.) renders prose that is continuous with
+    # lineage so a chain of queries (counterfactual → intervention
+    # → observation, etc.) renders prose that is continuous with
     # everything that came before, not just the accumulated world
-    # state. Background context only \u2014 hard constraints and the
+    # state. Background context only — hard constraints and the
     # SCENE CONTEXT below remain authoritative on conflict.
+    # Capped to ``preceding_prose_max_chars`` (tail of the text, i.e.
+    # the most recent prose) so long session lineages don't overflow
+    # the context window.
     if brief.preceding_prose:
+        _pp_max = _get_settings().generation.preceding_prose_max_chars
+        _pp = brief.preceding_prose.strip()
+        if len(_pp) > _pp_max:
+            _pp = "…" + _pp[-_pp_max:]
         sections.append("=== STORY SO FAR (prior prose for continuity) ===")
-        sections.append(brief.preceding_prose.strip())
+        sections.append(_pp)
         sections.append(
             "Treat the prose above as established narrative this scene "
             "must continue from. Honour its tone, point-of-view drift, "
@@ -1060,6 +1792,42 @@ def assemble_rendering_prompt(
     # === Effect-specific payloads ===
     if brief.threat_proximity:
         sections.append(_format_threat_proximity(brief.threat_proximity))
+        sections.append("")
+
+    if brief.surprise_profile:
+        sections.append(_format_surprise_profile(brief.surprise_profile))
+        sections.append("")
+
+    if brief.irony_profile:
+        sections.append(_format_irony_profile(brief.irony_profile))
+        sections.append("")
+
+    if brief.mystery_profile:
+        sections.append(_format_mystery_profile(brief.mystery_profile))
+        sections.append("")
+
+    if brief.fear_profile:
+        sections.append(_format_fear_profile(brief.fear_profile))
+        sections.append("")
+
+    if brief.joy_profile:
+        sections.append(_format_joy_profile(brief.joy_profile))
+        sections.append("")
+
+    if brief.regret_profile:
+        sections.append(_format_regret_profile(brief.regret_profile))
+        sections.append("")
+
+    if brief.grief_profile:
+        sections.append(_format_grief_profile(brief.grief_profile))
+        sections.append("")
+
+    if brief.rage_profile:
+        sections.append(_format_rage_profile(brief.rage_profile))
+        sections.append("")
+
+    if brief.love_profile:
+        sections.append(_format_love_profile(brief.love_profile))
         sections.append("")
 
     if brief.counterfactual_branch:
@@ -1145,6 +1913,55 @@ def assemble_rendering_prompt(
                 f"{fact.summary}{url}"
             )
         sections.append("")
+
+    # === Narrative Tension (fabula/syuzhet displacement) ===
+    # Brief carries per-event withholding/flash-forward markers from
+    # ``DirectiveAssembler.compute_narrative_tension``. The renderer
+    # uses these to pace reveals: ``withheld_cause`` events should
+    # feel pre-loaded with consequence (the reader senses something
+    # pending) without being explained on-page; ``upcoming_revelation``
+    # events should be foreshadowed without being spoiled. Filtered to
+    # the items most likely to fire on the *next* beat — full list is
+    # already in the brief log for downstream auditing.
+    if brief.narrative_tensions:
+        active = [
+            t for t in brief.narrative_tensions
+            if t.tension_type != "linear"
+        ]
+        if active:
+            sections.append(
+                "=== NARRATIVE TENSION (pacing — silent guidance) ==="
+            )
+            sections.append(
+                "These are events whose chronological position differs "
+                "from their narrative position. Use them to pace this "
+                "beat: hint at withheld causes without explaining them, "
+                "and foreshadow upcoming revelations without spoiling "
+                "them. Do NOT name 'displacement', 'fabula', 'syuzhet', "
+                "'foreshadow' or any meta-structure in the prose."
+            )
+            for t in active[:8]:
+                if t.tension_type == "withheld_cause":
+                    sections.append(
+                        f"  - WITHHELD: {t.event_id} (already happened "
+                        f"at fabula_time={t.fabula_time}, revealed later "
+                        f"at syuzhet={t.syuzhet_index}, displacement="
+                        f"{t.displacement:+.2f}). Pre-load consequence; "
+                        f"do not explain. Description: {t.description}"
+                    )
+                elif t.tension_type == "upcoming_revelation":
+                    sections.append(
+                        f"  - UPCOMING: {t.event_id} (shown ahead of its "
+                        f"fabula time at syuzhet={t.syuzhet_index}, "
+                        f"displacement={t.displacement:+.2f}). "
+                        f"Foreshadow lightly; the full beat lands later. "
+                        f"Description: {t.description}"
+                    )
+            if len(active) > 8:
+                sections.append(
+                    f"  … (+{len(active) - 8} more displacement markers)"
+                )
+            sections.append("")
 
     # === Utterance & Channel Fidelity ===
     # Hidden channels (carrier capabilities + future utterances) and
@@ -1274,6 +2091,15 @@ def build_observation_brief(
     """Build a lightweight CreativeBrief for observation queries."""
     pov = query.focus_entity_ids[0] if query.focus_entity_ids else None
     constraints: List[ConstraintBlock] = _user_intent_constraints(query.original_query)
+    # Negative-physics record: events the world tags as not occurring
+    # and propositions committed FALSE at or before the anchor must
+    # NOT be staged as having happened. Applies to every rung.
+    constraints.extend(build_prevented_event_constraints(
+        world_state, syuzhet_anchor, world_label="observed",
+    ))
+    constraints.extend(build_false_proposition_constraints(
+        world_state, syuzhet_anchor, world_label="observed",
+    ))
     scene_context = dict(physics_state) if isinstance(physics_state, dict) else {}
     if syuzhet_anchor is not None and isinstance(scene_context, dict):
         scene_context.setdefault("syuzhet_anchor", syuzhet_anchor)
@@ -1343,12 +2169,31 @@ def _build_exclusion_constraints(
                 continue
             speaker = getattr(evt, "speaker_id", None) or "unknown"
             addressees = list(getattr(evt, "addressee_ids", []) or [])
-            content = (getattr(evt, "content", None) or "").strip()
-            if len(content) > 120:
-                content = content[:117] + "..."
-            snippet = f' \u2014 was: "{content}"' if content else ""
+            # Anti-pink-elephant: do NOT show ``content`` verbatim. The
+            # canonical text is exactly what we are forbidding the
+            # renderer to echo, so quoting it in the "do not echo"
+            # instruction reliably makes it the most salient phrase
+            # in the prompt and the renderer either reproduces it
+            # verbatim or paraphrases its evidentiary logic. Show only
+            # a *structural fingerprint* — the speech-act shape that
+            # is forbidden, not the wording. The id slug
+            # (e.g.\u00a0EVT_UTT_GEORGE_ORDERS_KEN_KILL_COADY) carries
+            # enough semantic content for the renderer to know which
+            # speech act is forbidden without showing it the line.
+            target_ids = list(getattr(evt, "target_ids", []) or [])
+            truth_value = getattr(evt, "truth_value", None) or ""
+            via_channel = getattr(evt, "via_channel_id", None) or ""
+            fp_parts: list[str] = []
+            if target_ids:
+                fp_parts.append(f"about={target_ids}")
+            if truth_value:
+                fp_parts.append(f"truth={truth_value}")
+            if via_channel:
+                fp_parts.append(f"via={via_channel}")
+            fingerprint = (" | " + ", ".join(fp_parts)) if fp_parts else ""
             lines.append(
-                f"  - {uid}: {speaker} \u2192 {addressees}{snippet}"
+                f"  - {uid}: speaker={speaker} \u2192 "
+                f"addressees={addressees}{fingerprint}"
             )
         if len(pruned_utts) > 20:
             lines.append(f"  - ...and {len(pruned_utts) - 20} more.")
@@ -1361,14 +2206,22 @@ def _build_exclusion_constraints(
                 # so an LLM that pattern-matches on the heading sees
                 # it verbatim, not just the prefix words inside a
                 # generic constraints dump.
-                f"=== ERASED UTTERANCES (HARD) === \u2014 these lines were SPOKEN "
-                f"in canon but the do-surgery severed their provenance "
-                f"and they DO NOT exist in this {world_label} world. "
-                "Do NOT have any character say, paraphrase, remember, "
-                "or react to them. If the same speaker would naturally "
-                "still talk to the same addressee in this scene, write "
-                "a NEW line consistent with the changed conditions \u2014 "
-                "do not echo the canonical wording.\n"
+                f"=== ERASED UTTERANCES (HARD) === \u2014 the speech acts "
+                f"identified below were SPOKEN in canon but the do-"
+                f"surgery severed their provenance and they DO NOT "
+                f"exist in this {world_label} world. The canonical "
+                "wording is intentionally NOT shown to you \u2014 only the "
+                "speaker, addressees, and topic structure. Do NOT have "
+                "any character perform this speech act in any form: "
+                "do not echo, paraphrase, remember, or recreate the "
+                "evidentiary logic, intent, or causal claim of the "
+                "erased line. If the same speaker would naturally "
+                "still talk to the same addressee in this scene, "
+                "invent a NEW line about a DIFFERENT subject (or a "
+                "different evidentiary justification) consistent with "
+                "the changed conditions. The auditor will flag both "
+                "verbatim quotation and structural paraphrase \u2014 the "
+                "act-shape is what is forbidden, not just the wording.\n"
                 + "\n".join(lines)
             ),
             evidence={"pruned_utterance_event_ids": pruned_utts},
@@ -1591,6 +2444,13 @@ def build_intervention_brief(
         world_state,
         world_label="intervened",
     ))
+    # Negative-physics record: prevented events + false propositions.
+    constraints.extend(build_prevented_event_constraints(
+        world_state, syuzhet_anchor, world_label="intervened",
+    ))
+    constraints.extend(build_false_proposition_constraints(
+        world_state, syuzhet_anchor, world_label="intervened",
+    ))
 
     return CreativeBrief(
         target_effect="intervention",
@@ -1664,11 +2524,28 @@ def build_counterfactual_brief(
     syuzhet_anchor: Optional[int] = None,
 ) -> CreativeBrief:
     """Build a CreativeBrief for counterfactual (Rung 3) queries."""
-    # Build AbductionTruth entries from hidden_deltas
+    # Build AbductionTruth entries from hidden_deltas.
+    #
+    # Filter out near-zero deltas (|delta| < 0.10). When the Rung-3
+    # propagator hits a cyclic SCC or noisy-OR absorption it returns
+    # impact=0.00..0.18 across most traits, which the auditor then
+    # flags as "abduction failures" because the prose can't render
+    # observable cues for shifts that the simulator itself called
+    # negligible. The renderer is asked to invent observable behaviour
+    # for an effectively-flat trait distribution — and if it does, the
+    # POV-lock auditor flags those exact cues as "diagnostic gloss
+    # exceeding perceptual bounds". Dropping near-zero entries here
+    # cuts that double-jeopardy at the source. (May 2026 Star Wars
+    # counterfactual non-convergence audit.)
+    _ABDUCTION_MIN_DELTA = 0.10
     abduction: List[AbductionTruth] = []
     if hidden_deltas:
+        skipped_flat = 0
         for entity_id, deltas in hidden_deltas.items():
             for trait, delta_val in deltas.items():
+                if abs(float(delta_val)) < _ABDUCTION_MIN_DELTA:
+                    skipped_flat += 1
+                    continue
                 direction = "increased" if delta_val > 0 else "decreased"
                 abduction.append(AbductionTruth(
                     entity_id=entity_id,
@@ -1682,6 +2559,14 @@ def build_counterfactual_brief(
                         f"reveal the hidden {trait} shift without exposition."
                     ),
                 ))
+        if skipped_flat:
+            logger.info(
+                "[CounterfactualBrief] Skipped %d sub-threshold abduction "
+                "shifts (|delta| < %.2f) — propagator likely hit a cyclic "
+                "or noisy-OR-absorbed cluster; rendering would be invented "
+                "and immediately flagged as POV/abduction conflicts.",
+                skipped_flat, _ABDUCTION_MIN_DELTA,
+            )
 
     # Build a counterfactual branch from the intervention keys.
     # Phrasing is scene-internal: the renderer must treat the simulated
@@ -1814,6 +2699,13 @@ def build_counterfactual_brief(
         disabled_channel_ids,
         world_state,
         world_label="counterfactual",
+    ))
+    # Negative-physics record: prevented events + false propositions.
+    constraints.extend(build_prevented_event_constraints(
+        world_state, syuzhet_anchor, world_label="counterfactual",
+    ))
+    constraints.extend(build_false_proposition_constraints(
+        world_state, syuzhet_anchor, world_label="counterfactual",
     ))
 
     # Resolve target entities from the historical intervention keys
@@ -1969,8 +2861,7 @@ def render_scene(
     model_settings: Dict[str, Any] = {}
     if config.temperature != 0.7:
         model_settings["temperature"] = config.temperature
-    if config.max_tokens != 64000:
-        model_settings["max_tokens"] = config.max_tokens
+    model_settings["max_tokens"] = config.max_tokens
 
     try:
         result = agent.run_sync(

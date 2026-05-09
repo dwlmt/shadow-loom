@@ -26,7 +26,7 @@ from pydantic_ai import Agent, NativeOutput
 
 from shadow_loom.generation import GenerationConfig
 from shadow_loom.models import WorldStateV1
-from shadow_loom.settings import resolve_model as _resolve_model
+from shadow_loom.settings import resolve_model as _resolve_model, get_settings as _get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -332,6 +332,98 @@ def _compress_world_state(
                 wid_tag = f" [{ch.get('world_id', 'factual')}]"
             lines.append(f"- `{cid}` {medium}{wid_tag} participants=[{parts}]")
 
+    # Propositions — the catalogue of structured factual claims.
+    # ``truth_at_fabula`` is the physics commit log: the answer LLM
+    # MUST treat ``False`` commits as factually NOT the case (even if
+    # one or more characters still believe them) and ``True`` commits
+    # as established fact. Without this section the Interrogator /
+    # General Q&A surfaces only events + beliefs and silently misses
+    # the propositional ground truth.
+    propositions = physics_state.get("propositions", None)
+    if propositions:
+        if isinstance(propositions, dict):
+            prop_iter = list(propositions.items())
+        else:
+            prop_iter = [
+                (p.get("id") or p.get("proposition_id") or "?", p)
+                for p in propositions
+                if isinstance(p, dict)
+            ]
+        if prop_iter:
+            lines.append("\n## Propositions (factual claims, with commit log)")
+            for pid, p in prop_iter[:max_events]:
+                desc = (p.get("description") or "").strip().replace("\n", " ")
+                if len(desc) > 140:
+                    desc = desc[:137] + "…"
+                truth_map = p.get("truth_at_fabula") or {}
+                if truth_map:
+                    items = sorted(
+                        ((int(t), bool(v)) for t, v in truth_map.items()),
+                        key=lambda kv: kv[0],
+                    )
+                    truth_str = ", ".join(
+                        f"T={t}:{'TRUE' if v else 'FALSE'}" for t, v in items
+                    )
+                    truth_part = f" truth=[{truth_str}]"
+                else:
+                    truth_part = " truth=[uncommitted]"
+                lines.append(f"- `{pid}`{truth_part} — {desc}")
+            if len(prop_iter) > max_events:
+                lines.append(
+                    f"  …(+{len(prop_iter) - max_events} more propositions)"
+                )
+
+    # Negative facts — events the physics tags as NOT occurring and
+    # propositions whose latest commit is FALSE. Surfaced as a
+    # dedicated callout so the answer LLM cannot accidentally answer
+    # "yes, X happened" about an event the world records as prevented,
+    # or assert a falsified proposition as fact.
+    prevented_events = [
+        e for e in (physics_state.get("events", []) or [])
+        if (e.get("event_type") or "") in {"prevented", "never_happened", "removed"}
+    ]
+    false_props: List[str] = []
+    if propositions:
+        if isinstance(propositions, dict):
+            _piter = list(propositions.values())
+        else:
+            _piter = [p for p in propositions if isinstance(p, dict)]
+        for p in _piter:
+            truth_map = p.get("truth_at_fabula") or {}
+            if not truth_map:
+                continue
+            items = sorted(
+                ((int(t), bool(v)) for t, v in truth_map.items()),
+                key=lambda kv: kv[0],
+            )
+            if items and items[-1][1] is False:
+                pid = p.get("id") or p.get("proposition_id") or "?"
+                desc = (p.get("description") or "").strip().replace("\n", " ")
+                if len(desc) > 120:
+                    desc = desc[:117] + "…"
+                false_props.append(f"`{pid}` (false @ T={items[-1][0]}) — {desc}")
+    if prevented_events or false_props:
+        lines.append(
+            "\n## NEGATIVE FACTS — these did NOT occur / are NOT true"
+        )
+        lines.append(
+            "  Treat the items below as authoritative non-events. The "
+            "answer must not assert them as having happened or being "
+            "true. Characters may still *believe* a false proposition "
+            "(belief ≠ fact); answer that distinction explicitly when "
+            "asked, but do not enact the proposition as fact."
+        )
+        for evt in prevented_events[:max_events]:
+            eid = evt.get("id", "?")
+            ft = evt.get("fabula_time", "?")
+            etype = evt.get("event_type", "?")
+            desc = (evt.get("description") or "").strip().replace("\n", " ")
+            if len(desc) > 120:
+                desc = desc[:117] + "…"
+            lines.append(f"- T={ft} `{eid}` [{etype}] — {desc}")
+        for fp in false_props[:max_events]:
+            lines.append(f"- {fp}")
+
     return "\n".join(lines)
 
 
@@ -365,6 +457,15 @@ Rules:
   • The active branch is the source of truth for the answer. When on a
     shadow fork, do NOT default back to canonical / factual outcomes
     that the shadow has overwritten — answer from the shadow state.
+  • The world state has a NEGATIVE FACTS section listing events the
+    physics tags as `prevented` / `never_happened` / `removed` and
+    propositions whose latest commit in `truth_at_fabula` is FALSE.
+    Treat these as authoritative non-events: do NOT assert any of
+    them as having occurred or being true. A character may still
+    *believe* a false proposition; surface that distinction
+    explicitly when relevant (e.g. "Macbeth believes Banquo is
+    dead" vs "Banquo is alive"), but do not enact the proposition
+    as fact in the answer.
   • If the answer is not deducible, say so plainly and lower confidence.
   • Reference characters, events, and locations by their human names
     in the prose answer; list the exact node ids in evidence_node_ids.
@@ -405,6 +506,14 @@ Rules:
     direct knowledge, inference, and what X is unaware of.
   • When asked about relationships or spatial reachability, walk the
     social_topology / spatial_topology edges.
+  • The world state has a NEGATIVE FACTS section listing events the
+    physics tags as `prevented` / `never_happened` / `removed` and
+    propositions whose latest commit is FALSE. Do NOT walk through
+    a prevented event as if it occurred, do NOT cite a falsified
+    proposition as a cause, and do NOT include their node ids in
+    evidence_node_ids as supporting evidence for a positive claim.
+    A causal chain that depends on a prevented event collapses —
+    say so plainly.
   • If require_proof is true, only assert claims you can back with at
     least one explicit edge or event in the supplied data, and only
     use edges that belong to the active branch.
@@ -421,17 +530,111 @@ Rules:
 """
 
 
+_SYSTEM_PROMPT_INTERVENTION = """\
+You are the Shadow Loom Pearl-Rung-2 (do-operator) analyst. The user
+asked a Rung-2 question — they want to know what the world looks like
+*under a forced surgery* on its present state. The world-state slice
+you are given is the post-do sandbox produced by the causal physics
+engine (NOT the factual mainline).
+
+You will be given:
+  1. The user's question.
+  2. The active AMWN branch and the omniscient post-do world-state
+     slice. Treat this slice as the ground truth for everything the
+     question asks "now".
+  3. Phase-7 RUNG-2 SURGERY METADATA when the parser produced typed
+     ``do_targets``. The metadata names the *kind* of surgery and the
+     concrete payload — DoEvent / DoProposition / DoBelief / DoConcern
+     / DoTrait — and lists the propositions, beliefs, and concerns
+     whose values shifted relative to the factual world.
+
+Rules:
+  • Answer ONLY from the supplied (post-do) world state. The factual
+    mainline is background contrast; do NOT default to it.
+  • Match the surgery's epistemic / ontic register:
+      - DoProposition  → "Under the clamp that PROP X is true, …" (ontic).
+      - DoBelief       → "From holder H's clamped belief …" (epistemic;
+        the world may be unchanged but H's beliefs were forced).
+      - DoConcern      → "With holder H's concern C clamped to
+        salience S, …" (motivational; reweighs disposition, not facts).
+      - DoTrait        → "With H's trait T clamped to V, …".
+      - DoEvent        → "Under do(E={occurred|prevented}), …".
+  • When the surgery is vacuous (Rule 3 pruned target_node_ids) say so
+    plainly and lower confidence; do NOT invent downstream ripples.
+  • When typed AFFECTED PROPOSITIONS / BELIEFS / CONCERNS are listed,
+    foreground them in the answer rather than leading with low-stake
+    surface state changes.
+  • Never name the rung level or the words "do-operator" in the
+    rendered prose. Use natural conditional language ("Suppose…",
+    "If we force…", "Under that clamp,…").
+  • Reference characters and events by human names in the prose;
+    list exact node ids (and PROP_/CCN_ ids) in evidence_node_ids.
+"""
+
+
+_SYSTEM_PROMPT_COUNTERFACTUAL = """\
+You are the Shadow Loom Pearl-Rung-3 (counterfactual) analyst. The
+user asked a Rung-3 question — they want to know what *would have*
+happened had the past been different. The world-state slice you are
+given is the post-abduction, post-prediction sandbox after a
+historical surgery (NOT the factual mainline).
+
+You will be given:
+  1. The user's question.
+  2. The active AMWN branch and the omniscient counterfactual
+     world-state slice (the simulated branch).
+  3. A FACTUAL MAINLINE contrast block (when available) so you can
+     diff actual vs counterfactual.
+  4. Phase-7 RUNG-3 SURGERY METADATA when the parser produced typed
+     ``historical_do_targets``. The metadata names the *kind* of
+     historical surgery and lists the propositions, beliefs, and
+     concerns that flipped between actual and counterfactual.
+  5. A NARRATIVE FORM tag when one was inferred (tragic / comic /
+     ironic / neutral) — apply the matching closing register.
+
+Rules:
+  • Answer ONLY from the counterfactual world state for what *would*
+    happen; cite the factual mainline only when contrasting.
+  • Match the surgery's epistemic / ontic register:
+      - DoProposition  → "Had it been the case that PROP X = T, …".
+      - DoBelief       → "Had H believed otherwise about PROP X, …"
+        (epistemic — Romeo not believing Juliet dead, etc.).
+      - DoConcern      → "Without H's concern C, …" (motivational —
+        Roese commission/omission frame).
+      - DoTrait        → "Had H been less/more T, …".
+      - DoEvent        → "Had E not occurred (or had it gone
+        differently), …".
+  • Apply the narrative-form hedge:
+      - tragic   → close with an "and yet" register; foreground regret.
+      - comic    → close with an "and so" register; foreground relief.
+      - ironic   → "as if to mock" — same magnitude, rearranged
+        polarities.
+      - neutral  → "though it would have made no difference".
+  • Surface the AFFECTED PROPOSITIONS / BELIEFS / CONCERNS as the
+    causal mechanism of the counterfactual outcome.
+  • If the abduction did not yield enough to answer, say so plainly,
+    lower confidence to <=0.3, and add a caveat.
+  • Never name the rung level or "abduction" / "do-operator" in the
+    rendered prose. Use natural subjunctive language.
+  • Reference by human names in prose; list ids (incl. PROP_/CCN_) in
+    evidence_node_ids.
+"""
+
+
 def _build_answer_agent(
     config: GenerationConfig,
     *,
     query_type: str,
 ) -> Agent[None, AnswerCard]:
-    """Construct the Q&A agent for ``general`` / ``interrogate``."""
-    system_prompt = (
-        _SYSTEM_PROMPT_INTERROGATE
-        if query_type == "interrogate"
-        else _SYSTEM_PROMPT_GENERAL
-    )
+    """Construct the Q&A agent for the given query type."""
+    if query_type == "interrogate":
+        system_prompt = _SYSTEM_PROMPT_INTERROGATE
+    elif query_type == "intervention":
+        system_prompt = _SYSTEM_PROMPT_INTERVENTION
+    elif query_type == "counterfactual":
+        system_prompt = _SYSTEM_PROMPT_COUNTERFACTUAL
+    else:
+        system_prompt = _SYSTEM_PROMPT_GENERAL
     agent: Agent[None, AnswerCard] = Agent(
         _resolve_model(config.model),
         output_type=NativeOutput(AnswerCard),
@@ -459,6 +662,11 @@ def answer_question(
     factual_contrast_summary: Optional[str] = None,
     preceding_prose: Optional[str] = None,
     narrative_style: Optional[Any] = None,
+    do_targets: Optional[List[Dict[str, Any]]] = None,
+    affected_propositions: Optional[List[str]] = None,
+    affected_beliefs: Optional[List[str]] = None,
+    affected_concerns: Optional[List[str]] = None,
+    tragedy_form: Optional[str] = None,
 ) -> AnswerCard:
     """Answer a Q&A question using the supplied world-state slice.
 
@@ -488,8 +696,12 @@ def answer_question(
             caveats=["Empty question."],
         )
 
+    _gs = _get_settings().generation
     context_block = _compress_world_state(
-        physics_state, branch_world_id=branch_world_id,
+        physics_state,
+        branch_world_id=branch_world_id,
+        max_entities=_gs.answer_max_entities,
+        max_events=_gs.answer_max_events,
     )
     user_msg_parts: List[str] = [
         f"Question: {question.strip()}",
@@ -501,6 +713,48 @@ def answer_question(
         user_msg_parts.append(
             f"Require causal proof: {'yes' if require_proof else 'no'}"
         )
+
+    # Phase-9: surface typed Pearl-rung surgery metadata so the
+    # intervention / counterfactual answer agents can match the right
+    # epistemic / ontic register and apply the narrative-form hedge.
+    # Caller is expected to forward these from the rung-2 / rung-3
+    # ``calculate_narrative_physics`` result dict (Phase-7 keys).
+    if query_type in ("intervention", "counterfactual"):
+        rung_label = "RUNG-2" if query_type == "intervention" else "RUNG-3"
+        if do_targets:
+            user_msg_parts.extend([
+                "",
+                f"=== {rung_label} SURGERY METADATA (typed do_targets) ===",
+            ])
+            for t in do_targets:
+                kind = t.get("target_kind", "?")
+                # Compact one-line summary per target so the LLM can
+                # see the discriminator + the kind-specific payload.
+                payload_keys = [k for k in t.keys() if k != "target_kind"]
+                fields = ", ".join(
+                    f"{k}={t[k]!r}" for k in payload_keys if t.get(k) is not None
+                )
+                user_msg_parts.append(f"  - {kind}: {fields}")
+        if affected_propositions:
+            user_msg_parts.append(
+                "AFFECTED PROPOSITIONS (truth flipped under the surgery): "
+                + ", ".join(affected_propositions)
+            )
+        if affected_beliefs:
+            user_msg_parts.append(
+                "AFFECTED BELIEFS (confidence shifted under the surgery): "
+                + ", ".join(affected_beliefs)
+            )
+        if affected_concerns:
+            user_msg_parts.append(
+                "AFFECTED CONCERNS (satisfaction or salience shifted): "
+                + ", ".join(affected_concerns)
+            )
+        if tragedy_form:
+            user_msg_parts.append(
+                f"NARRATIVE FORM: {tragedy_form} \u2014 apply the matching "
+                "closing register per the system prompt."
+            )
     if branch_world_id == "shadow" and factual_contrast_summary:
         user_msg_parts.extend([
             "",
@@ -511,10 +765,14 @@ def answer_question(
             "not assume the shadow branch follows it.)",
         ])
     if preceding_prose:
+        _pp_max = _get_settings().generation.preceding_prose_max_chars
+        _pp = preceding_prose.strip()
+        if len(_pp) > _pp_max:
+            _pp = "\u2026" + _pp[-_pp_max:]
         user_msg_parts.extend([
             "",
             "=== STORY SO FAR (prior prose on this branch) ===",
-            preceding_prose.strip(),
+            _pp,
         ])
     if narrative_style is not None:
         # Surface the source register so the LLM uses the same

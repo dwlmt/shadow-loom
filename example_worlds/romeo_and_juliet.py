@@ -17,6 +17,7 @@ from shadow_loom.models import (
     CausalEdge, SpatialEdge, RelationshipEdge, RelationshipMetric, TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
     GlobalTrait, WorldTraitSnapshot,
     NarrativeStyle,
+    Concern, Proposition, ConcernSnapshot, PropositionSnapshot,
 )
 
 world_state = WorldStateV1(
@@ -82,6 +83,8 @@ world_state = WorldStateV1(
             description="Neighbouring city where Romeo lives in exile after killing Tybalt.",
             ambient_state={
                 "isolation": AmbientVector(value=0.75, volatility=0.3, evidence_strength="strong"),
+                # Frijda action-readiness: exile city has roads back to Verona — flight feasible.
+                "connected_to": AmbientVector(value=1.0, volatility=0.0, evidence_strength="strong"),
             },
         ),
         "LOC_APOTHECARY": Location(
@@ -97,6 +100,8 @@ world_state = WorldStateV1(
             ambient_state={
                 "danger": AmbientVector(value=0.85, volatility=0.3, evidence_strength="strong"),
                 "grief": AmbientVector(value=0.95, volatility=0.1, evidence_strength="strong"),
+                # Sealed tomb — no flight, dread floor for whoever is inside.
+                "connected_to": AmbientVector(value=0.0, volatility=0.0, evidence_strength="strong"),
             },
         ),
     },
@@ -158,10 +163,38 @@ world_state = WorldStateV1(
                 "shame": TraitVector(value=0.1, inertia=0.3, evidence_strength="weak"),
             },
             beliefs=[
-                Belief(target_id="ENT_ROSALINE", perceived_state="Rosaline is the only girl I can ever love",
+                Belief(target_id="ENT_ROSALINE", perceived_state="Rosaline is the only girl I can ever love", proposition_id="PROP_LOVE_BOND",
                        confidence=0.8, inertia=0.3, evidence_strength="strong"),
-                Belief(target_id="ENT_TYBALT", perceived_state="Tybalt is my enemy by birthright",
+                Belief(target_id="ENT_TYBALT", perceived_state="Tybalt is my enemy by birthright", proposition_id="PROP_HOUSE_HONOUR",
                        confidence=0.85, inertia=0.45, evidence_strength="moderate"),
+            ],
+            concerns=[
+                # Sternberg passionate-bond + Lazarus existential desire — anchors love & joy after the balcony,
+                # and grief / despair when Juliet is reported dead.
+                Concern(concern_id="CCN_ROMEO_LOVES_JULIET", proposition_id="PROP_LOVE_BOND",
+                        polarity="desire", kind="love", salience=0.95,
+                        activation_fabula_window=[2000, 17000]),
+                Concern(concern_id="CCN_ROMEO_JULIET_ALIVE", proposition_id="PROP_JULIET_ALIVE",
+                        polarity="desire", kind="survival", salience=0.95,
+                        activation_fabula_window=[2000, 17000],
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=14500, triggered_by="EVT_BALTHASAR_REPORTS_DEATH",
+                                            salience=1.0, polarity="fear", kind="loss",
+                                            counter_concern_ids=["CCN_ROMEO_LOVES_JULIET"]),
+                        ]),
+                # Romeo opens the play lamenting the feud ("O brawling love, O loving hate");
+                # he wants peace as a precondition for the bond.
+                Concern(concern_id="CCN_ROMEO_DESIRES_PEACE", proposition_id="PROP_FEUD_ENDS",
+                        polarity="desire", kind="loyalty", salience=0.6,
+                        activation_fabula_window=[500, 17000]),
+                # Post-banishment, Romeo's central drive is to return to Juliet.
+                Concern(concern_id="CCN_ROMEO_DESIRES_RETURN", proposition_id="PROP_ROMEO_RETURNS_FROM_EXILE",
+                        polarity="desire", kind="freedom", salience=0.75,
+                        activation_fabula_window=[7000, 16000]),
+                # Averill normative-violation: Tybalt's killing of Mercutio is the trigger for Romeo's rage.
+                Concern(concern_id="CCN_ROMEO_AVENGE_MERCUTIO", proposition_id="PROP_TYBALT_AVENGED",
+                        polarity="desire", kind="vengeance", salience=0.9,
+                        activation_fabula_window=[6000, 7500]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=1200, triggered_by="EVT_BENVOLIO_PERSUADES_ROMEO",
@@ -176,7 +209,7 @@ world_state = WorldStateV1(
                     },
                     beliefs_invalidated=["ENT_ROSALINE"],
                     beliefs_added=[
-                        Belief(target_id="ENT_JULIET", perceived_state="Juliet is the only woman I have ever truly loved",
+                        Belief(target_id="ENT_JULIET", perceived_state="Juliet is the only woman I have ever truly loved", proposition_id="PROP_LOVE_BOND",
                                confidence=1.0, inertia=0.7, established_at_fabula=2000, evidence_strength="strong"),
                     ]),
                 EntityStateSnapshot(fabula_time=4000, triggered_by="EVT_SECRET_MARRIAGE",
@@ -198,6 +231,7 @@ world_state = WorldStateV1(
                     },
                     beliefs_added=[
                         Belief(target_id="ENT_JULIET", perceived_state="Juliet is dead",
+                               proposition_id="PROP_JULIET_ALIVE",
                                confidence=0.95, inertia=0.85, established_at_fabula=14500, evidence_strength="strong"),
                     ]),
                 EntityStateSnapshot(fabula_time=15500, triggered_by="EVT_ROMEO_KILLS_PARIS",
@@ -222,8 +256,26 @@ world_state = WorldStateV1(
                 "resolve": TraitVector(value=0.4, inertia=0.4, evidence_strength="moderate"),
             },
             beliefs=[
-                Belief(target_id="ENT_CAPULET", perceived_state="My father expects me to marry whomever he chooses",
+                Belief(target_id="ENT_CAPULET", perceived_state="My father expects me to marry whomever he chooses", proposition_id="PROP_JULIET_OBEDIENT_DAUGHTER",
                        confidence=0.9, inertia=0.6, evidence_strength="strong"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_JULIET_LOVES_ROMEO", proposition_id="PROP_LOVE_BOND",
+                        polarity="desire", kind="love", salience=0.95,
+                        activation_fabula_window=[2000, 17000],
+                        counter_concern_ids=["CCN_JULIET_FEARS_PARIS", "CCN_JULIET_FEARS_FATHER"]),
+                Concern(concern_id="CCN_JULIET_ROMEO_ALIVE", proposition_id="PROP_ROMEO_ALIVE",
+                        polarity="desire", kind="survival", salience=0.95,
+                        activation_fabula_window=[7000, 17000]),
+                # Forced betrothal = Averill normative-violation → rage / desperation.
+                Concern(concern_id="CCN_JULIET_FEARS_PARIS", proposition_id="PROP_PARIS_MARRIES_JULIET",
+                        polarity="fear", kind="injustice", salience=0.9,
+                        activation_fabula_window=[10000, 16000],
+                        counter_concern_ids=["CCN_JULIET_LOVES_ROMEO"]),
+                Concern(concern_id="CCN_JULIET_FEARS_FATHER", proposition_id="PROP_JULIET_OBEDIENT_DAUGHTER",
+                        polarity="fear", kind="humiliation", salience=0.7,
+                        activation_fabula_window=[10000, 16000],
+                        counter_concern_ids=["CCN_JULIET_LOVES_ROMEO"]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_PARIS_PROPOSAL",
@@ -236,7 +288,7 @@ world_state = WorldStateV1(
                         "courage": TraitVector(value=0.7, inertia=0.5, evidence_strength="strong"),
                     },
                     beliefs_added=[
-                        Belief(target_id="ENT_ROMEO", perceived_state="Romeo is my true love despite our families' feud",
+                        Belief(target_id="ENT_ROMEO", perceived_state="Romeo is my true love despite our families' feud", proposition_id="PROP_LOVE_BOND",
                                confidence=0.95, inertia=0.7, established_at_fabula=2000, evidence_strength="strong"),
                     ]),
                 EntityStateSnapshot(fabula_time=4000, triggered_by="EVT_SECRET_MARRIAGE",
@@ -262,6 +314,7 @@ world_state = WorldStateV1(
                     status="healthy",
                     beliefs_added=[
                         Belief(target_id="ENT_ROMEO", perceived_state="Romeo is dead beside me",
+                               proposition_id="PROP_ROMEO_ALIVE",
                                confidence=1.0, inertia=0.95, established_at_fabula=16500,
                                acquired_via_event_id="EVT_JULIET_AWAKES",
                                evidence_strength="strong"),
@@ -281,8 +334,16 @@ world_state = WorldStateV1(
                 "fury": TraitVector(value=0.5, inertia=0.35, evidence_strength="moderate"),
             },
             beliefs=[
-                Belief(target_id="ENT_ROMEO", perceived_state="Romeo's intrusion at our ball is an insult that demands blood",
+                Belief(target_id="ENT_ROMEO", perceived_state="Romeo's intrusion at our ball is an insult that demands blood", proposition_id="PROP_HOUSE_HONOUR",
                        confidence=0.95, inertia=0.7, established_at_fabula=3000, evidence_strength="strong"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_TYBALT_HOUSE_HONOUR", proposition_id="PROP_HOUSE_HONOUR",
+                        polarity="desire", kind="loyalty", salience=0.95,
+                        activation_fabula_window=[500, 7000]),
+                Concern(concern_id="CCN_TYBALT_PUNISH_ROMEO", proposition_id="PROP_ROMEO_HUMBLED",
+                        polarity="desire", kind="injustice", salience=0.9,
+                        activation_fabula_window=[3000, 7000]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=5000, triggered_by="EVT_TYBALT_CHALLENGES_ROMEO",
@@ -305,11 +366,20 @@ world_state = WorldStateV1(
                 "anger": TraitVector(value=0.4, inertia=0.3, evidence_strength="weak"),
             },
             beliefs=[],
+            concerns=[
+                # Mercutio's loyalty to Romeo is the bond Tybalt violates → Averill rage trigger for Romeo.
+                Concern(concern_id="CCN_MERCUTIO_LOYAL_TO_ROMEO", proposition_id="PROP_LOVE_BOND",
+                        polarity="desire", kind="loyalty", salience=0.7,
+                        activation_fabula_window=[500, 6000]),
+                Concern(concern_id="CCN_MERCUTIO_HUMILIATION", proposition_id="PROP_TYBALT_HUMBLED",
+                        polarity="desire", kind="humiliation", salience=0.8,
+                        activation_fabula_window=[5000, 6000]),
+            ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=6000, triggered_by="EVT_TYBALT_KILLS_MERCUTIO",
                     traits={"anger": TraitVector(value=0.95, inertia=0.45, evidence_strength="strong")},
                     beliefs_added=[
-                        Belief(target_id="ENT_ROMEO", perceived_state="Romeo's pacifism is vile submission",
+                        Belief(target_id="ENT_ROMEO", perceived_state="Romeo's pacifism is vile submission", proposition_id="PROP_HOUSE_HONOUR",
                                confidence=0.7, inertia=0.5, established_at_fabula=6000, evidence_strength="strong"),
                     ],
                     status="dead"),
@@ -324,7 +394,7 @@ world_state = WorldStateV1(
                 "courage": TraitVector(value=0.6, inertia=0.5, evidence_strength="moderate"),
             },
             beliefs=[
-                Belief(target_id="ENT_ROMEO", perceived_state="Romeo's lovesickness for Rosaline can be cured by a new beauty",
+                Belief(target_id="ENT_ROMEO", perceived_state="Romeo's lovesickness for Rosaline can be cured by a new beauty", proposition_id="PROP_LOVE_BOND",
                        confidence=0.7, inertia=0.4, evidence_strength="moderate"),
             ],
         ),
@@ -339,7 +409,16 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_ROMEO", perceived_state="This marriage may at last heal the Montague-Capulet feud",
+                       proposition_id="PROP_FEUD_ENDS",
                        confidence=0.6, inertia=0.5, evidence_strength="moderate"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_FRIAR_FEUD_ENDS", proposition_id="PROP_FEUD_ENDS",
+                        polarity="desire", kind="loyalty", salience=0.85,
+                        activation_fabula_window=[2000, 17500]),
+                Concern(concern_id="CCN_FRIAR_FEARS_DISCOVERY", proposition_id="PROP_PLAN_DISCOVERED",
+                        polarity="fear", kind="exposure", salience=0.7,
+                        activation_fabula_window=[4000, 17000]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=17000, triggered_by="EVT_JULIET_STABS_SELF",
@@ -373,6 +452,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_JULIET", perceived_state="Juliet is dead",
+                       proposition_id="PROP_JULIET_ALIVE",
                        confidence=0.9, inertia=0.6, established_at_fabula=13500, evidence_strength="moderate"),
             ],
             state_timeline=[
@@ -394,7 +474,19 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_JULIET", perceived_state="Juliet's grief is for Tybalt and a Paris match will cheer her",
+                       proposition_id="PROP_PARIS_MARRIES_JULIET",
                        confidence=0.7, inertia=0.55, evidence_strength="moderate"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_CAPULET_OBEDIENT_DAUGHTER", proposition_id="PROP_JULIET_OBEDIENT_DAUGHTER",
+                        polarity="desire", kind="power", salience=0.85,
+                        activation_fabula_window=[1000, 13000]),
+                Concern(concern_id="CCN_CAPULET_HOUSE_HONOUR", proposition_id="PROP_HOUSE_HONOUR",
+                        polarity="desire", kind="loyalty", salience=0.85,
+                        activation_fabula_window=[500, 17500]),
+                Concern(concern_id="CCN_CAPULET_LOVES_JULIET", proposition_id="PROP_JULIET_ALIVE",
+                        polarity="desire", kind="love", salience=0.7,
+                        activation_fabula_window=[1000, 17500]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=800, triggered_by="EVT_PRINCE_DECREE",
@@ -437,7 +529,7 @@ world_state = WorldStateV1(
                 "warmth": TraitVector(value=0.8, inertia=0.6, evidence_strength="strong"),
             },
             beliefs=[
-                Belief(target_id="ENT_JULIET", perceived_state="Juliet should marry Paris now that Romeo is exiled",
+                Belief(target_id="ENT_JULIET", perceived_state="Juliet should marry Paris now that Romeo is exiled", proposition_id="PROP_PARIS_MARRIES_JULIET",
                        confidence=0.6, inertia=0.4, established_at_fabula=9500, evidence_strength="moderate"),
             ],
         ),
@@ -470,7 +562,7 @@ world_state = WorldStateV1(
                 "weariness": TraitVector(value=0.4, inertia=0.4, evidence_strength="moderate"),
             },
             beliefs=[
-                Belief(target_id="ENT_MONTAGUE", perceived_state="Both houses are equally guilty of disturbing the peace",
+                Belief(target_id="ENT_MONTAGUE", perceived_state="Both houses are equally guilty of disturbing the peace", proposition_id="PROP_FEUD_ENDS",
                        confidence=0.9, inertia=0.65, evidence_strength="strong"),
             ],
         ),
@@ -484,7 +576,13 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_JULIET", perceived_state="Juliet will come to love me once we marry",
+                       proposition_id="PROP_PARIS_MARRIES_JULIET",
                        confidence=0.6, inertia=0.45, evidence_strength="moderate"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_PARIS_MARRIES_JULIET", proposition_id="PROP_PARIS_MARRIES_JULIET",
+                        polarity="desire", kind="love", salience=0.75,
+                        activation_fabula_window=[1000, 15500]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=15500, triggered_by="EVT_ROMEO_KILLS_PARIS",
@@ -623,7 +721,7 @@ world_state = WorldStateV1(
                   addressee_ids=["ENT_ROMEO"],
                   actor_ids=["ENT_NURSE"],
                   target_ids=["EVT_SECRET_MARRIAGE", "ENT_JULIET"],
-                  via_channel_id="CHN_NURSE_CONFIDANT", truth_value="true"),
+                  via_channel_id="CHN_NURSE_CONFIDANT", truth_value="performative"),
         EventNode(id="EVT_UTT_FRIAR_EXPLAINS_POTION", fabula_time=11500, syuzhet_index=32,
                   event_type="utterance",
                   description="In his cell Friar Laurence privately explains the sleeping-potion stratagem to Juliet — she will appear dead for forty-two hours and Romeo will fetch her.",
@@ -632,7 +730,7 @@ world_state = WorldStateV1(
                   addressee_ids=["ENT_JULIET"],
                   actor_ids=["ENT_FRIAR_LAURENCE"],
                   target_ids=["EVT_FRIAR_GIVES_POTION", "EVT_JULIET_TAKES_POTION", "OBJ_SLEEPING_POTION"],
-                  via_channel_id=None, truth_value="true"),
+                  via_channel_id=None, truth_value="performative"),
         EventNode(id="EVT_UTT_FRIAR_LETTER_TO_ROMEO", fabula_time=12000, syuzhet_index=33,
                   event_type="utterance",
                   description="Friar Laurence entrusts Friar John with a letter to Romeo in Mantua explaining the potion plan; the letter is never delivered because of the plague-quarantine.",
@@ -640,7 +738,7 @@ world_state = WorldStateV1(
                   speaker_id="ENT_FRIAR_LAURENCE",
                   addressee_ids=["ENT_ROMEO"],
                   actor_ids=["ENT_FRIAR_LAURENCE", "ENT_FRIAR_JOHN"],
-                  target_ids=["EVT_FRIAR_GIVES_POTION", "EVT_JULIET_TAKES_POTION", "EVT_PLAGUE_QUARANTINE_FRIAR_JOHN", "OBJ_FRIAR_LETTER"],
+                  target_ids=["EVT_FRIAR_GIVES_POTION", "EVT_JULIET_TAKES_POTION", "OBJ_FRIAR_LETTER"],
                   via_channel_id=None, truth_value="unknown"),
         EventNode(id="EVT_UTT_BALTHASAR_REPORTS_JULIETS_DEATH", fabula_time=14500, syuzhet_index=34,
                   event_type="utterance",
@@ -1014,6 +1112,58 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_PARIS_PROPOSAL", target_id="ENT_PARIS", rel_counterpart_id="ENT_JULIET", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.4, mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1000, propagation_delay=0),
         CausalEdge(source_id="EVT_PRINCE_DECREE", target_id="ENT_PRINCE_ESCALUS", rel_counterpart_id="ENT_CAPULET", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.8, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=800, propagation_delay=0),
         CausalEdge(source_id="EVT_PRINCE_DECREE", target_id="ENT_PRINCE_ESCALUS", rel_counterpart_id="ENT_MONTAGUE", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.8, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=800, propagation_delay=0),
+        # ── auto-backfilled per-axis mutation_social ──
+        CausalEdge(source_id="EVT_UTT_BENVOLIO_DRAWS_OUT_ROSALINE", target_id="ENT_ROMEO", rel_counterpart_id="ENT_BENVOLIO",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.24,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1200, propagation_delay=0),
+        CausalEdge(source_id="EVT_SECRET_MARRIAGE", target_id="ENT_ROMEO", rel_counterpart_id="ENT_FRIAR_LAURENCE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.22,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=4000, propagation_delay=0),
+        CausalEdge(source_id="EVT_ROMEO_MEETS_JULIET", target_id="ENT_JULIET", rel_counterpart_id="ENT_PARIS",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.21,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_CAPULET_BALL", target_id="ENT_CAPULET", rel_counterpart_id="ENT_PRINCE_ESCALUS",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.05,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=1800, propagation_delay=0),
+        CausalEdge(source_id="EVT_FAMILIES_RECONCILE", target_id="ENT_MONTAGUE", rel_counterpart_id="ENT_PRINCE_ESCALUS",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.05,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=17500, propagation_delay=0),
+        CausalEdge(source_id="EVT_ROMEO_MEETS_JULIET", target_id="ENT_JULIET", rel_counterpart_id="ENT_PARIS",  # auto-backfill
+                   causality_type="mutation_social", trait_target="fear", trait_delta=0.12,
+                   mechanism="psychological", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_UTT_BENVOLIO_DRAWS_OUT_ROSALINE", target_id="ENT_ROMEO", rel_counterpart_id="ENT_BENVOLIO",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.06,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1200, propagation_delay=0),
+        CausalEdge(source_id="EVT_SECRET_MARRIAGE", target_id="ENT_ROMEO", rel_counterpart_id="ENT_FRIAR_LAURENCE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.15,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=4000, propagation_delay=0),
+        CausalEdge(source_id="EVT_ROMEO_MEETS_JULIET", target_id="ENT_JULIET", rel_counterpart_id="ENT_PARIS",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.12,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=2000, propagation_delay=0),
+        CausalEdge(source_id="EVT_CAPULET_BALL", target_id="ENT_CAPULET", rel_counterpart_id="ENT_PRINCE_ESCALUS",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.24,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=1800, propagation_delay=0),
+        CausalEdge(source_id="EVT_FAMILIES_RECONCILE", target_id="ENT_MONTAGUE", rel_counterpart_id="ENT_PRINCE_ESCALUS",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.24,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=17500, propagation_delay=0),
+
+        # ── WORLD_ → WORLD_ (named-latent forces destabilising one another) ──
+        CausalEdge(source_id="WORLD_HONOUR_CULTURE", target_id="WORLD_FAMILY_FEUD",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=7000,
+                   description="Honour culture re-ignites the feud at every insult — Tybalt's challenge after the masque is the duelling code working as designed."),
+        CausalEdge(source_id="WORLD_PATRIARCHAL_AUTHORITY", target_id="WORLD_FAMILY_FEUD",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=11000,
+                   description="Patriarchal disposal of Juliet to Paris is the feud reproducing itself in the next generation — the very mechanism the lovers must defy."),
+        CausalEdge(source_id="WORLD_PLAGUE_QUARANTINE", target_id="WORLD_FATE",
+                   causality_type="chain_reaction", mechanism="informational", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=15500,
+                   description="The plague that traps Friar John is the contingent vehicle by which 'star-crossed' fate becomes operative — fate working through quarantine as its named-latent instrument."),
+        CausalEdge(source_id="WORLD_FAMILY_FEUD", target_id="WORLD_HONOUR_CULTURE",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=2200,
+                   description="The standing feud raises every honour-stake — a Capulet/Montague slight cannot be passed off as private quarrel."),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -1069,6 +1219,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.85, inertia=0.75, evidence_strength="strong"),
             affected_domains=["social", "psychological", "betrayal"],
+            proposition_id="PROP_FEUD_ENDS",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=17500, triggered_by="EVT_FAMILIES_RECONCILE",
                     magnitude=TraitVector(value=0.15, inertia=0.45, evidence_strength="strong"),
@@ -1082,6 +1233,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.8, inertia=0.8, evidence_strength="strong"),
             affected_domains=["social", "emotional"],
+            proposition_id="PROP_JULIET_OBEDIENT_DAUGHTER",
         ),
         "WORLD_FATE": GlobalTrait(
             id="WORLD_FATE",
@@ -1090,6 +1242,7 @@ world_state = WorldStateV1(
             category="cosmology",
             magnitude=TraitVector(value=0.55, inertia=0.9, evidence_strength="moderate"),
             affected_domains=["psychological", "epistemic"],
+            proposition_id="PROP_LOVERS_STAR_CROSSED",
         ),
         "WORLD_HONOUR_CULTURE": GlobalTrait(
             id="WORLD_HONOUR_CULTURE",
@@ -1098,6 +1251,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.7, inertia=0.7, evidence_strength="strong"),
             affected_domains=["social", "betrayal"],
+            proposition_id="PROP_HOUSE_HONOUR",
         ),
         "WORLD_PLAGUE_QUARANTINE": GlobalTrait(
             id="WORLD_PLAGUE_QUARANTINE",
@@ -1106,6 +1260,7 @@ world_state = WorldStateV1(
             category="environmental",
             magnitude=TraitVector(value=0.6, inertia=0.85, evidence_strength="strong"),
             affected_domains=["physical", "informational"],
+            proposition_id="PROP_FRIAR_LETTER_DELIVERED",
         ),
     },
 
@@ -1274,5 +1429,81 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=-0.8, inertia=0.75, evidence_strength="strong",   last_updated_fabula=800),
             },
         ),
+    ],
+
+    # ── PROPOSITIONS ─────────────────────────────────────────────
+    # Hand-authored named atoms targeted by the Concerns above.
+    propositions=[
+        Proposition(proposition_id="PROP_LOVE_BOND", kind="relation_holds",
+                    referent_ids=["ENT_ROMEO", "ENT_JULIET"],
+                    description="The Romeo–Juliet marriage bond endures.",
+                    audience_default_prior=0.7, stakes=0.95,
+                    truth_at_fabula={2000: True, 4000: True, 17000: False}),
+        Proposition(proposition_id="PROP_JULIET_ALIVE", kind="trait_holds",
+                    referent_ids=["ENT_JULIET"],
+                    description="Juliet is alive.",
+                    audience_default_prior=0.85, stakes=0.95,
+                    truth_at_fabula={12000: False, 16500: True, 17000: False}),
+        Proposition(proposition_id="PROP_ROMEO_ALIVE", kind="trait_holds",
+                    referent_ids=["ENT_ROMEO"],
+                    description="Romeo is alive.",
+                    audience_default_prior=0.9, stakes=0.95,
+                    truth_at_fabula={16000: False}),
+        Proposition(proposition_id="PROP_FEUD_ENDS", kind="outcome",
+                    referent_ids=["ENT_MONTAGUE", "ENT_CAPULET"],
+                    description="The Montague–Capulet feud is reconciled.",
+                    audience_default_prior=0.2, stakes=0.85,
+                    truth_at_fabula={17500: True}),
+        Proposition(proposition_id="PROP_TYBALT_AVENGED", kind="event_occurs",
+                    referent_ids=["EVT_ROMEO_KILLS_TYBALT", "ENT_MERCUTIO", "ENT_TYBALT"],
+                    description="Romeo kills Tybalt to avenge Mercutio.",
+                    audience_default_prior=0.45, stakes=0.8,
+                    truth_at_fabula={7000: True}),
+        Proposition(proposition_id="PROP_TYBALT_HUMBLED", kind="event_occurs",
+                    referent_ids=["ENT_TYBALT", "ENT_MERCUTIO"],
+                    description="Tybalt is publicly humbled in the duel.",
+                    audience_default_prior=0.4, stakes=0.5,
+                    truth_at_fabula={6000: False}),
+        Proposition(proposition_id="PROP_ROMEO_HUMBLED", kind="event_occurs",
+                    referent_ids=["ENT_ROMEO", "ENT_TYBALT"],
+                    description="Romeo is publicly humbled / chastised by Tybalt for crashing the ball.",
+                    audience_default_prior=0.3, stakes=0.6,
+                    truth_at_fabula={6000: False}),
+        Proposition(proposition_id="PROP_ROMEO_RETURNS_FROM_EXILE", kind="event_occurs",
+                    referent_ids=["ENT_ROMEO", "LOC_VERONA_STREETS"],
+                    description="Romeo is recalled from Mantuan exile and reunited with Juliet.",
+                    audience_default_prior=0.4, stakes=0.85,
+                    truth_at_fabula={15000: True, 16000: False}),
+        Proposition(proposition_id="PROP_PARIS_MARRIES_JULIET", kind="event_occurs",
+                    referent_ids=["ENT_PARIS", "ENT_JULIET"],
+                    description="Paris weds Juliet as her father has decreed.",
+                    audience_default_prior=0.55, stakes=0.75,
+                    truth_at_fabula={15500: False}),
+        Proposition(proposition_id="PROP_HOUSE_HONOUR", kind="trait_holds",
+                    referent_ids=["ENT_TYBALT", "ENT_CAPULET", "ENT_MONTAGUE"],
+                    description="The honour of the great houses is intact.",
+                    audience_default_prior=0.7, stakes=0.6,
+                    truth_at_fabula={1000: True}),
+        Proposition(proposition_id="PROP_JULIET_OBEDIENT_DAUGHTER", kind="trait_holds",
+                    referent_ids=["ENT_JULIET", "ENT_CAPULET"],
+                    description="Juliet remains the obedient Capulet daughter.",
+                    audience_default_prior=0.7, stakes=0.5,
+                    truth_at_fabula={11000: False}),
+        Proposition(proposition_id="PROP_PLAN_DISCOVERED", kind="event_occurs",
+                    referent_ids=["ENT_FRIAR_LAURENCE", "ENT_JULIET"],
+                    description="Friar Laurence's secret marriage and potion plot is exposed.",
+                    audience_default_prior=0.4, stakes=0.7,
+                    truth_at_fabula={17500: True}),
+        # WORLD_ trait Pearl-Rung-2 reifications.
+        Proposition(proposition_id="PROP_LOVERS_STAR_CROSSED", kind="trait_holds",
+                    referent_ids=["WORLD_FATE", "ENT_ROMEO", "ENT_JULIET"],
+                    description="The lovers are 'star-crossed' — fate has already sealed the cluster of contingencies that will destroy them.",
+                    audience_default_prior=0.6, stakes=0.95,
+                    truth_at_fabula={17000: True}),
+        Proposition(proposition_id="PROP_FRIAR_LETTER_DELIVERED", kind="event_occurs",
+                    referent_ids=["WORLD_PLAGUE_QUARANTINE", "ENT_FRIAR_LAURENCE", "ENT_ROMEO"],
+                    description="Friar John reaches Romeo with the letter explaining Juliet's feigned death.",
+                    audience_default_prior=0.7, stakes=0.95,
+                    truth_at_fabula={15500: False}),
     ],
 )

@@ -225,7 +225,7 @@ integrations can migrate one call at a time.
 
 | Tool | Scope | Purpose |
 |---|---|---|
-| `ask(question)` | read | Routes through `parse_query` → `GeneralQuery` / `InterrogationQuery`. After `calculate_narrative_physics` runs, the tool dispatches `shadow_loom.answer.answer_question` to render an `AnswerCard{answer, confidence, caveats, evidence_node_ids}`; the response object surfaces those four fields directly alongside the underlying physics state. No prose, no version write. |
+| `ask(question)` | read | Routes through `parse_query` → `InterrogationQuery`. After `calculate_narrative_physics` runs, the tool dispatches `shadow_loom.answer.answer_question` to render an `AnswerCard{answer, confidence, caveats, evidence_node_ids}`; the response object surfaces those four fields directly alongside the underlying physics state. No prose, no version write. |
 | `compute_tension(vector_id, …)` | read | Runs the affective scorers (mystery / irony / suspense / surprise) over the current graph for a given POV. |
 | `diff_versions(v_a, v_b)` | read | Structured changeset between two versions. |
 

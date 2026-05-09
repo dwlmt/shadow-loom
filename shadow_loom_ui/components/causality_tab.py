@@ -1,16 +1,15 @@
 # SPDX-FileCopyrightText: 2026 David Rae Wilmot
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-"""Causality tab — causal topology, what-if workbench, directive builder.
+"""Causality panels — causal topology + ingestion warnings + affective dashboard.
 
-Four sub-views:
-  1. Causal Topology — Sankey + causal force graph
-  2. Evolution — how the topology grows over fabula time
-  3. What-If Workbench — NL-driven intervention/counterfactual with propagation waterfall
-  4. Directive Builder — visual emotional target builder + NL hybrid
+The top-level Causality tab has been removed. The surviving public
+entry points are now mounted by other tabs:
 
-The Affective Dashboard now lives in its own top-level tab
-(:mod:`shadow_loom_ui.components.affective_tab`).
+  * :func:`_build_causal_topology` → mounted from the Reasoning tab
+    (after the events panel).
+  * :func:`_build_ingestion_warnings_panel` → mounted from the Edit tab.
+  * :func:`build_affective_dashboard` → mounted from the Affective tab.
 """
 
 from __future__ import annotations
@@ -21,8 +20,7 @@ from typing import TYPE_CHECKING
 
 from nicegui import ui
 
-from shadow_loom_ui.state import AppState, NLQueryResult, StateEvent
-from shadow_loom_ui.task_helpers import run_query_as_task
+from shadow_loom_ui.state import AppState, StateEvent
 from shadow_loom_ui.viz import (
     render_causal_force_graph,
     render_causal_sankey,
@@ -30,20 +28,10 @@ from shadow_loom_ui.viz import (
     render_emotional_gauges,
     render_emotional_gauges_graded,
     render_empty_state,
-    render_entity_state_timeline,
-    render_physics_trajectory,
-    render_propagation_graph,
-    render_propagation_waterfall,
-    render_relationship_timeline,
-    render_world_trait_timeline,
     open_explain_dialog,
     with_expand,
 )
-from shadow_loom_ui.viz_helpers import (
-    mutations_to_propagation_rows,
-)
 from shadow_loom_ui.components._subtab_help import subtab_help
-from shadow_loom_ui.components._safe_md import safe_markdown
 
 import json as _json
 
@@ -144,144 +132,6 @@ def _events_at(ws, t: int, *, axis: str = "fabula", limit: int = 3) -> str:
         suffix = f"  (+{extra} more)" + suffix
     return "  \u2022  ".join(parts) + suffix
 
-_EMOTIONAL_TARGETS = [
-    ("mystery", "Mystery"),
-    ("dramatic_irony", "Dramatic Irony"),
-    ("suspense", "Suspense"),
-    ("surprise", "Surprise"),
-    ("grief", "Grief"),
-    ("rage", "Rage"),
-    ("joy", "Joy"),
-    ("fear", "Fear"),
-    ("love", "Love"),
-    ("regret", "Regret"),
-]
-
-
-def build_causality_tab(state: AppState) -> None:
-    """Build the Causality tab with four sub-views."""
-
-    with ui.column().classes("w-full h-full bg-slate-50"):
-        with ui.row().classes(
-            "w-full items-center px-4 py-2 border-b border-slate-200 gap-2 bg-white"
-        ):
-            ui.icon("account_tree", color="primary")
-            ui.label("Causality").classes(
-                "text-sm font-semibold text-slate-700"
-            )
-            ui.space()
-            from shadow_loom_ui.components.help_popover import help_popover
-            help_popover(
-                title="Causality — typed causal graph & what-if workbench",
-                body_md=(
-                    "Four sub-views into the causal/social/spatial/"
-                    "information graph and the engine's intervention"
-                    " / counterfactual workbench.\n\n"
-                    "_Affective scoring (suspense, surprise, irony, ...)"
-                    " lives in its own top-level **Affective** tab._\n\n"
-                    "### Sub-tabs\n"
-                    "- **Causal Topology** — the directed graph of"
-                    " cause→effect edges between events, plus social"
-                    " and spatial slices.\n"
-                    "  - *Sankey Flow* shows volume of causal flow"
-                    " between event clusters.\n"
-                    "  - *Force Graph* lays nodes out by causal"
-                    " proximity — tightly entangled events cluster"
-                    " together. Try *Circular* / *Cartesian* layouts"
-                    " too.\n"
-                    "  - *Aspect* picks which slice to draw (causal"
-                    " only, social, spatial, information, or"
-                    " combined).\n"
-                    "- **Evolution** — how the topology grows over"
-                    " fabula time. Step through the time cursor to"
-                    " watch new events and edges appear.\n"
-                    "- **What-If Workbench** — build interventions or"
-                    " counterfactuals visually: pick a target node,"
-                    " specify the change, run, and inspect mutations,"
-                    " blocked propagations, and hidden deltas.\n"
-                    "- **Directive Builder** — craft an emotional"
-                    " directive (target effect + target entities +"
-                    " intensity) without writing prose. Useful for"
-                    " understanding which levers the engine has.\n\n"
-                    "### Reading the diagrams\n"
-                    "- **Node colour** — event type (choice, outcome,"
-                    " revelation, utterance) or aspect category.\n"
-                    "- **Edge style** — solid for causal, dashed for"
-                    " social, dotted for informational.\n"
-                    "- **Edge thickness** — strength / confidence of"
-                    " the relationship.\n"
-                    "- **Hover** any node / edge for a tooltip with"
-                    " the raw ids and metadata.\n\n"
-                    "### What you can do\n"
-                    "- Filter by aspect, time range, or focus entity.\n"
-                    "- Click an event in the topology to deep-link to"
-                    " its inspector in the Explorer tab.\n"
-                    "- Use the What-If Workbench to design and run a"
-                    " counterfactual without natural language."
-                ),
-                tooltip="What is this tab?",
-            )
-        with ui.tabs().props(
-            "dense no-caps indicator-color=primary active-color=primary align=left"
-        ).classes(
-            "w-full bg-white border-b border-slate-200 px-4"
-        ) as sub_tabs:
-            ui.tab("topology", label="Causal Topology", icon="device_hub")
-            ui.tab("evolution", label="Evolution", icon="timeline")
-            ui.tab("whatif", label="What-If Workbench", icon="science")
-            ui.tab("directive", label="Directive Builder", icon="theater_comedy")
-            ui.tab("warnings", label="Ingestion Warnings", icon="report_problem")
-
-        # Track the active sub-tab so each panel can gate its refresh.
-        # Default-load is "topology"; mirror that into AppState so panels
-        # below first-paint without waiting for a tab change.
-        if state.active_path in ("", "causality"):
-            state.set_active_path("causality.topology")
-
-        def _on_sub_tab(e):
-            val = getattr(e, "args", None)
-            if isinstance(val, str):
-                state.set_active_path(f"causality.{val}")
-
-        sub_tabs.on("update:model-value", _on_sub_tab)
-
-        # When the user clicks the top-level "Causality" tab, the
-        # workspace handler sets ``active_path`` to bare ``"causality"``
-        # — but our sub-panels gate their refresh on the fully-qualified
-        # ``"causality.<sub>"`` path. Without this promotion, every
-        # panel below treats itself as off-screen and silently drops
-        # slider/combo updates (the user observes "the chart doesn't
-        # always update"). Re-broadcast the qualified path so the
-        # currently visible sub-panel un-gates.
-        def _promote_bare_causality(**kw):
-            if state.active_path == "causality":
-                sub_val = getattr(sub_tabs, "value", None) or "topology"
-                state.set_active_path(f"causality.{sub_val}")
-
-        state.on(StateEvent.ACTIVE_PATH_CHANGED, _promote_bare_causality)
-
-        with ui.tab_panels(sub_tabs, value="topology").classes(
-            "w-full flex-grow bg-slate-50"
-        ):
-            with ui.tab_panel("topology").classes("p-4"):
-                subtab_help("causality.topology")
-                _build_causal_topology(state)
-
-            with ui.tab_panel("evolution").classes("p-4"):
-                subtab_help("causality.evolution")
-                _build_evolution_panel(state)
-
-            with ui.tab_panel("whatif").classes("p-4"):
-                subtab_help("causality.whatif")
-                _build_whatif_workbench(state)
-
-            with ui.tab_panel("directive").classes("p-4"):
-                subtab_help("causality.directive")
-                _build_directive_builder(state)
-
-            with ui.tab_panel("warnings").classes("p-4"):
-                _build_ingestion_warnings_panel(state)
-
 
 # =====================================================================
 # 1. Causal Topology
@@ -293,7 +143,9 @@ def _build_causal_topology(state: AppState) -> None:
     from shadow_loom_ui.viz_helpers import (
         SANKEY_ASPECTS,
         _set_slider_bounds,
+        axis_bounds,
         fabula_time_bounds,
+        resolve_cursor,
     )
 
     with ui.column().classes("w-full h-full gap-3"):
@@ -341,16 +193,25 @@ def _build_causal_topology(state: AppState) -> None:
             ).classes("w-48")
             force_slider.tooltip("Hide edges below this causal_force value")
 
-            ui.label("Up to fabula t:").classes("text-sm text-slate-600 ml-4")
+            time_slider_label = ui.label("Up to fabula t:").classes(
+                "text-sm text-slate-600 ml-4"
+            )
             time_slider = ui.slider(min=0, max=1, step=1, value=1).props(
                 "color=secondary label-always dense"
             ).classes("flex-grow min-w-32")
-            time_slider.tooltip("Only show edges with fabula_time ≤ this value")
+            time_slider.tooltip(
+                "Only show edges revealed at or before this cursor "
+                "(syuzhet: events with index ≤ s; fabula: events with "
+                "fabula_time ≤ t). Bound to the global time-axis picker."
+            )
 
             def _reset_time():
                 # Drive through the global cursor so other tabs follow.
                 _slider_state["local_origin_t"] = False
-                state.set_fabula_cursor(None)
+                if state.time_axis == "syuzhet":
+                    state.set_syuzhet_cursor(None)
+                else:
+                    state.set_fabula_cursor(None)
 
             ui.button("Full span", icon="restart_alt", on_click=_reset_time) \
                 .props("flat dense no-caps color=secondary")
@@ -379,7 +240,9 @@ def _build_causal_topology(state: AppState) -> None:
                 t = int(time_slider.value)
             except (TypeError, ValueError):
                 return
-            topo_event_at_cursor.text = _events_at(ws, t, axis="fabula")
+            topo_event_at_cursor.text = _events_at(
+                ws, t, axis=state.time_axis or "fabula",
+            )
 
         time_slider.on(
             "update:model-value", lambda _e: _update_topo_event_label(),
@@ -404,7 +267,11 @@ def _build_causal_topology(state: AppState) -> None:
         }
 
         def _sync_time_slider(ws) -> None:
-            tmin, tmax = fabula_time_bounds(ws)
+            axis = state.time_axis or "fabula"
+            tmin, tmax = axis_bounds(ws, axis)
+            time_slider_label.text = (
+                "Up to syuzhet s:" if axis == "syuzhet" else "Up to fabula t:"
+            )
             if tmax <= tmin:
                 return
             # Quasar's <q-slider> requires numeric min/max props. Passing
@@ -414,7 +281,10 @@ def _build_causal_topology(state: AppState) -> None:
             # original construction-time bounds. Write numeric values
             # straight into the props dict instead.
             _set_slider_bounds(time_slider, tmin, tmax)
-            cur = state.fabula_cursor
+            cur = (
+                state.syuzhet_cursor if axis == "syuzhet"
+                else state.fabula_cursor
+            )
             desired = tmax if cur is None else max(tmin, min(tmax, cur))
             if not _slider_state["local_origin_t"]:
                 try:
@@ -467,14 +337,24 @@ def _build_causal_topology(state: AppState) -> None:
 
             # Sync the time slider widget without bouncing user input back.
             _sync_time_slider(ws)
-            tmin, tmax = fabula_time_bounds(ws)
+            axis = state.time_axis or "fabula"
+            tmin, tmax = axis_bounds(ws, axis)
+            # The Sankey filters by fabula_time on edges; resolve the
+            # syuzhet cursor through the fabula axis so the visible
+            # span matches what the audience has been told by s=K.
+            cursor_value = (
+                state.syuzhet_cursor if axis == "syuzhet"
+                else state.fabula_cursor
+            )
+            fabula_max = resolve_cursor(ws, axis, cursor_value)
+            _, fabula_tmax = fabula_time_bounds(ws)
 
             with graph_container:
                 if is_sankey:
                     fmax = (
-                        state.fabula_cursor
-                        if state.fabula_cursor is not None
-                        else tmax
+                        fabula_max
+                        if fabula_max is not None
+                        else fabula_tmax
                     )
                     aspect_label = dict(SANKEY_ASPECTS).get(
                         aspect_select.value, "Sankey"
@@ -518,7 +398,7 @@ def _build_causal_topology(state: AppState) -> None:
                             height=h,
                             aspect=aspect_select.value,
                             min_force=float(force_slider.value or 0.0),
-                            fabula_max=fmax if tmax > tmin else None,
+                            fabula_max=fmax if fabula_tmax > 0 else None,
                             on_click=_on_sankey_click,
                         ),
                         title=f"Sankey \u2014 {aspect_label}",
@@ -545,17 +425,25 @@ def _build_causal_topology(state: AppState) -> None:
 
         def _on_slider(key: str):
             if key == "t":
-                # Push to global cursor; the FABULA_CURSOR_CHANGED
-                # subscription below triggers _refresh(), so callers
-                # see the same data as every other time-aware panel.
+                # Push to global cursor; the cursor-changed subscription
+                # below triggers _refresh(), so callers see the same data
+                # as every other time-aware panel.
                 try:
                     t = int(time_slider.value)
                 except (TypeError, ValueError):
                     return
-                if state.fabula_cursor == t:
+                axis = state.time_axis or "fabula"
+                cur_global = (
+                    state.syuzhet_cursor if axis == "syuzhet"
+                    else state.fabula_cursor
+                )
+                if cur_global == t:
                     return
                 _slider_state["local_origin_t"] = True
-                state.set_fabula_cursor(t)
+                if axis == "syuzhet":
+                    state.set_syuzhet_cursor(t)
+                else:
+                    state.set_fabula_cursor(t)
                 return
             _refresh()
 
@@ -594,7 +482,13 @@ def _build_causal_topology(state: AppState) -> None:
 
         # Gate by visibility so off-screen Topology doesn't rebuild
         # the Sankey/force graph on every cursor scrub from another tab.
-        _TOPO_PATH = "causality.topology"
+        # NOTE: the workspace top-tab listener sets ``active_path`` to the
+        # bare top-level key (e.g. ``"reasoning"``); reasoning's sub-tabs
+        # don't push a more specific path. Gating on ``"reasoning.topology"``
+        # therefore matched *never* and silently swallowed every
+        # slider/combo refresh. Gate on the top-level path instead so the
+        # slider/aspect/layout/force-min controls actually take effect.
+        _TOPO_PATH = "reasoning"
         _topo_dirty = {"on": True}
         _refresh_sync_topo = _refresh
 
@@ -615,851 +509,12 @@ def _build_causal_topology(state: AppState) -> None:
         state.on(StateEvent.WORLD_STATE_CHANGED, _refresh)
         state.on(StateEvent.TASKS_CHANGED, _on_tasks)
         state.on(StateEvent.ACTIVE_PATH_CHANGED, _on_topo_path)
-        # Cross-tab cursor sync: scrubbing the fabula cursor anywhere
-        # (World tab, Causal Graph snapshot, Affective Dashboard) should
-        # update the Sankey "Up to fabula t" filter so all panels share
-        # one timeline.
+        # Cross-tab cursor sync: scrubbing the cursor anywhere (World
+        # tab, Causal Graph snapshot, Affective Dashboard) should update
+        # this panel's filter so all panels share one timeline.
         state.on(StateEvent.FABULA_CURSOR_CHANGED, lambda **_kw: _refresh())
-
-
-# =====================================================================
-# 1b. Evolution panel — character / relationship / world-trait timelines
-# =====================================================================
-
-def _build_evolution_panel(state: AppState) -> None:
-    """How characters, relationships, and world traits change over the story."""
-
-    from shadow_loom_ui.viz_helpers import (
-        _set_slider_bounds,
-        list_relationship_pairs,
-        list_world_traits,
-    )
-
-    with ui.column().classes("w-full h-full gap-4"):
-        with ui.tabs().props(
-            "dense no-caps indicator-color=primary active-color=primary"
-        ).classes("w-full bg-white border border-slate-200 rounded-xl") as evo_tabs:
-            ui.tab("character", label="Character", icon="person")
-            ui.tab("relationship", label="Relationship", icon="people")
-            ui.tab("world", label="World Trait", icon="public")
-            ui.tab("causal", label="Causal Graph", icon="account_tree")
-            ui.tab("physics", label="Physics", icon="science")
-
-        with ui.tab_panels(evo_tabs, value="character").classes("w-full flex-grow"):
-            # ── Character ────────────────────────────────────────
-            with ui.tab_panel("character").classes("p-3"):
-                subtab_help("causality.evolution.character")
-                with ui.row().classes("w-full items-center gap-3"):
-                    ui.icon("person", color="primary")
-                    ui.label("Entity:").classes("text-sm text-slate-600")
-                    char_select = ui.select(options={}, value=None).props(
-                        "dense outlined options-dense"
-                    ).classes("min-w-56")
-                    char_select.tooltip(
-                        "Pick an entity to see how its traits and status "
-                        "evolve through fabula time"
-                    )
-                char_chart = ui.column().classes(
-                    "w-full h-96 bg-white border border-slate-200 "
-                    "rounded-xl shadow-sm p-3 mt-2"
-                )
-
-                def _refresh_char(**kw):
-                    char_chart.clear()
-                    ws = state.world_state
-                    if ws is None or not ws.entities:
-                        with char_chart:
-                            render_empty_state(
-                                "No entities loaded.",
-                                icon="person_off",
-                                hint="Load a project to see characters and their trait evolution.",
-                            )
-                        char_select.options = {}
-                        char_select.value = None
-                        char_select.update()
-                        return
-                    opts = {eid: ent.name for eid, ent in ws.entities.items()}
-                    if char_select.options != opts:
-                        char_select.options = opts
-                        if char_select.value not in opts:
-                            char_select.value = next(iter(opts))
-                        char_select.update()
-                    with char_chart:
-                        eid = char_select.value
-                        ent_name = ws.entities[eid].name if eid in ws.entities else eid
-                        with_expand(
-                            lambda h, eid=eid: render_entity_state_timeline(eid, ws, height=h),
-                            title=f"Character evolution \u2014 {ent_name}",
-                        )
-
-                char_select.on("update:model-value", lambda: _refresh_char())
-
-            # ── Relationship ─────────────────────────────────────
-            with ui.tab_panel("relationship").classes("p-3"):
-                subtab_help("causality.evolution.relationship")
-                with ui.row().classes("w-full items-center gap-3"):
-                    ui.icon("people", color="primary")
-                    ui.label("Pair:").classes("text-sm text-slate-600")
-                    pair_select = ui.select(options={}, value=None).props(
-                        "dense outlined options-dense"
-                    ).classes("min-w-72")
-                    pair_select.tooltip(
-                        "Pick a relationship dyad to see affinity, fear, "
-                        "and power-dynamic over time"
-                    )
-                rel_chart = ui.column().classes(
-                    "w-full h-96 bg-white border border-slate-200 "
-                    "rounded-xl shadow-sm p-3 mt-2"
-                )
-
-                def _refresh_rel(**kw):
-                    rel_chart.clear()
-                    ws = state.world_state
-                    if ws is None:
-                        with rel_chart:
-                            ui.label("No world model loaded.").classes(
-                                "text-sm text-slate-400 italic"
-                            )
-                        pair_select.options = {}
-                        pair_select.value = None
-                        pair_select.update()
-                        return
-                    pairs = list_relationship_pairs(ws)
-                    if not pairs:
-                        with rel_chart:
-                            render_empty_state(
-                                "No relationships found.",
-                                icon="people_outline",
-                                hint=(
-                                    "Add `mutation_social` causal edges or "
-                                    "RelationshipEdge entries to track how "
-                                    "characters' bonds evolve."
-                                ),
-                            )
-                        pair_select.options = {}
-                        pair_select.value = None
-                        pair_select.update()
-                        return
-                    opts = {f"{a}|{b}": f"{na} ⇄ {nb}" for a, b, na, nb in pairs}
-                    if pair_select.options != opts:
-                        pair_select.options = opts
-                        if pair_select.value not in opts:
-                            pair_select.value = next(iter(opts))
-                        pair_select.update()
-                    if not pair_select.value:
-                        return
-                    a, b = pair_select.value.split("|", 1)
-                    na = ws.entities[a].name if a in ws.entities else a
-                    nb = ws.entities[b].name if b in ws.entities else b
-                    with rel_chart:
-                        with_expand(
-                            lambda h, a=a, b=b: render_relationship_timeline(ws, a, b, height=h),
-                            title=f"Relationship \u2014 {na} \u21c4 {nb}",
-                        )
-
-                pair_select.on("update:model-value", lambda: _refresh_rel())
-
-            # ── World trait ──────────────────────────────────────
-            with ui.tab_panel("world").classes("p-3"):
-                subtab_help("causality.evolution.world")
-                with ui.row().classes("w-full items-center gap-3"):
-                    ui.icon("public", color="primary")
-                    ui.label("Trait:").classes("text-sm text-slate-600")
-                    world_select = ui.select(options={}, value=None).props(
-                        "dense outlined options-dense"
-                    ).classes("min-w-56")
-                    world_select.tooltip(
-                        "Pick a world-level trait (governance, magic, "
-                        "environment\u2026) to see how it shifts over time"
-                    )
-                world_chart = ui.column().classes(
-                    "w-full h-96 bg-white border border-slate-200 "
-                    "rounded-xl shadow-sm p-3 mt-2"
-                )
-
-                def _refresh_world(**kw):
-                    world_chart.clear()
-                    ws = state.world_state
-                    if ws is None or not ws.world_traits:
-                        with world_chart:
-                            render_empty_state(
-                                "No world traits in this world.",
-                                icon="public_off",
-                                hint=(
-                                    "World traits represent setting-level "
-                                    "forces (e.g. surveillance state, magic "
-                                    "system). Add `GlobalTrait` entries to "
-                                    "see how they evolve."
-                                ),
-                            )
-                        world_select.options = {}
-                        world_select.value = None
-                        world_select.update()
-                        return
-                    opts = {wid: name for wid, name in list_world_traits(ws)}
-                    if world_select.options != opts:
-                        world_select.options = opts
-                        if world_select.value not in opts:
-                            world_select.value = next(iter(opts))
-                        world_select.update()
-                    with world_chart:
-                        wid = world_select.value
-                        wname = ws.world_traits[wid].name if wid in ws.world_traits else wid
-                        with_expand(
-                            lambda h, wid=wid: render_world_trait_timeline(ws, wid, height=h),
-                            title=f"World trait \u2014 {wname}",
-                        )
-
-                world_select.on("update:model-value", lambda: _refresh_world())
-
-            # ── Causal graph snapshot ────────────────────────────
-            with ui.tab_panel("causal").classes("p-3"):
-                subtab_help("causality.evolution.causal")
-                ui.label(
-                    "Snapshot of the causal topology at a given fabula time. "
-                    "Edges with fabula_time \u2264 t are included; scrub to "
-                    "watch causality accrete."
-                ).classes("text-xs text-slate-500 mb-2")
-
-                causal_slider_row = ui.row().classes(
-                    "w-full items-center gap-3 flex-wrap"
-                )
-                with causal_slider_row:
-                    ui.icon("schedule", color="primary")
-                    causal_time_label = ui.label("t=0").classes(
-                        "text-sm font-mono text-slate-700 w-20"
-                    )
-                    causal_slider = ui.slider(
-                        min=0, max=1, value=0, step=1
-                    ).props("color=primary label-always dense").classes(
-                        "flex-grow min-w-32"
-                    )
-                    causal_slider.tooltip(
-                        "Filter causal edges to those with "
-                        "fabula_time \u2264 t. Release-only to avoid lag. "
-                        "Synced with the global fabula cursor."
-                    )
-                    causal_layout = ui.toggle(
-                        {"force": "Force", "circular": "Circular",
-                         "cartesian": "Cartesian"},
-                        value="cartesian",
-                    ).props("dense no-caps color=primary")
-                    causal_show_deltas = ui.checkbox(
-                        "Highlight \u0394", value=True,
-                    ).tooltip(
-                        "Pulse edges added at the current tick "
-                        "(``fabula_time == t``) so causality firing is "
-                        "visible rather than just the cumulative state."
-                    )
-                    causal_count = ui.label("").classes(
-                        "text-xs text-slate-500"
-                    )
-
-                causal_chart = ui.column().classes(
-                    "w-full bg-white border border-slate-200 "
-                    "rounded-xl shadow-sm p-3 mt-2"
-                ).style("height: 520px;")
-
-                def _refresh_causal(**kw):
-                    causal_chart.clear()
-                    ws = state.world_state
-                    if ws is None or not ws.causal_topology:
-                        with causal_chart:
-                            render_empty_state(
-                                "No causal topology.",
-                                icon="account_tree",
-                                hint=(
-                                    "Run causal extraction to populate "
-                                    "CausalEdges and watch the graph "
-                                    "evolve over fabula time."
-                                ),
-                            )
-                        causal_slider_row.set_visibility(False)
-                        return
-
-                    edge_times = [
-                        ce.fabula_time for ce in ws.causal_topology
-                    ]
-                    tmin = min(edge_times)
-                    tmax = max(edge_times)
-                    if tmax <= tmin:
-                        causal_slider_row.set_visibility(False)
-                        t = tmax
-                    else:
-                        causal_slider_row.set_visibility(True)
-                        _set_slider_bounds(causal_slider, tmin, tmax)
-                        # Source of truth: AppState.fabula_cursor
-                        cur = state.fabula_cursor
-                        if cur is None or cur < tmin or cur > tmax:
-                            cur = tmax
-                        if int(causal_slider.value or 0) != cur:
-                            causal_slider.value = cur
-                        t = cur
-                        causal_time_label.text = f"t={t}"
-
-                    cumulative = [
-                        ce for ce in ws.causal_topology
-                        if ce.fabula_time <= t
-                    ]
-                    delta_edges = (
-                        [ce for ce in cumulative if ce.fabula_time == t]
-                        if causal_show_deltas.value else []
-                    )
-                    causal_count.text = (
-                        f"{len(cumulative)} / {len(ws.causal_topology)} edges"
-                        + (f" (+{len(delta_edges)} new)"
-                           if delta_edges else "")
-                    )
-
-                    # Use the canonical snapshot so all topologies, events,
-                    # and replayed entity / world-trait state are consistent
-                    # with what every other time-cursored view shows.
-                    from shadow_loom_ui.viz_helpers import snapshot_world_at
-                    try:
-                        snap_ws = snapshot_world_at(ws, t)
-                    except Exception:
-                        logger.exception("Causal snapshot failed; manual fallback")
-                        snap_ws = ws.model_copy(
-                            update={"causal_topology": cumulative}
-                        )
-                    layout = causal_layout.value or "cartesian"
-                    delta_ids = {
-                        f"{ce.source_id}->{ce.target_id}"
-                        for ce in delta_edges
-                    }
-                    with causal_chart:
-                        with_expand(
-                            lambda h, w=snap_ws, lay=layout, dids=delta_ids: (
-                                render_causal_force_graph(
-                                    w, height=h, layout=lay,
-                                    highlight_edge_ids=dids,
-                                )
-                            ),
-                            title=f"Causal graph @ t={t} ({layout})",
-                        )
-
-                def _on_causal_slider_change():
-                    try:
-                        t = int(causal_slider.value)
-                    except (TypeError, ValueError):
-                        return
-                    # Push to global cursor; the listener triggers _refresh_causal.
-                    state.set_fabula_cursor(t)
-
-                causal_slider.on(
-                    "change", lambda: _on_causal_slider_change()
-                )
-                causal_layout.on(
-                    "update:model-value", lambda: _refresh_causal()
-                )
-                causal_show_deltas.on(
-                    "update:model-value", lambda: _refresh_causal()
-                )
-                # Re-render whenever any other panel moves the cursor,
-                # but only when the Evolution tab is actually visible.
-                def _causal_cursor_listener(**_kw):
-                    if state.is_path_visible("causality.evolution"):
-                        _refresh_causal()
-
-                state.on(
-                    StateEvent.FABULA_CURSOR_CHANGED,
-                    _causal_cursor_listener,
-                )
-
-            # ── Physics trajectory ──────────────────────────────
-            with ui.tab_panel("physics").classes("p-3"):
-                subtab_help("causality.evolution.physics")
-                ui.label(
-                    "Structural physics scalars sampled at evenly-spaced "
-                    "fabula anchors. Pure graph math \u2014 no LLM calls "
-                    "and no per-anchor pipeline runs."
-                ).classes("text-xs text-slate-500 mb-2")
-
-                with ui.row().classes("w-full items-center gap-3 flex-wrap"):
-                    ui.icon("science", color="primary")
-                    ui.label("Focus:").classes("text-sm text-slate-600")
-                    physics_focus = ui.select(
-                        options={"__all__": "Omniscient (all entities)"},
-                        value="__all__",
-                        multiple=True,
-                    ).props("dense outlined options-dense use-chips").classes(
-                        "min-w-72"
-                    )
-                    physics_focus.tooltip(
-                        "Pick one or more focus entities to scope the "
-                        "ego-graph at every anchor; leave omniscient for "
-                        "world-wide structural totals."
-                    )
-                    ui.label("Samples:").classes("text-sm text-slate-600")
-                    physics_samples = ui.number(
-                        value=12, min=2, max=40, step=1, format="%.0f",
-                    ).props("dense outlined").classes("w-20")
-                    physics_samples.tooltip(
-                        "How many fabula anchors to sample."
-                    )
-
-                physics_chart = ui.column().classes(
-                    "w-full bg-white border border-slate-200 "
-                    "rounded-xl shadow-sm p-3 mt-2"
-                ).style("height: 360px;")
-
-                def _refresh_physics(**kw):
-                    physics_chart.clear()
-                    ws = state.world_state
-                    if ws is None or not ws.events:
-                        with physics_chart:
-                            render_empty_state(
-                                "No events to sample.",
-                                icon="science",
-                                hint=(
-                                    "Load a project with events so the "
-                                    "physics engine has anchors to "
-                                    "sample."
-                                ),
-                            )
-                        return
-
-                    raw = physics_focus.value or []
-                    if isinstance(raw, str):
-                        raw = [raw]
-                    focus_ids = [
-                        eid for eid in raw if eid and eid != "__all__"
-                    ]
-                    try:
-                        samples = int(physics_samples.value or 12)
-                    except (TypeError, ValueError):
-                        samples = 12
-
-                    # Refresh selector options from the live world.
-                    opts = {"__all__": "Omniscient (all entities)"}
-                    opts.update(
-                        {eid: ent.name for eid, ent in ws.entities.items()}
-                    )
-                    if physics_focus.options != opts:
-                        physics_focus.options = opts
-                        physics_focus.update()
-
-                    fc = state.fabula_cursor
-                    with physics_chart:
-                        with_expand(
-                            lambda h, w=ws, f=focus_ids, n=samples, fc=fc: (
-                                render_physics_trajectory(
-                                    w, f, samples=n, height=h,
-                                    fabula_cursor=fc,
-                                )
-                            ),
-                            title=(
-                                "Physics trajectory"
-                                + (f" \u2014 focus: {', '.join(focus_ids)}"
-                                   if focus_ids else " \u2014 omniscient")
-                            ),
-                        )
-
-                physics_focus.on(
-                    "update:model-value", lambda: _refresh_physics()
-                )
-                physics_samples.on(
-                    "change", lambda: _refresh_physics()
-                )
-
-        def _refresh_all(**kw):
-            from shadow_loom_ui.viz_helpers import invalidate_snapshot_cache
-            invalidate_snapshot_cache()
-            _refresh_char()
-            _refresh_rel()
-            _refresh_world()
-            _refresh_causal()
-            _refresh_physics()
-
-        # Visibility gating: skip the five evolution sub-refreshes when
-        # the panel is off-screen. Cursor scrubs from other tabs no
-        # longer trigger a full re-render of every timeline.
-        _EVO_PATH = "causality.evolution"
-        _evo_dirty = {"on": True}
-        _refresh_all_sync = _refresh_all
-
-        def _evo_gated(**kw):
-            if not state.is_path_visible(_EVO_PATH):
-                _evo_dirty["on"] = True
-                return
-            _evo_dirty["on"] = False
-            _refresh_all_sync()
-
-        def _evo_physics_gated(**kw):
-            if not state.is_path_visible(_EVO_PATH):
-                _evo_dirty["on"] = True
-                return
-            _refresh_physics()
-
-        def _on_evo_path(**kw):
-            if _evo_dirty["on"] and state.is_path_visible(_EVO_PATH):
-                _evo_dirty["on"] = False
-                _refresh_all_sync()
-
-        _refresh_all_sync()
-        state.on(StateEvent.WORLD_STATE_CHANGED, _evo_gated)
-        state.on(StateEvent.ACTIVE_PATH_CHANGED, _on_evo_path)
-        # Physics needle depends on the global fabula cursor; without
-        # this listener, scrubbing the World tab or Affective Dashboard
-        # left the trajectory cursor stale. (The causal-graph panel
-        # already subscribes to FABULA_CURSOR_CHANGED separately.)
-        state.on(
-            StateEvent.FABULA_CURSOR_CHANGED,
-            _evo_physics_gated,
-        )
-
-
-# =====================================================================
-# 2. What-If Workbench (NL-driven with propagation viz)
-# =====================================================================
-
-def _build_whatif_workbench(state: AppState) -> None:
-    """NL-driven intervention and counterfactual with propagation waterfall."""
-
-    with ui.column().classes("w-full h-full gap-4"):
-        # ── Single NL input with type toggle ──────────────────────
-        with ui.card().classes(
-            "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-6"
-        ):
-            with ui.row().classes("items-center gap-2"):
-                ui.icon("science", color="primary")
-                ui.label("What-If Explorer").classes(
-                    "text-lg font-semibold text-slate-800"
-                )
-
-            ui.label(
-                "Describe what you want to change (intervention) or explore "
-                "(counterfactual) in natural language."
-            ).classes("text-sm text-slate-500 mb-2")
-
-            whatif_type = ui.toggle(
-                {"intervention": "Intervene (now)", "counterfactual": "What-If (past)"},
-                value="intervention",
-            ).props("dense no-caps color=primary")
-            whatif_type.tooltip(
-                "Intervene = mutate the world from the present forward. "
-                "What-If = abduce the past, then re-propagate."
-            )
-
-            whatif_input = ui.textarea(
-                placeholder="e.g., 'Kill Macbeth' or 'What if Romeo never met Juliet?'",
-            ).classes("w-full q-mt-sm").props("rows=2 autogrow outlined dense")
-            whatif_input.tooltip(
-                "Free-form natural language. The parser maps this to a "
-                "structured intervention or counterfactual query."
-            )
-
-            # NL suggestion chips
-            with ui.row().classes("gap-1 flex-wrap q-mt-xs"):
-                def _fill(text, wtype):
-                    whatif_input.value = text
-                    whatif_type.value = wtype
-
-                ui.chip("Kill a character…", icon="flash_on",
-                        on_click=lambda: _fill("Kill ", "intervention")).props("dense outline size=sm clickable")
-                ui.chip("What if X never happened…", icon="alt_route",
-                        on_click=lambda: _fill("What if ", "counterfactual")).props("dense outline size=sm clickable")
-                ui.chip("Move character to…", icon="place",
-                        on_click=lambda: _fill("Move ", "intervention")).props("dense outline size=sm clickable")
-                ui.chip("Change relationship…", icon="people",
-                        on_click=lambda: _fill("Make the relationship between ", "intervention")).props("dense outline size=sm clickable")
-
-            result_container = ui.column().classes("w-full q-mt-md")
-
-            async def _run_whatif():
-                text = whatif_input.value.strip()
-                if not text:
-                    return
-                if state.world_state is None:
-                    ui.notify("No world model loaded", type="warning")
-                    return
-
-                qtype = whatif_type.value
-                try:
-                    result, _task = await run_query_as_task(
-                        state,
-                        label=f"{qtype.title()}: {text[:40]}{'…' if len(text) > 40 else ''}",
-                        kind=qtype,
-                        runner=lambda: state.run_nl_query_async(
-                            text, query_type=qtype,
-                        ),
-                        summary_fn=lambda r: (r.summary if r else "") or "Done",
-                    )
-                    _render_whatif_result(result_container, result)
-                except Exception as e:
-                    logger.exception("What-if query failed")
-
-            ui.button(
-                "Run", icon="play_arrow", on_click=_run_whatif
-            ).props("unelevated color=primary no-caps").classes("rounded-lg shadow-sm")
-
-
-def _render_whatif_result(container, result: NLQueryResult) -> None:
-    """Render intervention/counterfactual result with propagation waterfall."""
-    container.clear()
-
-    if result.error:
-        with container:
-            ui.label(f"Error: {result.error}").classes("text-negative")
-        return
-
-    pr = result.pipeline_result
-    if pr is None:
-        with container:
-            ui.label("No result.").classes("text-sm text-slate-400 italic")
-        return
-
-    with container:
-        with ui.card().classes(
-            "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-6"
-        ):
-            with ui.row().classes("items-center gap-2 mb-3"):
-                ui.badge(pr.query_type, color="primary").props("dense")
-                if pr.world_model:
-                    ui.badge(f"v{pr.world_model.version}", color="secondary").props("dense")
-                if pr.converged is not None:
-                    status = "converged" if pr.converged else "did not converge"
-                    color = "positive" if pr.converged else "warning"
-                    ui.badge(f"Audit: {status}", color=color).props("dense")
-
-            if pr.prose:
-                with ui.expansion("Generated Prose", icon="article", value=True).props("dense"):
-                    safe_markdown(pr.prose[:2000])
-
-            # Propagation waterfall (if mutations available in physics result)
-            if pr.physics_result:
-                mutations = pr.physics_result.get("mutations", [])
-                blocked = pr.physics_result.get("blocked", [])
-                if mutations or blocked:
-                    with ui.expansion("Causal Propagation", icon="trending_up", value=True).props("dense"):
-                        with ui.tabs().props("dense") as _prop_tabs:
-                            _t_water = ui.tab("Waterfall", icon="bar_chart")
-                            _t_graph = ui.tab("Graph", icon="hub")
-                            _t_table = ui.tab("Table", icon="table_view")
-                        with ui.tab_panels(_prop_tabs, value=_t_water).classes("w-full"):
-                            _sth = subtab_help
-                            with ui.tab_panel(_t_water):
-                                _sth("causality.whatif.waterfall")
-                                with_expand(
-                                    lambda h, m=mutations, b=blocked: (
-                                        render_propagation_waterfall(
-                                            m, b, height=h
-                                        )
-                                    ),
-                                    title="Causal propagation waterfall",
-                                    height="250px",
-                                )
-                            with ui.tab_panel(_t_graph):
-                                _sth("causality.whatif.graph")
-                                with_expand(
-                                    lambda h, m=mutations, b=blocked: (
-                                        render_propagation_graph(
-                                            m, b, height=h
-                                        )
-                                    ),
-                                    title="Causal propagation graph",
-                                    height="320px",
-                                )
-                            with ui.tab_panel(_t_table):
-                                _sth("causality.whatif.table")
-                                rows = mutations_to_propagation_rows(
-                                    mutations, blocked
-                                )
-                                if rows:
-                                    ui.table(
-                                        columns=[
-                                            {"name": "step", "label": "Step", "field": "step", "sortable": True},
-                                            {"name": "entity", "label": "Entity", "field": "entity", "sortable": True},
-                                            {"name": "trait", "label": "Trait", "field": "trait", "sortable": True},
-                                            {"name": "delta", "label": "\u0394", "field": "delta", "sortable": True},
-                                            {"name": "from_value", "label": "From", "field": "from_value"},
-                                            {"name": "to_value", "label": "To", "field": "to_value"},
-                                            {"name": "reason", "label": "Reason", "field": "reason"},
-                                            {"name": "blocked", "label": "Blocked?", "field": "blocked", "sortable": True},
-                                        ],
-                                        rows=rows,
-                                        pagination={"rowsPerPage": 15},
-                                    ).props("dense flat bordered").classes("w-full")
-                                else:
-                                    ui.label("No propagation rows.").classes(
-                                        "text-sm text-slate-500 italic"
-                                    )
-
-                # Hidden deltas (counterfactual)
-                hidden = pr.physics_result.get("hidden_deltas", [])
-                if hidden:
-                    with ui.expansion("Hidden Deltas (abduction)", icon="visibility_off").props("dense"):
-                        for hd in hidden:
-                            def _fmt(v):
-                                try:
-                                    return f"{float(v):.2f}"
-                                except (TypeError, ValueError):
-                                    return "?"
-                            ui.label(
-                                f"{hd.get('entity', '?')}:{hd.get('trait', '?')} "
-                                f"factual={_fmt(hd.get('factual'))} \u2192 "
-                                f"counterfactual={_fmt(hd.get('counterfactual'))}"
-                            ).classes("text-xs text-slate-500")
-
-            if pr.physics_result and not pr.prose:
-                with ui.expansion("Raw Physics", icon="data_object").props("dense"):
-                    import json as _json
-                    ui.code(_json.dumps(pr.physics_result, default=str)[:1500], language="json")
-
-
-# =====================================================================
-# 3. Directive Builder (visual + NL hybrid)
-# =====================================================================
-
-def _build_directive_builder(state: AppState) -> None:
-    """Interactive emotional target builder with NL override."""
-
-    with ui.column().classes("w-full h-full gap-4"):
-        with ui.card().classes(
-            "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-6"
-        ):
-            with ui.row().classes("items-center gap-2"):
-                ui.icon("theater_comedy", color="secondary")
-                ui.label("Emotional Directive Builder").classes(
-                    "text-lg font-semibold text-slate-800"
-                )
-
-            ui.label(
-                "Choose an emotional effect to optimize the next scene for. "
-                "Or describe what you want in natural language below."
-            ).classes("text-sm text-slate-500 mb-2")
-
-            # Entity picker
-            entity_select = ui.select(
-                options={},
-                label="Target entities",
-                multiple=True,
-            ).classes("w-full").props("outlined dense use-chips")
-            entity_select.tooltip(
-                "Which characters the directive should focus on"
-            )
-
-            # Emotional target selector
-            effect_select = ui.select(
-                options={k: v for k, v in _EMOTIONAL_TARGETS},
-                value="suspense",
-                label="Target emotion",
-            ).classes("w-64 q-mt-sm").props("outlined dense")
-            effect_select.tooltip(
-                "The dominant affect the next scene should evoke in \n"
-                "the reader"
-            )
-
-            # Intensity slider
-            with ui.row().classes("w-full items-center gap-2 q-mt-sm"):
-                ui.label("Intensity:").classes("text-sm text-slate-600")
-                intensity_slider = ui.slider(
-                    min=0.1, max=1.0, value=0.7, step=0.1
-                ).classes("flex-grow").props("label-always")
-                intensity_slider.tooltip(
-                    "How strongly to push the chosen emotion. "
-                    "0.1 = subtle, 1.0 = full saturation."
-                )
-
-            # NL override
-            nl_input = ui.textarea(
-                placeholder="Or describe in natural language: 'Make the reader feel dread as the storm approaches…'",
-            ).classes("w-full q-mt-sm").props("rows=2 autogrow outlined dense")
-
-            result_container = ui.column().classes("w-full q-mt-md")
-
-            async def _run_directive():
-                if state.world_state is None:
-                    ui.notify("No world model loaded", type="warning")
-                    return
-
-                # If NL text is provided, use it directly
-                nl_text = nl_input.value.strip()
-                if nl_text:
-                    query_text = nl_text
-                else:
-                    # Build from visual inputs
-                    effect = effect_select.value
-                    intensity = intensity_slider.value
-                    entities = entity_select.value or []
-                    entity_names = []
-                    for eid in entities:
-                        ent = state.world_state.entities.get(eid)
-                        if ent:
-                            entity_names.append(ent.name)
-
-                    target_str = ", ".join(entity_names) if entity_names else "the characters"
-                    query_text = (
-                        f"Create a scene that makes {target_str} feel {effect.replace('_', ' ')} "
-                        f"with intensity {intensity:.1f}"
-                    )
-
-                state.emit(StateEvent.QUERY_STARTED)
-                try:
-                    result, _task = await run_query_as_task(
-                        state,
-                        label=f"Directive: {effect_select.value}",
-                        kind="directive",
-                        runner=lambda: state.run_nl_query_async(
-                            query_text, query_type="directive",
-                        ),
-                        summary_fn=lambda r: (r.summary if r else "") or "Done",
-                    )
-                    _render_directive_result(result_container, result)
-                except Exception as e:
-                    logger.exception("Directive failed")
-
-            ui.button(
-                "Generate Directive", icon="play_arrow", on_click=_run_directive
-            ).props("unelevated color=secondary no-caps").classes("rounded-lg shadow-sm")
-
-        # Update entity options on world state change
-        def _update_entities(**kw):
-            ws = state.world_state
-            if ws is None:
-                opts: dict = {}
-            else:
-                opts = {eid: ent.name for eid, ent in ws.entities.items()}
-            if entity_select.options != opts:
-                entity_select.options = opts
-                # Drop any selected ids that no longer exist.
-                if entity_select.value:
-                    entity_select.value = [
-                        v for v in entity_select.value if v in opts
-                    ]
-                entity_select.update()
-
-        _update_entities()
-        state.on(StateEvent.WORLD_STATE_CHANGED, _update_entities)
-
-
-def _render_directive_result(container, result: NLQueryResult) -> None:
-    """Render directive result."""
-    container.clear()
-    if result.error:
-        with container:
-            ui.label(f"Error: {result.error}").classes("text-negative")
-        return
-
-    pr = result.pipeline_result
-    if pr is None:
-        with container:
-            ui.label("No result.").classes("text-sm text-slate-400 italic")
-        return
-
-    with container:
-        with ui.card().classes(
-            "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-6"
-        ):
-            with ui.row().classes("items-center gap-2 mb-3"):
-                ui.badge("directive", color="secondary").props("dense")
-                if pr.converged is not None:
-                    status = "converged" if pr.converged else "did not converge"
-                    color = "positive" if pr.converged else "warning"
-                    ui.badge(f"Audit: {status}", color=color).props("dense")
-
-            if pr.prose:
-                safe_markdown(pr.prose)
+        state.on(StateEvent.SYUZHET_CURSOR_CHANGED, lambda **_kw: _refresh())
+        state.on(StateEvent.TIME_AXIS_CHANGED, lambda **_kw: _refresh())
 
 
 # =====================================================================
@@ -1557,6 +612,7 @@ def build_affective_dashboard(state: AppState) -> None:
         affective_timeseries,
         affective_timeseries_syuzhet,
         compute_affective_scores,
+        compute_character_emotion_grid,
         fabula_time_bounds,
         invalidate_snapshot_cache,
         snapshot_world_at,
@@ -1579,13 +635,20 @@ def build_affective_dashboard(state: AppState) -> None:
         )
         with slider_row:
             ui.icon("schedule", color="primary")
-            mode_toggle = ui.toggle(
-                {"fabula": "Fabula", "syuzhet": "Syuzhet"},
-                value="fabula",
-            ).props("dense no-caps color=primary")
-            mode_toggle.tooltip(
-                "Fabula = chronological story-world time. "
-                "Syuzhet = the order the reader encounters events."
+            # Time-axis is driven by the global picker in the workspace
+            # toolbar (state.time_axis). Local label mirrors it so the
+            # user can see at a glance which mode the slider is in.
+            axis_label = ui.label(
+                "Syuzhet" if state.time_axis == "syuzhet" else "Fabula"
+            ).classes(
+                "text-xs uppercase tracking-wide text-slate-500 "
+                "px-2 py-0.5 rounded bg-slate-100 border border-slate-200"
+            )
+            axis_label.tooltip(
+                "Active time axis (change via the global axis picker "
+                "in the toolbar). Fabula = chronological story-world "
+                "time. Syuzhet = the order the reader encounters "
+                "events."
             )
             time_label = ui.label("live").classes(
                 "text-sm font-mono text-slate-700 w-16"
@@ -1601,7 +664,7 @@ def build_affective_dashboard(state: AppState) -> None:
             def _set_live():
                 # Route through the setter so the FABULA/SYUZHET_CURSOR_CHANGED
                 # subscription drives _refresh — no manual call here.
-                if mode_toggle.value == "syuzhet":
+                if state.time_axis == "syuzhet":
                     state.set_syuzhet_cursor(None)
                     _url_set_param("syuzhet", None)
                 else:
@@ -1651,7 +714,7 @@ def build_affective_dashboard(state: AppState) -> None:
                 t = int(time_slider.value)
             except (TypeError, ValueError):
                 return
-            axis = "syuzhet" if mode_toggle.value == "syuzhet" else "fabula"
+            axis = "syuzhet" if state.time_axis == "syuzhet" else "fabula"
             event_at_cursor.text = _events_at(ws, t, axis=axis)
 
         # ``input`` fires while the user drags so the label updates
@@ -1667,7 +730,7 @@ def build_affective_dashboard(state: AppState) -> None:
                 t = int(time_slider.value)
             except (TypeError, ValueError):
                 return
-            if mode_toggle.value == "syuzhet":
+            if state.time_axis == "syuzhet":
                 if state.syuzhet_cursor == t:
                     return
                 # Setter emits SYUZHET_CURSOR_CHANGED → ``_refresh`` runs
@@ -1684,7 +747,6 @@ def build_affective_dashboard(state: AppState) -> None:
         # Release-only: ``change`` fires once when the user releases the
         # thumb, avoiding the per-pixel rerender storm that froze the UI.
         time_slider.on("change", lambda: _on_slider_change())
-        mode_toggle.on("update:model-value", lambda: _refresh())
 
         # Keyboard shortcuts on the slider element: \u2190/\u2192 step,
         # space toggles live, f/s switch mode.
@@ -1700,17 +762,16 @@ def build_affective_dashboard(state: AppState) -> None:
         time_slider.on("keydown.right", lambda: _step(1))
         time_slider.on("keydown.space", lambda: _set_live())
         time_slider.on(
-            "keydown.f", lambda: (
-                setattr(mode_toggle, "value", "fabula"), _refresh()
-            )
+            "keydown.f", lambda: state.set_time_axis("fabula")
         )
         time_slider.on(
-            "keydown.s", lambda: (
-                setattr(mode_toggle, "value", "syuzhet"), _refresh()
-            )
+            "keydown.s", lambda: state.set_time_axis("syuzhet")
         )
 
         gauge_container = ui.column().classes(
+            "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-6"
+        )
+        char_emotion_container = ui.column().classes(
             "w-full bg-white border border-slate-200 rounded-xl shadow-sm p-6"
         )
         timeline_container = ui.column().classes(
@@ -1861,6 +922,7 @@ def build_affective_dashboard(state: AppState) -> None:
             # mount will re-render from scratch.
             try:
                 gauge_container.clear()
+                char_emotion_container.clear()
             except RuntimeError:
                 logger.debug(
                     "[causality_tab._refresh] client torn down before "
@@ -1886,7 +948,7 @@ def build_affective_dashboard(state: AppState) -> None:
                         )
                 return
 
-            is_syuzhet = mode_toggle.value == "syuzhet"
+            is_syuzhet = state.time_axis == "syuzhet"
             if is_syuzhet:
                 tmin, tmax = syuzhet_time_bounds(ws)
                 cursor = state.syuzhet_cursor
@@ -2054,6 +1116,44 @@ def build_affective_dashboard(state: AppState) -> None:
                         "text-sm text-slate-400 italic"
                     )
 
+            # ── OCC character-felt emotions (per-character heatmap) ──
+            with char_emotion_container:
+                from shadow_loom_ui.viz import (
+                    render_character_emotion_heatmap,
+                )
+                ui.label("Character Emotions (OCC appraisals)").classes(
+                    "text-lg font-semibold text-slate-800 mb-1"
+                )
+                ui.label(
+                    "Per-character felt emotions \u2014 fear, joy, regret, "
+                    "grief, rage, love \u2014 from the appraisal grid for "
+                    "the top entities at the current cursor."
+                ).classes("text-xs text-slate-500 mb-2")
+                try:
+                    char_grid = compute_character_emotion_grid(
+                        full_ws or ws,
+                        entity_ids=entity_ids,
+                        syuzhet_anchor=anchor,
+                    )
+                except Exception:
+                    logger.exception("Character emotion grid failed")
+                    char_grid = {}
+                if char_grid:
+                    name_lookup = {
+                        eid: ent.name
+                        for eid, ent in (full_ws or ws).entities.items()
+                    }
+                    render_character_emotion_heatmap(
+                        char_grid,
+                        entity_names=name_lookup,
+                        height="320px",
+                    )
+                else:
+                    ui.label(
+                        "No per-character emotion data \u2014 needs "
+                        "propositions and concerns."
+                    ).classes("text-sm text-slate-400 italic")
+
             with timeline_container:
                 axis_label = "Syuzhet Index" if is_syuzhet else "Fabula Time"
                 # Stable timeline charts are built once at panel-build
@@ -2128,7 +1228,7 @@ def build_affective_dashboard(state: AppState) -> None:
             params = await _url_get_params()
             if "syuzhet" in params:
                 try:
-                    mode_toggle.value = "syuzhet"
+                    state.set_time_axis("syuzhet")
                     # Use the setter so every other time-aware panel
                     # (World tab, Causality Sankey, Physics) hydrates
                     # to the same cursor in lockstep instead of just
@@ -2172,13 +1272,13 @@ def build_affective_dashboard(state: AppState) -> None:
             try:
                 cursor = (
                     state.syuzhet_cursor
-                    if mode_toggle.value == "syuzhet"
+                    if state.time_axis == "syuzhet"
                     else state.fabula_cursor
                 )
                 eids = await asyncio.to_thread(
                     _top_entity_ids_by_event_degree, ws, 20,
                 )
-                if mode_toggle.value == "syuzhet" and cursor is not None:
+                if state.time_axis == "syuzhet" and cursor is not None:
                     snap = await asyncio.to_thread(
                         snapshot_world_at_syuzhet, ws, cursor,
                     )
@@ -2189,7 +1289,7 @@ def build_affective_dashboard(state: AppState) -> None:
                 else:
                     snap = ws
                 anchor = (
-                    cursor if mode_toggle.value == "syuzhet"
+                    cursor if state.time_axis == "syuzhet"
                     else max(
                         (e.syuzhet_index for e in snap.events), default=None
                     )
@@ -2238,6 +1338,13 @@ def build_affective_dashboard(state: AppState) -> None:
         # scrub action across the app.
         state.on(StateEvent.FABULA_CURSOR_CHANGED, lambda **_kw: _refresh())
         state.on(StateEvent.SYUZHET_CURSOR_CHANGED, lambda **_kw: _refresh())
+
+        def _on_aff_axis_change(**_kw):
+            axis_label.text = (
+                "Syuzhet" if state.time_axis == "syuzhet" else "Fabula"
+            )
+            _refresh()
+        state.on(StateEvent.TIME_AXIS_CHANGED, _on_aff_axis_change)
 
 
 

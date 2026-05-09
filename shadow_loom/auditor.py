@@ -81,6 +81,14 @@ EFFECT_AUDIT_CATEGORIES: Dict[str, List[str]] = {
     "grief": ["counterfactual", "physics"],
     "rage": ["counterfactual", "physics"],
     "love": ["counterfactual", "physics"],
+    # Composite — narrative tension is the Brewer-Lichtenstein triad
+    # aggregator over suspense + mystery + irony + Δsurprise + unpaid
+    # setup debt. It needs every structural pass to fire because each
+    # contributing scorer reads a different aspect of the world. We
+    # union epistemic + probabilistic + physics; counterfactual is
+    # not strictly required (the surprise term is local Δ, not a
+    # rung-3 attribution) but kept off to bound prompt size.
+    "narrative_tension": ["epistemic", "probabilistic", "physics"],
     # Non-directive
     "observation": ["physics"],
     "intervention": ["physics"],
@@ -758,7 +766,7 @@ def compute_affective_feedback(
     # ``affective_loss`` as ``None`` in that case so the hero tile
     # and findings card render "not measured" honestly.
     _MEASURABLE_TARGETS = (
-        {"mystery", "dramatic_irony", "suspense", "surprise"}
+        {"mystery", "dramatic_irony", "suspense", "surprise", "narrative_tension"}
         | set(_EFFECT_TRAITS.keys())
     )
     target = brief.target_effect
@@ -780,6 +788,7 @@ def compute_affective_feedback(
         "dramatic_irony": "compute_dramatic_irony_score",
         "suspense": "compute_suspense_score",
         "surprise": "compute_surprise_score",
+        "narrative_tension": "compute_tension_score",
     }
     for effect, method_name in score_map.items():
         try:
@@ -1028,6 +1037,240 @@ def _format_affective_metrics_block(
     return lines
 
 
+def _format_propositional_context(brief: CreativeBrief) -> List[str]:
+    """Surface propositional / belief / concern context to the auditor.
+
+    The renderer (``shadow_loom.generation``) already emits dedicated
+    prompt blocks for ``surprise_profile``, ``irony_profile``,
+    ``mystery_profile`` and the per-emotion appraisal payloads, plus
+    the ``affected_propositions`` / ``affected_concerns`` /
+    ``affected_beliefs`` lists carried on
+    :class:`ThreatProximity` (Rung-2) and
+    :class:`CounterfactualBranch` (Rung-3). The auditor must see the
+    same data, otherwise it can flag prose against trait/belief gaps
+    while staying blind to whether the rendered scene respects the
+    propositional commitments and concern polarities the directive
+    was assembled around. This helper renders only the populated
+    fields so audits on briefs without a Phase A3 catalogue degrade
+    gracefully to the legacy trait-anchored picture.
+    """
+    out: List[str] = []
+
+    sp = getattr(brief, "surprise_profile", None)
+    if sp is not None and (sp.revealed_proposition_ids or sp.score):
+        out.append(
+            "=== SURPRISE PROFILE (audience-belief revision — "
+            "propositions whose audience prior just shifted) ==="
+        )
+        out.append(
+            f"  total KL: {sp.score:.3f}  "
+            f"pleasant: {sp.pleasant_score:.3f}  "
+            f"unpleasant: {sp.unpleasant_score:.3f}"
+        )
+        descs = list(sp.revealed_descriptions or [])
+        for i, pid in enumerate(sp.revealed_proposition_ids[:8]):
+            desc = descs[i] if i < len(descs) else ""
+            out.append(f"    - {pid}: {desc}")
+        if sp.per_focal_score:
+            top = sorted(
+                sp.per_focal_score.items(), key=lambda kv: -kv[1]
+            )[:5]
+            out.append(
+                "  per-focal (concern-weighted): "
+                + ", ".join(f"{eid}={s:.2f}" for eid, s in top)
+            )
+        out.append(
+            "  Rule: prose must render the on-page consequence of "
+            "these belief shifts; do NOT have the focal voice the "
+            "shift directly (no 'she suddenly realised...')."
+        )
+        out.append("")
+
+    ip = getattr(brief, "irony_profile", None)
+    if ip is not None and (
+        ip.audience_advantage_score
+        or ip.focal_advantage_score
+        or ip.audience_advantage_propositions
+        or ip.focal_advantage_propositions
+    ):
+        out.append(
+            "=== IRONY PROFILE (audience vs focal belief gap) ==="
+        )
+        out.append(
+            f"  focal: {ip.focal_id}  "
+            f"audience-advantage KL: {ip.audience_advantage_score:.3f}  "
+            f"focal-advantage KL: {ip.focal_advantage_score:.3f}"
+        )
+        if ip.audience_advantage_propositions:
+            out.append("  audience knows (focal does NOT):")
+            for desc in ip.audience_advantage_propositions[:6]:
+                out.append(f"    - {desc}")
+        if ip.focal_advantage_propositions:
+            out.append("  focal knows (audience does NOT — keep hidden):")
+            for desc in ip.focal_advantage_propositions[:6]:
+                out.append(f"    - {desc}")
+        if ip.most_ironised_entity_id and ip.most_ironised_entity_id != ip.focal_id:
+            out.append(
+                f"  most-ironised entity: {ip.most_ironised_entity_id} "
+                f"(KL={ip.most_ironised_score:.2f})"
+            )
+        out.append(
+            "  Rule: the focal MUST act consistent with their "
+            "(false) belief state on every audience-advantage "
+            "proposition. Flag prose where the focal silently "
+            "absorbs an audience-advantage fact without an on-page "
+            "trigger."
+        )
+        out.append("")
+
+    mp = getattr(brief, "mystery_profile", None)
+    if mp is not None and (mp.score or mp.open_questions):
+        out.append(
+            "=== MYSTERY PROFILE (open erotetic questions — known "
+            "effects with hidden causes) ==="
+        )
+        out.append(
+            f"  score: {mp.score:.3f}  "
+            f"plot-gap: {mp.plot_gap_score:.3f}  "
+            f"character-gap: {mp.character_gap_score:.3f}"
+        )
+        if mp.governing_question_description:
+            out.append(
+                f"  governing question: "
+                f"{mp.governing_question_description}"
+            )
+        for q in (mp.open_questions or [])[:6]:
+            out.append(f"    - {q}")
+        for q in (mp.character_gap_descriptions or [])[:4]:
+            out.append(f"    ~ {q}")
+        out.append(
+            "  Rule: the prose MUST render the effects on-page "
+            "without naming or implying the hidden cause."
+        )
+        out.append("")
+
+    # Rung-2 / Rung-3 surgery side-effects on the propositional /
+    # concern / belief layer. These are populated only on briefs
+    # built from typed DoTarget queries; the legacy event-only path
+    # leaves the lists empty and the block is suppressed.
+    for label, payload in (
+        ("RUNG-2 INTERVENTION SIDE-EFFECTS", brief.threat_proximity),
+        ("RUNG-3 COUNTERFACTUAL SIDE-EFFECTS", brief.counterfactual_branch),
+    ):
+        if payload is None:
+            continue
+        ap = list(getattr(payload, "affected_propositions", []) or [])
+        ab = list(getattr(payload, "affected_beliefs", []) or [])
+        ac = list(getattr(payload, "affected_concerns", []) or [])
+        if not (ap or ab or ac):
+            continue
+        out.append(f"=== {label} (typed DoTarget surgery) ===")
+        if ap:
+            out.append(
+                "  PROPOSITIONS whose truth flipped: "
+                + ", ".join(ap[:12])
+            )
+        if ab:
+            out.append(
+                "  BELIEFS whose confidence shifted "
+                "(holder→target): " + ", ".join(ab[:12])
+            )
+        if ac:
+            out.append(
+                "  CONCERNS whose polarity / salience shifted: "
+                + ", ".join(ac[:12])
+            )
+        tragedy = getattr(payload, "tragedy_form", None)
+        if tragedy:
+            out.append(f"  tragedy_form: {tragedy}")
+        out.append(
+            "  Rule: every flipped proposition / belief / concern "
+            "above MUST be visibly grounded in an on-page event "
+            "or utterance; flag silent off-page changes as "
+            "miracle steps."
+        )
+        out.append("")
+
+    # Character-felt emotion appraisals — surface the concern-level
+    # diagnostics so the auditor can validate prose against the
+    # appraisal that drove the directive's stylistic instructions.
+    emo_blocks = (
+        ("FEAR APPRAISAL", brief.fear_profile, [
+            ("object_fear", "object_fear_score"),
+            ("anxiety", "anxiety_score"),
+            ("coping", "coping_score"),
+            ("flight_available", "flight_available"),
+            ("dread", "dread"),
+            ("primary_concern", "primary_concern_description"),
+        ]),
+        ("JOY APPRAISAL", brief.joy_profile, [
+            ("own_joy", "own_joy_score"),
+            ("happy_for", "happy_for_score"),
+            ("gloating", "gloating_score"),
+            ("relief", "relief_score"),
+            ("primary_concern", "primary_concern_description"),
+        ]),
+        ("REGRET APPRAISAL", brief.regret_profile, [
+            ("agentive_regret", "agentive_regret_score"),
+            ("disappointment", "disappointment_score"),
+            ("commission", "commission_score"),
+            ("omission", "omission_score"),
+            ("downward_relief", "downward_relief_score"),
+            ("mode", "mode"),
+        ]),
+        ("GRIEF APPRAISAL", brief.grief_profile, [
+            ("coupling_strength", "coupling_strength"),
+            ("stage", "stage"),
+            ("unfinished_concerns", "unfinished_concern_count"),
+            ("lost_entity", "lost_entity_id"),
+        ]),
+        ("RAGE APPRAISAL", brief.rage_profile, [
+            ("blocked_concern", "blocked_concern_score"),
+            ("attribution_clarity", "attribution_clarity"),
+            ("perpetrator", "perpetrator_id"),
+            ("perpetrator_proximity", "perpetrator_proximity"),
+            ("normative_violation", "normative_violation"),
+            ("mode", "mode"),
+        ]),
+        ("LOVE APPRAISAL", brief.love_profile, [
+            ("partner", "primary_partner_id"),
+            ("intimacy", "intimacy_score"),
+            ("passion", "passion_score"),
+            ("commitment", "commitment_score"),
+            ("style", "style"),
+        ]),
+    )
+    for label, payload, fields in emo_blocks:
+        if payload is None:
+            continue
+        parts: List[str] = []
+        for human, attr in fields:
+            v = getattr(payload, attr, None)
+            if v is None or v == "":
+                continue
+            if isinstance(v, bool):
+                parts.append(f"{human}={'yes' if v else 'no'}")
+            elif isinstance(v, (int, float)) and not isinstance(v, bool):
+                parts.append(f"{human}={float(v):.2f}")
+            else:
+                parts.append(f"{human}={v}")
+        if not parts:
+            continue
+        out.append(f"=== {label} ===")
+        focal = getattr(payload, "focal_id", None)
+        if focal:
+            out.append(f"  focal: {focal}")
+        out.append("  " + "  ".join(parts))
+        cids = list(getattr(payload, "contributing_concern_ids", []) or [])
+        if cids:
+            out.append(
+                "  driving concerns: " + ", ".join(cids[:8])
+            )
+        out.append("")
+
+    return out
+
+
 def assemble_audit_prompt(
     prose: str,
     brief: CreativeBrief,
@@ -1062,9 +1305,15 @@ def assemble_audit_prompt(
     # Without this the auditor can raise false-positive continuity /
     # voice / thread judgments on prose the renderer was actually
     # instructed to continue from earlier versions.
+    # Capped to the same ``preceding_prose_max_chars`` limit as the
+    # renderer so the auditor sees an identical (tail-truncated) slice.
     if brief.preceding_prose:
+        _pp_max = _get_settings().generation.preceding_prose_max_chars
+        _pp = brief.preceding_prose.strip()
+        if len(_pp) > _pp_max:
+            _pp = "…" + _pp[-_pp_max:]
         sections.append("=== STORY SO FAR (background continuity \u2014 do NOT re-audit) ===")
-        sections.append(brief.preceding_prose.strip())
+        sections.append(_pp)
         sections.append(
             "The prose above is the established narrative this scene "
             "continues from. Use it only to judge continuity / tone / "
@@ -1234,6 +1483,52 @@ def assemble_audit_prompt(
             "  Violation type: `withheld_utterance_leak` for utterance "
             "leaks, `epistemic_leakage` for channel leaks."
         )
+        sections.append("")
+
+    # === Negative-physics record (HARD)
+    # The brief's CONSTRAINTS section already carries the HARD
+    # ``=== PREVENTED EVENTS (HARD) ===`` and ``=== FALSE PROPOSITIONS
+    # (HARD) ===`` blocks (emitted by every brief builder \u2014 directive,
+    # observation, intervention, counterfactual). Surface a dedicated
+    # reminder here so the auditor flags negative-physics breaches
+    # under a typed rationale rather than as a generic prose drift.
+    has_prevented = any(
+        "PREVENTED EVENTS (HARD)" in (c.instruction or "")
+        for c in (brief.constraints or [])
+    )
+    has_false_props = any(
+        "FALSE PROPOSITIONS (HARD)" in (c.instruction or "")
+        for c in (brief.constraints or [])
+    )
+    if has_prevented or has_false_props:
+        sections.append(
+            "=== NEGATIVE PHYSICS (the prose must NOT stage these "
+            "as occurring) ==="
+        )
+        if has_prevented:
+            sections.append(
+                "  Prevented events: see the `=== PREVENTED EVENTS "
+                "(HARD) ===` block in the constraints above. The "
+                "physics tags those event ids as not occurring. Flag "
+                "any prose that stages them as having happened, has "
+                "characters witness or remember them as past events, "
+                "or treats a downstream consequence as if the "
+                "prevented event were canonical. Violation type: "
+                "`reasoning_failure` with rationale prefix "
+                "`prevented_event:`."
+            )
+        if has_false_props:
+            sections.append(
+                "  False propositions: see the `=== FALSE PROPOSITIONS "
+                "(HARD) ===` block in the constraints above. The "
+                "physics commits those propositions FALSE at or before "
+                "this scene's anchor. Characters MAY believe them "
+                "(belief\u2260fact is an allowed mismatch and often the "
+                "point); the narration MUST NOT enact them as fact. "
+                "Flag prose that asserts a false proposition as "
+                "occurring/true. Violation type: `reasoning_failure` "
+                "with rationale prefix `false_proposition:`."
+            )
         sections.append("")
 
     sections.append(f"=== AUDIT CATEGORIES TO CHECK: {', '.join(audit_categories)} ===")
@@ -1414,6 +1709,14 @@ def assemble_audit_prompt(
                 f"coupling={p.coupling_strength:.2f}"
             )
         sections.append("")
+
+    # Propositional / belief / concern surfacing — the renderer was
+    # given dedicated blocks for surprise / irony / mystery profiles
+    # and the affected_propositions / affected_concerns / affected_beliefs
+    # lists; the auditor must see the same data so it can flag prose
+    # that fails to ground a flipped proposition or violates a focal's
+    # concern polarity.
+    sections.extend(_format_propositional_context(brief))
 
     # Prior feedback (for iteration > 0)
     if prior_feedback:
@@ -1871,6 +2174,14 @@ def assemble_evaluation_prompt(
             )
         sections.append("")
 
+    # Propositional / belief / concern surfacing — same data the
+    # renderer was given via the ``*_profile`` and
+    # ``affected_propositions`` / ``affected_concerns`` /
+    # ``affected_beliefs`` blocks. Without this the evaluator scores
+    # full-story prose blind to the propositional commitments the
+    # directive was assembled around.
+    sections.extend(_format_propositional_context(brief))
+
     # Engine-computed metrics (ground truth for the evaluator)
     if causal_feedback is not None:
         sections.append("=== ENGINE: CAUSAL PHYSICS METRICS (ground truth) ===")
@@ -2313,6 +2624,32 @@ def run_feedback_loop(
     consecutive_failed_open = 0
     correction_error: Optional[str] = None
 
+    # Snapshot the rendering mode the brief asked for. The refinement
+    # agent is forbidden from mutating it (mode-flip silently degrades
+    # the audit because the auditor evaluates against the *brief's*
+    # mode while the prose was rewritten under a different one). If
+    # the agent flips the mode we treat its output as a generation
+    # error, keep the previous scene, and exit the loop.
+    expected_rendering_mode: Optional[str] = None
+    if getattr(brief, "rendering", None) is not None:
+        expected_rendering_mode = getattr(
+            brief.rendering, "rendering_mode", None,
+        )
+
+    # Track the prior iteration's violation count and scene so we can
+    # roll back when the refinement agent INTRODUCES more violations
+    # than it closes. Without this guard the loop happily accepts a
+    # strictly-worse rewrite (e.g.\u00a0closes 1 minor density drift
+    # while opening a major meta-narration leak) and the user sees the
+    # regressed prose as the final output.
+    prior_violation_count: Optional[int] = None
+    prior_violation_keys: set[tuple[str, str]] = set()
+    prior_scene: Optional[GeneratedScene] = None
+    prior_audit: Optional[AuditResult] = None
+    prior_cycle_impact: Optional[ChangeImpactMetrics] = None
+    prior_graph_version: int = 0
+    prior_graph_data: Dict[str, Any] = {}
+
     # Initial-scene generation failure short-circuit. ``render_scene``
     # returns a placeholder GeneratedScene with ``generation_error``
     # set when the LLM call raises. There is no useful prose to audit
@@ -2471,6 +2808,60 @@ def run_feedback_loop(
         else:
             consecutive_failed_open = 0
 
+        # --- Refinement-regression rollback ---
+        # If the *previous* iteration's refinement introduced strictly
+        # more violations than it closed, the rewriter regressed.
+        # Roll back to the prior scene + audit and exit. This keeps
+        # the user's final output at the best draft seen rather than
+        # the latest draft (which is often worse). Specifically, the
+        # rewriter is "regressing" when:
+        #   (a) total violation count strictly increased, AND
+        #   (b) at least one *new* violation type appeared that was
+        #       not in the prior iteration's audit (so we are not
+        #       just seeing the same gripe re-flagged with extra
+        #       evidence). Pure increases on the same violation type
+        #       are tolerated as the auditor finding more instances.
+        if (
+            iteration > 0
+            and not audit.failed_open
+            and prior_audit is not None
+            and prior_violation_count is not None
+        ):
+            current_keys = {
+                (v.violation_type, (v.evidence_quote or "")[:160])
+                for v in audit.violations
+            }
+            new_keys = current_keys - prior_violation_keys
+            new_types = {t for (t, _q) in new_keys}
+            prior_types = {t for (t, _q) in prior_violation_keys}
+            introduced_types = new_types - prior_types
+            if (
+                len(audit.violations) > prior_violation_count
+                and introduced_types
+            ):
+                logger.warning(
+                    "[FeedbackLoop] Refinement REGRESSION at iteration %d: "
+                    "violation count rose %d -> %d and %d new violation "
+                    "type(s) appeared (%s). Rolling back to iteration %d "
+                    "prose and exiting loop.",
+                    iteration + 1, prior_violation_count,
+                    len(audit.violations), len(introduced_types),
+                    ", ".join(sorted(introduced_types)),
+                    iteration,
+                )
+                correction_error = (
+                    f"Refinement regressed at iteration {iteration + 1}: "
+                    f"introduced {sorted(introduced_types)}; rolled back."
+                )
+                # Use the prior iteration's scene/audit as the final.
+                if prior_scene is not None:
+                    current_scene = prior_scene
+                audit = prior_audit
+                cycle_impact = prior_cycle_impact or cycle_impact
+                graph_version = prior_graph_version
+                graph_data = prior_graph_data
+                break
+
         # --- Convergence rule ---
         # The LLM auditor's prose-level verdict is the only signal that
         # actually responds to a rewrite. The engine veto is folded in
@@ -2606,6 +2997,20 @@ def run_feedback_loop(
         # refinement pass sees them as non-regression constraints.
         accumulated_violations.extend(audit.violations)
 
+        # Snapshot this iteration's scene + audit BEFORE refinement so
+        # the regression-rollback at the top of the next iteration can
+        # restore them if the rewriter makes things strictly worse.
+        prior_scene = current_scene
+        prior_audit = audit
+        prior_violation_count = len(audit.violations)
+        prior_violation_keys = {
+            (v.violation_type, (v.evidence_quote or "")[:160])
+            for v in audit.violations
+        }
+        prior_cycle_impact = cycle_impact
+        prior_graph_version = graph_version
+        prior_graph_data = graph_data
+
         # Re-generate the scene under the refinement system prompt so
         # the LLM is explicitly in rewrite mode (rather than reusing
         # the generic generation prompt and relying on injected text).
@@ -2635,6 +3040,36 @@ def run_feedback_loop(
                 "Keeping previous scene and exiting loop.", exc,
             )
             correction_error = f"Refinement LLM call raised: {exc!r}"
+            break
+
+        # --- Refinement rendering_mode contract ---
+        # The refinement agent is forbidden from mutating
+        # ``rendering_mode``. The auditor evaluates against the
+        # brief's mode; if the rewriter switches modes (e.g.
+        # counterfactual -> observation) every subsequent iteration
+        # is auditing a different rubric than the prose was written
+        # under and convergence becomes accidental. Reject the output,
+        # restore the previous scene, and surface as a generation
+        # error.
+        if (
+            expected_rendering_mode is not None
+            and current_scene.rendering_mode
+            and current_scene.rendering_mode != expected_rendering_mode
+        ):
+            logger.error(
+                "[FeedbackLoop] Refinement agent mutated rendering_mode "
+                "(%r -> %r) at iteration %d; this is forbidden. "
+                "Restoring prior scene and exiting loop.",
+                expected_rendering_mode, current_scene.rendering_mode,
+                iteration + 1,
+            )
+            correction_error = (
+                f"Refinement agent mutated rendering_mode "
+                f"{expected_rendering_mode!r} -> "
+                f"{current_scene.rendering_mode!r}; rejected."
+            )
+            if prior_scene is not None:
+                current_scene = prior_scene
             break
 
         if current_scene.generation_error:

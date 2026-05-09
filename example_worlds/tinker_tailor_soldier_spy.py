@@ -28,6 +28,7 @@ from shadow_loom.models import (
     CausalEdge, SpatialEdge, RelationshipEdge, RelationshipMetric, TraitVector, AmbientVector, Affordance, Belief, EntityStateSnapshot,
     GlobalTrait, WorldTraitSnapshot,
     NarrativeStyle,
+    Concern, Proposition, ConcernSnapshot, PropositionSnapshot,
 )
 
 world_state = WorldStateV1(
@@ -49,6 +50,10 @@ world_state = WorldStateV1(
                 "surveillance": AmbientVector(value=0.85, volatility=0.3, evidence_strength="strong"),
                 "tension": AmbientVector(value=0.7, volatility=0.4, evidence_strength="strong"),
                 "secrecy": AmbientVector(value=0.9, volatility=0.2, evidence_strength="strong"),
+                # Frijda action-readiness: the Circus is institutionally
+                # open — Smiley can come and go — yet politically a soft cage,
+                # because every move is observed by the mole.
+                "connected_to": AmbientVector(value=0.4, volatility=0.0, evidence_strength="strong"),
             },
         ),
         "LOC_HUNGARY": Location(
@@ -57,6 +62,8 @@ world_state = WorldStateV1(
             ambient_state={
                 "danger": AmbientVector(value=0.9, volatility=0.3, evidence_strength="strong"),
                 "surveillance": AmbientVector(value=0.85, volatility=0.2, evidence_strength="strong"),
+                # Frijda dread: enemy territory, sealed once Prideaux is shot.
+                "connected_to": AmbientVector(value=0.0, volatility=0.0, evidence_strength="strong"),
             },
         ),
         "LOC_LACON_HOUSE": Location(
@@ -79,6 +86,9 @@ world_state = WorldStateV1(
             ambient_state={
                 "secrecy": AmbientVector(value=0.95, volatility=0.2, evidence_strength="strong"),
                 "surveillance": AmbientVector(value=0.8, volatility=0.3, evidence_strength="strong"),
+                # Smiley's stake-out trap for Haydon — there is one entrance,
+                # one exit, and Smiley waits at the only door.
+                "connected_to": AmbientVector(value=0.0, volatility=0.0, evidence_strength="strong"),
             },
         ),
         "LOC_SARRATT": Location(
@@ -183,10 +193,45 @@ world_state = WorldStateV1(
                 "grief": TraitVector(value=0.3, inertia=0.35, evidence_strength="weak"),
             },
             beliefs=[
-                Belief(target_id="ENT_CONTROL", perceived_state="Control is my mentor and the rightful Chief",
+                Belief(target_id="ENT_CONTROL", perceived_state="Control is my mentor and the rightful Chief", proposition_id="PROP_HAYDON_EXPOSED",
                        confidence=0.95, inertia=0.7, evidence_strength="strong"),
-                Belief(target_id="ENT_BILL_HAYDON", perceived_state="Haydon is a trusted colleague and friend",
+                Belief(target_id="ENT_BILL_HAYDON", perceived_state="Haydon is a trusted colleague and friend", proposition_id="PROP_HAYDON_LOYAL",
                        confidence=0.75, inertia=0.55, evidence_strength="strong"),
+            ],
+            concerns=[
+                # Lazarus appraisal — the spine of the investigation.
+                Concern(concern_id="CCN_SMILEY_DESIRES_FIND_MOLE", proposition_id="PROP_MOLE_IDENTIFIED",
+                        polarity="desire", kind="truth", salience=0.95,
+                        activation_fabula_window=[5000, 24000]),
+                # Sternberg passionate-bond — anchors the love scorer; Ann is
+                # the wound Haydon has already turned against him.
+                Concern(concern_id="CCN_SMILEY_LOVES_ANN", proposition_id="PROP_ANN_FAITHFUL",
+                        polarity="desire", kind="love", salience=0.7,
+                        activation_fabula_window=[1, 24000],
+                        counter_concern_ids=["CCN_SMILEY_RESENTS_HAYDON_AFFAIR"]),
+                # Averill normative-violation rage — the cuckolding by Haydon
+                # is the moral injury Smiley carries through Lock Gardens.
+                # Counter-linked to Smiley's love for Ann + loyalty to Haydon.
+                Concern(concern_id="CCN_SMILEY_RESENTS_HAYDON_AFFAIR", proposition_id="PROP_HAYDON_AFFAIR_WITH_ANN",
+                        polarity="fear", kind="humiliation", salience=0.85,
+                        activation_fabula_window=[13000, 24000],
+                        counter_concern_ids=["CCN_SMILEY_LOVES_ANN", "CCN_SMILEY_DESIRES_HAYDON_LOYAL"]),
+                # Averill normative-violation — Soviet penetration IS the canonical institutional betrayal.
+                Concern(concern_id="CCN_SMILEY_FEARS_CIRCUS_PENETRATED", proposition_id="PROP_CIRCUS_PENETRATED",
+                        polarity="fear", kind="betrayal", salience=0.9,
+                        activation_fabula_window=[5000, 24000]),
+                # Averill betrayal-rage — vengeance for Control.
+                # Counter-linked to Smiley's residual loyalty to Haydon.
+                Concern(concern_id="CCN_SMILEY_DESIRES_AVENGE_CONTROL", proposition_id="PROP_HAYDON_EXPOSED",
+                        polarity="desire", kind="vengeance", salience=0.95,
+                        activation_fabula_window=[5000, 24000],
+                        counter_concern_ids=["CCN_SMILEY_DESIRES_HAYDON_LOYAL"]),
+                # Sternberg bond — the friendship that made Haydon's betrayal
+                # so devastating; sustains grief at ft ≥ 22000.
+                Concern(concern_id="CCN_SMILEY_DESIRES_HAYDON_LOYAL", proposition_id="PROP_HAYDON_LOYAL",
+                        polarity="desire", kind="loyalty", salience=0.7,
+                        activation_fabula_window=[1, 24000],
+                        counter_concern_ids=["CCN_SMILEY_DESIRES_AVENGE_CONTROL", "CCN_SMILEY_RESENTS_HAYDON_AFFAIR"]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=4000, triggered_by="EVT_CONTROL_DIES",
@@ -220,9 +265,18 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="WORLD_SOVIET_MOLE", perceived_state="There is a mole in the Circus at senior level",
+                       proposition_id="PROP_CIRCUS_PENETRATED",
                        confidence=0.85, inertia=0.8, evidence_strength="strong"),
-                Belief(target_id="OBJ_WITCHCRAFT_MATERIAL", perceived_state="Witchcraft is a Soviet deception operation",
+                Belief(target_id="OBJ_WITCHCRAFT_MATERIAL", perceived_state="Witchcraft is a Soviet deception operation", proposition_id="PROP_CIRCUS_PENETRATED",
                        confidence=0.8, inertia=0.75, evidence_strength="strong"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_CONTROL_DESIRES_MOLE_FOUND", proposition_id="PROP_MOLE_IDENTIFIED",
+                        polarity="desire", kind="truth", salience=0.95,
+                        activation_fabula_window=[1, 4000]),
+                Concern(concern_id="CCN_CONTROL_FEARS_PURGE", proposition_id="PROP_CIRCUS_PENETRATED",
+                        polarity="fear", kind="betrayal", salience=0.9,
+                        activation_fabula_window=[1, 4000]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=2500, triggered_by="EVT_CONTROL_FORCED_RETIREMENT",
@@ -244,9 +298,10 @@ world_state = WorldStateV1(
                 "composure": TraitVector(value=0.9, inertia=0.6, evidence_strength="strong"),
             },
             beliefs=[
-                Belief(target_id="ENT_KARLA", perceived_state="Karla is my true master and I serve the Soviet cause",
+                Belief(target_id="ENT_KARLA", perceived_state="Karla is my true master and I serve the Soviet cause", proposition_id="PROP_MOLE_IDENTIFIED",
                        confidence=0.95, inertia=0.9, evidence_strength="strong"),
                 Belief(target_id="ENT_GEORGE_SMILEY", perceived_state="Smiley suspects nothing — the Ann affair keeps him distracted",
+                       proposition_id="PROP_HAYDON_AFFAIR_WITH_ANN",
                        confidence=0.8, inertia=0.6, evidence_strength="strong"),
             ],
             state_timeline=[
@@ -272,7 +327,7 @@ world_state = WorldStateV1(
                 "professionalism": TraitVector(value=0.65, inertia=0.55, evidence_strength="moderate"),
             },
             beliefs=[
-                Belief(target_id="OBJ_WITCHCRAFT_MATERIAL", perceived_state="Witchcraft is my triumph — genuine high-grade Soviet intelligence",
+                Belief(target_id="OBJ_WITCHCRAFT_MATERIAL", perceived_state="Witchcraft is my triumph — genuine high-grade Soviet intelligence", proposition_id="PROP_HAYDON_LOYAL",
                        confidence=0.9, inertia=0.7, evidence_strength="strong"),
             ],
             state_timeline=[
@@ -316,7 +371,31 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_BILL_HAYDON", perceived_state="Haydon is my close friend and trusted comrade",
+                       proposition_id="PROP_HAYDON_LOYAL",
                        confidence=0.9, inertia=0.75, evidence_strength="strong"),
+            ],
+            concerns=[
+                Concern(concern_id="CCN_PRIDEAUX_DESIRES_MISSION_SUCCESS", proposition_id="PROP_MISSION_SUCCEEDS",
+                        polarity="desire", kind="loyalty", salience=0.85,
+                        activation_fabula_window=[500, 1500]),
+                Concern(concern_id="CCN_PRIDEAUX_FEARS_TORTURE", proposition_id="PROP_PRIDEAUX_TORTURED",
+                        polarity="fear", kind="mortal_threat", salience=0.95,
+                        activation_fabula_window=[1000, 2000]),
+                Concern(concern_id="CCN_PRIDEAUX_LOVES_HAYDON", proposition_id="PROP_HAYDON_LOYAL",
+                        polarity="desire", kind="love", salience=0.85,
+                        activation_fabula_window=[1, 23000],
+                        counter_concern_ids=["CCN_PRIDEAUX_DESIRES_VENGEANCE"],
+                        state_timeline=[
+                            ConcernSnapshot(fabula_time=23000, triggered_by="EVT_HAYDON_CONFESSION",
+                                            salience=0.95, polarity="fear", kind="betrayal",
+                                            counter_concern_ids=["CCN_PRIDEAUX_DESIRES_VENGEANCE"]),
+                        ]),
+                # Averill betrayal-rage trigger — fires the cell-block killing.
+                # Counter-linked to the surviving friendship-love that makes the killing tragic.
+                Concern(concern_id="CCN_PRIDEAUX_DESIRES_VENGEANCE", proposition_id="PROP_HAYDON_DEAD",
+                        polarity="desire", kind="vengeance", salience=0.95,
+                        activation_fabula_window=[23000, 24000],
+                        counter_concern_ids=["CCN_PRIDEAUX_LOVES_HAYDON"]),
             ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=1000, triggered_by="EVT_PRIDEAUX_SHOT",
@@ -348,7 +427,7 @@ world_state = WorldStateV1(
                 "courage": TraitVector(value=0.75, inertia=0.6, evidence_strength="moderate"),
             },
             beliefs=[
-                Belief(target_id="ENT_GEORGE_SMILEY", perceived_state="Smiley is the only one I can trust",
+                Belief(target_id="ENT_GEORGE_SMILEY", perceived_state="Smiley is the only one I can trust", proposition_id="PROP_MISSION_SUCCEEDS",
                        confidence=0.9, inertia=0.75, evidence_strength="strong"),
             ],
             state_timeline=[
@@ -366,6 +445,17 @@ world_state = WorldStateV1(
                 "fear": TraitVector(value=0.4, inertia=0.3, evidence_strength="weak"),
             },
             beliefs=[],
+            concerns=[
+                Concern(concern_id="CCN_TARR_LOVES_IRINA", proposition_id="PROP_IRINA_SAFE",
+                        polarity="desire", kind="love", salience=0.9,
+                        activation_fabula_window=[7500, 17000]),
+                Concern(concern_id="CCN_TARR_FEARS_BURN", proposition_id="PROP_TARR_FRAMED",
+                        polarity="fear", kind="betrayal", salience=0.85,
+                        activation_fabula_window=[10000, 20000]),
+                Concern(concern_id="CCN_TARR_DESIRES_VENGEANCE_FOR_IRINA", proposition_id="PROP_MOLE_IDENTIFIED",
+                        polarity="desire", kind="vengeance", salience=0.7,
+                        activation_fabula_window=[10000, 22000]),
+            ],
             state_timeline=[
                 EntityStateSnapshot(fabula_time=8000, triggered_by="EVT_IRINA_DEFECTION_REQUEST",
                     traits={
@@ -392,6 +482,7 @@ world_state = WorldStateV1(
             },
             beliefs=[
                 Belief(target_id="ENT_POLYAKOV", perceived_state="Polyakov is a Soviet mole handler operating in London",
+                       proposition_id="PROP_CIRCUS_PENETRATED",
                        confidence=0.85, inertia=0.8, evidence_strength="strong"),
             ],
             state_timeline=[
@@ -986,6 +1077,79 @@ world_state = WorldStateV1(
         CausalEdge(source_id="EVT_ALLELINE_BECOMES_CHIEF", target_id="ENT_PERCY_ALLELINE", rel_counterpart_id="ENT_GEORGE_SMILEY", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.6, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=3000, propagation_delay=0),
         CausalEdge(source_id="EVT_CONTROL_FORCED_RETIREMENT", target_id="ENT_GEORGE_SMILEY", rel_counterpart_id="ENT_CONTROL", causality_type="mutation_social", trait_target="power_dynamic", trait_delta=-0.5, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=2500, propagation_delay=0),
         CausalEdge(source_id="EVT_GUILLAM_STEALS_LOGBOOK", target_id="ENT_PETER_GUILLAM", rel_counterpart_id="ENT_GEORGE_SMILEY", causality_type="mutation_social", trait_target="affinity", trait_delta=0.4, mechanism="social", evidence_strength="strong", causal_force=7.0, fabula_time=14000, propagation_delay=0),
+        # ── auto-backfilled per-axis mutation_social ──
+        CausalEdge(source_id="EVT_PRIDEAUX_HUNGARY_MISSION", target_id="ENT_CONTROL", rel_counterpart_id="ENT_GEORGE_SMILEY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.24,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=500, propagation_delay=0),
+        CausalEdge(source_id="EVT_CONTROL_FORCED_RETIREMENT", target_id="ENT_ANN_SMILEY", rel_counterpart_id="ENT_GEORGE_SMILEY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.09,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=2500, propagation_delay=0),
+        CausalEdge(source_id="EVT_LACON_RECRUITS_SMILEY", target_id="ENT_OLIVER_LACON", rel_counterpart_id="ENT_GEORGE_SMILEY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.17,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=5000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WITCHCRAFT_PROJECT_STARTS", target_id="ENT_BILL_HAYDON", rel_counterpart_id="ENT_JIM_PRIDEAUX",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.12,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=3200, propagation_delay=0),
+        CausalEdge(source_id="EVT_ESTERHASE_PRESSED", target_id="ENT_GEORGE_SMILEY", rel_counterpart_id="ENT_TOBY_ESTERHASE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.09,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=19000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WITCHCRAFT_PROJECT_STARTS", target_id="ENT_KARLA", rel_counterpart_id="ENT_BILL_HAYDON",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.12,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=3200, propagation_delay=0),
+        CausalEdge(source_id="EVT_PRIDEAUX_HUNGARY_MISSION", target_id="ENT_KARLA", rel_counterpart_id="ENT_JIM_PRIDEAUX",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.15,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=500, propagation_delay=0),
+        CausalEdge(source_id="EVT_SACHS_SACKED", target_id="ENT_PERCY_ALLELINE", rel_counterpart_id="ENT_CONNIE_SACHS",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=-0.12,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=3500, propagation_delay=0),
+        CausalEdge(source_id="EVT_SMILEY_INTERVIEWS_SACHS", target_id="ENT_GEORGE_SMILEY", rel_counterpart_id="ENT_PETER_GUILLAM",  # auto-backfill
+                   causality_type="mutation_social", trait_target="affinity", trait_delta=0.24,
+                   mechanism="emotional", evidence_strength="moderate", causal_force=4.0, fabula_time=12000, propagation_delay=0),
+        CausalEdge(source_id="EVT_PRIDEAUX_HUNGARY_MISSION", target_id="ENT_CONTROL", rel_counterpart_id="ENT_GEORGE_SMILEY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.15,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=500, propagation_delay=0),
+        CausalEdge(source_id="EVT_CONTROL_FORCED_RETIREMENT", target_id="ENT_ANN_SMILEY", rel_counterpart_id="ENT_GEORGE_SMILEY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.09,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=2500, propagation_delay=0),
+        CausalEdge(source_id="EVT_LACON_RECRUITS_SMILEY", target_id="ENT_OLIVER_LACON", rel_counterpart_id="ENT_GEORGE_SMILEY",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.09,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=5000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WITCHCRAFT_PROJECT_STARTS", target_id="ENT_BILL_HAYDON", rel_counterpart_id="ENT_JIM_PRIDEAUX",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.15,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=3200, propagation_delay=0),
+        CausalEdge(source_id="EVT_ESTERHASE_PRESSED", target_id="ENT_GEORGE_SMILEY", rel_counterpart_id="ENT_TOBY_ESTERHASE",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.18,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=19000, propagation_delay=0),
+        CausalEdge(source_id="EVT_WITCHCRAFT_PROJECT_STARTS", target_id="ENT_KARLA", rel_counterpart_id="ENT_BILL_HAYDON",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.15,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=3200, propagation_delay=0),
+        CausalEdge(source_id="EVT_PRIDEAUX_HUNGARY_MISSION", target_id="ENT_KARLA", rel_counterpart_id="ENT_JIM_PRIDEAUX",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.28,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=500, propagation_delay=0),
+        CausalEdge(source_id="EVT_SACHS_SACKED", target_id="ENT_PERCY_ALLELINE", rel_counterpart_id="ENT_CONNIE_SACHS",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.21,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=3500, propagation_delay=0),
+        CausalEdge(source_id="EVT_SMILEY_INTERVIEWS_SACHS", target_id="ENT_GEORGE_SMILEY", rel_counterpart_id="ENT_PETER_GUILLAM",  # auto-backfill
+                   causality_type="mutation_social", trait_target="power_dynamic", trait_delta=0.12,
+                   mechanism="social", evidence_strength="moderate", causal_force=4.0, fabula_time=12000, propagation_delay=0),
+
+        # ── WORLD_ → WORLD_ (named-latent forces destabilising one another) ──
+        CausalEdge(source_id="WORLD_SOVIET_MOLE", target_id="WORLD_INSTITUTIONAL_PARANOIA",
+                   causality_type="chain_reaction", mechanism="betrayal", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=2500,
+                   description="The hidden mole is the literal cause of institutional paranoia — every suspicion, every vetting, every Sarratt interrogation is downstream of his presence."),
+        CausalEdge(source_id="WORLD_KARLA_ASYMMETRY", target_id="WORLD_SOVIET_MOLE",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="strong",
+                   causal_force=5.0, fabula_time=1000,
+                   description="Karla's strategic patience and personal compromise of Haydon (via Ann) is the offstage mechanism that produces the mole."),
+        CausalEdge(source_id="WORLD_BRITISH_DECLINE", target_id="WORLD_KARLA_ASYMMETRY",
+                   causality_type="chain_reaction", mechanism="social", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=1000,
+                   description="Post-imperial decline is the structural weakness Karla exploits — a Service desperate for prestige is one that buys Witchcraft without questioning its source."),
+        CausalEdge(source_id="WORLD_INSTITUTIONAL_PARANOIA", target_id="WORLD_COLD_WAR_TRADECRAFT",
+                   causality_type="chain_reaction", mechanism="epistemic", evidence_strength="moderate",
+                   causal_force=4.0, fabula_time=15000,
+                   description="Paranoia is exactly the operational climate in which tradecraft — dead drops, vetting, controlled surveillance — either tightens or breaks down."),
     ],
 
     # ── SPATIAL TOPOLOGY ────────────────────────────────────────────────
@@ -1065,6 +1229,7 @@ world_state = WorldStateV1(
             category="governance",
             magnitude=TraitVector(value=0.85, inertia=0.8, evidence_strength="strong"),
             affected_domains=["social", "psychological", "informational"],
+            proposition_id="PROP_TRADECRAFT_HOLDS",
         ),
         "WORLD_INSTITUTIONAL_PARANOIA": GlobalTrait(
             id="WORLD_INSTITUTIONAL_PARANOIA",
@@ -1073,6 +1238,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.7, inertia=0.65, evidence_strength="strong"),
             affected_domains=["psychological", "social", "epistemic"],
+            proposition_id="PROP_CIRCUS_PENETRATED",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=2500, triggered_by="EVT_CONTROL_FORCED_RETIREMENT",
                     magnitude=TraitVector(value=0.8, inertia=0.7, evidence_strength="strong"),
@@ -1089,6 +1255,7 @@ world_state = WorldStateV1(
             category="cosmology",
             magnitude=TraitVector(value=0.75, inertia=0.9, evidence_strength="strong"),
             affected_domains=["psychological", "social", "informational"],
+            proposition_id="PROP_MOLE_IDENTIFIED",
             state_timeline=[
                 WorldTraitSnapshot(fabula_time=22000, triggered_by="EVT_HAYDON_UNMASKED",
                     magnitude=TraitVector(value=0.0, inertia=0.9, evidence_strength="strong"),
@@ -1102,6 +1269,7 @@ world_state = WorldStateV1(
             category="cosmology",
             magnitude=TraitVector(value=0.65, inertia=0.85, evidence_strength="moderate"),
             affected_domains=["psychological", "epistemic"],
+            proposition_id="PROP_KARLA_OUTPLAYS_CIRCUS",
         ),
         "WORLD_BRITISH_DECLINE": GlobalTrait(
             id="WORLD_BRITISH_DECLINE",
@@ -1110,6 +1278,7 @@ world_state = WorldStateV1(
             category="social_structure",
             magnitude=TraitVector(value=0.6, inertia=0.75, evidence_strength="moderate"),
             affected_domains=["social", "psychological"],
+            proposition_id="PROP_EMPIRE_RECLAIMED",
         ),
     },
 
@@ -1316,5 +1485,90 @@ world_state = WorldStateV1(
                 "power_dynamic": RelationshipMetric(value=0.4, inertia=0.65, evidence_strength="strong",   last_updated_fabula=0),
             },
         ),
+        # Smiley → Ann — the unfaithful wife whose affair with Haydon is the
+        # private wound that doubles every professional injury. Smiley's
+        # love survives without illusion; affinity high, power tilted to Ann.
+        RelationshipEdge(
+            source_entity_id="ENT_GEORGE_SMILEY", target_entity_id="ENT_ANN_SMILEY",
+            metrics={
+                "affinity":      RelationshipMetric(value=0.85, inertia=0.8,  evidence_strength="strong", last_updated_fabula=13000),
+                "power_dynamic": RelationshipMetric(value=-0.4, inertia=0.7,  evidence_strength="strong", last_updated_fabula=13000),
+            },
+        ),
+    ],
+
+    # ── PROPOSITIONS ────────────────────────────────────────────────────
+    propositions=[
+        Proposition(proposition_id="PROP_MOLE_IDENTIFIED", kind="outcome",
+                    referent_ids=["EVT_HAYDON_UNMASKED", "ENT_BILL_HAYDON"],
+                    description="The Soviet mole inside the Circus is identified.",
+                    audience_default_prior=0.4, stakes=0.95,
+                    truth_at_fabula={22000: True}),
+        Proposition(proposition_id="PROP_HAYDON_LOYAL", kind="trait_holds",
+                    referent_ids=["ENT_BILL_HAYDON", "ENT_GEORGE_SMILEY"],
+                    description="Bill Haydon is loyal to the Circus and to his friends.",
+                    audience_default_prior=0.65, stakes=0.85,
+                    truth_at_fabula={22000: False}),
+        Proposition(proposition_id="PROP_HAYDON_AFFAIR_WITH_ANN", kind="relation_holds",
+                    referent_ids=["ENT_BILL_HAYDON", "ENT_ANN_SMILEY"],
+                    description="Haydon has been conducting an affair with Ann Smiley.",
+                    audience_default_prior=0.5, stakes=0.7,
+                    truth_at_fabula={13000: True}),
+        Proposition(proposition_id="PROP_ANN_FAITHFUL", kind="trait_holds",
+                    referent_ids=["ENT_ANN_SMILEY", "ENT_GEORGE_SMILEY"],
+                    description="Ann Smiley is faithful to George.",
+                    audience_default_prior=0.5, stakes=0.6,
+                    truth_at_fabula={13000: False}),
+        Proposition(proposition_id="PROP_CIRCUS_PENETRATED", kind="trait_holds",
+                    referent_ids=["LOC_THE_CIRCUS"],
+                    description="The Circus is penetrated by Moscow Centre at senior level.",
+                    audience_default_prior=0.7, stakes=0.95,
+                    truth_at_fabula={500: True, 22000: True}),
+        Proposition(proposition_id="PROP_HAYDON_EXPOSED", kind="event_occurs",
+                    referent_ids=["EVT_HAYDON_UNMASKED", "ENT_BILL_HAYDON"],
+                    description="Haydon is publicly exposed and detained at Sarratt.",
+                    audience_default_prior=0.4, stakes=0.95,
+                    truth_at_fabula={22000: True}),
+        Proposition(proposition_id="PROP_HAYDON_DEAD", kind="event_occurs",
+                    referent_ids=["EVT_PRIDEAUX_KILLS_HAYDON", "ENT_BILL_HAYDON"],
+                    description="Bill Haydon is killed in his exercise yard at Sarratt.",
+                    audience_default_prior=0.3, stakes=0.85,
+                    truth_at_fabula={24000: True}),
+        Proposition(proposition_id="PROP_IRINA_SAFE", kind="trait_holds",
+                    referent_ids=["ENT_IRINA"],
+                    description="Irina survives her defection attempt.",
+                    audience_default_prior=0.4, stakes=0.85,
+                    truth_at_fabula={10000: False, 17000: False}),
+        Proposition(proposition_id="PROP_TARR_FRAMED", kind="trait_holds",
+                    referent_ids=["ENT_RICKI_TARR"],
+                    description="Tarr is framed by the Circus as a defector and murderer.",
+                    audience_default_prior=0.4, stakes=0.7,
+                    truth_at_fabula={11000: True}),
+        Proposition(proposition_id="PROP_PRIDEAUX_TORTURED", kind="event_occurs",
+                    referent_ids=["EVT_PRIDEAUX_CAPTURED", "ENT_JIM_PRIDEAUX"],
+                    description="Prideaux is captured and interrogated by Karla.",
+                    audience_default_prior=0.6, stakes=0.85,
+                    truth_at_fabula={1500: True}),
+        Proposition(proposition_id="PROP_MISSION_SUCCEEDS", kind="outcome",
+                    referent_ids=["EVT_PRIDEAUX_HUNGARY_MISSION", "ENT_JIM_PRIDEAUX"],
+                    description="Prideaux's Hungary meeting yields the mole's name.",
+                    audience_default_prior=0.4, stakes=0.85,
+                    truth_at_fabula={1000: False}),
+        # WORLD_ trait Pearl-Rung-2 reifications.
+        Proposition(proposition_id="PROP_TRADECRAFT_HOLDS", kind="trait_holds",
+                    referent_ids=["WORLD_COLD_WAR_TRADECRAFT", "ENT_GEORGE_SMILEY"],
+                    description="Cold War tradecraft — the institutional methods of secrecy, vetting, and counter-surveillance — still works as advertised inside the Circus.",
+                    audience_default_prior=0.6, stakes=0.85,
+                    truth_at_fabula={1000: False, 22000: True}),
+        Proposition(proposition_id="PROP_KARLA_OUTPLAYS_CIRCUS", kind="trait_holds",
+                    referent_ids=["WORLD_KARLA_ASYMMETRY", "ENT_KARLA", "ENT_GEORGE_SMILEY"],
+                    description="Karla's offstage strategic pressure outplays the Circus — the Witchcraft deception and Operation Testify both succeed before Smiley turns the table.",
+                    audience_default_prior=0.55, stakes=0.9,
+                    truth_at_fabula={1500: True, 22000: False}),
+        Proposition(proposition_id="PROP_EMPIRE_RECLAIMED", kind="trait_holds",
+                    referent_ids=["WORLD_BRITISH_DECLINE", "ENT_PERCY_ALLELINE"],
+                    description="British Intelligence reclaims its independent standing — Witchcraft restores parity with the Cousins and arrests the post-imperial decline.",
+                    audience_default_prior=0.4, stakes=0.7,
+                    truth_at_fabula={3000: True, 22000: False}),
     ],
 )

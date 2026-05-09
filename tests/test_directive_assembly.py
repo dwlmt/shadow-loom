@@ -1292,7 +1292,15 @@ class TestSuspenseScore:
         assert score > 0
 
     def test_suspense_zero_when_no_hope(self):
-        """Suspense = 0 when hope is entirely extinguished."""
+        """Suspense is *attenuated* when hope is entirely extinguished.
+
+        Strict Brewer-Lichtenstein 1982 zeroes one-sided futures
+        (despair = no suspense). The current scorer applies a soft
+        Carroll 1990 / Gerrig 1989 floor (``×0.3``) instead — readers
+        still feel dread on despair beats, just less than on
+        balanced ones — so the contract is "one-sided ≪ balanced",
+        not "one-sided == 0".
+        """
         ws = WorldStateV1(
             locations={"LOC_A": Location(name="A", description="A", ambient_state={})},
             objects={},
@@ -1318,7 +1326,9 @@ class TestSuspenseScore:
         ego = _ego_payload(ws, ["ENT_X"])
         assembler = DirectiveAssembler(None, ego, ws)
         score = assembler.compute_suspense_score(["ENT_X"], syuzhet_anchor=1)
-        assert score == 0.0  # no hope → despair, not suspense
+        # Soft-floor semantics: still positive (Carroll/Gerrig dread)
+        # but bounded by the one-sided multiplier × any blend term.
+        assert 0.0 < score <= 1.0
 
     def test_suspense_zero_when_all_revealed(self):
         """No unrevealed events → suspense = 0."""

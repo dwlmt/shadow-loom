@@ -68,8 +68,7 @@ def build_affective_tab(state: AppState) -> None:
                     " ``DirectiveAssembler`` /"
                     " ``affective_timeseries_syuzhet`` pipeline used by"
                     " the engine when ranking candidate interventions"
-                    " in the Causality tab \u2014 nothing here is"
-                    " LLM-generated."
+                    " \u2014 nothing here is LLM-generated."
                 ),
                 tooltip="What is this tab?",
             )
@@ -77,3 +76,5 @@ def build_affective_tab(state: AppState) -> None:
         with ui.column().classes("w-full h-full p-4 gap-4 overflow-auto"):
             subtab_help("affective")
             build_affective_dashboard(state)
+
+

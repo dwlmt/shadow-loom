@@ -62,6 +62,8 @@ class StateEvent(Enum):
     TASKS_CHANGED = "tasks_changed"
     FABULA_CURSOR_CHANGED = "fabula_cursor_changed"
     SYUZHET_CURSOR_CHANGED = "syuzhet_cursor_changed"
+    TIME_AXIS_CHANGED = "time_axis_changed"
+    WORLD_ID_CHANGED = "world_id_changed"
     ACTIVE_PATH_CHANGED = "active_path_changed"
     WORLD_FACTS_CHANGED = "world_facts_changed"
     PROJECT_LIST_CHANGED = "project_list_changed"
@@ -156,6 +158,18 @@ class AppState:
 
     # Syuzhet (reading-order) cursor (None = "live"); affects suspense/reveal views
     syuzhet_cursor: Optional[int] = None
+
+    # Global time axis: "fabula" (chronological) or "syuzhet" (telling
+    # order). Charts that bin on event time honour this so the user
+    # can see Genette's order/anachrony with one switch.
+    time_axis: str = "fabula"
+
+    # Active AMWN branch: "factual" (canonical timeline) or "shadow"
+    # (a what-if fork). Every snapshot/replay panel filters
+    # ``state_timeline`` and edge ``world_id`` by this so the UI shows
+    # one branch coherently. Emits :data:`StateEvent.WORLD_ID_CHANGED`
+    # when toggled via :meth:`set_world_id`.
+    world_id: str = "factual"
 
     # Background task registry (in-flight + recently completed)
     background_tasks: List[BackgroundTask] = field(default_factory=list)
@@ -656,8 +670,21 @@ class AppState:
         insert_after_event_id: str | None = None,
         insert_at_fabula_time: int | None = None,
         replace_event_ids: list[str] | None = None,
+        replace_entity_ids: list[str] | None = None,
+        replace_object_ids: list[str] | None = None,
+        replace_location_ids: list[str] | None = None,
+        replace_world_trait_ids: list[str] | None = None,
+        replace_channel_ids: list[str] | None = None,
+        replace_proposition_ids: list[str] | None = None,
+        replace_concern_ids: list[tuple[str, str]] | None = None,
     ) -> NLQueryResult:
-        """Submit user-authored prose as a ManualEditQuery through the pipeline."""
+        """Submit user-authored prose as a ManualEditQuery through the pipeline.
+
+        ``replace_*`` lists drop the named graph nodes (and their
+        dependent edges/snapshots/concerns) before merging the
+        re-extracted topology, giving true *replace* semantics across
+        every namespace surfaced by the merge deletion pass.
+        """
         query = ManualEditQuery(
             edited_prose=edited_prose,
             description=description,
@@ -665,8 +692,174 @@ class AppState:
             insert_after_event_id=insert_after_event_id,
             insert_at_fabula_time=insert_at_fabula_time,
             replace_event_ids=replace_event_ids or [],
+            replace_entity_ids=replace_entity_ids or [],
+            replace_object_ids=replace_object_ids or [],
+            replace_location_ids=replace_location_ids or [],
+            replace_world_trait_ids=replace_world_trait_ids or [],
+            replace_channel_ids=replace_channel_ids or [],
+            replace_proposition_ids=replace_proposition_ids or [],
+            replace_concern_ids=list(replace_concern_ids or []),
         )
         return self.run_structured_query(query)
+
+    # ---- Structured patch (skips prose round-trip) ----
+
+    def apply_world_state_patch(
+        self,
+        patch: "Any",
+        *,
+        description: str = "",
+    ) -> tuple[bool, list[str]]:
+        """Apply a typed ``WorldStatePatch`` directly to the active world.
+
+        Bypasses the prose re-extraction round-trip when the change is
+        already known structurally (e.g. backfilling
+        ``Belief.proposition_id``, committing a proposition truth,
+        renaming a channel). Persists a new DB version on success and
+        emits ``VERSION_CHANGED`` so the UI refreshes.
+
+        Returns ``(ok, change_log)`` — ``ok`` is False on validation /
+        apply / persist failures and the change log is a list of
+        human-readable strings produced by the patcher.
+        """
+        from shadow_loom.ingestion import (
+            WorldStatePatch as _WorldStatePatch,
+            _apply_world_state_patch,
+            _auto_repair,
+            _programmatic_validation,
+        )
+
+        if self.world_state is None:
+            return False, ["No active world state."]
+
+        if isinstance(patch, dict):
+            try:
+                typed_patch = _WorldStatePatch.model_validate(patch)
+            except Exception as exc:
+                logger.exception("[AppState] Invalid world-state patch payload")
+                return False, [f"Invalid patch payload: {exc}"]
+        else:
+            typed_patch = patch
+
+        try:
+            new_ws, changes = _apply_world_state_patch(
+                self.world_state, typed_patch,
+            )
+        except Exception as exc:
+            logger.exception("[AppState] World-state patch apply failed")
+            return False, [f"Patch application failed: {exc}"]
+
+        # ── Quality bridge: route the patched world through the same
+        # programmatic validators and auto-repair pass that raw-text
+        # ingestion uses. Previously this code path was a "back door"
+        # that skipped every consistency check (orphan events, dead
+        # actors, time ordering, status coherence, …) and persisted
+        # whatever the patcher emitted. The LLM-based validator is
+        # *not* called here because patches are meant to be cheap and
+        # synchronous; the programmatic checks alone catch the
+        # structural classes of regression that matter (dangling ids,
+        # type mismatches, broken edges).
+        try:
+            new_ws, repairs = _auto_repair(new_ws)
+        except Exception:
+            logger.exception("[AppState] _auto_repair raised on patched world")
+            repairs = []
+        if repairs:
+            changes = list(changes) + [f"(auto-repair) {r}" for r in repairs]
+
+        try:
+            issues = _programmatic_validation(new_ws)
+        except Exception:
+            logger.exception(
+                "[AppState] _programmatic_validation raised on patched world"
+            )
+            issues = []
+        errors = [i for i in issues if i.severity == "error"]
+        warnings = [i for i in issues if i.severity == "warning"]
+        quarantined = bool(errors)
+        if errors:
+            logger.warning(
+                "[AppState] Patched world failed validation \u2014 quarantining "
+                "(%d errors, %d warnings)",
+                len(errors), len(warnings),
+            )
+            for err in errors[:10]:
+                logger.warning(
+                    "[AppState]   [%s] %s", err.category, err.detail,
+                )
+            changes = list(changes) + [
+                f"(quarantined: {len(errors)} validation error(s)) "
+                f"{errors[0].detail}"
+            ]
+        elif warnings:
+            logger.info(
+                "[AppState] Patched world has %d validation warning(s); "
+                "persisting normally.",
+                len(warnings),
+            )
+
+        # Re-seed the versioned model with the patched world so the
+        # next merge sees the corrected baseline. We still load
+        # quarantined worlds into session state so the UI can show
+        # the user what the patch produced; the quarantine only
+        # affects persistence (source label + active-pointer move).
+        self.load_world_state(new_ws)
+
+        # Persist a new DB version so the patch is durable.
+        proj_id = self.project_id
+        if proj_id is not None:
+            try:
+                ws_json = new_ws.model_dump_json()
+                desc = description or typed_patch.notes or (
+                    f"Structured patch ({len(changes)} change(s))"
+                )
+                if quarantined:
+                    desc = f"[QUARANTINED] {desc}"
+                source_label = (
+                    "patch_world_state_quarantined"
+                    if quarantined else "patch_world_state"
+                )
+                ver = save_version(
+                    project_id=proj_id,
+                    world_state_json=ws_json,
+                    ancestor_id=self.current_version_row_id,
+                    source=source_label,
+                    description=desc,
+                    user_id=self.user_id,
+                )
+                # Quarantined patches do not become the active version;
+                # the user / agent stays anchored on the parent so the
+                # next read tool returns the validated baseline rather
+                # than the broken patch result.
+                if not quarantined:
+                    self.current_version_row_id = ver.id
+                if self.user_id is not None and not quarantined:
+                    try:
+                        set_active_version(proj_id, self.user_id, ver.id)
+                    except Exception:
+                        logger.exception(
+                            "[AppState] Failed to update active-version pointer"
+                        )
+                try:
+                    log_activity(
+                        project_id=proj_id,
+                        action=source_label,
+                        user_id=self.user_id,
+                        summary=desc,
+                        version_id=ver.id,
+                    )
+                except Exception:
+                    pass
+                # Only fire VERSION_CHANGED for non-quarantined patches
+                # \u2014 a quarantined version exists in history but is
+                # not the active version, so the UI should keep showing
+                # the parent.
+                if not quarantined:
+                    self.emit(StateEvent.VERSION_CHANGED, version=ver.version)
+            except Exception:
+                logger.exception("[AppState] Failed to persist patched world")
+                return True, changes + ["(warning) DB persistence failed"]
+        return True, changes
 
     # ---- DB persistence ----
 
@@ -728,8 +921,16 @@ class AppState:
                 project_id=proj_id,
                 world_state_json=ws_json,
                 ancestor_id=ancestor,
-                source=source,
-                description=f"{source} query",
+                source=(
+                    f"{source}_quarantined"
+                    if getattr(pipeline_result, "continuation_quarantined", False)
+                    else source
+                ),
+                description=(
+                    f"[QUARANTINED] {source} query"
+                    if getattr(pipeline_result, "continuation_quarantined", False)
+                    else f"{source} query"
+                ),
                 changeset_json=changeset_json,
                 raw_query=raw_query,
                 parsed_query_json=parsed_query_json,
@@ -941,6 +1142,63 @@ class AppState:
             "syuzhet", StateEvent.SYUZHET_CURSOR_CHANGED, s,
             immediate=immediate,
         )
+
+    @property
+    def active_cursor(self) -> int | None:
+        """The cursor for the currently selected ``time_axis``.
+
+        Cross-panel sliders read this so an axis flip automatically
+        switches between :attr:`fabula_cursor` (Genette story order)
+        and :attr:`syuzhet_cursor` (telling order) without each panel
+        re-implementing the dispatch.
+        """
+        if self.time_axis == "syuzhet":
+            return self.syuzhet_cursor
+        return self.fabula_cursor
+
+    def set_active_cursor(self, value: int | None, *, immediate: bool = False) -> None:
+        """Set the cursor on the currently active axis.
+
+        Routes to :meth:`set_fabula_cursor` or :meth:`set_syuzhet_cursor`
+        based on :attr:`time_axis`. Used by the World and Social tab
+        sliders so the same widget drives the correct axis cursor.
+        """
+        if self.time_axis == "syuzhet":
+            self.set_syuzhet_cursor(value, immediate=immediate)
+        else:
+            self.set_fabula_cursor(value, immediate=immediate)
+
+    def set_time_axis(self, axis: str) -> None:
+        """Set the global time axis ("fabula" | "syuzhet").
+
+        Charts that bin on event time read this to decide whether to
+        use ``evt.fabula_time`` (Genette: story order) or
+        ``evt.syuzhet_index`` (telling order). Emits
+        :data:`StateEvent.TIME_AXIS_CHANGED`.
+        """
+        axis = (axis or "fabula").lower()
+        if axis not in ("fabula", "syuzhet"):
+            axis = "fabula"
+        if self.time_axis == axis:
+            return
+        self.time_axis = axis
+        self.emit(StateEvent.TIME_AXIS_CHANGED, axis=axis)
+
+    def set_world_id(self, world_id: str) -> None:
+        """Set the active AMWN branch ("factual" | "shadow").
+
+        Snapshot panels filter entity / world-trait / proposition /
+        concern timelines by this so a Rung-2/3 intervention's shadow
+        nodes are isolated from the canonical mainline. Emits
+        :data:`StateEvent.WORLD_ID_CHANGED`.
+        """
+        wid = (world_id or "factual").lower()
+        if wid not in ("factual", "shadow"):
+            wid = "factual"
+        if self.world_id == wid:
+            return
+        self.world_id = wid
+        self.emit(StateEvent.WORLD_ID_CHANGED, world_id=wid)
 
     def _schedule_cursor_emit(
         self, axis: str, event: "StateEvent", value: int | None,

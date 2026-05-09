@@ -15,11 +15,11 @@ tab (Save / Save Anyway), as documented below.
 
 The workspace is composed of a left-hand **version sidebar**, a top-level
 **chat / command bar**, a dedicated **Answer panel** (above the chat bar,
-for read-only Q&A results), and nine cross-linked tabs defined in
+for read-only Q&A results), and ten cross-linked tabs defined in
 [`components/workspace.py`](../shadow_loom_ui/components/workspace.py):
 
 ```
-story · explorer · world · causality · reasoning · audit · research · editor · export
+story · explorer · world · social · affective · reasoning · audit · research · editor · export
 ```
 
 State is centralised in [`state.py::AppState`](../shadow_loom_ui/state.py),
@@ -67,13 +67,12 @@ shows the same version as the UI for that user.
 
 ## Chat / command bar and Answer panel
 
-The chat bar at the bottom of the workspace dispatches one of the eight
-typed query objects (see
-[query-and-cycles.md](query-and-cycles.md)). Two of those query types are
-read-only:
+The chat bar at the bottom of the workspace dispatches one of the typed
+query objects (see [query-and-cycles.md](query-and-cycles.md)). The
+**Interrogation** mode is read-only:
 
-* `general` — open Q&A about the world ("who knows what at this point?").
-* `interrogate` — targeted questioning of an entity, event, or belief.
+* `interrogate` — targeted questioning of an entity, event, or belief
+  ("who knows what at this point?", "why does Y act?").
 
 Read-only queries do **not** create a new `VersionRow`. Their result is
 rendered in the dedicated **Answer panel**
@@ -87,7 +86,27 @@ lingers across versions.
 Write-mode queries (`observation` / `intervention` / `counterfactual` /
 `directive` / `evaluate` / `manual_edit`) take their normal pipeline
 route and surface in whichever tab consumes their result
-(Story / Reasoning / Audit / Causality).
+(Story / Reasoning / Audit / Affective).
+
+> *Developer note*: the underlying `GeneralQuery` model still exists in
+> [`shadow_loom/query_models.py`](../shadow_loom/query_models.py) and is
+> retained as a last-resort fallback inside the parser, but the chat bar
+> no longer offers an explicit **Ask** mode \u2014 free-form questions
+> should be issued in **Interrogation** mode instead.
+
+Read-only queries do **not** create a new `VersionRow`. Their result is
+rendered in the dedicated **Answer panel**
+([`components/answer_panel.py`](../shadow_loom_ui/components/answer_panel.py))
+that sits directly above the chat bar: a card with the model's claim, a
+confidence badge (🟢 ≥ 70 / 🟡 40–69 / 🔴 < 40), an evidence-id list
+(linking back to the graph nodes consulted), and any caveats. The panel
+clears on `VERSION_CHANGED` and `PROJECT_LOADED` so a stale answer never
+lingers across versions.
+
+Write-mode queries (`observation` / `intervention` / `counterfactual` /
+`directive` / `evaluate` / `manual_edit`) take their normal pipeline
+route and surface in whichever tab consumes their result
+(Story / Reasoning / Audit / Affective).
 
 ## 1. Story tab
 
@@ -99,7 +118,7 @@ route and surface in whichever tab consumes their result
   result as a new version with `source="ingestion"` and the previous
   version as ancestor.
 * This tab is **not** autosaved — the textarea is plain prose, not graph.
-* Read-only Q&A queries (`general`, `interrogate`) and full-story
+* Read-only Q&A queries (`interrogate`) and full-story
   `evaluate` runs are deliberately filtered out of this tab's
   `PIPELINE_RESULT` listener: the prose feed only re-renders when the
   result actually carries new *story* prose, so a question or an audit
@@ -152,19 +171,18 @@ rest of the UI.
 
 ## 4. Causality tab
 
+Removed. The top-level Causality tab was retired in May 2026; its
+sub-views were promoted to first-class tabs:
+
+* **Topology / Evolution** — the causal Sankey, trait trajectories, and
+  per-event causal-graph snapshot now live inside the **Social** and
+  **World** tabs (animated relationships, snapshot cards).
+* **Affective Dashboard** — promoted to its own top-level **Affective**
+  tab (see below).
+
 [`components/causality_tab.py`](../shadow_loom_ui/components/causality_tab.py)
-
-Three sub-tabs:
-
-* **Topology** — Sankey of causal flow up to the fabula cursor.
-* **Evolution** — trait trajectory plots per entity, with cursor needle.
-* **Affective Dashboard** — suspense / mystery / irony / surprise / emotion
-  gauges and time-series, computed by `viz_helpers.compute_affective_scores`
-  (which routes through `DirectiveAssembler.compute_*_score`). Top-20
-  entities by event degree are shown by default.
-
-Heavy panels go through `state.spawn_panel_task` — rapid scrubs collapse to
-the most recent render.
+is kept only as an internal builder library that exposes the affective
+rendering helpers; it is not mounted as a workspace tab.
 
 ## 5. Reasoning tab
 
@@ -344,9 +362,9 @@ The events most useful when extending a tab:
 | `PROJECT_LOADED` | project picker, MCP `open_project` | every tab — full re-render |
 | `WORLD_STATE_CHANGED` | `load_db_version`, manual save, pipeline | every tab + cache invalidation in `viz_helpers` |
 | `VERSION_CHANGED` | `load_db_version` | version sidebar highlight, story tab raw-text reload |
-| `FABULA_CURSOR_CHANGED` | sliders in world / causality tabs | world tab, causality sub-tabs |
-| `SYUZHET_CURSOR_CHANGED` | reasoning tab, causality affective dashboard | causality affective dashboard |
-| `ACTIVE_PATH_CHANGED` | top tabs, causality sub-tabs | gated panels for "render only when visible" |
+| `FABULA_CURSOR_CHANGED` | sliders in world / social tabs | world tab, social tab, affective dashboard |
+| `SYUZHET_CURSOR_CHANGED` | reasoning tab, affective dashboard | world tab, social tab, affective dashboard |
+| `ACTIVE_PATH_CHANGED` | top tabs, sub-tab controllers | gated panels for "render only when visible" |
 
 ---
 
@@ -373,7 +391,7 @@ hang fixes".
 
 * [architecture.md §9](architecture.md) — the conceptual map of the UI's nine tabs and the `AppState` event bus.
 * [pipeline-walkthrough.md](pipeline-walkthrough.md) — what happens behind the scenes when the **Story** tab issues a query.
-* [query-and-cycles.md](query-and-cycles.md) — the eight query types that the chat box and the **Reasoning** tab build, including the read-only `general` and `interrogate` cycles served by the **Answer panel**.
+* [query-and-cycles.md](query-and-cycles.md) — the typed query taxonomy that the chat box and the **Reasoning** tab build, including the read-only `interrogate` cycle served by the **Answer panel**.
 * [mcp-guide.md](mcp-guide.md) — the agent-facing equivalent of the workspace; the active version pointer is shared so the UI and an MCP client always see the same tip.
 * [use-cases.md](use-cases.md) §5 — the **Editor** tab and the manual-editing workflow.
 * [paper/shadow_loom.pdf](../paper/shadow_loom.pdf) **Appendix D** (`app:ui`) — the same surfaces described tab-by-tab with example sessions on bundled fixtures (Macbeth, Death on the Nile, Reservoir Dogs, Romeo and Juliet, Gone Girl).

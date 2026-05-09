@@ -28,6 +28,7 @@ import json
 import logging
 import re
 from contextvars import ContextVar
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Set, Tuple
 
@@ -44,12 +45,16 @@ from shadow_loom.models import (
     Belief,
     CausalEdge,
     Channel,
+    Concern,
+    ConcernSnapshot,
     Entity,
     EntityStateSnapshot,
     EventNode,
     GlobalTrait,
     Location,
     NarrativeObject,
+    Proposition,
+    PropositionSnapshot,
     RelationshipEdge,
     SpatialEdge,
     TraitVector,
@@ -125,6 +130,144 @@ class WorldTraitsRegister(BaseModel):
     )
 
 
+class ChunkPropositionSnapshot(BaseModel):
+    """Per-chunk wire format for a Proposition framing-shift snapshot.
+
+    Mirrors :class:`shadow_loom.models.PropositionSnapshot` but adds the
+    ``proposition_id`` discriminator so a single per-chunk payload can
+    carry snapshots for many propositions. The reconciler (Phase C)
+    routes each entry into ``Proposition.state_timeline`` and strips
+    the discriminator before persisting.
+    """
+    proposition_id: str = Field(
+        description="Catalogue PROP_ id this snapshot applies to.",
+    )
+    fabula_time: int
+    triggered_by: str = Field(
+        description="EVT_ id from this chunk that caused the framing shift.",
+    )
+    stakes: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    audience_default_prior: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    description: Optional[str] = None
+
+
+class PropositionTruthCommit(BaseModel):
+    """Per-chunk wire format for a Proposition ground-truth commitment.
+
+    Folded into ``Proposition.truth_at_fabula`` by the reconciler.
+    ``triggered_by`` lets the auditor explain *why* the commit fires
+    at this fabula tick (typically an outcome / revelation event).
+    """
+    proposition_id: str = Field(
+        description="Catalogue PROP_ id whose truth value commits.",
+    )
+    fabula_time: int = Field(
+        description="Fabula tick at which the commit fires; must equal triggered_by's fabula_time.",
+    )
+    truth: bool = Field(
+        description="True if the proposition resolves true; False if false.",
+    )
+    triggered_by: str = Field(
+        description="EVT_ id from this chunk that resolves the proposition.",
+    )
+
+
+class ChunkConcernSnapshot(BaseModel):
+    """Per-chunk wire format for a Concern drift snapshot.
+
+    Mirrors :class:`shadow_loom.models.ConcernSnapshot` but adds the
+    ``concern_id`` discriminator so a single per-chunk payload can
+    carry snapshots for many concerns. The reconciler (Phase C) routes
+    each entry into ``Concern.state_timeline``.
+    """
+    concern_id: str = Field(
+        description="Catalogue CCN_ id this snapshot applies to.",
+    )
+    fabula_time: int
+    triggered_by: str = Field(
+        description="EVT_ id from this chunk that caused the drift.",
+    )
+    salience: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    polarity: Optional[Literal["desire", "fear"]] = None
+    activation_fabula_window: Optional[List[int]] = None
+    counter_concern_ids: Optional[List[str]] = None
+    kind: Optional[str] = None
+
+
+class ChunkBeliefSnapshot(BaseModel):
+    """Per-chunk wire format for a per-character Belief confidence drift.
+
+    Owned by the Phase B4 Affect Agent. Distinct from the Consequences
+    agent's :class:`BeliefConfidenceUpdate` (which lands as a flat
+    overwrite via :class:`EntityUpdate.belief_confidence_updates`):
+    ``ChunkBeliefSnapshot`` is folded onto an
+    :class:`EntityStateSnapshot.belief_confidence_updates` entry at
+    the snapshot's ``fabula_time`` so per-character Bayesian-surprise
+    diagnostics see the drift on the timeline, not just the
+    last-write-wins overwrite.
+
+    The reconciler matches by ``(holder_id, target_id,
+    proposition_id?)`` against the entity's *current* beliefs and
+    skips entries with no match — Affect must not forge new beliefs
+    (that's Consequences' job via ``new_beliefs``).
+    """
+    holder_id: str = Field(description="ENT_ id of the believer.")
+    target_id: str = Field(
+        description="ENT_/EVT_/OBJ_/LOC_/WORLD_ id the belief is *about*.",
+    )
+    proposition_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional PROP_ id discriminator when ``target_id`` matches "
+            "more than one belief on the holder."
+        ),
+    )
+    fabula_time: int
+    triggered_by: str = Field(
+        description="EVT_ id from this chunk that caused the drift.",
+    )
+    new_confidence: float = Field(
+        ge=0.0, le=1.0,
+        description=(
+            "Clamped post-drift confidence (0.0–1.0). Diff-only — emit "
+            "only when the value actually changes."
+        ),
+    )
+    new_inertia: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0,
+        description=(
+            "Optional override of belief.inertia. Use when the chunk "
+            "*shocks* a belief loose (lowers inertia) or *cements* it "
+            "(raises inertia)."
+        ),
+    )
+
+
+class ChunkAffectExtraction(BaseModel):
+    """Step 3d output (Phase B4): per-chunk affect deltas.
+
+    Owned exclusively by the Affect Agent; no other per-chunk
+    extractor may emit any of these fields. Reconciled into
+    ``WorldStateV1.propositions`` and ``Entity.concerns`` by the
+    Phase C affect-unification reconciler.
+    """
+    proposition_snapshots: List[ChunkPropositionSnapshot] = Field(default_factory=list)
+    proposition_truth_commits: List[PropositionTruthCommit] = Field(default_factory=list)
+    concern_snapshots: List[ChunkConcernSnapshot] = Field(default_factory=list)
+    belief_snapshots: List[ChunkBeliefSnapshot] = Field(
+        default_factory=list,
+        description=(
+            "Per-character Belief confidence drift snapshots. Diff-only:"
+            " emit only when an existing belief's ``confidence`` (or"
+            " ``inertia``) shifts in response to an on-page event. The"
+            " reconciler folds each into"
+            " ``EntityStateSnapshot.belief_confidence_updates`` at the"
+            " snapshot's fabula_time."
+        ),
+    )
+    new_concern_seeds: List["ConcernSeed"] = Field(default_factory=list)
+
+
 class ChunkTopology(BaseModel):
     """Merged output per chunk: events + all edge types. Used by assembly.
 
@@ -140,6 +283,12 @@ class ChunkTopology(BaseModel):
     They are empty for plain ingestion chunks; the pipeline populates
     them when a query introduces characters / objects / locations /
     world-traits that did not exist in the canonical world state.
+
+    The Phase B4 affect collections (``proposition_snapshots`` /
+    ``proposition_truth_commits`` / ``concern_snapshots`` /
+    ``new_concern_seeds``) carry the per-chunk Affect Agent's diff
+    against the catalogue. They are consumed by the Phase C
+    reconciler and otherwise pass through unchanged.
     """
     events: List[EventNode] = Field(default_factory=list)
     causal_topology: List[CausalEdge] = Field(default_factory=list)
@@ -147,11 +296,73 @@ class ChunkTopology(BaseModel):
     social_topology: List[RelationshipEdge] = Field(default_factory=list)
     spatial_topology: List[SpatialEdge] = Field(default_factory=list)
     entity_updates: List["EntityUpdate"] = Field(default_factory=list)
+    world_trait_updates: List["WorldTraitUpdate"] = Field(
+        default_factory=list,
+        description=(
+            "Per-chunk surgical updates to WORLD_ traits (mirrors the belief"
+            " update vocabulary on EntityUpdate). Consumed by the Phase C"
+            " merge step which folds each into a synthetic"
+            " WorldTraitSnapshot on GlobalTrait.state_timeline. Per-chunk"
+            " emission is the authoritative path; Step-5 timelines run as a"
+            " gap-filler for WORLD_ ids that received no per-chunk updates."
+        ),
+    )
+    # Phase B4 affect outputs (default empty when affect stage skipped).
+    proposition_snapshots: List[ChunkPropositionSnapshot] = Field(default_factory=list)
+    proposition_truth_commits: List[PropositionTruthCommit] = Field(default_factory=list)
+    concern_snapshots: List[ChunkConcernSnapshot] = Field(default_factory=list)
+    belief_snapshots: List[ChunkBeliefSnapshot] = Field(default_factory=list)
+    new_concern_seeds: List["ConcernSeed"] = Field(default_factory=list)
     # Genesis spawns (post-physics promotion). Keyed by canonical id.
     new_entities: Dict[str, Entity] = Field(default_factory=dict)
     new_objects: Dict[str, NarrativeObject] = Field(default_factory=dict)
     new_locations: Dict[str, Location] = Field(default_factory=dict)
     new_world_traits: Dict[str, GlobalTrait] = Field(default_factory=dict)
+    # Affect-layer genesis: brand-new propositions/concerns introduced
+    # by this chunk (re-extracted prose, sandbox spawn, or directive
+    # seed). The merge step inserts these into the world before folding
+    # ``proposition_truth_commits`` / ``concern_snapshots`` so the
+    # snapshots have a target to attach to.
+    new_propositions: Dict[str, Proposition] = Field(default_factory=dict)
+    new_concerns: Dict[str, List[Concern]] = Field(
+        default_factory=dict,
+        description="entity_id → list of brand-new Concern records to attach.",
+    )
+
+    # --- Deletion vocabulary (all default empty; consumed by the merge
+    # step's deletion pass before additive sections run, so a single
+    # merge can replace-then-add cleanly). All counters are recorded
+    # into the resulting MergeChangeset.
+    removed_event_ids: List[str] = Field(default_factory=list)
+    removed_causal_edge_keys: List[Tuple[str, str, str, int]] = Field(
+        default_factory=list,
+        description="(source_id, target_id, causality_type, fabula_time) keys to drop from causal_topology.",
+    )
+    removed_social_dyad_keys: List[Tuple[str, str]] = Field(
+        default_factory=list,
+        description="(source_entity_id, target_entity_id) dyads to drop from social_topology.",
+    )
+    removed_spatial_keys: List[Tuple[str, str]] = Field(
+        default_factory=list,
+        description="(source_id, target_id) keys to drop from spatial_topology.",
+    )
+    removed_channel_ids: List[str] = Field(default_factory=list)
+    removed_entity_ids: List[str] = Field(default_factory=list)
+    removed_object_ids: List[str] = Field(default_factory=list)
+    removed_location_ids: List[str] = Field(default_factory=list)
+    removed_world_trait_ids: List[str] = Field(default_factory=list)
+    removed_proposition_ids: List[str] = Field(default_factory=list)
+    removed_concern_ids: List[Tuple[str, str]] = Field(
+        default_factory=list,
+        description="(entity_id, concern_id) pairs to drop from Entity.concerns.",
+    )
+
+    # Supersession (mainline-promoted counterfactual override). Maps
+    # ``new_event_id → old_event_id``; the merge step marks the old
+    # event with ``superseded_by_event_id`` and rewrites downstream
+    # references (``triggered_by``, ``acquired_via_event_id``,
+    # ``resolves_proposition_ids``) onto the new id.
+    supersedes_event_ids: Dict[str, str] = Field(default_factory=dict)
 
 
 class QAPair(BaseModel):
@@ -209,6 +420,37 @@ class ConsequencesExtraction(BaseModel):
     with event/edge extraction.
     """
     entity_updates: List["EntityUpdate"] = Field(default_factory=list)
+    world_trait_updates: List["WorldTraitUpdate"] = Field(
+        default_factory=list,
+        description=(
+            "Per-chunk surgical updates to WORLD_ trait magnitudes/inertia/"
+            "affected_domains. Each must reference a WORLD_ id from the"
+            " register and an EVT_ id from this chunk; fabula_time must equal"
+            " the triggering event's fabula_time. Folded into"
+            " GlobalTrait.state_timeline at merge time, mirroring how"
+            " belief_confidence_updates fold onto Belief."
+        ),
+    )
+
+
+class BeliefConfidenceUpdate(BaseModel):
+    """Per-chunk overwrite of an existing belief's confidence (and optional inertia).
+
+    Carried alongside :class:`EntityUpdate` so a Pearl-Rung-2 belief
+    clamp (``BeliefMutation`` from the causal physics layer) can be
+    persisted onto an existing :class:`Belief` without needing to
+    create a new one. The merge step locates the belief by
+    ``target_id`` (and ``proposition_id`` when set) on the entity's
+    *current* belief list at merge time and overwrites its
+    ``confidence`` (and ``inertia`` when supplied).
+    """
+    target_id: str = Field(description="target_id of the belief to update.")
+    proposition_id: Optional[str] = Field(
+        default=None,
+        description="Optional PROP_ id discriminator when target_id is ambiguous.",
+    )
+    new_confidence: float = Field(ge=0.0, le=1.0)
+    new_inertia: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
 
 class EntityUpdate(BaseModel):
@@ -225,14 +467,69 @@ class EntityUpdate(BaseModel):
         default_factory=list,
         description="target_ids of beliefs shattered by this event.",
     )
+    belief_confidence_updates: List[BeliefConfidenceUpdate] = Field(
+        default_factory=list,
+        description=(
+            "Overwrite confidence (and optional inertia) on existing beliefs. "
+            "Used by the Pearl-Rung-2 BeliefMutation bridge so do-surgery "
+            "clamps persist without spawning duplicate beliefs."
+        ),
+    )
     new_status: Optional[Literal["healthy", "injured", "ill", "dead", "unconscious"]] = Field(
         default=None, description="New status if changed.",
     )
     new_location_id: Optional[str] = Field(default=None, description="New location if entity moved.")
 
 
-# Resolve forward references now that EntityUpdate is defined
-ChunkTopology.model_rebuild()
+class WorldTraitUpdate(BaseModel):
+    """Per-chunk surgical change to a WORLD_ trait.
+
+    Mirrors the belief-update vocabulary on :class:`EntityUpdate`:
+      * ``new_magnitude_value`` / ``new_inertia`` — surgical overwrite of
+        :class:`TraitVector` fields on :class:`GlobalTrait.magnitude`.
+      * ``affected_domains_add`` / ``affected_domains_remove`` —
+        set-ops on :attr:`GlobalTrait.affected_domains`.
+
+    Folded by the Phase C merge step into a synthetic
+    :class:`WorldTraitSnapshot` appended onto
+    :attr:`GlobalTrait.state_timeline`. The merge honours
+    ``magnitude.inertia`` (high inertia attenuates the delta, matching
+    the Step-5 timeline pass) and emits an ``[Auto-Fix]`` log when
+    clamped. Per-chunk emission is the *authoritative* path; the
+    post-assembly Step-5 LLM pass is demoted to a gap-filler that only
+    runs for WORLD_ ids with zero per-chunk updates.
+    """
+    world_trait_id: str = Field(description="WORLD_ id of the trait being updated.")
+    fabula_time: int = Field(
+        description="Must equal the triggering event's fabula_time (validator-enforced).",
+    )
+    triggered_by: str = Field(description="EVT_ id that caused this world-state change.")
+    new_magnitude_value: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0,
+        description="Surgical overwrite of GlobalTrait.magnitude.value.",
+    )
+    new_inertia: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0,
+        description="Surgical overwrite of GlobalTrait.magnitude.inertia (rare).",
+    )
+    affected_domains_add: List[str] = Field(
+        default_factory=list,
+        description="Domains to add to GlobalTrait.affected_domains (set-union).",
+    )
+    affected_domains_remove: List[str] = Field(
+        default_factory=list,
+        description="Domains to remove from GlobalTrait.affected_domains (set-diff).",
+    )
+    rationale: Optional[str] = Field(
+        default=None,
+        description="Brief author note explaining the shift; surfaced in audit logs.",
+    )
+
+
+# Resolve forward references now that EntityUpdate is defined.
+# ``ChunkTopology`` and ``ChunkAffectExtraction`` additionally reference
+# ``ConcernSeed`` (defined later for Phase A3), so their rebuild is
+# deferred until after that class lands.
 PhysicsExtraction.model_rebuild()
 ConsequencesExtraction.model_rebuild()
 
@@ -427,6 +724,19 @@ class ExtractionConfig(BaseModel):
             "deliberate flashbacks via negative fabula_time."
         ),
     )
+    actorless_choice_retry: bool = Field(
+        default=True,
+        description=(
+            "When true, a chunk that produced any ``event_type=choice`` "
+            "event with empty ``actor_ids`` triggers a single Physics "
+            "retry naming the offending event ids and asking the agent "
+            "to fill in the decider(s) or downgrade the event_type to "
+            "``outcome`` / ``revelation``. Same shape as the anon "
+            "retry; closes the gap where the post-hoc EventNode "
+            "validator only warned about actorless choices instead of "
+            "asking for a corrective re-extraction."
+        ),
+    )
     second_drift_pass: bool = Field(
         default=False,
         description=(
@@ -439,6 +749,24 @@ class ExtractionConfig(BaseModel):
             "entities. Off by default \u2014 the first drift pass is "
             "usually sufficient and a second pass costs an extra LLM "
             "round-trip per affected chunk."
+        ),
+    )
+    chunk_consistency_audit: bool = Field(
+        default=True,
+        description=(
+            "When true, run a deterministic post-extraction audit on "
+            "each chunk's assembled :class:`ChunkTopology` that checks "
+            "(a) every id referenced by an event/edge/update resolves "
+            "either to the global :class:`GlobalRegister` or to a "
+            "chunk-local id, and (b) cross-stage parity contracts not "
+            "already covered by the per-stage retries (orphan trait "
+            "updates, dead-then-acting actor resurrections, "
+            "same-tick location conflicts, mutation_social edges with "
+            "no matching RelationshipEdge reading). Defects are logged "
+            "as a structured warning but do NOT fail the chunk \u2014 "
+            "they are advisory only in this iteration. Cheap "
+            "(deterministic; no LLM call); leave on unless you are "
+            "diagnosing a noisy log."
         ),
     )
     pipeline_checkpoint_dir: Optional[str] = Field(
@@ -496,16 +824,33 @@ class ExtractionConfig(BaseModel):
         "a value of 0 would create ``asyncio.Semaphore(0)`` and hang every chunk.",
     )
     per_chunk_timeout_seconds: float = Field(
+        default=0.0,
+        ge=0,
+        description="Outer per-chunk safety timeout (seconds) wrapping "
+        "the entire Socratic\u2192Physics\u2192Social\u2192Consequences "
+        "pipeline on a single chunk. **Off by default** \u2014 prefer "
+        "the finer-grained ``per_agent_call_timeout_seconds`` which "
+        "cancels just the wedged agent call and lets retries / "
+        "subsequent stages proceed. Set this >0 only as an outer "
+        "guard against pathological loops in the chunk-level retry "
+        "helpers themselves.",
+    )
+    per_agent_call_timeout_seconds: float = Field(
         default=600.0,
         ge=0,
-        description="Per-chunk soft timeout (seconds) for the entire "
-        "Socratic\u2192Physics\u2192Social\u2192Consequences pipeline on a "
-        "single chunk. When >0, a wedged LLM call is cancelled and that "
-        "chunk yields an empty ChunkTopology so the rest of the run can "
-        "proceed; the chunk's stage flags are all set to 1 so the "
-        ">50%-of-chunks failure threshold still triggers if many chunks "
-        "time out. Default 600s (10 min) accommodates slow local models "
-        "with multiple retries; set to 0 to disable.",
+        description="Per-agent-call soft timeout (seconds). Each "
+        "``X_agent.run(...)`` invocation inside the per-chunk pipeline "
+        "(Socratic, Physics, Social, Consequences, Affect, plus all "
+        "chunk-level retries: anon / actorless-choice / scaffold-drift "
+        "/ fabula-monotonicity / channel-resync / parity / etc.) is "
+        "wrapped in ``asyncio.wait_for``. On timeout the call raises "
+        "``asyncio.TimeoutError`` and the surrounding try/except for "
+        "that specific stage records the failure and continues with "
+        "the next stage instead of voiding the whole chunk. Default "
+        "600s (10 min) is generous for slow providers; set to 0 to "
+        "disable per-call wrapping. This replaces the legacy whole-"
+        "chunk timeout \u2014 a single wedged agent no longer wipes "
+        "out the other stages' work.",
     )
     estimated_events_per_chunk: int = Field(
         default=10,
@@ -519,6 +864,108 @@ class ExtractionConfig(BaseModel):
         "deltas) from the events Physics produced. When enabled, the Physics agent's "
         "own entity_updates output is discarded in favour of the Consequences output. "
         "Disable to fall back to the legacy two-agent (Physics + Social) split.",
+    )
+
+    enable_affect_agent: bool = Field(
+        default=True,
+        description=(
+            "If true, run the Phase B4 per-chunk Affect agent (Step 3d) "
+            "after Consequences. Emits proposition_snapshots, "
+            "proposition_truth_commits, concern_snapshots and "
+            "new_concern_seeds folded into Proposition.state_timeline / "
+            "truth_at_fabula and Entity.concerns by the Phase C "
+            "reconciler. The agent is gated per-chunk on the presence "
+            "of an affect signal (catalogue PROP_ id touched by an "
+            "event, belief, or seeded entity update); chunks with no "
+            "signal skip the call entirely. Disable to fall back to "
+            "static catalogue baselines (no per-chunk drift)."
+        ),
+    )
+
+    enable_proposition_catalogue: bool = Field(
+        default=True,
+        description=(
+            "If true, run the Phase A3 Proposition Catalogue agent over "
+            "the full text after Step 1 ontology, producing a global "
+            "PROP_ registry plus baseline ConcernSeed entries. The "
+            "catalogue's PROP_ id list is threaded into every per-chunk "
+            "extractor (Physics / Social / Consequences) so beliefs and "
+            "utterances can carry canonical ``proposition_id`` / "
+            "``asserts_proposition_id`` / ``denies_proposition_id`` / "
+            "``resolves_proposition_ids`` at extraction time — removing "
+            "the round-trip the post-pass belief-clustering stage would "
+            "otherwise need. Disable to skip the catalogue and fall back "
+            "to legacy post-pass clustering only."
+        ),
+    )
+
+    # ------------------------------------------------------------------
+    # Step 5c — entity concern extraction (Affect Unification, Step 2)
+    # ------------------------------------------------------------------
+    enable_concern_extraction: bool = Field(
+        default=True,
+        description=(
+            "If true, after world-state assembly the pipeline runs a single "
+            "focused LLM call per non-trivial entity to extract their standing "
+            "``Concern`` ledger (fears + desires over the synthesised "
+            "``Proposition`` register). Concerns drive the affect-unification "
+            "layer's per-entity threat / hope surfacing. Cheap (~1 call/entity) "
+            "and additive — disable to leave ``Entity.concerns`` empty for all "
+            "entities (legacy behaviour). See "
+            "``/memories/repo/affect-unification-plan.md`` Step 2."
+        ),
+    )
+    concern_min_event_appearances: int = Field(
+        default=2,
+        description=(
+            "Skip concern extraction for entities that appear in fewer than this "
+            "many events (one-line side characters). Lowers cost on long "
+            "manuscripts with large incidental casts."
+        ),
+    )
+
+    # ------------------------------------------------------------------
+    # Step 5d — belief proposition clustering (Affect Unification, Step 3)
+    # ------------------------------------------------------------------
+    enable_belief_clustering: bool = Field(
+        default=True,
+        description=(
+            "If true, after concern extraction the pipeline runs an LLM "
+            "clustering pass per (non-event) belief target to bind "
+            "equivalent ``perceived_state`` strings to shared "
+            "``Proposition`` records. The deterministic event-target "
+            "backfill always runs regardless. Disable to leave non-event "
+            "beliefs without a ``proposition_id`` (KL-based dramatic-irony "
+            "scoring on those propositions then falls through to the "
+            "audience prior). See ``/memories/repo/affect-unification-plan.md`` "
+            "Step 3."
+        ),
+    )
+    belief_cluster_min_beliefs: int = Field(
+        default=2,
+        description=(
+            "Skip belief-clustering for targets with fewer than this many "
+            "beliefs across all entities. Single-belief targets contribute "
+            "no irony signal so the LLM call is wasted there."
+        ),
+    )
+
+    # ------------------------------------------------------------------
+    # Step 5e — audience-agent synthesis (Affect Unification, Step 4)
+    # ------------------------------------------------------------------
+    enable_audience_synthesis: bool = Field(
+        default=True,
+        description=(
+            "If true, after concerns and belief clustering the pipeline "
+            "synthesises the reserved ``ENT_AUDIENCE`` entity (deterministic, "
+            "no LLM cost) by walking the syuzhet stream and emitting graded-"
+            "confidence ``Belief`` snapshots at each event's fabula_time. "
+            "This is the final substrate the unified affect scorers "
+            "(suspense / surprise / dramatic irony / mystery) read against. "
+            "Disable to leave the audience implicit (legacy behaviour); the "
+            "unified scorers will then synthesise lazily on first call. See "
+            "``/memories/repo/affect-unification-plan.md`` Step 4."
+        ),
     )
 
     # ------------------------------------------------------------------
@@ -839,13 +1286,15 @@ def _build_object_agent(config: ExtractionConfig) -> Agent[_ObjectDeps, ObjectRe
     return agent
 
 
-# --- Step 1c: Entity extraction (depends on locations + objects) ---
+# --- Step 1c: Entity extraction (depends on locations + objects + world traits) ---
 
 class _EntityDeps(BaseModel):
-    """Dependencies for Step 1c — entities need location + object IDs."""
+    """Dependencies for Step 1c — entities need location + object IDs, plus the
+    world-traits register so baseline beliefs may target ``WORLD_`` ids."""
     model_config = {"protected_namespaces": ()}
     location_register: LocationRegister
     object_register: ObjectRegister
+    world_traits_register: Optional[WorldTraitsRegister] = None
 
 
 def _build_entity_agent(config: ExtractionConfig) -> Agent[_EntityDeps, EntityRegister]:
@@ -870,6 +1319,24 @@ def _build_entity_agent(config: ExtractionConfig) -> Agent[_EntityDeps, EntityRe
             oid: ctx.deps.object_register.objects[oid].name
             for oid in obj_ids
         }
+        wt_reg = ctx.deps.world_traits_register
+        if wt_reg is not None and wt_reg.world_traits:
+            wt_ids = sorted(wt_reg.world_traits.keys())
+            wt_names = {wid: wt_reg.world_traits[wid].name for wid in wt_ids}
+            wt_block = (
+                "\n=== WORLD-TRAIT REGISTER (from Step 1d) ===\n"
+                f"WORLD_ IDs: {wt_ids}\n"
+                f"WORLD_ NAMES: {wt_names}\n"
+                "You MAY reference WORLD_ IDs in belief target_id fields when an\n"
+                "entity holds a baseline belief about a world fact ('the\n"
+                "prophecy binds', 'the Party watches everything'). Step 1d\n"
+                "now precedes Step 1c so these IDs are stable.\n"
+            )
+        else:
+            wt_block = (
+                "\n=== WORLD-TRAIT REGISTER (from Step 1d) ===\n"
+                "(empty \u2014 no world traits extracted; do not reference WORLD_ ids)\n"
+            )
         return (
             "=== LOCATION REGISTER (from Step 1a) ===\n"
             f"LOCATION IDs: {loc_ids}\n"
@@ -878,6 +1345,7 @@ def _build_entity_agent(config: ExtractionConfig) -> Agent[_EntityDeps, EntityRe
             "=== OBJECT REGISTER (from Step 1b) ===\n"
             f"OBJECT IDs: {obj_ids}\n"
             f"OBJECT NAMES: {obj_names}\n"
+            f"{wt_block}"
             "\n"
             "Use ONLY these LOC_ IDs when assigning location_id. If a "
             "character's home location is missing from the register "
@@ -886,7 +1354,7 @@ def _build_entity_agent(config: ExtractionConfig) -> Agent[_EntityDeps, EntityRe
             "of inventing a new one \u2014 the validator will null any "
             "unknown LOC_ id and the entity will fall back to "
             "LOC_UNSPECIFIED.\n"
-            "You may reference LOC_ and OBJ_ IDs in belief target_id fields.\n"
+            "You may reference LOC_, OBJ_, and WORLD_ IDs in belief target_id fields.\n"
             "You may also reference ENT_ IDs you are creating in this pass."
         )
 
@@ -936,39 +1404,6 @@ def _build_world_traits_agent(config: ExtractionConfig) -> Agent[None, WorldTrai
         _resolve_model(config.model),
         output_type=NativeOutput(WorldTraitsRegister),
         system_prompt=_load_prompt("ontology_world_traits.md"),
-        retries=config.output_retries,
-    )
-
-
-# --- Legacy single-pass agent (kept for backward compatibility) ---
-
-def _build_ontology_agent(config: ExtractionConfig) -> Agent[None, GlobalRegister]:
-    """Construct the legacy single-pass Step 1 PydanticAI agent.
-
-    .. deprecated::
-        The active pipeline uses the four-pass split
-        (`_build_location_agent`, `_build_object_agent`,
-        `_build_entity_agent`, `_build_world_traits_agent`). This
-        single-pass builder is retained only for backward-compat
-        callers and emits a `DeprecationWarning` when invoked.
-    """
-    import warnings
-    warnings.warn(
-        "ontology_extraction.md / _build_ontology_agent is deprecated; "
-        "use the split ontology_locations / ontology_objects / "
-        "ontology_entities / ontology_world_traits agents instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    logger.warning(
-        "[ingestion] Legacy _build_ontology_agent invoked \u2014 the "
-        "active pipeline uses the four-pass split; this prompt is "
-        "stale relative to the current channel/world-trait schema."
-    )
-    return Agent(
-        _resolve_model(config.model),
-        output_type=NativeOutput(GlobalRegister),
-        system_prompt=_load_prompt("ontology_extraction.md"),
         retries=config.output_retries,
     )
 
@@ -1101,11 +1536,15 @@ async def extract_ontology_async(
             ) from exc
     logger.info("[Step 1a] Extracted %d locations.", len(loc_register.locations))
 
-    # --- Steps 1b → 1c (chained) and 1d (parallel) ---
-    # Step 1c (entities) consumes the Object Register in its prompt for
-    # belief target_id grounding, so it must run AFTER Step 1b. The two
-    # are chained inside one coroutine and that coroutine runs in
-    # parallel with Step 1d (world traits, no deps).
+    # --- Steps 1b + 1d (parallel; both no-deps after 1a) → 1c ---
+    # Step 1c (entities) consumes the Object Register AND the World-
+    # Traits Register so baseline beliefs may target ``WORLD_`` ids
+    # (Macbeth's prior belief in the prophecy, Winston's prior belief
+    # about the Party). Step 1d previously ran in parallel with 1c,
+    # which meant the Step-1c LLM never saw WORLD_ ids and the entity
+    # prompt had to forbid them. We now run 1b and 1d together (each
+    # is a single full-text pass with no inter-dependence), then
+    # Step 1c with both registers in scope.
     async def _extract_objects() -> ObjectRegister:
         object_agent = _build_object_agent(config)
         obj_deps = _ObjectDeps(location_register=loc_register)
@@ -1125,11 +1564,15 @@ async def extract_ontology_async(
                     "the underlying LLM/API error."
                 ) from exc
 
-    async def _extract_entities(obj_register: ObjectRegister) -> EntityRegister:
+    async def _extract_entities(
+        obj_register: ObjectRegister,
+        wt_reg: Optional[WorldTraitsRegister],
+    ) -> EntityRegister:
         entity_agent = _build_entity_agent(config)
         ent_deps = _EntityDeps(
             location_register=loc_register,
             object_register=obj_register,
+            world_traits_register=wt_reg,
         )
         logger.info("[Step 1c] Extracting entities with %s …", config.model)
         try:
@@ -1146,11 +1589,6 @@ async def extract_ontology_async(
                     "proceed without an entity register. See logs above "
                     "for the underlying LLM/API error."
                 ) from exc
-
-    async def _extract_objects_then_entities() -> Tuple[ObjectRegister, EntityRegister]:
-        obj_reg = await _extract_objects()
-        ent_reg = await _extract_entities(obj_reg)
-        return obj_reg, ent_reg
 
     async def _extract_world_traits() -> WorldTraitsRegister:
         world_traits_agent = _build_world_traits_agent(config)
@@ -1170,12 +1608,14 @@ async def extract_ontology_async(
                     "logs above for the underlying LLM/API error."
                 ) from exc
 
-    (obj_register, ent_register), wt_register = await asyncio.gather(
-        _extract_objects_then_entities(), _extract_world_traits()
+    # 1b and 1d run together (independent), then 1c sees both.
+    obj_register, wt_register = await asyncio.gather(
+        _extract_objects(), _extract_world_traits()
     )
     logger.info("[Step 1b] Extracted %d objects.", len(obj_register.objects))
-    logger.info("[Step 1c] Extracted %d entities.", len(ent_register.entities))
     logger.info("[Step 1d] Extracted %d world traits.", len(wt_register.world_traits))
+    ent_register = await _extract_entities(obj_register, wt_register)
+    logger.info("[Step 1c] Extracted %d entities.", len(ent_register.entities))
 
     # --- Resolve object owner_ids to ENT_ IDs (needs both registers) ---
     resolved_objects = _resolve_object_owner_ids(obj_register.objects, ent_register.entities)
@@ -1249,6 +1689,295 @@ def _build_socratic_agent(config: ExtractionConfig) -> Agent[_SocraticDeps, Socr
 
 
 # =====================================================================
+# Step 2.5 — Proposition Catalogue (Phase A3)
+#
+# Single global pass over the full text that produces the canonical
+# ``PROP_*`` registry (and per-entity ``ConcernSeed`` baselines)
+# referenced by every per-chunk extractor. See
+# ``/memories/repo/ingestion-plan-2026-05-07-propositions-concerns.md``
+# Phase A3 + Annex.
+# =====================================================================
+
+
+class ConcernSeed(BaseModel):
+    """Baseline standing-fear/desire entry produced by the Proposition
+    Catalogue. Anchors a character's concern to a catalogued proposition.
+
+    Drift over fabula time is owned by the per-chunk Affect agent's
+    ``ConcernSnapshot`` output \u2014 the seed records the *initial* salience
+    only.
+    """
+    model_config = {"protected_namespaces": ()}
+    concern_id: str = Field(
+        description="Unique CCN_ id (matches ^CCN_[A-Z0-9_]+$).",
+    )
+    entity_id: str = Field(
+        description="ENT_ id of the concern-holder.",
+    )
+    proposition_id: str = Field(
+        description="PROP_ id whose realisation realises (desire) or averts (fear) the concern.",
+    )
+    polarity: Literal["desire", "fear"] = Field(
+        description="Whether the entity wants the proposition true or false.",
+    )
+    kind: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional harm/benefit-kind label drawn from the affect "
+            "vocabulary (betrayal, abandonment, irrelevance, death, ...)."
+        ),
+    )
+    baseline_salience: float = Field(
+        default=0.5, ge=0.0, le=1.0,
+        description="Initial per-entity weighting of the concern.",
+    )
+    evidence_strength: Literal["weak", "moderate", "strong"] = Field(
+        default="moderate",
+        description="Engine's certainty in the catalogue extraction of this seed.",
+    )
+    counter_concern_ids: List[str] = Field(
+        default_factory=list,
+        description="Other CCN_ ids forming an ambivalent pair with this seed.",
+    )
+
+
+class PropositionCatalogue(BaseModel):
+    """Phase A3 output: global PROP_/CCN_ registry, plus concern seeds.
+
+    The reconciler folds ``propositions`` into ``WorldStateV1.propositions``
+    and materialises ``concern_seeds`` as ``Concern`` records on the
+    referenced entities. Per-chunk extractors only ever *reference* these
+    ids; they may not introduce new PROP_ ids and may introduce new
+    CCN_ ids only via the Affect agent's ``new_concern_seeds`` channel.
+    """
+    propositions: List[Proposition] = Field(default_factory=list)
+    concern_seeds: List[ConcernSeed] = Field(default_factory=list)
+
+
+# Now that ``ConcernSeed`` exists, finalise the per-chunk topology
+# wire format whose forward ref to it was deferred earlier.
+ChunkTopology.model_rebuild()
+ChunkAffectExtraction.model_rebuild()
+
+
+class _PropCatalogueDeps(BaseModel):
+    """Dependencies for the Phase A3 catalogue agent."""
+    model_config = {"protected_namespaces": ()}
+    global_register: GlobalRegister
+
+
+def _build_proposition_catalogue_agent(
+    config: ExtractionConfig,
+) -> Agent[_PropCatalogueDeps, PropositionCatalogue]:
+    """Construct the Phase A3 Proposition Catalogue agent.
+
+    Sees the full source text and the Step-1 ontology register; emits
+    PROP_ and CCN_ ids that downstream per-chunk agents reference as
+    opaque labels. Owns no events, edges, beliefs, or snapshots.
+    """
+    agent: Agent[_PropCatalogueDeps, PropositionCatalogue] = Agent(
+        _resolve_model(config.model),
+        deps_type=_PropCatalogueDeps,
+        output_type=NativeOutput(PropositionCatalogue),
+        system_prompt=_load_prompt("proposition_catalogue.md"),
+        retries=config.output_retries,
+    )
+
+    @agent.system_prompt
+    def inject_register_for_catalogue(
+        ctx: RunContext[_PropCatalogueDeps],
+    ) -> str:
+        reg = ctx.deps.global_register
+
+        # Entity cards: name + status + headline traits (top 3 by value).
+        ent_lines: List[str] = []
+        for eid in sorted(reg.entities):
+            ent = reg.entities[eid]
+            traits = getattr(ent, "traits", {}) or {}
+            top_traits = sorted(
+                traits.items(),
+                key=lambda kv: -float(getattr(kv[1], "value", 0.0)),
+            )[:3]
+            trait_str = ", ".join(
+                f"{tn}={float(getattr(tv, 'value', 0.0)):.2f}"
+                for tn, tv in top_traits
+            ) or "—"
+            ent_lines.append(
+                f"  - {eid}: {ent.name} [{getattr(ent, 'status', 'unknown')}] "
+                f"@{getattr(ent, 'location_id', '?')} traits=({trait_str})"
+            )
+        entities_block = "\n".join(ent_lines) if ent_lines else "  (none)"
+
+        # Location cards: name + 1-line description.
+        loc_lines: List[str] = []
+        for lid in sorted(reg.locations):
+            loc = reg.locations[lid]
+            desc = (getattr(loc, "description", "") or "").strip().splitlines()
+            desc_str = (desc[0][:120] if desc else "—")
+            loc_lines.append(f"  - {lid}: {loc.name} — {desc_str}")
+        locations_block = "\n".join(loc_lines) if loc_lines else "  (none)"
+
+        # Object cards: name + owner/location + top affordance verbs.
+        obj_lines: List[str] = []
+        for oid in sorted(reg.objects):
+            obj = reg.objects[oid]
+            affs = getattr(obj, "affordances", []) or []
+            verbs = ",".join(
+                getattr(a, "action", str(a)) for a in affs[:3]
+            ) or "—"
+            holder = getattr(obj, "owner_id", None) or getattr(obj, "location_id", "?")
+            obj_lines.append(
+                f"  - {oid}: {obj.name} @{holder} affordances=({verbs})"
+            )
+        objects_block = "\n".join(obj_lines) if obj_lines else "  (none)"
+
+        # World-trait cards: name + 1-line description.
+        wt_lines: List[str] = []
+        for wid in sorted(reg.world_traits):
+            wt = reg.world_traits[wid]
+            desc = (getattr(wt, "description", "") or "").strip().splitlines()
+            desc_str = (desc[0][:120] if desc else "—")
+            wt_lines.append(f"  - {wid}: {wt.name} — {desc_str}")
+        world_traits_block = "\n".join(wt_lines) if wt_lines else "  (none)"
+
+        return (
+            "=== ONTOLOGY REGISTER (from Step 1) ===\n"
+            "Use ONLY the ENT_/LOC_/OBJ_/WORLD_ ids below in `referent_ids` "
+            "and `entity_id`. The compact cards give you the context you "
+            "need to pick `referent_ids` that fully scope each proposition "
+            "(e.g. a relation_holds proposition between two entities should "
+            "list BOTH entity ids; a location-bound prophecy should list "
+            "the location, not the speaker).\n"
+            "\n"
+            "ENTITIES:\n"
+            f"{entities_block}\n"
+            "\n"
+            "LOCATIONS:\n"
+            f"{locations_block}\n"
+            "\n"
+            "OBJECTS:\n"
+            f"{objects_block}\n"
+            "\n"
+            "WORLD TRAITS:\n"
+            f"{world_traits_block}\n"
+            "\n"
+            "You MAY mint new PROP_*/CCN_* ids \u2014 they are your namespace "
+            "and downstream extractors will reference them by name. Do NOT "
+            "mint EVT_ ids; per-chunk Physics / Social agents own that "
+            "namespace."
+        )
+
+    @agent.output_validator
+    def validate_catalogue_ids(
+        ctx: RunContext[_PropCatalogueDeps],
+        result: PropositionCatalogue,
+    ) -> PropositionCatalogue:
+        """Drop catalogue entries with invalid ontology references / id shapes.
+
+        - PROP_ / CCN_ id shape is enforced by the model annotations on
+          downstream consumers (and by ``PropositionId`` / ``ConcernId``
+          aliases in ``models.py``); here we focus on referential integrity:
+          referent ids must exist in the ontology, and concern seeds must
+          point at a proposition the catalogue itself emits.
+        - Duplicates collapse silently (later entry wins) so a slightly
+          chatty extractor doesn't poison the world.
+        """
+        reg = ctx.deps.global_register
+        valid_ontology = (
+            set(reg.entities)
+            | set(reg.locations)
+            | set(reg.objects)
+            | set(reg.world_traits)
+        )
+        prop_re = re.compile(r"^PROP_[A-Z0-9_]+$")
+        ccn_re = re.compile(r"^CCN_[A-Z0-9_]+$")
+
+        deduped_props: Dict[str, Proposition] = {}
+        for p in result.propositions:
+            if not prop_re.match(p.proposition_id):
+                logger.warning(
+                    "[PropCatalogue] Dropping proposition %r \u2014 id does not "
+                    "match ^PROP_[A-Z0-9_]+$.", p.proposition_id,
+                )
+                continue
+            kept_referents: List[str] = []
+            for rid in p.referent_ids:
+                if rid in valid_ontology:
+                    kept_referents.append(rid)
+                else:
+                    logger.warning(
+                        "[PropCatalogue] Proposition %s drops unknown referent_id %r.",
+                        p.proposition_id, rid,
+                    )
+            if kept_referents != list(p.referent_ids):
+                p = p.model_copy(update={"referent_ids": kept_referents})
+            deduped_props[p.proposition_id] = p
+
+        prop_ids = set(deduped_props)
+        deduped_seeds: Dict[Tuple[str, str, str], ConcernSeed] = {}
+        for s in result.concern_seeds:
+            if not ccn_re.match(s.concern_id):
+                logger.warning(
+                    "[PropCatalogue] Dropping concern seed %r \u2014 id does not "
+                    "match ^CCN_[A-Z0-9_]+$.", s.concern_id,
+                )
+                continue
+            if s.entity_id not in reg.entities:
+                logger.warning(
+                    "[PropCatalogue] Dropping concern seed %s \u2014 unknown entity %r.",
+                    s.concern_id, s.entity_id,
+                )
+                continue
+            if s.proposition_id not in prop_ids:
+                logger.warning(
+                    "[PropCatalogue] Dropping concern seed %s \u2014 unknown "
+                    "proposition_id %r.", s.concern_id, s.proposition_id,
+                )
+                continue
+            deduped_seeds[(s.entity_id, s.proposition_id, s.polarity)] = s
+
+        return PropositionCatalogue(
+            propositions=list(deduped_props.values()),
+            concern_seeds=list(deduped_seeds.values()),
+        )
+
+    return agent
+
+
+async def extract_proposition_catalogue_async(
+    text: str,
+    register: GlobalRegister,
+    config: ExtractionConfig,
+) -> PropositionCatalogue:
+    """Run Phase A3: build the global Proposition Catalogue.
+
+    Single LLM call over the full source text. Failures degrade
+    gracefully to an empty catalogue \u2014 every per-chunk agent then
+    sees an empty PROP list and the legacy post-pass clustering path
+    handles belief\u2192proposition binding.
+    """
+    agent = _build_proposition_catalogue_agent(config)
+    deps = _PropCatalogueDeps(global_register=register)
+    logger.info("[Step 2.5] Extracting proposition catalogue \u2026")
+    try:
+        result = await agent.run(text, deps=deps, **_user_kwargs())
+        catalogue = result.output
+    except Exception:
+        logger.exception(
+            "[Step 2.5] Proposition catalogue extraction FAILED \u2014 "
+            "returning empty catalogue (per-chunk extractors will run "
+            "with no PROP_ context; legacy post-pass clustering still "
+            "fires).",
+        )
+        return PropositionCatalogue()
+    logger.info(
+        "[Step 2.5] Catalogue: %d propositions, %d concern seeds.",
+        len(catalogue.propositions), len(catalogue.concern_seeds),
+    )
+    return catalogue
+
+
+# =====================================================================
 # Step 3 — Decomposed Topology Extraction (Physics + Social Agents)
 # =====================================================================
 
@@ -1263,6 +1992,12 @@ class _PhysicsDeps(BaseModel):
     # toward extracting events for the on-page cast and away from
     # hallucinating events for offstage characters.
     on_page_entity_ids: List[str] = Field(default_factory=list)
+    # Compact ``(PROP_id, description)`` pairs from the global
+    # Proposition Catalogue (Phase A3). Empty list when the catalogue
+    # has not been extracted yet (legacy worlds, ablation runs) — the
+    # system prompt then renders an explicit "none yet" notice and
+    # the agent leaves ``EventNode.resolves_proposition_ids`` empty.
+    chunk_propositions: List[Tuple[str, str]] = Field(default_factory=list)
 
 
 class _SocialDeps(BaseModel):
@@ -1290,6 +2025,10 @@ class _SocialDeps(BaseModel):
     # where chunks have no causal ordering — dedup at assembly handles
     # that case via shape-key collapse.
     previous_chunk_channels: Dict[str, "Channel"] = Field(default_factory=dict)
+    # See ``_PhysicsDeps.chunk_propositions``. Surfaces PROP_ ids on the
+    # social agent so utterances can carry ``asserts_proposition_id`` /
+    # ``denies_proposition_id`` referencing canonical catalogue ids.
+    chunk_propositions: List[Tuple[str, str]] = Field(default_factory=list)
 
 
 class _ConsequencesDeps(BaseModel):
@@ -1316,6 +2055,38 @@ class _ConsequencesDeps(BaseModel):
     chunk_utterance_events: List[EventNode] = Field(default_factory=list)
     previous_event_ids: List[str] = Field(default_factory=list)
     on_page_entity_ids: List[str] = Field(default_factory=list)
+    # See ``_PhysicsDeps.chunk_propositions``. Surfaces PROP_ ids on the
+    # consequences agent so beliefs whose ``target_id`` matches a
+    # catalogue proposition's referent can carry ``proposition_id`` at
+    # extraction time — removing the post-pass clustering round-trip
+    # for the common case.
+    chunk_propositions: List[Tuple[str, str]] = Field(default_factory=list)
+
+
+class _AffectDeps(BaseModel):
+    """Dependencies for Step 3d (Phase B4: Affect Agent).
+
+    Carries the *full* catalogue (propositions and concern seeds), the
+    chunk's events (Physics + Social merged) and entity_updates
+    (Consequences output), so the affect agent can decide which
+    propositions to snapshot, which truths to commit, and which
+    concerns drift in this chunk.
+
+    The reconciler folds the agent's outputs into
+    ``Proposition.state_timeline`` / ``Proposition.truth_at_fabula``
+    and ``Entity.concerns`` / ``Concern.state_timeline`` in Phase C.
+    """
+    model_config = {"protected_namespaces": ()}
+    global_register: GlobalRegister
+    chunk_events: List[EventNode] = Field(default_factory=list)
+    chunk_entity_updates: List["EntityUpdate"] = Field(default_factory=list)
+    # Full catalogue (propositions + concern seeds) — the affect agent
+    # needs each proposition's kind / referents / baseline stakes /
+    # baseline prior / description, and each seed's polarity / kind /
+    # baseline salience, all of which the compact (id, desc) pairs on
+    # the other deps drop. Empty when no catalogue stage ran.
+    propositions: List[Proposition] = Field(default_factory=list)
+    concern_seeds: List["ConcernSeed"] = Field(default_factory=list)
 
 
 def _format_scaffold(scaffold: SocraticScaffold) -> str:
@@ -1327,6 +2098,30 @@ def _format_scaffold(scaffold: SocraticScaffold) -> str:
         lines.append(f"  [{qa.category.upper()}] Q: {qa.question}")
         lines.append(f"           A: {qa.answer}")
     return "\n".join(lines)
+
+
+def _format_proposition_catalogue(
+    catalogue: List[Tuple[str, str]],
+) -> str:
+    """Render a compact ``(PROP_id, description)`` list for agent injection.
+
+    The Phase A3 Proposition Catalogue Agent owns the canonical PROP_
+    ids; per-chunk Physics / Social / Consequences agents reference
+    them as opaque labels via ``deps.chunk_propositions``. When the
+    catalogue is empty (legacy world, ablation run, catalogue stage
+    skipped) this renders an explicit notice so the agent does not
+    silently invent PROP_ ids.
+    """
+    if not catalogue:
+        return (
+            "  (no proposition catalogue available \u2014 leave "
+            "proposition_id / asserts_proposition_id / "
+            "denies_proposition_id / resolves_proposition_ids empty / "
+            "null on every artefact in this chunk)"
+        )
+    return "\n".join(
+        f"  - {prop_id}: {description}" for prop_id, description in catalogue
+    )
 
 
 # Verbs / cue-tokens that strongly imply on-page speech-acts. The Social
@@ -1525,10 +2320,38 @@ def _fix_id(candidate: str, valid_ids: set[str], field_label: str, fixes: List[s
     if candidate and "_" in candidate and candidate.split("_", 1)[0] in {
         "LOC", "OBJ", "ENT", "EVT", "CHN", "WORLD",
     }:
-        fixes.append(
-            f"[Unknown-ID] {field_label} '{candidate}' is not in the "
-            f"ontology register and could not be fuzzy-matched."
-        )
+        prefix = candidate.split("_", 1)[0]
+        if prefix == "EVT":
+            # Events aren't in the static ontology register at all —
+            # they live on the Physics agent's `events` list (this
+            # chunk) plus `previous_event_ids` (prior chunks). A
+            # dangling EVT_ reference almost always means the LLM
+            # "drew an arrow" to a canon event it knows from
+            # background but never actually emitted as an EventNode.
+            # Use a precise message so the retry prompt steers the
+            # LLM to either add the event to `events` or drop the
+            # edge — the generic "ontology register" wording
+            # actively misleads here because events are never in it.
+            fixes.append(
+                f"[Unknown-ID] {field_label} '{candidate}' references "
+                f"an event that is neither in this chunk's `events` "
+                f"list nor in the previous-chunk event list. Either "
+                f"add it to `events` (if it actually occurs on-page "
+                f"in this chunk's text) or drop the edge/reference."
+            )
+        elif prefix == "CHN":
+            fixes.append(
+                f"[Unknown-ID] {field_label} '{candidate}' references "
+                f"a channel that is neither declared in this chunk's "
+                f"`channels` map nor carried over from a prior chunk."
+            )
+        else:
+            fixes.append(
+                f"[Unknown-ID] {field_label} '{candidate}' is not in "
+                f"the Step-1 ontology register "
+                f"({prefix}_ ids are fixed at extraction setup) "
+                f"and could not be fuzzy-matched."
+            )
     return candidate, False
 
 
@@ -1876,6 +2699,53 @@ def _sanitize_register(register: "GlobalRegister", notes: List[str]) -> "GlobalR
                 evidence_strength=mag.evidence_strength,
             )
 
+    # --- Cross-kind name-collision check (Star Wars audit, May 2026) ---
+    #
+    # The Step 1c Entity extractor occasionally promotes a location-
+    # like noun phrase ("Rebel Base on Yavin 4", "the courtroom",
+    # "the manor") into an Entity record when it appears as a target
+    # of agentic verbs in the prose. The same name then exists as
+    # both a Location *and* an Entity, which (a) double-counts the
+    # node in graph viz, (b) confuses social/causal extraction (the
+    # location node gets traits + beliefs it shouldn't have), and
+    # (c) breaks the "entity belongs at a location" invariant used
+    # by the spatial topology pass.
+    #
+    # We detect a collision when an entity's name (case-insensitive,
+    # whitespace-collapsed) matches an existing location's name and
+    # drop the entity, rewiring any object owner_id that pointed at
+    # it onto ``None`` (a location can't own an object).  Only the
+    # entity is dropped — locations are the canonical "place" record.
+    loc_name_to_id: Dict[str, str] = {}
+    for lid, loc in register.locations.items():
+        loc_name_to_id[(loc.name or "").lower().strip()] = lid
+    dropped_entity_ids: List[str] = []
+    for eid in list(register.entities.keys()):
+        ent = register.entities[eid]
+        norm_name = (ent.name or "").lower().strip()
+        if norm_name and norm_name in loc_name_to_id:
+            collided_loc = loc_name_to_id[norm_name]
+            notes.append(
+                f"[Auto-Fix] Dropping entity '{eid}' ({ent.name!r}) — "
+                f"its name collides with location '{collided_loc}'. "
+                f"Locations are the canonical 'place' nodes; an entity "
+                f"with the same name double-counts the node and breaks "
+                f"the spatial-topology invariant."
+            )
+            del register.entities[eid]
+            dropped_entity_ids.append(eid)
+    # Rewire any object whose owner_id pointed at a dropped entity.
+    if dropped_entity_ids:
+        dropped_set = set(dropped_entity_ids)
+        for obj in register.objects.values():
+            if obj.owner_id in dropped_set:
+                notes.append(
+                    f"[Auto-Fix] Cleared owner_id on object '{obj.id}' "
+                    f"(was {obj.owner_id!r}, now dropped as a "
+                    f"location-collision entity)."
+                )
+                obj.owner_id = None
+
     return register
 
 
@@ -2054,6 +2924,23 @@ def _build_physics_agent(config: ExtractionConfig) -> Agent[_PhysicsDeps, Physic
             "above by matching the name (e.g. 'the dagger' \u2192 "
             "whichever OBJ_ entry has name 'Bloody Daggers').\n"
             "\n"
+            "=== EVT_ CLOSURE RULE ===\n"
+            "Every EVT_ id you reference in `causal_topology` "
+            "(source_id, target_id, rel_counterpart_id) or in "
+            "`entity_updates.triggered_by` MUST appear either (a) in "
+            "this chunk's `events` list that you are producing right "
+            "now, OR (b) in the PREVIOUSLY EXTRACTED EVENT IDs list "
+            "above. Do NOT name EVT_ ids that you have not extracted "
+            "as EventNodes in this chunk and that have not appeared "
+            "in a prior chunk \u2014 that includes events you know from "
+            "background knowledge of the source text but that are "
+            "not actually depicted on-page in this chunk's prose. If "
+            "a causal arrow points at such a missing event, EITHER "
+            "add the event to `events` (only if it really happens "
+            "in this chunk's text) OR drop the edge. Forward "
+            "references to future-chunk events are not allowed; the "
+            "future chunk will own that causal arrow when it lands.\n"
+            "\n"
             "=== ON-PAGE ENTITIES (substring-matched in this chunk's text) ===\n"
             f"{ctx.deps.on_page_entity_ids}\n"
             "\n"
@@ -2078,7 +2965,17 @@ def _build_physics_agent(config: ExtractionConfig) -> Agent[_PhysicsDeps, Physic
             "\n"
             "Use the scaffold above to inform your extraction — it identifies "
             "hidden motivations, implicit causal chains, and unobserved variables "
-            "that you should capture as events and edges."
+            "that you should capture as events and edges.\n"
+            "\n"
+            "=== PROPOSITION CATALOGUE (PROP_ ids referenceable on outcome events) ===\n"
+            f"{_format_proposition_catalogue(ctx.deps.chunk_propositions)}\n"
+            "\n"
+            "When an `outcome` event commits the truth of one of the "
+            "PROP_ ids above (e.g. EVT_DUNCAN_MURDER resolves "
+            "PROP_DUNCAN_DEAD = true), list that PROP_ id in the "
+            "event's `resolves_proposition_ids`. Do NOT invent new "
+            "PROP_ ids — reference only the catalogue. Leave the "
+            "field empty when no catalogued proposition is resolved."
         )
 
     @agent.output_validator
@@ -2228,8 +3125,22 @@ def _build_physics_agent(config: ExtractionConfig) -> Agent[_PhysicsDeps, Physic
 
         if bad:
             raise ModelRetry(
-                "The following IDs could not be auto-resolved. "
-                "Fix them using ONLY IDs from the register:\n" + "\n".join(bad)
+                "The following IDs could not be auto-resolved.\n"
+                "Repair rules:\n"
+                "  * ENT_/LOC_/OBJ_/WORLD_ ids: must come from the "
+                "Step-1 ontology register shown in the system prompt. "
+                "Do NOT invent new ones — look up the right id from "
+                "the maps.\n"
+                "  * EVT_ ids: must either appear in this chunk's "
+                "`events` list OR in the PREVIOUSLY EXTRACTED EVENT "
+                "IDs list shown in the system prompt. If a causal "
+                "edge points at an event you didn't extract, EITHER "
+                "(a) add that event to `events` because it actually "
+                "occurs on-page in this chunk's text, OR (b) drop "
+                "the edge entirely. Do NOT invent EVT_ ids for "
+                "events you only know about from background "
+                "knowledge or from text outside this chunk.\n\n"
+                "Bad ids:\n" + "\n".join(bad)
             )
 
         return PhysicsExtraction(
@@ -2417,7 +3328,17 @@ def _build_social_agent(config: ExtractionConfig) -> Agent[_SocialDeps, SocialEx
             f"{scaffold_text}\n"
             "\n"
             "Use the scaffold above to identify implicit social dynamics, "
-            "hidden information flows, and unspoken relationship shifts."
+            "hidden information flows, and unspoken relationship shifts.\n"
+            "\n"
+            "=== PROPOSITION CATALOGUE (PROP_ ids referenceable on utterances) ===\n"
+            f"{_format_proposition_catalogue(ctx.deps.chunk_propositions)}\n"
+            "\n"
+            "When a speaker affirms one of the PROP_ ids above on-page "
+            "(confession, accusation, sworn testimony), set the "
+            "utterance's `asserts_proposition_id` to that PROP_ id. "
+            "When the speaker denies one (lie, alibi, dismissal), set "
+            "`denies_proposition_id`. Do NOT invent new PROP_ ids; "
+            "reference only the catalogue."
         )
 
     @agent.output_validator
@@ -2608,8 +3529,17 @@ def _build_social_agent(config: ExtractionConfig) -> Agent[_SocialDeps, SocialEx
 
         if bad:
             raise ModelRetry(
-                "The following IDs could not be auto-resolved. "
-                "Fix them using ONLY IDs from the register:\n" + "\n".join(bad)
+                "The following IDs could not be auto-resolved.\n"
+                "Repair rules:\n"
+                "  * ENT_/LOC_/OBJ_/WORLD_ ids: use ONLY ids from the "
+                "Step-1 ontology register shown in the system prompt.\n"
+                "  * EVT_ ids: must appear in this chunk's events OR "
+                "in PREVIOUSLY EXTRACTED EVENT IDs. Drop edges/utterances "
+                "that reference events you cannot find in those lists.\n"
+                "  * CHN_ ids: must be in this chunk's `channels` map "
+                "or in the carried-over channel list. Do not invent "
+                "channel ids on utterances.\n\n"
+                "Bad ids:\n" + "\n".join(bad)
             )
 
         # --- Tier 3 #13: prune empty conversational channels -----------
@@ -2800,7 +3730,19 @@ def _build_consequences_agent(
             "\n"
             "Use the scaffold's WHY/HOW answers to surface IMPLICIT trait "
             "shifts (guilt after killing, fear after threat, grief after loss) "
-            "even when the prose does not name them."
+            "even when the prose does not name them.\n"
+            "\n"
+            "=== PROPOSITION CATALOGUE (PROP_ ids referenceable on beliefs) ===\n"
+            f"{_format_proposition_catalogue(ctx.deps.chunk_propositions)}\n"
+            "\n"
+            "When you emit a `Belief` whose target maps to one of the "
+            "PROP_ ids above (the belief is *about* that catalogued "
+            "proposition — e.g. a belief that Duncan is dead targets "
+            "PROP_DUNCAN_DEAD), set the belief's `proposition_id` to "
+            "the matching PROP_ id. This wires the belief into the "
+            "affect-unification layer at extraction time and avoids "
+            "a downstream clustering call. Leave `proposition_id` "
+            "null when no catalogued proposition matches."
         )
 
     @agent.output_validator
@@ -2922,11 +3864,339 @@ def _build_consequences_agent(
             )
         if bad:
             raise ModelRetry(
-                "The following IDs could not be auto-resolved. "
-                "Fix them using ONLY IDs from the register:\n" + "\n".join(bad)
+                "The following IDs could not be auto-resolved.\n"
+                "Repair rules:\n"
+                "  * ENT_/LOC_ ids: use ONLY ids from the Step-1 "
+                "ontology register shown in the system prompt.\n"
+                "  * EVT_ ids on `triggered_by`: must be in the "
+                "chunk's events list (Physics output) or in "
+                "PREVIOUSLY EXTRACTED EVENT IDs. If a consequence "
+                "is triggered by an event you cannot find, drop "
+                "the EntityUpdate — do NOT invent EVT_ ids.\n\n"
+                "Bad ids:\n" + "\n".join(bad)
             )
 
         return ConsequencesExtraction(entity_updates=fixed_updates)
+
+    return agent
+
+
+# =====================================================================
+# Step 3d — Per-chunk Affect Agent (Phase B4)
+#
+# Runs after Physics + Social + Consequences. Owns the diff between
+# the global Phase A3 catalogue (PROP_ / CCN_ baselines) and the
+# chunk's on-page events: which propositions' framing shifts, which
+# truths commit, which concerns drift in salience or polarity. The
+# reconciler folds the agent's outputs into Proposition.state_timeline /
+# truth_at_fabula and Entity.concerns / Concern.state_timeline.
+# =====================================================================
+
+
+def _chunk_has_affect_signal(
+    events: List[EventNode],
+    entity_updates: List["EntityUpdate"],
+    catalogue_prop_ids: Set[str],
+    seeded_entity_ids: Set[str],
+    *,
+    referent_to_props: Dict[str, Set[str]] | None = None,
+    concern_entity_to_props: Dict[str, Set[str]] | None = None,
+) -> bool:
+    """True iff this chunk plausibly affects a catalogue prop or seeded concern.
+
+    Conservative gate so the affect LLM call is skipped on chunks
+    whose extractor outputs reference no PROP_ id and no seeded
+    entity. Runs in O(events + entity_updates + new_beliefs); the
+    chunk-level cost is negligible compared to a saved per-chunk
+    LLM round-trip.
+
+    The optional ``referent_to_props`` map widens the gate so a chunk
+    also fires when an event's actors / targets / participants
+    overlap a catalogue proposition's ``referent_ids`` even if the
+    event has no explicit ``asserts/denies/resolves`` link yet (the
+    Affect agent is exactly where that link should be drawn).
+    Similarly, ``concern_entity_to_props`` widens the gate when an
+    event's participants include any entity carrying a proposition-
+    tied concern, since salience/polarity drift on those concerns
+    is the common case the narrow gate misses.
+    """
+    if not catalogue_prop_ids and not seeded_entity_ids:
+        return False
+    referent_to_props = referent_to_props or {}
+    concern_entity_to_props = concern_entity_to_props or {}
+    for e in events:
+        if e.asserts_proposition_id and e.asserts_proposition_id in catalogue_prop_ids:
+            return True
+        if e.denies_proposition_id and e.denies_proposition_id in catalogue_prop_ids:
+            return True
+        for pid in e.resolves_proposition_ids:
+            if pid in catalogue_prop_ids:
+                return True
+        # Widened: referent overlap on actors / targets / participants.
+        evt_refs: Set[str] = set()
+        evt_refs.update(getattr(e, "actor_ids", []) or [])
+        evt_refs.update(getattr(e, "target_ids", []) or [])
+        evt_refs.update(getattr(e, "participant_ids", []) or [])
+        for rid in evt_refs:
+            if rid in referent_to_props:
+                return True
+            if rid in concern_entity_to_props:
+                return True
+    for eu in entity_updates:
+        if eu.entity_id in seeded_entity_ids:
+            return True
+        if eu.entity_id in concern_entity_to_props:
+            return True
+        for b in eu.new_beliefs:
+            if b.proposition_id and b.proposition_id in catalogue_prop_ids:
+                return True
+            # Widened: a belief whose target_id is a catalogued referent
+            # is almost certainly tied to that proposition; let Affect see it.
+            if b.target_id in referent_to_props:
+                return True
+        # Widened: a belief invalidation about a catalogued referent
+        # is a textbook resolution / framing-shift event.
+        for tid in getattr(eu, "invalidated_belief_targets", []) or []:
+            if tid in referent_to_props:
+                return True
+    return False
+
+
+def _build_affect_agent(
+    config: ExtractionConfig,
+) -> Agent[_AffectDeps, ChunkAffectExtraction]:
+    """Construct the Step 3d Affect Agent — proposition + concern drift.
+
+    Sees the catalogue (full ``Proposition`` and ``ConcernSeed`` lists),
+    this chunk's merged events (Physics + Social) and entity_updates
+    (Consequences). Emits diff snapshots only — no events, no edges,
+    no beliefs. The output_validator drops snapshots whose
+    ``triggered_by`` cannot be resolved to a chunk event, snapshots
+    referencing unknown PROP_ / CCN_ ids, and truth commits whose
+    fabula_time disagrees with the triggering event.
+    """
+    agent: Agent[_AffectDeps, ChunkAffectExtraction] = Agent(
+        _resolve_model(config.model),
+        deps_type=_AffectDeps,
+        output_type=NativeOutput(ChunkAffectExtraction),
+        system_prompt=_load_prompt("affect_extraction.md"),
+        retries=config.output_retries,
+    )
+
+    @agent.system_prompt
+    def inject_register_for_affect(ctx: RunContext[_AffectDeps]) -> str:
+        reg = ctx.deps.global_register
+        entity_names = {eid: reg.entities[eid].name for eid in sorted(reg.entities)}
+
+        # Catalogue propositions — render fully so the agent can decide
+        # which to snapshot.
+        if ctx.deps.propositions:
+            prop_lines: List[str] = []
+            for p in ctx.deps.propositions:
+                prop_lines.append(
+                    f"  - {p.proposition_id} [{p.kind}] referents={p.referent_ids} "
+                    f"stakes={p.stakes:.2f} prior={p.audience_default_prior:.2f}: "
+                    f"{p.description}"
+                )
+            propositions_block = "\n".join(prop_lines)
+        else:
+            propositions_block = "  (no propositions in catalogue)"
+
+        # Concern seeds — keyed by (entity_id, proposition_id, polarity).
+        if ctx.deps.concern_seeds:
+            seed_lines: List[str] = []
+            for s in ctx.deps.concern_seeds:
+                seed_lines.append(
+                    f"  - {s.concern_id} entity={s.entity_id} "
+                    f"prop={s.proposition_id} polarity={s.polarity} "
+                    f"kind={s.kind} salience={s.baseline_salience:.2f}"
+                )
+            seeds_block = "\n".join(seed_lines)
+        else:
+            seeds_block = "  (no concern seeds in catalogue)"
+
+        # Chunk events the agent may anchor snapshots on.
+        evt_lines: List[str] = []
+        for e in ctx.deps.chunk_events:
+            link_bits: List[str] = []
+            if e.asserts_proposition_id:
+                link_bits.append(f"asserts={e.asserts_proposition_id}")
+            if e.denies_proposition_id:
+                link_bits.append(f"denies={e.denies_proposition_id}")
+            if e.resolves_proposition_ids:
+                link_bits.append(f"resolves={e.resolves_proposition_ids}")
+            link_str = (" " + ", ".join(link_bits)) if link_bits else ""
+            evt_lines.append(
+                f"  - {e.id} (fabula={e.fabula_time}, type={e.event_type}, "
+                f"actors={e.actor_ids}, targets={e.target_ids}){link_str}: "
+                f"{e.description}"
+            )
+        events_block = "\n".join(evt_lines) if evt_lines else "  (no events in this chunk)"
+
+        # Entity updates with their PROP-tagged beliefs surfaced.
+        eu_lines: List[str] = []
+        for eu in ctx.deps.chunk_entity_updates:
+            tagged_beliefs = [
+                f"{b.target_id}->{b.proposition_id}"
+                for b in eu.new_beliefs if b.proposition_id
+            ]
+            tagged_str = (
+                f" tagged_beliefs={tagged_beliefs}" if tagged_beliefs else ""
+            )
+            eu_lines.append(
+                f"  - {eu.entity_id} fabula={eu.fabula_time} "
+                f"triggered_by={eu.triggered_by}{tagged_str}"
+            )
+        entity_updates_block = (
+            "\n".join(eu_lines) if eu_lines else "  (no entity updates in this chunk)"
+        )
+
+        chunk_evt_ids = [e.id for e in ctx.deps.chunk_events]
+
+        return (
+            "=== VALID ID REGISTER (from Step 1) ===\n"
+            f"ENTITIES: {entity_names}\n"
+            f"THIS CHUNK'S EVENT IDs: {chunk_evt_ids}\n"
+            "\n"
+            "Every `triggered_by` you emit MUST be one of THIS CHUNK'S "
+            "EVENT IDs. Snapshots that try to retro-attribute drift to a "
+            "prior chunk's event are dropped during validation.\n"
+            "\n"
+            "=== PROPOSITION CATALOGUE (full) ===\n"
+            f"{propositions_block}\n"
+            "\n"
+            "You MAY emit snapshots / truth commits ONLY against PROP_ ids "
+            "in this list. Do NOT invent new PROP_ ids.\n"
+            "\n"
+            "=== CONCERN SEED CATALOGUE ===\n"
+            f"{seeds_block}\n"
+            "\n"
+            "Concern snapshots target catalogue CCN_ ids. New CCN_ ids "
+            "go through `new_concern_seeds` (sparingly).\n"
+            "\n"
+            "=== EVENTS IN THIS CHUNK (Physics + Social merged) ===\n"
+            f"{events_block}\n"
+            "\n"
+            "=== ENTITY UPDATES IN THIS CHUNK (Consequences output) ===\n"
+            f"{entity_updates_block}\n"
+        )
+
+    @agent.output_validator
+    def validate_affect_ids(
+        ctx: RunContext[_AffectDeps],
+        result: ChunkAffectExtraction,
+    ) -> ChunkAffectExtraction:
+        """Drop affect entries that fail referential integrity gates.
+
+        These are *the* hard contract for the affect agent (see
+        ``affect_extraction.md`` rule list); enforcing them here saves
+        the Phase C reconciler from a second filter pass.
+        """
+        chunk_evt_index: Dict[str, EventNode] = {
+            e.id: e for e in ctx.deps.chunk_events
+        }
+        prop_ids = {p.proposition_id for p in ctx.deps.propositions}
+        seed_ids = {s.concern_id for s in ctx.deps.concern_seeds}
+        ent_ids = set(ctx.deps.global_register.entities)
+
+        kept_prop_snaps: List[ChunkPropositionSnapshot] = []
+        for s in result.proposition_snapshots:
+            if s.proposition_id not in prop_ids:
+                logger.warning(
+                    "[Affect] Dropping proposition_snapshot %s — unknown PROP_ id.",
+                    s.proposition_id,
+                )
+                continue
+            evt = chunk_evt_index.get(s.triggered_by)
+            if evt is None:
+                logger.warning(
+                    "[Affect] Dropping proposition_snapshot for %s — "
+                    "triggered_by %r not in this chunk's events.",
+                    s.proposition_id, s.triggered_by,
+                )
+                continue
+            kept_prop_snaps.append(s)
+
+        kept_truth: List[PropositionTruthCommit] = []
+        for c in result.proposition_truth_commits:
+            if c.proposition_id not in prop_ids:
+                logger.warning(
+                    "[Affect] Dropping truth_commit %s — unknown PROP_ id.",
+                    c.proposition_id,
+                )
+                continue
+            evt = chunk_evt_index.get(c.triggered_by)
+            if evt is None:
+                logger.warning(
+                    "[Affect] Dropping truth_commit %s — triggered_by %r "
+                    "not in this chunk's events.",
+                    c.proposition_id, c.triggered_by,
+                )
+                continue
+            if evt.fabula_time != c.fabula_time:
+                logger.warning(
+                    "[Affect] Realigning truth_commit %s fabula_time "
+                    "%d → %d to match triggering event %s.",
+                    c.proposition_id, c.fabula_time, evt.fabula_time, evt.id,
+                )
+                c = c.model_copy(update={"fabula_time": evt.fabula_time})
+            kept_truth.append(c)
+
+        kept_concern_snaps: List[ChunkConcernSnapshot] = []
+        for s in result.concern_snapshots:
+            if s.concern_id not in seed_ids:
+                logger.warning(
+                    "[Affect] Dropping concern_snapshot %s — unknown CCN_ id "
+                    "(not in catalogue; new concerns must go through new_concern_seeds).",
+                    s.concern_id,
+                )
+                continue
+            if s.triggered_by not in chunk_evt_index:
+                logger.warning(
+                    "[Affect] Dropping concern_snapshot for %s — "
+                    "triggered_by %r not in this chunk's events.",
+                    s.concern_id, s.triggered_by,
+                )
+                continue
+            kept_concern_snaps.append(s)
+
+        ccn_re = re.compile(r"^CCN_[A-Z0-9_]+$")
+        kept_new_seeds: List["ConcernSeed"] = []
+        for ns in result.new_concern_seeds:
+            if not ccn_re.match(ns.concern_id):
+                logger.warning(
+                    "[Affect] Dropping new_concern_seed %r — id does not "
+                    "match ^CCN_[A-Z0-9_]+$.", ns.concern_id,
+                )
+                continue
+            if ns.concern_id in seed_ids:
+                logger.warning(
+                    "[Affect] Dropping new_concern_seed %s — collides with "
+                    "an existing catalogue concern id.", ns.concern_id,
+                )
+                continue
+            if ns.entity_id not in ent_ids:
+                logger.warning(
+                    "[Affect] Dropping new_concern_seed %s — unknown entity %r.",
+                    ns.concern_id, ns.entity_id,
+                )
+                continue
+            if ns.proposition_id not in prop_ids:
+                logger.warning(
+                    "[Affect] Dropping new_concern_seed %s — unknown "
+                    "proposition_id %r (must reference an existing catalogue "
+                    "proposition; affect agent may not introduce new propositions).",
+                    ns.concern_id, ns.proposition_id,
+                )
+                continue
+            kept_new_seeds.append(ns)
+
+        return ChunkAffectExtraction(
+            proposition_snapshots=kept_prop_snaps,
+            proposition_truth_commits=kept_truth,
+            concern_snapshots=kept_concern_snaps,
+            new_concern_seeds=kept_new_seeds,
+        )
 
     return agent
 
@@ -2976,6 +4246,33 @@ def _physics_anonymous_events(physics: "PhysicsExtraction") -> List[str]:
         if e.event_type == "utterance":
             continue
         if not (e.actor_ids or []) and not (e.target_ids or []):
+            bad.append(e.id)
+    return bad
+
+
+def _physics_actorless_choices(physics: "PhysicsExtraction") -> List[str]:
+    """Return the IDs of ``choice`` events that have empty ``actor_ids``.
+
+    A ``choice`` event models a deliberate decision and per the prompt
+    contract MUST name at least one decider. The post-hoc
+    :class:`EventNode` model validator only logs a warning for these
+    cases (so legitimate test fixtures and rare narrator-choice edge
+    cases stay constructible), which means a default extraction quietly
+    persists actorless choices and the warning surfaces only after the
+    chunk has already been merged. Detecting them here lets the chunk
+    loop trigger a corrective Physics retry while the agent context is
+    still hot, mirroring the existing anon / scaffold-drift / fabula-
+    monotonicity retries.
+
+    The Star Wars Kimi audit produced ~30 actorless choices per run
+    (events like ``EVT_LUKE_JOINS_DEATH_STAR_ATTACK`` and
+    ``EVT_HAN_RETURNS_TO_SAVE_LUKE`` whose IDs already encoded the
+    decider in the slug but whose ``actor_ids`` was an empty list).
+    Almost every case the LLM corrects on a single targeted retry.
+    """
+    bad: List[str] = []
+    for e in physics.events:
+        if e.event_type == "choice" and not (e.actor_ids or []):
             bad.append(e.id)
     return bad
 
@@ -3185,6 +4482,27 @@ def _dedupe_scene_events(
     kept_events: List["EventNode"] = []
     for e in physics.events:
         if e.event_type == "utterance":
+            # Utterance dedup: collapse identical-content speech acts
+            # by the same speaker to the same addressees within the
+            # same fabula window. The per-chunk extractor's collision
+            # resolver appends ``_2``/``_3`` suffixes when it sees an
+            # already-used EVT_UTT_ id, so duplicates show up with the
+            # same content + speaker but distinct ids. Any one of
+            # speaker_id, content, or fabula_time differing keeps the
+            # event distinct.
+            content_norm = (e.content or e.description or "").strip().lower()
+            if e.speaker_id and content_norm:
+                utt_key = (
+                    "__utt__",
+                    e.speaker_id,
+                    frozenset(e.addressee_ids or []),
+                    content_norm,
+                    (e.fabula_time or 0) // fabula_window,
+                )
+                if utt_key in seen_keys:
+                    canonical_of[e.id] = seen_keys[utt_key]
+                    continue
+                seen_keys[utt_key] = e.id
             kept_events.append(e)
             canonical_of[e.id] = e.id
             continue
@@ -3402,6 +4720,44 @@ def _merge_anonymous_retry(
                     "actor_ids": retry_e.actor_ids,
                     "target_ids": retry_e.target_ids,
                 })
+            )
+        else:
+            new_events.append(e)
+        seen_ids.add(e.id)
+    for r in retry.events:
+        if r.id not in seen_ids:
+            new_events.append(r)
+            seen_ids.add(r.id)
+
+    base_with_new_events = base.model_copy(update={"events": new_events})
+    return _merge_physics_retry(base_with_new_events, retry)
+
+
+def _merge_actorless_choice_retry(
+    base: "PhysicsExtraction",
+    retry: "PhysicsExtraction",
+) -> "PhysicsExtraction":
+    """Variant of :func:`_merge_anonymous_retry` for the actorless-choice
+    retry. Only patches ``actor_ids`` on matching ``choice`` events and
+    preserves every other field, then defers to
+    :func:`_merge_physics_retry` so any new/extended causal/spatial
+    edges the retry produced still merge in.
+    """
+    new_events: List["EventNode"] = []
+    seen_ids: set[str] = set()
+    retry_by_id = {r.id: r for r in retry.events}
+    for e in base.events:
+        retry_e = retry_by_id.get(e.id)
+        base_actorless_choice = (
+            e.event_type == "choice" and not (e.actor_ids or [])
+        )
+        if (
+            retry_e is not None
+            and base_actorless_choice
+            and (retry_e.actor_ids or [])
+        ):
+            new_events.append(
+                e.model_copy(update={"actor_ids": retry_e.actor_ids})
             )
         else:
             new_events.append(e)
@@ -3827,7 +5183,13 @@ def _extraction_fingerprint(config: "ExtractionConfig") -> str:
     # Optional fields added by later fixes — tolerate absence on older
     # ExtractionConfig instances.
     for f in ("max_chunk_chars", "enable_chunk_carry_over",
-              "scaffold_drift_retry", "fabula_monotonicity_retry"):
+              "scaffold_drift_retry", "fabula_monotonicity_retry",
+              "actorless_choice_retry",
+              "per_agent_call_timeout_seconds"):
+        # Note: per_agent_call_timeout_seconds is included because a
+        # checkpoint produced under a tight timeout may have stage
+        # failures baked in (empty topology for the wedged stage);
+        # rerunning with a more generous timeout should re-extract.
         if hasattr(config, f):
             parts.append(f"{f}={getattr(config, f)!r}")
     try:
@@ -4038,12 +5400,13 @@ def _save_register_checkpoint(
 
 def _load_topologies_checkpoint(
     checkpoint_dir: Optional[str], text: str, fingerprint: str,
-) -> Optional[List["ChunkTopology"]]:
+) -> Optional[Tuple[List["ChunkTopology"], Optional["PropositionCatalogue"]]]:
     """High-level topology-list checkpoint.
 
-    Returns the previously-saved list of ``ChunkTopology`` for this
-    exact (text, config) pair, or ``None`` if missing / mismatched /
-    invalid. Skips the entire Step 2 (chunking + per-chunk extraction +
+    Returns ``(topologies, catalogue)`` for this exact (text, config)
+    pair, or ``None`` if missing / mismatched / invalid. ``catalogue``
+    is ``None`` for legacy checkpoints written before Phase A3.
+    Skips the entire Step 2 (chunking + per-chunk extraction +
     reconciliation) on a hit.
     """
     if not checkpoint_dir:
@@ -4078,15 +5441,28 @@ def _load_topologies_checkpoint(
             "[Checkpoint] %s topology list invalid — ignoring.", p,
         )
         return None
+    catalogue: Optional[PropositionCatalogue] = None
+    cat_body = data.get("catalogue")
+    if cat_body is not None:
+        try:
+            catalogue = PropositionCatalogue.model_validate(cat_body)
+        except Exception:
+            logger.warning(
+                "[Checkpoint] %s catalogue body invalid — dropping.", p,
+            )
     logger.info(
-        "[Checkpoint] Loaded %d chunk topologies from %s.", len(topos), p,
+        "[Checkpoint] Loaded %d chunk topologies from %s%s.",
+        len(topos), p,
+        f" (+ catalogue: {len(catalogue.propositions)} props, "
+        f"{len(catalogue.concern_seeds)} seeds)" if catalogue else "",
     )
-    return topos
+    return topos, catalogue
 
 
 def _save_topologies_checkpoint(
     checkpoint_dir: Optional[str], text: str, fingerprint: str,
     topologies: List["ChunkTopology"],
+    catalogue: Optional["PropositionCatalogue"] = None,
 ) -> None:
     if not checkpoint_dir:
         return
@@ -4095,22 +5471,324 @@ def _save_topologies_checkpoint(
             checkpoint_dir, "topologies", text, fingerprint,
         )
         p.parent.mkdir(parents=True, exist_ok=True)
-        envelope = {
+        envelope: Dict[str, Any] = {
             "version": _CHECKPOINT_VERSION,
             "fingerprint": fingerprint,
             "topologies": [
                 json.loads(t.model_dump_json()) for t in topologies
             ],
         }
+        if catalogue is not None:
+            envelope["catalogue"] = json.loads(catalogue.model_dump_json())
         p.write_text(json.dumps(envelope, indent=2), encoding="utf-8")
         logger.debug(
-            "[Checkpoint] Wrote topologies checkpoint %s (%d chunks).",
+            "[Checkpoint] Wrote topologies checkpoint %s (%d chunks%s).",
             p, len(topologies),
+            " + catalogue" if catalogue is not None else "",
         )
     except Exception:
         logger.exception(
             "[Checkpoint] Could not write topologies checkpoint.",
         )
+
+
+# =====================================================================
+# Per-chunk deterministic consistency audit
+# =====================================================================
+#
+# Runs *after* all per-chunk extraction stages (Physics/Social/
+# Consequences/Affect) and their per-stage retries have completed,
+# against the assembled ``ChunkTopology`` and the global ontology
+# register. Flags structural defects the per-stage retries cannot
+# catch — most importantly id-validity (every reference resolves)
+# and cross-stage *contradictions* (same fabula tick, opposite
+# claim).  Advisory only: defects are logged but do not fail the
+# chunk in this iteration so the output can be inspected before
+# wiring targeted re-runs.
+
+@dataclass(frozen=True)
+class _ChunkDefect:
+    """A single structural defect found by ``_audit_chunk_consistency``.
+
+    ``kind`` is a short tag (one of the strings listed in the audit
+    plan); ``detail`` is a human-readable one-liner naming the
+    offending id(s). Both are plain strings so the defect list can be
+    serialised (logged or persisted) without bringing in extra
+    Pydantic machinery.
+    """
+    kind: str
+    detail: str
+
+
+def _audit_chunk_consistency(
+    topo: "ChunkTopology",
+    register: GlobalRegister,
+    *,
+    previous_event_ids: Optional[Set[str]] = None,
+    previous_channel_ids: Optional[Set[str]] = None,
+) -> List[_ChunkDefect]:
+    """Return a deterministic list of structural defects in ``topo``.
+
+    Checks fall into two families:
+
+    1. **Id validity** — every id referenced by an event, edge, channel
+       or :class:`EntityUpdate` resolves either to ``register`` (for
+       the static ontology) or to a chunk-local id (for events,
+       utterances, and channels). Ids on the chunk's ``new_*``
+       collections (genesis spawns) and ids forwarded from prior
+       chunks (via ``previous_event_ids`` / ``previous_channel_ids``)
+       count as resolved.
+
+    2. **Cross-stage contradictions** — defects the per-stage retries
+       cannot detect because they involve information from two
+       different stages disagreeing about the same fabula tick:
+       orphan trait updates (``EntityUpdate`` claims a trait shifted
+       but no Physics edge declares it), dead-then-acting actor
+       resurrections (``EntityUpdate.new_status='dead'`` with a later
+       chunk-event still listing the entity in ``actor_ids``),
+       same-tick location conflicts (two events place the same
+       entity in different ``location_id``s at the same fabula
+       time), and ``mutation_social`` causal edges with no
+       :class:`RelationshipEdge` reading covering the dyad-axis.
+
+    Defects already flagged by existing stage retries
+    (consequences-mutation parity, scaffold drift, channel
+    under-extraction, missing-mutation_social-axis) are **not**
+    re-emitted here — those have their own targeted retries upstream
+    and re-checking them would just produce duplicate noise.
+    """
+    prev_event_ids: Set[str] = set(previous_event_ids or ())
+    prev_channel_ids: Set[str] = set(previous_channel_ids or ())
+    defects: List[_ChunkDefect] = []
+
+    # ── Build resolution sets ──────────────────────────────────────
+    known_entities: Set[str] = set(register.entities.keys()) | set(
+        topo.new_entities.keys()
+    )
+    known_objects: Set[str] = set(register.objects.keys()) | set(
+        topo.new_objects.keys()
+    )
+    known_locations: Set[str] = set(register.locations.keys()) | set(
+        topo.new_locations.keys()
+    )
+    known_world_traits: Set[str] = set(register.world_traits.keys()) | set(
+        topo.new_world_traits.keys()
+    )
+    chunk_event_ids: Set[str] = {e.id for e in topo.events}
+    known_event_ids: Set[str] = chunk_event_ids | prev_event_ids
+    chunk_channel_ids: Set[str] = set(topo.channels.keys())
+    known_channel_ids: Set[str] = chunk_channel_ids | prev_channel_ids
+
+    def _classify(ref_id: str) -> str:
+        """Map an id prefix to the resolution-set tag."""
+        if ref_id.startswith("ENT_"):
+            return "entity"
+        if ref_id.startswith("OBJ_"):
+            return "object"
+        if ref_id.startswith("LOC_"):
+            return "location"
+        if ref_id.startswith("WORLD_"):
+            return "world_trait"
+        if ref_id.startswith("EVT_"):
+            return "event"
+        if ref_id.startswith("CHN_"):
+            return "channel"
+        return "unknown"
+
+    def _resolves(ref_id: str) -> bool:
+        kind = _classify(ref_id)
+        if kind == "entity":
+            return ref_id in known_entities
+        if kind == "object":
+            return ref_id in known_objects
+        if kind == "location":
+            return ref_id in known_locations
+        if kind == "world_trait":
+            return ref_id in known_world_traits
+        if kind == "event":
+            return ref_id in known_event_ids
+        if kind == "channel":
+            return ref_id in known_channel_ids
+        # Unknown prefix — let the upstream schema validator handle it.
+        return True
+
+    def _flag_id(ref_id: str, where: str) -> None:
+        if not ref_id:
+            return
+        if _resolves(ref_id):
+            return
+        kind = _classify(ref_id)
+        if kind == "unknown":
+            return
+        defects.append(_ChunkDefect(
+            kind=f"id_unknown_{kind}",
+            detail=f"{ref_id} referenced by {where} not in register or chunk",
+        ))
+
+    # ── 1. Id validity across the topology ────────────────────────
+    for ev in topo.events:
+        for aid in ev.actor_ids:
+            _flag_id(aid, f"event {ev.id}.actor_ids")
+        for tid in ev.target_ids:
+            # target_ids may reference EVT_ (utterances about events)
+            # in addition to ENT_/OBJ_; _resolves handles that.
+            _flag_id(tid, f"event {ev.id}.target_ids")
+        if ev.speaker_id:
+            _flag_id(ev.speaker_id, f"event {ev.id}.speaker_id")
+        for aid in ev.addressee_ids:
+            _flag_id(aid, f"event {ev.id}.addressee_ids")
+        if ev.via_channel_id:
+            _flag_id(ev.via_channel_id, f"event {ev.id}.via_channel_id")
+        # ``triggered_by`` lives on EntityUpdate, not EventNode (events
+        # carry their causal predecessors through ``causal_topology``).
+        # Older revisions stored a free-text trigger on the event itself;
+        # tolerate both shapes via ``getattr``.
+        ev_trigger = getattr(ev, "triggered_by", None)
+        if ev_trigger:
+            _flag_id(ev_trigger, f"event {ev.id}.triggered_by")
+
+    for ce in topo.causal_topology:
+        _flag_id(ce.source_id, "causal_edge.source_id")
+        _flag_id(ce.target_id, "causal_edge.target_id")
+        if ce.rel_counterpart_id:
+            _flag_id(ce.rel_counterpart_id, "causal_edge.rel_counterpart_id")
+
+    for re in topo.social_topology:
+        _flag_id(re.source_entity_id, "relationship_edge.source_entity_id")
+        _flag_id(re.target_entity_id, "relationship_edge.target_entity_id")
+        if getattr(re, "triggered_by_event_id", None):
+            _flag_id(re.triggered_by_event_id, "relationship_edge.triggered_by_event_id")
+
+    for sp in topo.spatial_topology:
+        _flag_id(sp.source_id, "spatial_edge.source_id")
+        _flag_id(sp.target_id, "spatial_edge.target_id")
+
+    for chn in topo.channels.values():
+        for pid in getattr(chn, "participant_ids", []) or []:
+            _flag_id(pid, f"channel {chn.id}.participant_ids")
+
+    for eu in topo.entity_updates:
+        _flag_id(eu.entity_id, "entity_update.entity_id")
+        if eu.triggered_by:
+            _flag_id(eu.triggered_by, "entity_update.triggered_by")
+        if eu.new_location_id:
+            _flag_id(eu.new_location_id, "entity_update.new_location_id")
+        for b in eu.new_beliefs:
+            if getattr(b, "acquired_via_event_id", None):
+                _flag_id(
+                    b.acquired_via_event_id,
+                    f"entity_update {eu.entity_id}.belief.acquired_via_event_id",
+                )
+            if getattr(b, "acquired_via_channel_id", None):
+                _flag_id(
+                    b.acquired_via_channel_id,
+                    f"entity_update {eu.entity_id}.belief.acquired_via_channel_id",
+                )
+
+    # ── 2. Orphan trait updates ───────────────────────────────────
+    # Build the set of (entity_id, trait_name) pairs Physics declared
+    # via mutation / mutation_social edges.
+    declared_trait_shifts: Set[Tuple[str, str]] = set()
+    for ce in topo.causal_topology:
+        if ce.causality_type not in ("mutation", "mutation_social"):
+            continue
+        if not ce.trait_target:
+            continue
+        if ce.target_id.startswith("ENT_"):
+            declared_trait_shifts.add((ce.target_id, ce.trait_target))
+    for eu in topo.entity_updates:
+        for trait_name in eu.trait_updates.keys():
+            key = (eu.entity_id, trait_name)
+            if key not in declared_trait_shifts:
+                defects.append(_ChunkDefect(
+                    kind="orphan_trait_update",
+                    detail=(
+                        f"EntityUpdate({eu.entity_id}) shifts trait "
+                        f"'{trait_name}' but no mutation/mutation_social "
+                        f"causal edge declares it"
+                    ),
+                ))
+
+    # ── 3. Dead-then-acting actor resurrection (chunk-internal) ───
+    death_time: Dict[str, int] = {}
+    for eu in topo.entity_updates:
+        if eu.new_status == "dead":
+            t = eu.fabula_time
+            if eu.entity_id not in death_time or t < death_time[eu.entity_id]:
+                death_time[eu.entity_id] = t
+    if death_time:
+        for ev in topo.events:
+            for aid in ev.actor_ids:
+                d_t = death_time.get(aid)
+                if d_t is None:
+                    continue
+                if ev.fabula_time > d_t:
+                    defects.append(_ChunkDefect(
+                        kind="dead_actor_resurrection",
+                        detail=(
+                            f"Entity {aid} marked dead at fabula_time={d_t} "
+                            f"but acts in event {ev.id} at "
+                            f"fabula_time={ev.fabula_time}"
+                        ),
+                    ))
+
+    # ── 4. Same-tick location conflict ────────────────────────────
+    # If two ``EntityUpdate`` records for the same entity at the same
+    # fabula_time disagree on ``new_location_id``, the chunk has a
+    # cross-stage contradiction the per-stage retries cannot detect
+    # (only one of the locations can be physically true).
+    by_ent_tick: Dict[Tuple[str, int], List[Tuple[str, str]]] = {}
+    for eu in topo.entity_updates:
+        if not eu.new_location_id:
+            continue
+        key = (eu.entity_id, eu.fabula_time)
+        by_ent_tick.setdefault(key, []).append(
+            (eu.new_location_id, eu.triggered_by or "<no trigger>"),
+        )
+    for (ent_id, tick), placements in by_ent_tick.items():
+        unique_locs = {loc for loc, _ in placements}
+        if len(unique_locs) > 1:
+            defects.append(_ChunkDefect(
+                kind="same_tick_location_conflict",
+                detail=(
+                    f"Entity {ent_id} placed at "
+                    f"{sorted(unique_locs)} at fabula_time={tick} "
+                    f"by {len(placements)} EntityUpdate(s)"
+                ),
+            ))
+
+    # ── 5. Social-mutation orphan ─────────────────────────────────
+    # mutation_social edges declare (target, counterpart, axis); each
+    # should have a matching RelationshipEdge reading on that dyad-axis.
+    rel_dyad_axes: Set[Tuple[str, str, str]] = set()
+    for re in topo.social_topology:
+        for axis_name, reading in (re.metrics or {}).items():
+            # Only count axes the social agent actually observed.
+            if not getattr(reading, "observed", True):
+                continue
+            rel_dyad_axes.add(
+                (re.source_entity_id, re.target_entity_id, axis_name)
+            )
+    for ce in topo.causal_topology:
+        if ce.causality_type != "mutation_social":
+            continue
+        if not (ce.target_id and ce.rel_counterpart_id and ce.trait_target):
+            continue
+        # mutation_social edges may be declared in either direction.
+        forward = (ce.target_id, ce.rel_counterpart_id, ce.trait_target)
+        reverse = (ce.rel_counterpart_id, ce.target_id, ce.trait_target)
+        if forward in rel_dyad_axes or reverse in rel_dyad_axes:
+            continue
+        defects.append(_ChunkDefect(
+            kind="social_mutation_orphan",
+            detail=(
+                f"mutation_social edge ({ce.target_id} \u2194 "
+                f"{ce.rel_counterpart_id}, axis={ce.trait_target}) has no "
+                f"matching RelationshipEdge reading"
+            ),
+        ))
+
+    return defects
 
 
 def _check_chunk_failure_threshold(
@@ -4215,6 +5893,17 @@ class _ChunkParams(BaseModel):
     prev_chunk_tail: str
     previous_event_ids: List[str] = Field(default_factory=list)
     previous_chunk_channels: Dict[str, Channel] = Field(default_factory=dict)
+    # Compact ``(PROP_id, description)`` pairs from the global Phase A3
+    # catalogue. Same shape consumed by ``_format_proposition_catalogue``
+    # in the per-chunk system_prompt injectors. Empty when the
+    # catalogue stage is skipped or returned no propositions.
+    chunk_propositions: List[Tuple[str, str]] = Field(default_factory=list)
+    # Phase B4: full Phase A3 catalogue (propositions + concern seeds)
+    # threaded onto every chunk so the Affect agent can see baseline
+    # framing / salience values without a second registry round-trip.
+    # Optional so the field stays absent when the catalogue stage is
+    # disabled or fails (in which case the affect agent is also skipped).
+    chunk_catalogue: Optional["PropositionCatalogue"] = None
 
 
 def _pre_allocate_chunk_params(
@@ -4255,6 +5944,7 @@ async def _extract_single_chunk_async(
     physics_agent: Agent,
     social_agent: Agent,
     consequences_agent: Optional[Agent] = None,
+    affect_agent: Optional[Agent] = None,
 ) -> Tuple[ChunkTopology, Dict[str, int], Dict[str, str]]:
     """Process one chunk through the per-chunk agent pipeline (async).
 
@@ -4277,6 +5967,47 @@ async def _extract_single_chunk_async(
     n = params.total_chunks
     failure_flags: Dict[str, int] = {"physics": 0, "social": 0, "consequences": 0}
     stage_errors: Dict[str, str] = {}
+
+    # Per-agent-call timeout. Each X_agent.run(...) inside this
+    # function is wrapped in asyncio.wait_for via a thin proxy so the
+    # 30+ call sites below need no per-site change. On timeout the
+    # call raises asyncio.TimeoutError, which the existing per-stage
+    # try/except catches and records as the stage's failure cause \u2014
+    # subsequent stages still run on whatever the earlier stages
+    # produced (rather than the whole chunk being voided as before).
+    _call_timeout = getattr(config, "per_agent_call_timeout_seconds", 0) or 0
+    if _call_timeout > 0:
+
+        class _TimeoutAgent:
+            __slots__ = ("_agent", "_timeout", "_label")
+
+            def __init__(self, agent: Agent, label: str) -> None:
+                self._agent = agent
+                self._timeout = _call_timeout
+                self._label = label
+
+            async def run(self, *args, **kwargs):
+                try:
+                    return await asyncio.wait_for(
+                        self._agent.run(*args, **kwargs),
+                        timeout=self._timeout,
+                    )
+                except asyncio.TimeoutError as exc:
+                    raise asyncio.TimeoutError(
+                        f"{self._label}_agent.run did not complete within "
+                        f"{self._timeout:.0f}s (per_agent_call_timeout_seconds)"
+                    ) from exc
+
+            def __getattr__(self, name: str):
+                return getattr(self._agent, name)
+
+        socratic_agent = _TimeoutAgent(socratic_agent, "socratic")  # type: ignore[assignment]
+        physics_agent = _TimeoutAgent(physics_agent, "physics")  # type: ignore[assignment]
+        social_agent = _TimeoutAgent(social_agent, "social")  # type: ignore[assignment]
+        if consequences_agent is not None:
+            consequences_agent = _TimeoutAgent(consequences_agent, "consequences")  # type: ignore[assignment]
+        if affect_agent is not None:
+            affect_agent = _TimeoutAgent(affect_agent, "affect")  # type: ignore[assignment]
 
     fingerprint = _extraction_fingerprint(config)
 
@@ -4346,6 +6077,7 @@ async def _extract_single_chunk_async(
         # ordering at dispatch time.
         previous_event_ids=list(params.previous_event_ids),
         on_page_entity_ids=on_page,
+        chunk_propositions=list(params.chunk_propositions),
     )
     try:
         physics_result = await physics_agent.run(physics_msg, deps=physics_deps, **_user_kwargs())
@@ -4455,6 +6187,61 @@ async def _extract_single_chunk_async(
         except Exception:
             logger.exception(
                 "[Step 3a·Async] Chunk %d anon retry FAILED.", i + 1,
+            )
+
+    # Actorless-choice retry (async). A ``choice`` event MUST name a
+    # decider per the prompt contract, but the post-hoc EventNode
+    # validator only warns rather than raising (so test fixtures and
+    # rare narrator-choice edge cases stay constructible). That meant
+    # the LLM's structured output was accepted, the warning surfaced
+    # only after the chunk had already been merged, and there was no
+    # corrective retry. We catch them here while the agent context is
+    # still hot — same shape as the anon retry above.
+    actorless_ids = _physics_actorless_choices(physics)
+    if actorless_ids and config.actorless_choice_retry:
+        sample = actorless_ids[:6]
+        logger.info(
+            "[Step 3a\u00b7Async] Chunk %d: %d actorless choice event(s) "
+            "(event_type=choice with empty actor_ids): %s\u2026 \u2014 "
+            "retrying with decider emphasis \u2026",
+            i + 1, len(actorless_ids), sample,
+        )
+        actorless_msg = (
+            "IMPORTANT: The previous extraction produced "
+            f"{len(actorless_ids)} event(s) with event_type=\"choice\" "
+            f"but EMPTY actor_ids: {sample}. Every choice event MUST "
+            "name at least one ENT_ in actor_ids \u2014 a deliberate "
+            "decision requires a decider. Re-emit those events with "
+            "the on-page decider(s) filled in, keeping the SAME id "
+            "and fabula_time so the merge step replaces the actorless "
+            "version. If after re-reading the chunk you cannot "
+            "identify any decider, change event_type to "
+            "\"outcome\" (consequence) or \"revelation\" (narrator-side "
+            "disclosure) instead \u2014 do NOT leave actor_ids empty on "
+            "a choice event.\n\n" + physics_msg
+        )
+        try:
+            actorless_result = await physics_agent.run(
+                actorless_msg, deps=physics_deps, **_user_kwargs(),
+            )
+            actorless_physics = actorless_result.output
+            merged_actorless = _merge_actorless_choice_retry(
+                physics, actorless_physics,
+            )
+            new_actorless = _physics_actorless_choices(merged_actorless)
+            if len(new_actorless) < len(actorless_ids):
+                physics = merged_actorless
+                logger.info(
+                    "[Step 3a\u00b7Async] Chunk %d: actorless-choice "
+                    "retry covered %d/%d actorless choice event(s).",
+                    i + 1,
+                    len(actorless_ids) - len(new_actorless),
+                    len(actorless_ids),
+                )
+        except Exception:
+            logger.exception(
+                "[Step 3a\u00b7Async] Chunk %d actorless-choice retry FAILED.",
+                i + 1,
             )
 
     # Collapse duplicate events from multi-pass extraction.
@@ -4624,6 +6411,7 @@ async def _extract_single_chunk_async(
         previous_event_ids=list(params.previous_event_ids),
         previous_chunk_channels=dict(params.previous_chunk_channels),
         on_page_entity_ids=on_page,
+        chunk_propositions=list(params.chunk_propositions),
     )
 
     async def _run_social() -> SocialExtraction:
@@ -4789,6 +6577,7 @@ async def _extract_single_chunk_async(
             chunk_utterance_events=local_social.utterance_events,
             previous_event_ids=list(params.previous_event_ids),
             on_page_entity_ids=on_page,
+            chunk_propositions=list(params.chunk_propositions),
         )
         try:
             consequences_result = await consequences_agent.run(
@@ -5300,6 +7089,80 @@ async def _extract_single_chunk_async(
         chunk_label=f"Step 3b·Async chunk {i + 1}",
     )
 
+    # ----- Step 3d (Phase B4): Affect Agent — proposition + concern drift.
+    # Skip cleanly when the agent isn't built (catalogue empty / disabled),
+    # when the catalogue isn't on params (legacy callers), or when
+    # ``_chunk_has_affect_signal`` says the chunk touches no PROP_ id and
+    # no seeded entity.
+    affect_props: List[ChunkPropositionSnapshot] = []
+    affect_truth: List[PropositionTruthCommit] = []
+    affect_concerns: List[ChunkConcernSnapshot] = []
+    affect_new_seeds: List["ConcernSeed"] = []
+    if affect_agent is not None and params.chunk_catalogue is not None:
+        catalogue = params.chunk_catalogue
+        catalogue_prop_ids = {p.proposition_id for p in catalogue.propositions}
+        seeded_entity_ids = {s.entity_id for s in catalogue.concern_seeds}
+        # Build the widened-gate lookup maps once per chunk.
+        referent_to_props: Dict[str, Set[str]] = {}
+        for prop in catalogue.propositions:
+            for rid in prop.referent_ids:
+                referent_to_props.setdefault(rid, set()).add(prop.proposition_id)
+        concern_entity_to_props: Dict[str, Set[str]] = {}
+        for seed in catalogue.concern_seeds:
+            concern_entity_to_props.setdefault(seed.entity_id, set()).add(
+                seed.proposition_id,
+            )
+        if _chunk_has_affect_signal(
+            merged_events, entity_updates_final,
+            catalogue_prop_ids, seeded_entity_ids,
+            referent_to_props=referent_to_props,
+            concern_entity_to_props=concern_entity_to_props,
+        ):
+            affect_deps = _AffectDeps(
+                global_register=register,
+                chunk_events=list(merged_events),
+                chunk_entity_updates=list(entity_updates_final),
+                propositions=list(catalogue.propositions),
+                concern_seeds=list(catalogue.concern_seeds),
+            )
+            affect_msg = (
+                f"Chunk {i + 1} of {n}.\n\n"
+                f"Emit proposition_snapshots, proposition_truth_commits, "
+                f"concern_snapshots and (sparingly) new_concern_seeds for "
+                f"the events listed in the system prompt. Skip cleanly with "
+                f"empty lists if nothing in this chunk shifts the "
+                f"catalogue.\n\nORIGINAL TEXT:\n{chunk_with_ctx}"
+            )
+            try:
+                affect_result = await affect_agent.run(
+                    affect_msg, deps=affect_deps, **_user_kwargs(),
+                )
+                affect_out = affect_result.output
+                affect_props = list(affect_out.proposition_snapshots)
+                affect_truth = list(affect_out.proposition_truth_commits)
+                affect_concerns = list(affect_out.concern_snapshots)
+                affect_new_seeds = list(affect_out.new_concern_seeds)
+                logger.info(
+                    "[Step 3d·Async] Chunk %d affect: %d prop_snaps, "
+                    "%d truth_commits, %d concern_snaps, %d new_seeds.",
+                    i + 1, len(affect_props), len(affect_truth),
+                    len(affect_concerns), len(affect_new_seeds),
+                )
+            except Exception as exc:
+                logger.exception(
+                    "[Step 3d·Async] Chunk %d affect FAILED — "
+                    "proceeding without per-chunk affect deltas.", i + 1,
+                )
+                failure_flags["affect"] = 1
+                stage_errors.setdefault(
+                    "affect", f"{type(exc).__name__}: {exc}",
+                )
+        else:
+            logger.debug(
+                "[Step 3d·Async] Chunk %d: no affect signal — skipping.",
+                i + 1,
+            )
+
     topo = ChunkTopology(
         events=merged_events,
         causal_topology=physics.causal_topology,
@@ -5307,6 +7170,10 @@ async def _extract_single_chunk_async(
         social_topology=social.social_topology,
         spatial_topology=physics.spatial_topology,
         entity_updates=entity_updates_final,
+        proposition_snapshots=affect_props,
+        proposition_truth_commits=affect_truth,
+        concern_snapshots=affect_concerns,
+        new_concern_seeds=affect_new_seeds,
     )
     logger.info(
         "[Step 3·Async] Chunk %d: %d events (%d utterances), %d causal, %d social, %d spatial, %d channels.",
@@ -5318,6 +7185,45 @@ async def _extract_single_chunk_async(
         len(topo.spatial_topology),
         len(topo.channels),
     )
+
+    # Deterministic post-extraction consistency audit (advisory only).
+    # Logs a structured warning when the assembled chunk topology has
+    # id-validity or cross-stage parity defects the per-stage retries
+    # cannot detect (orphan trait updates, dead-then-acting actor
+    # resurrections, same-tick location conflicts, mutation_social
+    # edges with no matching RelationshipEdge reading). Does NOT fail
+    # the chunk — the goal in this iteration is observability so the
+    # follow-up can wire defect-class-specific re-runs.
+    if config.chunk_consistency_audit:
+        try:
+            chunk_defects = _audit_chunk_consistency(
+                topo,
+                register,
+                previous_event_ids=set(params.previous_event_ids),
+                previous_channel_ids=set(params.previous_chunk_channels.keys()),
+            )
+        except Exception:
+            logger.exception(
+                "[Audit\u00b7Async] Chunk %d consistency audit FAILED \u2014 "
+                "continuing without audit results.", i + 1,
+            )
+            chunk_defects = []
+        if chunk_defects:
+            counts: Dict[str, int] = {}
+            for d in chunk_defects:
+                counts[d.kind] = counts.get(d.kind, 0) + 1
+            sample = "; ".join(
+                f"{d.kind}: {d.detail}" for d in chunk_defects[:5]
+            )
+            logger.warning(
+                "[Audit\u00b7Async] Chunk %d: %d defect(s) %s. Sample: %s",
+                i + 1, len(chunk_defects), counts, sample,
+            )
+            stage_errors.setdefault(
+                "audit",
+                f"{len(chunk_defects)} defect(s) {counts}",
+            )
+
     # Tier 3 #11 + audit fix #4/#5: persist topology so a re-run skips
     # the agents — but only when no stage failed (else resume could
     # serve a degraded extraction as clean).
@@ -5462,6 +7368,72 @@ def _reconcile_chunk_topologies(
             rewritten.append(renamed.model_copy(update={"events": kept}))
         reconciled = rewritten
 
+    # --- Pass 1c: long-range high-confidence dedup ---
+    #
+    # Pass 1b only collapses adjacent-chunk duplicates within a 50-tick
+    # fabula window. Some LLM extractions emit the same beat in two
+    # non-adjacent chunks at very different absolute fabula times
+    # (e.g. Star Wars: Obi-Wan's lightsaber sacrifice tagged at
+    # fabula=1000 in chunk 2 and fabula=3600 in chunk 5). When two
+    # non-utterance events share the same actors, targets, and
+    # event_type AND their descriptions overlap heavily (Jaccard
+    # >= 0.7 on word tokens), they almost certainly describe the
+    # same beat regardless of chunk distance or fabula offset. The
+    # earliest-syuzhet occurrence is canonical; later ones are
+    # collapsed onto it. Utterances are still excluded from this
+    # pass (separate speech acts with similar content are common).
+    _LONG_RANGE_OVERLAP_MIN = 0.70
+    _LONG_RANGE_MIN_SHARED_TOKENS = 3
+    long_range_groups: Dict[tuple, List[Tuple[int, int, str, str]]] = {}
+    long_range_renames: Dict[str, str] = {}
+    long_range_dropped: Set[str] = set()
+    for ci, topo in enumerate(reconciled):
+        for e in topo.events:
+            if e.event_type == "utterance":
+                continue
+            if not e.actor_ids and not e.target_ids:
+                continue
+            key = (
+                frozenset(e.actor_ids or []),
+                frozenset(e.target_ids or []),
+                e.event_type,
+            )
+            entries = long_range_groups.setdefault(key, [])
+            tokens = _desc_tokens(e.description)
+            if not tokens:
+                entries.append((ci, e.syuzhet_index, e.id, e.description))
+                continue
+            best_match: Optional[Tuple[int, int, str, str]] = None
+            for prev in entries:
+                prev_tokens = _desc_tokens(prev[3])
+                if not prev_tokens:
+                    continue
+                shared = tokens & prev_tokens
+                if len(shared) < _LONG_RANGE_MIN_SHARED_TOKENS:
+                    continue
+                jacc = len(shared) / max(1, len(tokens | prev_tokens))
+                if jacc >= _LONG_RANGE_OVERLAP_MIN:
+                    best_match = prev
+                    break
+            if best_match is not None and best_match[2] != e.id:
+                long_range_renames[e.id] = best_match[2]
+                long_range_dropped.add(e.id)
+            else:
+                entries.append((ci, e.syuzhet_index, e.id, e.description))
+
+    if long_range_renames:
+        logger.info(
+            "[Reconcile] Long-range dedup: collapsing %d cross-chunk "
+            "duplicate event(s) onto canonical ids (Jaccard >= %.2f).",
+            len(long_range_renames), _LONG_RANGE_OVERLAP_MIN,
+        )
+        rewritten = []
+        for topo in reconciled:
+            renamed = _apply_event_renames(topo, long_range_renames)
+            kept = [e for e in renamed.events if e.id not in long_range_dropped]
+            rewritten.append(renamed.model_copy(update={"events": kept}))
+        reconciled = rewritten
+
     # --- Pass 2: Re-number syuzhet_index globally in chunk order ---
     syuzhet_counter = 0
     for topo in reconciled:
@@ -5603,14 +7575,39 @@ def _apply_event_renames(topo: ChunkTopology, rmap: Dict[str, str]) -> ChunkTopo
             ],
         }) for eu in topo.entity_updates
     ]
-    return ChunkTopology(
-        events=new_events,
-        causal_topology=new_causal,
-        channels=topo.channels,
-        social_topology=topo.social_topology,
-        spatial_topology=topo.spatial_topology,
-        entity_updates=new_entity_updates,
-    )
+    # Phase B4: rename triggered_by on every affect snapshot / truth
+    # commit too, so cross-chunk EVT_ id collisions resolved by Pass 1
+    # of ``_reconcile_chunk_topologies`` keep the affect → event link
+    # intact for the Phase C reconciler.
+    new_prop_snaps = [
+        ps.model_copy(update={"triggered_by": _r(ps.triggered_by)})
+        for ps in topo.proposition_snapshots
+    ]
+    new_truth_commits = [
+        tc.model_copy(update={"triggered_by": _r(tc.triggered_by)})
+        for tc in topo.proposition_truth_commits
+    ]
+    new_concern_snaps = [
+        cs.model_copy(update={"triggered_by": _r(cs.triggered_by)})
+        for cs in topo.concern_snapshots
+    ]
+    # ``model_copy(update=...)`` rather than rebuilding the model
+    # explicitly so any ChunkTopology field NOT touched by rename
+    # (new_entities, new_objects, new_locations, new_world_traits,
+    # new_propositions, new_concerns, proposition_truth_commits,
+    # belief_confidence_updates, deletions, supersession_updates,
+    # new_concern_seeds, etc.) is preserved verbatim. Rebuilding the
+    # model with a hand-listed subset silently dropped those fields,
+    # which manifested as snapshot-era / merge-era data going missing
+    # whenever cross-chunk EVT_ id reconciliation fired.
+    return topo.model_copy(update={
+        "events": new_events,
+        "causal_topology": new_causal,
+        "entity_updates": new_entity_updates,
+        "proposition_snapshots": new_prop_snaps,
+        "proposition_truth_commits": new_truth_commits,
+        "concern_snapshots": new_concern_snaps,
+    })
 
 
 def _shift_fabula_times(topo: ChunkTopology, shift: int) -> None:
@@ -5654,6 +7651,7 @@ async def extract_topology_async(
     chunks: List[str],
     register: GlobalRegister,
     config: ExtractionConfig | None = None,
+    catalogue: Optional[PropositionCatalogue] = None,
 ) -> List[ChunkTopology]:
     """Extract per-chunk topology — chunks are processed in parallel.
 
@@ -5671,8 +7669,44 @@ async def extract_topology_async(
         _build_consequences_agent(config)
         if config.enable_consequences_agent else None
     )
+    # Phase B4: build the affect agent only when both the global
+    # catalogue stage actually produced something AND the user hasn't
+    # disabled the per-chunk affect pass. ``_extract_single_chunk_async``
+    # additionally gates per-chunk on ``_chunk_has_affect_signal``.
+    affect_agent = (
+        _build_affect_agent(config)
+        if (
+            config.enable_affect_agent
+            and catalogue is not None
+            and (catalogue.propositions or catalogue.concern_seeds)
+        )
+        else None
+    )
 
     params_list = _pre_allocate_chunk_params(chunks, config)
+    # Phase A3: thread the global Proposition Catalogue id list onto
+    # every chunk's params so the per-chunk system_prompt injectors
+    # render the catalogue block. Empty list (no catalogue stage / no
+    # propositions found) leaves the existing default-empty behaviour.
+    if catalogue is not None and catalogue.propositions:
+        catalogue_pairs: List[Tuple[str, str]] = [
+            (p.proposition_id, p.description) for p in catalogue.propositions
+        ]
+        params_list = [
+            p.model_copy(update={
+                "chunk_propositions": catalogue_pairs,
+                "chunk_catalogue": catalogue,
+            })
+            for p in params_list
+        ]
+    elif catalogue is not None:
+        # Concern-seeds-only edge case: still surface the catalogue so
+        # the affect agent can drift seeded concerns even when the
+        # catalogue declared no propositions.
+        params_list = [
+            p.model_copy(update={"chunk_catalogue": catalogue})
+            for p in params_list
+        ]
     semaphore = asyncio.Semaphore(config.max_concurrent_chunks)
     chunk_timeout = getattr(config, "per_chunk_timeout_seconds", 0)
     # Cap how many consecutive timeouts to tolerate in serial mode
@@ -5688,7 +7722,7 @@ async def extract_topology_async(
             coro = _extract_single_chunk_async(
                 chunk, params, register, config,
                 socratic_agent, physics_agent, social_agent,
-                consequences_agent,
+                consequences_agent, affect_agent,
             )
             if chunk_timeout and chunk_timeout > 0:
                 try:
@@ -6267,9 +8301,16 @@ def _deduplicate_social(edges: List[RelationshipEdge]) -> List[RelationshipEdge]
     Instead we merge per-axis, picking the metric with the larger
     ``last_updated_fabula`` for each axis independently.
     """
-    best: dict[tuple[str, str], RelationshipEdge] = {}
+    # Branch-aware key: same (src, tgt) on factual vs shadow must NOT
+    # collapse — Pearl Rung-2/3 forks legitimately produce parallel
+    # edges with the same endpoints on the shadow branch.
+    best: dict[tuple[str, str, str], RelationshipEdge] = {}
     for e in edges:
-        key = (e.source_entity_id, e.target_entity_id)
+        key = (
+            e.source_entity_id,
+            e.target_entity_id,
+            getattr(e, "world_id", "factual"),
+        )
         if key not in best:
             best[key] = e
             continue
@@ -6365,9 +8406,13 @@ def _deduplicate_spatial(edges: List[SpatialEdge]) -> List[SpatialEdge]:
     passage's birth tick is preserved) and merge in any subsequent
     edge's lock and destruction facts.
     """
-    by_pair: dict[tuple[str, str], List[SpatialEdge]] = {}
+    # Branch-aware key: factual and shadow spatial edges over the same
+    # passage must remain distinct so a counterfactual lock/destruction
+    # never bleeds into the factual world (and vice versa).
+    by_pair: dict[tuple[str, str, str], List[SpatialEdge]] = {}
     for e in edges:
-        by_pair.setdefault((e.source_id, e.target_id), []).append(e)
+        wid = getattr(e, "world_id", "factual")
+        by_pair.setdefault((e.source_id, e.target_id, wid), []).append(e)
     merged: List[SpatialEdge] = []
     for pair, group in by_pair.items():
         # Sort by established_at_fabula so the earliest is canonical.
@@ -6427,6 +8472,8 @@ def _deduplicate_causal(
     tick. Set ``fabula_tolerance=0`` to restore strict dedup.
     """
     def _key(e: CausalEdge) -> tuple:
+        # Branch-aware: the same causal arc on factual vs shadow must
+        # remain a distinct edge so Pearl Rung-2/3 forks survive merge.
         return (
             e.source_id,
             e.target_id,
@@ -6435,6 +8482,7 @@ def _deduplicate_causal(
             e.rel_counterpart_id,
             e.mechanism,
             e.fabula_time,
+            getattr(e, "world_id", "factual"),
         )
 
     best: dict[tuple, CausalEdge] = {}
@@ -6452,6 +8500,7 @@ def _deduplicate_causal(
     deduped.sort(key=lambda e: (
         e.source_id, e.target_id, e.causality_type,
         e.trait_target or "", e.rel_counterpart_id or "", e.mechanism,
+        getattr(e, "world_id", "factual"),
         e.fabula_time,
     ))
     collapsed: List[CausalEdge] = []
@@ -6465,6 +8514,8 @@ def _deduplicate_causal(
                 and prev.trait_target == e.trait_target
                 and prev.rel_counterpart_id == e.rel_counterpart_id
                 and prev.mechanism == e.mechanism
+                and getattr(prev, "world_id", "factual")
+                    == getattr(e, "world_id", "factual")
                 and abs(e.fabula_time - prev.fabula_time) <= fabula_tolerance
             ):
                 if e.causal_force > prev.causal_force:
@@ -6513,11 +8564,16 @@ def _deduplicate_channels_with_map(
     aliases: dict[tuple, list[str]] = {}
     for chunk_channels in channel_dicts:
         for ch in chunk_channels.values():
+            # Branch-aware bucket: a shadow-branch channel with the
+            # same medium/participants/directionality as a factual
+            # channel must NOT collapse — they describe parallel
+            # capabilities in distinct AMWN branches.
             key = (
                 ch.medium,
                 tuple(sorted(ch.participant_ids)),
                 ch.directionality,
                 ch.established_at_fabula // bucket_size,
+                getattr(ch, "world_id", "factual"),
             )
             aliases.setdefault(key, []).append(ch.id)
             existing = best.get(key)
@@ -6535,6 +8591,17 @@ def _deduplicate_channels_with_map(
                 if t is not None
             ]
             merged_term: Optional[int] = min(term_candidates) if term_candidates else None
+            # Earliest non-null syuzhet discovery wins (the channel
+            # becomes audience-knowledge at the first reveal beat;
+            # later re-mentions don't push the discovery later).
+            disc_candidates = [
+                d for d in (
+                    getattr(existing, "discovered_at_syuzhet", None),
+                    getattr(ch, "discovered_at_syuzhet", None),
+                )
+                if d is not None
+            ]
+            merged_disc: Optional[int] = min(disc_candidates) if disc_candidates else None
             # Earliest establishment tick wins (channel exists from the
             # earliest report onward; later jittered re-reports were
             # the LLM observing the same standing capability later).
@@ -6542,6 +8609,7 @@ def _deduplicate_channels_with_map(
             best[key] = ch.model_copy(update={
                 "intelligibility": merged_intel,
                 "terminated_at_fabula": merged_term,
+                "discovered_at_syuzhet": merged_disc,
                 "established_at_fabula": merged_estab,
             })
     deduped = {ch.id: ch for ch in best.values()}
@@ -6629,6 +8697,64 @@ def _snapshot_sort_key(s) -> tuple:
         len(getattr(s, "traits", None) or {}),
         len(getattr(s, "beliefs_added", None) or []),
     )
+
+
+def _apply_world_trait_chunk_updates(
+    wt: GlobalTrait,
+    new_snaps: List[WorldTraitSnapshot],
+    domain_ops: Optional[Tuple[Set[str], Set[str]]],
+) -> GlobalTrait:
+    """Fold per-chunk :class:`WorldTraitUpdate` outputs onto a ``GlobalTrait``.
+
+    Appends ``new_snaps`` (already inertia-attenuated) onto
+    ``state_timeline`` in fabula-time order, deduplicating identical
+    ``(fabula_time, world_id, magnitude.value, magnitude.inertia)``
+    tuples that may arise when the engine and Consequences both emit
+    a snapshot for the same event. ``domain_ops`` is an
+    ``(adds, removes)`` set pair applied to ``affected_domains`` as a
+    structural mutation (mirrors how new beliefs are added directly to
+    the entity rather than encoded as a snapshot).
+    """
+    if not new_snaps and not domain_ops:
+        return wt
+    existing_keys = {
+        (
+            int(s.fabula_time),
+            getattr(s, "world_id", "factual"),
+            round(s.magnitude.value, 4) if s.magnitude else None,
+            round(s.magnitude.inertia, 4) if s.magnitude else None,
+        )
+        for s in wt.state_timeline
+    }
+    merged = list(wt.state_timeline)
+    for s in new_snaps:
+        key = (
+            int(s.fabula_time),
+            s.world_id,
+            round(s.magnitude.value, 4) if s.magnitude else None,
+            round(s.magnitude.inertia, 4) if s.magnitude else None,
+        )
+        if key in existing_keys:
+            continue
+        merged.append(s)
+        existing_keys.add(key)
+    merged.sort(key=lambda s: (int(s.fabula_time), getattr(s, "world_id", "factual")))
+
+    update_dict: Dict[str, object] = {"state_timeline": merged}
+    if domain_ops is not None:
+        adds, rems = domain_ops
+        new_domains = list(wt.affected_domains)
+        new_domains_set = set(new_domains)
+        for d in adds:
+            if d and d not in new_domains_set:
+                new_domains.append(d)
+                new_domains_set.add(d)
+        for d in rems:
+            if d in new_domains_set:
+                new_domains = [x for x in new_domains if x != d]
+                new_domains_set.discard(d)
+        update_dict["affected_domains"] = new_domains
+    return wt.model_copy(update=update_dict)
 
 
 def _coalesce_snapshots(
@@ -6900,6 +9026,90 @@ def assemble_world_state(
     if deduped_parts:
         logger.info("[Step 3] Deduplicated edges: %s.", ", ".join(deduped_parts))
 
+    # --- Fold per-chunk WorldTraitUpdate into GlobalTrait.state_timeline ---
+    # Mirrors the EntityUpdate fold above. Each WorldTraitUpdate yields
+    # a ``WorldTraitSnapshot`` honouring the trait's ``magnitude.inertia``
+    # (high inertia attenuates the delta; the snapshot stores the
+    # *attenuated* value so replay reproduces the merge decision). Per-
+    # chunk updates are authoritative; ``extract_world_trait_timelines``
+    # downstream only fills gaps for WORLD_ ids with zero per-chunk hits.
+    #
+    # Parity validators:
+    #   * ``world_trait_id`` must be in ``register.world_traits``
+    #   * ``triggered_by`` must reference an event in this assembly
+    #   * ``fabula_time`` must equal the triggering event's fabula_time
+    # Failures log a [Auto-Fix] / [Unknown-ID] line and drop the update;
+    # they do NOT raise (matching the EntityUpdate auto_repair posture).
+    chunk_world_updates: Dict[str, List[WorldTraitSnapshot]] = {}
+    chunk_world_seen: Set[str] = set()  # WORLD_ ids that received >=1 update
+    chunk_world_domain_ops: Dict[str, Tuple[Set[str], Set[str]]] = {}
+    if any(topo.world_trait_updates for topo in topologies):
+        event_index = {e.event_id: e for e in events}
+        for topo in topologies:
+            for wtu in topo.world_trait_updates:
+                wid = wtu.world_trait_id
+                if wid not in register.world_traits:
+                    logger.warning(
+                        "[Unknown-ID] WorldTraitUpdate.world_trait_id %r not in "
+                        "register; dropping update at fabula=%d.",
+                        wid, wtu.fabula_time,
+                    )
+                    continue
+                trig = event_index.get(wtu.triggered_by)
+                if trig is None:
+                    logger.warning(
+                        "[Unknown-ID] WorldTraitUpdate.triggered_by %r for %s "
+                        "not in assembled events; dropping.",
+                        wtu.triggered_by, wid,
+                    )
+                    continue
+                if trig.fabula_time != wtu.fabula_time:
+                    logger.warning(
+                        "[Auto-Fix] WorldTraitUpdate %s fabula_time=%d != "
+                        "triggering EVT %s fabula_time=%d; snapping to event time.",
+                        wid, wtu.fabula_time, wtu.triggered_by, trig.fabula_time,
+                    )
+                    eff_ft = trig.fabula_time
+                else:
+                    eff_ft = wtu.fabula_time
+
+                wt = register.world_traits[wid]
+                base_value = wt.magnitude.value
+                inertia = wt.magnitude.inertia if wt.magnitude else 0.3
+                # Attenuate magnitude jumps by inertia: small high-inertia
+                # changes slip through, large jumps are damped towards the
+                # baseline. ``value_after = base + (1 - inertia) * (target - base)``
+                # mirrors the Step-5 timeline pass and the engine's
+                # ``_upsert_world_trait_snapshot`` posture.
+                if wtu.new_magnitude_value is not None:
+                    target = float(max(0.0, min(1.0, wtu.new_magnitude_value)))
+                    eff_value = base_value + (1.0 - float(inertia)) * (target - base_value)
+                    eff_value = float(max(0.0, min(1.0, eff_value)))
+                    if abs(eff_value - target) > 1e-3:
+                        logger.info(
+                            "[Auto-Fix] WorldTraitUpdate %s magnitude attenuated by "
+                            "inertia=%.2f: target=%.3f → applied=%.3f.",
+                            wid, inertia, target, eff_value,
+                        )
+                else:
+                    eff_value = base_value
+
+                eff_inertia = float(wtu.new_inertia) if wtu.new_inertia is not None else inertia
+                snap = WorldTraitSnapshot(
+                    world_id="factual",
+                    fabula_time=int(eff_ft),
+                    triggered_by=wtu.triggered_by,
+                    magnitude=TraitVector(value=eff_value, inertia=eff_inertia),
+                )
+                chunk_world_updates.setdefault(wid, []).append(snap)
+                chunk_world_seen.add(wid)
+                if wtu.affected_domains_add or wtu.affected_domains_remove:
+                    add_set, rem_set = chunk_world_domain_ops.setdefault(
+                        wid, (set(), set()),
+                    )
+                    add_set.update(wtu.affected_domains_add)
+                    rem_set.update(wtu.affected_domains_remove)
+
     ws = WorldStateV1(
         locations=register.locations,
         objects=register.objects,
@@ -6911,13 +9121,24 @@ def assemble_world_state(
             )
             for eid, ent in register.entities.items()
         },
-        world_traits=register.world_traits,
+        world_traits={
+            wid: _apply_world_trait_chunk_updates(
+                wt,
+                chunk_world_updates.get(wid, []),
+                chunk_world_domain_ops.get(wid),
+            )
+            for wid, wt in register.world_traits.items()
+        },
         events=events,
         causal_topology=causal_topology,
         spatial_topology=spatial_topology,
         channels=channels,
         social_topology=social_topology,
     )
+    # Stash the set of WORLD_ ids that received per-chunk updates so the
+    # post-assembly Step-5 LLM pass can demote itself to gap-filler mode
+    # (see ``extract_world_trait_timelines``).
+    setattr(ws, "_chunk_world_trait_ids", frozenset(chunk_world_seen))
     utterance_count = sum(1 for e in events if e.event_type == "utterance")
     logger.info(
         "[Step 3] Assembled WorldStateV1 — %d events (%d utterances), %d causal, %d social, "
@@ -6982,6 +9203,1107 @@ def assemble_world_state(
         )
 
     return ws
+
+
+# =====================================================================
+# Phase C — Affect Reconciler
+#
+# Folds the Phase A3 ``PropositionCatalogue`` and the per-chunk Phase B4
+# affect outputs (``ChunkTopology.proposition_snapshots`` /
+# ``proposition_truth_commits`` / ``concern_snapshots`` /
+# ``new_concern_seeds``) into the assembled ``WorldStateV1``:
+#
+#   * Catalogue propositions land on ``WorldStateV1.propositions``,
+#     stable-merged with any pre-existing ones (catalogue framing
+#     wins; ``truth_at_fabula`` keeps prior commits).
+#   * ``EventNode.resolves_proposition_ids`` /
+#     ``asserts_proposition_id`` (with ``truth_value``) /
+#     ``denies_proposition_id`` are swept into
+#     ``Proposition.truth_at_fabula`` so the per-chunk extractors that
+#     wrote the link at extraction time become world-level truths
+#     without a second LLM call.
+#   * ``ChunkPropositionSnapshot`` / ``ChunkConcernSnapshot`` payloads
+#     are stripped of their wire-format discriminator
+#     (``proposition_id`` / ``concern_id``) and routed onto the matching
+#     proposition / concern's ``state_timeline``, then run through
+#     :func:`_coalesce_timeline` for deterministic replay.
+#   * Catalogue ``concern_seeds`` and per-chunk ``new_concern_seeds``
+#     are materialised as ``Concern`` records on the named entity,
+#     deduped on ``(entity_id, proposition_id, polarity)``.
+#
+# The function is intentionally *additive*: legacy worlds without a
+# catalogue or affect outputs round-trip unchanged. Idempotent given
+# the same inputs (re-running collapses duplicates).
+# =====================================================================
+
+
+def _truth_value_to_bool(tv: Optional[str]) -> Optional[bool]:
+    """Map an utterance ``truth_value`` to the ``truth_at_fabula`` bool.
+
+    'true' / 'false' commit; 'unknown' / 'performative' / None do not
+    contribute to the proposition's ground-truth ledger (an unreliable
+    or non-truth-apt utterance is captured by the per-agent belief
+    layer, not by world truth).
+    """
+    if tv == "true":
+        return True
+    if tv == "false":
+        return False
+    return None
+
+
+def reconcile_affect(
+    world: WorldStateV1,
+    catalogue: Optional["PropositionCatalogue"],
+    topologies: List[ChunkTopology],
+) -> WorldStateV1:
+    """Phase C: fold catalogue + per-chunk affect outputs into the world.
+
+    Mutates ``world`` in place (and returns it) for symmetry with the
+    other post-assembly passes (``_normalize_fabula_times``,
+    ``_auto_repair``, ``extract_world_trait_timelines_async``).
+    """
+    # Lazy import — affect_unification depends on shadow_loom.models
+    # which is a leaf, so no cycle, but we keep the import local to
+    # match the rest of the post-assembly call sites in this file.
+    from shadow_loom.affect_unification import _coalesce_timeline
+
+    # ----------------------------------------------------------------
+    # 1. Merge catalogue propositions into ``world.propositions``.
+    # ----------------------------------------------------------------
+    prop_index: Dict[str, Proposition] = {
+        p.proposition_id: p for p in world.propositions
+    }
+    if catalogue is not None:
+        for cat_prop in catalogue.propositions:
+            existing = prop_index.get(cat_prop.proposition_id)
+            if existing is None:
+                prop_index[cat_prop.proposition_id] = cat_prop.model_copy(deep=True)
+                continue
+            # Catalogue wins on framing fields (description, kind,
+            # referents, audience prior, stakes); existing keeps its
+            # accumulated state_timeline / truth_at_fabula. We do
+            # NOT clobber state_timeline / truth_at_fabula because a
+            # legacy ``synthesise_propositions`` pass may have written
+            # them earlier.
+            prop_index[cat_prop.proposition_id] = existing.model_copy(update={
+                "kind": cat_prop.kind,
+                "referent_ids": list(cat_prop.referent_ids),
+                "description": cat_prop.description,
+                "audience_default_prior": cat_prop.audience_default_prior,
+                "stakes": cat_prop.stakes,
+            })
+
+    # ----------------------------------------------------------------
+    # 2. Sweep events for inline PROP links and commit truth_at_fabula.
+    #    These came from the per-chunk Physics / Social agents writing
+    #    ``resolves_proposition_ids`` / ``asserts_proposition_id`` /
+    #    ``denies_proposition_id`` at extraction time.
+    # ----------------------------------------------------------------
+    truth_writes: Dict[Tuple[str, int], bool] = {}
+    for evt in world.events:
+        for pid in evt.resolves_proposition_ids:
+            if pid in prop_index:
+                truth_writes[(pid, evt.fabula_time)] = True
+        if evt.asserts_proposition_id and evt.asserts_proposition_id in prop_index:
+            tv = _truth_value_to_bool(evt.truth_value)
+            # Default for assertions without an explicit truth_value is
+            # True (the speaker stands behind the claim); deny stays
+            # False.
+            if tv is None and evt.truth_value not in ("unknown", "performative"):
+                tv = True
+            if tv is not None:
+                truth_writes[(evt.asserts_proposition_id, evt.fabula_time)] = tv
+        if evt.denies_proposition_id and evt.denies_proposition_id in prop_index:
+            truth_writes[(evt.denies_proposition_id, evt.fabula_time)] = False
+
+    for (pid, fab), val in truth_writes.items():
+        prop = prop_index[pid]
+        # Last write at a tick wins, but we warn on flips so the
+        # auditor can flag intentional Schr\u00f6dinger reveals separately
+        # from extraction noise.
+        existing_truth = prop.truth_at_fabula.get(fab)
+        if existing_truth is not None and existing_truth != val:
+            logger.info(
+                "[Phase C] Truth flip on %s@fabula=%d: %s \u2192 %s "
+                "(intentional Schr\u00f6dinger reveal or conflicting extractors).",
+                pid, fab, existing_truth, val,
+            )
+        new_truth = dict(prop.truth_at_fabula)
+        new_truth[fab] = val
+        prop_index[pid] = prop.model_copy(update={"truth_at_fabula": new_truth})
+
+    # ----------------------------------------------------------------
+    # 3. Per-chunk affect outputs: proposition framing snapshots +
+    #    concern drift snapshots + truth commits + new concern seeds.
+    # ----------------------------------------------------------------
+    chunk_truth_commits: Dict[Tuple[str, int], bool] = {}
+    prop_snap_buckets: Dict[str, List[PropositionSnapshot]] = {}
+    concern_snap_buckets: Dict[str, List[ConcernSnapshot]] = {}
+    new_seed_records: List["ConcernSeed"] = []
+
+    for topo in topologies:
+        for ps in topo.proposition_snapshots:
+            if ps.proposition_id not in prop_index:
+                # Affect agent's output_validator should have already
+                # dropped these, but legacy / replayed checkpoints may
+                # still carry them. Drop silently with a debug log.
+                logger.debug(
+                    "[Phase C] Dropping prop_snapshot for unknown PROP_ id %s.",
+                    ps.proposition_id,
+                )
+                continue
+            prop_snap_buckets.setdefault(ps.proposition_id, []).append(
+                PropositionSnapshot(
+                    fabula_time=ps.fabula_time,
+                    triggered_by=ps.triggered_by,
+                    stakes=ps.stakes,
+                    audience_default_prior=ps.audience_default_prior,
+                    description=ps.description,
+                )
+            )
+        for tc in topo.proposition_truth_commits:
+            if tc.proposition_id not in prop_index:
+                continue
+            chunk_truth_commits[(tc.proposition_id, tc.fabula_time)] = tc.truth
+        for cs in topo.concern_snapshots:
+            concern_snap_buckets.setdefault(cs.concern_id, []).append(
+                ConcernSnapshot(
+                    fabula_time=cs.fabula_time,
+                    triggered_by=cs.triggered_by,
+                    salience=cs.salience,
+                    polarity=cs.polarity,
+                    activation_fabula_window=cs.activation_fabula_window,
+                    counter_concern_ids=cs.counter_concern_ids,
+                    kind=cs.kind,
+                )
+            )
+        for ns in topo.new_concern_seeds:
+            new_seed_records.append(ns)
+
+    # Apply chunk-level truth commits (from explicit affect agent
+    # output) over the inline-event ones — affect agent has full
+    # context and may correct an incorrect inline default.
+    for (pid, fab), val in chunk_truth_commits.items():
+        prop = prop_index[pid]
+        new_truth = dict(prop.truth_at_fabula)
+        new_truth[fab] = val
+        prop_index[pid] = prop.model_copy(update={"truth_at_fabula": new_truth})
+
+    # ----------------------------------------------------------------
+    # 4. Fold proposition snapshots onto each proposition's timeline
+    #    and coalesce.
+    # ----------------------------------------------------------------
+    _PROP_DIFF_FIELDS = ("stakes", "audience_default_prior", "description")
+    for pid, snaps in prop_snap_buckets.items():
+        prop = prop_index[pid]
+        merged = list(prop.state_timeline) + snaps
+        merged = _coalesce_timeline(merged, _PROP_DIFF_FIELDS)
+        prop_index[pid] = prop.model_copy(update={"state_timeline": merged})
+
+    # Final propositions list \u2014 sorted by id for deterministic output.
+    world.propositions = [prop_index[pid] for pid in sorted(prop_index)]
+
+    # ----------------------------------------------------------------
+    # 5. Concerns: materialise catalogue seeds + chunk new_concern_seeds
+    #    onto entities, then fold concern snapshots onto each concern's
+    #    timeline.
+    # ----------------------------------------------------------------
+    seed_records: List["ConcernSeed"] = []
+    if catalogue is not None:
+        seed_records.extend(catalogue.concern_seeds)
+    seed_records.extend(new_seed_records)
+
+    if seed_records:
+        # Per-entity concern dedup index keyed on
+        # (proposition_id, polarity) so re-runs collapse duplicates.
+        for seed in seed_records:
+            ent = world.entities.get(seed.entity_id)
+            if ent is None:
+                logger.debug(
+                    "[Phase C] Dropping concern seed %s \u2014 entity %s missing.",
+                    seed.concern_id, seed.entity_id,
+                )
+                continue
+            existing_keys = {
+                (c.proposition_id, c.polarity) for c in ent.concerns
+            }
+            if (seed.proposition_id, seed.polarity) in existing_keys:
+                continue
+            new_concern = Concern(
+                concern_id=seed.concern_id,
+                proposition_id=seed.proposition_id,
+                polarity=seed.polarity,
+                kind=seed.kind,
+                salience=seed.baseline_salience,
+                counter_concern_ids=list(seed.counter_concern_ids),
+            )
+            ent.concerns = list(ent.concerns) + [new_concern]
+
+    # Apply concern snapshots (now that the concern records exist).
+    _CONCERN_DIFF_FIELDS = (
+        "salience", "polarity", "activation_fabula_window",
+        "counter_concern_ids", "kind",
+    )
+    if concern_snap_buckets:
+        # Build (entity_id, concern_id) \u2192 Concern lookup.
+        concern_index: Dict[str, Tuple[str, Concern]] = {}
+        for eid, ent in world.entities.items():
+            for c in ent.concerns:
+                concern_index[c.concern_id] = (eid, c)
+        for ccn_id, snaps in concern_snap_buckets.items():
+            entry = concern_index.get(ccn_id)
+            if entry is None:
+                logger.debug(
+                    "[Phase C] Dropping %d concern_snapshot(s) for unknown CCN_ id %s.",
+                    len(snaps), ccn_id,
+                )
+                continue
+            eid, concern = entry
+            merged = list(concern.state_timeline) + snaps
+            merged = _coalesce_timeline(merged, _CONCERN_DIFF_FIELDS)
+            updated = concern.model_copy(update={"state_timeline": merged})
+            ent = world.entities[eid]
+            ent.concerns = [
+                updated if c.concern_id == ccn_id else c
+                for c in ent.concerns
+            ]
+
+    # ----------------------------------------------------------------
+    # 6. Auto-close concerns whose anchor proposition has resolved but
+    #    whose timeline got no closure snapshot from the affect agent.
+    #    This is a backstop against the common LLM failure mode of
+    #    emitting `proposition_truth_commits` without the matching
+    #    `concern_snapshots` (see affect_extraction.md rule 9). We
+    #    fold a synthetic salience-0.1 snapshot at the *latest* commit
+    #    fabula and \u2014 for materialised harms (fear\u2192true,
+    #    desire\u2192false) \u2014 cap ``activation_fabula_window`` at
+    #    the commit tick so the post-resolution scoring isn't
+    #    double-counting a still-active standing fear/desire about an
+    #    already-settled question.
+    #
+    #    Multi-commit handling: a proposition that flips truth more
+    #    than once (true \u2192 false \u2192 true \u2014 e.g. character
+    #    believed dead, revealed alive, then actually killed) is
+    #    treated against its *latest* commit, not the earliest. A
+    #    concern that closed against an earlier commit and was
+    #    explicitly re-opened by the affect agent (snapshot with
+    #    salience>=0.2 between two commits) is honoured: we only fire
+    #    the synthetic close if the concern is still open *after* the
+    #    most recent commit at this batch's tick.
+    #
+    #    Counter-concern propagation: when a concern over PROP_X is
+    #    closed, every concern listed in its ``counter_concern_ids``
+    #    is also driven to closure at the same tick \u2014 even if
+    #    the partner concern is anchored to a *different* (logically
+    #    inverse) proposition that has not itself committed in this
+    #    batch. The polarity used for the partner's
+    #    materialised-vs-realised decision is the partner's own
+    #    polarity vs the *partner-side* truth value, which we derive
+    #    by inverting the trigger commit's truth (counter_concern_ids
+    #    encodes "if mine is realised, theirs is materialised and
+    #    vice versa").
+    #
+    #    Tracked via INFO log so the affect agent can be tuned over
+    #    time; the synthetic snapshots are tagged with the resolving
+    #    EVT_ id so the auditor can distinguish them from on-page
+    #    drift (see ``triggered_by`` in the snapshot).
+    chunk_truth_index: Dict[str, Tuple[int, str, bool]] = {}
+    for topo in topologies:
+        for tc in topo.proposition_truth_commits:
+            existing = chunk_truth_index.get(tc.proposition_id)
+            # Keep the LATEST commit (highest fabula_time) when the
+            # batch contains multiple commits for the same prop.
+            if existing is None or tc.fabula_time > existing[0]:
+                chunk_truth_index[tc.proposition_id] = (
+                    tc.fabula_time, tc.triggered_by, tc.truth,
+                )
+
+    def _concern_open_after(c: Concern, fab: int) -> bool:
+        """True iff *c* has no closure snapshot at fabula >= *fab*.
+
+        A closure snapshot is one that drops salience below 0.2 OR
+        sets ``activation_fabula_window`` to a non-None value. A
+        snapshot at-or-after *fab* whose salience is >= 0.2 with no
+        window cap counts as an *explicit re-open* and the concern
+        is treated as open again (honours mid-batch re-openings).
+        """
+        # Find the most recent snapshot at or after `fab`.
+        latest: Optional[ConcernSnapshot] = None
+        for snap in c.state_timeline:
+            if snap.fabula_time < fab:
+                continue
+            if latest is None or snap.fabula_time > latest.fabula_time:
+                latest = snap
+        if latest is None:
+            return True
+        if latest.salience is not None and latest.salience < 0.2:
+            return False
+        if latest.activation_fabula_window is not None:
+            return False
+        return True
+
+    if chunk_truth_index:
+        # Build (concern_id) -> (entity_id, Concern) for fast lookup
+        # so counter_concern propagation can find partner records
+        # across entities.
+        all_concerns: Dict[str, Tuple[str, Concern]] = {}
+        for eid, ent in world.entities.items():
+            for c in ent.concerns:
+                all_concerns[c.concern_id] = (eid, c)
+
+        # Plan synthetic closures as
+        # concern_id -> (commit_fab, commit_evt, commit_truth, propagated_from)
+        # Direct closures from chunk_truth_index are planned first,
+        # then we transitively expand counter_concern_ids.
+        planned: Dict[str, Tuple[int, str, bool, Optional[str]]] = {}
+        for ccn_id, (eid, c) in all_concerns.items():
+            tinfo = chunk_truth_index.get(c.proposition_id)
+            if tinfo is None:
+                continue
+            commit_fab, commit_evt, commit_truth = tinfo
+            if not _concern_open_after(c, commit_fab):
+                continue
+            planned[ccn_id] = (commit_fab, commit_evt, commit_truth, None)
+
+        # Transitively propagate to counter_concern partners. A
+        # partner's effective truth is the *inverse* of the trigger's
+        # truth (counter_concerns by definition straddle inverse
+        # propositions \u2014 see Concern.counter_concern_ids docs).
+        # Bound the BFS so a malformed graph cannot loop forever.
+        frontier = list(planned.items())
+        guard = 0
+        while frontier and guard < 256:
+            guard += 1
+            next_frontier: List[Tuple[str, Tuple[int, str, bool, Optional[str]]]] = []
+            for src_id, (cf, ce, ct, _src_via) in frontier:
+                src_entry = all_concerns.get(src_id)
+                if src_entry is None:
+                    continue
+                _src_eid, src_concern = src_entry
+                for partner_id in src_concern.counter_concern_ids:
+                    if partner_id in planned:
+                        continue
+                    p_entry = all_concerns.get(partner_id)
+                    if p_entry is None:
+                        continue
+                    _p_eid, partner = p_entry
+                    if not _concern_open_after(partner, cf):
+                        continue
+                    # Partner sees the inverse truth of the trigger.
+                    partner_truth = not ct
+                    planned[partner_id] = (cf, ce, partner_truth, src_id)
+                    next_frontier.append(
+                        (partner_id, (cf, ce, partner_truth, src_id))
+                    )
+            frontier = next_frontier
+
+        if planned:
+            auto_closed = 0
+            for eid, ent in world.entities.items():
+                patched: List[Concern] = []
+                for c in ent.concerns:
+                    plan = planned.get(c.concern_id)
+                    if plan is None:
+                        patched.append(c)
+                        continue
+                    commit_fab, commit_evt, commit_truth, propagated_from = plan
+                    # Materialised harm/benefit if polarity disagrees
+                    # with effective truth: fear+true OR desire+false.
+                    materialised = (
+                        (c.polarity == "fear" and commit_truth is True)
+                        or (c.polarity == "desire" and commit_truth is False)
+                    )
+                    window_update: Optional[List[int]] = None
+                    if materialised:
+                        lo = (
+                            c.activation_fabula_window[0]
+                            if c.activation_fabula_window
+                            else 0
+                        )
+                        window_update = [lo, commit_fab]
+                    synthetic = ConcernSnapshot(
+                        fabula_time=commit_fab,
+                        triggered_by=commit_evt,
+                        salience=0.10,
+                        activation_fabula_window=window_update,
+                    )
+                    merged = list(c.state_timeline) + [synthetic]
+                    merged = _coalesce_timeline(merged, _CONCERN_DIFF_FIELDS)
+                    patched.append(c.model_copy(update={"state_timeline": merged}))
+                    auto_closed += 1
+                    if propagated_from is None:
+                        logger.info(
+                            "[Phase C] Auto-closing concern %s "
+                            "(entity=%s, polarity=%s) at fabula=%d "
+                            "\u2014 anchor proposition %s resolved "
+                            "%s via %s and the affect agent did not "
+                            "emit a closure snapshot (see "
+                            "affect_extraction.md rule 9).",
+                            c.concern_id, eid, c.polarity, commit_fab,
+                            c.proposition_id, commit_truth, commit_evt,
+                        )
+                    else:
+                        logger.info(
+                            "[Phase C] Auto-closing counter-concern %s "
+                            "(entity=%s, polarity=%s) at fabula=%d "
+                            "\u2014 propagated from %s "
+                            "(effective truth %s via %s); the affect "
+                            "agent did not emit the paired closure "
+                            "snapshot.",
+                            c.concern_id, eid, c.polarity, commit_fab,
+                            propagated_from, commit_truth, commit_evt,
+                        )
+                ent.concerns = patched
+            if auto_closed:
+                logger.warning(
+                    "[Phase C] Auto-closed %d concern(s) whose anchor "
+                    "proposition (or a counter-concern partner's "
+                    "anchor) resolved without a paired closure "
+                    "snapshot. These are scoring-correct backstops, "
+                    "but the affect agent should be emitting them "
+                    "\u2014 inspect the chunk log for [Phase C] "
+                    "Auto-closing entries.", auto_closed,
+                )
+
+    # ----------------------------------------------------------------
+    # 7. Auto-derive WORLD_ snapshots from event evidence.
+    # ----------------------------------------------------------------
+    # For each WORLD_ trait that received ZERO per-chunk world_trait_updates
+    # (tracked on ``ws._chunk_world_trait_ids``), scan events for lexical
+    # overlap with the trait's name/description keywords. When an event
+    # plausibly affects the trait, emit a low-confidence
+    # ``WorldTraitSnapshot`` flagged as auto-inferred via the snapshot's
+    # ``description`` field. This is a deterministic backstop for
+    # ``extract_world_trait_timelines`` failing or missing inflections.
+    # The Step-5 LLM pass remains the authoritative timeline source for
+    # WORLD_ ids without per-chunk updates and may override these auto
+    # snapshots; per-chunk updates already-folded by the assembler are
+    # never overridden.
+    chunk_world_ids: frozenset = getattr(world, "_chunk_world_trait_ids", frozenset())
+    if world.world_traits:
+        new_world_traits: Dict[str, GlobalTrait] = {}
+        any_inferred = False
+        for wid, wt in world.world_traits.items():
+            if wid in chunk_world_ids:
+                new_world_traits[wid] = wt
+                continue
+            # Build a keyword bag from name + description (cheap lexical match).
+            bag = (wt.name + " " + (wt.description or "")).lower()
+            keywords = {
+                tok for tok in bag.replace("/", " ").replace(",", " ").split()
+                if len(tok) >= 5
+            }
+            if not keywords:
+                new_world_traits[wid] = wt
+                continue
+            # Track existing snapshot fabula_times so we don't double-emit.
+            existing_fts = {int(s.fabula_time) for s in wt.state_timeline}
+            inferred: List[WorldTraitSnapshot] = []
+            for ev in world.events:
+                if int(ev.fabula_time) in existing_fts:
+                    continue
+                desc = (ev.description or "").lower()
+                hits = sum(1 for kw in keywords if kw in desc)
+                if hits >= 2:
+                    inferred.append(WorldTraitSnapshot(
+                        world_id="factual",
+                        fabula_time=int(ev.fabula_time),
+                        triggered_by=ev.id,
+                        magnitude=wt.magnitude,
+                        description=f"[auto-inferred] lexical match on event {ev.id}",
+                    ))
+                    existing_fts.add(int(ev.fabula_time))
+            if inferred:
+                merged_tl = sorted(
+                    list(wt.state_timeline) + inferred,
+                    key=lambda s: int(s.fabula_time),
+                )
+                new_world_traits[wid] = wt.model_copy(update={"state_timeline": merged_tl})
+                any_inferred = True
+                logger.info(
+                    "[Phase C] Auto-inferred %d WorldTraitSnapshot(s) for %s "
+                    "from event lexical match (Step-5 may override).",
+                    len(inferred), wid,
+                )
+            else:
+                new_world_traits[wid] = wt
+        if any_inferred:
+            world = world.model_copy(update={"world_traits": new_world_traits})
+
+    # ----------------------------------------------------------------
+    # 8. GlobalTrait.proposition_id linking by name match.
+    # ----------------------------------------------------------------
+    # When a GlobalTrait has no ``proposition_id`` set, try to find a
+    # Proposition whose description (or referent_ids) lexically aligns
+    # with the trait's name. This lets concerns/beliefs anchored to the
+    # PROP_ id surface on the trait inspector (and vice-versa) without
+    # the LLM having to explicitly emit the link.
+    if world.world_traits and world.propositions:
+        new_world_traits: Dict[str, GlobalTrait] = {}
+        any_linked = False
+        prop_text = {p.proposition_id: (p.description or "").lower() for p in world.propositions}
+        for wid, wt in world.world_traits.items():
+            if wt.proposition_id is not None:
+                new_world_traits[wid] = wt
+                continue
+            wt_name = (wt.name or "").lower()
+            if not wt_name:
+                new_world_traits[wid] = wt
+                continue
+            best_pid = None
+            best_score = 0
+            wt_tokens = {t for t in wt_name.split() if len(t) >= 5}
+            for pid, ptext in prop_text.items():
+                score = sum(1 for t in wt_tokens if t in ptext)
+                if score > best_score and score >= 2:
+                    best_score = score
+                    best_pid = pid
+            if best_pid is not None:
+                new_world_traits[wid] = wt.model_copy(update={"proposition_id": best_pid})
+                any_linked = True
+                logger.info(
+                    "[Phase C] Linked GlobalTrait %s \u2192 %s (lexical name overlap).",
+                    wid, best_pid,
+                )
+            else:
+                new_world_traits[wid] = wt
+        if any_linked:
+            world = world.model_copy(update={"world_traits": new_world_traits})
+
+    # ----------------------------------------------------------------
+    # 9. Deterministic narrative-quality post-passes (May 2026 audit).
+    # ----------------------------------------------------------------
+    world = apply_post_pass_fixes(world)
+
+    return world
+
+
+# =====================================================================
+# Phase C′ — Deterministic Narrative-Quality Post-Passes
+#
+# Six fixes derived from the May 2026 Star Wars audit. Each one closes
+# a class of LLM-extraction shortfall that was silently breaking the
+# affect engine downstream:
+#
+#   1. Concern auto-closure — when a concern's proposition resolves,
+#      append a low-salience closing rung and set the activation
+#      window so time-sliced views stop showing it as "still active".
+#   2. Truth-commit synthesis — derive ``Proposition.truth_at_fabula``
+#      from events that explicitly reference the proposition (via
+#      ``referent_ids`` containing an EVT_ id, or matching prop_id on
+#      the event). Without commits the suspense scorer can never
+#      collapse entropy → flat affective curves.
+#   3. Audience-belief synthesis — for every revelation / outcome
+#      event the audience witnesses, ensure ``ENT_AUDIENCE`` carries
+#      a Belief on the resolved propositions. Powers Bayesian
+#      surprise.
+#   4. Belief invalidation — when a proposition's truth flips and a
+#      believer's stored confidence contradicts the new truth, append
+#      an ``EntityStateSnapshot`` with ``beliefs_invalidated`` so the
+#      replay layer drops the contradicted belief.
+#   5. Near-duplicate event detection — flag events with identical
+#      actors / targets / event_type whose fabula times collide, and
+#      collapse the safest cases (same fabula time).
+#   6. WORLD→WORLD chain inference — add ``chain_reaction`` causal
+#      edges between world traits when one trait's description names
+#      another, so the constraint field is connected.
+# =====================================================================
+
+
+def _post_pass_synthesize_truth_commits(
+    world: WorldStateV1, repairs: List[str],
+) -> WorldStateV1:
+    """Derive ``truth_at_fabula`` for event-resolving propositions.
+
+    A proposition with ``kind in {event_occurs, outcome}`` whose
+    ``referent_ids`` contains an EVT_ id committed at the referent
+    event's fabula time. Conservative: only writes when the
+    proposition has no commits at or before that time.
+    """
+    if not world.propositions:
+        return world
+    event_index = {e.id: e for e in world.events}
+    written = 0
+    new_props: List[Proposition] = []
+    for prop in world.propositions:
+        if prop.kind not in ("event_occurs", "outcome"):
+            new_props.append(prop)
+            continue
+        evt_referents = [
+            r for r in prop.referent_ids if r.startswith("EVT_") and r in event_index
+        ]
+        if not evt_referents:
+            new_props.append(prop)
+            continue
+        # Earliest referent event commits the proposition true.
+        commit_t = min(event_index[eid].fabula_time for eid in evt_referents)
+        if any(t <= commit_t for t in prop.truth_at_fabula):
+            new_props.append(prop)
+            continue
+        new_truth = dict(prop.truth_at_fabula)
+        new_truth[commit_t] = True
+        new_props.append(prop.model_copy(update={"truth_at_fabula": new_truth}))
+        written += 1
+        repairs.append(
+            f"Truth-commit: {prop.proposition_id} -> True @ fabula={commit_t} "
+            f"(via referent {evt_referents[0]})."
+        )
+    if written:
+        world = world.model_copy(update={"propositions": new_props})
+    return world
+
+
+# Audience entity id used by affect-unification (mirrors AUDIENCE_ID
+# in shadow_loom.affect_unification — duplicated locally to avoid an
+# import cycle in ingestion).
+_AUDIENCE_ENT_ID = "ENT_AUDIENCE"
+
+
+def _post_pass_synthesize_audience_beliefs(
+    world: WorldStateV1, repairs: List[str],
+) -> WorldStateV1:
+    """For every committed ``Proposition.truth_at_fabula`` entry, ensure
+    the AUDIENCE entity carries a matching belief at that fabula time.
+
+    No-ops when no AUDIENCE entity exists (older worlds without an
+    explicit audience surrogate). Existing audience beliefs are left
+    intact; we only append.
+    """
+    aud = world.entities.get(_AUDIENCE_ENT_ID)
+    if aud is None or not world.propositions:
+        return world
+    existing_aud_props = {
+        b.proposition_id for b in (aud.beliefs or []) if b.proposition_id
+    }
+    new_beliefs = list(aud.beliefs or [])
+    appended = 0
+    for prop in world.propositions:
+        if prop.proposition_id in existing_aud_props:
+            continue
+        if not prop.truth_at_fabula:
+            continue
+        commit_t = min(prop.truth_at_fabula)
+        truth = prop.truth_at_fabula[commit_t]
+        # Confidence shifts toward the committed truth — strong
+        # commits (event_occurs / outcome) move farther than the
+        # default 0.5 prior; framing propositions (trait_holds /
+        # identity_is) move less aggressively.
+        target_conf = 0.9 if truth else 0.1
+        if prop.kind in ("trait_holds", "identity_is", "relation_holds"):
+            target_conf = 0.75 if truth else 0.25
+        new_beliefs.append(Belief(
+            target_id=prop.referent_ids[0] if prop.referent_ids else prop.proposition_id,
+            perceived_state=prop.description if truth else f"NOT: {prop.description}",
+            confidence=target_conf,
+            inertia=0.5,
+            established_at_fabula=commit_t,
+            evidence_strength="strong",
+            proposition_id=prop.proposition_id,
+        ))
+        appended += 1
+    if appended:
+        world.entities[_AUDIENCE_ENT_ID] = aud.model_copy(
+            update={"beliefs": new_beliefs}
+        )
+        repairs.append(
+            f"Audience-belief synthesis: appended {appended} AUDIENCE beliefs "
+            f"to track committed propositions."
+        )
+    return world
+
+
+def _post_pass_invalidate_contradicted_beliefs(
+    world: WorldStateV1, repairs: List[str],
+) -> WorldStateV1:
+    """When a proposition's truth commits contradict a believer's
+    stored confidence, append an ``EntityStateSnapshot`` with
+    ``beliefs_invalidated`` so replay drops the obsolete belief.
+
+    A belief is "contradicted" when:
+      * confidence > 0.6 but the proposition is committed False, or
+      * confidence < 0.4 but the proposition is committed True.
+
+    Skipped silently when an invalidation snapshot for that target
+    already exists at or after the commit time (idempotent).
+    """
+    if not world.propositions or not world.entities:
+        return world
+    prop_index = {p.proposition_id: p for p in world.propositions}
+    invalidated = 0
+    for eid, ent in list(world.entities.items()):
+        if eid == _AUDIENCE_ENT_ID:
+            continue
+        new_snaps = list(ent.state_timeline)
+        snap_map: Dict[int, EntityStateSnapshot] = {}
+        for snap in new_snaps:
+            snap_map.setdefault(snap.fabula_time, snap)
+        added_local = 0
+        for b in ent.beliefs:
+            if not b.proposition_id or b.proposition_id not in prop_index:
+                continue
+            prop = prop_index[b.proposition_id]
+            if not prop.truth_at_fabula:
+                continue
+            for commit_t, truth in sorted(prop.truth_at_fabula.items()):
+                if commit_t < b.established_at_fabula:
+                    continue
+                contradicted = (
+                    (b.confidence > 0.6 and truth is False)
+                    or (b.confidence < 0.4 and truth is True)
+                )
+                if not contradicted:
+                    continue
+                # Idempotency: do not re-add if any snapshot at or
+                # after commit_t already invalidates this target.
+                already = any(
+                    s.fabula_time >= commit_t and b.target_id in s.beliefs_invalidated
+                    for s in new_snaps
+                )
+                if already:
+                    continue
+                new_snaps.append(EntityStateSnapshot(
+                    fabula_time=commit_t,
+                    triggered_by=None,
+                    beliefs_invalidated=[b.target_id],
+                ))
+                invalidated += 1
+                added_local += 1
+                break  # one invalidation per belief is enough
+        if added_local:
+            new_snaps.sort(key=lambda s: s.fabula_time)
+            world.entities[eid] = ent.model_copy(update={"state_timeline": new_snaps})
+    if invalidated:
+        repairs.append(
+            f"Belief-invalidation: appended {invalidated} beliefs_invalidated "
+            f"snapshots for truth-flipped propositions."
+        )
+    return world
+
+
+def _post_pass_close_resolved_concerns(
+    world: WorldStateV1, repairs: List[str],
+) -> WorldStateV1:
+    """Close concerns whose proposition has resolved or whose owner
+    has died. Sets ``activation_fabula_window`` if absent and appends
+    a low-salience closing snapshot rung if the concern's last rung
+    is well above zero.
+    """
+    if not world.entities:
+        return world
+    prop_index = {p.proposition_id: p for p in world.propositions}
+    closed = 0
+    for eid, ent in list(world.entities.items()):
+        # Death time of the owning entity (latest transition to dead).
+        death_t: Optional[int] = None
+        for snap in ent.state_timeline:
+            if snap.status == "dead":
+                death_t = snap.fabula_time if death_t is None else min(death_t, snap.fabula_time)
+        if not ent.concerns:
+            continue
+        new_concerns: List[Concern] = []
+        for concern in ent.concerns:
+            close_t: Optional[int] = None
+            close_reason: str = ""
+            prop = prop_index.get(concern.proposition_id)
+            if prop and prop.truth_at_fabula:
+                # Concern closes when its proposition's truth aligns
+                # with what the entity wants (desire→True, fear→False).
+                wants_true = concern.polarity == "desire"
+                for ct, tv in sorted(prop.truth_at_fabula.items()):
+                    if (wants_true and tv) or ((not wants_true) and not tv):
+                        close_t = ct
+                        close_reason = (
+                            f"prop {concern.proposition_id} resolved "
+                            f"{tv} at {ct}"
+                        )
+                        break
+            if death_t is not None and (close_t is None or death_t < close_t):
+                close_t = death_t
+                close_reason = f"owner {eid} died at {death_t}"
+            if close_t is None:
+                new_concerns.append(concern)
+                continue
+            updates: Dict[str, Any] = {}
+            timeline = list(concern.state_timeline)
+            # Set activation window if missing.
+            if concern.activation_fabula_window is None:
+                start_t = (
+                    timeline[0].fabula_time if timeline else 0
+                )
+                updates["activation_fabula_window"] = [start_t, close_t]
+            # Append closing rung if last rung is not already small.
+            last = timeline[-1] if timeline else None
+            if last is None or last.fabula_time < close_t or (
+                last.salience is not None and last.salience > 0.1
+            ):
+                timeline.append(ConcernSnapshot(
+                    fabula_time=close_t,
+                    triggered_by=None,
+                    salience=0.0,
+                    polarity=None,
+                    activation_fabula_window=None,
+                    counter_concern_ids=[],
+                    kind=concern.kind,
+                ))
+                updates["state_timeline"] = timeline
+                closed += 1
+                repairs.append(
+                    f"Concern-close: {eid}/{concern.concern_id} closed at "
+                    f"{close_t} ({close_reason})."
+                )
+            new_concerns.append(
+                concern.model_copy(update=updates) if updates else concern
+            )
+        if new_concerns != ent.concerns:
+            world.entities[eid] = ent.model_copy(update={"concerns": new_concerns})
+    if closed:
+        repairs.append(f"Concern-close: closed {closed} concerns total.")
+    return world
+
+
+def _post_pass_dedup_near_duplicate_events(
+    world: WorldStateV1, repairs: List[str],
+) -> WorldStateV1:
+    """Collapse near-duplicate events at the SAME fabula time.
+
+    Two events are considered duplicates iff they share
+    ``event_type``, ``fabula_time``, sorted ``actor_ids``, and sorted
+    ``target_ids``. The keeper is the event with the longest
+    description (most informative); the loser's id is rewritten in
+    every reference (causal_topology, state_timeline.triggered_by,
+    beliefs.acquired_via_event_id, propositions.referent_ids,
+    events.superseded_by_event_id).
+
+    Does NOT cross fabula times — different-time near-duplicates
+    (e.g. an event placed twice at t=400 and t=2300) are reported
+    only, since collapsing across time would silently mutate the
+    syuzhet.
+    """
+    if not world.events:
+        return world
+    groups: Dict[Tuple[str, int, Tuple[str, ...], Tuple[str, ...]], List[EventNode]] = {}
+    for evt in world.events:
+        key = (
+            evt.event_type or "",
+            evt.fabula_time,
+            tuple(sorted(evt.actor_ids or [])),
+            tuple(sorted(evt.target_ids or [])),
+        )
+        groups.setdefault(key, []).append(evt)
+
+    rename: Dict[str, str] = {}
+    for key, evts in groups.items():
+        if len(evts) <= 1:
+            continue
+        # Keep the longest-described (most informative) event.
+        keeper = max(evts, key=lambda e: len(e.description or ""))
+        for loser in evts:
+            if loser.id != keeper.id:
+                rename[loser.id] = keeper.id
+                repairs.append(
+                    f"Event-dedup: {loser.id} -> {keeper.id} "
+                    f"(t={loser.fabula_time}, type={loser.event_type})."
+                )
+
+    # Cross-time near-duplicate report (no rewrite).
+    desc_groups: Dict[Tuple[str, Tuple[str, ...], Tuple[str, ...]], List[EventNode]] = {}
+    for evt in world.events:
+        if evt.id in rename:
+            continue
+        key2 = (
+            evt.event_type or "",
+            tuple(sorted(evt.actor_ids or [])),
+            tuple(sorted(evt.target_ids or [])),
+        )
+        desc_groups.setdefault(key2, []).append(evt)
+    for key2, evts in desc_groups.items():
+        if len(evts) <= 1:
+            continue
+        # Only report when descriptions overlap heavily (Jaccard ≥ 0.6).
+        for i, a in enumerate(evts):
+            atok = set((a.description or "").lower().split())
+            for b in evts[i + 1:]:
+                btok = set((b.description or "").lower().split())
+                if not atok or not btok:
+                    continue
+                jac = len(atok & btok) / max(1, len(atok | btok))
+                if jac >= 0.6 and a.fabula_time != b.fabula_time:
+                    repairs.append(
+                        f"Event-dedup-WARN: cross-time near-duplicate "
+                        f"{a.id}@{a.fabula_time} ↔ {b.id}@{b.fabula_time} "
+                        f"(jaccard={jac:.2f}); not collapsed."
+                    )
+
+    if not rename:
+        return world
+
+    # Rewrite all references.
+    new_events: List[EventNode] = []
+    seen: Set[str] = set()
+    for evt in world.events:
+        if evt.id in rename:
+            continue
+        if evt.id in seen:
+            continue
+        seen.add(evt.id)
+        sup = evt.superseded_by_event_id
+        if sup and sup in rename:
+            evt = evt.model_copy(update={"superseded_by_event_id": rename[sup]})
+        new_events.append(evt)
+
+    new_causal: List[CausalEdge] = []
+    for ce in world.causal_topology:
+        s = rename.get(ce.source_id, ce.source_id)
+        t = rename.get(ce.target_id, ce.target_id)
+        if s == t:
+            continue  # self-loop after rename — drop
+        if s != ce.source_id or t != ce.target_id:
+            ce = ce.model_copy(update={"source_id": s, "target_id": t})
+        new_causal.append(ce)
+
+    # Rewrite proposition.referent_ids.
+    new_props: List[Proposition] = []
+    for prop in world.propositions:
+        new_refs = [rename.get(r, r) for r in prop.referent_ids]
+        # Drop dups while preserving order.
+        seen_r: Set[str] = set()
+        deduped = [r for r in new_refs if not (r in seen_r or seen_r.add(r))]
+        if deduped != prop.referent_ids:
+            prop = prop.model_copy(update={"referent_ids": deduped})
+        new_props.append(prop)
+
+    # Rewrite entity beliefs / state_timeline / concerns.state_timeline.
+    new_entities: Dict[str, Entity] = {}
+    for eid, ent in world.entities.items():
+        ent_updates: Dict[str, Any] = {}
+        if ent.beliefs:
+            new_b = []
+            for b in ent.beliefs:
+                if b.acquired_via_event_id and b.acquired_via_event_id in rename:
+                    b = b.model_copy(
+                        update={"acquired_via_event_id": rename[b.acquired_via_event_id]}
+                    )
+                new_b.append(b)
+            ent_updates["beliefs"] = new_b
+        if ent.state_timeline:
+            new_st = []
+            for snap in ent.state_timeline:
+                if snap.triggered_by and snap.triggered_by in rename:
+                    snap = snap.model_copy(
+                        update={"triggered_by": rename[snap.triggered_by]}
+                    )
+                new_st.append(snap)
+            ent_updates["state_timeline"] = new_st
+        if ent.concerns:
+            new_c = []
+            for c in ent.concerns:
+                if c.state_timeline:
+                    new_rungs = []
+                    for r in c.state_timeline:
+                        if r.triggered_by and r.triggered_by in rename:
+                            r = r.model_copy(
+                                update={"triggered_by": rename[r.triggered_by]}
+                            )
+                        new_rungs.append(r)
+                    c = c.model_copy(update={"state_timeline": new_rungs})
+                new_c.append(c)
+            ent_updates["concerns"] = new_c
+        new_entities[eid] = ent.model_copy(update=ent_updates) if ent_updates else ent
+
+    return world.model_copy(update={
+        "events": new_events,
+        "causal_topology": new_causal,
+        "propositions": new_props,
+        "entities": new_entities,
+    })
+
+
+def _post_pass_infer_world_chain_reactions(
+    world: WorldStateV1, repairs: List[str],
+) -> WorldStateV1:
+    """Add ``chain_reaction`` causal edges between world traits when
+    one trait's description names another trait by name.
+
+    Conservative: at most 3 outgoing inferred edges per source trait,
+    and never a duplicate of an existing edge between the same pair.
+    """
+    traits = list(world.world_traits.values())
+    if len(traits) < 2:
+        return world
+    existing_pairs: Set[Tuple[str, str]] = {
+        (ce.source_id, ce.target_id) for ce in world.causal_topology
+    }
+    additions: List[CausalEdge] = []
+    for src in traits:
+        src_id = src.id
+        src_desc = (src.description or "").lower()
+        if not src_desc:
+            continue
+        outgoing = 0
+        for tgt in traits:
+            if tgt.id == src_id:
+                continue
+            if outgoing >= 3:
+                break
+            tgt_name = (tgt.name or "").lower()
+            if not tgt_name or len(tgt_name) < 4:
+                continue
+            # Whole-word match on the target's name.
+            tokens = {t.strip(".,;:!?\"'()") for t in src_desc.split()}
+            if tgt_name not in tokens and tgt_name not in src_desc:
+                continue
+            if (src_id, tgt.id) in existing_pairs:
+                continue
+            additions.append(CausalEdge(
+                source_id=src_id,
+                target_id=tgt.id,
+                causality_type="chain_reaction",
+                causal_force=1.5,
+                mechanism="psychological",
+            ))
+            existing_pairs.add((src_id, tgt.id))
+            outgoing += 1
+            repairs.append(
+                f"World-chain: inferred {src_id} -> {tgt.id} "
+                f"(name match in description)."
+            )
+    if additions:
+        world = world.model_copy(update={
+            "causal_topology": list(world.causal_topology) + additions,
+        })
+    return world
+
+
+def apply_post_pass_fixes(
+    world: WorldStateV1, *, dedup_events: bool = True,
+) -> WorldStateV1:
+    """Run all six deterministic narrative-quality post-passes.
+
+    Idempotent and side-effect-free aside from the returned world.
+    Pure-Python; safe to call from tests, replays, and the live
+    pipeline. The auditor.py affective-feedback step depends on
+    these fixes having run, so calling order matters: this is wired
+    into ``reconcile_affect`` just before its return.
+
+    Set ``dedup_events=False`` to skip the (intentionally
+    conservative) event-collapse step, e.g. when a downstream
+    consumer needs the raw extraction.
+    """
+    repairs: List[str] = []
+    world = _post_pass_synthesize_truth_commits(world, repairs)
+    world = _post_pass_synthesize_audience_beliefs(world, repairs)
+    world = _post_pass_invalidate_contradicted_beliefs(world, repairs)
+    world = _post_pass_close_resolved_concerns(world, repairs)
+    if dedup_events:
+        world = _post_pass_dedup_near_duplicate_events(world, repairs)
+    world = _post_pass_infer_world_chain_reactions(world, repairs)
+    if repairs:
+        logger.info(
+            "[Post-Pass] applied %d narrative-quality fixes; samples:\n  %s",
+            len(repairs), "\n  ".join(repairs[:15]),
+        )
+    return world
 
 
 # =====================================================================
@@ -7081,6 +10403,85 @@ def _auto_repair(ws: WorldStateV1) -> Tuple[WorldStateV1, List[str]]:
             repairs.append(f"Removed causal edge: rel_counterpart_id '{ce.rel_counterpart_id}' not in node set.")
         else:
             clean_causal.append(ce)
+
+    # --- Break causal SCCs ------------------------------------------
+    # The Rung-3 propagator in causal_physics.py refuses to fire any
+    # node inside a non-trivial SCC ("Cyclic clusters are blocked from
+    # propagation; only acyclic spines fire") which collapses entire
+    # counterfactual abduction sweeps to flat distributions when the
+    # extraction wires (e.g.) ``EVT_OBI_WAN_DUELS_VADER → EVT_OBI_WAN_
+    # SACRIFICES_HIMSELF`` *and* the reverse. Rather than waiting for
+    # a cyclic_blocked warning at query time, detect SCCs at ingestion
+    # and break the lowest-causal-force edge in each cycle. Logged so
+    # the audit trail makes it explicit which edge was severed.
+    #
+    # ``affordance_gate`` edges (entity ENABLES event, pre-event state)
+    # and ``mutation`` edges (event MUTATES entity, post-event state)
+    # collapse onto the same entity node and form a temporal-artefact
+    # cycle that doesn't exist in fabula time. Skip affordance_gate
+    # edges in the cycle-detection view so genuine forward-causal
+    # cycles remain visible while temporal-collapse artefacts are
+    # dissolved without severing any real causal claim.
+    #
+    # Iterate: a single edge cut can leave a smaller-but-still-cyclic
+    # SCC behind on densely-cyclic graphs. Cap iterations so a runaway
+    # extraction can't loop forever; surface a warning if we hit it.
+    try:
+        import networkx as _nx_break  # local import; networkx is already a runtime dep
+        _MAX_SCC_BREAK_ITERS = 50
+        for _scc_iter in range(_MAX_SCC_BREAK_ITERS):
+            _g = _nx_break.DiGraph()
+            for ce in clean_causal:
+                if ce.causality_type == "affordance_gate":
+                    continue
+                _g.add_edge(ce.source_id, ce.target_id)
+            sccs = [s for s in _nx_break.strongly_connected_components(_g) if len(s) > 1]
+            if not sccs:
+                break
+            edges_to_drop: set[tuple[str, str]] = set()
+            for scc in sccs:
+                # Find every non-affordance edge whose endpoints both
+                # sit inside this SCC.
+                in_scc = [
+                    (i, ce) for i, ce in enumerate(clean_causal)
+                    if ce.source_id in scc
+                    and ce.target_id in scc
+                    and ce.causality_type != "affordance_gate"
+                ]
+                if not in_scc:
+                    continue
+                # Drop the lowest-causal-force edge — most likely an
+                # extraction artefact rather than a load-bearing causal
+                # backbone.
+                weakest_idx, weakest_ce = min(
+                    in_scc, key=lambda pair: pair[1].causal_force,
+                )
+                edges_to_drop.add((weakest_ce.source_id, weakest_ce.target_id))
+                repairs.append(
+                    f"SCC-break: removed weakest cyclic edge "
+                    f"{weakest_ce.source_id} -> {weakest_ce.target_id} "
+                    f"(causal_force={weakest_ce.causal_force:.1f}, "
+                    f"causality_type={weakest_ce.causality_type!r}, "
+                    f"mechanism={weakest_ce.mechanism!r}); SCC of "
+                    f"{len(scc)} nodes."
+                )
+            if not edges_to_drop:
+                break
+            clean_causal = [
+                ce for ce in clean_causal
+                if (ce.source_id, ce.target_id) not in edges_to_drop
+                or ce.causality_type == "affordance_gate"
+            ]
+        else:
+            logger.warning(
+                "[Auto-Repair] SCC-break iteration cap (%d) hit; some "
+                "cycles remain. Extraction quality may be degraded.",
+                _MAX_SCC_BREAK_ITERS,
+            )
+    except Exception:
+        # SCC analysis is best-effort — never block the repair pass on
+        # a graph-library hiccup.
+        logger.exception("[Auto-Repair] SCC-break pass failed; continuing.")
 
     # --- Strip broken social edges ---
     clean_social: List[RelationshipEdge] = []
@@ -7998,12 +11399,707 @@ def _programmatic_validation(ws: WorldStateV1) -> List[ValidationIssue]:
                 ),
             ))
 
+    # --- Phase E: Proposition / Concern / Belief\u2192PROP validation ---
+    #
+    # Programmatic checks for the affect-unification namespaces. Errors
+    # name explicit categories so the correction LLM can map them onto
+    # the new patch ops (add_propositions, update_proposition_snapshots,
+    # commit_proposition_truth, add_concerns, update_concern_snapshots,
+    # set_belief_proposition_ids).
+    prop_ids = {p.proposition_id for p in ws.propositions}
+
+    # E1.a Proposition.referent_ids must resolve in the ontology.
+    # Channels are valid referents (a proposition can name a CHN_* node, e.g.
+    # "the locket-letter is a covert channel between Macbeth and his wife").
+    valid_referent_targets = (
+        location_ids | object_ids | entity_ids | world_trait_ids
+        | event_id_set | set(ws.channels.keys())
+    )
+    for prop in ws.propositions:
+        if not prop.proposition_id.startswith("PROP_"):
+            issues.append(ValidationIssue(
+                severity="error", category="bad_proposition_id",
+                detail=(
+                    f"Proposition id '{prop.proposition_id}' does not "
+                    f"match the PROP_ namespace."
+                ),
+            ))
+        for ref in prop.referent_ids:
+            if ref not in valid_referent_targets:
+                issues.append(ValidationIssue(
+                    severity="warning", category="broken_link",
+                    detail=(
+                        f"Proposition '{prop.proposition_id}' referent_id "
+                        f"'{ref}' is not in locations/objects/entities/"
+                        f"world_traits/events."
+                    ),
+                ))
+        # E1.f truth_at_fabula keys within event-fabula range.
+        if prop.truth_at_fabula and ws.events:
+            evt_fabulas = [e.fabula_time for e in ws.events]
+            evt_min, evt_max = min(evt_fabulas), max(evt_fabulas)
+            for fab in prop.truth_at_fabula.keys():
+                if fab < evt_min or fab > evt_max:
+                    issues.append(ValidationIssue(
+                        severity="warning", category="temporal",
+                        detail=(
+                            f"Proposition '{prop.proposition_id}' "
+                            f"truth_at_fabula key {fab} is outside the "
+                            f"event fabula range [{evt_min}, {evt_max}]."
+                        ),
+                    ))
+
+    # E1.b PropositionSnapshot.triggered_by must resolve to an EVT_ id;
+    # snapshot fabula_time within event-fabula range.
+    if ws.events:
+        evt_max_fabula = max(e.fabula_time for e in ws.events)
+    else:
+        evt_max_fabula = None
+    for prop in ws.propositions:
+        for snap in prop.state_timeline:
+            if snap.triggered_by and snap.triggered_by not in event_id_set:
+                issues.append(ValidationIssue(
+                    severity="warning", category="snapshot_no_event",
+                    detail=(
+                        f"Proposition '{prop.proposition_id}' snapshot at "
+                        f"fabula={snap.fabula_time} triggered_by="
+                        f"'{snap.triggered_by}' does not resolve to an event."
+                    ),
+                ))
+            if (
+                evt_max_fabula is not None
+                and snap.fabula_time > evt_max_fabula
+            ):
+                issues.append(ValidationIssue(
+                    severity="warning", category="temporal",
+                    detail=(
+                        f"Proposition '{prop.proposition_id}' snapshot "
+                        f"fabula_time={snap.fabula_time} exceeds max event "
+                        f"fabula={evt_max_fabula}."
+                    ),
+                ))
+
+    # E1.c Concern.proposition_id must exist in propositions; concern_id
+    # must match the CCN_ namespace; ConcernSnapshot.triggered_by must
+    # resolve; counter_concern_ids must be symmetric (warn if not).
+    all_concerns: Dict[str, Tuple[str, Concern]] = {}
+    for eid, ent in ws.entities.items():
+        for c in ent.concerns:
+            if not c.concern_id.startswith("CCN_"):
+                issues.append(ValidationIssue(
+                    severity="error", category="bad_concern_id",
+                    detail=(
+                        f"Concern id '{c.concern_id}' on entity '{eid}' "
+                        f"does not match the CCN_ namespace."
+                    ),
+                ))
+            if c.concern_id in all_concerns:
+                issues.append(ValidationIssue(
+                    severity="error", category="duplicate",
+                    detail=(
+                        f"Concern id '{c.concern_id}' appears on both "
+                        f"'{all_concerns[c.concern_id][0]}' and '{eid}'."
+                    ),
+                ))
+            else:
+                all_concerns[c.concern_id] = (eid, c)
+            if c.proposition_id not in prop_ids:
+                issues.append(ValidationIssue(
+                    severity="error", category="unknown_proposition_id",
+                    detail=(
+                        f"Concern '{c.concern_id}' on entity '{eid}' "
+                        f"references proposition '{c.proposition_id}' "
+                        f"which is not in WorldStateV1.propositions."
+                    ),
+                ))
+            for snap in c.state_timeline:
+                if snap.triggered_by and snap.triggered_by not in event_id_set:
+                    issues.append(ValidationIssue(
+                        severity="warning", category="snapshot_no_event",
+                        detail=(
+                            f"Concern '{c.concern_id}' snapshot at "
+                            f"fabula={snap.fabula_time} triggered_by="
+                            f"'{snap.triggered_by}' does not resolve to an event."
+                        ),
+                    ))
+                if (
+                    evt_max_fabula is not None
+                    and snap.fabula_time > evt_max_fabula
+                ):
+                    issues.append(ValidationIssue(
+                        severity="warning", category="temporal",
+                        detail=(
+                            f"Concern '{c.concern_id}' snapshot "
+                            f"fabula_time={snap.fabula_time} exceeds max "
+                            f"event fabula={evt_max_fabula}."
+                        ),
+                    ))
+    # counter_concern_ids symmetry check (warning).
+    for ccn_id, (eid, c) in all_concerns.items():
+        for partner in c.counter_concern_ids:
+            entry = all_concerns.get(partner)
+            if entry is None:
+                issues.append(ValidationIssue(
+                    severity="warning", category="broken_link",
+                    detail=(
+                        f"Concern '{ccn_id}' lists counter_concern_id "
+                        f"'{partner}' which does not exist."
+                    ),
+                ))
+                continue
+            if ccn_id not in entry[1].counter_concern_ids:
+                issues.append(ValidationIssue(
+                    severity="warning", category="asymmetric_counter_concern",
+                    detail=(
+                        f"Concern '{ccn_id}' lists '{partner}' as a "
+                        f"counter_concern but '{partner}' does not "
+                        f"reciprocate."
+                    ),
+                ))
+
+    # E1.c.2 Concern closure check (audit fix): for every concern whose
+    # anchor proposition has a truth_at_fabula commit, the concern's
+    # state_timeline should contain a closure snapshot at or after the
+    # earliest commit (salience<0.2 or activation_fabula_window capped).
+    # Without one, downstream affective scoring will keep treating the
+    # concern as a standing fear/desire about an already-settled
+    # question \u2014 see ``affect_extraction.md`` rule 9 and the
+    # ``reconcile_affect`` auto-closer that backstops this. Surfaced as
+    # an info-level issue (not a hard error) so a deliberate
+    # surviving-concern pattern (e.g. fear of exposure of a now-true
+    # secret) doesn't trip the auditor.
+    prop_first_commit: Dict[str, int] = {}
+    for prop in ws.propositions:
+        if prop.truth_at_fabula:
+            prop_first_commit[prop.proposition_id] = min(
+                int(k) for k in prop.truth_at_fabula.keys()
+            )
+    if prop_first_commit:
+        for ccn_id, (eid, c) in all_concerns.items():
+            commit_fab = prop_first_commit.get(c.proposition_id)
+            if commit_fab is None:
+                continue
+            closed = False
+            for snap in c.state_timeline:
+                if snap.fabula_time < commit_fab:
+                    continue
+                if snap.salience is not None and snap.salience < 0.2:
+                    closed = True
+                    break
+                if snap.activation_fabula_window is not None:
+                    closed = True
+                    break
+            # Also consider already-closed if the initial baseline is
+            # tiny (catalogue may have shipped it pre-closed) or if
+            # the concern's own activation_fabula_window already ends
+            # before the commit.
+            if not closed and c.salience < 0.2:
+                closed = True
+            if (
+                not closed
+                and c.activation_fabula_window
+                and c.activation_fabula_window[1] <= commit_fab
+            ):
+                closed = True
+            if not closed:
+                issues.append(ValidationIssue(
+                    severity="warning", category="concern_not_closed_on_resolution",
+                    detail=(
+                        f"Concern '{ccn_id}' on entity '{eid}' anchors to "
+                        f"proposition '{c.proposition_id}' which committed "
+                        f"truth at fabula={commit_fab}, but the concern's "
+                        f"state_timeline has no closure snapshot at or after "
+                        f"that tick (salience<0.2 or "
+                        f"activation_fabula_window capped). Leaving the "
+                        f"concern open will double-count it in suspense / "
+                        f"surprise scoring \u2014 see affect_extraction.md "
+                        f"rule 9. The Phase C auto-closer will inject a "
+                        f"synthetic closure unless this is a deliberate "
+                        f"surviving-concern pattern."
+                    ),
+                ))
+
+    # E1.c.3 Polarity-flip consistency check (audit fix): when a
+    # concern's state_timeline contains a snapshot that flips the
+    # ``polarity`` field (desire \u2194 fear), each of its
+    # ``counter_concern_ids`` partners SHOULD also carry a paired
+    # snapshot at the same fabula tick \u2014 otherwise the
+    # desire/fear pair has gone asymmetric (one side now wants what
+    # the other side still wants, breaking the rivalry topology that
+    # downstream tension/asymmetry scoring relies on). The affect
+    # prompt's Rule 6 marks polarity flips as load-bearing; we
+    # surface missing partner-flips as warnings so the affect agent
+    # can be tuned without breaking valid asymmetric flips (e.g. one
+    # half of a pair undergoes a genuine moral conversion the other
+    # half does not).
+    for ccn_id, (eid, c) in all_concerns.items():
+        if not c.counter_concern_ids:
+            continue
+        # Find polarity-flip snapshots on this concern (snapshot's
+        # polarity differs from baseline).
+        flip_ticks: List[int] = []
+        prev_polarity = c.polarity
+        for snap in sorted(c.state_timeline, key=lambda s: s.fabula_time):
+            if snap.polarity is not None and snap.polarity != prev_polarity:
+                flip_ticks.append(snap.fabula_time)
+                prev_polarity = snap.polarity
+        if not flip_ticks:
+            continue
+        for partner_id in c.counter_concern_ids:
+            partner_entry = all_concerns.get(partner_id)
+            if partner_entry is None:
+                # Already reported as broken_link above.
+                continue
+            _p_eid, partner = partner_entry
+            partner_flip_ticks = set()
+            p_prev = partner.polarity
+            for snap in sorted(
+                partner.state_timeline, key=lambda s: s.fabula_time,
+            ):
+                if snap.polarity is not None and snap.polarity != p_prev:
+                    partner_flip_ticks.add(snap.fabula_time)
+                    p_prev = snap.polarity
+            for tick in flip_ticks:
+                if tick in partner_flip_ticks:
+                    continue
+                # Tolerate a partner snapshot at the same tick that
+                # explicitly closes the partner (salience<0.2 or
+                # window cap) \u2014 a closed partner is allowed to
+                # not flip because it is no longer a live rival.
+                partner_closed_at_tick = False
+                for snap in partner.state_timeline:
+                    if snap.fabula_time != tick:
+                        continue
+                    if snap.salience is not None and snap.salience < 0.2:
+                        partner_closed_at_tick = True
+                        break
+                    if snap.activation_fabula_window is not None:
+                        partner_closed_at_tick = True
+                        break
+                if partner_closed_at_tick:
+                    continue
+                issues.append(ValidationIssue(
+                    severity="warning",
+                    category="counter_concern_polarity_asymmetry",
+                    detail=(
+                        f"Concern '{ccn_id}' on entity '{eid}' flipped "
+                        f"polarity at fabula={tick}, but its "
+                        f"counter_concern partner '{partner_id}' "
+                        f"neither flipped nor closed at that tick. "
+                        f"Counter-concern rivalry expects paired "
+                        f"polarity transitions \u2014 see "
+                        f"affect_extraction.md rule 6. If the partner "
+                        f"genuinely diverged, emit an explicit closure "
+                        f"snapshot for it to silence this warning."
+                    ),
+                ))
+
+    # E1.d Belief.proposition_id, when set, must exist in propositions.
+    for eid, ent in ws.entities.items():
+        for b in ent.beliefs:
+            if b.proposition_id and b.proposition_id not in prop_ids:
+                issues.append(ValidationIssue(
+                    severity="error", category="unknown_proposition_id",
+                    detail=(
+                        f"Entity '{eid}' belief about '{b.target_id}' "
+                        f"references proposition '{b.proposition_id}' "
+                        f"which is not in WorldStateV1.propositions."
+                    ),
+                ))
+
+    # E1.e EventNode prop-link fields must resolve in propositions.
+    for evt in ws.events:
+        for pid in evt.resolves_proposition_ids:
+            if pid not in prop_ids:
+                issues.append(ValidationIssue(
+                    severity="warning", category="unknown_proposition_id",
+                    detail=(
+                        f"Event '{evt.id}' resolves_proposition_ids entry "
+                        f"'{pid}' is not in WorldStateV1.propositions."
+                    ),
+                ))
+        if (
+            evt.asserts_proposition_id
+            and evt.asserts_proposition_id not in prop_ids
+        ):
+            issues.append(ValidationIssue(
+                severity="warning", category="unknown_proposition_id",
+                detail=(
+                    f"Event '{evt.id}' asserts_proposition_id "
+                    f"'{evt.asserts_proposition_id}' is not in "
+                    f"WorldStateV1.propositions."
+                ),
+            ))
+        if (
+            evt.denies_proposition_id
+            and evt.denies_proposition_id not in prop_ids
+        ):
+            issues.append(ValidationIssue(
+                severity="warning", category="unknown_proposition_id",
+                detail=(
+                    f"Event '{evt.id}' denies_proposition_id "
+                    f"'{evt.denies_proposition_id}' is not in "
+                    f"WorldStateV1.propositions."
+                ),
+            ))
+
+    # E1.g mutation_social edges should have at least one concern
+    # touching them on either source or target. A mutation_social
+    # edge represents a social-fact change (alliance forms, betrayal,
+    # marriage, public exposure) — the affect substrate cares about
+    # these only insofar as some entity has a stake in them. An edge
+    # that no concern references is structurally valid but produces
+    # no felt suspense / irony / surprise on the affect ledger,
+    # because both `_audience_concern_for_event` and the per-entity
+    # appraisal computations will route around it. Warn (not error)
+    # so legacy worlds without populated concern catalogues still
+    # pass; the LLM correction agent can surface this as a hint to
+    # add the missing concerns.
+    if ws.causal_topology and ws.entities:
+        # Build a lookup: entity_id → set of proposition referent
+        # entity ids the entity has concerns about. A mutation_social
+        # edge is "concern-covered" when its source or target entity
+        # appears in this lookup.
+        concern_touches: Dict[str, Set[str]] = {}
+        prop_referents: Dict[str, Set[str]] = {
+            p.proposition_id: set(p.referent_ids) for p in ws.propositions
+        }
+        for ent_id, ent in ws.entities.items():
+            touched: Set[str] = set()
+            for c in ent.concerns:
+                touched |= prop_referents.get(c.proposition_id, set())
+            if touched:
+                concern_touches[ent_id] = touched
+        events_by_id_local = {e.id: e for e in ws.events}
+        for ce in ws.causal_topology:
+            if ce.mechanism != "mutation_social":
+                continue
+            # Resolve the entity participants of this edge. Source
+            # and target may be event ids or entity ids; for events
+            # we expand to actor + target sets.
+            participants: Set[str] = set()
+            for eid in (ce.source_id, ce.target_id):
+                if eid in ws.entities:
+                    participants.add(eid)
+                elif eid in events_by_id_local:
+                    evt = events_by_id_local[eid]
+                    participants |= set(evt.actor_ids)
+                    participants |= set(evt.target_ids)
+            if not participants:
+                continue  # orphan edge — caught by other validators
+            covered = any(p in concern_touches for p in participants)
+            if not covered:
+                issues.append(ValidationIssue(
+                    severity="warning",
+                    category="uncovered_mutation_social",
+                    detail=(
+                        f"mutation_social edge {ce.source_id} → "
+                        f"{ce.target_id} has no concern from any of its "
+                        f"participants ({sorted(participants)}). The "
+                        f"affect substrate will route around it — add a "
+                        f"concern referencing this edge's social stake "
+                        f"so suspense/irony register the change."
+                    ),
+                ))
+
     # --- Time validation ---
     issues.extend(_validate_time_ordering(ws))
 
     # --- Dead-actor validation ---
     issues.extend(_validate_dead_actors(ws))
 
+    # --- Orphan-event validation ---
+    issues.extend(_validate_orphan_events(ws))
+
+    # --- Entity status / state_timeline coherence ---
+    issues.extend(_validate_entity_status_coherence(ws))
+
+    # --- Orphan-proposition validation ---
+    issues.extend(_validate_orphan_propositions(ws))
+
+    # --- E1.h WORLD_ causal source must have non-trivial magnitude ---
+    # A WORLD_ wired as `chain_reaction` / `affordance_gate` / `mutation`
+    # source with magnitude.value < 0.05 contributes nothing through
+    # propagation; a WORLD_ source whose `mechanism` is not in its
+    # `affected_domains` is silently penalised to 20% by the runtime
+    # domain gate. Both produce graphs that look richer than they
+    # behave. Surface as warnings so authors can either bump the
+    # magnitude / extend `affected_domains` or drop the edge.
+    if ws.world_traits and ws.causal_topology:
+        for ce in ws.causal_topology:
+            if not ce.source_id.startswith("WORLD_"):
+                continue
+            wt = ws.world_traits.get(ce.source_id)
+            if wt is None:
+                continue
+            if wt.magnitude.value < 0.05:
+                issues.append(ValidationIssue(
+                    category="world_trait_low_magnitude_source",
+                    severity="warning",
+                    detail=(
+                        f"WORLD_ trait {ce.source_id} (magnitude.value="
+                        f"{wt.magnitude.value:.2f}) is wired as causal source on "
+                        f"{ce.causality_type} edge → {ce.target_id} but its magnitude "
+                        f"is too low to produce non-trivial propagation. "
+                        f"Either raise the magnitude, drop the edge, or treat "
+                        f"this as a structural-only common-cause anchor."
+                    ),
+                ))
+            if wt.affected_domains:
+                edge_mech = getattr(ce, "mechanism", None)
+                if edge_mech and edge_mech not in wt.affected_domains:
+                    issues.append(ValidationIssue(
+                        category="world_trait_domain_mismatch_source",
+                        severity="warning",
+                        detail=(
+                            f"WORLD_ {ce.source_id} edge → {ce.target_id} declares "
+                            f"mechanism={edge_mech!r} which is not in the trait's "
+                            f"affected_domains={list(wt.affected_domains)}. The "
+                            f"runtime domain gate will attenuate this contribution "
+                            f"to ~20%. Add the mechanism to affected_domains or "
+                            f"change the edge's mechanism."
+                        ),
+                    ))
+
+    # --- E1.i Orphan-cause cluster: events with zero in-edges that share
+    # a fabula tick with another orphan event hint at a missing common
+    # cause (typically an unwired WORLD_ trait — see physics rule 16).
+    if ws.events and ws.causal_topology:
+        in_edges: Dict[str, int] = {}
+        for ce in ws.causal_topology:
+            if ce.target_id.startswith("EVT_"):
+                in_edges[ce.target_id] = in_edges.get(ce.target_id, 0) + 1
+        orphan_by_ft: Dict[int, List[str]] = {}
+        for ev in ws.events:
+            if in_edges.get(ev.id, 0) == 0:
+                orphan_by_ft.setdefault(int(ev.fabula_time), []).append(ev.id)
+        for ft, eids in orphan_by_ft.items():
+            if len(eids) >= 2:
+                issues.append(ValidationIssue(
+                    category="orphan_cause_cluster",
+                    severity="warning",
+                    detail=(
+                        f"{len(eids)} events share fabula_time={ft} with no causal "
+                        f"in-edges: {eids}. This pattern usually indicates a "
+                        f"missing WORLD_ common-cause anchor (physics rule 16). "
+                        f"If the events are jointly driven by an unstated force "
+                        f"(fate, war, prophecy, ambient ideology), wire the "
+                        f"corresponding WORLD_ trait as a chain_reaction parent "
+                        f"of each."
+                    ),
+                ))
+
+    # --- E1.j WORLD_ trait with empty affected_domains broadcasts
+    # everywhere via the runtime domain gate (which only filters when
+    # the list is non-empty). Authors should declare at least one
+    # canonical domain so the trait routes selectively.
+    for wid, wt in ws.world_traits.items():
+        if not wt.affected_domains:
+            issues.append(ValidationIssue(
+                category="world_trait_empty_affected_domains",
+                severity="warning",
+                detail=(
+                    f"WORLD_ trait {wid} ({wt.name!r}) has empty "
+                    f"affected_domains. The runtime domain gate treats this "
+                    f"as 'broadcast everywhere', producing un-targeted "
+                    f"ambient pressure. Declare at least one canonical "
+                    f"domain ('physical', 'psychological', 'epistemic', "
+                    f"'social', 'emotional', 'informational', 'betrayal') "
+                    f"so the trait routes selectively."
+                ),
+            ))
+
+    return issues
+
+
+def _validate_orphan_events(ws: WorldStateV1) -> List[ValidationIssue]:
+    """Flag events that participate in zero causal edges.
+
+    An event with no incoming and no outgoing causal edge is functionally
+    invisible to the physics engine — counterfactual abduction d-separates
+    it from every other node, and the suspense/irony surfaces fall back to
+    the orphan-event prior (``_SUSPENSE_ORPHAN_EVENT_PROB`` ≈ 0.25). This
+    is the right fallback for a *handful* of one-shot scenic beats, but in
+    practice every plot-relevant event should sit in some chain. A high
+    orphan ratio means the extractor wrote down beats it never wired up,
+    and the correction loop should propose ``add_causal_edges`` to attach
+    them. We emit warnings (not errors) because the engine still runs;
+    the signal is for the auditor / correction agent to spot extraction
+    incompleteness.
+    """
+    issues: List[ValidationIssue] = []
+    if not ws.events:
+        return issues
+
+    in_count: dict[str, int] = {e.id: 0 for e in ws.events}
+    out_count: dict[str, int] = {e.id: 0 for e in ws.events}
+    for ce in ws.causal_topology:
+        if ce.source_id in out_count:
+            out_count[ce.source_id] += 1
+        if ce.target_id in in_count:
+            in_count[ce.target_id] += 1
+
+    orphans = [e.id for e in ws.events if in_count[e.id] == 0 and out_count[e.id] == 0]
+    if not orphans:
+        return issues
+
+    # Soft cap on per-event lines to keep the report readable; the
+    # correction agent only needs a few exemplars to start fixing.
+    sample = orphans[:25]
+    for eid in sample:
+        issues.append(ValidationIssue(
+            severity="warning", category="orphan_event",
+            detail=(
+                f"Event '{eid}' has no incoming or outgoing causal edges. "
+                f"Either wire it into causal_topology with at least one "
+                f"chain_reaction / mutation / mutation_social / "
+                f"affordance_gate edge, or drop it via drop_event_ids if "
+                f"it is genuinely scenic filler with no narrative "
+                f"consequence."
+            ),
+        ))
+    if len(orphans) > len(sample):
+        issues.append(ValidationIssue(
+            severity="warning", category="orphan_event",
+            detail=(
+                f"... plus {len(orphans) - len(sample)} more orphan events "
+                f"({len(orphans)} of {len(ws.events)} total — "
+                f"{100*len(orphans)/max(1,len(ws.events)):.0f}%). High "
+                f"orphan ratio is a strong signal that extraction left "
+                f"causal chains incomplete; consider an axis-coverage retry."
+            ),
+        ))
+    return issues
+
+
+def _validate_entity_status_coherence(ws: WorldStateV1) -> List[ValidationIssue]:
+    """Flag entities whose ``status`` disagrees with their state_timeline.
+
+    Two failure modes we observed in the wild and want to surface so the
+    correction agent can fix them via ``update_entity_status`` /
+    ``update_state_timeline``:
+
+    1. **Initial status says 'dead' but no death event exists** — usually
+       the extractor inferred the entity died off-page (a backstory
+       killing) without emitting the event itself. The downstream
+       physics engine then has a dead actor with no death timestamp,
+       which breaks ``_validate_dead_actors``' fabula-ordering check
+       (because ``death_times`` stays empty, every reference looks fine).
+    2. **Initial status says 'healthy' but a state_timeline snapshot
+       later flips status to 'dead'** — fine in itself, BUT if there is
+       *no* event in causal_topology that targets this entity at the
+       same fabula_time as the death snapshot, the death is unanchored
+       and the propagation engine will treat the entity as still alive
+       throughout the simulation.
+    """
+    issues: List[ValidationIssue] = []
+    if not ws.entities or not ws.events:
+        return issues
+
+    death_target_times: dict[str, list[int]] = {}
+    for evt in ws.events:
+        for tid in evt.target_ids:
+            if tid in ws.entities:
+                death_target_times.setdefault(tid, []).append(evt.fabula_time)
+
+    for eid, ent in ws.entities.items():
+        last_status = ent.status
+        last_status_time = None
+        for snap in ent.state_timeline:
+            if snap.status is not None:
+                if last_status_time is None or snap.fabula_time >= last_status_time:
+                    last_status = snap.status
+                    last_status_time = snap.fabula_time
+
+        # Case (1): initial status='dead' but no event ever targets this entity.
+        if ent.status == "dead" and eid not in death_target_times:
+            issues.append(ValidationIssue(
+                severity="warning", category="status_no_death_event",
+                detail=(
+                    f"Entity '{eid}' has initial status='dead' but no "
+                    f"event in causal_topology targets them. Either emit "
+                    f"a death event (outcome with target_ids=['{eid}']) "
+                    f"and wire it in, or revise the initial status to "
+                    f"'healthy' if the entity is alive at the start of "
+                    f"the narrative."
+                ),
+            ))
+
+        # Case (2): timeline flips to 'dead' without an anchoring event
+        # at the same (or earlier) fabula_time targeting this entity.
+        if last_status == "dead" and last_status_time is not None and ent.status != "dead":
+            anchors = [t for t in death_target_times.get(eid, []) if t <= last_status_time]
+            if not anchors:
+                issues.append(ValidationIssue(
+                    severity="warning", category="unanchored_death_snapshot",
+                    detail=(
+                        f"Entity '{eid}' state_timeline ends with "
+                        f"status='dead' at fabula={last_status_time} but "
+                        f"no event at or before that fabula_time targets "
+                        f"them. Add an outcome event with "
+                        f"target_ids=['{eid}'] anchoring the death."
+                    ),
+                ))
+
+    return issues
+
+
+def _validate_orphan_propositions(ws: WorldStateV1) -> List[ValidationIssue]:
+    """Flag PROP_s that are never referenced anywhere.
+
+    A proposition is meaningful only if some agent holds a belief or
+    concern about it, some utterance asserts/denies it, or some event
+    resolves it. PROP_s with zero references add storage and reasoning
+    cost without contributing to the model — usually they are leftover
+    catalogue entries from earlier passes that were never wired up.
+    """
+    issues: List[ValidationIssue] = []
+    if not ws.propositions:
+        return issues
+
+    referenced: set[str] = set()
+    for ent in ws.entities.values():
+        for b in ent.beliefs:
+            if b.proposition_id:
+                referenced.add(b.proposition_id)
+        for c in ent.concerns:
+            if c.proposition_id:
+                referenced.add(c.proposition_id)
+    for evt in ws.events:
+        if evt.asserts_proposition_id:
+            referenced.add(evt.asserts_proposition_id)
+        if evt.denies_proposition_id:
+            referenced.add(evt.denies_proposition_id)
+        for pid in evt.resolves_proposition_ids:
+            referenced.add(pid)
+
+    orphans = [p.proposition_id for p in ws.propositions if p.proposition_id not in referenced]
+    if not orphans:
+        return issues
+
+    sample = orphans[:20]
+    for pid in sample:
+        issues.append(ValidationIssue(
+            severity="warning", category="orphan_proposition",
+            detail=(
+                f"Proposition '{pid}' is in the catalogue but no entity "
+                f"believes/fears it, no event asserts/denies/resolves it. "
+                f"Wire it to ≥1 belief/concern/event (use "
+                f"set_belief_proposition_ids on an existing belief, or "
+                f"add_concerns referencing this PROP_, or set "
+                f"asserts_proposition_id on a relevant utterance via "
+                f"update_event_fields)."
+            ),
+        ))
+    if len(orphans) > len(sample):
+        issues.append(ValidationIssue(
+            severity="warning", category="orphan_proposition",
+            detail=(
+                f"... plus {len(orphans) - len(sample)} more orphan "
+                f"propositions ({len(orphans)} of {len(ws.propositions)} "
+                f"total)."
+            ),
+        ))
     return issues
 
 
@@ -8138,6 +12234,39 @@ def _validate_time_ordering(ws: WorldStateV1) -> List[ValidationIssue]:
                 ),
             ))
 
+    # 5. Utterance temporal coherence: a non-performative utterance can
+    #    only *describe* events that have already occurred (target_ids
+    #    referring to EVT_ ids must have fabula_time <= utterance.fabula_time).
+    #    Performative speech-acts — prophecies, vows, orders, declarations
+    #    — are exempt because they posit/announce future events rather
+    #    than report past ones.
+    for u in ws.events:
+        if u.event_type != "utterance":
+            continue
+        if u.truth_value == "performative":
+            continue
+        for tid in u.target_ids or []:
+            if not tid.startswith("EVT_"):
+                continue
+            tgt_t = evt_fabula.get(tid)
+            if tgt_t is None:
+                continue
+            if tgt_t > u.fabula_time:
+                issues.append(ValidationIssue(
+                    severity="error", category="temporal",
+                    detail=(
+                        f"Utterance '{u.id}' (fabula={u.fabula_time}, "
+                        f"truth_value={u.truth_value!r}) has target_ids "
+                        f"referencing future event '{tid}' (fabula={tgt_t}). "
+                        f"A non-performative utterance can only describe "
+                        f"already-occurred events. Either set "
+                        f"truth_value='performative' (if the utterance is a "
+                        f"prophecy/vow/order positing the future event), or "
+                        f"remove the future event from target_ids and let "
+                        f"causal_topology express the downstream causal link."
+                    ),
+                ))
+
     return issues
 
 
@@ -8186,6 +12315,27 @@ class _EdgeRef(BaseModel):
     """Identifies a single causal/social/spatial edge by its endpoints."""
     source_id: str
     target_id: str
+
+
+class _BeliefPropAssignment(BaseModel):
+    """Identifies a belief by ``(entity, target)`` and assigns a PROP_ id.
+
+    Used by ``WorldStatePatch.set_belief_proposition_ids`` so the
+    correction agent can backfill ``Belief.proposition_id`` on a
+    belief whose target matches a catalogued proposition without
+    having to re-emit the entire belief record.
+    """
+    entity_id: str = Field(description="ENT_ id of the believer.")
+    target_id: str = Field(
+        description=(
+            "The belief's existing ``target_id`` (used to locate the "
+            "belief on the entity)."
+        ),
+    )
+    proposition_id: str = Field(
+        pattern=r"^PROP_[A-Z0-9_]+$",
+        description="PROP_ id to write into ``Belief.proposition_id``.",
+    )
 
 
 class WorldStatePatch(BaseModel):
@@ -8272,6 +12422,131 @@ class WorldStatePatch(BaseModel):
             "new id, so a simple typo fix does not have to be expressed "
             "as drop+add (which would null the provenance of every "
             "belief / utterance pointing at the old channel)."
+        ),
+    )
+    update_channel_intelligibility: Dict[str, Dict[str, float]] = Field(
+        default_factory=dict,
+        description=(
+            "Edit per-participant decode probabilities on existing "
+            "channels: {channel_id: {participant_id: 0.0..1.0}}. Each "
+            "value is clamped to [0, 1] and merged into the channel's "
+            "existing ``intelligibility`` map (existing entries for "
+            "other participants are preserved). Use this for narrative "
+            "tweaks (\"the line is now noisy for ENT_BOB\") without "
+            "rebuilding the channel."
+        ),
+    )
+    # ----- Phase E: proposition / concern / belief-proposition ops -----
+    add_propositions: Dict[str, Proposition] = Field(
+        default_factory=dict,
+        description=(
+            "New propositions keyed by PROP_ id. Use when a belief / "
+            "concern / event reference an uncatalogued PROP_ id and "
+            "the right fix is to introduce the proposition rather than "
+            "drop the reference."
+        ),
+    )
+    update_proposition_snapshots: Dict[str, List[PropositionSnapshot]] = Field(
+        default_factory=dict,
+        description=(
+            "Append snapshots into Proposition.state_timeline: "
+            "{prop_id: [PropositionSnapshot, ...]}."
+        ),
+    )
+    commit_proposition_truth: Dict[str, Dict[int, bool]] = Field(
+        default_factory=dict,
+        description=(
+            "Write into Proposition.truth_at_fabula: "
+            "{prop_id: {fabula_time: bool}}. Last write wins; existing "
+            "commits at other fabula_times are preserved."
+        ),
+    )
+    add_concerns: Dict[str, List[Concern]] = Field(
+        default_factory=dict,
+        description=(
+            "Append concerns onto entities: {entity_id: [Concern, ...]}. "
+            "Each Concern.proposition_id MUST exist in propositions "
+            "after the patch is applied (catalogue or add_propositions)."
+        ),
+    )
+    update_concern_snapshots: Dict[str, Dict[str, List[ConcernSnapshot]]] = Field(
+        default_factory=dict,
+        description=(
+            "Append snapshots into a concern's state_timeline: "
+            "{entity_id: {concern_id: [ConcernSnapshot, ...]}}."
+        ),
+    )
+    set_belief_proposition_ids: List[_BeliefPropAssignment] = Field(
+        default_factory=list,
+        description=(
+            "Backfill Belief.proposition_id on existing beliefs matched "
+            "by (entity_id, target_id)."
+        ),
+    )
+    # ----- Ontology repairs (entity/object/location renames + drops) -----
+    entity_renames: Dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "ENT_ ID renames: {old_id: new_id}. Use to merge two "
+            "entities that the upstream extractor split apart (e.g. "
+            "an identity reveal where Anakin and Vader were registered "
+            "as separate ENT_ ids for the same character). Forwards "
+            "every reference (entities dict key, event actor_ids / "
+            "target_ids / speaker_id / addressee_ids, channel "
+            "participant_ids, social_topology source/target_entity_id, "
+            "causal_topology source/target/rel_counterpart_id, belief "
+            "target_ids, entity.location_id self-ref). Beliefs and "
+            "concerns from the merged-away ENT are concatenated onto "
+            "the surviving entity (deduped on (proposition_id, polarity) "
+            "for concerns and on target_id for beliefs)."
+        ),
+    )
+    object_renames: Dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "OBJ_ ID renames: {old_id: new_id}. Forwards every "
+            "reference. Use to fix typo/spelling drift on object ids."
+        ),
+    )
+    drop_object_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Object IDs to remove entirely. Use when the upstream "
+            "extractor mis-tiered a place as an object (e.g. registered "
+            "OBJ_DEATH_STAR alongside the existing LOC_DEATH_STAR). "
+            "Edges and event target_ids referencing the dropped objects "
+            "are pruned by the post-patch ``_auto_repair`` pass."
+        ),
+    )
+    location_renames: Dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "LOC_ ID renames: {old_id: new_id}. Forwards every "
+            "reference (locations dict key, entity.location_id, "
+            "object.location_id, spatial_topology source/target, "
+            "causal_topology, EntityStateSnapshot.location_id)."
+        ),
+    )
+    drop_location_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Location IDs to remove entirely. Entities / objects "
+            "still pointing at the dropped LOC_ have their location_id "
+            "nulled by ``_auto_repair`` (which the caller invokes "
+            "after the patch is applied)."
+        ),
+    )
+    swap_causal_edge_directions: List[_EdgeRef] = Field(
+        default_factory=list,
+        description=(
+            "Causal edges whose endpoints should be swapped: each entry "
+            "names the edge by its CURRENT (source_id, target_id); "
+            "the apply pass rewrites it to (target_id, source_id) in "
+            "place, preserving causality_type, mechanism, causal_force, "
+            "trait_target / trait_delta, propagation_delay, evidence_strength. "
+            "Use when an extractor wired causality the wrong way round "
+            "(e.g. a chain_reaction whose 'effect' has a smaller "
+            "fabula_time than its 'cause')."
         ),
     )
     notes: str = Field(
@@ -8391,6 +12666,33 @@ def _apply_world_state_patch(
     for cid, ch in patch.add_channels.items():
         new_channels[cid] = ch
         changes.append(f"Added channel '{cid}'.")
+
+    # 6b. Per-participant intelligibility edits on channels that
+    # survived the rename/drop/add pass. Clamps to [0, 1] and merges
+    # into the existing map so an edit for ENT_BOB does not erase the
+    # value for ENT_ALICE.
+    for cid, intel_updates in (patch.update_channel_intelligibility or {}).items():
+        target_cid = chan_renames.get(cid, cid)
+        ch = new_channels.get(target_cid)
+        if ch is None:
+            changes.append(
+                f"Skipped intelligibility update for missing channel '{cid}'."
+            )
+            continue
+        merged: Dict[str, float] = dict(ch.intelligibility or {})
+        for pid, raw in (intel_updates or {}).items():
+            try:
+                val = float(raw)
+            except (TypeError, ValueError):
+                continue
+            merged[pid] = max(0.0, min(1.0, val))
+        new_channels[target_cid] = ch.model_copy(
+            update={"intelligibility": merged}
+        )
+        changes.append(
+            f"Updated intelligibility on channel '{target_cid}' "
+            f"for {sorted((intel_updates or {}).keys())}."
+        )
 
     # 7. Entity location overrides + state_timeline appends.
     new_entities: Dict[str, Entity] = {}
@@ -8549,16 +12851,458 @@ def _apply_world_state_patch(
     else:
         patched_world_traits = ws.world_traits
 
+    # ----- Phase E: proposition / concern / belief-prop ops -----
+    # Index existing propositions by id; apply add_propositions then
+    # update_proposition_snapshots and commit_proposition_truth.
+    prop_index: Dict[str, Proposition] = {
+        p.proposition_id: p for p in ws.propositions
+    }
+    for pid, prop in patch.add_propositions.items():
+        if pid in prop_index:
+            changes.append(
+                f"add_propositions: proposition '{pid}' already exists \u2014 skipped."
+            )
+            continue
+        prop_index[pid] = prop
+        changes.append(f"Added proposition '{pid}'.")
+
+    # Forward EVT renames/drops onto incoming snapshot triggered_by
+    # ids so the patch contract stays consistent with the rest of the
+    # apply path.
+    def _normalise_trigger(trig: Optional[str]) -> Optional[str]:
+        if not trig:
+            return trig
+        new_trig = _r(trig)
+        if new_trig in drop_evts:
+            return None
+        return new_trig
+
+    for pid, snaps in patch.update_proposition_snapshots.items():
+        prop = prop_index.get(pid)
+        if prop is None:
+            changes.append(
+                f"update_proposition_snapshots: unknown PROP_ id '{pid}' \u2014 skipped."
+            )
+            continue
+        normalised: List[PropositionSnapshot] = []
+        for snap in snaps:
+            new_trig = _normalise_trigger(snap.triggered_by)
+            if new_trig != snap.triggered_by:
+                normalised.append(snap.model_copy(update={"triggered_by": new_trig}))
+            else:
+                normalised.append(snap)
+        merged = list(prop.state_timeline) + normalised
+        merged.sort(key=lambda s: (s.fabula_time, s.triggered_by or ""))
+        prop_index[pid] = prop.model_copy(update={"state_timeline": merged})
+        changes.append(
+            f"Appended {len(normalised)} proposition snapshot(s) to '{pid}'."
+        )
+
+    for pid, commits in patch.commit_proposition_truth.items():
+        prop = prop_index.get(pid)
+        if prop is None:
+            changes.append(
+                f"commit_proposition_truth: unknown PROP_ id '{pid}' \u2014 skipped."
+            )
+            continue
+        new_truth = dict(prop.truth_at_fabula)
+        for fab, val in commits.items():
+            new_truth[int(fab)] = bool(val)
+        prop_index[pid] = prop.model_copy(update={"truth_at_fabula": new_truth})
+        changes.append(
+            f"Committed truth for '{pid}' at fabula={sorted(int(f) for f in commits)}."
+        )
+
+    new_propositions = [prop_index[pid] for pid in sorted(prop_index)]
+
+    # add_concerns + update_concern_snapshots + set_belief_proposition_ids
+    # — fold onto entities. Build concern dedup keys per entity to make
+    # the op idempotent.
+    if (
+        patch.add_concerns
+        or patch.update_concern_snapshots
+        or patch.set_belief_proposition_ids
+    ):
+        bp_index: Dict[Tuple[str, str], str] = {
+            (a.entity_id, a.target_id): a.proposition_id
+            for a in patch.set_belief_proposition_ids
+        }
+        rewritten: Dict[str, Entity] = {}
+        for eid, ent in new_entities.items():
+            ent_update: Dict[str, Any] = {}
+
+            # Belief proposition_id backfill.
+            ent_assignments = {
+                tgt: prop for (e_id, tgt), prop in bp_index.items()
+                if e_id == eid
+            }
+            if ent_assignments:
+                new_beliefs: List[Belief] = []
+                hit = 0
+                for b in ent.beliefs:
+                    if b.target_id in ent_assignments:
+                        new_beliefs.append(
+                            b.model_copy(update={
+                                "proposition_id": ent_assignments[b.target_id],
+                            })
+                        )
+                        hit += 1
+                    else:
+                        new_beliefs.append(b)
+                if hit:
+                    ent_update["beliefs"] = new_beliefs
+                    changes.append(
+                        f"Set proposition_id on {hit} belief(s) of entity '{eid}'."
+                    )
+
+            # add_concerns — append, dedup on (proposition_id, polarity).
+            new_concerns_for_ent = patch.add_concerns.get(eid, [])
+            updates_for_ent = patch.update_concern_snapshots.get(eid, {})
+
+            current_concerns: List[Concern] = list(ent.concerns)
+            concerns_dirty = False
+            if new_concerns_for_ent:
+                existing_keys = {
+                    (c.proposition_id, c.polarity) for c in current_concerns
+                }
+                added = 0
+                for c in new_concerns_for_ent:
+                    if (c.proposition_id, c.polarity) in existing_keys:
+                        continue
+                    current_concerns.append(c)
+                    existing_keys.add((c.proposition_id, c.polarity))
+                    added += 1
+                if added:
+                    concerns_dirty = True
+                    changes.append(
+                        f"Added {added} concern(s) to entity '{eid}'."
+                    )
+
+            # update_concern_snapshots
+            if updates_for_ent:
+                concern_idx = {c.concern_id: i for i, c in enumerate(current_concerns)}
+                touched = 0
+                for ccn_id, snaps in updates_for_ent.items():
+                    if ccn_id not in concern_idx:
+                        changes.append(
+                            f"update_concern_snapshots: unknown CCN_ id '{ccn_id}' "
+                            f"on entity '{eid}' \u2014 skipped."
+                        )
+                        continue
+                    idx = concern_idx[ccn_id]
+                    concern = current_concerns[idx]
+                    normalised: List[ConcernSnapshot] = []
+                    for snap in snaps:
+                        new_trig = _normalise_trigger(snap.triggered_by)
+                        if new_trig != snap.triggered_by:
+                            normalised.append(snap.model_copy(update={"triggered_by": new_trig}))
+                        else:
+                            normalised.append(snap)
+                    merged = list(concern.state_timeline) + normalised
+                    merged.sort(key=lambda s: (s.fabula_time, s.triggered_by or ""))
+                    current_concerns[idx] = concern.model_copy(
+                        update={"state_timeline": merged},
+                    )
+                    touched += len(normalised)
+                if touched:
+                    concerns_dirty = True
+                    changes.append(
+                        f"Appended {touched} concern snapshot(s) on entity '{eid}'."
+                    )
+
+            if concerns_dirty:
+                ent_update["concerns"] = current_concerns
+
+            rewritten[eid] = ent.model_copy(update=ent_update) if ent_update else ent
+        new_entities = rewritten
+
+    # 9. Ontology repairs: entity / object / location renames + drops,
+    #    plus causal-edge direction swaps. Run as the final pass before
+    #    assembling new_ws so all earlier rewrites (event renames,
+    #    channel renames, snapshot inserts) have already settled into
+    #    new_entities / new_events / new_causal / new_social /
+    #    new_spatial / new_channels. Dangling refs left after drops
+    #    are cleaned by ``_auto_repair`` in the caller.
+    ent_renames = dict(patch.entity_renames)
+    obj_renames = dict(patch.object_renames)
+    loc_renames = dict(patch.location_renames)
+    drop_objs = set(patch.drop_object_ids)
+    drop_locs = set(patch.drop_location_ids)
+    swap_pairs = {(e.source_id, e.target_id) for e in patch.swap_causal_edge_directions}
+
+    def _re(eid: Optional[str]) -> Optional[str]:
+        if eid is None:
+            return None
+        return ent_renames.get(eid, eid)
+
+    def _ro(oid: Optional[str]) -> Optional[str]:
+        if oid is None:
+            return None
+        return obj_renames.get(oid, oid)
+
+    def _rl(lid: Optional[str]) -> Optional[str]:
+        if lid is None:
+            return None
+        return loc_renames.get(lid, lid)
+
+    def _rid(any_id: Optional[str]) -> Optional[str]:
+        """Rewrite any namespaced id through whichever rename dict applies."""
+        if not any_id:
+            return any_id
+        if any_id.startswith("ENT_"):
+            return ent_renames.get(any_id, any_id)
+        if any_id.startswith("OBJ_"):
+            return obj_renames.get(any_id, any_id)
+        if any_id.startswith("LOC_"):
+            return loc_renames.get(any_id, any_id)
+        return any_id
+
+    needs_ontology_rewrite = bool(
+        ent_renames or obj_renames or loc_renames
+        or drop_objs or drop_locs or swap_pairs
+    )
+    if needs_ontology_rewrite:
+        # --- Causal-edge direction swaps (run before id rewrites so
+        #     the user's swap_pairs are matched against the edge's
+        #     CURRENT endpoints, as documented).
+        if swap_pairs:
+            swapped: List[CausalEdge] = []
+            for ce in new_causal:
+                if (ce.source_id, ce.target_id) in swap_pairs:
+                    swapped.append(ce.model_copy(update={
+                        "source_id": ce.target_id,
+                        "target_id": ce.source_id,
+                    }))
+                    changes.append(
+                        f"Swapped causal edge direction: "
+                        f"{ce.source_id}→{ce.target_id} ⇒ "
+                        f"{ce.target_id}→{ce.source_id}."
+                    )
+                else:
+                    swapped.append(ce)
+            new_causal = swapped
+
+        # --- Locations dict: drop + rename ---
+        new_locations: Dict[str, Location] = {}
+        for lid, loc in ws.locations.items():
+            if lid in drop_locs:
+                changes.append(f"Dropped location '{lid}'.")
+                continue
+            new_lid = loc_renames.get(lid, lid)
+            if new_lid != lid:
+                changes.append(f"Renamed location '{lid}' → '{new_lid}'.")
+                new_locations[new_lid] = loc.model_copy(update={"id": new_lid})
+            else:
+                new_locations[lid] = loc
+
+        # --- Objects dict: drop + rename, with location_id rewrite ---
+        new_objects: Dict[str, NarrativeObject] = {}
+        for oid, obj in ws.objects.items():
+            if oid in drop_objs:
+                changes.append(f"Dropped object '{oid}'.")
+                continue
+            new_oid = obj_renames.get(oid, oid)
+            obj_update: dict = {}
+            if new_oid != oid:
+                obj_update["id"] = new_oid
+                changes.append(f"Renamed object '{oid}' → '{new_oid}'.")
+            new_loc = _rl(obj.location_id)
+            if new_loc in drop_locs:
+                obj_update["location_id"] = None
+            elif new_loc != obj.location_id:
+                obj_update["location_id"] = new_loc
+            new_objects[new_oid] = obj.model_copy(update=obj_update) if obj_update else obj
+
+        # --- Entities dict: drop-via-merge through entity_renames + rewrite location_id ---
+        merged_entities: Dict[str, Entity] = {}
+        for eid, ent in new_entities.items():
+            new_eid = ent_renames.get(eid, eid)
+            ent_update: dict = {}
+            if new_eid != eid:
+                ent_update["id"] = new_eid
+            # Rewrite location_id through loc_renames; null if dropped.
+            if ent.location_id:
+                new_loc = _rl(ent.location_id)
+                if new_loc in drop_locs:
+                    ent_update["location_id"] = None
+                elif new_loc != ent.location_id:
+                    ent_update["location_id"] = new_loc
+            # Rewrite belief target_ids through any-id mapping; null
+            # beliefs whose target was dropped.
+            if ent.beliefs:
+                new_bs: List[Belief] = []
+                bs_changed = False
+                for b in ent.beliefs:
+                    new_tid = _rid(b.target_id)
+                    if (new_tid and (new_tid in drop_objs or new_tid in drop_locs)):
+                        bs_changed = True
+                        continue  # drop the belief
+                    if new_tid != b.target_id:
+                        new_bs.append(b.model_copy(update={"target_id": new_tid}))
+                        bs_changed = True
+                    else:
+                        new_bs.append(b)
+                if bs_changed:
+                    ent_update["beliefs"] = new_bs
+            ent_final = ent.model_copy(update=ent_update) if ent_update else ent
+
+            if new_eid in merged_entities:
+                # Merge: concatenate beliefs (dedup on target_id) and
+                # concerns (dedup on (proposition_id, polarity)).
+                existing = merged_entities[new_eid]
+                merge_update: dict = {}
+                if ent_final.beliefs:
+                    seen_tids = {b.target_id for b in existing.beliefs}
+                    add_bs = [b for b in ent_final.beliefs if b.target_id not in seen_tids]
+                    if add_bs:
+                        merge_update["beliefs"] = list(existing.beliefs) + add_bs
+                if ent_final.concerns:
+                    seen_keys = {(c.proposition_id, c.polarity) for c in existing.concerns}
+                    add_cs = [
+                        c for c in ent_final.concerns
+                        if (c.proposition_id, c.polarity) not in seen_keys
+                    ]
+                    if add_cs:
+                        merge_update["concerns"] = list(existing.concerns) + add_cs
+                if merge_update:
+                    merged_entities[new_eid] = existing.model_copy(update=merge_update)
+                changes.append(
+                    f"Merged entity '{eid}' into '{new_eid}' "
+                    f"(beliefs/concerns concatenated, dedup applied)."
+                )
+            else:
+                merged_entities[new_eid] = ent_final
+                if new_eid != eid:
+                    changes.append(f"Renamed entity '{eid}' → '{new_eid}'.")
+        new_entities = merged_entities
+
+        # --- Events: rewrite ENT_/OBJ_/LOC_ refs everywhere, drop
+        #     target_ids that pointed at dropped objects/locations.
+        rewritten_events: List[EventNode] = []
+        for evt in new_events:
+            ev_update: dict = {}
+            new_actors = [_rid(a) for a in evt.actor_ids]
+            new_actors = [a for a in new_actors if a and a not in drop_objs and a not in drop_locs]
+            if new_actors != evt.actor_ids:
+                ev_update["actor_ids"] = new_actors
+            new_targets = [_rid(t) for t in evt.target_ids]
+            new_targets = [
+                t for t in new_targets
+                if t and t not in drop_objs and t not in drop_locs
+            ]
+            if new_targets != evt.target_ids:
+                ev_update["target_ids"] = new_targets
+            new_speaker = _re(evt.speaker_id) if evt.speaker_id else evt.speaker_id
+            if new_speaker != evt.speaker_id:
+                ev_update["speaker_id"] = new_speaker
+            new_addrs = [_re(a) for a in evt.addressee_ids]
+            new_addrs = [a for a in new_addrs if a]
+            if new_addrs != evt.addressee_ids:
+                ev_update["addressee_ids"] = new_addrs
+            rewritten_events.append(evt.model_copy(update=ev_update) if ev_update else evt)
+        new_events = rewritten_events
+
+        # --- Causal topology: rewrite ENT_/OBJ_/LOC_ endpoints ---
+        rewritten_causal: List[CausalEdge] = []
+        for ce in new_causal:
+            ce_update: dict = {}
+            new_src = _rid(ce.source_id)
+            new_tgt = _rid(ce.target_id)
+            # Drop the edge entirely if either endpoint was dropped.
+            if (
+                new_src in drop_objs or new_src in drop_locs
+                or new_tgt in drop_objs or new_tgt in drop_locs
+            ):
+                changes.append(
+                    f"Dropped causal edge {ce.source_id}→{ce.target_id} "
+                    f"(endpoint dropped by ontology repair)."
+                )
+                continue
+            if new_src != ce.source_id:
+                ce_update["source_id"] = new_src
+            if new_tgt != ce.target_id:
+                ce_update["target_id"] = new_tgt
+            if ce.rel_counterpart_id:
+                new_rc = _re(ce.rel_counterpart_id)
+                if new_rc != ce.rel_counterpart_id:
+                    ce_update["rel_counterpart_id"] = new_rc
+            rewritten_causal.append(ce.model_copy(update=ce_update) if ce_update else ce)
+        new_causal = rewritten_causal
+
+        # --- Social topology: rewrite ENT_ endpoints (+ drop if either is now missing) ---
+        rewritten_social: List[RelationshipEdge] = []
+        for re_edge in new_social:
+            re_update: dict = {}
+            new_src = _re(re_edge.source_entity_id)
+            new_tgt = _re(re_edge.target_entity_id)
+            if new_src == new_tgt:
+                # Self-loop after rename merge \u2014 drop.
+                changes.append(
+                    f"Dropped social self-loop after entity merge: "
+                    f"{re_edge.source_entity_id}→{re_edge.target_entity_id}."
+                )
+                continue
+            if new_src != re_edge.source_entity_id:
+                re_update["source_entity_id"] = new_src
+            if new_tgt != re_edge.target_entity_id:
+                re_update["target_entity_id"] = new_tgt
+            rewritten_social.append(re_edge.model_copy(update=re_update) if re_update else re_edge)
+        new_social = rewritten_social
+
+        # --- Spatial topology: rewrite LOC_/ENT_ endpoints, drop if endpoint dropped ---
+        rewritten_spatial: List[SpatialEdge] = []
+        for sp in new_spatial:
+            sp_update: dict = {}
+            new_src = _rid(sp.source_id)
+            new_tgt = _rid(sp.target_id)
+            if new_src in drop_locs or new_tgt in drop_locs:
+                changes.append(
+                    f"Dropped spatial edge {sp.source_id}→{sp.target_id} "
+                    f"(endpoint location dropped)."
+                )
+                continue
+            if new_src != sp.source_id:
+                sp_update["source_id"] = new_src
+            if new_tgt != sp.target_id:
+                sp_update["target_id"] = new_tgt
+            rewritten_spatial.append(sp.model_copy(update=sp_update) if sp_update else sp)
+        new_spatial = rewritten_spatial
+
+        # --- Channels: rewrite participant_ids (ENT_) ---
+        rewritten_channels: Dict[str, Channel] = {}
+        for cid, ch in new_channels.items():
+            new_pids = [_re(p) for p in (ch.participant_ids or [])]
+            new_pids = [p for p in new_pids if p]
+            # Dedup while preserving order (entity merges can collapse ids).
+            seen_p: set[str] = set()
+            deduped_pids: List[str] = []
+            for p in new_pids:
+                if p in seen_p:
+                    continue
+                seen_p.add(p)
+                deduped_pids.append(p)
+            if deduped_pids != list(ch.participant_ids or []):
+                rewritten_channels[cid] = ch.model_copy(update={"participant_ids": deduped_pids})
+            else:
+                rewritten_channels[cid] = ch
+        new_channels = rewritten_channels
+    else:
+        new_locations = ws.locations
+        new_objects = ws.objects
+
     new_ws = WorldStateV1(
-        locations=ws.locations,
-        objects=ws.objects,
+        locations=new_locations,
+        objects=new_objects,
         entities=new_entities,
         events=new_events,
         world_traits=patched_world_traits,
+        narrative_style=ws.narrative_style,
         causal_topology=new_causal,
         spatial_topology=new_spatial,
         channels=new_channels,
         social_topology=new_social,
+        propositions=new_propositions,
+        world_facts=list(ws.world_facts),
     )
     return new_ws, changes
 
@@ -8585,6 +13329,7 @@ def _build_correction_patch_agent(
 
 def _is_correction_regression(
     before: WorldStateV1, after: WorldStateV1,
+    patch: Optional["WorldStatePatch"] = None,
 ) -> Optional[str]:
     """Return a human-readable reason if *after* has lost too much vs *before*.
 
@@ -8592,15 +13337,56 @@ def _is_correction_regression(
     drops more than half of any topology or any entities, we reject the
     patch and keep the previous state. Returns ``None`` when the post-
     correction state is acceptable.
+
+    When *patch* is provided, the circuit-breaker accounts for the
+    counts the patch *explicitly* asks to remove (entity_renames merge
+    two entities into one; drop_object_ids / drop_location_ids reduce
+    those tiers; drop_channel_ids likewise). Without this allowance the
+    breaker would falsely reject every legitimate ontology-repair
+    patch.
     """
     def _ratio(a: int, b: int) -> float:
         return (a / b) if b > 0 else 1.0
 
-    if len(after.entities) < len(before.entities):
+    expected_entity_loss = (
+        len({k for k, v in patch.entity_renames.items() if k != v})
+        if patch else 0
+    )
+    expected_object_loss = (
+        len(patch.drop_object_ids)
+        + len({k for k, v in patch.object_renames.items() if k != v})
+        if patch else 0
+    )
+    expected_location_loss = (
+        len(patch.drop_location_ids)
+        + len({k for k, v in patch.location_renames.items() if k != v})
+        if patch else 0
+    )
+    expected_channel_loss = (
+        len(patch.drop_channel_ids)
+        if patch else 0
+    )
+
+    entity_shrink = len(before.entities) - len(after.entities)
+    if entity_shrink > expected_entity_loss:
         return (
             f"entities shrank from {len(before.entities)} to "
-            f"{len(after.entities)} (correction is not allowed to drop "
-            f"entities)"
+            f"{len(after.entities)} (correction asked for "
+            f"{expected_entity_loss} merges; got {entity_shrink} drops)"
+        )
+    object_shrink = len(before.objects) - len(after.objects)
+    if object_shrink > expected_object_loss:
+        return (
+            f"objects shrank from {len(before.objects)} to "
+            f"{len(after.objects)} (correction asked for "
+            f"{expected_object_loss} drops/renames; got {object_shrink})"
+        )
+    location_shrink = len(before.locations) - len(after.locations)
+    if location_shrink > expected_location_loss:
+        return (
+            f"locations shrank from {len(before.locations)} to "
+            f"{len(after.locations)} (correction asked for "
+            f"{expected_location_loss} drops/renames; got {location_shrink})"
         )
     if _ratio(len(after.events), len(before.events)) < 0.8:
         return (
@@ -8628,15 +13414,38 @@ def _is_correction_regression(
     # severs every belief / utterance provenance edge that pointed at
     # the dropped CHN_, which the existing belief-provenance warnings
     # only surface *after* corruption has been persisted.
-    if before.channels and _ratio(len(after.channels), len(before.channels)) < 0.5:
+    channel_shrink = len(before.channels) - len(after.channels)
+    if (
+        before.channels
+        and channel_shrink > expected_channel_loss
+        and _ratio(len(after.channels), len(before.channels)) < 0.5
+    ):
         return (
             f"channels shrank from {len(before.channels)} to "
-            f"{len(after.channels)} (>50% loss)"
+            f"{len(after.channels)} (>50% loss; correction asked for "
+            f"{expected_channel_loss} drops)"
         )
     if before.world_traits and _ratio(len(after.world_traits), len(before.world_traits)) < 0.5:
         return (
             f"world_traits shrank from {len(before.world_traits)} to "
             f"{len(after.world_traits)} (>50% loss)"
+        )
+    # Propositions / per-entity concerns are first-class affect-layer
+    # ontology — the correction agent has no path to legitimately
+    # remove >50% of either, so a regression there is almost certainly
+    # the same destructive-rewrite failure mode this circuit-breaker
+    # exists to catch.
+    if before.propositions and _ratio(len(after.propositions), len(before.propositions)) < 0.5:
+        return (
+            f"propositions shrank from {len(before.propositions)} to "
+            f"{len(after.propositions)} (>50% loss)"
+        )
+    before_concerns = sum(len(e.concerns) for e in before.entities.values())
+    after_concerns = sum(len(e.concerns) for e in after.entities.values())
+    if before_concerns and _ratio(after_concerns, before_concerns) < 0.5:
+        return (
+            f"total concerns shrank from {before_concerns} to "
+            f"{after_concerns} (>50% loss)"
         )
     return None
 
@@ -8709,7 +13518,7 @@ def _build_correction_subgraph(
     # Channels referenced in errors
     relevant_channels = [
         ch.model_dump(mode="json")
-        for ch in world_state.channels if ch.id in seed_chn
+        for ch in world_state.channels.values() if ch.id in seed_chn
     ]
 
     # Spatial edges touching any seed location or entity
@@ -8722,7 +13531,7 @@ def _build_correction_subgraph(
     # Social edges touching any seed entity
     relevant_social = [
         sr.model_dump(mode="json") for sr in world_state.social_topology
-        if sr.source_id in seed_ent or sr.target_id in seed_ent
+        if sr.source_entity_id in seed_ent or sr.target_entity_id in seed_ent
     ]
 
     # Ontology header — names only, no nested timelines / beliefs.
@@ -8924,7 +13733,7 @@ def _run_correction_patch(
         )
         return world_state, [], "apply_failed"
 
-    regression = _is_correction_regression(world_state, new_ws)
+    regression = _is_correction_regression(world_state, new_ws, patch=patch)
     if regression:
         logger.warning(
             "%s Rejected correction patch: %s. Keeping previous state. "
@@ -9036,18 +13845,144 @@ def _build_world_trait_timeline_agent(
     return agent
 
 
+def _step5_filter_events_for_trait(wt: GlobalTrait, events: List[EventNode]) -> List[EventNode]:
+    """Lexical pre-filter — keep events whose description plausibly relates
+    to the trait. Reduces per-call prompt size for the chunked Step-5
+    path; full event list is still passed when no keywords match anything
+    so the LLM has visibility into the timeline.
+    """
+    bag = (wt.name + " " + (wt.description or "")).lower()
+    keywords = {tok for tok in bag.replace("/", " ").replace(",", " ").split() if len(tok) >= 5}
+    if not keywords:
+        return events
+    filtered = [e for e in events if any(kw in (e.description or "").lower() for kw in keywords)]
+    if len(filtered) >= 5:
+        return filtered
+    return events  # not enough lexical hits to be worth narrowing
+
+
+def _step5_run_chunk(
+    agent: Agent,
+    sub_traits: Dict[str, GlobalTrait],
+    sub_events: List[EventNode],
+    timeout_s: float,
+) -> Optional[WorldTraitTimelineExtraction]:
+    """Execute a single Step-5 LLM call with timeout/retry protection.
+
+    Returns the extraction or None on terminal failure. ``ModelRetry`` is
+    handled by the agent itself (via ``output_retries``); this wrapper
+    only retries on TimeoutError / connection-style errors.
+    """
+    deps = _WorldTraitTimelineDeps(world_traits=sub_traits, events=sub_events)
+    prompt = (
+        f"Analyze the following {len(sub_traits)} world trait(s) against "
+        f"{len(sub_events)} events and identify any inflection points."
+    )
+    last_exc: Optional[BaseException] = None
+    for attempt in range(2):
+        try:
+            if timeout_s > 0:
+                # Run with a hard timeout in a worker thread.
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    fut = pool.submit(lambda: agent.run_sync(prompt, deps=deps, **_user_kwargs()))
+                    try:
+                        result = fut.result(timeout=timeout_s)
+                    except concurrent.futures.TimeoutError as te:
+                        last_exc = te
+                        logger.warning(
+                            "[Step 5] Timed out after %.0fs (attempt %d/2) for "
+                            "traits=%s; will retry once.",
+                            timeout_s, attempt + 1, sorted(sub_traits.keys()),
+                        )
+                        continue
+            else:
+                result = agent.run_sync(prompt, deps=deps, **_user_kwargs())
+            return result.output
+        except (TimeoutError, ConnectionError) as exc:
+            last_exc = exc
+            logger.warning(
+                "[Step 5] Transient error %r (attempt %d/2) for traits=%s; "
+                "will retry once.", exc, attempt + 1, sorted(sub_traits.keys()),
+            )
+            continue
+        except Exception:
+            logger.exception(
+                "[Step 5] Non-transient failure for traits=%s; not retrying.",
+                sorted(sub_traits.keys()),
+            )
+            return None
+    if last_exc is not None:
+        logger.error(
+            "[Step 5] Gave up after retries for traits=%s: %r",
+            sorted(sub_traits.keys()), last_exc,
+        )
+    return None
+
+
+async def _step5_run_chunk_async(
+    agent: Agent,
+    sub_traits: Dict[str, GlobalTrait],
+    sub_events: List[EventNode],
+    timeout_s: float,
+) -> Optional[WorldTraitTimelineExtraction]:
+    """Async variant of :func:`_step5_run_chunk` using ``asyncio.wait_for``."""
+    deps = _WorldTraitTimelineDeps(world_traits=sub_traits, events=sub_events)
+    prompt = (
+        f"Analyze the following {len(sub_traits)} world trait(s) against "
+        f"{len(sub_events)} events and identify any inflection points."
+    )
+    last_exc: Optional[BaseException] = None
+    for attempt in range(2):
+        try:
+            if timeout_s > 0:
+                result = await asyncio.wait_for(
+                    agent.run(prompt, deps=deps, **_user_kwargs()),
+                    timeout=timeout_s,
+                )
+            else:
+                result = await agent.run(prompt, deps=deps, **_user_kwargs())
+            return result.output
+        except asyncio.TimeoutError as te:
+            last_exc = te
+            logger.warning(
+                "[Step 5·Async] Timed out after %.0fs (attempt %d/2) for "
+                "traits=%s; will retry once.",
+                timeout_s, attempt + 1, sorted(sub_traits.keys()),
+            )
+            continue
+        except (TimeoutError, ConnectionError) as exc:
+            last_exc = exc
+            logger.warning(
+                "[Step 5·Async] Transient error %r (attempt %d/2) for traits=%s; "
+                "will retry once.", exc, attempt + 1, sorted(sub_traits.keys()),
+            )
+            continue
+        except Exception:
+            logger.exception(
+                "[Step 5·Async] Non-transient failure for traits=%s; not retrying.",
+                sorted(sub_traits.keys()),
+            )
+            return None
+    if last_exc is not None:
+        logger.error(
+            "[Step 5·Async] Gave up after retries for traits=%s: %r",
+            sorted(sub_traits.keys()), last_exc,
+        )
+    return None
+
+
 def extract_world_trait_timelines(
     ws: WorldStateV1,
-    config: ExtractionConfig | None = None,ƒhop
+    config: ExtractionConfig | None = None,
 ) -> WorldStateV1:
-    """Step 5: Post-assembly world trait timeline extraction.
+    """Step 5: Post-assembly world trait timeline extraction (gap-filler).
 
-    Given a fully assembled ``WorldStateV1`` with all events resolved,
-    runs a single focused LLM call to identify inflection points where
-    world traits changed due to specific events.
-
-    Returns the world state with ``state_timeline`` populated on each
-    ``GlobalTrait`` that experienced changes.
+    Per-chunk ``WorldTraitUpdate`` outputs (folded by
+    ``assemble_world_state``) are the authoritative source. This pass
+    fills gaps for WORLD_ ids that received zero per-chunk updates,
+    and does so per-trait with lexical event pre-filtering so each LLM
+    call sees a focused prompt rather than the entire event timeline.
     """
     config = config or ExtractionConfig()
 
@@ -9055,49 +13990,52 @@ def extract_world_trait_timelines(
         logger.info("[Step 5] No world traits — skipping timeline extraction.")
         return ws
 
-    agent = _build_world_trait_timeline_agent(config)
-    deps = _WorldTraitTimelineDeps(
-        world_traits=ws.world_traits,
-        events=ws.events,
-    )
-
-    logger.info(
-        "[Step 5] Extracting world trait timelines (%d traits, %d events) …",
-        len(ws.world_traits), len(ws.events),
-    )
-
-    try:
-        result = agent.run_sync(
-            f"Analyze the following {len(ws.world_traits)} world trait(s) against "
-            f"{len(ws.events)} events and identify any inflection points.",
-            deps=deps,
-            **_user_kwargs(),
+    chunk_covered = getattr(ws, "_chunk_world_trait_ids", frozenset())
+    gap_traits = {wid: wt for wid, wt in ws.world_traits.items() if wid not in chunk_covered}
+    if not gap_traits:
+        logger.info(
+            "[Step 5] All %d world traits covered by per-chunk updates "
+            "— skipping LLM gap-filler.", len(ws.world_traits),
         )
-        extraction = result.output
-        log_agent_output(logger, "WorldTraitTimeline", extraction)
-    except Exception:
-        logger.exception("[Step 5] World trait timeline extraction FAILED — skipping.")
         return ws
 
-    # Apply timelines to the world state
+    agent = _build_world_trait_timeline_agent(config)
+    timeout_s = float(getattr(config, "per_agent_call_timeout_seconds", 0) or 0)
+
+    logger.info(
+        "[Step 5] Gap-filling timelines for %d/%d world traits (per-trait LLM calls) …",
+        len(gap_traits), len(ws.world_traits),
+    )
+
+    aggregated: Dict[str, List[WorldTraitSnapshot]] = {}
+    for wid, wt in gap_traits.items():
+        sub_events = _step5_filter_events_for_trait(wt, ws.events)
+        extraction = _step5_run_chunk(agent, {wid: wt}, sub_events, timeout_s)
+        if extraction is None:
+            continue
+        log_agent_output(logger, "WorldTraitTimeline", extraction)
+        if wid in extraction.timelines and extraction.timelines[wid]:
+            aggregated[wid] = extraction.timelines[wid]
+
+    if not aggregated:
+        logger.info("[Step 5] Gap-filler produced no timelines — returning world unchanged.")
+        return ws
+
     updated_traits: Dict[str, GlobalTrait] = {}
     changes_applied = 0
     for wid, wt in ws.world_traits.items():
-        if wid in extraction.timelines and extraction.timelines[wid]:
-            sorted_timeline = sorted(extraction.timelines[wid], key=_snapshot_sort_key)
+        if wid in aggregated:
+            sorted_timeline = sorted(aggregated[wid], key=_snapshot_sort_key)
             updated_traits[wid] = wt.model_copy(update={"state_timeline": sorted_timeline})
             changes_applied += 1
-            logger.info(
-                "[Step 5] %s: %d inflection point(s) identified.",
-                wid, len(sorted_timeline),
-            )
+            logger.info("[Step 5] %s: %d inflection point(s) identified.", wid, len(sorted_timeline))
         else:
             updated_traits[wid] = wt
 
     ws = ws.model_copy(update={"world_traits": updated_traits})
     logger.info(
-        "[Step 5] World trait timeline extraction complete — %d/%d traits changed.",
-        changes_applied, len(ws.world_traits),
+        "[Step 5] Gap-filler complete — %d/%d gap traits filled.",
+        changes_applied, len(gap_traits),
     )
     return ws
 
@@ -9106,54 +14044,842 @@ async def extract_world_trait_timelines_async(
     ws: WorldStateV1,
     config: ExtractionConfig | None = None,
 ) -> WorldStateV1:
-    """Async variant of :func:`extract_world_trait_timelines`."""
+    """Async per-trait variant of :func:`extract_world_trait_timelines`.
+
+    Runs gap-filler calls in parallel via ``asyncio.gather`` with per-call
+    ``asyncio.wait_for`` timeouts.
+    """
     config = config or ExtractionConfig()
 
     if not ws.world_traits:
         logger.info("[Step 5·Async] No world traits — skipping timeline extraction.")
         return ws
 
+    chunk_covered = getattr(ws, "_chunk_world_trait_ids", frozenset())
+    gap_traits = {wid: wt for wid, wt in ws.world_traits.items() if wid not in chunk_covered}
+    if not gap_traits:
+        logger.info(
+            "[Step 5·Async] All %d world traits covered by per-chunk updates "
+            "— skipping LLM gap-filler.", len(ws.world_traits),
+        )
+        return ws
+
     agent = _build_world_trait_timeline_agent(config)
-    deps = _WorldTraitTimelineDeps(
-        world_traits=ws.world_traits,
-        events=ws.events,
-    )
+    timeout_s = float(getattr(config, "per_agent_call_timeout_seconds", 0) or 0)
 
     logger.info(
-        "[Step 5·Async] Extracting world trait timelines (%d traits, %d events) …",
-        len(ws.world_traits), len(ws.events),
+        "[Step 5·Async] Gap-filling timelines for %d/%d world traits (parallel per-trait) …",
+        len(gap_traits), len(ws.world_traits),
     )
 
-    try:
-        result = await agent.run(
-            f"Analyze the following {len(ws.world_traits)} world trait(s) against "
-            f"{len(ws.events)} events and identify any inflection points.",
-            deps=deps,
-            **_user_kwargs(),
-        )
-        extraction = result.output
-    except Exception:
-        logger.exception("[Step 5·Async] World trait timeline extraction FAILED — skipping.")
+    async def _one(wid: str, wt: GlobalTrait) -> Tuple[str, Optional[WorldTraitTimelineExtraction]]:
+        sub_events = _step5_filter_events_for_trait(wt, ws.events)
+        extraction = await _step5_run_chunk_async(agent, {wid: wt}, sub_events, timeout_s)
+        return wid, extraction
+
+    results = await asyncio.gather(*[_one(wid, wt) for wid, wt in gap_traits.items()])
+
+    aggregated: Dict[str, List[WorldTraitSnapshot]] = {}
+    for wid, extraction in results:
+        if extraction is None:
+            continue
+        if wid in extraction.timelines and extraction.timelines[wid]:
+            aggregated[wid] = extraction.timelines[wid]
+
+    if not aggregated:
+        logger.info("[Step 5·Async] Gap-filler produced no timelines — returning world unchanged.")
         return ws
 
     updated_traits: Dict[str, GlobalTrait] = {}
     changes_applied = 0
     for wid, wt in ws.world_traits.items():
-        if wid in extraction.timelines and extraction.timelines[wid]:
-            sorted_timeline = sorted(extraction.timelines[wid], key=_snapshot_sort_key)
+        if wid in aggregated:
+            sorted_timeline = sorted(aggregated[wid], key=_snapshot_sort_key)
             updated_traits[wid] = wt.model_copy(update={"state_timeline": sorted_timeline})
             changes_applied += 1
-            logger.info(
-                "[Step 5·Async] %s: %d inflection point(s) identified.",
-                wid, len(sorted_timeline),
-            )
+            logger.info("[Step 5·Async] %s: %d inflection point(s) identified.", wid, len(sorted_timeline))
         else:
             updated_traits[wid] = wt
 
     ws = ws.model_copy(update={"world_traits": updated_traits})
     logger.info(
-        "[Step 5·Async] World trait timeline extraction complete — %d/%d traits changed.",
-        changes_applied, len(ws.world_traits),
+        "[Step 5·Async] Gap-filler complete — %d/%d gap traits filled.",
+        changes_applied, len(gap_traits),
+    )
+    return ws
+
+
+# =====================================================================
+# Step 5c — Entity Concern Extraction (Affect Unification, Step 2)
+# =====================================================================
+
+
+class ConcernRegister(BaseModel):
+    """Per-entity Step-5c output — the entity's standing concerns."""
+    model_config = {"protected_namespaces": ()}
+    concerns: List[Concern] = Field(
+        default_factory=list,
+        description="3–7 standing fears / desires for this entity. May be empty.",
+    )
+
+
+class _ConcernExtractionDeps(BaseModel):
+    """Per-entity dependencies for the Step-5c concern agent."""
+    model_config = {"protected_namespaces": ()}
+    entity: Entity
+    propositions: List[Proposition]
+    involving_events: List[EventNode]
+
+
+def _build_concern_extraction_agent(
+    config: ExtractionConfig,
+) -> Agent[_ConcernExtractionDeps, ConcernRegister]:
+    """Construct the Step 5c entity-concern agent."""
+    agent: Agent[_ConcernExtractionDeps, ConcernRegister] = Agent(
+        _resolve_model(config.model),
+        deps_type=_ConcernExtractionDeps,
+        output_type=NativeOutput(ConcernRegister),
+        system_prompt=_load_prompt("concern_extraction.md"),
+        retries=config.output_retries,
+    )
+
+    @agent.system_prompt
+    def inject_entity_and_propositions(
+        ctx: RunContext[_ConcernExtractionDeps],
+    ) -> str:
+        ent = ctx.deps.entity
+        # Compact entity card.
+        trait_lines = [
+            f"  {k}: value={v.value:.2f}, inertia={v.inertia:.2f}"
+            for k, v in ent.traits.items()
+        ]
+        traits_block = "\n".join(trait_lines) if trait_lines else "  (none)"
+        belief_lines = [
+            f"  re {b.target_id}: '{b.perceived_state}' (conf={b.confidence:.2f})"
+            for b in ent.beliefs
+        ]
+        beliefs_block = "\n".join(belief_lines) if belief_lines else "  (none)"
+
+        # Proposition register (compact, capped to keep prompt small).
+        prop_cap = 120
+        props = ctx.deps.propositions[:prop_cap]
+        prop_lines = [
+            f"  {p.proposition_id} (kind={p.kind}, stakes={p.stakes:.2f}): "
+            f"{p.description}"
+            for p in props
+        ]
+        prop_overflow = (
+            f"  …(+{len(ctx.deps.propositions) - prop_cap} more propositions truncated)"
+            if len(ctx.deps.propositions) > prop_cap else ""
+        )
+        prop_block = (
+            "\n".join(prop_lines) + (("\n" + prop_overflow) if prop_overflow else "")
+        )
+
+        # Events involving this entity.
+        evt_cap = 60
+        evts = ctx.deps.involving_events[:evt_cap]
+        evt_lines = [
+            f"  {e.id} (fabula={e.fabula_time}, type={e.event_type}): "
+            f"{e.description}"
+            for e in evts
+        ]
+        evt_overflow = (
+            f"  …(+{len(ctx.deps.involving_events) - evt_cap} more events truncated)"
+            if len(ctx.deps.involving_events) > evt_cap else ""
+        )
+        evt_block = (
+            "\n".join(evt_lines) + (("\n" + evt_overflow) if evt_overflow else "")
+        )
+
+        return (
+            f"=== ENTITY: {ent.id} ({ent.name}) ===\n"
+            f"status={ent.status}; location_id={ent.location_id}\n"
+            f"traits:\n{traits_block}\n"
+            f"beliefs:\n{beliefs_block}\n\n"
+            f"=== EVENTS INVOLVING THIS ENTITY ({len(ctx.deps.involving_events)}) ===\n"
+            f"{evt_block}\n\n"
+            f"=== PROPOSITION REGISTER ({len(ctx.deps.propositions)}) ===\n"
+            f"VALID PROPOSITION IDs: {sorted(p.proposition_id for p in ctx.deps.propositions)[:40]}…\n"
+            f"{prop_block}\n\n"
+            "Identify this entity's 3–7 standing concerns. Each concern's "
+            "``proposition_id`` MUST appear in the register above."
+        )
+
+    @agent.output_validator
+    def validate_concerns(
+        ctx: RunContext[_ConcernExtractionDeps],
+        result: ConcernRegister,
+    ) -> ConcernRegister:
+        valid_prop_ids = {p.proposition_id for p in ctx.deps.propositions}
+        seen_pairs: set[tuple[str, str]] = set()
+        seen_ccn_ids: set[str] = set()
+        bad: List[str] = []
+        for c in result.concerns:
+            if c.proposition_id not in valid_prop_ids:
+                bad.append(
+                    f"Concern '{c.concern_id}' references unknown "
+                    f"proposition_id '{c.proposition_id}'."
+                )
+            pair = (c.proposition_id, c.polarity)
+            if pair in seen_pairs:
+                bad.append(
+                    f"Duplicate concern over ({c.proposition_id}, {c.polarity}) "
+                    f"— collapse into one."
+                )
+            seen_pairs.add(pair)
+            if c.concern_id in seen_ccn_ids:
+                bad.append(f"Duplicate concern_id '{c.concern_id}'.")
+            seen_ccn_ids.add(c.concern_id)
+        # Validate counter_concern_ids only references siblings in same response.
+        for c in result.concerns:
+            for ccid in c.counter_concern_ids:
+                if ccid not in seen_ccn_ids:
+                    bad.append(
+                        f"Concern '{c.concern_id}' has counter_concern_ids "
+                        f"entry '{ccid}' not present in this response."
+                    )
+        if bad:
+            raise ModelRetry(
+                "The following issues were found in the concern register. "
+                "Fix them:\n" + "\n".join(bad)
+            )
+        return result
+
+    return agent
+
+
+def _entities_eligible_for_concerns(
+    ws: WorldStateV1, min_appearances: int,
+) -> List[Entity]:
+    """Return entities that appear in at least ``min_appearances`` events."""
+    counts: Dict[str, int] = {}
+    for evt in ws.events:
+        for eid in set(evt.actor_ids) | set(evt.target_ids):
+            counts[eid] = counts.get(eid, 0) + 1
+    return [
+        ent for eid, ent in ws.entities.items()
+        if counts.get(eid, 0) >= min_appearances
+    ]
+
+
+def _events_involving(ws: WorldStateV1, entity_id: str) -> List[EventNode]:
+    return [
+        e for e in ws.events
+        if entity_id in set(e.actor_ids) or entity_id in set(e.target_ids)
+    ]
+
+
+def _ensure_propositions_for_concerns(ws: WorldStateV1) -> None:
+    """Synthesise propositions if absent — concerns reference them by id."""
+    if ws.propositions:
+        return
+    # Lazy import to avoid a circular import at module load time.
+    from shadow_loom.affect_unification import synthesise_propositions
+    synthesise_propositions(ws)
+
+
+def extract_entity_concerns(
+    ws: WorldStateV1,
+    config: ExtractionConfig | None = None,
+) -> WorldStateV1:
+    """Step 5c: Per-entity standing concern (fear/desire) extraction.
+
+    For every entity that participates in at least
+    ``config.concern_min_event_appearances`` events, runs one focused
+    LLM call against the synthesised ``Proposition`` register and
+    populates ``Entity.concerns``. Idempotent — entities with an
+    already-populated ``concerns`` list are skipped.
+    """
+    config = config or ExtractionConfig()
+    if not config.enable_concern_extraction:
+        logger.info("[Step 5c] Concern extraction disabled — skipping.")
+        return ws
+    if not ws.entities:
+        return ws
+
+    _ensure_propositions_for_concerns(ws)
+    eligible = _entities_eligible_for_concerns(
+        ws, config.concern_min_event_appearances,
+    )
+    eligible = [e for e in eligible if not e.concerns]
+    if not eligible:
+        logger.info("[Step 5c] No eligible entities for concern extraction.")
+        return ws
+
+    agent = _build_concern_extraction_agent(config)
+    logger.info(
+        "[Step 5c] Extracting concerns for %d entit%s …",
+        len(eligible), "y" if len(eligible) == 1 else "ies",
+    )
+
+    updated_entities: Dict[str, Entity] = dict(ws.entities)
+    n_concerns_total = 0
+    for ent in eligible:
+        deps = _ConcernExtractionDeps(
+            entity=ent,
+            propositions=ws.propositions,
+            involving_events=_events_involving(ws, ent.id),
+        )
+        try:
+            result = agent.run_sync(
+                f"Extract standing concerns for entity {ent.id} ({ent.name}).",
+                deps=deps,
+                **_user_kwargs(),
+            )
+            concerns = list(result.output.concerns)
+            log_agent_output(logger, f"Concerns·{ent.id}", result.output)
+        except Exception:
+            logger.exception(
+                "[Step 5c] Concern extraction FAILED for %s — leaving empty.",
+                ent.id,
+            )
+            continue
+        if concerns:
+            updated_entities[ent.id] = ent.model_copy(update={"concerns": concerns})
+            n_concerns_total += len(concerns)
+            logger.info("[Step 5c] %s: %d concern(s).", ent.id, len(concerns))
+
+    ws = ws.model_copy(update={"entities": updated_entities})
+    logger.info(
+        "[Step 5c] Concern extraction complete — %d concerns across %d entit%s.",
+        n_concerns_total, len(eligible), "y" if len(eligible) == 1 else "ies",
+    )
+    return ws
+
+
+async def extract_entity_concerns_async(
+    ws: WorldStateV1,
+    config: ExtractionConfig | None = None,
+) -> WorldStateV1:
+    """Async variant of :func:`extract_entity_concerns`.
+
+    Concerns for distinct entities are independent so the LLM calls
+    fan out concurrently (bounded by ``config.max_concurrent_chunks``
+    when present, else unbounded — the per-entity prompts are small).
+    """
+    config = config or ExtractionConfig()
+    if not config.enable_concern_extraction:
+        logger.info("[Step 5c·Async] Concern extraction disabled — skipping.")
+        return ws
+    if not ws.entities:
+        return ws
+
+    _ensure_propositions_for_concerns(ws)
+    eligible = _entities_eligible_for_concerns(
+        ws, config.concern_min_event_appearances,
+    )
+    pre_covered = sum(1 for e in eligible if e.concerns)
+    eligible = [e for e in eligible if not e.concerns]
+    if pre_covered:
+        logger.info(
+            "[Step 5c\u00b7Async] Phase D gating: %d eligible entit%s already "
+            "covered by Phase A/C catalogue seeds \u2014 LLM call skipped for them.",
+            pre_covered, "y" if pre_covered == 1 else "ies",
+        )
+    if not eligible:
+        logger.info("[Step 5c\u00b7Async] No eligible entities for concern extraction.")
+        return ws
+
+    agent = _build_concern_extraction_agent(config)
+    logger.info(
+        "[Step 5c·Async] Extracting concerns for %d entit%s …",
+        len(eligible), "y" if len(eligible) == 1 else "ies",
+    )
+
+    sem_size = getattr(config, "max_concurrent_chunks", 0) or len(eligible)
+    sem = asyncio.Semaphore(max(1, sem_size))
+
+    async def _one(ent: Entity) -> tuple[str, List[Concern]]:
+        deps = _ConcernExtractionDeps(
+            entity=ent,
+            propositions=ws.propositions,
+            involving_events=_events_involving(ws, ent.id),
+        )
+        async with sem:
+            try:
+                result = await agent.run(
+                    f"Extract standing concerns for entity {ent.id} ({ent.name}).",
+                    deps=deps,
+                    **_user_kwargs(),
+                )
+                return ent.id, list(result.output.concerns)
+            except Exception:
+                logger.exception(
+                    "[Step 5c·Async] Concern extraction FAILED for %s — "
+                    "leaving empty.", ent.id,
+                )
+                return ent.id, []
+
+    results = await asyncio.gather(*(_one(e) for e in eligible))
+
+    updated_entities: Dict[str, Entity] = dict(ws.entities)
+    n_concerns_total = 0
+    for eid, concerns in results:
+        if concerns:
+            updated_entities[eid] = updated_entities[eid].model_copy(
+                update={"concerns": concerns},
+            )
+            n_concerns_total += len(concerns)
+            logger.info("[Step 5c·Async] %s: %d concern(s).", eid, len(concerns))
+
+    ws = ws.model_copy(update={"entities": updated_entities})
+    logger.info(
+        "[Step 5c·Async] Concern extraction complete — %d concerns across %d entit%s.",
+        n_concerns_total, len(eligible), "y" if len(eligible) == 1 else "ies",
+    )
+    return ws
+
+
+# =====================================================================
+# Step 5d — Belief Proposition Clustering (Affect Unification, Step 3 LLM half)
+# =====================================================================
+
+
+class BeliefPropositionCluster(BaseModel):
+    """One cluster of equivalent ``perceived_state`` strings → one Proposition."""
+    model_config = {"protected_namespaces": ()}
+    proposition: Proposition
+    perceived_states: List[str] = Field(
+        description=(
+            "Verbatim ``Belief.perceived_state`` strings from the input that "
+            "all map to ``proposition``. Every input string must appear in "
+            "exactly one cluster."
+        ),
+    )
+
+
+class BeliefClusterRegister(BaseModel):
+    """Per-target Step-5d output — clusters of equivalent beliefs."""
+    model_config = {"protected_namespaces": ()}
+    clusters: List[BeliefPropositionCluster] = Field(default_factory=list)
+
+
+class _BeliefClusteringDeps(BaseModel):
+    """Per-target dependencies for the Step-5d clustering agent."""
+    model_config = {"protected_namespaces": ()}
+    target_id: str
+    target_name: str
+    target_kind: Literal["entity", "object", "location", "world_trait"]
+    # Tuples of (entity_id, perceived_state, confidence) for context.
+    held_by: List[tuple[str, str, float]] = Field(default_factory=list)
+    # Distinct perceived_state strings to cluster.
+    distinct_perceived_states: List[str] = Field(default_factory=list)
+
+
+def _build_belief_clustering_agent(
+    config: ExtractionConfig,
+) -> Agent[_BeliefClusteringDeps, BeliefClusterRegister]:
+    """Construct the Step 5d belief-proposition-clustering agent."""
+    agent: Agent[_BeliefClusteringDeps, BeliefClusterRegister] = Agent(
+        _resolve_model(config.model),
+        deps_type=_BeliefClusteringDeps,
+        output_type=NativeOutput(BeliefClusterRegister),
+        system_prompt=_load_prompt("belief_proposition_clustering.md"),
+        retries=config.output_retries,
+    )
+
+    @agent.system_prompt
+    def inject_target_and_beliefs(
+        ctx: RunContext[_BeliefClusteringDeps],
+    ) -> str:
+        held_lines = [
+            f"  {eid} (conf={conf:.2f}): {state!r}"
+            for eid, state, conf in ctx.deps.held_by
+        ]
+        distinct_lines = [f"  {i+1}. {s!r}" for i, s in enumerate(ctx.deps.distinct_perceived_states)]
+        return (
+            f"=== TARGET ===\n"
+            f"id={ctx.deps.target_id}; name={ctx.deps.target_name}; "
+            f"kind={ctx.deps.target_kind}\n\n"
+            f"=== ALL BELIEFS HELD ABOUT THIS TARGET ({len(ctx.deps.held_by)}) ===\n"
+            + ("\n".join(held_lines) if held_lines else "  (none)")
+            + "\n\n"
+            f"=== DISTINCT PERCEIVED_STATE STRINGS TO CLUSTER ({len(ctx.deps.distinct_perceived_states)}) ===\n"
+            + ("\n".join(distinct_lines) if distinct_lines else "  (none)")
+            + "\n\nCluster the distinct strings into propositions. Every "
+            "supplied string MUST appear in exactly one cluster's "
+            "``perceived_states``. Negation pairs are TWO propositions, "
+            "not one."
+        )
+
+    @agent.output_validator
+    def validate_clusters(
+        ctx: RunContext[_BeliefClusteringDeps],
+        result: BeliefClusterRegister,
+    ) -> BeliefClusterRegister:
+        bad: List[str] = []
+        # 1. Every input string must appear exactly once across clusters.
+        seen_strings: Dict[str, int] = {}
+        for cl in result.clusters:
+            for s in cl.perceived_states:
+                seen_strings[s] = seen_strings.get(s, 0) + 1
+        for required in ctx.deps.distinct_perceived_states:
+            if required not in seen_strings:
+                bad.append(f"perceived_state {required!r} is missing from all clusters.")
+            elif seen_strings.get(required, 0) > 1:
+                bad.append(
+                    f"perceived_state {required!r} appears in "
+                    f"{seen_strings[required]} clusters; must be exactly one."
+                )
+        # 2. Unique proposition_ids inside this response.
+        seen_ids: set[str] = set()
+        for cl in result.clusters:
+            pid = cl.proposition.proposition_id
+            if pid in seen_ids:
+                bad.append(f"Duplicate proposition_id {pid!r} in this response.")
+            seen_ids.add(pid)
+            if not pid.startswith("PROP_"):
+                bad.append(f"proposition_id {pid!r} must start with 'PROP_'.")
+        # 3. The target_id should appear in each proposition's referent_ids.
+        for cl in result.clusters:
+            if ctx.deps.target_id not in cl.proposition.referent_ids:
+                bad.append(
+                    f"Proposition {cl.proposition.proposition_id!r} omits "
+                    f"target {ctx.deps.target_id!r} from referent_ids."
+                )
+        if bad:
+            raise ModelRetry(
+                "The following issues were found in the belief-cluster register. "
+                "Fix them:\n" + "\n".join(bad)
+            )
+        return result
+
+    return agent
+
+
+def _gather_unbound_beliefs(
+    ws: WorldStateV1,
+) -> Dict[str, List[tuple[str, str, float]]]:
+    """Group unbound character beliefs by ``target_id``.
+
+    Returns ``{target_id: [(entity_id, perceived_state, confidence), ...]}``
+    for every belief without a ``proposition_id`` whose target is NOT an
+    event (event-target beliefs are handled by the deterministic
+    ``backfill_character_belief_propositions`` pass).
+    """
+    event_ids = {e.id for e in ws.events}
+    out: Dict[str, List[tuple[str, str, float]]] = {}
+    for eid, ent in ws.entities.items():
+        # Audience entity is synthesised after this pass — skip if seen.
+        if eid == "ENT_AUDIENCE":
+            continue
+        # Walk both initial beliefs and timeline beliefs_added.
+        for b in ent.beliefs:
+            if b.proposition_id or b.target_id in event_ids:
+                continue
+            out.setdefault(b.target_id, []).append(
+                (eid, b.perceived_state, float(b.confidence)),
+            )
+        for snap in ent.state_timeline:
+            for b in snap.beliefs_added:
+                if b.proposition_id or b.target_id in event_ids:
+                    continue
+                out.setdefault(b.target_id, []).append(
+                    (eid, b.perceived_state, float(b.confidence)),
+                )
+    return out
+
+
+def _classify_target(ws: WorldStateV1, target_id: str) -> Literal[
+    "entity", "object", "location", "world_trait",
+]:
+    if target_id in ws.entities:
+        return "entity"
+    if target_id in ws.objects:
+        return "object"
+    if target_id in ws.locations:
+        return "location"
+    return "world_trait"
+
+
+def _target_name(ws: WorldStateV1, target_id: str) -> str:
+    for store in (ws.entities, ws.objects, ws.locations, ws.world_traits):
+        if target_id in store:
+            obj = store[target_id]
+            return getattr(obj, "name", target_id) or target_id
+    return target_id
+
+
+def _apply_belief_clusters(
+    ws: WorldStateV1,
+    target_id: str,
+    clusters: List[BeliefPropositionCluster],
+) -> int:
+    """Assign ``proposition_id`` to every belief about ``target_id`` whose
+    ``perceived_state`` matches a cluster member. Returns the number of
+    beliefs updated.
+    """
+    # Build perceived_state → proposition_id index for this target.
+    state_to_prop: Dict[str, str] = {}
+    for cl in clusters:
+        for s in cl.perceived_states:
+            state_to_prop[s] = cl.proposition.proposition_id
+
+    n = 0
+    for ent in ws.entities.values():
+        if ent.id == "ENT_AUDIENCE":
+            continue
+        for b in ent.beliefs:
+            if b.proposition_id or b.target_id != target_id:
+                continue
+            pid = state_to_prop.get(b.perceived_state)
+            if pid:
+                b.proposition_id = pid
+                n += 1
+        for snap in ent.state_timeline:
+            for b in snap.beliefs_added:
+                if b.proposition_id or b.target_id != target_id:
+                    continue
+                pid = state_to_prop.get(b.perceived_state)
+                if pid:
+                    b.proposition_id = pid
+                    n += 1
+    return n
+
+
+def cluster_belief_propositions(
+    ws: WorldStateV1,
+    config: ExtractionConfig | None = None,
+) -> WorldStateV1:
+    """Step 5d: LLM-driven proposition clustering for non-event beliefs.
+
+    For every (non-event) belief target with at least
+    ``config.belief_cluster_min_beliefs`` beliefs across entities,
+    runs one focused LLM call to cluster equivalent ``perceived_state``
+    strings into shared ``Proposition`` records. Newly emitted
+    propositions are appended to ``ws.propositions`` and matched
+    beliefs receive a ``proposition_id``.
+
+    Idempotent — beliefs with an existing ``proposition_id`` are
+    skipped, and previously clustered targets contribute zero
+    distinct strings on a second pass.
+    """
+    config = config or ExtractionConfig()
+    if not getattr(config, "enable_belief_clustering", True):
+        logger.info("[Step 5d] Belief clustering disabled — skipping.")
+        return ws
+
+    # Always run the cheap deterministic event-target backfill first,
+    # then the deterministic single-referent-match backfill. Both are
+    # cheap, idempotent, and shrink the work the LLM clustering pass
+    # has to do.
+    from shadow_loom.affect_unification import (
+        backfill_belief_propositions_by_referent,
+        backfill_character_belief_propositions,
+        synthesise_propositions,
+    )
+    if not ws.propositions:
+        synthesise_propositions(ws)
+    n_event_bound = backfill_character_belief_propositions(ws)
+    if n_event_bound:
+        logger.info(
+            "[Step 5d] Deterministic event-target backfill bound %d beliefs.",
+            n_event_bound,
+        )
+    n_referent_bound = backfill_belief_propositions_by_referent(ws)
+    if n_referent_bound:
+        logger.info(
+            "[Step 5d] Deterministic single-referent backfill bound %d beliefs.",
+            n_referent_bound,
+        )
+
+    grouped = _gather_unbound_beliefs(ws)
+    min_beliefs = getattr(config, "belief_cluster_min_beliefs", 2)
+    eligible_targets = [t for t, lst in grouped.items() if len(lst) >= min_beliefs]
+    if not eligible_targets:
+        logger.info("[Step 5d] No eligible targets for belief clustering.")
+        return ws
+
+    agent = _build_belief_clustering_agent(config)
+    new_props: List[Proposition] = []
+    n_total = 0
+    for tid in eligible_targets:
+        held = grouped[tid]
+        distinct = sorted({state for _, state, _ in held})
+        deps = _BeliefClusteringDeps(
+            target_id=tid,
+            target_name=_target_name(ws, tid),
+            target_kind=_classify_target(ws, tid),
+            held_by=held,
+            distinct_perceived_states=distinct,
+        )
+        try:
+            result = agent.run_sync(
+                f"Cluster {len(distinct)} distinct perceived_state strings "
+                f"about target {tid}.",
+                deps=deps,
+                **_user_kwargs(),
+            )
+            log_agent_output(logger, f"BeliefClusters·{tid}", result.output)
+        except Exception:
+            logger.exception(
+                "[Step 5d] Belief clustering FAILED for %s — leaving unbound.",
+                tid,
+            )
+            continue
+        clusters = list(result.output.clusters)
+        n_bound = _apply_belief_clusters(ws, tid, clusters)
+        if n_bound:
+            new_props.extend(cl.proposition for cl in clusters)
+            n_total += n_bound
+            logger.info(
+                "[Step 5d] %s: %d clusters, %d beliefs bound.",
+                tid, len(clusters), n_bound,
+            )
+
+    if new_props:
+        # De-dupe by proposition_id against what's already on the world.
+        existing = {p.proposition_id for p in ws.propositions}
+        ws.propositions = list(ws.propositions) + [
+            p for p in new_props if p.proposition_id not in existing
+        ]
+
+    logger.info(
+        "[Step 5d] Belief clustering complete — %d beliefs bound to %d new propositions.",
+        n_total, len(new_props),
+    )
+    return ws
+
+
+async def cluster_belief_propositions_async(
+    ws: WorldStateV1,
+    config: ExtractionConfig | None = None,
+) -> WorldStateV1:
+    """Async variant of :func:`cluster_belief_propositions`."""
+    config = config or ExtractionConfig()
+    if not getattr(config, "enable_belief_clustering", True):
+        logger.info("[Step 5d·Async] Belief clustering disabled — skipping.")
+        return ws
+
+    from shadow_loom.affect_unification import (
+        backfill_belief_propositions_by_referent,
+        backfill_character_belief_propositions,
+        synthesise_propositions,
+    )
+    if not ws.propositions:
+        synthesise_propositions(ws)
+    n_event_bound = backfill_character_belief_propositions(ws)
+    if n_event_bound:
+        logger.info(
+            "[Step 5d·Async] Deterministic event-target backfill bound %d beliefs.",
+            n_event_bound,
+        )
+    n_referent_bound = backfill_belief_propositions_by_referent(ws)
+    if n_referent_bound:
+        logger.info(
+            "[Step 5d·Async] Deterministic single-referent backfill bound %d beliefs.",
+            n_referent_bound,
+        )
+
+    grouped = _gather_unbound_beliefs(ws)
+    min_beliefs = getattr(config, "belief_cluster_min_beliefs", 2)
+    eligible_targets = [t for t, lst in grouped.items() if len(lst) >= min_beliefs]
+    if not eligible_targets:
+        logger.info("[Step 5d·Async] No eligible targets for belief clustering.")
+        return ws
+
+    agent = _build_belief_clustering_agent(config)
+    sem_size = getattr(config, "max_concurrent_chunks", 0) or len(eligible_targets)
+    sem = asyncio.Semaphore(max(1, sem_size))
+
+    async def _one(tid: str) -> tuple[str, List[BeliefPropositionCluster]]:
+        held = grouped[tid]
+        distinct = sorted({state for _, state, _ in held})
+        deps = _BeliefClusteringDeps(
+            target_id=tid,
+            target_name=_target_name(ws, tid),
+            target_kind=_classify_target(ws, tid),
+            held_by=held,
+            distinct_perceived_states=distinct,
+        )
+        async with sem:
+            try:
+                result = await agent.run(
+                    f"Cluster {len(distinct)} distinct perceived_state "
+                    f"strings about target {tid}.",
+                    deps=deps,
+                    **_user_kwargs(),
+                )
+                return tid, list(result.output.clusters)
+            except Exception:
+                logger.exception(
+                    "[Step 5d·Async] Belief clustering FAILED for %s — "
+                    "leaving unbound.", tid,
+                )
+                return tid, []
+
+    results = await asyncio.gather(*(_one(t) for t in eligible_targets))
+
+    new_props: List[Proposition] = []
+    n_total = 0
+    for tid, clusters in results:
+        if not clusters:
+            continue
+        n_bound = _apply_belief_clusters(ws, tid, clusters)
+        if n_bound:
+            new_props.extend(cl.proposition for cl in clusters)
+            n_total += n_bound
+            logger.info(
+                "[Step 5d·Async] %s: %d clusters, %d beliefs bound.",
+                tid, len(clusters), n_bound,
+            )
+
+    if new_props:
+        existing = {p.proposition_id for p in ws.propositions}
+        ws.propositions = list(ws.propositions) + [
+            p for p in new_props if p.proposition_id not in existing
+        ]
+
+    logger.info(
+        "[Step 5d·Async] Belief clustering complete — %d beliefs bound to %d new propositions.",
+        n_total, len(new_props),
+    )
+    return ws
+
+
+# ----------------------------------------------------------------------
+# Step 5e — synthesise ENT_AUDIENCE (Affect Unification, Step 4)
+# ----------------------------------------------------------------------
+def _maybe_synthesise_audience_entity(
+    ws: WorldStateV1,
+    config: ExtractionConfig | None = None,
+) -> WorldStateV1:
+    """Synthesise the reserved ``ENT_AUDIENCE`` entity, if enabled.
+
+    Deterministic, no LLM cost. Walks the syuzhet stream and emits
+    graded-confidence ``Belief`` snapshots so the unified affect scorers
+    can read audience belief uniformly with character belief. See
+    ``shadow_loom.affect_unification.synthesise_audience_entity`` for
+    the substrate logic and ``/memories/repo/affect-unification-plan.md``
+    Step 4 for context.
+    """
+    config = config or ExtractionConfig()
+    if not getattr(config, "enable_audience_synthesis", True):
+        logger.info("[Step 5e] Audience synthesis disabled — skipping.")
+        return ws
+
+    from shadow_loom.affect_unification import (
+        AUDIENCE_ID,
+        synthesise_audience_entity,
+        synthesise_propositions,
+    )
+
+    if not ws.propositions:
+        synthesise_propositions(ws)
+
+    synthesise_audience_entity(ws)
+
+    audience = ws.entities.get(AUDIENCE_ID)
+    n_snapshots = len(audience.state_timeline) if audience is not None else 0
+    n_beliefs = (
+        sum(len(s.beliefs_added) for s in audience.state_timeline)
+        if audience is not None else 0
+    )
+    logger.info(
+        "[Step 5e] Audience synthesis complete — %s populated with %d "
+        "state-timeline snapshots (%d belief updates).",
+        AUDIENCE_ID, n_snapshots, n_beliefs,
     )
     return ws
 
@@ -9340,6 +15066,247 @@ def validate_world_state(
 
 
 # =====================================================================
+# Continuation Quality Bridge
+# =====================================================================
+#
+# When generated continuation prose (rung-1 / rung-2 / rung-3 / directive
+# / manual-edit) is parsed back into topology and folded into the parent
+# world via ``VersionedWorldModel.merge``, the resulting world state was
+# historically persisted *without* running the same auto-repair +
+# programmatic-validation + LLM-correction loop that raw-text ingestion
+# applies. That meant orphan events, dangling ids, retrograde
+# fabula_times, dead actors emitting events, and other structural
+# regressions could silently land on the canonical (or shadow) branch.
+#
+# ``validate_and_correct_world_state_async`` exposes that quality stack
+# as a reusable async helper. It is a slice of ``run_extraction_async``
+# from the auto-repair line through the correction retry loop and the
+# final-pass validation snapshot — no per-chunk extraction, no
+# ontology/affect/research re-passes, just the validation + correction
+# block. Callers are expected to have *already* assembled the world
+# state (via ``run_extraction_async`` for raw text or
+# ``extract_topology_from_prose`` + ``vwm.merge`` for continuation
+# prose); this helper turns it into a validated world state with the
+# same guarantees the ingestion pipeline gives.
+#
+# Returns ``(corrected_ws, report)``. The ``report`` is a
+# ``ValidationReport`` whose ``repairs`` field aggregates auto-repair
+# and correction-agent change logs across every iteration. When
+# ``report.is_valid`` is False the caller's quarantine policy decides
+# whether to persist the result (``patch_world_state_quarantined`` /
+# ``pipeline_quarantined`` source labels exist for this purpose).
+async def validate_and_correct_world_state_async(
+    world_state: WorldStateV1,
+    config: ExtractionConfig | None = None,
+    *,
+    log_prefix: str = "[ContinuationBridge]",
+) -> Tuple[WorldStateV1, ValidationReport]:
+    """Run auto-repair + validate + correction loop on an assembled world.
+
+    Mirrors the post-assembly quality block in
+    :func:`run_extraction_async` so continuation-prose merges (rung-2,
+    rung-3, directive, manual-edit) get the same structural guarantees
+    raw-text ingestion gives. Skips the per-chunk extraction stack
+    (Physics/Social/Affect) and the ontology / world-trait /
+    concern-extraction passes — those have already run upstream.
+    """
+
+    config = config or ExtractionConfig()
+    repairs: List[str] = []
+
+    # Auto-repair pass — cheap, idempotent, fixes the structural
+    # regressions a deterministic pass can handle (dangling ids,
+    # duplicate edges, normalised fabula_times) before the LLM is
+    # asked to look at anything.
+    try:
+        world_state, initial_repairs = _auto_repair(world_state)
+    except Exception:
+        logger.exception(
+            "%s Auto-repair raised; continuing with un-repaired world.",
+            log_prefix,
+        )
+        initial_repairs = []
+    if initial_repairs:
+        repairs.extend(initial_repairs)
+        logger.info(
+            "%s Auto-repair fixed %d issue(s).",
+            log_prefix, len(initial_repairs),
+        )
+
+    # Programmatic + LLM validation. Offloaded to a worker thread
+    # because ``validate_world_state`` calls ``agent.run_sync``
+    # internally and we may be inside a running event loop.
+    report = await asyncio.to_thread(validate_world_state, world_state, config)
+
+    pre_correction_event_signature = tuple(
+        (e.id, e.fabula_time) for e in world_state.events
+    )
+
+    # Correction retry loop — same shape as ``run_extraction_async``:
+    # oscillation guard, compact iteration log, empty-patch early exit,
+    # transient-failure tolerance.
+    seen_error_signatures: set[Tuple[Tuple[str, str], ...]] = set()
+    correction_history: List[Dict[str, Any]] = []
+    for retry_num in range(config.max_correction_retries):
+        prog_errors = [i for i in report.issues if i.severity == "error"]
+        if not prog_errors:
+            break
+
+        error_signature = tuple(sorted(
+            (i.category, i.detail) for i in prog_errors
+        ))
+        if error_signature in seen_error_signatures:
+            logger.warning(
+                "%s Same error set recurred (oscillation detected) — "
+                "breaking out with %d error(s) remaining.",
+                log_prefix, len(prog_errors),
+            )
+            break
+        seen_error_signatures.add(error_signature)
+
+        iter_log_prefix = (
+            f"{log_prefix}·Correction "
+            f"{retry_num + 1}/{config.max_correction_retries}"
+        )
+        logger.info(
+            "%s %d errors remain — running patch-based correction agent.",
+            iter_log_prefix, len(prog_errors),
+        )
+
+        iter_errors_compact = [
+            f"[{i.category}] {i.detail}" for i in prog_errors
+        ]
+        new_world_state, change_log, patch_status = await asyncio.to_thread(
+            _run_correction_patch,
+            world_state, prog_errors, config, iter_log_prefix,
+            correction_history,
+        )
+        correction_history.append({
+            "iteration": retry_num + 1,
+            "status": patch_status,
+            "errors": iter_errors_compact,
+            "changes": list(change_log),
+        })
+        if patch_status == "empty_patch":
+            logger.info(
+                "%s Correction agent returned an intentional empty patch; "
+                "ending correction loop with %d error(s) remaining.",
+                iter_log_prefix, len(prog_errors),
+            )
+            break
+        if not change_log:
+            # Transient failure (agent_failed / apply_failed /
+            # regression). Burn one slot and let the oscillation guard
+            # decide when to stop.
+            continue
+        world_state = new_world_state
+        repairs.extend(change_log)
+
+        world_state = _normalize_fabula_times(
+            world_state, config.fabula_time_spacing,
+        )
+        world_state, new_repairs = _auto_repair(world_state)
+        if new_repairs:
+            repairs.extend(new_repairs)
+        report = await asyncio.to_thread(
+            validate_world_state, world_state, config,
+        )
+
+    post_correction_event_signature = tuple(
+        (e.id, e.fabula_time) for e in world_state.events
+    )
+    if (
+        post_correction_event_signature != pre_correction_event_signature
+        and world_state.world_traits
+    ):
+        logger.info(
+            "%s Re-running world-trait timeline extraction after "
+            "correction touched events.",
+            log_prefix,
+        )
+        try:
+            world_state = await extract_world_trait_timelines_async(
+                world_state, config,
+            )
+            world_state, post_repairs = _auto_repair(world_state)
+            if post_repairs:
+                repairs.extend(post_repairs)
+            report = await asyncio.to_thread(
+                validate_world_state, world_state, config,
+            )
+        except Exception:
+            logger.exception(
+                "%s Post-correction timeline re-extraction failed — "
+                "keeping pre-correction timelines.",
+                log_prefix,
+            )
+
+    # Final-pass validation snapshot so ``report`` always describes
+    # the world state we actually return.
+    try:
+        final_report = await asyncio.to_thread(
+            validate_world_state, world_state, config,
+        )
+        final_report.repairs = list(repairs)
+        report = final_report
+    except Exception:
+        logger.exception(
+            "%s Final-pass validation failed — returning the "
+            "pre-final report.",
+            log_prefix,
+        )
+        report.repairs = list(repairs)
+
+    remaining_errors = [
+        i for i in report.issues if i.severity == "error"
+    ]
+    if remaining_errors:
+        logger.warning(
+            "%s Continuation quality bridge complete — %d error(s) "
+            "remain after %d auto-repair / correction iteration(s); "
+            "caller's quarantine policy applies.",
+            log_prefix, len(remaining_errors), len(correction_history),
+        )
+    else:
+        logger.info(
+            "%s Continuation quality bridge complete — clean (%d "
+            "auto-repair / correction iteration(s)).",
+            log_prefix, len(correction_history),
+        )
+
+    return world_state, report
+
+
+def validate_and_correct_world_state(
+    world_state: WorldStateV1,
+    config: ExtractionConfig | None = None,
+    *,
+    log_prefix: str = "[ContinuationBridge]",
+) -> Tuple[WorldStateV1, ValidationReport]:
+    """Synchronous wrapper around
+    :func:`validate_and_correct_world_state_async`.
+
+    Raises ``RuntimeError`` when called from inside a running event
+    loop — await the async version directly in that case.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        loop_running = False
+    else:
+        loop_running = True
+    if loop_running:
+        raise RuntimeError(
+            "validate_and_correct_world_state() called from inside a "
+            "running event loop. Await "
+            "validate_and_correct_world_state_async(...) instead."
+        )
+    return asyncio.run(validate_and_correct_world_state_async(
+        world_state, config, log_prefix=log_prefix,
+    ))
+
+
+# =====================================================================
 # Top-Level Orchestrator
 # =====================================================================
 
@@ -9410,9 +15377,14 @@ async def run_extraction_async(
             )
 
         # Step 2: Chunk Topology (parallel chunks)
-        topologies = _load_topologies_checkpoint(
+        ckpt_loaded = _load_topologies_checkpoint(
             pipeline_ckpt, text, fingerprint,
         )
+        catalogue: Optional[PropositionCatalogue] = None
+        if ckpt_loaded is None:
+            topologies = None
+        else:
+            topologies, catalogue = ckpt_loaded
         if topologies is None:
             chunks = chunk_text(
                 text,
@@ -9421,9 +15393,23 @@ async def run_extraction_async(
                 max_chunk_chars=config.max_chunk_chars,
             )
             logger.info("[Pipeline\u00b7Async] Text split into %d chunks.", len(chunks))
-            topologies = await extract_topology_async(chunks, register, config)
+            # Phase A3: optional Proposition Catalogue between
+            # ontology and per-chunk extraction. The result threads
+            # PROP_ ids into every chunk's deps so beliefs / utterances
+            # / outcome events carry canonical ``proposition_id`` /
+            # ``asserts_proposition_id`` / ``denies_proposition_id`` /
+            # ``resolves_proposition_ids`` at extraction time. Failure
+            # degrades to an empty catalogue (legacy behaviour).
+            if config.enable_proposition_catalogue:
+                catalogue = await extract_proposition_catalogue_async(
+                    text, register, config,
+                )
+            topologies = await extract_topology_async(
+                chunks, register, config, catalogue=catalogue,
+            )
             _save_topologies_checkpoint(
                 pipeline_ckpt, text, fingerprint, topologies,
+                catalogue=catalogue,
             )
         else:
             logger.info(
@@ -9439,8 +15425,54 @@ async def run_extraction_async(
         if repairs:
             logger.info("[Pipeline·Async] Auto-repaired %d issues before validation.", len(repairs))
 
+        # Phase C: fold the Phase A3 catalogue + per-chunk Phase B4
+        # affect outputs onto the assembled world (propositions /
+        # truth_at_fabula / Concern records / Proposition+Concern
+        # state_timelines). Runs after _auto_repair so any event id
+        # rewrites the repair pass made are already reflected on the
+        # ``triggered_by`` fields the reconciler reads. No-op when
+        # catalogue is None and every topology has empty affect lists.
+        try:
+            world_state = reconcile_affect(world_state, catalogue, topologies)
+        except Exception:
+            logger.exception(
+                "[Pipeline·Async] Phase C affect reconciliation FAILED — "
+                "leaving propositions / concerns at their pre-reconciler state.",
+            )
+
         # Step 5: Post-assembly world trait timeline extraction
         world_state = await extract_world_trait_timelines_async(world_state, config)
+
+        # Step 5c: Per-entity standing concern extraction (Affect Unification, Step 2).
+        try:
+            world_state = await extract_entity_concerns_async(world_state, config)
+        except Exception:
+            logger.exception(
+                "[Pipeline·Async] Step 5c concern extraction failed — leaving "
+                "entity.concerns empty.",
+            )
+
+        # Step 5d: LLM proposition clustering for non-event beliefs
+        # (Affect Unification, Step 3 LLM half).
+        try:
+            world_state = await cluster_belief_propositions_async(world_state, config)
+        except Exception:
+            logger.exception(
+                "[Pipeline·Async] Step 5d belief clustering failed — leaving "
+                "non-event beliefs without proposition_id.",
+            )
+
+        # Step 5e: synthesise ENT_AUDIENCE (Affect Unification, Step 4).
+        # Deterministic, no LLM cost — walks the syuzhet stream and
+        # emits graded-confidence Belief snapshots so the unified affect
+        # scorers can read audience belief uniformly with characters.
+        try:
+            world_state = _maybe_synthesise_audience_entity(world_state, config)
+        except Exception:
+            logger.exception(
+                "[Pipeline·Async] Step 5e audience synthesis failed — the "
+                "unified scorers will synthesise lazily on first call.",
+            )
 
         # Validation calls a sync LLM agent internally; offload it to a
         # worker thread so we don't block the event loop while it runs
@@ -9554,6 +15586,40 @@ async def run_extraction_async(
                 logger.exception(
                     "[Pipeline·Async] Post-correction timeline re-extraction failed "
                     "— keeping pre-correction timelines.",
+                )
+
+        # Step 5c: re-run concern extraction if events changed during correction.
+        if pre_correction_event_signature != tuple(
+            (e.id, e.fabula_time) for e in world_state.events
+        ):
+            try:
+                # Reset concerns so re-extraction sees the corrected event set.
+                refreshed = {
+                    eid: e.model_copy(update={"concerns": []})
+                    for eid, e in world_state.entities.items()
+                }
+                world_state = world_state.model_copy(update={"entities": refreshed})
+                world_state = await extract_entity_concerns_async(world_state, config)
+            except Exception:
+                logger.exception(
+                    "[Pipeline·Async] Post-correction concern re-extraction failed "
+                    "— leaving concerns empty.",
+                )
+
+            # Re-synthesise ENT_AUDIENCE so its belief snapshots reflect the
+            # post-correction event set. Drop the prior audience entity
+            # first so the rebuild starts from a clean slate.
+            try:
+                if "ENT_AUDIENCE" in world_state.entities:
+                    new_entities = {
+                        eid: e for eid, e in world_state.entities.items()
+                        if eid != "ENT_AUDIENCE"
+                    }
+                    world_state = world_state.model_copy(update={"entities": new_entities})
+                world_state = _maybe_synthesise_audience_entity(world_state, config)
+            except Exception:
+                logger.exception(
+                    "[Pipeline·Async] Post-correction audience re-synthesis failed.",
                 )
 
         # ------------------------------------------------------------------
