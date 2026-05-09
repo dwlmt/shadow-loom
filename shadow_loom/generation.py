@@ -2152,6 +2152,26 @@ def build_observation_brief(
     """Build a lightweight CreativeBrief for observation queries."""
     pov = query.focus_entity_ids[0] if query.focus_entity_ids else None
     constraints: List[ConstraintBlock] = _user_intent_constraints(query.original_query)
+    # Scene-internal grounding constraint (mirrors the counterfactual
+    # rung). Without this the rung-1 prose is free to drift into
+    # author-voice meta framing because the rendering directive's
+    # ``stylistic_instructions`` are advisory; the constraint block
+    # makes scenic grounding HARD across every prose-generating rung
+    # so the auditor's stylistic checks have something concrete to bind
+    # to and the ``narrative_style`` block is not the only style anchor.
+    constraints.append(ConstraintBlock(
+        constraint_type="narrative",
+        priority="hard",
+        instruction=(
+            "Render this scene as the actual lived world \u2014 concrete "
+            "physical action, sensory detail, and character behaviour, "
+            "in plain past-tense narration. Do NOT use author-voice "
+            "conditional or subjunctive framing (\"if he had\u2026\", "
+            "\"would have\u2026\"). The events of this scene are what "
+            "actually happened in this world."
+        ),
+        evidence={},
+    ))
     # Negative-physics record: events the world tags as not occurring
     # and propositions committed FALSE at or before the anchor must
     # NOT be staged as having happened. Applies to every rung.
@@ -2188,11 +2208,17 @@ def build_observation_brief(
             pacing="normal",
             sensory_focus="wide",
             stylistic_instructions=[
+                "Ground the prose in concrete physical reality \u2014 what "
+                "the POV character sees, hears, touches, and does, "
+                "moment by moment.",
                 "Render the scene from the focal character's perspective.",
                 "Describe what they see, hear, and feel in this moment.",
                 "Include environmental details that set the tone.",
                 "Ground the prose in the character's current emotional state (use trait values).",
                 "Do NOT reveal information the focal character cannot perceive.",
+                "Render the scene as the lived present of this world. Do "
+                "not stand outside it as a narrator commenting on its "
+                "structure.",
             ],
         ),
         scene_context=scene_context,
@@ -2425,6 +2451,23 @@ def build_intervention_brief(
         ))
 
     constraints: List[ConstraintBlock] = list(_user_intent_constraints(query.original_query))
+    # Scene-internal grounding constraint (mirrors the counterfactual
+    # rung). The intervention rung performs do-surgery but the scene is
+    # still the actual lived world post-intervention; the renderer must
+    # not slip into "what would have happened" subjunctive framing.
+    constraints.append(ConstraintBlock(
+        constraint_type="narrative",
+        priority="hard",
+        instruction=(
+            "Render this scene as the actual lived world \u2014 concrete "
+            "physical action, sensory detail, and character behaviour, "
+            "in plain past-tense narration. Do NOT use author-voice "
+            "conditional or subjunctive framing (\"if he had\u2026\", "
+            "\"would have\u2026\"). The events of this scene are what "
+            "actually happened in this world."
+        ),
+        evidence={},
+    ))
     # Blocked propagations become constraints
     if blocked:
         for b in blocked:
@@ -2548,12 +2591,18 @@ def build_intervention_brief(
             pacing="normal",
             sensory_focus="normal",
             stylistic_instructions=[
+                "Ground the prose in concrete physical reality \u2014 what "
+                "the POV character sees, hears, touches, and does, "
+                "moment by moment.",
                 "Describe the exact physical mechanism for each state change (do-operator).",
                 "Render the struggle between Impact and Inertia as physical prose.",
                 "Show the cause producing the effect through a specific mechanism "
                 "(kinetic, chemical, social, psychological).",
-                "If a propagation was blocked, describe the resistance — the force "
+                "If a propagation was blocked, describe the resistance \u2014 the force "
                 "that stopped the change from taking hold.",
+                "Render the scene as the lived present of this world. Do "
+                "not stand outside it as a narrator commenting on its "
+                "structure.",
             ],
         ),
         intervention_mechanisms=mechanisms,
@@ -3051,12 +3100,54 @@ def render_from_query(
         if brief_data:
             brief = CreativeBrief(**brief_data) if isinstance(brief_data, dict) else brief_data
         else:
-            # Fallback: build a minimal brief
+            # Fallback: build a minimal brief. The fallback historically
+            # omitted ``rendering`` entirely, which silently dropped the
+            # stylistic_instructions / pov_lock contract on directive
+            # paths whose physics_state did not carry a ``creative_brief``
+            # (e.g. minimal pipelines, test harnesses). Mirror the
+            # universal grounding directive the other rungs ship so
+            # ``narrative_style`` is not the only style anchor on this
+            # path.
+            target_eff = physics_result.get("target_effect", "observation")
+            target_ents = list(getattr(request, "target_entity_ids", []) or [])
+            fallback_constraints: List[ConstraintBlock] = list(
+                _user_intent_constraints(getattr(request, "original_query", None))
+            )
+            fallback_constraints.append(ConstraintBlock(
+                constraint_type="narrative",
+                priority="hard",
+                instruction=(
+                    "Render this scene as the actual lived world \u2014 "
+                    "concrete physical action, sensory detail, and "
+                    "character behaviour, in plain past-tense narration. "
+                    "Do NOT use author-voice conditional or subjunctive "
+                    "framing (\"if he had\u2026\", \"would have\u2026\"). "
+                    "The events of this scene are what actually "
+                    "happened in this world."
+                ),
+                evidence={},
+            ))
             brief = CreativeBrief(
-                target_effect=physics_result.get("target_effect", "observation"),
-                target_entities=getattr(request, "target_entity_ids", []),
+                target_effect=target_eff,
+                target_entities=target_ents,
+                original_query=getattr(request, "original_query", None),
+                constraints=fallback_constraints,
                 scene_context=physics_state,
                 narrative_style=getattr(world_state, "narrative_style", None),
+                rendering=RenderingDirective(
+                    rendering_mode=str(target_eff),
+                    pov_lock=target_ents[0] if target_ents else None,
+                    pacing="normal",
+                    sensory_focus="normal",
+                    stylistic_instructions=[
+                        "Ground the prose in concrete physical reality "
+                        "\u2014 what the POV character sees, hears, "
+                        "touches, and does, moment by moment.",
+                        "Render the scene as the lived present of this "
+                        "world. Do not stand outside it as a narrator "
+                        "commenting on its structure.",
+                    ],
+                ),
             )
         if preceding_prose and not brief.preceding_prose:
             brief.preceding_prose = preceding_prose

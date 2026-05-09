@@ -171,13 +171,65 @@ def _build_causal_topology(state: AppState) -> None:
 
             ui.label("Force layout:").classes("text-sm text-slate-600 ml-4")
             force_layout = ui.select(
-                options={"force": "Force", "circular": "Circular", "cartesian": "Cartesian"},
-                value="force",
+                options={
+                    "force": "Force",
+                    "timeline": "Timeline",
+                    "circular": "Circular",
+                    "cartesian": "Cartesian",
+                },
+                value="timeline",
             ).props("dense outlined options-dense").classes("min-w-32")
             force_layout.tooltip(
-                "How to lay out the causal force graph "
-                "(circular = ring; cartesian = time on x-axis)"
+                "How to lay out the causal force graph. Timeline "
+                "anchors event nodes to fabula_time on the x-axis "
+                "while letting the force solver spread them "
+                "vertically (best default for cascade reading); "
+                "Cartesian additionally pins the y-axis to syuzhet "
+                "index; Circular places nodes on a ring; Force is "
+                "an unanchored physics layout."
             )
+
+        # ── Focus / drill-down row ────────────────────────────────
+        # Focus state lives on this closure (not AppState) so swapping
+        # Causality \u2194 other tabs doesn't reset it; cleared via the
+        # button or by clicking the same node twice.
+        focus_state: dict = {"id": None, "hops": 2}
+        focus_row = ui.row().classes(
+            "w-full items-center gap-3 px-3 py-1 bg-amber-50 "
+            "border border-amber-200 rounded-md flex-wrap"
+        )
+        with focus_row:
+            ui.icon("center_focus_strong", color="amber-9")
+            focus_label = ui.label(
+                "No focus \u2014 click any node to drill into its "
+                "ancestor / descendant chain."
+            ).classes("text-xs text-amber-900")
+            ui.space()
+            ui.label("Hops:").classes("text-xs text-slate-600")
+            hops_select = ui.select(
+                options={1: "1", 2: "2", 3: "3", 4: "4"}, value=2,
+            ).props("dense outlined options-dense").classes("w-16")
+            hops_select.tooltip(
+                "How many causal hops in each direction to keep "
+                "around the focus node."
+            )
+
+            def _clear_focus():
+                focus_state["id"] = None
+                focus_label.text = (
+                    "No focus \u2014 click any node to drill into "
+                    "its ancestor / descendant chain."
+                )
+                _refresh()
+
+            ui.button(
+                "Clear", icon="close", on_click=_clear_focus,
+            ).props("flat dense no-caps color=amber-9")
+        focus_row.set_visibility(False)  # only shows once a graph is loaded
+
+        # ── Modality legend (causal palette) ──────────────────────
+        from shadow_loom_ui.viz import render_modality_legend
+        render_modality_legend()
 
         # ── Filter row (Sankey only) — sticky for tall diagrams ────
         filter_row = ui.row().classes(
@@ -350,6 +402,46 @@ def _build_causal_topology(state: AppState) -> None:
             _, fabula_tmax = fabula_time_bounds(ws)
 
             with graph_container:
+                # Show the focus row only once we know we have a graph.
+                focus_row.set_visibility(True)
+
+                # Helpers shared by Sankey + Force click handlers.
+                def _resolve_node_type(nid: str, ws_now) -> str:
+                    if ws_now is None:
+                        return "event"
+                    if nid in {e.id for e in ws_now.events}:
+                        return "event"
+                    if nid in ws_now.entities:
+                        return "entity"
+                    if nid in ws_now.locations:
+                        return "location"
+                    if nid in ws_now.objects:
+                        return "object"
+                    if nid in getattr(ws_now, "world_traits", {}):
+                        return "world_trait"
+                    return "event"
+
+                def _set_focus(nid: str | None) -> None:
+                    """Toggle focus on/off for ``nid`` and re-render."""
+                    try:
+                        focus_state["hops"] = int(hops_select.value or 2)
+                    except (TypeError, ValueError):
+                        focus_state["hops"] = 2
+                    if focus_state["id"] == nid:
+                        focus_state["id"] = None
+                        focus_label.text = (
+                            "No focus \u2014 click any node to drill "
+                            "into its ancestor / descendant chain."
+                        )
+                    else:
+                        focus_state["id"] = nid
+                        focus_label.text = (
+                            f"Focused on {nid} (\u00b1"
+                            f"{focus_state['hops']} hops). Click "
+                            "again to clear."
+                        )
+                    _refresh()
+
                 if is_sankey:
                     fmax = (
                         fabula_max
@@ -362,35 +454,27 @@ def _build_causal_topology(state: AppState) -> None:
 
                     def _on_sankey_click(ev):
                         # Wire cross-chart selection: store the clicked
-                        # node id on AppState so other tabs can react.
+                        # node id on AppState so other tabs can react,
+                        # and toggle the local focus drill-down so the
+                        # Sankey re-renders restricted to that chain.
                         try:
                             data = ev.args.get("data") or {}
-                            nid = data.get("name") if isinstance(data, dict) else None
-                            if nid:
-                                # Route through the official setter so the
-                                # inspector receives both the id and a
-                                # resolved node_type. Sankey nodes are
-                                # event-shaped in every aspect, so default
-                                # to ``event`` and only widen if the id
-                                # resolves to an entity/location/object/world_trait.
-                                ws_now = state.world_state
-                                node_type = "event"
-                                if ws_now is not None:
-                                    if nid in ws_now.entities:
-                                        node_type = "entity"
-                                    elif nid in ws_now.locations:
-                                        node_type = "location"
-                                    elif nid in ws_now.objects:
-                                        node_type = "object"
-                                    elif nid in getattr(ws_now, "world_traits", {}):
-                                        node_type = "world_trait"
-                                state.select_node(nid, node_type)
-                                # Also pop the explain dialog so users
-                                # see the causal structure of the click.
-                                if ws_now is not None:
-                                    open_explain_dialog(ws_now, nid)
+                            nid = (
+                                data.get("name")
+                                if isinstance(data, dict) else None
+                            )
+                            if not nid:
+                                return
+                            ws_now = state.world_state
+                            state.select_node(
+                                nid, _resolve_node_type(nid, ws_now),
+                            )
+                            _set_focus(nid)
                         except Exception:
-                            logger.debug("sankey click: unparsable args", exc_info=True)
+                            logger.debug(
+                                "sankey click: unparsable args",
+                                exc_info=True,
+                            )
 
                     with_expand(
                         lambda h: render_causal_sankey(
@@ -399,6 +483,8 @@ def _build_causal_topology(state: AppState) -> None:
                             aspect=aspect_select.value,
                             min_force=float(force_slider.value or 0.0),
                             fabula_max=fmax if fabula_tmax > 0 else None,
+                            focus_id=focus_state["id"],
+                            focus_max_hops=focus_state["hops"],
                             on_click=_on_sankey_click,
                         ),
                         title=f"Sankey \u2014 {aspect_label}",
@@ -407,17 +493,32 @@ def _build_causal_topology(state: AppState) -> None:
                     def _on_force_click(ev):
                         try:
                             data = ev.args.get("data") or {}
-                            nid = data.get("name") if isinstance(data, dict) else None
-                            if nid and state.world_state is not None:
-                                open_explain_dialog(state.world_state, nid)
+                            nid = (
+                                data.get("id") or data.get("name")
+                                if isinstance(data, dict) else None
+                            )
+                            if not nid or state.world_state is None:
+                                return
+                            state.select_node(
+                                nid,
+                                _resolve_node_type(
+                                    nid, state.world_state,
+                                ),
+                            )
+                            _set_focus(nid)
                         except Exception:
-                            logger.debug("force click: unparsable args", exc_info=True)
+                            logger.debug(
+                                "force click: unparsable args",
+                                exc_info=True,
+                            )
 
                     with_expand(
                         lambda h: render_causal_force_graph(
                             ws,
                             height=h,
-                            layout=force_layout.value or "force",
+                            layout=force_layout.value or "timeline",
+                            focus_id=focus_state["id"],
+                            focus_max_hops=focus_state["hops"],
                             on_click=_on_force_click,
                         ),
                         title="Causal force graph",
@@ -456,6 +557,7 @@ def _build_causal_topology(state: AppState) -> None:
 
         aspect_select.on("update:model-value", lambda: _on_aspect())
         force_layout.on("update:model-value", lambda: _refresh())
+        hops_select.on("update:model-value", lambda: _refresh())
         force_slider.on("change", lambda: _on_slider("f"))
         time_slider.on("change", lambda: _on_slider("t"))
 

@@ -4861,6 +4861,30 @@ class DirectiveAssembler:
         ))
 
         # =============================================================
+        # SCENIC GROUNDING  (universal lived-present anchor)
+        # =============================================================
+        # Mirrors the hard ConstraintBlock that build_observation_brief,
+        # build_intervention_brief, and build_counterfactual_brief all
+        # ship. Without it the directive path's stylistic_instructions
+        # (which vary per affect) are the only style anchor and the
+        # auditor's stylistic checks have no shared HARD constraint to
+        # bind to. Compatible with every effect because it constrains
+        # narrator stance, not internal content.
+        constraints.append(ConstraintBlock(
+            constraint_type="narrative",
+            priority="hard",
+            instruction=(
+                "Render this scene as the actual lived world \u2014 concrete "
+                "physical action, sensory detail, and character behaviour, "
+                "in plain past-tense narration. Do NOT use author-voice "
+                "conditional or subjunctive framing (\"if he had\u2026\", "
+                "\"would have\u2026\"). The events of this scene are what "
+                "actually happened in this world."
+            ),
+            evidence={},
+        ))
+
+        # =============================================================
         # USER INTENT  (verbatim NL request as a HARD constraint)
         # =============================================================
         # The user's natural-language request is the highest-priority
@@ -5726,6 +5750,29 @@ class DirectiveAssembler:
         scene_context = dict(self.ego) if isinstance(self.ego, dict) else {}
         if syuzhet_anchor is not None:
             scene_context["syuzhet_anchor"] = syuzhet_anchor
+
+        # Universal lived-present grounding tail — append to whichever
+        # affect-specific RenderingDirective was built above so every
+        # directive brief carries the same scenic anchor that
+        # build_observation_brief / build_intervention_brief /
+        # build_counterfactual_brief end with. Compatible with every
+        # affect (constrains narrator stance, not internal content).
+        if rendering is not None:
+            _grounding_tail = [
+                "Ground the prose in concrete physical reality \u2014 "
+                "what the POV character sees, hears, touches, and "
+                "does, moment by moment.",
+                "Render the scene as the lived present of this world. "
+                "Do not stand outside it as a narrator commenting on "
+                "its structure.",
+            ]
+            existing = list(rendering.stylistic_instructions or [])
+            for line in _grounding_tail:
+                if line not in existing:
+                    existing.append(line)
+            rendering = rendering.model_copy(update={
+                "stylistic_instructions": existing,
+            })
 
         brief = CreativeBrief(
             target_effect=effect,

@@ -825,14 +825,20 @@ def render_causal_sankey(
     aspect: str = "causal_all",
     min_force: float = 0.0,
     fabula_max: int | None = None,
+    focus_id: str | None = None,
+    focus_max_hops: int = 2,
 ) -> ui.echart:
     """Sankey diagram of causal/social/information flow.
 
     ``aspect`` selects the underlying edge set — see
-    :data:`shadow_loom_ui.viz_helpers.SANKEY_ASPECTS`.
+    :data:`shadow_loom_ui.viz_helpers.SANKEY_ASPECTS`. ``focus_id``
+    drills into a single node's ancestor/descendant chain (\u00b1
+    ``focus_max_hops``). Edges are coloured per-link by causality
+    modality (see :data:`shadow_loom_ui.viz_helpers.MODALITY_COLORS`).
     """
     nodes, links = ws_sankey_for_aspect(
-        ws, aspect, min_force=min_force, fabula_max=fabula_max
+        ws, aspect, min_force=min_force, fabula_max=fabula_max,
+        focus_id=focus_id, focus_max_hops=focus_max_hops,
     )
     if not nodes:
         return ui.label("No edges to display for this aspect.").classes(
@@ -868,16 +874,29 @@ def render_causal_sankey(
             "type": "sankey",
             "data": nodes,
             "links": links,
-            "emphasis": {"focus": "adjacency"},
-            "nodeAlign": "left",
+            "emphasis": {
+                "focus": "adjacency",
+                "lineStyle": {"opacity": 0.95},
+            },
+            # ``justify`` (vs ``left``) lets ECharts spread sink-only
+            # nodes to the right edge so the temporal "rightward
+            # flow" reading is honoured even when terminal events
+            # have no outgoing edges.
+            "nodeAlign": "justify",
             "orient": "horizontal",
-            "nodeGap": 12,
-            "nodeWidth": 14,
+            # More vertical breathing room between stacked nodes
+            # and a slightly thicker node bar so the column reads
+            # as a "lane" rather than a hairline.
+            "nodeGap": 18,
+            "nodeWidth": 16,
             "draggable": True,
+            # Per-link colours (set in ws_to_sankey_data) carry the
+            # modality encoding; series-level lineStyle.color must
+            # NOT override them, so omit it here. Opacity defaults to
+            # the per-link value (0.55) and bumps on hover via
+            # ``emphasis``.
             "lineStyle": {
-                "color": "source",
                 "curveness": 0.5,
-                "opacity": 0.45,
             },
             "itemStyle": {
                 "borderWidth": 1,
@@ -890,9 +909,16 @@ def render_causal_sankey(
             },
         }],
     }
+    title_lines: list[str] = []
     if truncated:
+        title_lines.append(f"showing top {MAX_LINKS} flows by force")
+    if focus_id:
+        title_lines.append(
+            f"focused on {focus_id} (\u00b1{focus_max_hops} hops)"
+        )
+    if title_lines:
         options["title"] = {
-            "text": f"showing top {MAX_LINKS} flows by force",
+            "text": " \u2022 ".join(title_lines),
             "top": 4,
             "left": "center",
             "textStyle": {
@@ -906,6 +932,38 @@ def render_causal_sankey(
     if on_click:
         chart.on("click", on_click)
     return chart
+
+
+def render_modality_legend() -> ui.element:
+    """Chip-strip legend for the causality-modality colour palette.
+
+    Used above the causal Sankey + force graph so the per-edge colour
+    encoding is self-documenting.
+    """
+    from shadow_loom_ui.viz_helpers import MODALITY_COLORS, MODALITY_LABELS
+
+    container = ui.row().classes(
+        "w-full items-center gap-3 px-3 py-2 bg-slate-50 "
+        "border border-slate-200 rounded-md flex-wrap"
+    )
+    with container:
+        ui.label("Causality modality:").classes(
+            "text-xs font-semibold text-slate-700"
+        )
+        for key in (
+            "chain_reaction", "mutation", "mutation_social",
+            "affordance_gate", "ambient_propagation", "world_to_world",
+        ):
+            color = MODALITY_COLORS[key]
+            label = MODALITY_LABELS[key]
+            with ui.row().classes("items-center gap-1"):
+                ui.html(
+                    f'<span style="display:inline-block;width:18px;'
+                    f'height:3px;background:{color};border-radius:2px;'
+                    f'{"border-top:2px dashed " + color + ";background:transparent;height:0;" if key == "world_to_world" else ""}"></span>'
+                )
+                ui.label(label).classes("text-xs text-slate-600")
+    return container
 
 
 # ── Trait radar chart ──────────────────────────────────────────────
@@ -2683,14 +2741,26 @@ def render_causal_force_graph(
     height: str = "100%",
     layout: str = "force",
     highlight_edge_ids: set[str] | None = None,
+    focus_id: str | None = None,
+    focus_max_hops: int = 2,
 ) -> ui.echart:
     """Force-directed graph of causal edges, thickness = causal_force.
 
     ``layout`` options:
       - ``"force"`` (default): physics-based layout, good for medium graphs.
       - ``"circular"``: nodes on a ring, ideal for symmetry inspection.
+      - ``"timeline"``: physics layout but with event nodes pre-seeded
+        at their ``fabula_time`` x-coordinate, so the cascade reads
+        left-to-right while the force solver still spreads vertical
+        clusters apart. Best default for "what caused what" reading.
       - ``"cartesian"``: anchors events on (fabula_time, syuzhet_index)
-        axes so the temporal flow of causality is preserved.
+        axes so the temporal flow of causality is preserved exactly.
+
+    ``focus_id`` restricts the rendered graph to the BFS neighbourhood
+    of that node (\u00b1``focus_max_hops`` along the directed causal
+    graph). The focus node gets a gold halo so the chain anchor is
+    obvious. Edges are coloured by ``causality_type`` modality (see
+    :data:`shadow_loom_ui.viz_helpers.MODALITY_COLORS`).
 
     For >80 nodes the force layout auto-tunes its repulsion / friction
     (Webkit-dep style) so the graph doesn't explode into a hairball.
@@ -2699,9 +2769,15 @@ def render_causal_force_graph(
         return _render_causal_cartesian(
             ws, on_click=on_click, height=height,
             highlight_edge_ids=highlight_edge_ids,
+            focus_id=focus_id, focus_max_hops=focus_max_hops,
         )
 
-    nodes, links, cats = ws_to_causal_force_data(ws)
+    nodes, links, cats = ws_to_causal_force_data(
+        ws,
+        focus_id=focus_id,
+        focus_max_hops=focus_max_hops,
+        layout_hint=layout,
+    )
     if not nodes:
         return ui.label("No causal topology.").classes("text-grey q-pa-md")
 
@@ -2732,6 +2808,15 @@ def render_causal_force_graph(
         else:
             force = {"repulsion": 400, "gravity": 0.1, "edgeLength": [60, 180], "friction": 0.6}
             curveness = 0.15
+        if layout == "timeline":
+            # Pre-seeded x positions on event nodes (set by
+            # ws_to_causal_force_data when layout_hint='timeline')
+            # act as a soft anchor: the force solver still moves
+            # nodes but won't drag them across the temporal axis,
+            # so the cascade reads left-to-right naturally without
+            # collapsing into a single column the way Cartesian
+            # mode can when many events share a fabula_time.
+            force = {**force, "initLayout": "none", "gravity": 0.04}
         series_extra = {"layout": "force", "force": force}
 
     chart = ui.echart({
@@ -2741,7 +2826,7 @@ def render_causal_force_graph(
             "type": "graph",
             "roam": True,
             "draggable": True,
-            "emphasis": {"focus": "adjacency"},
+            "emphasis": {"focus": "adjacency", "lineStyle": {"width": 4}},
             "categories": cats,
             "data": nodes,
             "links": links,
@@ -2770,6 +2855,8 @@ def _render_causal_cartesian(
     on_click: OnClick = None,
     height: str = "100%",
     highlight_edge_ids: set[str] | None = None,
+    focus_id: str | None = None,
+    focus_max_hops: int = 2,
 ) -> ui.echart:
     """Causal graph anchored on (fabula_time, syuzhet_index) axes.
 
@@ -2777,7 +2864,9 @@ def _render_causal_cartesian(
     keep their temporal coordinates while edges curve between them so
     the visual reading order matches the story order.
     """
-    nodes, links = ws_to_causal_cartesian_data(ws)
+    nodes, links = ws_to_causal_cartesian_data(
+        ws, focus_id=focus_id, focus_max_hops=focus_max_hops,
+    )
     if not nodes:
         return ui.label("No causal topology.").classes("text-grey q-pa-md")
 

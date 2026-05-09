@@ -321,6 +321,45 @@ EDGE_COLORS: dict[str, str] = {
     "governs": "#8A5CF0",           # Iris        — world trait constrains event
 }
 
+# Per-``causality_type`` palette so the Sankey + force graph encode
+# the *modality* of causation directly in colour rather than collapsing
+# every kind of causal coupling onto a single crimson line. Picked to
+# stay distinguishable from EDGE_COLORS above (which colour topology
+# edges) and from NODE_COLORS (which colour the node categories the
+# edges land on). Order matches the SANKEY_ASPECTS taxonomy.
+MODALITY_COLORS: dict[str, str] = {
+    "chain_reaction":      "#D8334A",  # crimson — direct event \u2192 event
+    "mutation":            "#F5B43C",  # amber   — entity-state mutation
+    "mutation_social":     "#E36BB8",  # rose    — social/relationship
+    "affordance_gate":     "#3A7BD5",  # sapphire — gating preconditions
+    "ambient_propagation": "#2EA6A0",  # teal    — environmental/world
+    "world_to_world":      "#8A5CF0",  # iris    — WORLD_ \u2192 WORLD_ coupling
+}
+
+MODALITY_LABELS: dict[str, str] = {
+    "chain_reaction":      "Event \u2192 Event",
+    "mutation":            "Entity mutation",
+    "mutation_social":     "Social mutation",
+    "affordance_gate":     "Affordance gate",
+    "ambient_propagation": "Ambient propagation",
+    "world_to_world":      "World \u2192 World",
+}
+
+
+def _modality_key(ce: "CausalEdge") -> str:
+    """Return the palette key for a causal edge.
+
+    Treats WORLD_\u2192WORLD_ couplings as their own modality so the
+    cross-trait latent network reads as distinct from the dominant
+    event mesh, regardless of the edge's declared ``causality_type``.
+    """
+    if (
+        ce.source_id.startswith("WORLD_")
+        and ce.target_id.startswith("WORLD_")
+    ):
+        return "world_to_world"
+    return ce.causality_type
+
 # World-trait domains that match causal-edge mechanism strings.
 # A WorldTrait whose ``affected_domains`` contains any of these keys
 # is considered to govern an event whose incoming CausalEdges carry a
@@ -805,18 +844,58 @@ def ws_to_sankey_data(
 
     ``edge_filter`` optionally restricts which ``CausalEdge`` rows are
     included (e.g. by ``causality_type``, ``mechanism``, force range).
+    Each link gets a per-link ``lineStyle.color`` keyed off the
+    edge's modality (see :data:`MODALITY_COLORS`) so the Sankey
+    encodes *what kind* of causation the flow represents, not just
+    its volume.
     """
+    edges_with_mod: list[tuple[CausalEdge, str]] = []
+    for ce in ws.causal_topology:
+        if edge_filter is not None and not edge_filter(ce):
+            continue
+        edges_with_mod.append((ce, _modality_key(ce)))
+
     def _iter():
-        for ce in ws.causal_topology:
-            if edge_filter is not None and not edge_filter(ce):
-                continue
+        for ce, modality in edges_with_mod:
             tip = (
-                f"{ce.causality_type} · {ce.mechanism}<br/>"
-                f"force {ce.causal_force:.1f} · evidence {ce.evidence_strength}"
-                f"<br/>fabula t={ce.fabula_time}"
+                f"<b>{MODALITY_LABELS.get(modality, ce.causality_type)}"
+                f"</b> \u00b7 {ce.mechanism}<br/>"
+                f"force {ce.causal_force:.1f} \u00b7 evidence "
+                f"{ce.evidence_strength}<br/>fabula t={ce.fabula_time}"
             )
             yield (ce.source_id, ce.target_id, ce.causal_force, tip)
-    return _build_sankey(ws, _iter())
+
+    nodes, links = _build_sankey(ws, _iter())
+    # _build_sankey iterates raw_edges in fabula order and may drop
+    # cycle-closing edges; re-walk the *kept* edges so per-link
+    # colours line up with what's actually drawn.
+    kept = {(s, t) for s, t in {
+        (l["source"], l["target"]) for l in links
+    }}
+    mod_by_pair: dict[tuple[str, str], str] = {}
+    force_by_pair: dict[tuple[str, str], float] = {}
+    for ce, modality in edges_with_mod:
+        pair = (ce.source_id, ce.target_id)
+        if pair not in kept:
+            continue
+        # Pick the strongest edge's modality if multiple share a pair.
+        prev_force = force_by_pair.get(pair, -1.0)
+        if float(ce.causal_force) > prev_force:
+            mod_by_pair[pair] = modality
+            force_by_pair[pair] = float(ce.causal_force)
+    for link in links:
+        pair = (link["source"], link["target"])
+        modality = mod_by_pair.get(pair)
+        if modality is None:
+            continue
+        link["_sl_modality"] = modality
+        ls = dict(link.get("lineStyle") or {})
+        ls["color"] = MODALITY_COLORS.get(
+            modality, EDGE_COLORS["causal"]
+        )
+        ls.setdefault("opacity", 0.55)
+        link["lineStyle"] = ls
+    return nodes, links
 
 
 def ws_to_information_sankey_data(
@@ -874,26 +953,67 @@ def ws_sankey_for_aspect(
     *,
     min_force: float = 0.0,
     fabula_max: Optional[int] = None,
+    focus_id: str | None = None,
+    focus_max_hops: int = 2,
 ) -> tuple[list[dict], list[dict]]:
     """Dispatch ``aspect`` (key from ``SANKEY_ASPECTS``) to the right builder.
 
     ``min_force`` and ``fabula_max`` apply to causal-edge aspects only.
+    ``focus_id`` (when set) applies a post-build BFS \u00b1
+    ``focus_max_hops`` filter on the resulting nodes/links so the
+    Sankey can drill into a single chain. Works for every aspect
+    (causal, information, world_influence) by operating on the
+    built node/link lists.
     """
     if aspect == "information":
-        return ws_to_information_sankey_data(ws)
-    if aspect == "world_influence":
-        return ws_to_world_influence_sankey_data(ws)
+        nodes, links = ws_to_information_sankey_data(ws)
+    elif aspect == "world_influence":
+        nodes, links = ws_to_world_influence_sankey_data(ws)
+    else:
+        def _flt(ce: CausalEdge) -> bool:
+            if ce.causal_force < min_force:
+                return False
+            if fabula_max is not None and ce.fabula_time > fabula_max:
+                return False
+            if aspect == "causal_all":
+                return True
+            return ce.causality_type == aspect
+        nodes, links = ws_to_sankey_data(ws, edge_filter=_flt)
 
-    def _flt(ce: CausalEdge) -> bool:
-        if ce.causal_force < min_force:
-            return False
-        if fabula_max is not None and ce.fabula_time > fabula_max:
-            return False
-        if aspect == "causal_all":
-            return True
-        return ce.causality_type == aspect
+    if focus_id is None:
+        return nodes, links
 
-    return ws_to_sankey_data(ws, edge_filter=_flt)
+    # BFS \u00b1 max_hops over the directed link graph.
+    out_adj: dict[str, set[str]] = {}
+    in_adj: dict[str, set[str]] = {}
+    for lk in links:
+        out_adj.setdefault(lk["source"], set()).add(lk["target"])
+        in_adj.setdefault(lk["target"], set()).add(lk["source"])
+    keep: set[str] = {focus_id}
+    frontier: set[str] = {focus_id}
+    for _ in range(max(1, int(focus_max_hops))):
+        nxt: set[str] = set()
+        for nid in frontier:
+            nxt.update(out_adj.get(nid, ()))
+            nxt.update(in_adj.get(nid, ()))
+        nxt -= keep
+        if not nxt:
+            break
+        keep.update(nxt)
+        frontier = nxt
+    nodes = [n for n in nodes if n.get("name") in keep]
+    links = [
+        l for l in links
+        if l["source"] in keep and l["target"] in keep
+    ]
+    # Highlight focus node so the chain anchor is visible.
+    for n in nodes:
+        if n.get("name") == focus_id:
+            style = dict(n.get("itemStyle") or {})
+            style["borderColor"] = "#FFD700"
+            style["borderWidth"] = 3
+            n["itemStyle"] = style
+    return nodes, links
 
 
 # ── Social graph (entities + relationships only) ───────────────────
@@ -1257,11 +1377,79 @@ def entity_state_timeline_data(
 
 def ws_to_causal_force_data(
     ws: WorldStateV1,
+    *,
+    focus_id: str | None = None,
+    focus_max_hops: int = 2,
+    layout_hint: str = "force",
 ) -> tuple[list[dict], list[dict], list[dict]]:
     """Build a force-directed graph of causal edges with thickness = causal_force.
 
+    ``focus_id``: when set, restrict the graph to the BFS neighbourhood
+    of that node (both ancestors and descendants up to
+    ``focus_max_hops`` along the directed causal graph). The focus
+    node itself gets a gold border so the user can see what's being
+    drilled into.
+
+    ``layout_hint``: when ``"timeline"`` the function attaches an
+    ``x`` coordinate (= ``fabula_time``) to every event node so the
+    caller can render with ``coordinateSystem='cartesian2d'`` *or*
+    pass through to the standard ``force`` layout where the
+    pre-seeded x positions act as a soft temporal anchor (events
+    drift left-to-right by fabula time, vertical position relaxed by
+    the force solver). Non-event nodes get their x averaged from the
+    events that touch them.
+
     Returns ``(nodes, links, categories)`` for ECharts graph series.
     """
+    edges = list(ws.causal_topology)
+    if focus_id is not None:
+        # Build adjacency in both directions for BFS.
+        out_adj: dict[str, set[str]] = {}
+        in_adj: dict[str, set[str]] = {}
+        for ce in edges:
+            out_adj.setdefault(ce.source_id, set()).add(ce.target_id)
+            in_adj.setdefault(ce.target_id, set()).add(ce.source_id)
+        keep: set[str] = {focus_id}
+        frontier: set[str] = {focus_id}
+        for _ in range(max(1, int(focus_max_hops))):
+            nxt: set[str] = set()
+            for nid in frontier:
+                nxt.update(out_adj.get(nid, ()))
+                nxt.update(in_adj.get(nid, ()))
+            nxt -= keep
+            if not nxt:
+                break
+            keep.update(nxt)
+            frontier = nxt
+        edges = [
+            ce for ce in edges
+            if ce.source_id in keep and ce.target_id in keep
+        ]
+
+    # Pre-compute timeline x-anchors when requested.
+    x_by_id: dict[str, float] = {}
+    if layout_hint == "timeline":
+        evt_by_id = {e.id: e for e in ws.events}
+        for nid in {ce.source_id for ce in edges} | {
+            ce.target_id for ce in edges
+        }:
+            if nid in evt_by_id:
+                x_by_id[nid] = float(evt_by_id[nid].fabula_time)
+        # Average non-event nodes from neighbouring events.
+        non_evt = {
+            nid for ce in edges for nid in (ce.source_id, ce.target_id)
+            if nid not in evt_by_id
+        }
+        for nid in non_evt:
+            xs: list[float] = []
+            for ce in edges:
+                if ce.source_id == nid and ce.target_id in evt_by_id:
+                    xs.append(float(evt_by_id[ce.target_id].fabula_time))
+                elif ce.target_id == nid and ce.source_id in evt_by_id:
+                    xs.append(float(evt_by_id[ce.source_id].fabula_time))
+            if xs:
+                x_by_id[nid] = sum(xs) / len(xs)
+
     nodes: list[dict] = []
     links: list[dict] = []
     cats = [
@@ -1272,90 +1460,102 @@ def ws_to_causal_force_data(
         {"name": "WorldTrait"},
     ]
     seen: set[str] = set()
+    evt_by_id = {evt.id: evt for evt in ws.events}
 
     def _ensure(nid: str) -> None:
         if nid in seen:
             return
         seen.add(nid)
-        if nid in {evt.id for evt in ws.events}:
-            evt = next(e for e in ws.events if e.id == nid)
-            nodes.append({
+        if nid in evt_by_id:
+            evt = evt_by_id[nid]
+            node = {
                 "id": nid, "name": nid,
                 "category": 0,
                 "symbolSize": 20, "symbol": "triangle",
                 "itemStyle": {"color": NODE_COLORS["EventNode"]},
-                "tooltip": {"formatter": f"<b>{nid}</b><br/>{evt.description[:60]}"},
-            })
+                "tooltip": {"formatter": (
+                    f"<b>{nid}</b> [{evt.event_type}]<br/>"
+                    f"t={evt.fabula_time}, s={evt.syuzhet_index}<br/>"
+                    f"{(evt.description or '')[:80]}"
+                )},
+            }
         elif nid in ws.entities:
-            nodes.append({
+            node = {
                 "id": nid, "name": ws.entities[nid].name,
                 "category": 1,
                 "symbolSize": 25, "symbol": "circle",
                 "itemStyle": {"color": NODE_COLORS["Entity"]},
-            })
+            }
         elif nid in ws.locations:
-            nodes.append({
+            node = {
                 "id": nid, "name": ws.locations[nid].name,
                 "category": 2,
                 "symbolSize": 20, "symbol": "rect",
                 "itemStyle": {"color": NODE_COLORS["Location"]},
-            })
+            }
         elif nid in ws.objects:
-            nodes.append({
+            node = {
                 "id": nid, "name": ws.objects[nid].name,
                 "category": 3,
                 "symbolSize": 16, "symbol": "diamond",
                 "itemStyle": {"color": NODE_COLORS["NarrativeObject"]},
-            })
+            }
         elif nid in ws.world_traits:
-            nodes.append({
+            node = {
                 "id": nid, "name": ws.world_traits[nid].name,
                 "category": 4,
                 "symbolSize": 20, "symbol": "pin",
                 "itemStyle": {"color": NODE_COLORS["WorldTrait"]},
-            })
+            }
         else:
-            nodes.append({
+            node = {
                 "id": nid, "name": nid,
                 "category": 0,
                 "symbolSize": 14,
                 "itemStyle": {"color": "#9E9E9E"},
-            })
+            }
+        # Highlight the focus node so it's visually anchored when
+        # drilling into a chain.
+        if focus_id is not None and nid == focus_id:
+            style = dict(node.get("itemStyle") or {})
+            style["borderColor"] = "#FFD700"
+            style["borderWidth"] = 4
+            node["itemStyle"] = style
+            node["symbolSize"] = max(node.get("symbolSize", 16) + 6, 28)
+        # Attach timeline x-anchor (caller decides whether to use it).
+        if nid in x_by_id:
+            node["x"] = x_by_id[nid]
+        nodes.append(node)
 
-    for ce in ws.causal_topology:
+    for ce in edges:
         _ensure(ce.source_id)
         _ensure(ce.target_id)
         w = min(6, max(1, ce.causal_force / 1.5))
+        modality = _modality_key(ce)
+        color = MODALITY_COLORS.get(modality, EDGE_COLORS["causal"])
         tooltip = (
-            f"{ce.causality_type}<br/>"
+            f"<b>{MODALITY_LABELS.get(modality, ce.causality_type)}</b><br/>"
             f"mechanism: {ce.mechanism}<br/>"
             f"force: {ce.causal_force}<br/>"
             f"evidence: {ce.evidence_strength}"
         )
-        # Distinguish WORLD_→WORLD_ chain_reaction / mutation edges:
-        # they encode global-force coupling (one ambient force amplifies
-        # or attenuates another) and would otherwise be visually
-        # indistinguishable from the dominant Event→Event causal mesh.
-        # Render them in the WorldTrait teal at a slightly thicker
-        # weight with a dashed style so the audit eye can pick them
-        # out at a glance.
-        is_world_to_world = (
-            ce.source_id.startswith("WORLD_")
-            and ce.target_id.startswith("WORLD_")
-        )
+        # WORLD_\u2192WORLD_ kept dashed so the latent-coupling lattice
+        # is readable even where the iris colour overlaps with other
+        # high-saturation hues at a distance.
+        is_world_to_world = modality == "world_to_world"
+        line_style = {
+            "width": max(w, 2.0) if is_world_to_world else w,
+            "color": color,
+            "opacity": 0.85,
+            "curveness": 0.2 if is_world_to_world else 0.15,
+        }
         if is_world_to_world:
-            line_style = {
-                "width": max(w, 2.0),
-                "color": NODE_COLORS["WorldTrait"],
-                "type": "dashed",
-                "opacity": 0.85,
-                "curveness": 0.2,
-            }
-        else:
-            line_style = {"width": w, "color": EDGE_COLORS["causal"]}
+            line_style["type"] = "dashed"
         links.append({
             "source": ce.source_id,
             "target": ce.target_id,
+            "_sl_modality": modality,
+            "_sl_force": float(ce.causal_force),
             "lineStyle": line_style,
             "tooltip": {"formatter": tooltip},
         })
@@ -3944,6 +4144,9 @@ def ws_to_trait_stats_rows(
 
 def ws_to_causal_cartesian_data(
     ws: WorldStateV1,
+    *,
+    focus_id: str | None = None,
+    focus_max_hops: int = 2,
 ) -> tuple[list[dict], list[dict]]:
     """Causal nodes + links anchored on (fabula_time, syuzhet_index).
 
@@ -3952,11 +4155,42 @@ def ws_to_causal_cartesian_data(
     of the events that touch them so the layout still has them somewhere
     sensible (rather than being scattered randomly).
 
+    ``focus_id`` (when provided) restricts the rendered graph to the
+    BFS neighbourhood of that node along the directed causal graph.
+    Edges are coloured by ``causality_type`` modality so the
+    Cartesian view shares the Sankey/force palette.
+
     Returns ``(nodes, links)`` ready for an ECharts ``graph`` series with
     ``coordinateSystem: 'cartesian2d'``.
     """
     if not ws.events or not ws.causal_topology:
         return [], []
+
+    edges = list(ws.causal_topology)
+    if focus_id is not None:
+        out_adj: dict[str, set[str]] = {}
+        in_adj: dict[str, set[str]] = {}
+        for ce in edges:
+            out_adj.setdefault(ce.source_id, set()).add(ce.target_id)
+            in_adj.setdefault(ce.target_id, set()).add(ce.source_id)
+        keep: set[str] = {focus_id}
+        frontier: set[str] = {focus_id}
+        for _ in range(max(1, int(focus_max_hops))):
+            nxt: set[str] = set()
+            for nid in frontier:
+                nxt.update(out_adj.get(nid, ()))
+                nxt.update(in_adj.get(nid, ()))
+            nxt -= keep
+            if not nxt:
+                break
+            keep.update(nxt)
+            frontier = nxt
+        edges = [
+            ce for ce in edges
+            if ce.source_id in keep and ce.target_id in keep
+        ]
+        if not edges:
+            return [], []
 
     # Index events for quick lookup
     evt_by_id = {e.id: e for e in ws.events}
@@ -3964,7 +4198,7 @@ def ws_to_causal_cartesian_data(
 
     # Compute mean coords for every non-event referenced by causal edges
     coord_acc: dict[str, list[tuple[int, int]]] = {}
-    for ce in ws.causal_topology:
+    for ce in edges:
         for nid in (ce.source_id, ce.target_id):
             if nid in evt_ids:
                 continue
@@ -3996,7 +4230,7 @@ def ws_to_causal_cartesian_data(
         seen.add(nid)
         if nid in evt_ids:
             evt = evt_by_id[nid]
-            nodes.append({
+            node = {
                 "id": nid,
                 "name": nid,
                 "value": [evt.fabula_time, evt.syuzhet_index],
@@ -4005,12 +4239,20 @@ def ws_to_causal_cartesian_data(
                 "itemStyle": {"color": NODE_COLORS["EventNode"]},
                 "tooltip": {
                     "formatter": (
-                        f"<b>{nid}</b><br/>"
+                        f"<b>{nid}</b> [{evt.event_type}]<br/>"
                         f"t={evt.fabula_time}, s={evt.syuzhet_index}<br/>"
-                        f"{evt.description[:80]}"
+                        f"{(evt.description or '')[:80]}"
                     )
                 },
-            })
+            }
+            if focus_id is not None and nid == focus_id:
+                node["itemStyle"] = {
+                    **node["itemStyle"],
+                    "borderColor": "#FFD700",
+                    "borderWidth": 4,
+                }
+                node["symbolSize"] = 24
+            nodes.append(node)
             return
         x, y = _mean_xy(nid)
         if nid in ws.entities:
@@ -4028,25 +4270,48 @@ def ws_to_causal_cartesian_data(
         else:
             color = "#9E9E9E"; sym = "circle"; size = 12
             label = nid
-        nodes.append({
+        node = {
             "id": nid,
             "name": label,
             "value": [round(x, 2), round(y, 2)],
             "symbol": sym,
             "symbolSize": size,
             "itemStyle": {"color": color},
-        })
+        }
+        if focus_id is not None and nid == focus_id:
+            node["itemStyle"] = {
+                **node["itemStyle"],
+                "borderColor": "#FFD700",
+                "borderWidth": 4,
+            }
+            node["symbolSize"] = max(size + 6, 24)
+        nodes.append(node)
 
     links: list[dict] = []
-    for ce in ws.causal_topology:
+    for ce in edges:
         _ensure(ce.source_id)
         _ensure(ce.target_id)
         w = min(6, max(1, ce.causal_force / 1.5))
+        modality = _modality_key(ce)
+        color = MODALITY_COLORS.get(modality, EDGE_COLORS["causal"])
+        is_world_to_world = modality == "world_to_world"
+        ls = {
+            "width": max(w, 2.0) if is_world_to_world else w,
+            "color": color,
+            "opacity": 0.7,
+            "curveness": 0.15,
+        }
+        if is_world_to_world:
+            ls["type"] = "dashed"
         links.append({
             "source": ce.source_id,
             "target": ce.target_id,
-            "lineStyle": {"width": w, "color": EDGE_COLORS["causal"], "opacity": 0.6, "curveness": 0.15},
-            "tooltip": {"formatter": f"{ce.causality_type}<br/>force={ce.causal_force}"},
+            "_sl_modality": modality,
+            "lineStyle": ls,
+            "tooltip": {"formatter": (
+                f"<b>{MODALITY_LABELS.get(modality, ce.causality_type)}</b>"
+                f"<br/>force={ce.causal_force}"
+            )},
         })
     return nodes, links
 
