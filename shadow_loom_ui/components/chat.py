@@ -27,11 +27,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _QUERY_TYPES = [
-    # NB: "general" / Ask is intentionally omitted from this list so it
-    # no longer appears in the Mode picker. The underlying GeneralQuery
-    # code path is still reachable as the parser's last-resort fallback
-    # (see query_parsing._fallback_to_general_query) and the hint /
-    # rendering helpers below still recognise the value if it arrives.
+    # "general" / Ask is the safe read-only default and the first entry
+    # in the picker. Auto-detect was removed because it routinely
+    # mis-routed creative requests to read-only modes; users now pick
+    # the mode explicitly.
+    ("general", "Ask", "help_outline"),
     ("observation", "Continue", "auto_stories"),
     ("intervention", "Intervene", "flash_on"),
     ("counterfactual", "What-If", "alt_route"),
@@ -40,17 +40,15 @@ _QUERY_TYPES = [
     ("evaluate", "Evaluate", "fact_check"),
 ]
 
+_DEFAULT_QUERY_TYPE = "general"
+
 # One-line hover hints, keyed by query type. Used both in the Mode
 # selector tooltip and in the help-popover markdown table so the two
 # surfaces stay in sync.
 _QUERY_TYPE_HINTS: dict[str, str] = {
-    "": (
-        "Auto-detect — let the parser pick the right mode from your "
-        "wording. Safe default."
-    ),
     "general": (
         "Ask — read-only Q&A over the world graph. Returns an answer; "
-        "does not advance the timeline or write prose."
+        "does not advance the timeline or write prose. Safe default."
     ),
     "observation": (
         "Continue — generate the next scene in chronological order. "
@@ -89,12 +87,13 @@ _QUERY_TYPE_HINTS: dict[str, str] = {
 
 _MODE_HELP_BODY = (
     "Pick how the engine should interpret your input. "
-    "**Auto-detect** is usually correct \u2014 these explicit modes are "
-    "for cases where you want to override the parser.\n\n"
+    "**Ask** is the safe read-only default \u2014 switch to a writing "
+    "mode when you want to advance the story.\n\n"
     "| Mode | What it does |\n"
     "|---|---|\n"
-    "| **Auto-detect** | Let the parser pick the right mode from your wording. |\n"
+    "| **Ask** | Read-only Q&A over the world graph. No new version. |\n"
     "| **Continue** | Generate the next scene in chronological order. New factual version. |\n"
+
     "| **Intervene** | Force a state change and propagate consequences. New factual version. |\n"
     "| **What-If** | Re-run history under a changed past event. Forks a *shadow* branch. |\n"
     "| **Direct** | Optimise the next scene for a target emotional effect. |\n"
@@ -134,7 +133,7 @@ def _build_command_bar(state: AppState) -> None:
     """Persistent command bar: input always visible, history expands upward."""
 
     messages: List[dict] = []
-    selected_type = {"value": ""}  # Empty = auto-detect
+    selected_type = {"value": _DEFAULT_QUERY_TYPE}
     manual_mode = {"active": False}
     last_request = {"text": "", "qtype": "", "manual": False, "forced": False}
 
@@ -171,11 +170,10 @@ def _build_command_bar(state: AppState) -> None:
             # vertically aligns the field with the textarea.
             type_select = ui.select(
                 options={
-                    "": "Auto-detect",
                     **{k: label for k, label, _ in _QUERY_TYPES},
                     "manual_edit": "✏ Write prose",
                 },
-                value="",
+                value=_DEFAULT_QUERY_TYPE,
                 label="Mode",
             ).props(
                 "dense outlined options-dense stack-label "
@@ -184,7 +182,9 @@ def _build_command_bar(state: AppState) -> None:
             # Hover tooltip on the field itself — updates as the user
             # changes mode so the hint always matches the current pick.
             with type_select:
-                _mode_tip = ui.tooltip(_QUERY_TYPE_HINTS[""]).classes(
+                _mode_tip = ui.tooltip(
+                    _QUERY_TYPE_HINTS[_DEFAULT_QUERY_TYPE]
+                ).classes(
                     "text-xs max-w-xs leading-snug whitespace-normal"
                 )
 
@@ -203,10 +203,11 @@ def _build_command_bar(state: AppState) -> None:
                     selected_type["value"] = ""
                 else:
                     manual_mode["active"] = False
-                    selected_type["value"] = val
+                    selected_type["value"] = val or _DEFAULT_QUERY_TYPE
                 # Keep the hover hint in sync with the active mode.
                 _mode_tip.text = _QUERY_TYPE_HINTS.get(
-                    val or "", _QUERY_TYPE_HINTS[""],
+                    val or _DEFAULT_QUERY_TYPE,
+                    _QUERY_TYPE_HINTS[_DEFAULT_QUERY_TYPE],
                 )
                 _mode_tip.update()
                 _update_placeholder()
@@ -480,7 +481,6 @@ def _build_command_bar(state: AppState) -> None:
                     "### Modes\n"
                     "| Mode | What it does | Saves a version? | Surfaces in |\n"
                     "|------|--------------|------------------|-------------|\n"
-                    "| **Auto-detect** | Parses the text and routes to the best mode. | depends | depends |\n"
                     "| **Ask** | Read-only Q&A over the world graph. | no | Answer panel |\n"
                     "| **Continue** | Generate the next scene. | yes (factual) | Story tab |\n"
                     "| **Intervene** | Force a change *now* and continue. | yes (factual) | Story tab |\n"

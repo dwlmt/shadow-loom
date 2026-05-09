@@ -1277,6 +1277,7 @@ def ask(
     project_name: Optional[str] = None,
     version: Optional[int] = None,
     pov_entity_id: Optional[str] = None,
+    mode: Optional[str] = None,
 ) -> dict:
     """Ask a read-only question about the story world.
 
@@ -1288,6 +1289,14 @@ def ask(
       "What does Macbeth believe about Lady Macbeth?"
       "Who is at the castle right now?"
       "What are the causal consequences of the murder?"
+
+    ``mode`` selects the read-only query family:
+      - ``"interrogate"`` *(default)* — graph pathfinding with proof;
+        returns Causal Bridges as evidence for "who knows X?" /
+        "is there a path from A to B?" questions.
+      - ``"general"`` — broad Q&A over the world graph; the engine
+        answers in natural language without requiring explicit
+        causal-bridge proof.
 
     ``pov_entity_id`` (scaffold): if set, the world is filtered through that
     character's epistemic lens before analysis (utterances they could not
@@ -1311,9 +1320,18 @@ def ask(
             intelligibility_threshold=_settings.physics.intelligibility_threshold,
         )
 
+    qmode = (mode or "interrogate").lower()
+    if qmode not in ("general", "interrogate"):
+        return {
+            "error": (
+                f"Unknown mode {mode!r}; expected 'general' or "
+                f"'interrogate'."
+            )
+        }
+
     # Parse the question to resolve IDs
     parse_result = parse_query(
-        question, query_type="interrogate", world_state=ws,
+        question, query_type=qmode, world_state=ws,
         config=QueryParsingConfig(),
     )
 
@@ -1321,7 +1339,7 @@ def ask(
         # Fallback: run as general physics query
         query = InterrogationQuery(
             question=question,
-            require_proof=True,
+            require_proof=(qmode == "interrogate"),
             original_query=question,
         )
     else:
