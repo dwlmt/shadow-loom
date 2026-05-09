@@ -917,14 +917,19 @@ class ExtractionConfig(BaseModel):
         ),
     )
     proposition_catalogue_max_tokens: int = Field(
-        default=8000,
+        default=65536,
         ge=1000,
         description=(
             "Hard ``max_tokens`` for the Phase A3 catalogue agent. "
-            "Sized to fit a per-chunk catalogue payload (~30-80 "
-            "propositions) without truncation. The provider-default "
-            "behaviour was the silent-truncation source in the "
-            "May 2026 OpenRouter ``JSONDecodeError`` flake."
+            "Sized to fit a per-chunk catalogue payload without "
+            "truncation; bumped to 64k after observing chunks with "
+            "richer prose still hit a 24k cap and produce truncated "
+            "/ unparseable JSON on long-form inputs. Modern "
+            "long-context models (Moonshot Kimi K2, GPT-4.1, Claude "
+            "3.5+, Gemini 1.5/2.x) all advertise >=64k output budgets, "
+            "so this default is safe across the supported provider "
+            "set; trim it via ``EXTRACTION_PROPOSITION_CATALOGUE_MAX_TOKENS`` "
+            "if you are targeting a smaller-output model."
         ),
     )
     proposition_catalogue_temperature: float = Field(
