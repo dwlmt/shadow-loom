@@ -10561,6 +10561,72 @@ class WorldStatePatch(BaseModel):
             "by (entity_id, target_id)."
         ),
     )
+    # ----- Ontology repairs (entity/object/location renames + drops) -----
+    entity_renames: Dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "ENT_ ID renames: {old_id: new_id}. Use to merge two "
+            "entities that the upstream extractor split apart (e.g. "
+            "an identity reveal where Anakin and Vader were registered "
+            "as separate ENT_ ids for the same character). Forwards "
+            "every reference (entities dict key, event actor_ids / "
+            "target_ids / speaker_id / addressee_ids, channel "
+            "participant_ids, social_topology source/target_entity_id, "
+            "causal_topology source/target/rel_counterpart_id, belief "
+            "target_ids, entity.location_id self-ref). Beliefs and "
+            "concerns from the merged-away ENT are concatenated onto "
+            "the surviving entity (deduped on (proposition_id, polarity) "
+            "for concerns and on target_id for beliefs)."
+        ),
+    )
+    object_renames: Dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "OBJ_ ID renames: {old_id: new_id}. Forwards every "
+            "reference. Use to fix typo/spelling drift on object ids."
+        ),
+    )
+    drop_object_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Object IDs to remove entirely. Use when the upstream "
+            "extractor mis-tiered a place as an object (e.g. registered "
+            "OBJ_DEATH_STAR alongside the existing LOC_DEATH_STAR). "
+            "Edges and event target_ids referencing the dropped objects "
+            "are pruned by the post-patch ``_auto_repair`` pass."
+        ),
+    )
+    location_renames: Dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "LOC_ ID renames: {old_id: new_id}. Forwards every "
+            "reference (locations dict key, entity.location_id, "
+            "object.location_id, spatial_topology source/target, "
+            "causal_topology, EntityStateSnapshot.location_id)."
+        ),
+    )
+    drop_location_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Location IDs to remove entirely. Entities / objects "
+            "still pointing at the dropped LOC_ have their location_id "
+            "nulled by ``_auto_repair`` (which the caller invokes "
+            "after the patch is applied)."
+        ),
+    )
+    swap_causal_edge_directions: List[_EdgeRef] = Field(
+        default_factory=list,
+        description=(
+            "Causal edges whose endpoints should be swapped: each entry "
+            "names the edge by its CURRENT (source_id, target_id); "
+            "the apply pass rewrites it to (target_id, source_id) in "
+            "place, preserving causality_type, mechanism, causal_force, "
+            "trait_target / trait_delta, propagation_delay, evidence_strength. "
+            "Use when an extractor wired causality the wrong way round "
+            "(e.g. a chain_reaction whose 'effect' has a smaller "
+            "fabula_time than its 'cause')."
+        ),
+    )
     notes: str = Field(
         default="",
         description="Free-text rationale for the maintainer log; not applied to the world state.",
@@ -11028,9 +11094,283 @@ def _apply_world_state_patch(
             rewritten[eid] = ent.model_copy(update=ent_update) if ent_update else ent
         new_entities = rewritten
 
+    # 9. Ontology repairs: entity / object / location renames + drops,
+    #    plus causal-edge direction swaps. Run as the final pass before
+    #    assembling new_ws so all earlier rewrites (event renames,
+    #    channel renames, snapshot inserts) have already settled into
+    #    new_entities / new_events / new_causal / new_social /
+    #    new_spatial / new_channels. Dangling refs left after drops
+    #    are cleaned by ``_auto_repair`` in the caller.
+    ent_renames = dict(patch.entity_renames)
+    obj_renames = dict(patch.object_renames)
+    loc_renames = dict(patch.location_renames)
+    drop_objs = set(patch.drop_object_ids)
+    drop_locs = set(patch.drop_location_ids)
+    swap_pairs = {(e.source_id, e.target_id) for e in patch.swap_causal_edge_directions}
+
+    def _re(eid: Optional[str]) -> Optional[str]:
+        if eid is None:
+            return None
+        return ent_renames.get(eid, eid)
+
+    def _ro(oid: Optional[str]) -> Optional[str]:
+        if oid is None:
+            return None
+        return obj_renames.get(oid, oid)
+
+    def _rl(lid: Optional[str]) -> Optional[str]:
+        if lid is None:
+            return None
+        return loc_renames.get(lid, lid)
+
+    def _rid(any_id: Optional[str]) -> Optional[str]:
+        """Rewrite any namespaced id through whichever rename dict applies."""
+        if not any_id:
+            return any_id
+        if any_id.startswith("ENT_"):
+            return ent_renames.get(any_id, any_id)
+        if any_id.startswith("OBJ_"):
+            return obj_renames.get(any_id, any_id)
+        if any_id.startswith("LOC_"):
+            return loc_renames.get(any_id, any_id)
+        return any_id
+
+    needs_ontology_rewrite = bool(
+        ent_renames or obj_renames or loc_renames
+        or drop_objs or drop_locs or swap_pairs
+    )
+    if needs_ontology_rewrite:
+        # --- Causal-edge direction swaps (run before id rewrites so
+        #     the user's swap_pairs are matched against the edge's
+        #     CURRENT endpoints, as documented).
+        if swap_pairs:
+            swapped: List[CausalEdge] = []
+            for ce in new_causal:
+                if (ce.source_id, ce.target_id) in swap_pairs:
+                    swapped.append(ce.model_copy(update={
+                        "source_id": ce.target_id,
+                        "target_id": ce.source_id,
+                    }))
+                    changes.append(
+                        f"Swapped causal edge direction: "
+                        f"{ce.source_id}→{ce.target_id} ⇒ "
+                        f"{ce.target_id}→{ce.source_id}."
+                    )
+                else:
+                    swapped.append(ce)
+            new_causal = swapped
+
+        # --- Locations dict: drop + rename ---
+        new_locations: Dict[str, Location] = {}
+        for lid, loc in ws.locations.items():
+            if lid in drop_locs:
+                changes.append(f"Dropped location '{lid}'.")
+                continue
+            new_lid = loc_renames.get(lid, lid)
+            if new_lid != lid:
+                changes.append(f"Renamed location '{lid}' → '{new_lid}'.")
+                new_locations[new_lid] = loc.model_copy(update={"id": new_lid})
+            else:
+                new_locations[lid] = loc
+
+        # --- Objects dict: drop + rename, with location_id rewrite ---
+        new_objects: Dict[str, NarrativeObject] = {}
+        for oid, obj in ws.objects.items():
+            if oid in drop_objs:
+                changes.append(f"Dropped object '{oid}'.")
+                continue
+            new_oid = obj_renames.get(oid, oid)
+            obj_update: dict = {}
+            if new_oid != oid:
+                obj_update["id"] = new_oid
+                changes.append(f"Renamed object '{oid}' → '{new_oid}'.")
+            new_loc = _rl(obj.location_id)
+            if new_loc in drop_locs:
+                obj_update["location_id"] = None
+            elif new_loc != obj.location_id:
+                obj_update["location_id"] = new_loc
+            new_objects[new_oid] = obj.model_copy(update=obj_update) if obj_update else obj
+
+        # --- Entities dict: drop-via-merge through entity_renames + rewrite location_id ---
+        merged_entities: Dict[str, Entity] = {}
+        for eid, ent in new_entities.items():
+            new_eid = ent_renames.get(eid, eid)
+            ent_update: dict = {}
+            if new_eid != eid:
+                ent_update["id"] = new_eid
+            # Rewrite location_id through loc_renames; null if dropped.
+            if ent.location_id:
+                new_loc = _rl(ent.location_id)
+                if new_loc in drop_locs:
+                    ent_update["location_id"] = None
+                elif new_loc != ent.location_id:
+                    ent_update["location_id"] = new_loc
+            # Rewrite belief target_ids through any-id mapping; null
+            # beliefs whose target was dropped.
+            if ent.beliefs:
+                new_bs: List[Belief] = []
+                bs_changed = False
+                for b in ent.beliefs:
+                    new_tid = _rid(b.target_id)
+                    if (new_tid and (new_tid in drop_objs or new_tid in drop_locs)):
+                        bs_changed = True
+                        continue  # drop the belief
+                    if new_tid != b.target_id:
+                        new_bs.append(b.model_copy(update={"target_id": new_tid}))
+                        bs_changed = True
+                    else:
+                        new_bs.append(b)
+                if bs_changed:
+                    ent_update["beliefs"] = new_bs
+            ent_final = ent.model_copy(update=ent_update) if ent_update else ent
+
+            if new_eid in merged_entities:
+                # Merge: concatenate beliefs (dedup on target_id) and
+                # concerns (dedup on (proposition_id, polarity)).
+                existing = merged_entities[new_eid]
+                merge_update: dict = {}
+                if ent_final.beliefs:
+                    seen_tids = {b.target_id for b in existing.beliefs}
+                    add_bs = [b for b in ent_final.beliefs if b.target_id not in seen_tids]
+                    if add_bs:
+                        merge_update["beliefs"] = list(existing.beliefs) + add_bs
+                if ent_final.concerns:
+                    seen_keys = {(c.proposition_id, c.polarity) for c in existing.concerns}
+                    add_cs = [
+                        c for c in ent_final.concerns
+                        if (c.proposition_id, c.polarity) not in seen_keys
+                    ]
+                    if add_cs:
+                        merge_update["concerns"] = list(existing.concerns) + add_cs
+                if merge_update:
+                    merged_entities[new_eid] = existing.model_copy(update=merge_update)
+                changes.append(
+                    f"Merged entity '{eid}' into '{new_eid}' "
+                    f"(beliefs/concerns concatenated, dedup applied)."
+                )
+            else:
+                merged_entities[new_eid] = ent_final
+                if new_eid != eid:
+                    changes.append(f"Renamed entity '{eid}' → '{new_eid}'.")
+        new_entities = merged_entities
+
+        # --- Events: rewrite ENT_/OBJ_/LOC_ refs everywhere, drop
+        #     target_ids that pointed at dropped objects/locations.
+        rewritten_events: List[EventNode] = []
+        for evt in new_events:
+            ev_update: dict = {}
+            new_actors = [_rid(a) for a in evt.actor_ids]
+            new_actors = [a for a in new_actors if a and a not in drop_objs and a not in drop_locs]
+            if new_actors != evt.actor_ids:
+                ev_update["actor_ids"] = new_actors
+            new_targets = [_rid(t) for t in evt.target_ids]
+            new_targets = [
+                t for t in new_targets
+                if t and t not in drop_objs and t not in drop_locs
+            ]
+            if new_targets != evt.target_ids:
+                ev_update["target_ids"] = new_targets
+            new_speaker = _re(evt.speaker_id) if evt.speaker_id else evt.speaker_id
+            if new_speaker != evt.speaker_id:
+                ev_update["speaker_id"] = new_speaker
+            new_addrs = [_re(a) for a in evt.addressee_ids]
+            new_addrs = [a for a in new_addrs if a]
+            if new_addrs != evt.addressee_ids:
+                ev_update["addressee_ids"] = new_addrs
+            rewritten_events.append(evt.model_copy(update=ev_update) if ev_update else evt)
+        new_events = rewritten_events
+
+        # --- Causal topology: rewrite ENT_/OBJ_/LOC_ endpoints ---
+        rewritten_causal: List[CausalEdge] = []
+        for ce in new_causal:
+            ce_update: dict = {}
+            new_src = _rid(ce.source_id)
+            new_tgt = _rid(ce.target_id)
+            # Drop the edge entirely if either endpoint was dropped.
+            if (
+                new_src in drop_objs or new_src in drop_locs
+                or new_tgt in drop_objs or new_tgt in drop_locs
+            ):
+                changes.append(
+                    f"Dropped causal edge {ce.source_id}→{ce.target_id} "
+                    f"(endpoint dropped by ontology repair)."
+                )
+                continue
+            if new_src != ce.source_id:
+                ce_update["source_id"] = new_src
+            if new_tgt != ce.target_id:
+                ce_update["target_id"] = new_tgt
+            if ce.rel_counterpart_id:
+                new_rc = _re(ce.rel_counterpart_id)
+                if new_rc != ce.rel_counterpart_id:
+                    ce_update["rel_counterpart_id"] = new_rc
+            rewritten_causal.append(ce.model_copy(update=ce_update) if ce_update else ce)
+        new_causal = rewritten_causal
+
+        # --- Social topology: rewrite ENT_ endpoints (+ drop if either is now missing) ---
+        rewritten_social: List[RelationshipEdge] = []
+        for re_edge in new_social:
+            re_update: dict = {}
+            new_src = _re(re_edge.source_entity_id)
+            new_tgt = _re(re_edge.target_entity_id)
+            if new_src == new_tgt:
+                # Self-loop after rename merge \u2014 drop.
+                changes.append(
+                    f"Dropped social self-loop after entity merge: "
+                    f"{re_edge.source_entity_id}→{re_edge.target_entity_id}."
+                )
+                continue
+            if new_src != re_edge.source_entity_id:
+                re_update["source_entity_id"] = new_src
+            if new_tgt != re_edge.target_entity_id:
+                re_update["target_entity_id"] = new_tgt
+            rewritten_social.append(re_edge.model_copy(update=re_update) if re_update else re_edge)
+        new_social = rewritten_social
+
+        # --- Spatial topology: rewrite LOC_/ENT_ endpoints, drop if endpoint dropped ---
+        rewritten_spatial: List[SpatialEdge] = []
+        for sp in new_spatial:
+            sp_update: dict = {}
+            new_src = _rid(sp.source_id)
+            new_tgt = _rid(sp.target_id)
+            if new_src in drop_locs or new_tgt in drop_locs:
+                changes.append(
+                    f"Dropped spatial edge {sp.source_id}→{sp.target_id} "
+                    f"(endpoint location dropped)."
+                )
+                continue
+            if new_src != sp.source_id:
+                sp_update["source_id"] = new_src
+            if new_tgt != sp.target_id:
+                sp_update["target_id"] = new_tgt
+            rewritten_spatial.append(sp.model_copy(update=sp_update) if sp_update else sp)
+        new_spatial = rewritten_spatial
+
+        # --- Channels: rewrite participant_ids (ENT_) ---
+        rewritten_channels: Dict[str, Channel] = {}
+        for cid, ch in new_channels.items():
+            new_pids = [_re(p) for p in (ch.participant_ids or [])]
+            new_pids = [p for p in new_pids if p]
+            # Dedup while preserving order (entity merges can collapse ids).
+            seen_p: set[str] = set()
+            deduped_pids: List[str] = []
+            for p in new_pids:
+                if p in seen_p:
+                    continue
+                seen_p.add(p)
+                deduped_pids.append(p)
+            if deduped_pids != list(ch.participant_ids or []):
+                rewritten_channels[cid] = ch.model_copy(update={"participant_ids": deduped_pids})
+            else:
+                rewritten_channels[cid] = ch
+        new_channels = rewritten_channels
+    else:
+        new_locations = ws.locations
+        new_objects = ws.objects
+
     new_ws = WorldStateV1(
-        locations=ws.locations,
-        objects=ws.objects,
+        locations=new_locations,
+        objects=new_objects,
         entities=new_entities,
         events=new_events,
         world_traits=patched_world_traits,
@@ -11067,6 +11407,7 @@ def _build_correction_patch_agent(
 
 def _is_correction_regression(
     before: WorldStateV1, after: WorldStateV1,
+    patch: Optional["WorldStatePatch"] = None,
 ) -> Optional[str]:
     """Return a human-readable reason if *after* has lost too much vs *before*.
 
@@ -11074,15 +11415,56 @@ def _is_correction_regression(
     drops more than half of any topology or any entities, we reject the
     patch and keep the previous state. Returns ``None`` when the post-
     correction state is acceptable.
+
+    When *patch* is provided, the circuit-breaker accounts for the
+    counts the patch *explicitly* asks to remove (entity_renames merge
+    two entities into one; drop_object_ids / drop_location_ids reduce
+    those tiers; drop_channel_ids likewise). Without this allowance the
+    breaker would falsely reject every legitimate ontology-repair
+    patch.
     """
     def _ratio(a: int, b: int) -> float:
         return (a / b) if b > 0 else 1.0
 
-    if len(after.entities) < len(before.entities):
+    expected_entity_loss = (
+        len({k for k, v in patch.entity_renames.items() if k != v})
+        if patch else 0
+    )
+    expected_object_loss = (
+        len(patch.drop_object_ids)
+        + len({k for k, v in patch.object_renames.items() if k != v})
+        if patch else 0
+    )
+    expected_location_loss = (
+        len(patch.drop_location_ids)
+        + len({k for k, v in patch.location_renames.items() if k != v})
+        if patch else 0
+    )
+    expected_channel_loss = (
+        len(patch.drop_channel_ids)
+        if patch else 0
+    )
+
+    entity_shrink = len(before.entities) - len(after.entities)
+    if entity_shrink > expected_entity_loss:
         return (
             f"entities shrank from {len(before.entities)} to "
-            f"{len(after.entities)} (correction is not allowed to drop "
-            f"entities)"
+            f"{len(after.entities)} (correction asked for "
+            f"{expected_entity_loss} merges; got {entity_shrink} drops)"
+        )
+    object_shrink = len(before.objects) - len(after.objects)
+    if object_shrink > expected_object_loss:
+        return (
+            f"objects shrank from {len(before.objects)} to "
+            f"{len(after.objects)} (correction asked for "
+            f"{expected_object_loss} drops/renames; got {object_shrink})"
+        )
+    location_shrink = len(before.locations) - len(after.locations)
+    if location_shrink > expected_location_loss:
+        return (
+            f"locations shrank from {len(before.locations)} to "
+            f"{len(after.locations)} (correction asked for "
+            f"{expected_location_loss} drops/renames; got {location_shrink})"
         )
     if _ratio(len(after.events), len(before.events)) < 0.8:
         return (
@@ -11110,10 +11492,16 @@ def _is_correction_regression(
     # severs every belief / utterance provenance edge that pointed at
     # the dropped CHN_, which the existing belief-provenance warnings
     # only surface *after* corruption has been persisted.
-    if before.channels and _ratio(len(after.channels), len(before.channels)) < 0.5:
+    channel_shrink = len(before.channels) - len(after.channels)
+    if (
+        before.channels
+        and channel_shrink > expected_channel_loss
+        and _ratio(len(after.channels), len(before.channels)) < 0.5
+    ):
         return (
             f"channels shrank from {len(before.channels)} to "
-            f"{len(after.channels)} (>50% loss)"
+            f"{len(after.channels)} (>50% loss; correction asked for "
+            f"{expected_channel_loss} drops)"
         )
     if before.world_traits and _ratio(len(after.world_traits), len(before.world_traits)) < 0.5:
         return (
@@ -11423,7 +11811,7 @@ def _run_correction_patch(
         )
         return world_state, [], "apply_failed"
 
-    regression = _is_correction_regression(world_state, new_ws)
+    regression = _is_correction_regression(world_state, new_ws, patch=patch)
     if regression:
         logger.warning(
             "%s Rejected correction patch: %s. Keeping previous state. "

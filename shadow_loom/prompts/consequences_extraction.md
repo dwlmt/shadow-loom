@@ -48,13 +48,7 @@ One entry per (entity, fabula_time) state-change combination. Fields:
 
 3. **Inertia evolves with shocks.** When a trait shifts sharply away from baseline, also bump its inertia by `+0.05 to +0.15` (the new state is now hardened by the experience). For incremental drifts, leave inertia unchanged. Bands: `0.95–1.0` physical/supernatural law (avoid exactly `1.0` — the trait becomes literally unmovable); `0.7–0.85` lifelong identity; `0.4–0.6` situational baseline; `0.2–0.35` reactive emotional state; `0.0–0.15` passing surface reaction.
 
-4. **Extract IMPLICIT trait shifts.** Characters rarely announce their inner state. You MUST infer and emit:
-    - **Implicit guilt** after killing, betraying, or harming someone.
-    - **Implicit fear / paranoia** after danger, threat, or narrow escape.
-    - **Implicit grief** when someone close dies, even if tears are not described.
-    - **Implicit suspicion** when evidence of deception appears and the character is perceptive.
-    - **Implicit resolve / determination** when a character commits to a difficult plan.
-    - **Implicit love / affection** during intimate or vulnerable moments.
+4. **Do NOT invent trait shifts Physics did not declare.** Every key in `trait_updates` MUST correspond to a `mutation` or `mutation_social` CausalEdge in the input whose `target_id` is this entity (or, for `mutation_social`, whose perspective entity is this entity) and whose `trait_target` matches the trait name. If you believe an implicit shift is missing — e.g. you think a character should feel guilt after killing someone but Physics drew no `mutation` edge with `trait_target="guilt"` for them — DO NOT add it here. Instead, leave it out; the per-stage retry / correction loop will surface the missing edge upstream. Adding orphan trait updates here trips the chunk-consistency auditor (`orphan_trait_update`) and pollutes propagation with shifts that have no causal anchor.
 
 5. **Belief formation from witnessing.** If an entity is PRESENT for an event, they now hold a belief about that event. Use the on-page entity roster supplied in the dynamic context as the authoritative presence list — `EventNode` itself has no `location_id` field, so do NOT try to infer presence from event geography. Concretely: an entity is "present" if (a) they appear in `actor_ids` or `target_ids` of the event, OR (b) they appear in the on-page roster for this chunk AND the narration places them in the same scene as the actors. Emit witness beliefs as a `new_beliefs` entry with `confidence` near 1.0 (direct witness) and set `acquired_via_event_id` to the witnessed event's id. If the entity is ABSENT, do NOT create a belief here — they can only learn through an utterance event or Channel (handled by the Social Agent); when that utterance is on-page in the same chunk you may set `acquired_via_event_id` to that utterance's id and `acquired_via_channel_id` to the channel it travelled over.
 
