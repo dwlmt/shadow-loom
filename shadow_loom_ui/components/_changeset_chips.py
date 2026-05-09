@@ -89,7 +89,48 @@ def changeset_summary_total(summary: Optional[dict]) -> int:
     for _, _, items in _CHIP_GROUPS:
         for key, _, _ in items:
             total += int(summary.get(key, 0) or 0)
+    # Dangling-ref ledger is a list, not a counter — count its length
+    # so a version that ONLY contains a referential-integrity warning
+    # still renders something instead of an empty chip row.
+    drefs = summary.get("events_with_dangling_refs") or []
+    if isinstance(drefs, list):
+        total += len(drefs)
     return total
+
+
+def _render_integrity_chip(summary: dict) -> None:
+    """Render a single warning chip if the merge surfaced dangling
+    referential integrity issues. Surfaces from
+    ``MergeChangeset.events_with_dangling_refs`` \u2014 each entry is
+    ``{event_id, field, missing_ids}``.
+
+    A small tooltip lists the offending event ids and missing
+    referents so the user can decide whether to promote the missing
+    nodes into a follow-up ``query.introduce`` payload or rewrite
+    the prose."""
+    drefs = summary.get("events_with_dangling_refs") or []
+    if not drefs:
+        return
+    n_events = len(drefs)
+    n_ids = sum(len(d.get("missing_ids") or []) for d in drefs)
+    sample_lines: list[str] = []
+    for d in drefs[:5]:
+        eid = d.get("event_id", "?")
+        field = d.get("field", "?")
+        miss = ", ".join((d.get("missing_ids") or [])[:5])
+        sample_lines.append(f"{eid}.{field}: {miss}")
+    if len(drefs) > 5:
+        sample_lines.append(f"\u2026 +{len(drefs) - 5} more")
+    tip = (
+        f"{n_events} event(s) reference {n_ids} unknown id(s). "
+        f"Either promote the missing nodes into the next "
+        f"query.introduce payload, or edit the prose to remove "
+        f"the references.\n\n" + "\n".join(sample_lines)
+    )
+    ui.label(f"\u26a0 {n_events} dangling ref{'s' if n_events != 1 else ''}").classes(
+        "text-xs px-2 py-0.5 rounded border "
+        "text-amber-800 bg-amber-50 border-amber-300"
+    ).tooltip(tip)
 
 
 def render_changeset_chips(
@@ -127,6 +168,7 @@ def render_changeset_chips(
                                    else f"⤳{v} {short}")).classes(
                         f"text-[10px] px-1.5 py-0.5 rounded border {color_classes}"
                     ).tooltip(f"{tip}: {v}")
+            _render_integrity_chip(summary)
         return
 
     with ui.column().classes("w-full gap-1"):
@@ -146,3 +188,9 @@ def render_changeset_chips(
                     ui.label(f"{sign}{v} {short}").classes(
                         f"text-xs px-2 py-0.5 rounded border {color_classes}"
                     ).tooltip(f"{tip}: {v}")
+        if summary.get("events_with_dangling_refs"):
+            with ui.row().classes("w-full items-center gap-1 flex-wrap"):
+                ui.label("Integrity").classes(
+                    "text-[11px] uppercase tracking-wide text-slate-500 w-20"
+                )
+                _render_integrity_chip(summary)

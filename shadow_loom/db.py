@@ -2036,6 +2036,15 @@ def get_version_tree(project_id: int) -> list[dict]:
                         changeset_summary["entity_updates_skipped"] = cs.get(
                             "entity_updates_skipped"
                         )
+                    # Referential-integrity: list of events whose
+                    # actor_ids/target_ids point at unknown ids. The
+                    # UI renders this as a warning chip / drawer so
+                    # users can promote dangling refs into a follow-up
+                    # query.introduce.
+                    if cs.get("events_with_dangling_refs"):
+                        changeset_summary["events_with_dangling_refs"] = cs.get(
+                            "events_with_dangling_refs"
+                        )
                 except (json.JSONDecodeError, TypeError):
                     pass
             result.append(

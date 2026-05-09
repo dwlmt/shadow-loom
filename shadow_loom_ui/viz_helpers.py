@@ -2068,40 +2068,102 @@ def ws_to_theme_river_data(
     ws: WorldStateV1,
     trait_names: list[str] | None = None,
     max_entities: int = 6,
+    *,
+    group_by: str = "entity",
+    top_n: int = 5,
 ) -> list[list]:
-    """Build ThemeRiver series data: [[time, value, "entity:trait"], ...].
+    """Build ThemeRiver series data: ``[[time, value, label], ...]``.
 
-    Each river band is an entity-trait pair showing evolution over fabula time.
+    ``group_by="entity"`` (default): one band per ``entity:trait``
+    pair, matching the legacy behaviour.
+    ``group_by="trait"``: one band per trait, summed across the cast
+    \u2014 cleaner story-level view that doesn't explode with cast size.
+
+    ``trait_names=None``: auto-pick the top ``top_n`` traits by
+    *variance \u00d7 occurrence* across the cast (was: top-4 by raw
+    occurrence). Variance ranking surfaces the traits that actually
+    move during the story, so the river bands carry information
+    instead of being flat ribbons of stable axes.
+
+    ThemeRiver requires non-negative magnitudes; we encode trait
+    *energy* as ``|value - 0.5|`` for [0,1]-scale traits and
+    ``|value|`` for [-1,1]-scale traits, then add a small floor so
+    near-zero traits remain visible as a hairline rather than
+    disappearing entirely.
     """
-    if not ws.events:
+    if not ws.events or not ws.entities:
         return []
 
-    times = sorted({evt.fabula_time for evt in ws.events})
+    times = sorted({int(evt.fabula_time) for evt in ws.events})
     if not times:
         return []
 
+    # Cap the cast.
     ent_ids = list(ws.entities.keys())[:max_entities]
+    if not ent_ids:
+        return []
 
+    # ---- Trait selection: variance \u00d7 occurrence ----------------------
     if trait_names is None:
-        trait_counts: dict[str, int] = {}
+        trait_stats: dict[str, list[float]] = {}
         for eid in ent_ids:
-            for t in ws.entities[eid].traits:
-                trait_counts[t] = trait_counts.get(t, 0) + 1
-        trait_names = sorted(trait_counts, key=trait_counts.get, reverse=True)[:4]
+            ent = ws.entities[eid]
+            for tname, tv in ent.traits.items():
+                trait_stats.setdefault(tname, []).append(float(tv.value))
+        scored: list[tuple[str, float]] = []
+        for tname, vals in trait_stats.items():
+            n = len(vals)
+            if n < 1:
+                continue
+            mean = sum(vals) / n
+            var = sum((v - mean) ** 2 for v in vals) / n
+            # variance \u00d7 occurrence so traits that are both volatile
+            # and widely-shared rank highest.
+            scored.append((tname, var * n))
+        scored.sort(key=lambda x: -x[1])
+        trait_names = [t for t, _ in scored[:top_n]]
+    if not trait_names:
+        return []
 
     data: list[list] = []
     for t in times:
-        for eid in ent_ids:
-            ent = ws.entities[eid]
-            snapshot = reconstruct_entity_with_causal(ws, eid, t)
+        if group_by == "trait":
+            # One band per trait, summing energy across the cast.
             for tn in trait_names:
-                tv = snapshot.get("traits", {}).get(tn)
-                if tv is not None:
-                    val = tv["value"] if isinstance(tv, dict) else tv
-                else:
-                    val = ent.traits[tn].value if tn in ent.traits else 0.5
-                # ThemeRiver needs positive values; shift from [0,1] to [0.1, 1.1]
-                data.append([str(t), round(max(0.01, val + 0.1), 3), f"{ent.name}:{tn}"])
+                total = 0.0
+                for eid in ent_ids:
+                    ent = ws.entities[eid]
+                    snapshot = reconstruct_entity_with_causal(ws, eid, t)
+                    tv = snapshot.get("traits", {}).get(tn)
+                    if tv is not None:
+                        val = tv["value"] if isinstance(tv, dict) else tv
+                    elif tn in ent.traits:
+                        val = ent.traits[tn].value
+                    else:
+                        continue
+                    total += abs(float(val))
+                # Floor so a flat zero series shows as a hairline.
+                data.append([str(t), round(max(0.05, total), 3), tn])
+        else:
+            # One band per entity:trait pair.
+            for eid in ent_ids:
+                ent = ws.entities[eid]
+                snapshot = reconstruct_entity_with_causal(ws, eid, t)
+                for tn in trait_names:
+                    tv = snapshot.get("traits", {}).get(tn)
+                    if tv is not None:
+                        val = tv["value"] if isinstance(tv, dict) else tv
+                    elif tn in ent.traits:
+                        val = ent.traits[tn].value
+                    else:
+                        continue
+                    # Encode magnitude (energy) so negative traits
+                    # contribute thickness rather than disappearing.
+                    energy = abs(float(val))
+                    data.append([
+                        str(t), round(max(0.05, energy), 3),
+                        f"{ent.name}:{tn}",
+                    ])
 
     return data
 
@@ -2222,6 +2284,8 @@ def ws_to_lifeline_data(
     ws: WorldStateV1,
     *,
     entity_ids: list[str] | None = None,
+    sort_by: str = "first_appearance",
+    event_types: set[str] | None = None,
 ) -> dict:
     """Build per-entity lifeline segments for ``render_entity_lifelines``.
 
@@ -2232,21 +2296,37 @@ def ws_to_lifeline_data(
     "kinks" visibly at every move.
 
     ``entity_ids``: if provided, restrict the lanes to this subset.
-    Useful when an upstream multi-select wants to focus on a few
-    characters out of a large cast.
+    ``sort_by``: one of ``"first_appearance"`` (default — matches
+    reading order), ``"alphabetical"``, ``"event_count"``,
+    ``"last_appearance"``, ``"death_order"``.
+    ``event_types``: optional whitelist; events with
+    ``event_type not in event_types`` are dropped from the markers.
+
+    Each entity also reports its ``first_t`` / ``last_t`` (from
+    snapshots ∪ events they actor'd in) so the renderer can trim
+    "not-yet-introduced" / "off-page" portions of the lane to a thin
+    grey hairline rather than a misleading full-width healthy ribbon.
+    For dead entities, ``death_t`` carries the tick the ``dead``
+    status first appeared so the renderer can stop the ribbon and
+    drop a ``\u2716`` marker there.
 
     Returns ``{"entities": [(eid, name)],
               "segments": [{"row", "start", "end", "status",
-                            "status_color", "location_name"}],
+                            "status_color", "location_name",
+                            "duration"}],
               "moves":    [{"row", "time", "location_name"}],
               "events":   [{"row", "time", "event_type", "description",
                             "event_id", "color"}],
+              "lifespans":[{"row", "first_t", "last_t",
+                             "death_t": int|None,
+                             "current_status_at_tmax": str|None,
+                             "current_color": str}],
               "tmin": int, "tmax": int}``.
     """
     if not ws.entities:
         return {
             "entities": [], "segments": [], "moves": [],
-            "events": [], "tmin": 0, "tmax": 0,
+            "events": [], "lifespans": [], "tmin": 0, "tmax": 0,
         }
 
     keep: set[str] | None = set(entity_ids) if entity_ids else None
@@ -2257,7 +2337,7 @@ def ws_to_lifeline_data(
     if not sel_entities:
         return {
             "entities": [], "segments": [], "moves": [],
-            "events": [], "tmin": 0, "tmax": 0,
+            "events": [], "lifespans": [], "tmin": 0, "tmax": 0,
         }
 
     # Time bounds from snapshots + events; fall back to a unit range.
@@ -2274,13 +2354,53 @@ def ws_to_lifeline_data(
         if tmax == tmin:
             tmax = tmin + 1
 
+    # ---- Per-entity first/last appearance, death tick, event count -----
+    per_ent: dict[str, dict] = {}
+    for eid, ent in sel_entities.items():
+        snap_ts = [int(s.fabula_time) for s in ent.state_timeline]
+        evt_ts = [int(e.fabula_time) for e in ws.events if eid in (e.actor_ids or [])]
+        appearances = snap_ts + evt_ts
+        first_t = min(appearances) if appearances else tmin
+        last_t = max(appearances) if appearances else tmax
+        death_t: int | None = None
+        for snap in sorted(ent.state_timeline, key=lambda s: s.fabula_time):
+            if snap.status == "dead":
+                death_t = int(snap.fabula_time)
+                break
+        per_ent[eid] = {
+            "first_t": first_t,
+            "last_t": last_t,
+            "death_t": death_t,
+            "event_count": len(evt_ts),
+        }
+
+    # ---- Lane order ----------------------------------------------------
+    eid_list = list(sel_entities.keys())
+    if sort_by == "alphabetical":
+        eid_list.sort(key=lambda e: sel_entities[e].name.lower())
+    elif sort_by == "event_count":
+        eid_list.sort(key=lambda e: -per_ent[e]["event_count"])
+    elif sort_by == "last_appearance":
+        eid_list.sort(key=lambda e: per_ent[e]["last_t"])
+    elif sort_by == "death_order":
+        eid_list.sort(
+            key=lambda e: (
+                per_ent[e]["death_t"] if per_ent[e]["death_t"] is not None
+                else float("inf"),
+                per_ent[e]["first_t"],
+            )
+        )
+    else:  # first_appearance (default)
+        eid_list.sort(key=lambda e: per_ent[e]["first_t"])
+
     entities: list[tuple[str, str]] = [
-        (eid, ent.name) for eid, ent in sel_entities.items()
+        (eid, sel_entities[eid].name) for eid in eid_list
     ]
-    row_for = {eid: i for i, (eid, _) in enumerate(entities)}
+    row_for = {eid: i for i, eid in enumerate(eid_list)}
 
     segments: list[dict] = []
     moves: list[dict] = []
+    lifespans: list[dict] = []
 
     def _loc_name(lid: str | None) -> str:
         if not lid:
@@ -2288,15 +2408,28 @@ def ws_to_lifeline_data(
         loc = ws.locations.get(lid)
         return loc.name if loc else lid
 
-    for eid, ent in sel_entities.items():
+    for eid in eid_list:
+        ent = sel_entities[eid]
         row = row_for[eid]
+        info = per_ent[eid]
+        first_t = info["first_t"]
+        death_t = info["death_t"]
+        # The visible-life span ends at the death tick (so we don't
+        # paint a giant black "dead" ribbon spanning to tmax) or at
+        # tmax for entities that survive.
+        life_end = death_t if death_t is not None else tmax
+
         snaps = sorted(ent.state_timeline, key=lambda s: s.fabula_time)
         cur_status = ent.status
         cur_loc = ent.location_id
-        seg_start = tmin
+        seg_start = first_t
+        cur_color = _STATUS_COLORS.get(cur_status, "#94a3b8")
+
         # Walk snapshots, emitting a segment whenever status changes.
         for snap in snaps:
             t = int(snap.fabula_time)
+            if t > life_end:
+                break
             new_status = snap.status if snap.status is not None else cur_status
             new_loc = snap.location_id if snap.location_id is not None else cur_loc
             if new_status != cur_status and t > seg_start:
@@ -2304,7 +2437,8 @@ def ws_to_lifeline_data(
                     "row": row,
                     "start": seg_start,
                     "end": t,
-                    "status": cur_status,
+                    "duration": t - seg_start,
+                    "status": cur_status or "unknown",
                     "status_color": _STATUS_COLORS.get(cur_status, "#94a3b8"),
                     "location_name": _loc_name(cur_loc),
                 })
@@ -2312,30 +2446,52 @@ def ws_to_lifeline_data(
                 cur_status = new_status
             else:
                 cur_status = new_status
-            if new_loc != cur_loc:
+            if new_loc != cur_loc and t >= first_t:
                 moves.append({
                     "row": row,
                     "time": t,
                     "location_name": _loc_name(new_loc),
                 })
                 cur_loc = new_loc
-        # Final segment to tmax.
-        if seg_start <= tmax:
+        # Final visible segment runs to ``life_end`` (death or tmax).
+        if seg_start < life_end and cur_status != "dead":
             segments.append({
                 "row": row,
                 "start": seg_start,
-                "end": tmax,
-                "status": cur_status,
+                "end": life_end,
+                "duration": life_end - seg_start,
+                "status": cur_status or "unknown",
                 "status_color": _STATUS_COLORS.get(cur_status, "#94a3b8"),
                 "location_name": _loc_name(cur_loc),
             })
 
-    # Event markers per actor row.
+        # Lifespan summary so the renderer can paint the off-page
+        # hairline (before first_t / after life_end) and decorate the
+        # y-axis tick label with a current-status swatch.
+        lifespans.append({
+            "row": row,
+            "first_t": first_t,
+            "last_t": life_end,
+            "death_t": death_t,
+            "current_status_at_tmax": cur_status,
+            "current_color": _STATUS_COLORS.get(cur_status, "#94a3b8"),
+        })
+
+    # Event markers per actor row, optionally chip-filtered.
     events: list[dict] = []
+    type_filter = event_type_chip_filter(ws, event_types)
     for evt in sorted(ws.events, key=lambda e: e.fabula_time):
+        if evt.event_type not in type_filter:
+            continue
         for aid in (evt.actor_ids or []):
             row = row_for.get(aid)
             if row is None:
+                continue
+            # Skip events that fall after the actor's death — those
+            # are typically posthumous references in extracted prose
+            # and shouldn't appear as the actor doing something.
+            dt = per_ent[aid]["death_t"]
+            if dt is not None and int(evt.fabula_time) > dt:
                 continue
             events.append({
                 "row": row,
@@ -2351,6 +2507,7 @@ def ws_to_lifeline_data(
         "segments": segments,
         "moves": moves,
         "events": events,
+        "lifespans": lifespans,
         "tmin": tmin,
         "tmax": tmax,
     }
@@ -2721,6 +2878,119 @@ def resolve_cursor(
         if int(getattr(evt, "syuzhet_index", 0) or 0) <= int(value)
     ]
     return max(revealed) if revealed else 0
+
+
+# ── Shared temporal-chart helpers ─────────────────────────────────
+#
+# Used by every chart on the Temporal sub-tab so they share a single
+# time-axis range and a single cursor "now" line. Without these the
+# four charts each computed their own bounds (lifelines used data-
+# derived tmin/tmax, gantt used "dataMin"/"dataMax", trait timeline
+# used a category axis with one tick per event) so the cursor line
+# landed at a different screen-x on each chart and the visual stack
+# was incoherent. Centralising the axis options also lets us pass
+# the same dict into ECharts ``markLine`` / ``markArea`` consistently.
+
+def temporal_xaxis_options(
+    ws: WorldStateV1,
+    axis: str = "fabula",
+    *,
+    name: str | None = None,
+) -> dict:
+    """ECharts xAxis spec locked to the world's full time range.
+
+    Use ``type: "value"`` on every Temporal chart so a 1-tick gap and
+    a 1000-tick gap render with proportional widths (a plain
+    ``type: "category"`` axis evenly distributes ticks regardless of
+    their numeric distance, which made the trait timeline and theme
+    river misleading).
+
+    ``name`` defaults to "Fabula time" or "Syuzhet index" depending
+    on the active axis so chart axis labels stay consistent without
+    each call site re-deriving the label.
+    """
+    tmin, tmax = axis_bounds(ws, axis)
+    if tmax <= tmin:
+        tmax = tmin + 1
+    if name is None:
+        name = "Syuzhet index" if (axis or "").lower() == "syuzhet" else "Fabula time"
+    return {
+        "type": "value",
+        "min": tmin,
+        "max": tmax,
+        "name": name,
+        "nameGap": 18,
+        "nameTextStyle": {"color": "#475569", "fontSize": 10},
+        "axisLabel": {"color": "#475569", "fontSize": 9},
+        "splitLine": {"lineStyle": {"color": "#e2e8f0"}},
+    }
+
+
+def cursor_markline_series(
+    fabula_t: int | None,
+    *,
+    color: str = "#FF6B35",
+    label: str = "now",
+) -> dict | None:
+    """A near-zero-cost ECharts series whose only job is to draw a
+    vertical "now" line at ``fabula_t``.
+
+    Returns ``None`` when ``fabula_t`` is ``None`` so callers can
+    ``if s := cursor_markline_series(...): series.append(s)``.
+
+    Implemented as a tiny invisible scatter series carrying a
+    ``markLine``; we can't put ``markLine`` on the chart root because
+    ECharts only honours it on a series. Using its own series keeps
+    the existing chart series untouched (so per-series tooltips,
+    legend interactions, and visualMap mappings keep working).
+    """
+    if fabula_t is None:
+        return None
+    return {
+        "name": "__cursor__",
+        "type": "scatter",
+        "data": [],
+        "silent": True,
+        "z": 50,
+        "tooltip": {"show": False},
+        "legendHoverLink": False,
+        "markLine": {
+            "silent": True,
+            "symbol": ["none", "none"],
+            "label": {
+                "show": True,
+                "position": "insideEndTop",
+                "formatter": label,
+                "color": color,
+                "fontSize": 10,
+                "backgroundColor": "rgba(255,255,255,0.85)",
+                "padding": [1, 4, 1, 4],
+                "borderRadius": 3,
+            },
+            "lineStyle": {
+                "color": color,
+                "width": 2,
+                "type": "dashed",
+                "opacity": 0.85,
+            },
+            "data": [{"xAxis": int(fabula_t)}],
+        },
+    }
+
+
+def event_type_chip_filter(
+    ws: WorldStateV1, allowed: set[str] | None,
+) -> set[str]:
+    """Resolve a chip-filter selection to a concrete set of event types.
+
+    ``allowed=None`` means "no filter applied" (show all). An empty
+    set means the user explicitly hid every type — return an empty
+    set so callers render an empty chart rather than silently falling
+    back to "all".
+    """
+    if allowed is None:
+        return {evt.event_type for evt in (ws.events or [])}
+    return set(allowed)
 
 
 def snapshot_world_at_syuzhet(ws: WorldStateV1, s: int) -> WorldStateV1:

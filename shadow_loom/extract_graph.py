@@ -471,6 +471,178 @@ def extract_full_world_state(
 # 4. PROSE → TOPOLOGY EXTRACTION
 # ==========================================
 
+def introduced_elements_to_spawns(
+    introduced: "Any",
+    world_state: WorldStateV1,
+) -> Dict[str, Dict[str, Any]]:
+    """Materialise renderer-declared :class:`IntroducedElements` as
+    a ``spawns``-shaped payload that ``extract_topology_from_prose``
+    can mix with engine-side spawn nodes.
+
+    The output mirrors :func:`promote_sandbox_spawns` exactly so the
+    two channels can be merged with a simple per-key ``dict.update`` —
+    engine-side spawns (deterministic ground truth from
+    ``<ID>.spawn`` surgeries) win on collisions because they encode
+    constraints the renderer is not allowed to override.
+
+    Existing canonical IDs are skipped so the function is idempotent
+    if the renderer re-declares an element already in the canonical
+    world (which shouldn't happen, but is harmless if it does).
+    """
+    from shadow_loom.models import (
+        Concern,
+        Entity,
+        GlobalTrait,
+        Location,
+        NarrativeObject,
+        Proposition,
+        TraitVector,
+    )
+
+    out: Dict[str, Dict[str, Any]] = {
+        "entities": {},
+        "objects": {},
+        "locations": {},
+        "world_traits": {},
+        "channels": {},
+        "propositions": {},
+        "concerns": {},
+    }
+    if introduced is None or getattr(introduced, "is_empty", lambda: True)():
+        return out
+
+    # ── Locations first so entity/object ``located_in`` references resolve.
+    for spec in getattr(introduced, "locations", []) or []:
+        if spec.id in world_state.locations or spec.id in out["locations"]:
+            continue
+        try:
+            out["locations"][spec.id] = Location(
+                name=spec.name,
+                description=spec.description or "",
+                ambient_state={},
+            )
+        except Exception:
+            logger.exception(
+                "[introduced_elements_to_spawns] Location %s invalid \u2014 skipped.",
+                spec.id,
+            )
+
+    for spec in getattr(introduced, "entities", []) or []:
+        if spec.id in world_state.entities or spec.id in out["entities"]:
+            continue
+        location_id = spec.located_in
+        if not location_id:
+            logger.warning(
+                "[introduced_elements_to_spawns] Entity %s missing located_in \u2014 skipped.",
+                spec.id,
+            )
+            continue
+        try:
+            out["entities"][spec.id] = Entity(
+                id=spec.id,
+                name=spec.name,
+                location_id=location_id,
+                status="healthy",
+                traits=dict(spec.initial_traits or {}),
+                beliefs=[],
+                constants=[],
+                state_timeline=[],
+            )
+        except Exception:
+            logger.exception(
+                "[introduced_elements_to_spawns] Entity %s invalid \u2014 skipped.",
+                spec.id,
+            )
+
+    for spec in getattr(introduced, "objects", []) or []:
+        if spec.id in world_state.objects or spec.id in out["objects"]:
+            continue
+        try:
+            out["objects"][spec.id] = NarrativeObject(
+                id=spec.id,
+                name=spec.name,
+                location_id=spec.located_in,
+                owner_id=None,
+                properties={},
+                affordances=[],
+            )
+        except Exception:
+            logger.exception(
+                "[introduced_elements_to_spawns] Object %s invalid \u2014 skipped.",
+                spec.id,
+            )
+
+    for spec in getattr(introduced, "world_traits", []) or []:
+        if spec.id in world_state.world_traits or spec.id in out["world_traits"]:
+            continue
+        magnitude = TraitVector(
+            value=float(spec.value) if spec.value is not None else 0.5,
+            inertia=0.5,
+            evidence_strength="moderate",
+        )
+        try:
+            out["world_traits"][spec.id] = GlobalTrait(
+                id=spec.id,
+                name=spec.name,
+                description=spec.description or "",
+                category="social_structure",
+                magnitude=magnitude,
+                affected_domains=[],
+                state_timeline=[],
+            )
+        except Exception:
+            logger.exception(
+                "[introduced_elements_to_spawns] WorldTrait %s invalid \u2014 skipped.",
+                spec.id,
+            )
+
+    existing_prop_ids = {p.proposition_id for p in world_state.propositions}
+    for spec in getattr(introduced, "propositions", []) or []:
+        if spec.id in existing_prop_ids or spec.id in out["propositions"]:
+            continue
+        try:
+            out["propositions"][spec.id] = Proposition(
+                world_id="factual",
+                proposition_id=spec.id,
+                kind=spec.kind or "outcome",
+                referent_ids=[],
+                description=spec.name,
+                audience_default_prior=0.5,
+                stakes=0.5,
+                truth_at_fabula={},
+            )
+        except Exception:
+            logger.exception(
+                "[introduced_elements_to_spawns] Proposition %s invalid \u2014 skipped.",
+                spec.id,
+            )
+
+    for spec in getattr(introduced, "concerns", []) or []:
+        try:
+            polarity_pn = "positive" if spec.polarity == "positive" else "negative"
+            # Concern.polarity uses ``desire``/``aversion`` in models.py;
+            # translate the renderer's positive/negative shorthand.
+            polarity_da = "desire" if polarity_pn == "positive" else "aversion"
+            concern = Concern(
+                world_id="factual",
+                concern_id=spec.id,
+                proposition_id=spec.proposition_id,
+                polarity=polarity_da,
+                kind=None,
+                salience=float(spec.salience),
+                activation_fabula_window=None,
+                counter_concern_ids=[],
+            )
+            out["concerns"].setdefault(spec.holder_entity_id, []).append(concern)
+        except Exception:
+            logger.exception(
+                "[introduced_elements_to_spawns] Concern %s invalid \u2014 skipped.",
+                spec.id,
+            )
+
+    return out
+
+
 def promote_sandbox_spawns(
     world_state: WorldStateV1,
     physics_state: Dict[str, Any] | None,
@@ -723,6 +895,7 @@ def extract_topology_from_prose(
     config: "ExtractionConfig | None" = None,
     *,
     spawns: Optional[Dict[str, Dict[str, Any]]] = None,
+    introduced_elements: "Any" = None,
     fabula_time_base: Optional[int] = None,
     fabula_time_spacing: Optional[int] = None,
     branch_world_id: Literal["factual", "shadow"] = "factual",
@@ -773,7 +946,31 @@ def extract_topology_from_prose(
 
     # Merge sandbox spawns into the registry so the LLM agents see them
     # as canonical / known entities and refer to them by their spawn IDs.
-    spawns = spawns or {}
+    spawns = dict(spawns) if spawns else {}
+    for k in (
+        "entities", "objects", "locations", "world_traits",
+        "channels", "propositions", "concerns",
+    ):
+        spawns.setdefault(k, {})
+
+    # Mix renderer-declared introductions in. Engine spawns win on
+    # collisions because they encode hard physics constraints the
+    # renderer is not allowed to override.
+    if introduced_elements is not None and not getattr(
+        introduced_elements, "is_empty", lambda: True,
+    )():
+        rendered_spawns = introduced_elements_to_spawns(
+            introduced_elements, world_state,
+        )
+        for k in ("entities", "objects", "locations", "world_traits",
+                  "channels", "propositions"):
+            for nid, payload in rendered_spawns.get(k, {}).items():
+                spawns[k].setdefault(nid, payload)
+        # Concerns are list-valued per holder; extend without
+        # clobbering engine-side concerns for the same holder.
+        for holder_id, clist in rendered_spawns.get("concerns", {}).items():
+            spawns["concerns"].setdefault(holder_id, []).extend(clist)
+
     locations_known = {**world_state.locations, **spawns.get("locations", {})}
     objects_known = {**world_state.objects, **spawns.get("objects", {})}
     entities_known = {**world_state.entities, **spawns.get("entities", {})}
@@ -973,9 +1170,20 @@ def extract_topology_from_prose(
                 ConcernSeed,
             )
             catalogue_prop_ids = {p.proposition_id for p in world_state.propositions}
+            # Surface renderer-/engine-introduced propositions to the
+            # affect agent so it can commit truth values / framing
+            # snapshots against them, not just against canonical
+            # propositions.
+            extra_props = list((spawns.get("propositions") or {}).values())
+            for p in extra_props:
+                catalogue_prop_ids.add(p.proposition_id)
             seeded_entity_ids = {
                 eid for eid, e in world_state.entities.items() if e.concerns
             }
+            # Holders that picked up a fresh concern via spawns also
+            # qualify as "seeded" for affect-signal detection.
+            for holder_id in (spawns.get("concerns") or {}).keys():
+                seeded_entity_ids.add(holder_id)
             if _chunk_has_affect_signal(
                 physics_result.events,
                 physics_result.entity_updates,
@@ -999,12 +1207,27 @@ def extract_topology_from_prose(
                             ))
                         except Exception:
                             continue
+                # Mirror the same for spawn-introduced concerns so
+                # the agent sees them in its baseline catalogue.
+                for holder_id, clist in (spawns.get("concerns") or {}).items():
+                    for c in clist:
+                        try:
+                            seeds.append(ConcernSeed(
+                                concern_id=c.concern_id,
+                                entity_id=holder_id,
+                                proposition_id=c.proposition_id,
+                                polarity=c.polarity,
+                                kind=c.kind,
+                                baseline_salience=c.salience,
+                            ))
+                        except Exception:
+                            continue
                 affect_agent = _build_affect_agent(config)
                 affect_deps = _AffectDeps(
                     global_register=register,
                     chunk_events=physics_result.events,
                     chunk_entity_updates=physics_result.entity_updates,
-                    propositions=list(world_state.propositions),
+                    propositions=list(world_state.propositions) + extra_props,
                     concern_seeds=seeds,
                 )
                 affect_msg_parts: List[str] = [
@@ -1087,6 +1310,12 @@ class MergeChangeset(BaseModel):
     propositions_removed: int = 0
     concerns_removed: int = 0
     events_superseded: int = 0
+    # Referential-integrity: events whose actor_ids/target_ids reference
+    # ids that don't exist in the merged world AND were not declared via
+    # ``introduced_elements`` / sandbox spawns. Each entry is a dict
+    # ``{"event_id": str, "missing_ids": list[str], "field": str}``.
+    # Empty by default. Populated by the merge integrity pass.
+    events_with_dangling_refs: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class WorldModelVersion(BaseModel):
@@ -1732,6 +1961,62 @@ def _apply_supersession(
     # downstream readers that prefer the override.
 
 
+def _populate_dangling_ref_ledger(
+    merged: WorldStateV1,
+    changeset: "MergeChangeset",
+) -> None:
+    """Detect events that reference unknown ids and record them on the
+    changeset's ``events_with_dangling_refs`` field.
+
+    Resolution scope:
+
+    - ``actor_ids`` and ``target_ids`` may name entities, objects, or
+      locations (e.g. travel events target a location). All three
+      registries are accepted.
+    - Ids matching the project's reserved sentinel patterns
+      (``ENV_*``, ``UNKNOWN_*``, ``ANON_*``) are tolerated because
+      the physics agent legitimately emits them for ambient or
+      anonymous referents.
+
+    The ledger is purely diagnostic — the events stay in the world
+    model. The UI can render a warning chip from this list and the
+    user can promote dangling refs into a follow-up
+    ``query.introduce`` payload.
+    """
+    known_ids = (
+        set(merged.entities.keys())
+        | set(merged.objects.keys())
+        | set(merged.locations.keys())
+        | set(merged.world_traits.keys())
+        | {evt.id for evt in merged.events}
+        | {p.proposition_id for p in merged.propositions}
+        | set((merged.channels or {}).keys())
+    )
+    sentinel_prefixes = (
+        "ENV_", "UNKNOWN_", "ANON_", "NARRATOR_",
+        # Generic stand-ins the physics agent uses for unspecified
+        # crowds / abstractions; tolerated rather than promoted.
+        "GROUP_", "CROWD_", "AUDIENCE_",
+    )
+
+    def _is_sentinel(rid: str) -> bool:
+        return any(rid.startswith(p) for p in sentinel_prefixes)
+
+    for evt in merged.events:
+        for field_name in ("actor_ids", "target_ids"):
+            ids = getattr(evt, field_name, None) or []
+            missing = [
+                rid for rid in ids
+                if rid and rid not in known_ids and not _is_sentinel(rid)
+            ]
+            if missing:
+                changeset.events_with_dangling_refs.append({
+                    "event_id": evt.id,
+                    "field": field_name,
+                    "missing_ids": missing,
+                })
+
+
 class VersionedWorldModel(BaseModel):
     """Immutable-history wrapper around WorldStateV1.
 
@@ -2075,6 +2360,18 @@ class VersionedWorldModel(BaseModel):
         _apply_belief_confidence_updates(merged, topology, changeset=changeset)
         # Supersession (mainline-promoted counterfactual override).
         _apply_supersession(merged, topology, changeset=changeset)
+
+        # ── Referential-integrity pass ─────────────────────────────
+        # Walk every event in the merged world and verify each
+        # actor_id / target_id is resolvable. Anything missing means
+        # the renderer named an entity / object / location that was
+        # never declared via ``introduced_elements`` and never
+        # spawned via ``<ID>.spawn`` — surface it on the changeset
+        # so the UI can warn the user. The merge does NOT auto-drop
+        # the dangling event because doing so would silently
+        # discard prose; the auditor's ``undeclared_element`` rule
+        # is the upstream gate.
+        _populate_dangling_ref_ledger(merged, changeset)
 
         next_version = self.version + 1
         new_history = list(self.history) + [

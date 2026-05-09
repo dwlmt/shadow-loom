@@ -334,6 +334,19 @@ class CausalPhysicsResult(BaseModel):
             "treat any utterance routed through these as non-occurring."
         ),
     )
+    skipped_interventions: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Intervention targets the engine could not apply because the "
+            "named node was absent from the sandbox (and not introduced "
+            "via ``<ID>.spawn`` or ``query.introduce``). Each entry "
+            "carries ``target_path``, ``node_id``, ``property``, "
+            "``reason``, and ``detail``. Surfaced into the brief so the "
+            "renderer and the auditor know the intervention did NOT "
+            "land \u2014 prose must not pretend the requested change took "
+            "effect."
+        ),
+    )
     # ------------------------------------------------------------------
     # Probabilistic outputs (populated only when the corresponding modes
     # are active in CausalPhysicsSettings; empty under default settings).
@@ -2445,6 +2458,9 @@ class CausalPhysicsEngine:
             pruned_beliefs_count=beliefs_pruned,
             pruned_utterance_event_ids=sorted(pruned_evt_ids),
             disabled_channel_ids=sorted(disabled_ch_ids),
+            skipped_interventions=list(
+                self.sandbox.graph.get("skipped_interventions", []) or []
+            ),
         )
         _log_physics_result(rung, interventions, evidence_node_ids, result)
         return result

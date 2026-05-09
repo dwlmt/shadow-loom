@@ -2433,36 +2433,87 @@ def render_entity_state_timeline(
     ws: WorldStateV1,
     *,
     height: str = "300px",
+    fabula_t: int | None = None,
+    compare_with: str | None = None,
 ) -> ui.echart:
-    """Stepped line chart of an entity's trait values over fabula_time."""
+    """Stepped trait-evolution chart for one entity (optionally overlaid
+    with a second entity for comparison).
+
+    Improvements over the legacy version:
+      * x-axis is ``type: "value"`` so a 1-tick gap and a 1000-tick
+        gap render at proportional widths (the previous category
+        axis evenly distributed every event tick, hiding pacing).
+      * Symbol markers are suppressed once the timeline has more than
+        30 sample points to stop the chart turning into polka-dots.
+      * A horizontal ``markLine`` at ``y=0`` anchors signed traits
+        (good vs evil, hope vs fear); a vertical ``markLine`` at
+        ``fabula_t`` is the shared "now" cursor used by every
+        Temporal chart.
+      * ``compare_with`` overlays a second entity's same-named
+        traits as dashed lines on the same axis — much clearer than
+        flipping to a separate Comparison tab for a one-off check.
+    """
+    from shadow_loom_ui.viz_helpers import (
+        cursor_markline_series, temporal_xaxis_options,
+    )
+
     data = entity_state_timeline_data(entity_id, ws)
     if not data["times"]:
         return ui.label("No temporal data.").classes("text-grey text-caption")
 
     ent = ws.entities.get(entity_id)
     title = ent.name if ent else entity_id
+    n_pts = len(data["times"])
+    show_symbols = n_pts <= 30
 
-    series = []
+    series: list[dict] = []
     colors = CHART_COLORS
     for i, (trait_name, values) in enumerate(data["series"].items()):
+        # Pair each value with its fabula time so type:value renders
+        # the line with proportional spacing.
+        paired = [[t, v] for t, v in zip(data["times"], values)]
         series.append({
             "name": trait_name,
             "type": "line",
             "step": "middle",
-            "data": values,
+            "data": paired,
             "lineStyle": {"width": 2},
-            "symbol": "circle",
+            "symbol": "circle" if show_symbols else "none",
             "symbolSize": 6,
+            "showSymbol": show_symbols,
             "itemStyle": {"color": colors[i % len(colors)]},
         })
 
-    # Overlay event markers at each fabula tick that has events, so the
-    # user can see *what happened* at a step change without leaving
-    # the chart. Anchored at y=0 (the trait scale midpoint).
-    from shadow_loom_ui.viz_helpers import event_overlay_series
-    overlay = event_overlay_series(ws, data["times"], y_value=0.0)
-    if overlay is not None:
-        series.append(overlay)
+    # Optional second-entity overlay (dashed lines, same trait names).
+    legend_names = list(data["series"].keys())
+    if compare_with and compare_with != entity_id:
+        cmp_data = entity_state_timeline_data(compare_with, ws)
+        cmp_ent = ws.entities.get(compare_with)
+        cmp_label = cmp_ent.name if cmp_ent else compare_with
+        for i, (trait_name, values) in enumerate(cmp_data["series"].items()):
+            if trait_name not in data["series"]:
+                continue  # only overlay traits that exist on both
+            paired = [[t, v] for t, v in zip(cmp_data["times"], values)]
+            cmp_name = f"{trait_name} ({cmp_label})"
+            series.append({
+                "name": cmp_name,
+                "type": "line",
+                "step": "middle",
+                "data": paired,
+                "lineStyle": {
+                    "width": 2, "type": "dashed", "opacity": 0.7,
+                },
+                "symbol": "circle" if show_symbols else "none",
+                "symbolSize": 5,
+                "itemStyle": {"color": colors[i % len(colors)]},
+            })
+            legend_names.append(cmp_name)
+
+    cursor_s = cursor_markline_series(fabula_t)
+    if cursor_s:
+        series.append(cursor_s)
+
+    xaxis = temporal_xaxis_options(ws)
 
     return ui.echart({
         "backgroundColor": _CHART_BG,
@@ -2474,19 +2525,12 @@ def render_entity_state_timeline(
         "tooltip": {**_CHART_TOOLTIP, "trigger": "axis"},
         "legend": {
             "type": "scroll",
-            "data": list(data["series"].keys()),
+            "data": legend_names,
             "textStyle": {"color": _CHART_TEXT},
             "top": 24,
         },
         "grid": {"top": 64, "bottom": 30, "left": 50, "right": 20},
-        "xAxis": {
-            "type": "category",
-            "data": [str(t) for t in data["times"]],
-            "name": "Fabula Time",
-            "nameTextStyle": {"color": _CHART_TEXT},
-            "axisLabel": {"color": _CHART_TEXT, "fontSize": 9},
-            "splitLine": {"lineStyle": {"color": "#333"}},
-        },
+        "xAxis": xaxis,
         "yAxis": {
             "type": "value",
             "name": "Trait Value",
@@ -2494,7 +2538,8 @@ def render_entity_state_timeline(
             "max": 1,
             "nameTextStyle": {"color": _CHART_TEXT},
             "axisLabel": {"color": _CHART_TEXT},
-            "splitLine": {"lineStyle": {"color": "#333"}},
+            "splitLine": {"lineStyle": {"color": "#e2e8f0"}},
+            "axisLine": {"lineStyle": {"color": "#cbd5e1"}},
         },
         "series": series,
     }).classes("w-full").style(f"height:{height}")
@@ -3600,14 +3645,85 @@ def render_theme_river(
     trait_names: list[str] | None = None,
     max_entities: int = 6,
     height: str = "400px",
-) -> ui.echart:
-    """ThemeRiver showing entity trait evolution as flowing bands."""
-    data = ws_to_theme_river_data(ws, trait_names=trait_names, max_entities=max_entities)
-    if not data:
-        return ui.label("No temporal data for ThemeRiver.").classes("text-grey q-pa-md")
+    group_by: str = "trait",
+    top_n: int = 5,
+    fabula_t: int | None = None,
+) -> ui.element:
+    """ThemeRiver showing trait *energy* (|value|) flowing across fabula time.
 
-    # Extract legend entries
+    Improvements over the legacy version:
+      * Sparse-data guard: hides itself with a friendly hint when the
+        story has fewer than 4 distinct event ticks (themeriver bands
+        below that read as a rendering bug).
+      * ``group_by="trait"`` (new default) collapses bands across the
+        cast so each trait is one ribbon \u2014 readable at any cast size.
+        Pass ``group_by="entity"`` for the legacy ``entity:trait``
+        rivulets.
+      * Trait selection ranks by variance \u00d7 occurrence so flat axes
+        don't waste vertical space.
+      * Bands encode |trait| as thickness so negative values
+        contribute (the legacy code shifted [0,1] traits to [0.1,1.1]
+        and silently dropped negative-range traits).
+      * Shared "now" cursor as a vertical guide line synced with
+        every other Temporal chart.
+    """
+    from shadow_loom_ui.viz_helpers import (
+        ws_to_theme_river_data, axis_bounds,
+    )
+
+    tmin, tmax = axis_bounds(ws)
+    if (tmax - tmin) < 4:
+        return ui.label(
+            "Story too short for ThemeRiver \u2014 add more events to "
+            "see trait flow."
+        ).classes("text-grey q-pa-md text-caption italic")
+
+    data = ws_to_theme_river_data(
+        ws,
+        trait_names=trait_names,
+        max_entities=max_entities,
+        group_by=group_by,
+        top_n=top_n,
+    )
+    if not data:
+        return ui.label("No temporal data for ThemeRiver.").classes(
+            "text-grey q-pa-md"
+        )
+
     legends = sorted({d[2] for d in data})
+
+    series: list[dict] = [{
+        "type": "themeRiver",
+        "data": data,
+        "label": {"show": False},
+        "emphasis": {
+            "itemStyle": {
+                "shadowBlur": 20,
+                "shadowColor": "rgba(0,0,0,0.3)",
+            },
+        },
+    }]
+    # ThemeRiver uses ``singleAxis`` rather than xAxis, so we can't
+    # piggy-back on cursor_markline_series (which targets xAxis). Add
+    # a tiny ``markArea`` on the themeRiver series to highlight the
+    # cursor tick instead \u2014 visually equivalent.
+    if fabula_t is not None:
+        cursor_str = str(int(fabula_t))
+        series[0]["markLine"] = {
+            "silent": True,
+            "symbol": ["none", "none"],
+            "lineStyle": {
+                "color": "#FF6B35", "width": 2,
+                "type": "dashed", "opacity": 0.85,
+            },
+            "label": {
+                "show": True, "formatter": "now",
+                "color": "#FF6B35", "fontSize": 10,
+                "backgroundColor": "rgba(255,255,255,0.85)",
+                "padding": [1, 4, 1, 4], "borderRadius": 3,
+            },
+            "data": [{"xAxis": cursor_str}],
+        }
 
     return ui.echart({
         "backgroundColor": _CHART_BG,
@@ -3624,14 +3740,9 @@ def render_theme_river(
             "bottom": 50,
             "top": 50,
             "axisLabel": {"color": _CHART_TEXT},
-            "axisLine": {"lineStyle": {"color": "#555"}},
+            "axisLine": {"lineStyle": {"color": "#cbd5e1"}},
         },
-        "series": [{
-            "type": "themeRiver",
-            "data": data,
-            "label": {"show": False},
-            "emphasis": {"itemStyle": {"shadowBlur": 20, "shadowColor": "rgba(0,0,0,0.3)"}},
-        }],
+        "series": series,
     }).classes("w-full").style(f"height:{height}")
 
 
@@ -3856,58 +3967,58 @@ def render_event_gantt(
     ws: WorldStateV1,
     *,
     on_click: OnClick = None,
+    on_seek=None,
     height: str | None = None,
     show_status_marks: bool = True,
+    fabula_t: int | None = None,
+    event_types: set[str] | None = None,
 ) -> ui.echart:
     """Swim-lane Gantt chart: events grouped by actor, x = fabula_time.
 
-    Each event becomes a horizontal bar from ``fabula_time`` to
-    ``fabula_time + 1`` on its actor's lane, coloured by event type.
-    Implemented with a ``custom`` series so we get true start/end bars
-    instead of length-only stacked rectangles.
+    Single-tick events render as small coloured glyphs (rather than
+    1-tick rectangles that pretend to be Gantt bars but read as
+    scatter); events that genuinely span time render as proper bars.
+    The x-axis is locked to the world's full fabula range via
+    :func:`temporal_xaxis_options` so the cursor line lands at the
+    same screen-x as the lifeline / themeriver above.
 
-    With ``show_status_marks=True`` an extra scatter series annotates
-    each tick where an entity's ``status`` flips (e.g. ❌ on the
-    fabula tick they die).
-
-    ``height`` defaults to a lane-driven minimum (≈ 22px per actor)
-    so casts of 30+ don't get crushed into 400px. Pass an explicit
-    height to override.
+    ``event_types``: optional whitelist of ``event_type`` strings.
+    ``fabula_t``: shared "now" cursor.
+    ``on_seek``: when supplied, called with an integer fabula time on
+    glyph click so the World tab moves the cursor.
     """
-    from shadow_loom_ui.viz_helpers import EVENT_TYPE_COLORS
+    from shadow_loom_ui.viz_helpers import (
+        EVENT_TYPE_COLORS, temporal_xaxis_options, cursor_markline_series,
+    )
 
     actor_names, items = ws_to_gantt_data(ws)
+    if event_types is not None:
+        items = [it for it in items if it["event_type"] in event_types]
     if not items:
         return ui.label("No actor events for swim lanes.").classes("text-grey q-pa-md")
 
     if height is None:
         height = f"{max(400, 22 * len(actor_names) + 80)}px"
 
-    # Each datum: [actor_idx, start, end, event_type, description, event_id]
+    # Each datum: [actor_idx, start, end, type_idx, description, event_id, color]
+    legend_types = sorted({it["event_type"] for it in items})
+    type_to_idx = {et: idx for idx, et in enumerate(legend_types)}
     data = [
         [
-            it["actor_idx"],
-            it["start"],
-            it["end"],
-            it["event_type"],
-            it["description"],
-            it["event_id"],
+            it["actor_idx"], it["start"], it["end"],
+            type_to_idx[it["event_type"]],
+            it["description"], it["event_id"],
+            EVENT_TYPE_COLORS.get(it["event_type"], "#94a3b8"),
         ]
         for it in items
     ]
 
-    legend_types = sorted({it["event_type"] for it in items})
-
-    # Pieces is needed so each bar is colored by its event_type without us
-    # needing to write JS. We use visualMap.pieces over the 3rd dimension.
+    # Per-piece colour swatches drive the legend so toggling a type
+    # in the legend hides those events.
     pieces = [
         {"value": idx, "color": EVENT_TYPE_COLORS.get(et, "#94a3b8"), "label": et}
         for idx, et in enumerate(legend_types)
     ]
-    type_to_idx = {et: idx for idx, et in enumerate(legend_types)}
-    # Replace event_type strings with their pieces index
-    for row in data:
-        row[3] = type_to_idx[row[3]]
 
     chart_opts: dict = {
         "backgroundColor": _CHART_BG,
@@ -3917,23 +4028,17 @@ def render_event_gantt(
             ":formatter": (
                 "function (p) {"
                 "  var v = p.value;"
-                "  return '<b>' + v[5] + '</b><br/>'"
-                "       + 'actor: ' + p.name + '<br/>'"
-                "       + 't: ' + v[1] + ' \u2192 ' + v[2] + '<br/>'"
-                "       + v[4];"
+                "  if (!Array.isArray(v)) return p.name || '';"
+                "  return '<b>' + (v[5] || '') + '</b><br/>'"
+                "       + 'actor: ' + (p.name || '') + '<br/>'"
+                "       + 't: ' + v[1]"
+                "       + (v[2] > v[1] + 1 ? ' \u2192 ' + v[2] : '') + '<br/>'"
+                "       + (v[4] || '');"
                 "}"
             ),
         },
         "grid": {"top": 40, "bottom": 40, "left": 130, "right": 30},
-        "xAxis": {
-            "type": "value",
-            "name": "Fabula Time",
-            "nameTextStyle": {"color": _CHART_TEXT},
-            "axisLabel": {"color": _CHART_TEXT},
-            "splitLine": {"lineStyle": {"color": "#e2e8f0"}},
-            "min": "dataMin",
-            "max": "dataMax",
-        },
+        "xAxis": temporal_xaxis_options(ws),
         "yAxis": {
             "type": "category",
             "data": actor_names,
@@ -3954,19 +4059,34 @@ def render_event_gantt(
         "series": [{
             "type": "custom",
             "name": "events",
+            # Encoding the colour at index 6 lets the renderItem read it
+            # back via api.value(6); visualMap on dim 3 still drives
+            # the legend-toggle behaviour on event types.
             "encode": {"x": [1, 2], "y": 0, "tooltip": [1, 2, 4]},
             "data": data,
             ":renderItem": (
                 "function (params, api) {"
-                "  var y = api.coord([0, api.value(0)])[1];"
-                "  var x1 = api.coord([api.value(1), 0])[0];"
-                "  var x2 = api.coord([api.value(2), 0])[0];"
-                "  var height = api.size([0, 1])[1] * 0.55;"
-                "  var width = Math.max(2, x2 - x1);"
+                "  var y    = api.coord([0, api.value(0)])[1];"
+                "  var x1   = api.coord([api.value(1), 0])[0];"
+                "  var x2   = api.coord([api.value(2), 0])[0];"
+                "  var lane = api.size([0, 1])[1] * 0.55;"
+                "  var w    = x2 - x1;"
+                "  var fill = api.visual('color') || api.value(6);"
+                "  // Single-tick events: render as a glyph (circle)"
+                "  // instead of a 1-tick rectangle so they don't"
+                "  // masquerade as duration."
+                "  if (w < 6) {"
+                "    var r = Math.min(7, lane / 2);"
+                "    return {"
+                "      type: 'circle',"
+                "      shape: {cx: x1, cy: y, r: r},"
+                "      style: api.style({fill: fill, stroke: '#1E2A3A', lineWidth: 0.5})"
+                "    };"
+                "  }"
                 "  return {"
                 "    type: 'rect',"
-                "    shape: {x: x1, y: y - height/2, width: width, height: height},"
-                "    style: api.style({stroke: '#1E2A3A', lineWidth: 0.5})"
+                "    shape: {x: x1, y: y - lane/2, width: Math.max(2, w), height: lane, r: 2},"
+                "    style: api.style({fill: fill, stroke: '#1E2A3A', lineWidth: 0.5})"
                 "  };"
                 "}"
             ),
@@ -3975,8 +4095,6 @@ def render_event_gantt(
 
     if show_status_marks:
         marks = ws_to_gantt_status_marks(ws)
-        # Filter to actors that actually appear in the Gantt to avoid
-        # mismatched y-axis indices.
         actor_set = set(actor_names)
         marks = [m for m in marks if m["actor"] in actor_set]
         if marks:
@@ -3985,18 +4103,20 @@ def render_event_gantt(
                 "name": "status",
                 "symbol": "circle",
                 "symbolSize": 14,
-                "itemStyle": {"color": "#D8334A", "borderColor": "#1E2A3A", "borderWidth": 1},
+                "itemStyle": {
+                    "color": "#D8334A",
+                    "borderColor": "#1E2A3A",
+                    "borderWidth": 1,
+                },
                 "label": {
-                    "show": True,
-                    "position": "top",
-                    "formatter": "{@[2]}",
-                    "fontSize": 12,
+                    "show": True, "position": "top",
+                    "formatter": "{@[2]}", "fontSize": 12,
                     "color": _CHART_TEXT,
                 },
                 "data": [
                     {
                         "value": [m["fabula_time"], m["actor"], m["icon"]],
-                        "name": f"{m['actor']} → {m['status']}",
+                        "name": f"{m['actor']} \u2192 {m['status']}",
                     }
                     for m in marks
                 ],
@@ -4007,10 +4127,26 @@ def render_event_gantt(
                 "z": 5,
             })
 
+    cursor_s = cursor_markline_series(fabula_t)
+    if cursor_s:
+        chart_opts["series"].append(cursor_s)
+
     chart = ui.echart(chart_opts).classes("w-full").style(f"height:{height}")
 
-    if on_click:
-        chart.on("click", on_click)
+    def _on_chart_click(e):
+        if on_click:
+            on_click(e)
+        if on_seek:
+            try:
+                args = e.args if isinstance(e.args, dict) else {}
+                v = args.get("value") or (args.get("data", {}) or {}).get("value")
+                if isinstance(v, (list, tuple)) and len(v) >= 2:
+                    # Custom series rows: [actor_idx, start, ...]
+                    on_seek(int(v[1]))
+            except Exception:
+                pass
+
+    chart.on("click", _on_chart_click)
     return chart
 
 
@@ -4649,29 +4785,48 @@ def render_entity_lifelines(
     ws: WorldStateV1,
     *,
     on_click: OnClick = None,
+    on_seek=None,
     height: str | None = None,
+    fabula_t: int | None = None,
+    sort_by: str = "first_appearance",
+    event_types: set[str] | None = None,
 ) -> ui.echart:
     """Per-entity lifelines: status segments + location moves + events.
 
     Each character occupies one horizontal lane along fabula time.
-    Coloured bars show ``status`` over time (green=healthy, amber=
-    injured, blue=unconscious, near-black=dead). Diamond markers flag
-    every location change with the new place name in the tooltip.
-    Small dots render every event the character actor'd in, coloured
-    by ``event_type``.
+    Coloured bars span continuous status periods (green=healthy,
+    amber=injured, blue=unconscious, near-black=dead). Diamond
+    markers flag every location change; small dots render every event
+    the character actor'd in, coloured by ``event_type``.
 
-    This replaces the previous single-entity stepped trait line as the
-    "Temporal" top diagram because the lifeline view answers "who is
-    where, doing what, when" at a glance — the old chart only spoke
-    when the user pre-selected an entity.
-
-    ``height`` defaults to a lane-driven minimum (≈ 24px per entity)
-    so 20-character casts don't overlap. Pass an explicit height to
-    override.
+    Implementation notes:
+      * Status ribbons are drawn with a single ECharts ``custom``
+        series that emits one rect per (entity, status-period). The
+        previous implementation emitted one scatter cell per integer
+        tick, which scaled as ``O(entities * tmax)`` and dropped the
+        per-segment tooltip; the custom-series rendering is
+        ``O(segments)`` and lights up tooltips for free.
+      * Off-page periods (before the entity first appears, after a
+        death) render as a thin grey hairline so the lane remains
+        legible without lying about presence.
+      * A red \u2716 glyph drops at the death tick and the lane stops
+        there (no giant black "dead" ribbon stretching to tmax).
+      * ``fabula_t`` (when supplied) draws a vertical "now" markline
+        shared across every Temporal chart.
+      * ``on_seek`` (when supplied) is called with an integer fabula
+        time when the user clicks a status segment / event glyph /
+        location diamond, so the World tab can move the time cursor
+        from a chart click. ``on_click`` still fires for inspector
+        binding.
     """
-    from shadow_loom_ui.viz_helpers import ws_to_lifeline_data, _STATUS_COLORS
+    from shadow_loom_ui.viz_helpers import (
+        ws_to_lifeline_data, _STATUS_COLORS,
+        temporal_xaxis_options, cursor_markline_series,
+    )
 
-    data = ws_to_lifeline_data(ws)
+    data = ws_to_lifeline_data(
+        ws, sort_by=sort_by, event_types=event_types,
+    )
     if not data["entities"]:
         return ui.label("No entities to show.").classes("text-grey q-pa-md")
 
@@ -4679,78 +4834,118 @@ def render_entity_lifelines(
         height = f"{max(320, 24 * len(data['entities']) + 100)}px"
 
     names = [n for _eid, n in data["entities"]]
-    tmin, tmax = data["tmin"], data["tmax"]
 
-    # Status segments → custom series rendering [start, end, row].
-    segment_data = [
+    # ---- Status ribbon: custom series, one rect per segment ----------
+    # Encoded as [row, start, end, color]; the renderItem reads these
+    # back via api.value(i). Storing colour in the data row keeps the
+    # render JS small (no visualMap pieces required).
+    ribbon_data = [
         [
-            seg["row"],
-            seg["start"],
-            seg["end"],
-            seg["status"] or "unknown",
-            seg["status_color"],
-            seg["location_name"],
+            seg["row"], seg["start"], seg["end"],
+            seg["status_color"], seg["status"], seg["location_name"],
+            seg["duration"],
         ]
         for seg in data["segments"]
     ]
+    ribbon_series = {
+        "name": "status",
+        "type": "custom",
+        "data": ribbon_data,
+        "encode": {"x": [1, 2], "y": 0, "tooltip": [1, 2, 4, 5, 6]},
+        "z": 2,
+        "tooltip": {
+            ":formatter": (
+                "function(p){"
+                "  var v=p.value;"
+                "  return '<b>'+p.name+' \u2014 '+v[4]+'</b><br/>'"
+                "       + 't '+v[1]+' \u2192 '+v[2]+' ('+v[6]+' ticks)<br/>'"
+                "       + 'at: '+(v[5] || '\u2014');"
+                "}"
+            ),
+        },
+        ":renderItem": (
+            "function(params, api){"
+            "  var y    = api.coord([0, api.value(0)])[1];"
+            "  var x1   = api.coord([api.value(1), 0])[0];"
+            "  var x2   = api.coord([api.value(2), 0])[0];"
+            "  var lane = api.size([0, 1])[1] * 0.55;"
+            "  var w    = Math.max(2, x2 - x1);"
+            "  return {"
+            "    type: 'rect',"
+            "    shape: {x: x1, y: y - lane/2, width: w, height: lane, r: 3},"
+            "    style: api.style({fill: api.value(3), stroke: '#1e2a3a', lineWidth: 0.5})"
+            "  };"
+            "}"
+        ),
+    }
 
-    # The custom renderer draws a rounded bar between the two x ticks
-    # for the row's y position. We use a JS function string here
-    # because ECharts custom series accept JS bodies via NiceGUI's
-    # ``:fn`` magic on ``ui.echart`` option strings — but that
-    # complicates serialisation. To keep this pure-Python we model the
-    # segments as a stacked bar series instead, which renders the
-    # same visual without needing a custom JS renderer.
+    # ---- Off-page hairlines (before first / after life_end) ----------
+    tmin, tmax = data["tmin"], data["tmax"]
+    hairline_data: list[list] = []
+    for ls in data["lifespans"]:
+        if ls["first_t"] > tmin:
+            hairline_data.append([ls["row"], tmin, ls["first_t"], "#cbd5e1"])
+        if ls["last_t"] < tmax:
+            hairline_data.append([ls["row"], ls["last_t"], tmax, "#e5e7eb"])
+    hairline_series = {
+        "name": "off-page",
+        "type": "custom",
+        "data": hairline_data,
+        "encode": {"x": [1, 2], "y": 0},
+        "z": 1,
+        "silent": True,
+        "tooltip": {"show": False},
+        ":renderItem": (
+            "function(params, api){"
+            "  var y  = api.coord([0, api.value(0)])[1];"
+            "  var x1 = api.coord([api.value(1), 0])[0];"
+            "  var x2 = api.coord([api.value(2), 0])[0];"
+            "  return {"
+            "    type: 'rect',"
+            "    shape: {x: x1, y: y - 1, width: Math.max(1, x2 - x1), height: 2},"
+            "    style: api.style({fill: api.value(3), stroke: 'none'})"
+            "  };"
+            "}"
+        ),
+    } if hairline_data else None
 
-    # Build per-row stacked bar lengths: each row gets its segments as
-    # individual data points with explicit colour.
-    bar_series: list[dict] = []
-    # Collapse to one bar series per status so the legend reads cleanly.
-    by_status: dict[str, list[list]] = {}
-    for seg in data["segments"]:
-        by_status.setdefault(seg["status"] or "unknown", []).append([
-            seg["row"], seg["start"], seg["end"], seg["location_name"],
-        ])
-    # We render each segment as a horizontal bar via ``custom`` series
-    # with a small JS-free trick: an inverted ``bar`` series with
-    # ``data: [{value: [end-start], coord:[start,row]}]`` doesn't exist
-    # in ECharts. Instead we use ``custom`` series with rectShape pieces
-    # built server-side (no JS needed).
-    pieces_data = []
-    pieces_meta = []
-    for seg in data["segments"]:
-        pieces_data.append([seg["row"], seg["start"], seg["end"]])
-        pieces_meta.append({
-            "status": seg["status"] or "unknown",
-            "color": seg["status_color"],
-            "location": seg["location_name"],
-        })
-
-    # ECharts ``heatmap`` on a category-y, value-x grid with one cell
-    # per integer (start..end-1) is the cleanest pure-JSON approach.
-    heat_data: list[list] = []
-    for seg in data["segments"]:
-        for t in range(int(seg["start"]), max(int(seg["start"]) + 1, int(seg["end"]))):
-            heat_data.append([t, seg["row"], 1, seg["status_color"]])
-
-    # Pull color out into per-cell itemStyle via "value" tuple +
-    # visualMap mapping by 4th dim — we instead provide direct itemStyle
-    # by using ``data: [{value: [...], itemStyle: {color: ...}}]``.
-    cells = [
+    # ---- Death markers ----------------------------------------------
+    death_points = [
         {
-            "value": [t, row],
-            "itemStyle": {"color": color},
+            "value": [ls["death_t"], ls["row"]],
+            "name": names[ls["row"]],
         }
-        for t, row, _, color in heat_data
+        for ls in data["lifespans"]
+        if ls["death_t"] is not None
     ]
+    death_series = {
+        "name": "death",
+        "type": "scatter",
+        "symbol": "path://M2,2 L14,14 M14,2 L2,14",  # simple X glyph
+        "symbolSize": 16,
+        "data": death_points,
+        "itemStyle": {"color": "#D8334A", "borderColor": "#1E2A3A", "borderWidth": 1},
+        "z": 6,
+        "tooltip": {"formatter": "{b} \u2014 died at t={@[0]}"},
+    } if death_points else None
 
-    # Location-move markers
-    move_points = [
-        [m["time"], m["row"], m["location_name"]]
-        for m in data["moves"]
-    ]
+    # ---- Location-change diamonds -----------------------------------
+    move_series = {
+        "name": "location change",
+        "type": "scatter",
+        "symbol": "diamond",
+        "symbolSize": 11,
+        "data": [
+            {"value": [m["time"], m["row"], m["location_name"]],
+             "name": str(m["location_name"])}
+            for m in data["moves"]
+        ],
+        "itemStyle": {"color": "#ffffff", "borderColor": "#1e2a3a", "borderWidth": 1.5},
+        "z": 4,
+        "tooltip": {"formatter": "Moved \u2192 {@[2]}<br/>t={@[0]}"},
+    }
 
-    # Event markers
+    # ---- Event dots --------------------------------------------------
     event_points = [
         {
             "value": [e["time"], e["row"]],
@@ -4758,25 +4953,69 @@ def render_entity_lifelines(
             "_event_id": e["event_id"],
             "_desc": e["description"],
             "_type": e["event_type"],
+            "name": e["description"],
         }
         for e in data["events"]
     ]
+    event_series = {
+        "name": "events",
+        "type": "scatter",
+        "symbol": "circle",
+        "symbolSize": 7,
+        "data": event_points,
+        "z": 3,
+        "tooltip": {
+            ":formatter": (
+                "function(p){"
+                "  var v=p.value;"
+                "  var d=p.data || {};"
+                "  return '<b>'+(d._event_id || '')+'</b> ['+(d._type || '')+']<br/>'"
+                "       + 't='+v[0]+'<br/>'+ (d._desc || '');"
+                "}"
+            ),
+        },
+    }
 
-    # Status legend
-    status_legend = [
-        {"name": s, "icon": "rect", "itemStyle": {"color": c}}
+    # ---- Status legend (canonical swatches) -------------------------
+    status_legend_series = [
+        {
+            "name": s,
+            "type": "scatter",
+            "data": [],
+            "itemStyle": {"color": c},
+            "symbol": "rect",
+            "symbolSize": 10,
+        }
         for s, c in _STATUS_COLORS.items()
     ]
 
+    series: list[dict] = []
+    if hairline_series:
+        series.append(hairline_series)
+    series.append(ribbon_series)
+    series.append(move_series)
+    series.append(event_series)
+    if death_series:
+        series.append(death_series)
+    series.extend(status_legend_series)
+    cursor_s = cursor_markline_series(fabula_t)
+    if cursor_s:
+        series.append(cursor_s)
+
+    xaxis = temporal_xaxis_options(ws)
+    # Override the data-derived axis range with the lifeline-data-
+    # derived range only when the world has events outside the
+    # lifeline cast (rare but possible if an entity_ids filter is
+    # passed through from the toolbar).
+    xaxis["min"] = min(xaxis["min"], tmin)
+    xaxis["max"] = max(xaxis["max"], tmax)
+
     chart = ui.echart({
         "backgroundColor": _CHART_BG,
-        "tooltip": {
-            **_CHART_TOOLTIP,
-            "trigger": "item",
-        },
+        "tooltip": {**_CHART_TOOLTIP, "trigger": "item"},
         "legend": [
             {
-                "data": [s["name"] for s in status_legend],
+                "data": list(_STATUS_COLORS.keys()),
                 "top": 0,
                 "left": "center",
                 "textStyle": {"color": _CHART_TEXT, "fontSize": 10},
@@ -4785,16 +5024,7 @@ def render_entity_lifelines(
             },
         ],
         "grid": {"top": 36, "bottom": 30, "left": 110, "right": 20},
-        "xAxis": {
-            "type": "value",
-            "min": tmin,
-            "max": tmax,
-            "name": "Fabula time",
-            "nameGap": 18,
-            "nameTextStyle": {"color": _CHART_TEXT, "fontSize": 10},
-            "axisLabel": {"color": _CHART_TEXT, "fontSize": 9},
-            "splitLine": {"lineStyle": {"color": "#e2e8f0"}},
-        },
+        "xAxis": xaxis,
         "yAxis": {
             "type": "category",
             "data": names,
@@ -4802,71 +5032,28 @@ def render_entity_lifelines(
             "axisTick": {"show": False},
             "axisLine": {"lineStyle": {"color": "#cbd5e1"}},
         },
-        "series": [
-            # Status ribbon — one cell per integer fabula tick.
-            {
-                "name": "status",
-                "type": "scatter",
-                "symbol": "rect",
-                "symbolSize": [10, 18],
-                "data": cells,
-                "z": 1,
-                "tooltip": {"show": False},
-            },
-            # Location-change markers
-            {
-                "name": "location change",
-                "type": "scatter",
-                "symbol": "diamond",
-                "symbolSize": 12,
-                "data": [
-                    # Embed the destination location in the value
-                    # array (slot 2) so the tooltip formatter can
-                    # read it natively — ECharts can't address
-                    # arbitrary custom keys from a template string.
-                    {
-                        "value": [m[0], m[1], m[2]],
-                        "name": str(m[2]),
-                    }
-                    for m in move_points
-                ],
-                "itemStyle": {
-                    "color": "#ffffff",
-                    "borderColor": "#1e2a3a",
-                    "borderWidth": 1.5,
-                },
-                "z": 3,
-                "tooltip": {
-                    "formatter": "Moved → {@[2]}",
-                },
-            },
-            # Event markers (small coloured dots)
-            {
-                "name": "events",
-                "type": "scatter",
-                "symbol": "circle",
-                "symbolSize": 7,
-                "data": event_points,
-                "z": 2,
-            },
-        ]
-        + [
-            # Hidden series purely to populate the status legend with
-            # the canonical colour swatch for each status.
-            {
-                "name": s["name"],
-                "type": "scatter",
-                "data": [],
-                "itemStyle": s["itemStyle"],
-                "symbol": "rect",
-                "symbolSize": 10,
-            }
-            for s in status_legend
-        ],
+        "series": series,
     }).classes("w-full").style(f"height:{height}")
 
-    if on_click:
-        chart.on("click", on_click)
+    def _on_chart_click(e):
+        if on_click:
+            on_click(e)
+        if on_seek:
+            try:
+                args = e.args if isinstance(e.args, dict) else {}
+                v = args.get("value") or (args.get("data", {}) or {}).get("value")
+                if isinstance(v, (list, tuple)) and v:
+                    # The status ribbon emits [row, start, end, ...];
+                    # the others emit [time, row, ...]. Heuristic:
+                    # whichever of the first two slots is the larger
+                    # absolute integer is most likely "time".
+                    candidate = v[1] if args.get("seriesName") == "status" else v[0]
+                    if candidate is not None:
+                        on_seek(int(candidate))
+            except Exception:
+                pass
+
+    chart.on("click", _on_chart_click)
     return chart
 
 

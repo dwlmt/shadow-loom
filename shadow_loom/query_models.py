@@ -5,6 +5,8 @@ from pydantic import BaseModel, Field
 from typing import Any, Optional, Literal, Tuple, Union, Dict, List
 from typing_extensions import Annotated
 
+from shadow_loom.introduced_elements import IntroducedElements
+
 
 # ---------------------------------------------------------------------
 # DoTarget — typed, discriminated payloads for Pearl Rung-2 / Rung-3
@@ -247,6 +249,24 @@ class _QueryBase(BaseModel):
             "directive after EVT_BANQUO_DEATH' style requests without the "
             "caller looking the time up first. Explicit ``temporal_anchor`` "
             "/ ``syuzhet_anchor`` values take precedence over this."
+        ),
+    )
+    introduce: Optional[IntroducedElements] = Field(
+        default=None,
+        description=(
+            "User-side birth list of new top-level world elements this "
+            "query should pre-declare into the world before physics. "
+            "Use this when a do-surgery, observation, or directive needs "
+            "to refer to an entity / location / object / world-trait / "
+            "proposition / concern that doesn't exist yet (e.g. "
+            "do(`ENT_NEW_AGENT.spawn` = {...}) where the agent is "
+            "introduced for the first time). The pipeline pre-spawns "
+            "these into the sandbox before the engine runs so do-surgeries "
+            "can target them safely; they are then folded into the "
+            "renderer's ``GeneratedScene.introduced_elements`` for the "
+            "auditor and re-extraction. The renderer remains free to "
+            "additionally introduce other elements that emerge "
+            "organically from the prose."
         ),
     )
 

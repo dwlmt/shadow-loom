@@ -43,6 +43,7 @@ from shadow_loom.directive_assembly import CreativeBrief, DirectiveAssembler
 from shadow_loom.extract_graph import (
     VersionedWorldModel,
     extract_topology_from_prose,
+    introduced_elements_to_spawns,
     promote_sandbox_spawns,
 )
 from shadow_loom.generation import (
@@ -70,6 +71,71 @@ logger = logging.getLogger(__name__)
 # =====================================================================
 # Anchor resolution helper
 # =====================================================================
+
+def _apply_query_introductions(
+    ws: WorldStateV1,
+    query: "UserRequest",
+) -> WorldStateV1:
+    """Pre-spawn user-side ``query.introduce`` declarations into the
+    working world state before physics runs.
+
+    Returns a new :class:`WorldStateV1` (caller should re-bind their
+    variable). The pre-spawned nodes carry ``world_id="factual"`` and
+    are written directly into the typed registries, so do-surgeries
+    that target them resolve correctly during
+    :func:`calculate_narrative_physics`. The same payload is passed
+    through to the renderer's ``GeneratedScene.introduced_elements``
+    by the merge step so the auditor and re-extraction see the
+    declarations once, not twice.
+
+    No-op when ``query.introduce`` is ``None`` or empty.
+    """
+    introduced = getattr(query, "introduce", None)
+    if introduced is None or introduced.is_empty():
+        return ws
+    spawns = introduced_elements_to_spawns(introduced, ws)
+    if not any(spawns.get(k) for k in (
+        "entities", "objects", "locations", "world_traits",
+        "channels", "propositions", "concerns",
+    )):
+        return ws
+    new_ws = ws.model_copy(deep=True)
+    for nid, ent in spawns.get("entities", {}).items():
+        new_ws.entities.setdefault(nid, ent)
+    for nid, obj in spawns.get("objects", {}).items():
+        new_ws.objects.setdefault(nid, obj)
+    for nid, loc in spawns.get("locations", {}).items():
+        new_ws.locations.setdefault(nid, loc)
+    for nid, wt in spawns.get("world_traits", {}).items():
+        new_ws.world_traits.setdefault(nid, wt)
+    if spawns.get("channels"):
+        if new_ws.channels is None:
+            new_ws.channels = {}
+        for nid, ch in spawns["channels"].items():
+            new_ws.channels.setdefault(nid, ch)
+    if spawns.get("propositions"):
+        existing_prop_ids = {p.proposition_id for p in new_ws.propositions}
+        for nid, prop in spawns["propositions"].items():
+            if nid not in existing_prop_ids:
+                new_ws.propositions.append(prop)
+    for holder_id, clist in spawns.get("concerns", {}).items():
+        if holder_id in new_ws.entities:
+            holder = new_ws.entities[holder_id]
+            existing_ccn_ids = {c.concern_id for c in holder.concerns}
+            for c in clist:
+                if c.concern_id not in existing_ccn_ids:
+                    holder.concerns.append(c)
+    logger.info(
+        "[Pipeline] query.introduce pre-spawn \u2014 +%d entities, +%d objects, "
+        "+%d locations, +%d world_traits, +%d channels, +%d propositions, "
+        "+%d concern-attachments.",
+        len(spawns.get("entities", {})), len(spawns.get("objects", {})),
+        len(spawns.get("locations", {})), len(spawns.get("world_traits", {})),
+        len(spawns.get("channels", {})), len(spawns.get("propositions", {})),
+        sum(len(v) for v in spawns.get("concerns", {}).values()),
+    )
+    return new_ws
+
 
 def _resolve_query_anchors(
     query: UserRequest,
@@ -1843,6 +1909,7 @@ def run_pipeline(
         "[Pipeline] Step 2: Narrative physics — query_type=%s, causal_engine=%s.",
         query.query_type, cfg.use_causal_engine,
     )
+    ws = _apply_query_introductions(ws, query)
     eff_temporal, eff_syuzhet = _resolve_query_anchors(
         query, cfg.temporal_anchor, cfg.syuzhet_anchor, ws,
     )
@@ -2211,6 +2278,9 @@ def run_pipeline(
                 world_state=ws,
                 config=cfg.extraction_config,
                 spawns=spawns,
+                introduced_elements=getattr(
+                    result.scene, "introduced_elements", None,
+                ),
                 branch_world_id=_world_id,
                 branch_label=_branch_label,
                 preceding_prose=_preceding_prose,
@@ -2361,6 +2431,7 @@ async def run_pipeline_async(
         "[Pipeline·Async] Step 2: Narrative physics — query_type=%s, causal_engine=%s.",
         query.query_type, cfg.use_causal_engine,
     )
+    ws = _apply_query_introductions(ws, query)
     eff_temporal, eff_syuzhet = _resolve_query_anchors(
         query, cfg.temporal_anchor, cfg.syuzhet_anchor, ws,
     )
@@ -2630,6 +2701,9 @@ async def run_pipeline_async(
             topology = extract_topology_from_prose(
                 prose=result.prose, world_state=ws, config=cfg.extraction_config,
                 spawns=spawns,
+                introduced_elements=getattr(
+                    result.scene, "introduced_elements", None,
+                ),
                 branch_world_id=_world_id,
                 branch_label=_branch_label,
                 preceding_prose=_preceding_prose,
@@ -2910,6 +2984,7 @@ def _build_brief_for_query(
         return build_observation_brief(
             query, physics_state, world_state,
             syuzhet_anchor=syuzhet_anchor,
+            skipped_interventions=physics_result.get("skipped_interventions"),
         )
     elif query.query_type == "intervention":
         return build_intervention_brief(
@@ -2921,6 +2996,7 @@ def _build_brief_for_query(
             rule3_pruning_mode=physics_result.get("rule3_pruning_mode", "advisory"),
             pruned_utterance_event_ids=physics_result.get("pruned_utterance_event_ids"),
             disabled_channel_ids=physics_result.get("disabled_channel_ids"),
+            skipped_interventions=physics_result.get("skipped_interventions"),
             syuzhet_anchor=syuzhet_anchor,
         )
     elif query.query_type == "counterfactual":
@@ -2932,6 +3008,7 @@ def _build_brief_for_query(
             rule3_pruning_mode=physics_result.get("rule3_pruning_mode", "advisory"),
             pruned_utterance_event_ids=physics_result.get("pruned_utterance_event_ids"),
             disabled_channel_ids=physics_result.get("disabled_channel_ids"),
+            skipped_interventions=physics_result.get("skipped_interventions"),
             syuzhet_anchor=syuzhet_anchor,
         )
     elif query.query_type == "directive":

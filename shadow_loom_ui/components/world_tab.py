@@ -26,7 +26,6 @@ from shadow_loom_ui.viz import (
     render_ego_graph,
     render_entity_lifelines,
     render_entity_state_timeline,
-    render_event_gantt,
     render_event_type_bar,
     render_location_occupancy_bar,
     render_object_ownership_bar,
@@ -34,7 +33,6 @@ from shadow_loom_ui.viz import (
     render_spatial_map,
     render_status_donut,
     render_sunburst,
-    render_theme_river,
     render_world_graph,
     render_world_state_grid,
     render_world_trait_bars,
@@ -160,6 +158,37 @@ def build_world_tab(state: AppState) -> None:
             ).classes("w-48")
             temporal_select.set_visibility(False)
 
+            # Temporal: optional second entity for trait-line overlay.
+            temporal_compare_select = ui.select(
+                options={},
+                label="Compare with",
+                clearable=True,
+            ).classes("w-48")
+            temporal_compare_select.set_visibility(False)
+            temporal_compare_select.tooltip(
+                "Overlay a second character's same-named traits as "
+                "dashed lines"
+            )
+
+            # Temporal: lifeline lane sort order.
+            temporal_sort_select = ui.select(
+                options={
+                    "first_appearance": "First appearance",
+                    "alphabetical": "Alphabetical",
+                    "event_count": "Event count",
+                    "last_appearance": "Last appearance",
+                    "death_order": "Death order",
+                },
+                value="first_appearance",
+                label="Sort lanes",
+            ).classes("w-44")
+            temporal_sort_select.set_visibility(False)
+
+            # Temporal: shared event-type chip filter. None = "all";
+            # otherwise the set lists the types currently allowed
+            # through to lifelines + gantt.
+            temporal_event_filter: dict[str, set[str] | None] = {"types": None}
+
             # World-state world-trait filter (multi-select).
             world_state_select = ui.select(
                 options=[],
@@ -195,6 +224,8 @@ def build_world_tab(state: AppState) -> None:
                 mode = view_mode.value
                 ego_select.set_visibility(mode == "ego")
                 temporal_select.set_visibility(mode == "temporal")
+                temporal_compare_select.set_visibility(mode == "temporal")
+                temporal_sort_select.set_visibility(mode == "temporal")
                 world_state_select.set_visibility(mode == "world_state")
                 compare_select.set_visibility(mode == "comparison")
                 spatial_animated.set_visibility(mode == "spatial")
@@ -463,6 +494,7 @@ def build_world_tab(state: AppState) -> None:
             entity_opts = {eid: ent.name for eid, ent in ws.entities.items()}
             ego_select.options = entity_opts
             temporal_select.options = entity_opts
+            temporal_compare_select.options = entity_opts
             compare_select.options = entity_opts
             # World-state world-trait options.
             world_trait_opts = {
@@ -525,42 +557,103 @@ def build_world_tab(state: AppState) -> None:
                                 "text-sm text-slate-500"
                             )
                     elif mode == "temporal":
-                        # Top: Entity Lifelines — status/location/event
-                        # ribbons for every character. Replaces the old
-                        # single-entity trait line which read as noise
-                        # without an entity selected.
+                        # Shared "seek" callback: any chart click that
+                        # carries a fabula time moves the global
+                        # cursor so the slider, the World snapshot,
+                        # and every other Temporal chart re-render at
+                        # the clicked tick.
+                        def _seek(t: int) -> None:
+                            try:
+                                state.set_active_cursor(int(t))
+                            except Exception:
+                                logger.exception("seek failed")
+
+                        # Shared event-type chip strip for lifelines + gantt.
+                        all_types = sorted({
+                            ev.event_type for ev in (ws.events or [])
+                        })
+                        if all_types:
+                            with ui.row().classes(
+                                "w-full items-center gap-1 q-pb-sm flex-wrap"
+                            ):
+                                ui.label("Event types:").classes(
+                                    "text-xs text-slate-500 mr-1"
+                                )
+                                active = temporal_event_filter["types"]
+                                active_set = (
+                                    set(active) if active is not None
+                                    else set(all_types)
+                                )
+                                def _make_toggle(et: str):
+                                    def _toggle():
+                                        cur = temporal_event_filter["types"]
+                                        cur_set = (
+                                            set(cur) if cur is not None
+                                            else set(all_types)
+                                        )
+                                        if et in cur_set:
+                                            cur_set.discard(et)
+                                        else:
+                                            cur_set.add(et)
+                                        # Collapse "all on" back to None
+                                        # so downstream code can short-
+                                        # circuit the filter check.
+                                        if cur_set == set(all_types):
+                                            temporal_event_filter["types"] = None
+                                        else:
+                                            temporal_event_filter["types"] = cur_set
+                                        _refresh_sync_world()
+                                    return _toggle
+                                for et in all_types:
+                                    on = et in active_set
+                                    ui.button(
+                                        et,
+                                        on_click=_make_toggle(et),
+                                    ).props(
+                                        f"dense no-caps "
+                                        f"{'unelevated' if on else 'outline'} "
+                                        f"size=xs"
+                                    ).classes("text-xs")
+
+                        type_filter = temporal_event_filter["types"]
+
+                        # Top: Entity Lifelines — full-cast view with
+                        # status ribbons + death markers + cursor.
                         with_expand(
-                            lambda h: render_entity_lifelines(
-                                ws, on_click=_on_graph_click, height=h,
+                            lambda h, ft=fabula_t_eff,
+                            sort_by=temporal_sort_select.value or "first_appearance",
+                            etf=type_filter: render_entity_lifelines(
+                                ws, on_click=_on_graph_click,
+                                on_seek=_seek, height=h,
+                                fabula_t=ft,
+                                sort_by=sort_by,
+                                event_types=etf,
                             ),
                             title="Entity lifelines (status, location, events)",
                             height="280px",
                         )
                         eid = temporal_select.value
                         if eid:
+                            cmp_eid = temporal_compare_select.value
                             with_expand(
-                                lambda h, eid=eid: (
+                                lambda h, eid=eid, ft=fabula_t_eff,
+                                cmp=cmp_eid: (
                                     render_entity_state_timeline(
-                                        eid, ws, height=h
+                                        eid, ws, height=h,
+                                        fabula_t=ft,
+                                        compare_with=cmp,
                                     )
                                 ),
                                 title="Entity trait timeline",
                                 height="250px",
                             )
-                        # ThemeRiver for multi-entity trait flow
-                        with_expand(
-                            lambda h: render_theme_river(ws, height=h),
-                            title="Trait theme river",
-                            height="260px",
-                        )
-                        # Event swim lanes
-                        with_expand(
-                            lambda h: render_event_gantt(
-                                ws, on_click=_on_graph_click, height=h
-                            ),
-                            title="Event swim-lanes (Gantt)",
-                            height="250px",
-                        )
+                        else:
+                            ui.label(
+                                "Pick an entity above for a focused "
+                                "trait timeline."
+                            ).classes(
+                                "text-xs text-slate-500 italic q-px-md"
+                            )
                     elif mode == "composition":
                         # Six focused mini-charts beat the old sunburst+
                         # treemap pair, which crammed 4 hierarchy levels
@@ -715,6 +808,8 @@ def build_world_tab(state: AppState) -> None:
 
         ego_select.on("update:model-value", lambda: _refresh_sync_world())
         temporal_select.on("update:model-value", lambda: _refresh_sync_world())
+        temporal_compare_select.on("update:model-value", lambda: _refresh_sync_world())
+        temporal_sort_select.on("update:model-value", lambda: _refresh_sync_world())
         compare_select.on("update:model-value", lambda: _refresh_sync_world())
         def _on_world_axis_change(**_kw):
             time_axis_label.text = (

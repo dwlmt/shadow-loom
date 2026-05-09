@@ -3,7 +3,7 @@
 
 import logging
 import networkx as nx
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 from shadow_loom.settings import get_settings as _get_settings
 from shadow_loom.models import default_relationship_metrics_dict
@@ -414,10 +414,27 @@ class AMWNInstantiator:
         """
         Parses the syntax of the intervention dictionary and routes it to 
         the correct topological surgery method.
+
+        Targets that cannot be resolved (malformed key, unknown node)
+        are recorded into ``sandbox.graph.setdefault(
+        "skipped_interventions", [])`` rather than just emitting a
+        WARNING. Downstream the brief assembler surfaces this ledger
+        so the renderer and the auditor know the engine did NOT apply
+        those interventions \u2014 prose must not pretend they took
+        effect.
         """
+        skipped: List[Dict[str, Any]] = sandbox.graph.setdefault(
+            "skipped_interventions", []
+        )
+
         for target_path, new_value in interventions.items():
             if '.' not in target_path:
                 logger.warning("Malformed intervention key (no dot): %s. Skipping.", target_path)
+                skipped.append({
+                    "target_path": target_path,
+                    "reason": "malformed_key",
+                    "detail": "Intervention key must contain a '.' separator.",
+                })
                 continue
             node_id, property_path = target_path.split('.', 1)
 
@@ -429,6 +446,17 @@ class AMWNInstantiator:
             # --- THE FAIL-SAFE ---
             if not sandbox.has_node(node_id):
                 logger.warning("Node %s not in Ego-Graph. Skipping.", node_id)
+                skipped.append({
+                    "target_path": target_path,
+                    "node_id": node_id,
+                    "property": property_path,
+                    "reason": "unknown_node",
+                    "detail": (
+                        f"Node {node_id} is not present in the sandbox. "
+                        "Either pre-declare it via query.introduce / "
+                        "an `<ID>.spawn` surgery, or check the id."
+                    ),
+                })
                 continue
 
             if property_path == "location_id":

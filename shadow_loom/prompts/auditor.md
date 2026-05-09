@@ -18,7 +18,7 @@ Return a JSON object with this exact structure:
   "passed": true/false,
   "violations": [
     {
-      "violation_type": "epistemic_leakage | knowledge_contamination | low_kl_divergence | suspense_threshold | tonal_mismatch | magnitude_too_low | reasoning_failure | affective_failure | attribution_failure | empathy_weight | miracle_step | abduction_failure | utterance_truth_contradiction | channel_intelligibility_violation | withheld_utterance_leak | belief_provenance_contradiction | style_mismatch | meta_narration",
+      "violation_type": "epistemic_leakage | knowledge_contamination | low_kl_divergence | suspense_threshold | tonal_mismatch | magnitude_too_low | reasoning_failure | affective_failure | attribution_failure | empathy_weight | miracle_step | abduction_failure | utterance_truth_contradiction | channel_intelligibility_violation | withheld_utterance_leak | belief_provenance_contradiction | style_mismatch | meta_narration | undeclared_element",
       "severity": "critical | major | minor",
       "description": "What went wrong — specific, actionable.",
       "evidence_quote": "The exact passage from the prose that demonstrates the violation.",
@@ -117,9 +117,7 @@ Return a JSON object with this exact structure:
 - Use the abduction audit above for any implicit Rung-3 events the engine emitted.
 - Violation type: `reasoning_failure` (rationale prefix `counterfactual_canon_bleed:` when canon details leak into the shadow prose).
 
-### Category 4b: Meta-Narration (universal)
-
-**Meta-narration audit (every rendering mode):**
+### Category 4b: Meta-Narration (universal)**Meta-narration audit (every rendering mode):**
 - Run on **every** scene regardless of `rendering_mode` — observation (Rung 1), intervention (Rung 2), counterfactual (Rung 3), and every directive mode (mystery, dramatic_irony, surprise, suspense, fear, joy, regret, grief, rage, love, manual_edit, fallback, default). Meta-narration is the single most common failure across all modes and must be policed everywhere, not just in counterfactual scenes.
 - Flag any prose that **comments on its own narrative structure, the simulation that produced it, or the named effect being rendered**, instead of rendering the world as a lived scene. Specifically:
   - **Pipeline / system commentary** — references to "the observation", "the intervention", "the counterfactual", "the simulation", "the model", "the system", "the engine", "the prompt", "the brief", "the directive", "the scenario", or any other shadow-loom-internal vocabulary leaking into author voice.
@@ -131,6 +129,18 @@ Return a JSON object with this exact structure:
 - The single exception is the REGRET directive, where the character is explicitly required to articulate "if only…" logic in their internal monologue — that is character-voice, not author-voice meta-narration. Author-voice subjunctive framing of the events themselves is still a violation under regret.
 - Violation type: `meta_narration`
 - Feedback template: "Meta-Narration Detected. The prose comments on the [counterfactual structure | named effect | simulation pipeline] ([quoted phrase]) instead of rendering the scene as it was lived inside the world. Rewrite in plain past-tense narration of the events as they occurred — no references to 'timelines', 'divergences', 'alternatives', 'the simulation', 'the directive', 'the suspense/mystery/irony', no author-voice conditional framing, no metaphysical commentary on fate or possibility. Stay inside the scene."
+
+### Category 4c: Undeclared Elements (universal)
+
+**Undeclared-element audit (every rendering mode):**
+- Run on every scene. The renderer is allowed to introduce new world elements (entities, locations, objects, world traits, propositions, concerns) when the constraints or the user's request require them, but every introduction MUST be declared in the structured `introduced_elements` field of the `GeneratedScene` output. Free-floating prose names (a character / place / object / faction that appears in the prose but resolves to neither the SCENE CONTEXT block nor `introduced_elements`) are a hard violation — the merge has no way to capture them, downstream queries cannot reason about them, and the auditor itself cannot verify their physics.
+- A deterministic pre-check already flags raw `ENT_*` / `LOC_*` / etc. ids in prose and unresolved multi-word proper-noun bigrams. Your job is to catch the residual paraphrase / single-token cases the deterministic check is too conservative to flag:
+  - A new singular proper noun ("Roderigo arrived") that is not in SCENE CONTEXT and not in `introduced_elements`.
+  - A new role-defined character referred to by description without a name ("the courier", "the witness", "the henchman") whose existence is asserted as fact and who would need to enter the world model to be reasoned about by future queries — flag if there is no corresponding declaration. (Anonymous one-line crowd presence — "a few villagers passed" — is fine and does not need a declaration.)
+  - A new place ("they crossed into the Hollow") that is not in SCENE CONTEXT and not in `introduced_elements`.
+  - A new institution / faction / organisation referenced by name as if pre-existing in the world.
+- Violation type: `undeclared_element`
+- Feedback template: "Undeclared Element. The prose names [name] as if it exists in the world, but [name] is not in the SCENE CONTEXT block and was not declared in `introduced_elements`. Either (a) replace [name] with an existing referent, (b) remove the reference, or (c) add [name] to `introduced_elements` with a stable id, role, and one-sentence justification for why a new element was needed."
 
 ### Category 5: Source-Style Fidelity
 

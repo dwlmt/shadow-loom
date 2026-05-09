@@ -8160,9 +8160,23 @@ def _normalize_fabula_times(ws: WorldStateV1, spacing: int = 1000) -> WorldState
             all_times.add(b.established_at_fabula)
         for snap in ent.state_timeline:
             all_times.add(snap.fabula_time)
+        for c in ent.concerns:
+            if c.activation_fabula_window:
+                for t in c.activation_fabula_window:
+                    all_times.add(t)
+            for c_snap in c.state_timeline:
+                all_times.add(c_snap.fabula_time)
+                if c_snap.activation_fabula_window:
+                    for t in c_snap.activation_fabula_window:
+                        all_times.add(t)
     for wt in ws.world_traits.values():
         for snap in wt.state_timeline:
             all_times.add(snap.fabula_time)
+    for prop in ws.propositions:
+        for t in prop.truth_at_fabula.keys():
+            all_times.add(int(t))
+        for p_snap in prop.state_timeline:
+            all_times.add(p_snap.fabula_time)
 
     # 0 is the pre-story sentinel — keep it pinned at 0.
     nonzero_sorted = sorted(t for t in all_times if t > 0)
@@ -8224,9 +8238,41 @@ def _normalize_fabula_times(ws: WorldStateV1, spacing: int = 1000) -> WorldState
             snap.model_copy(update={"fabula_time": _map(snap.fabula_time) or snap.fabula_time})
             for snap in ent.state_timeline
         ]
+        # Remap Concern.activation_fabula_window + each ConcernSnapshot
+        # so per-character concerns track the rescaled timeline. Without
+        # this, concerns originally activated at fabula=2 would still
+        # report ``activation_fabula_window=[2,...]`` after every other
+        # tick was rescaled to thousands, leaving them silently
+        # always-/never-active depending on cursor placement.
+        new_concerns = []
+        for c in ent.concerns:
+            updates: dict = {}
+            if c.activation_fabula_window:
+                updates["activation_fabula_window"] = [
+                    _map(t) or t for t in c.activation_fabula_window
+                ]
+            if c.state_timeline:
+                updates["state_timeline"] = [
+                    cs.model_copy(update={
+                        **(
+                            {"fabula_time": _map(cs.fabula_time) or cs.fabula_time}
+                        ),
+                        **(
+                            {
+                                "activation_fabula_window": [
+                                    _map(t) or t
+                                    for t in cs.activation_fabula_window
+                                ]
+                            } if cs.activation_fabula_window else {}
+                        ),
+                    })
+                    for cs in c.state_timeline
+                ]
+            new_concerns.append(c.model_copy(update=updates) if updates else c)
         new_entities[eid] = ent.model_copy(update={
             "beliefs": new_beliefs,
             "state_timeline": new_timeline,
+            "concerns": new_concerns,
         })
 
     logger.info(
@@ -8243,16 +8289,42 @@ def _normalize_fabula_times(ws: WorldStateV1, spacing: int = 1000) -> WorldState
         ]
         new_world_traits[wid] = wt.model_copy(update={"state_timeline": new_wt_timeline})
 
+    # Remap Proposition.truth_at_fabula keys + state_timeline snapshot
+    # fabula_times so the proposition catalogue tracks the rescaled
+    # timeline alongside events / channels / beliefs / concerns.
+    # Without this remap the truth-flips and framing snapshots stay
+    # pinned to pre-normalised ticks, leaving every prop_truth_at()
+    # query against a normalised cursor returning ``None``.
+    new_propositions: list = []
+    for prop in ws.propositions:
+        updates: dict = {}
+        if prop.truth_at_fabula:
+            updates["truth_at_fabula"] = {
+                (_map(int(t)) or int(t)): v
+                for t, v in prop.truth_at_fabula.items()
+            }
+        if prop.state_timeline:
+            updates["state_timeline"] = [
+                ps.model_copy(update={
+                    "fabula_time": _map(ps.fabula_time) or ps.fabula_time,
+                })
+                for ps in prop.state_timeline
+            ]
+        new_propositions.append(prop.model_copy(update=updates) if updates else prop)
+
     return WorldStateV1(
         locations=ws.locations,
         objects=ws.objects,
         entities=new_entities,
         events=new_events,
         world_traits=new_world_traits,
+        narrative_style=ws.narrative_style,
         causal_topology=new_causal,
         spatial_topology=new_spatial,
         channels=new_channels,
         social_topology=new_social,
+        propositions=new_propositions,
+        world_facts=list(ws.world_facts),
     )
 
 
@@ -9134,6 +9206,23 @@ def assemble_world_state(
         spatial_topology=spatial_topology,
         channels=channels,
         social_topology=social_topology,
+        # Seed the proposition catalogue (when present) so the per-chunk
+        # Affect Agent's snapshots / truth_commits and the Social /
+        # Physics agents' utterance.asserts_proposition_id /
+        # EventNode.resolves_proposition_ids land in a world-state that
+        # actually contains the canonical Proposition records they
+        # reference. Without this, downstream merge passes (
+        # ``_apply_affect_to_world``) silently drop snapshots /
+        # truth-commits whose PROP id is not in ``ws.propositions``,
+        # leaving dangling references throughout beliefs and events.
+        # Phase C below ("world.propositions = ..." at the foot of the
+        # reconciler) overwrites this list with the fully-folded
+        # propositions; we still seed here so any code path that runs
+        # *before* that overwrite (auto-repair, programmatic
+        # validation) sees a non-empty registry.
+        propositions=(
+            list(catalogue.propositions) if catalogue is not None else []
+        ),
     )
     # Stash the set of WORLD_ ids that received per-chunk updates so the
     # post-assembly Step-5 LLM pass can demote itself to gap-filler mode
@@ -10759,10 +10848,13 @@ def _auto_repair(ws: WorldStateV1) -> Tuple[WorldStateV1, List[str]]:
             entities=ws.entities,
             events=clean_events,
             world_traits=ws.world_traits,
+            narrative_style=ws.narrative_style,
             causal_topology=clean_causal,
             spatial_topology=clean_spatial,
             channels=clean_channels,
             social_topology=clean_social,
+            propositions=list(ws.propositions),
+            world_facts=list(ws.world_facts),
         )
 
     return ws, repairs

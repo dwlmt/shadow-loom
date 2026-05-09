@@ -418,6 +418,14 @@ def calculate_narrative_physics(
                 "disabled_channel_ids": list(
                     physics_result.disabled_channel_ids
                 ),
+                # Skipped-intervention ledger: targets the engine
+                # could not apply because the named node was absent
+                # from the sandbox. Surfaced into the brief so the
+                # renderer and the auditor know the intervention did
+                # NOT land.
+                "skipped_interventions": list(
+                    physics_result.skipped_interventions
+                ),
                 # Typed object stashed under a private key so the pipeline
                 # can forward it to the auditor (which needs the full
                 # CausalPhysicsResult, not the JSON-serialised slices).
@@ -618,6 +626,9 @@ def calculate_narrative_physics(
                 ),
                 "disabled_channel_ids": list(
                     physics_result.disabled_channel_ids
+                ),
+                "skipped_interventions": list(
+                    physics_result.skipped_interventions
                 ),
                 # Typed object stashed for the pipeline → auditor handoff;
                 # see the intervention branch for rationale.

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
@@ -39,6 +40,7 @@ from shadow_loom.directive_assembly import (
 from shadow_loom.generation import (
     GeneratedScene,
     GenerationConfig,
+    IntroducedElements,
     assemble_rendering_prompt,
     format_scene_context_for_prompt,
     render_scene,
@@ -349,6 +351,18 @@ class AuditViolation(BaseModel):
         # divergences, counterfactual machinery) instead of rendering the
         # world as a lived scene.
         "meta_narration",
+        # New top-level world element (entity / location / object /
+        # world trait / proposition / concern) referenced in the prose
+        # without either a SCENE CONTEXT record OR a corresponding
+        # declaration in ``GeneratedScene.introduced_elements``. The
+        # renderer is allowed to invent, but every invention MUST be
+        # declared in the structured payload so the merge can spawn it
+        # into the next ``WorldStateV1`` revision and downstream queries
+        # know it exists. Free-floating prose names are a hard
+        # violation \u2014 the refinement loop must either (a) remove the
+        # name and use an existing referent or (b) move the name into
+        # ``introduced_elements`` with a justification.
+        "undeclared_element",
     ]
     severity: Literal["critical", "major", "minor"]
     description: str = Field(
@@ -2358,6 +2372,179 @@ def _withheld_utterance_leak_violations(
     return issues
 
 
+def _undeclared_element_violations(
+    prose: str,
+    world_state: Optional[WorldStateV1],
+    introduced: Optional[IntroducedElements],
+) -> List[AuditViolation]:
+    """Deterministic pre-check: flag prose references to elements that
+    do not resolve to either ``world_state`` or
+    ``GeneratedScene.introduced_elements``.
+
+    Two flavours of reference are checked, both intentionally
+    conservative to avoid false positives that would force the
+    refinement loop to chase its tail:
+
+      1. **Project-prefix ids in prose.** The renderer is instructed
+         not to emit raw ids like ``ENT_FOO`` or ``LOC_BAR`` into
+         prose, but if it does they MUST resolve. Any
+         ``[A-Z]{2,5}_[A-Z0-9_]+`` token whose id is not in
+         ``world_state`` or ``introduced_elements`` is a hard
+         violation.
+
+      2. **Multi-word proper-noun names.** Names like ``Roderigo
+         Smith`` or ``Lady Macbeth`` are treated as candidate
+         entity / location / object references. We deliberately do
+         NOT flag bare single capitalised tokens \u2014 those collide
+         too readily with sentence starts, days of the week, common
+         vocatives, and well-known place adjectives, all of which
+         the LLM auditor is better positioned to triage. The
+         multi-word case is high-precision because few non-name
+         capitalised bigrams survive normal English prose.
+
+    The check returns no violations when ``world_state`` is not
+    supplied (the caller has chosen not to enforce reference
+    integrity in this audit pass).
+    """
+    if world_state is None or not prose:
+        return []
+
+    # ---------- canonical name + id sets ----------
+    known_ids: set[str] = set()
+    known_names_lower: set[str] = set()
+
+    def _add_named_dict(d: Dict[str, Any] | None, name_attrs: tuple = ("name",)) -> None:
+        if not d:
+            return
+        for nid, node in d.items():
+            if nid:
+                known_ids.add(nid)
+            for attr in name_attrs:
+                v = getattr(node, attr, None)
+                if isinstance(v, str) and v.strip():
+                    known_names_lower.add(v.strip().lower())
+            # Aliases / display names if present.
+            for alias_attr in ("aliases", "alternative_names"):
+                aliases = getattr(node, alias_attr, None) or []
+                for a in aliases:
+                    if isinstance(a, str) and a.strip():
+                        known_names_lower.add(a.strip().lower())
+
+    _add_named_dict(getattr(world_state, "entities", None))
+    _add_named_dict(getattr(world_state, "locations", None))
+    _add_named_dict(getattr(world_state, "objects", None))
+    _add_named_dict(getattr(world_state, "world_traits", None))
+    _add_named_dict(getattr(world_state, "channels", None))
+    # Propositions / concerns are referenced by id only \u2014 names not
+    # in scope for the proper-noun pass but their ids count.
+    for attr in ("propositions", "concerns"):
+        coll = getattr(world_state, attr, None) or []
+        if isinstance(coll, dict):
+            coll = coll.values()
+        for node in coll:
+            nid = getattr(node, "id", None) or getattr(node, "proposition_id", None) \
+                or getattr(node, "concern_id", None)
+            if nid:
+                known_ids.add(nid)
+    for evt in getattr(world_state, "events", []) or []:
+        eid = getattr(evt, "id", None)
+        if eid:
+            known_ids.add(eid)
+
+    # ---------- declarations from this scene ----------
+    if introduced is not None:
+        known_ids.update(introduced.declared_ids())
+        known_names_lower.update(n.lower() for n in introduced.declared_names())
+
+    # ---------- common-English noise filter for proper nouns ----------
+    # Title-cased tokens that legitimately appear at sentence starts or
+    # as common vocatives without being names of world elements. Kept
+    # conservative; the LLM auditor catches the rest.
+    _STOP_TITLE_TOKENS = frozenset({
+        "i", "the", "a", "an", "and", "but", "or", "so", "yet", "for", "nor",
+        "he", "she", "it", "they", "we", "you", "his", "her", "its", "their",
+        "this", "that", "these", "those", "there", "here", "now", "then",
+        "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+        "sunday", "january", "february", "march", "april", "may", "june",
+        "july", "august", "september", "october", "november", "december",
+        "god", "lord", "sir", "madam", "mr", "mrs", "miss", "ms",
+        "yes", "no", "ok", "okay",
+    })
+
+    issues: List[AuditViolation] = []
+    seen_ids: set[str] = set()
+    seen_names: set[str] = set()
+
+    # Pass 1 \u2014 raw ids in prose.
+    for m in re.finditer(r"\b([A-Z]{2,5}_[A-Z0-9_]+)\b", prose):
+        token = m.group(1)
+        if token in known_ids or token in seen_ids:
+            continue
+        seen_ids.add(token)
+        issues.append(AuditViolation(
+            violation_type="undeclared_element",
+            severity="critical",
+            description=(
+                f"Prose references id `{token}` which is not present in "
+                f"the input world state and was not declared in "
+                f"``introduced_elements``."
+            ),
+            evidence_quote=prose[max(0, m.start() - 40): m.end() + 40],
+            feedback=(
+                f"Either remove `{token}` from the prose (ids should "
+                f"not appear in narrative text in any case), use an "
+                f"existing referent, or \u2014 if the element is genuinely "
+                f"new \u2014 add a corresponding entry under "
+                f"``introduced_elements`` with a justification."
+            ),
+        ))
+
+    # Pass 2 \u2014 multi-word proper-noun candidates (Title-cased
+    # bigrams / trigrams). Skip if the leading token is a stop word
+    # (handles "The Forest" at sentence starts where "Forest" alone
+    # is the only canonical name).
+    candidate_pattern = re.compile(
+        r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})\b"
+    )
+    for m in candidate_pattern.finditer(prose):
+        full = m.group(1)
+        full_lower = full.lower()
+        if full_lower in known_names_lower or full_lower in seen_names:
+            continue
+        # Strip a leading stop-word title token if present
+        # ("The Forest" \u2192 "Forest") and re-check.
+        tokens = full.split()
+        if tokens and tokens[0].lower() in _STOP_TITLE_TOKENS:
+            tail = " ".join(tokens[1:])
+            if tail.lower() in known_names_lower:
+                continue
+            # Single trailing token after stop \u2014 too noisy to flag.
+            if len(tokens) <= 2:
+                continue
+        seen_names.add(full_lower)
+        issues.append(AuditViolation(
+            violation_type="undeclared_element",
+            severity="major",
+            description=(
+                f"Prose references the name `{full}` which does not "
+                f"resolve to any entity, location, object, world trait, "
+                f"or channel in the input world state and was not "
+                f"declared in ``introduced_elements``."
+            ),
+            evidence_quote=prose[max(0, m.start() - 40): m.end() + 40],
+            feedback=(
+                f"If `{full}` was meant to refer to an existing element, "
+                f"correct the spelling to match the canonical name. If "
+                f"`{full}` is a deliberate new addition, declare it in "
+                f"``introduced_elements`` with a stable id, role, and "
+                f"justification \u2014 the merge will then materialise it "
+                f"into the next world-state revision. Otherwise remove "
+                f"the name."
+            ),
+        ))
+    return issues
+
+
 def run_audit(
     prose: str,
     brief: CreativeBrief,
@@ -2367,6 +2554,7 @@ def run_audit(
     *,
     world_state: Optional[WorldStateV1] = None,
     affective_feedback: Optional[AffectiveStateFeedback] = None,
+    introduced_elements: Optional[IntroducedElements] = None,
 ) -> AuditResult:
     """Execute a single audit pass (Step 11).
 
@@ -2476,6 +2664,24 @@ def run_audit(
         audit.audit_summary = (
             f"{audit.audit_summary} [+{len(leak_violations)} deterministic "
             f"withheld-utterance leak(s)]"
+        ).strip()
+
+    # Deterministic undeclared-element check. Runs against the union of
+    # ``world_state`` and the renderer's ``introduced_elements``
+    # declaration. The LLM auditor remains responsible for paraphrase
+    # / single-token cases; this catches the high-precision cases
+    # (raw ids in prose, multi-word proper-noun bigrams) so the
+    # refinement loop can never converge on prose that names something
+    # the merge would have to drop.
+    undeclared = _undeclared_element_violations(
+        prose, world_state, introduced_elements,
+    )
+    if undeclared:
+        audit.violations = list(audit.violations) + undeclared
+        audit.passed = False
+        audit.audit_summary = (
+            f"{audit.audit_summary} [+{len(undeclared)} undeclared "
+            f"element(s)]"
         ).strip()
 
     logger.info(
@@ -2754,6 +2960,9 @@ def run_feedback_loop(
             causal_feedback=cycle_causal,
             world_state=world_state,
             affective_feedback=cycle_affective,
+            introduced_elements=getattr(
+                current_scene, "introduced_elements", None,
+            ),
         )
 
         # Snapshot the current state

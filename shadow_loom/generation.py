@@ -117,6 +117,55 @@ class GenerationConfig(BaseModel):
 # Output Models
 # =====================================================================
 
+# ---------------------------------------------------------------------
+# IntroducedElements \u2014 the renderer's structured declaration of any
+# world elements it invented during this generation step.
+#
+# Shadow Loom's pipeline historically allowed exactly one door for
+# new top-level world elements: the ``<ID>.spawn`` genesis surgery on
+# the engine sandbox, lifted into the merge by
+# ``promote_sandbox_spawns``. The renderer system prompt
+# (``prompts/generation.md``) flatly forbade invention so that any
+# proper noun in the prose was guaranteed to resolve against the
+# ``=== SCENE CONTEXT ===`` block.
+#
+# That seam was too tight: a directive like "have a passing courier
+# overhear them" or a counterfactual "what if a witness had been
+# present" had no way to express itself \u2014 the renderer either
+# ignored the request or smuggled the new character in as
+# unaccountable prose that the merge could not capture (see
+# ``GAP ANALYSIS`` in /memories/repo for the audit). The closed seam
+# also blocked the manual-edit re-ingestion path: a human author
+# adding a character could not get that character into
+# ``WorldStateV1.entities`` because the re-extraction agents had no
+# schema field for it.
+#
+# The lift is structural rather than permissive: the renderer is now
+# allowed to invent BUT must declare every invention in
+# ``GeneratedScene.introduced_elements`` with id + name + minimal seed
+# data + a short justification. Unspecified means undeclared, and
+# undeclared invention is a typed audit violation
+# (``undeclared_element``) that the refinement loop must resolve. The
+# downstream merge then treats these declarations as an authoritative
+# birth list (analogous to sandbox spawns) so the new elements
+# survive into the next ``WorldStateV1``.
+#
+# The actual model definitions live in :mod:`shadow_loom.introduced_elements`
+# so :mod:`shadow_loom.query_models` can also import them (for the
+# user-side ``query.introduce`` channel) without forming a cycle.
+# ---------------------------------------------------------------------
+
+from shadow_loom.introduced_elements import (
+    IntroducedConcernSpec,
+    IntroducedElements,
+    IntroducedEntitySpec,
+    IntroducedLocationSpec,
+    IntroducedObjectSpec,
+    IntroducedPropositionSpec,
+    IntroducedWorldTraitSpec,
+)
+
+
 class GeneratedScene(BaseModel):
     """The structured output of the generation step."""
     prose: str = Field(
@@ -141,6 +190,20 @@ class GeneratedScene(BaseModel):
         default_factory=list,
         description="Any hard constraints that could not be fully satisfied.",
     )
+    introduced_elements: IntroducedElements = Field(
+        default_factory=IntroducedElements,
+        description=(
+            "Structured declaration of any new world elements (entities, "
+            "locations, objects, world traits, propositions, concerns) "
+            "that this rendering invented and that did not exist in the "
+            "input ``WorldStateV1``. Empty when the prose only refers to "
+            "elements present in the SCENE CONTEXT block. The "
+            "NarrativeAuditor cross-checks every proper noun in the "
+            "prose against ``WorldStateV1`` \u222a this payload; the merge "
+            "treats these lists as authoritative spawns when "
+            "re-ingesting the prose."
+        ),
+    )
     generation_error: Optional[str] = Field(
         default=None,
         description=(
@@ -151,6 +214,7 @@ class GeneratedScene(BaseModel):
             "normal render."
         ),
     )
+
 
 
 # =====================================================================
@@ -2148,6 +2212,7 @@ def build_observation_brief(
     branch_label: Optional[str] = None,
     factual_contrast_summary: Optional[str] = None,
     syuzhet_anchor: Optional[int] = None,
+    skipped_interventions: Optional[List[Dict[str, Any]]] = None,
 ) -> CreativeBrief:
     """Build a lightweight CreativeBrief for observation queries."""
     pov = query.focus_entity_ids[0] if query.focus_entity_ids else None
@@ -2175,6 +2240,9 @@ def build_observation_brief(
     # Negative-physics record: events the world tags as not occurring
     # and propositions committed FALSE at or before the anchor must
     # NOT be staged as having happened. Applies to every rung.
+    constraints.extend(_build_skipped_intervention_constraints(
+        skipped_interventions,
+    ))
     constraints.extend(build_prevented_event_constraints(
         world_state, syuzhet_anchor, world_label="observed",
     ))
@@ -2223,6 +2291,52 @@ def build_observation_brief(
         ),
         scene_context=scene_context,
     )
+
+
+def _build_skipped_intervention_constraints(
+    skipped: Optional[List[Dict[str, Any]]],
+) -> List[ConstraintBlock]:
+    """Build HARD ConstraintBlocks listing intervention targets the
+    engine could NOT apply.
+
+    The engine records skips when a do-target names a node that is
+    absent from the sandbox (and was not pre-declared via
+    ``query.introduce`` or an ``<ID>.spawn`` surgery). Without this
+    block the renderer would happily describe the intended state
+    change as if it had taken effect, and the auditor would have no
+    way to distinguish "the engine refused" from "the renderer
+    forgot". Surfacing the ledger means the renderer is told NOT to
+    depict the requested change and the auditor can flag prose that
+    pretends it did.
+    """
+    if not skipped:
+        return []
+    lines: List[str] = []
+    for entry in skipped:
+        if not isinstance(entry, dict):
+            continue
+        target = entry.get("target_path") or entry.get("node_id") or "?"
+        reason = entry.get("reason") or "unknown_node"
+        detail = entry.get("detail") or ""
+        lines.append(f"  \u2022 {target} \u2014 {reason}: {detail}".rstrip(":\u2014 "))
+    if not lines:
+        return []
+    return [ConstraintBlock(
+        constraint_type="mathematical",
+        priority="hard",
+        instruction=(
+            "ENGINE-SIDE INTERVENTION SKIPS: the requested do-surgery "
+            "targets below were NOT applied because their named nodes "
+            "are absent from the world model. Render the scene as if "
+            "those changes never took effect \u2014 do NOT depict the "
+            "intended outcome, do NOT name the missing nodes as if "
+            "they exist, and do NOT manufacture a substitute. If one "
+            "of these targets was meant to be a new element, declare "
+            "it under ``introduced_elements`` instead.\n"
+            + "\n".join(lines)
+        ),
+        evidence={"skipped_interventions": skipped},
+    )]
 
 
 def _build_exclusion_constraints(
@@ -2358,6 +2472,7 @@ def build_intervention_brief(
     rule3_pruning_mode: Literal["advisory", "prune"] = "advisory",
     pruned_utterance_event_ids: Optional[List[str]] = None,
     disabled_channel_ids: Optional[List[str]] = None,
+    skipped_interventions: Optional[List[Dict[str, Any]]] = None,
     *,
     preceding_prose: Optional[str] = None,
     branch_world_id: Literal["factual", "shadow"] = "factual",
@@ -2549,6 +2664,9 @@ def build_intervention_brief(
         world_label="intervened",
     ))
     # Negative-physics record: prevented events + false propositions.
+    constraints.extend(_build_skipped_intervention_constraints(
+        skipped_interventions,
+    ))
     constraints.extend(build_prevented_event_constraints(
         world_state, syuzhet_anchor, world_label="intervened",
     ))
@@ -2626,6 +2744,7 @@ def build_counterfactual_brief(
     rule3_pruning_mode: Literal["advisory", "prune"] = "advisory",
     pruned_utterance_event_ids: Optional[List[str]] = None,
     disabled_channel_ids: Optional[List[str]] = None,
+    skipped_interventions: Optional[List[Dict[str, Any]]] = None,
     *,
     preceding_prose: Optional[str] = None,
     branch_world_id: Literal["factual", "shadow"] = "factual",
@@ -2811,6 +2930,9 @@ def build_counterfactual_brief(
         world_label="counterfactual",
     ))
     # Negative-physics record: prevented events + false propositions.
+    constraints.extend(_build_skipped_intervention_constraints(
+        skipped_interventions,
+    ))
     constraints.extend(build_prevented_event_constraints(
         world_state, syuzhet_anchor, world_label="counterfactual",
     ))
@@ -3052,6 +3174,7 @@ def render_from_query(
             branch_label=branch_label,
             factual_contrast_summary=factual_contrast_summary,
             syuzhet_anchor=syuzhet_anchor,
+            skipped_interventions=physics_result.get("skipped_interventions"),
         )
         return render_scene(brief, config, "observation", physics_state)
 
@@ -3067,6 +3190,7 @@ def render_from_query(
             rule3_pruning_mode=physics_result.get("rule3_pruning_mode", "advisory"),
             pruned_utterance_event_ids=physics_result.get("pruned_utterance_event_ids"),
             disabled_channel_ids=physics_result.get("disabled_channel_ids"),
+            skipped_interventions=physics_result.get("skipped_interventions"),
             preceding_prose=preceding_prose,
             branch_world_id=branch_world_id,
             branch_label=branch_label,
@@ -3086,6 +3210,7 @@ def render_from_query(
             rule3_pruning_mode=physics_result.get("rule3_pruning_mode", "advisory"),
             pruned_utterance_event_ids=physics_result.get("pruned_utterance_event_ids"),
             disabled_channel_ids=physics_result.get("disabled_channel_ids"),
+            skipped_interventions=physics_result.get("skipped_interventions"),
             preceding_prose=preceding_prose,
             branch_world_id=branch_world_id,
             branch_label=branch_label,
