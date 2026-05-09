@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional, Literal, Set, Tuple
 import networkx as nx
 from pydantic import BaseModel, Field
 
-from shadow_loom.models import WorldStateV1, NarrativeStyle, reconstruct_entity_at
+from shadow_loom.models import WorldStateV1, NarrativeStyle, reconstruct_entity_at, reconstruct_world_trait_at
 from shadow_loom.query_models import DirectiveQuery, DoTarget
 from shadow_loom.settings import (
     DirectiveAssemblySettings,
@@ -58,6 +58,30 @@ class TraitTrajectory(BaseModel):
     inertia: float
     headroom_up: float    # 1.0 - current_value
     headroom_down: float  # current_value - 0.0
+
+
+class WorldTraitShift(BaseModel):
+    """Recent shift in a WORLD_ trait the renderer should depict.
+
+    Surfaces the trait's *latest* state-timeline movement (delta in
+    magnitude.value at or before the brief's syuzhet anchor) so prose
+    can foreground regime changes, mood reversals, prophecy
+    resolutions and other ambient shifts the engine has folded onto
+    ``GlobalTrait.state_timeline`` (per-chunk Consequences updates,
+    Step-5 timeline reconciliation, Pearl-Rung-2 truth clamps with a
+    linked ``proposition_id``). Empty when no recent movement exists.
+    """
+    trait_id: str
+    trait_name: str
+    previous_value: float
+    current_value: float
+    delta: float
+    inertia: float
+    affected_domains: List[str] = Field(default_factory=list)
+    fabula_time: int
+    triggered_by: Optional[str] = None
+    proposition_id: Optional[str] = None
+    description: Optional[str] = None
 
 
 class RelationshipTension(BaseModel):
@@ -1037,6 +1061,15 @@ class CreativeBrief(BaseModel):
     hidden_channels: List[HiddenChannel] = Field(default_factory=list)
     trait_trajectories: List[TraitTrajectory] = Field(default_factory=list)
     relationship_tensions: List[RelationshipTension] = Field(default_factory=list)
+    world_trait_shifts: List[WorldTraitShift] = Field(
+        default_factory=list,
+        description=(
+            "Recent WORLD_ trait shifts (regime changes, prophecy "
+            "resolutions, ambient mood reversals) folded onto "
+            "``GlobalTrait.state_timeline`` at or before the brief's "
+            "syuzhet anchor. Empty when no movement is recent."
+        ),
+    )
     physics_override: Optional[str] = None
     scene_context: Dict[str, Any] = Field(default_factory=dict)
 
@@ -1648,6 +1681,70 @@ class DirectiveAssembler:
                     headroom_down=val,
                 ))
         return trajectories
+
+    # ------------------------------------------------------------------
+    # WORLD_ trait shift computation (rendering directive layer)
+    # ------------------------------------------------------------------
+    def compute_world_trait_shifts(
+        self,
+        syuzhet_anchor: Optional[int] = None,
+        max_shifts: int = 6,
+    ) -> List["WorldTraitShift"]:
+        """Surface recent WORLD_ trait shifts at or before the brief's
+        anchor.
+
+        For each ``GlobalTrait`` we reconstruct its magnitude at the
+        anchor's fabula_time (or the latest snapshot when the anchor
+        is ``None``) and compare against the immediately-preceding
+        snapshot. Traits with no movement are skipped. Returned list
+        is sorted by absolute delta descending and capped at
+        ``max_shifts`` so the renderer foregrounds the largest
+        recent regime changes first.
+        """
+        anchor_t = self._syuzhet_anchor_to_fabula_time(syuzhet_anchor)
+        shifts: List[WorldTraitShift] = []
+        for wt_id, wt in (self.world_state.world_traits or {}).items():
+            timeline = sorted(
+                getattr(wt, "state_timeline", []) or [],
+                key=lambda s: s.fabula_time,
+            )
+            if not timeline:
+                continue
+            cutoff = anchor_t if anchor_t is not None else max(s.fabula_time for s in timeline)
+            visible = [s for s in timeline if s.fabula_time <= cutoff]
+            if not visible:
+                continue
+            latest = visible[-1]
+            if latest.magnitude is None:
+                continue
+            current = float(latest.magnitude.value)
+            inertia = float(latest.magnitude.inertia)
+            # Previous value: the snapshot before ``latest``, falling
+            # back to the trait's baseline magnitude.
+            if len(visible) >= 2 and visible[-2].magnitude is not None:
+                previous = float(visible[-2].magnitude.value)
+            elif wt.magnitude is not None:
+                previous = float(wt.magnitude.value)
+            else:
+                previous = current
+            delta = current - previous
+            if abs(delta) < 1e-6:
+                continue
+            shifts.append(WorldTraitShift(
+                trait_id=wt_id,
+                trait_name=getattr(wt, "name", wt_id),
+                previous_value=previous,
+                current_value=current,
+                delta=delta,
+                inertia=inertia,
+                affected_domains=list(getattr(wt, "affected_domains", []) or []),
+                fabula_time=int(latest.fabula_time),
+                triggered_by=getattr(latest, "triggered_by", None),
+                proposition_id=getattr(wt, "proposition_id", None),
+                description=getattr(latest, "description", None),
+            ))
+        shifts.sort(key=lambda s: abs(s.delta), reverse=True)
+        return shifts[:max_shifts]
 
     # ------------------------------------------------------------------
     # Relationship tension computation
@@ -5640,6 +5737,7 @@ class DirectiveAssembler:
             hidden_channels=hidden_channels,
             trait_trajectories=trajectories,
             relationship_tensions=rel_tensions,
+            world_trait_shifts=self.compute_world_trait_shifts(syuzhet_anchor),
             physics_override=physics_override,
             scene_context=scene_context,
             rendering=rendering,
@@ -6849,6 +6947,19 @@ def _log_creative_brief(brief: "CreativeBrief", *, max_items: int = 10) -> None:
         )
         for rt in brief.relationship_tensions[:max_items]:
             lines.append(f"    · {rt}")
+
+    if brief.world_trait_shifts:
+        lines.append(
+            f"  World-trait shifts ({len(brief.world_trait_shifts)}):"
+        )
+        for ws in brief.world_trait_shifts[:max_items]:
+            arrow = "↑" if ws.delta > 0 else "↓"
+            lines.append(
+                f"    {arrow} {ws.trait_id} {ws.previous_value:.2f}→{ws.current_value:.2f} "
+                f"(Δ{ws.delta:+.2f}, inertia={ws.inertia:.2f}, "
+                f"domains={ws.affected_domains}, ft={ws.fabula_time}, "
+                f"trig={ws.triggered_by})"
+            )
 
     if brief.physics_override:
         lines.append(f"  Physics override: {brief.physics_override}")

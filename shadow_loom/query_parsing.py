@@ -39,6 +39,7 @@ from shadow_loom.query_models import (
     DoBelief,
     DoConcern,
     DoProposition,
+    DoWorldTrait,
 )
 
 from shadow_loom.settings import get_settings as _get_settings, resolve_model as _resolve_model
@@ -715,6 +716,9 @@ def _build_do_target_item_model(world_state: WorldStateV1):
       * ``belief``      — DoBelief(holder_id, target_id, proposition_id, confidence)
       * ``concern``     — DoConcern(concern_id, polarity?, salience?, active?)
       * ``proposition`` — DoProposition(proposition_id, truth, propagate_to_beliefs?)
+      * ``world_trait`` — DoWorldTrait(world_trait_id, value, inertia?,
+        affected_domains_add?, affected_domains_remove?, fabula_time?,
+        triggered_by?)
 
     Every kind's id field is constrained to a ``Literal`` of valid IDs
     of the appropriate type. Other fields are Optional so a single
@@ -727,6 +731,7 @@ def _build_do_target_item_model(world_state: WorldStateV1):
     evt_lit = _make_id_literal(typed["event_ids"])
     prop_lit = _make_id_literal(typed.get("proposition_ids", []))
     ccn_lit = _make_id_literal(typed.get("concern_ids", []))
+    wt_lit = _make_id_literal(typed.get("world_trait_ids", []))
     any_actor_lit = _make_id_literal(
         typed["entity_ids"] + typed["object_ids"]
     )
@@ -734,7 +739,7 @@ def _build_do_target_item_model(world_state: WorldStateV1):
     return create_model(
         "DoTargetItem",
         target_kind=(
-            Literal["event", "trait", "belief", "concern", "proposition"],
+            Literal["event", "trait", "belief", "concern", "proposition", "world_trait"],
             Field(..., description="Discriminator for the do-target kind."),
         ),
         # event
@@ -783,6 +788,30 @@ def _build_do_target_item_model(world_state: WorldStateV1):
             description="For target_kind='proposition': also push the clamped "
                         "truth into every belief that references this proposition. "
                         "Defaults to True.")),
+        # world_trait
+        world_trait_id=(Optional[wt_lit], Field(default=None,
+            description="For target_kind='world_trait': WORLD_ id whose magnitude "
+                        "is clamped.")),
+        value=(Optional[float], Field(default=None,
+            description="For target_kind='world_trait': clamped magnitude.value "
+                        "(0.0 absent, 1.0 maximally present).")),
+        inertia=(Optional[float], Field(default=None,
+            description="For target_kind='world_trait': override magnitude.inertia "
+                        "(0.0–0.99). Leave null to keep the existing inertia.")),
+        affected_domains_add=(Optional[List[str]], Field(default=None,
+            description="For target_kind='world_trait': canonical domains to add "
+                        "('physical', 'psychological', 'epistemic', 'social', "
+                        "'emotional', 'informational', 'betrayal'). Set-additive.")),
+        affected_domains_remove=(Optional[List[str]], Field(default=None,
+            description="For target_kind='world_trait': canonical domains to drop "
+                        "from the trait's affected_domains set.")),
+        fabula_time=(Optional[int], Field(default=None,
+            description="For target_kind='world_trait' or 'proposition': fabula "
+                        "tick of the clamp. Defaults to the query anchor.")),
+        triggered_by=(Optional[evt_lit], Field(default=None,
+            description="For target_kind='world_trait': optional EVT_ id whose "
+                        "occurrence motivates this clamp. Surfaced on the "
+                        "WorldTraitSnapshot for audit attribution.")),
         __base__=BaseModel,
     )
 
@@ -1303,6 +1332,37 @@ def _do_target_items_to_typed(items: list[Any]) -> List[DoTarget]:
                     truth=bool(truth),
                     propagate_to_beliefs=data.get("propagate_to_beliefs", True),
                 ))
+            elif kind == "world_trait":
+                wt_id = (
+                    data.get("world_trait_id")
+                    or data.get("target_id")
+                    or data.get("node_id")
+                )
+                wval = data.get("value")
+                if wval is None:
+                    wval = data.get("trait_value")
+                if not wt_id or wval is None:
+                    continue
+                kwargs: Dict[str, Any] = {
+                    "world_trait_id": wt_id,
+                    "value": float(wval),
+                }
+                inertia = data.get("inertia")
+                if inertia is not None:
+                    kwargs["inertia"] = float(inertia)
+                add = data.get("affected_domains_add")
+                if add:
+                    kwargs["affected_domains_add"] = list(add)
+                rem = data.get("affected_domains_remove")
+                if rem:
+                    kwargs["affected_domains_remove"] = list(rem)
+                ft = data.get("fabula_time")
+                if ft is not None:
+                    kwargs["fabula_time"] = int(ft)
+                trig = data.get("triggered_by")
+                if trig:
+                    kwargs["triggered_by"] = str(trig)
+                out.append(DoWorldTrait(**kwargs))
             else:
                 continue
         except Exception:

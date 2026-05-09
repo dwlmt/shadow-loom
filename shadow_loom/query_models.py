@@ -126,9 +126,73 @@ class DoTrait(BaseModel):
     )
 
 
+class DoWorldTrait(BaseModel):
+    """Clamp a WORLD_ ``GlobalTrait``'s magnitude — a global ambient
+    intervention.
+
+    Used for "if the war had ended at chapter 12", "suppose the
+    surveillance state never tightened", "what if the prophecy had
+    resolved early". Lands as a :class:`WorldTraitSnapshot` on the
+    trait's ``state_timeline`` honouring the per-chunk merge fold's
+    inertia attenuation, so high-inertia traits resist the clamp
+    rather than snapping immediately.
+
+    Distinct from :class:`DoTrait` (per-character) because WORLD_
+    traits are shared common-cause anchors: every entity in the scene
+    sees the shifted ambient force on its next propagation step.
+    """
+    target_kind: Literal["world_trait"] = "world_trait"
+    world_trait_id: str = Field(
+        description="WORLD_ id of the global trait whose magnitude is clamped.",
+    )
+    value: float = Field(
+        ge=0.0, le=1.0,
+        description="Clamped magnitude.value (0.0 absent, 1.0 maximally present).",
+    )
+    inertia: Optional[float] = Field(
+        default=None, ge=0.0, le=0.99,
+        description=(
+            "Override magnitude.inertia; None leaves it unchanged. "
+            "Capped at 0.99 (1.0 would make the trait literally "
+            "unmovable)."
+        ),
+    )
+    affected_domains_add: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Canonical domains to add to the trait's affected_domains "
+            "set ('physical', 'psychological', 'epistemic', 'social', "
+            "'emotional', 'informational', 'betrayal'). Set-additive, "
+            "no-op if already present."
+        ),
+    )
+    affected_domains_remove: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Canonical domains to drop from the trait's "
+            "affected_domains set. Set-subtractive, no-op if absent."
+        ),
+    )
+    fabula_time: Optional[int] = Field(
+        default=None,
+        description=(
+            "Fabula time of the clamp. Defaults to the query's anchor "
+            "(or the simulation horizon when neither is supplied)."
+        ),
+    )
+    triggered_by: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional EVT_ id whose occurrence motivates this clamp. "
+            "When set, the snapshot's ``triggered_by`` field carries "
+            "this id so the audit panel can attribute the shift."
+        ),
+    )
+
+
 # Discriminated union — Pydantic v2 dispatches on ``target_kind``.
 DoTarget = Annotated[
-    Union[DoEvent, DoProposition, DoBelief, DoConcern, DoTrait],
+    Union[DoEvent, DoProposition, DoBelief, DoConcern, DoTrait, DoWorldTrait],
     Field(discriminator="target_kind"),
 ]
 

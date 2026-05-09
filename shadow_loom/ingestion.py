@@ -236,6 +236,17 @@ class ChunkTopology(BaseModel):
     social_topology: List[RelationshipEdge] = Field(default_factory=list)
     spatial_topology: List[SpatialEdge] = Field(default_factory=list)
     entity_updates: List["EntityUpdate"] = Field(default_factory=list)
+    world_trait_updates: List["WorldTraitUpdate"] = Field(
+        default_factory=list,
+        description=(
+            "Per-chunk surgical updates to WORLD_ traits (mirrors the belief"
+            " update vocabulary on EntityUpdate). Consumed by the Phase C"
+            " merge step which folds each into a synthetic"
+            " WorldTraitSnapshot on GlobalTrait.state_timeline. Per-chunk"
+            " emission is the authoritative path; Step-5 timelines run as a"
+            " gap-filler for WORLD_ ids that received no per-chunk updates."
+        ),
+    )
     # Phase B4 affect outputs (default empty when affect stage skipped).
     proposition_snapshots: List[ChunkPropositionSnapshot] = Field(default_factory=list)
     proposition_truth_commits: List[PropositionTruthCommit] = Field(default_factory=list)
@@ -348,6 +359,17 @@ class ConsequencesExtraction(BaseModel):
     with event/edge extraction.
     """
     entity_updates: List["EntityUpdate"] = Field(default_factory=list)
+    world_trait_updates: List["WorldTraitUpdate"] = Field(
+        default_factory=list,
+        description=(
+            "Per-chunk surgical updates to WORLD_ trait magnitudes/inertia/"
+            "affected_domains. Each must reference a WORLD_ id from the"
+            " register and an EVT_ id from this chunk; fabula_time must equal"
+            " the triggering event's fabula_time. Folded into"
+            " GlobalTrait.state_timeline at merge time, mirroring how"
+            " belief_confidence_updates fold onto Belief."
+        ),
+    )
 
 
 class BeliefConfidenceUpdate(BaseModel):
@@ -396,6 +418,51 @@ class EntityUpdate(BaseModel):
         default=None, description="New status if changed.",
     )
     new_location_id: Optional[str] = Field(default=None, description="New location if entity moved.")
+
+
+class WorldTraitUpdate(BaseModel):
+    """Per-chunk surgical change to a WORLD_ trait.
+
+    Mirrors the belief-update vocabulary on :class:`EntityUpdate`:
+      * ``new_magnitude_value`` / ``new_inertia`` — surgical overwrite of
+        :class:`TraitVector` fields on :class:`GlobalTrait.magnitude`.
+      * ``affected_domains_add`` / ``affected_domains_remove`` —
+        set-ops on :attr:`GlobalTrait.affected_domains`.
+
+    Folded by the Phase C merge step into a synthetic
+    :class:`WorldTraitSnapshot` appended onto
+    :attr:`GlobalTrait.state_timeline`. The merge honours
+    ``magnitude.inertia`` (high inertia attenuates the delta, matching
+    the Step-5 timeline pass) and emits an ``[Auto-Fix]`` log when
+    clamped. Per-chunk emission is the *authoritative* path; the
+    post-assembly Step-5 LLM pass is demoted to a gap-filler that only
+    runs for WORLD_ ids with zero per-chunk updates.
+    """
+    world_trait_id: str = Field(description="WORLD_ id of the trait being updated.")
+    fabula_time: int = Field(
+        description="Must equal the triggering event's fabula_time (validator-enforced).",
+    )
+    triggered_by: str = Field(description="EVT_ id that caused this world-state change.")
+    new_magnitude_value: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0,
+        description="Surgical overwrite of GlobalTrait.magnitude.value.",
+    )
+    new_inertia: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0,
+        description="Surgical overwrite of GlobalTrait.magnitude.inertia (rare).",
+    )
+    affected_domains_add: List[str] = Field(
+        default_factory=list,
+        description="Domains to add to GlobalTrait.affected_domains (set-union).",
+    )
+    affected_domains_remove: List[str] = Field(
+        default_factory=list,
+        description="Domains to remove from GlobalTrait.affected_domains (set-diff).",
+    )
+    rationale: Optional[str] = Field(
+        default=None,
+        description="Brief author note explaining the shift; surfaced in audit logs.",
+    )
 
 
 # Resolve forward references now that EntityUpdate is defined.
@@ -1158,13 +1225,15 @@ def _build_object_agent(config: ExtractionConfig) -> Agent[_ObjectDeps, ObjectRe
     return agent
 
 
-# --- Step 1c: Entity extraction (depends on locations + objects) ---
+# --- Step 1c: Entity extraction (depends on locations + objects + world traits) ---
 
 class _EntityDeps(BaseModel):
-    """Dependencies for Step 1c — entities need location + object IDs."""
+    """Dependencies for Step 1c — entities need location + object IDs, plus the
+    world-traits register so baseline beliefs may target ``WORLD_`` ids."""
     model_config = {"protected_namespaces": ()}
     location_register: LocationRegister
     object_register: ObjectRegister
+    world_traits_register: Optional[WorldTraitsRegister] = None
 
 
 def _build_entity_agent(config: ExtractionConfig) -> Agent[_EntityDeps, EntityRegister]:
@@ -1189,6 +1258,24 @@ def _build_entity_agent(config: ExtractionConfig) -> Agent[_EntityDeps, EntityRe
             oid: ctx.deps.object_register.objects[oid].name
             for oid in obj_ids
         }
+        wt_reg = ctx.deps.world_traits_register
+        if wt_reg is not None and wt_reg.world_traits:
+            wt_ids = sorted(wt_reg.world_traits.keys())
+            wt_names = {wid: wt_reg.world_traits[wid].name for wid in wt_ids}
+            wt_block = (
+                "\n=== WORLD-TRAIT REGISTER (from Step 1d) ===\n"
+                f"WORLD_ IDs: {wt_ids}\n"
+                f"WORLD_ NAMES: {wt_names}\n"
+                "You MAY reference WORLD_ IDs in belief target_id fields when an\n"
+                "entity holds a baseline belief about a world fact ('the\n"
+                "prophecy binds', 'the Party watches everything'). Step 1d\n"
+                "now precedes Step 1c so these IDs are stable.\n"
+            )
+        else:
+            wt_block = (
+                "\n=== WORLD-TRAIT REGISTER (from Step 1d) ===\n"
+                "(empty \u2014 no world traits extracted; do not reference WORLD_ ids)\n"
+            )
         return (
             "=== LOCATION REGISTER (from Step 1a) ===\n"
             f"LOCATION IDs: {loc_ids}\n"
@@ -1197,6 +1284,7 @@ def _build_entity_agent(config: ExtractionConfig) -> Agent[_EntityDeps, EntityRe
             "=== OBJECT REGISTER (from Step 1b) ===\n"
             f"OBJECT IDs: {obj_ids}\n"
             f"OBJECT NAMES: {obj_names}\n"
+            f"{wt_block}"
             "\n"
             "Use ONLY these LOC_ IDs when assigning location_id. If a "
             "character's home location is missing from the register "
@@ -1205,7 +1293,7 @@ def _build_entity_agent(config: ExtractionConfig) -> Agent[_EntityDeps, EntityRe
             "of inventing a new one \u2014 the validator will null any "
             "unknown LOC_ id and the entity will fall back to "
             "LOC_UNSPECIFIED.\n"
-            "You may reference LOC_ and OBJ_ IDs in belief target_id fields.\n"
+            "You may reference LOC_, OBJ_, and WORLD_ IDs in belief target_id fields.\n"
             "You may also reference ENT_ IDs you are creating in this pass."
         )
 
@@ -1387,11 +1475,15 @@ async def extract_ontology_async(
             ) from exc
     logger.info("[Step 1a] Extracted %d locations.", len(loc_register.locations))
 
-    # --- Steps 1b → 1c (chained) and 1d (parallel) ---
-    # Step 1c (entities) consumes the Object Register in its prompt for
-    # belief target_id grounding, so it must run AFTER Step 1b. The two
-    # are chained inside one coroutine and that coroutine runs in
-    # parallel with Step 1d (world traits, no deps).
+    # --- Steps 1b + 1d (parallel; both no-deps after 1a) → 1c ---
+    # Step 1c (entities) consumes the Object Register AND the World-
+    # Traits Register so baseline beliefs may target ``WORLD_`` ids
+    # (Macbeth's prior belief in the prophecy, Winston's prior belief
+    # about the Party). Step 1d previously ran in parallel with 1c,
+    # which meant the Step-1c LLM never saw WORLD_ ids and the entity
+    # prompt had to forbid them. We now run 1b and 1d together (each
+    # is a single full-text pass with no inter-dependence), then
+    # Step 1c with both registers in scope.
     async def _extract_objects() -> ObjectRegister:
         object_agent = _build_object_agent(config)
         obj_deps = _ObjectDeps(location_register=loc_register)
@@ -1411,11 +1503,15 @@ async def extract_ontology_async(
                     "the underlying LLM/API error."
                 ) from exc
 
-    async def _extract_entities(obj_register: ObjectRegister) -> EntityRegister:
+    async def _extract_entities(
+        obj_register: ObjectRegister,
+        wt_reg: Optional[WorldTraitsRegister],
+    ) -> EntityRegister:
         entity_agent = _build_entity_agent(config)
         ent_deps = _EntityDeps(
             location_register=loc_register,
             object_register=obj_register,
+            world_traits_register=wt_reg,
         )
         logger.info("[Step 1c] Extracting entities with %s …", config.model)
         try:
@@ -1432,11 +1528,6 @@ async def extract_ontology_async(
                     "proceed without an entity register. See logs above "
                     "for the underlying LLM/API error."
                 ) from exc
-
-    async def _extract_objects_then_entities() -> Tuple[ObjectRegister, EntityRegister]:
-        obj_reg = await _extract_objects()
-        ent_reg = await _extract_entities(obj_reg)
-        return obj_reg, ent_reg
 
     async def _extract_world_traits() -> WorldTraitsRegister:
         world_traits_agent = _build_world_traits_agent(config)
@@ -1456,12 +1547,14 @@ async def extract_ontology_async(
                     "logs above for the underlying LLM/API error."
                 ) from exc
 
-    (obj_register, ent_register), wt_register = await asyncio.gather(
-        _extract_objects_then_entities(), _extract_world_traits()
+    # 1b and 1d run together (independent), then 1c sees both.
+    obj_register, wt_register = await asyncio.gather(
+        _extract_objects(), _extract_world_traits()
     )
     logger.info("[Step 1b] Extracted %d objects.", len(obj_register.objects))
-    logger.info("[Step 1c] Extracted %d entities.", len(ent_register.entities))
     logger.info("[Step 1d] Extracted %d world traits.", len(wt_register.world_traits))
+    ent_register = await _extract_entities(obj_register, wt_register)
+    logger.info("[Step 1c] Extracted %d entities.", len(ent_register.entities))
 
     # --- Resolve object owner_ids to ENT_ IDs (needs both registers) ---
     resolved_objects = _resolve_object_owner_ids(obj_register.objects, ent_register.entities)
@@ -8545,6 +8638,64 @@ def _snapshot_sort_key(s) -> tuple:
     )
 
 
+def _apply_world_trait_chunk_updates(
+    wt: GlobalTrait,
+    new_snaps: List[WorldTraitSnapshot],
+    domain_ops: Optional[Tuple[Set[str], Set[str]]],
+) -> GlobalTrait:
+    """Fold per-chunk :class:`WorldTraitUpdate` outputs onto a ``GlobalTrait``.
+
+    Appends ``new_snaps`` (already inertia-attenuated) onto
+    ``state_timeline`` in fabula-time order, deduplicating identical
+    ``(fabula_time, world_id, magnitude.value, magnitude.inertia)``
+    tuples that may arise when the engine and Consequences both emit
+    a snapshot for the same event. ``domain_ops`` is an
+    ``(adds, removes)`` set pair applied to ``affected_domains`` as a
+    structural mutation (mirrors how new beliefs are added directly to
+    the entity rather than encoded as a snapshot).
+    """
+    if not new_snaps and not domain_ops:
+        return wt
+    existing_keys = {
+        (
+            int(s.fabula_time),
+            getattr(s, "world_id", "factual"),
+            round(s.magnitude.value, 4) if s.magnitude else None,
+            round(s.magnitude.inertia, 4) if s.magnitude else None,
+        )
+        for s in wt.state_timeline
+    }
+    merged = list(wt.state_timeline)
+    for s in new_snaps:
+        key = (
+            int(s.fabula_time),
+            s.world_id,
+            round(s.magnitude.value, 4) if s.magnitude else None,
+            round(s.magnitude.inertia, 4) if s.magnitude else None,
+        )
+        if key in existing_keys:
+            continue
+        merged.append(s)
+        existing_keys.add(key)
+    merged.sort(key=lambda s: (int(s.fabula_time), getattr(s, "world_id", "factual")))
+
+    update_dict: Dict[str, object] = {"state_timeline": merged}
+    if domain_ops is not None:
+        adds, rems = domain_ops
+        new_domains = list(wt.affected_domains)
+        new_domains_set = set(new_domains)
+        for d in adds:
+            if d and d not in new_domains_set:
+                new_domains.append(d)
+                new_domains_set.add(d)
+        for d in rems:
+            if d in new_domains_set:
+                new_domains = [x for x in new_domains if x != d]
+                new_domains_set.discard(d)
+        update_dict["affected_domains"] = new_domains
+    return wt.model_copy(update=update_dict)
+
+
 def _coalesce_snapshots(
     snaps: List[EntityStateSnapshot],
 ) -> List[EntityStateSnapshot]:
@@ -8814,6 +8965,90 @@ def assemble_world_state(
     if deduped_parts:
         logger.info("[Step 3] Deduplicated edges: %s.", ", ".join(deduped_parts))
 
+    # --- Fold per-chunk WorldTraitUpdate into GlobalTrait.state_timeline ---
+    # Mirrors the EntityUpdate fold above. Each WorldTraitUpdate yields
+    # a ``WorldTraitSnapshot`` honouring the trait's ``magnitude.inertia``
+    # (high inertia attenuates the delta; the snapshot stores the
+    # *attenuated* value so replay reproduces the merge decision). Per-
+    # chunk updates are authoritative; ``extract_world_trait_timelines``
+    # downstream only fills gaps for WORLD_ ids with zero per-chunk hits.
+    #
+    # Parity validators:
+    #   * ``world_trait_id`` must be in ``register.world_traits``
+    #   * ``triggered_by`` must reference an event in this assembly
+    #   * ``fabula_time`` must equal the triggering event's fabula_time
+    # Failures log a [Auto-Fix] / [Unknown-ID] line and drop the update;
+    # they do NOT raise (matching the EntityUpdate auto_repair posture).
+    chunk_world_updates: Dict[str, List[WorldTraitSnapshot]] = {}
+    chunk_world_seen: Set[str] = set()  # WORLD_ ids that received >=1 update
+    chunk_world_domain_ops: Dict[str, Tuple[Set[str], Set[str]]] = {}
+    if any(topo.world_trait_updates for topo in topologies):
+        event_index = {e.event_id: e for e in events}
+        for topo in topologies:
+            for wtu in topo.world_trait_updates:
+                wid = wtu.world_trait_id
+                if wid not in register.world_traits:
+                    logger.warning(
+                        "[Unknown-ID] WorldTraitUpdate.world_trait_id %r not in "
+                        "register; dropping update at fabula=%d.",
+                        wid, wtu.fabula_time,
+                    )
+                    continue
+                trig = event_index.get(wtu.triggered_by)
+                if trig is None:
+                    logger.warning(
+                        "[Unknown-ID] WorldTraitUpdate.triggered_by %r for %s "
+                        "not in assembled events; dropping.",
+                        wtu.triggered_by, wid,
+                    )
+                    continue
+                if trig.fabula_time != wtu.fabula_time:
+                    logger.warning(
+                        "[Auto-Fix] WorldTraitUpdate %s fabula_time=%d != "
+                        "triggering EVT %s fabula_time=%d; snapping to event time.",
+                        wid, wtu.fabula_time, wtu.triggered_by, trig.fabula_time,
+                    )
+                    eff_ft = trig.fabula_time
+                else:
+                    eff_ft = wtu.fabula_time
+
+                wt = register.world_traits[wid]
+                base_value = wt.magnitude.value
+                inertia = wt.magnitude.inertia if wt.magnitude else 0.3
+                # Attenuate magnitude jumps by inertia: small high-inertia
+                # changes slip through, large jumps are damped towards the
+                # baseline. ``value_after = base + (1 - inertia) * (target - base)``
+                # mirrors the Step-5 timeline pass and the engine's
+                # ``_upsert_world_trait_snapshot`` posture.
+                if wtu.new_magnitude_value is not None:
+                    target = float(max(0.0, min(1.0, wtu.new_magnitude_value)))
+                    eff_value = base_value + (1.0 - float(inertia)) * (target - base_value)
+                    eff_value = float(max(0.0, min(1.0, eff_value)))
+                    if abs(eff_value - target) > 1e-3:
+                        logger.info(
+                            "[Auto-Fix] WorldTraitUpdate %s magnitude attenuated by "
+                            "inertia=%.2f: target=%.3f → applied=%.3f.",
+                            wid, inertia, target, eff_value,
+                        )
+                else:
+                    eff_value = base_value
+
+                eff_inertia = float(wtu.new_inertia) if wtu.new_inertia is not None else inertia
+                snap = WorldTraitSnapshot(
+                    world_id="factual",
+                    fabula_time=int(eff_ft),
+                    triggered_by=wtu.triggered_by,
+                    magnitude=TraitVector(value=eff_value, inertia=eff_inertia),
+                )
+                chunk_world_updates.setdefault(wid, []).append(snap)
+                chunk_world_seen.add(wid)
+                if wtu.affected_domains_add or wtu.affected_domains_remove:
+                    add_set, rem_set = chunk_world_domain_ops.setdefault(
+                        wid, (set(), set()),
+                    )
+                    add_set.update(wtu.affected_domains_add)
+                    rem_set.update(wtu.affected_domains_remove)
+
     ws = WorldStateV1(
         locations=register.locations,
         objects=register.objects,
@@ -8825,13 +9060,24 @@ def assemble_world_state(
             )
             for eid, ent in register.entities.items()
         },
-        world_traits=register.world_traits,
+        world_traits={
+            wid: _apply_world_trait_chunk_updates(
+                wt,
+                chunk_world_updates.get(wid, []),
+                chunk_world_domain_ops.get(wid),
+            )
+            for wid, wt in register.world_traits.items()
+        },
         events=events,
         causal_topology=causal_topology,
         spatial_topology=spatial_topology,
         channels=channels,
         social_topology=social_topology,
     )
+    # Stash the set of WORLD_ ids that received per-chunk updates so the
+    # post-assembly Step-5 LLM pass can demote itself to gap-filler mode
+    # (see ``extract_world_trait_timelines``).
+    setattr(ws, "_chunk_world_trait_ids", frozenset(chunk_world_seen))
     utterance_count = sum(1 for e in events if e.event_type == "utterance")
     logger.info(
         "[Step 3] Assembled WorldStateV1 — %d events (%d utterances), %d causal, %d social, "
@@ -9358,6 +9604,111 @@ def reconcile_affect(
                     "\u2014 inspect the chunk log for [Phase C] "
                     "Auto-closing entries.", auto_closed,
                 )
+
+    # ----------------------------------------------------------------
+    # 7. Auto-derive WORLD_ snapshots from event evidence.
+    # ----------------------------------------------------------------
+    # For each WORLD_ trait that received ZERO per-chunk world_trait_updates
+    # (tracked on ``ws._chunk_world_trait_ids``), scan events for lexical
+    # overlap with the trait's name/description keywords. When an event
+    # plausibly affects the trait, emit a low-confidence
+    # ``WorldTraitSnapshot`` flagged as auto-inferred via the snapshot's
+    # ``description`` field. This is a deterministic backstop for
+    # ``extract_world_trait_timelines`` failing or missing inflections.
+    # The Step-5 LLM pass remains the authoritative timeline source for
+    # WORLD_ ids without per-chunk updates and may override these auto
+    # snapshots; per-chunk updates already-folded by the assembler are
+    # never overridden.
+    chunk_world_ids: frozenset = getattr(world, "_chunk_world_trait_ids", frozenset())
+    if world.world_traits:
+        new_world_traits: Dict[str, GlobalTrait] = {}
+        any_inferred = False
+        for wid, wt in world.world_traits.items():
+            if wid in chunk_world_ids:
+                new_world_traits[wid] = wt
+                continue
+            # Build a keyword bag from name + description (cheap lexical match).
+            bag = (wt.name + " " + (wt.description or "")).lower()
+            keywords = {
+                tok for tok in bag.replace("/", " ").replace(",", " ").split()
+                if len(tok) >= 5
+            }
+            if not keywords:
+                new_world_traits[wid] = wt
+                continue
+            # Track existing snapshot fabula_times so we don't double-emit.
+            existing_fts = {int(s.fabula_time) for s in wt.state_timeline}
+            inferred: List[WorldTraitSnapshot] = []
+            for ev in world.events:
+                if int(ev.fabula_time) in existing_fts:
+                    continue
+                desc = (ev.description or "").lower()
+                hits = sum(1 for kw in keywords if kw in desc)
+                if hits >= 2:
+                    inferred.append(WorldTraitSnapshot(
+                        world_id="factual",
+                        fabula_time=int(ev.fabula_time),
+                        triggered_by=ev.id,
+                        magnitude=wt.magnitude,
+                        description=f"[auto-inferred] lexical match on event {ev.id}",
+                    ))
+                    existing_fts.add(int(ev.fabula_time))
+            if inferred:
+                merged_tl = sorted(
+                    list(wt.state_timeline) + inferred,
+                    key=lambda s: int(s.fabula_time),
+                )
+                new_world_traits[wid] = wt.model_copy(update={"state_timeline": merged_tl})
+                any_inferred = True
+                logger.info(
+                    "[Phase C] Auto-inferred %d WorldTraitSnapshot(s) for %s "
+                    "from event lexical match (Step-5 may override).",
+                    len(inferred), wid,
+                )
+            else:
+                new_world_traits[wid] = wt
+        if any_inferred:
+            world = world.model_copy(update={"world_traits": new_world_traits})
+
+    # ----------------------------------------------------------------
+    # 8. GlobalTrait.proposition_id linking by name match.
+    # ----------------------------------------------------------------
+    # When a GlobalTrait has no ``proposition_id`` set, try to find a
+    # Proposition whose description (or referent_ids) lexically aligns
+    # with the trait's name. This lets concerns/beliefs anchored to the
+    # PROP_ id surface on the trait inspector (and vice-versa) without
+    # the LLM having to explicitly emit the link.
+    if world.world_traits and world.propositions:
+        new_world_traits: Dict[str, GlobalTrait] = {}
+        any_linked = False
+        prop_text = {p.proposition_id: (p.description or "").lower() for p in world.propositions}
+        for wid, wt in world.world_traits.items():
+            if wt.proposition_id is not None:
+                new_world_traits[wid] = wt
+                continue
+            wt_name = (wt.name or "").lower()
+            if not wt_name:
+                new_world_traits[wid] = wt
+                continue
+            best_pid = None
+            best_score = 0
+            wt_tokens = {t for t in wt_name.split() if len(t) >= 5}
+            for pid, ptext in prop_text.items():
+                score = sum(1 for t in wt_tokens if t in ptext)
+                if score > best_score and score >= 2:
+                    best_score = score
+                    best_pid = pid
+            if best_pid is not None:
+                new_world_traits[wid] = wt.model_copy(update={"proposition_id": best_pid})
+                any_linked = True
+                logger.info(
+                    "[Phase C] Linked GlobalTrait %s \u2192 %s (lexical name overlap).",
+                    wid, best_pid,
+                )
+            else:
+                new_world_traits[wid] = wt
+        if any_linked:
+            world = world.model_copy(update={"world_traits": new_world_traits})
 
     return world
 
@@ -10793,6 +11144,98 @@ def _programmatic_validation(ws: WorldStateV1) -> List[ValidationIssue]:
 
     # --- Orphan-proposition validation ---
     issues.extend(_validate_orphan_propositions(ws))
+
+    # --- E1.h WORLD_ causal source must have non-trivial magnitude ---
+    # A WORLD_ wired as `chain_reaction` / `affordance_gate` / `mutation`
+    # source with magnitude.value < 0.05 contributes nothing through
+    # propagation; a WORLD_ source whose `mechanism` is not in its
+    # `affected_domains` is silently penalised to 20% by the runtime
+    # domain gate. Both produce graphs that look richer than they
+    # behave. Surface as warnings so authors can either bump the
+    # magnitude / extend `affected_domains` or drop the edge.
+    if ws.world_traits and ws.causal_topology:
+        for ce in ws.causal_topology:
+            if not ce.source_id.startswith("WORLD_"):
+                continue
+            wt = ws.world_traits.get(ce.source_id)
+            if wt is None:
+                continue
+            if wt.magnitude.value < 0.05:
+                issues.append(ValidationIssue(
+                    category="world_trait_low_magnitude_source",
+                    severity="warning",
+                    detail=(
+                        f"WORLD_ trait {ce.source_id} (magnitude.value="
+                        f"{wt.magnitude.value:.2f}) is wired as causal source on "
+                        f"{ce.causality_type} edge → {ce.target_id} but its magnitude "
+                        f"is too low to produce non-trivial propagation. "
+                        f"Either raise the magnitude, drop the edge, or treat "
+                        f"this as a structural-only common-cause anchor."
+                    ),
+                ))
+            if wt.affected_domains:
+                edge_mech = getattr(ce, "mechanism", None)
+                if edge_mech and edge_mech not in wt.affected_domains:
+                    issues.append(ValidationIssue(
+                        category="world_trait_domain_mismatch_source",
+                        severity="warning",
+                        detail=(
+                            f"WORLD_ {ce.source_id} edge → {ce.target_id} declares "
+                            f"mechanism={edge_mech!r} which is not in the trait's "
+                            f"affected_domains={list(wt.affected_domains)}. The "
+                            f"runtime domain gate will attenuate this contribution "
+                            f"to ~20%. Add the mechanism to affected_domains or "
+                            f"change the edge's mechanism."
+                        ),
+                    ))
+
+    # --- E1.i Orphan-cause cluster: events with zero in-edges that share
+    # a fabula tick with another orphan event hint at a missing common
+    # cause (typically an unwired WORLD_ trait — see physics rule 16).
+    if ws.events and ws.causal_topology:
+        in_edges: Dict[str, int] = {}
+        for ce in ws.causal_topology:
+            if ce.target_id.startswith("EVT_"):
+                in_edges[ce.target_id] = in_edges.get(ce.target_id, 0) + 1
+        orphan_by_ft: Dict[int, List[str]] = {}
+        for ev in ws.events:
+            if in_edges.get(ev.id, 0) == 0:
+                orphan_by_ft.setdefault(int(ev.fabula_time), []).append(ev.id)
+        for ft, eids in orphan_by_ft.items():
+            if len(eids) >= 2:
+                issues.append(ValidationIssue(
+                    category="orphan_cause_cluster",
+                    severity="warning",
+                    detail=(
+                        f"{len(eids)} events share fabula_time={ft} with no causal "
+                        f"in-edges: {eids}. This pattern usually indicates a "
+                        f"missing WORLD_ common-cause anchor (physics rule 16). "
+                        f"If the events are jointly driven by an unstated force "
+                        f"(fate, war, prophecy, ambient ideology), wire the "
+                        f"corresponding WORLD_ trait as a chain_reaction parent "
+                        f"of each."
+                    ),
+                ))
+
+    # --- E1.j WORLD_ trait with empty affected_domains broadcasts
+    # everywhere via the runtime domain gate (which only filters when
+    # the list is non-empty). Authors should declare at least one
+    # canonical domain so the trait routes selectively.
+    for wid, wt in ws.world_traits.items():
+        if not wt.affected_domains:
+            issues.append(ValidationIssue(
+                category="world_trait_empty_affected_domains",
+                severity="warning",
+                detail=(
+                    f"WORLD_ trait {wid} ({wt.name!r}) has empty "
+                    f"affected_domains. The runtime domain gate treats this "
+                    f"as 'broadcast everywhere', producing un-targeted "
+                    f"ambient pressure. Declare at least one canonical "
+                    f"domain ('physical', 'psychological', 'epistemic', "
+                    f"'social', 'emotional', 'informational', 'betrayal') "
+                    f"so the trait routes selectively."
+                ),
+            ))
 
     return issues
 
@@ -12730,18 +13173,144 @@ def _build_world_trait_timeline_agent(
     return agent
 
 
+def _step5_filter_events_for_trait(wt: GlobalTrait, events: List[EventNode]) -> List[EventNode]:
+    """Lexical pre-filter — keep events whose description plausibly relates
+    to the trait. Reduces per-call prompt size for the chunked Step-5
+    path; full event list is still passed when no keywords match anything
+    so the LLM has visibility into the timeline.
+    """
+    bag = (wt.name + " " + (wt.description or "")).lower()
+    keywords = {tok for tok in bag.replace("/", " ").replace(",", " ").split() if len(tok) >= 5}
+    if not keywords:
+        return events
+    filtered = [e for e in events if any(kw in (e.description or "").lower() for kw in keywords)]
+    if len(filtered) >= 5:
+        return filtered
+    return events  # not enough lexical hits to be worth narrowing
+
+
+def _step5_run_chunk(
+    agent: Agent,
+    sub_traits: Dict[str, GlobalTrait],
+    sub_events: List[EventNode],
+    timeout_s: float,
+) -> Optional[WorldTraitTimelineExtraction]:
+    """Execute a single Step-5 LLM call with timeout/retry protection.
+
+    Returns the extraction or None on terminal failure. ``ModelRetry`` is
+    handled by the agent itself (via ``output_retries``); this wrapper
+    only retries on TimeoutError / connection-style errors.
+    """
+    deps = _WorldTraitTimelineDeps(world_traits=sub_traits, events=sub_events)
+    prompt = (
+        f"Analyze the following {len(sub_traits)} world trait(s) against "
+        f"{len(sub_events)} events and identify any inflection points."
+    )
+    last_exc: Optional[BaseException] = None
+    for attempt in range(2):
+        try:
+            if timeout_s > 0:
+                # Run with a hard timeout in a worker thread.
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    fut = pool.submit(lambda: agent.run_sync(prompt, deps=deps, **_user_kwargs()))
+                    try:
+                        result = fut.result(timeout=timeout_s)
+                    except concurrent.futures.TimeoutError as te:
+                        last_exc = te
+                        logger.warning(
+                            "[Step 5] Timed out after %.0fs (attempt %d/2) for "
+                            "traits=%s; will retry once.",
+                            timeout_s, attempt + 1, sorted(sub_traits.keys()),
+                        )
+                        continue
+            else:
+                result = agent.run_sync(prompt, deps=deps, **_user_kwargs())
+            return result.output
+        except (TimeoutError, ConnectionError) as exc:
+            last_exc = exc
+            logger.warning(
+                "[Step 5] Transient error %r (attempt %d/2) for traits=%s; "
+                "will retry once.", exc, attempt + 1, sorted(sub_traits.keys()),
+            )
+            continue
+        except Exception:
+            logger.exception(
+                "[Step 5] Non-transient failure for traits=%s; not retrying.",
+                sorted(sub_traits.keys()),
+            )
+            return None
+    if last_exc is not None:
+        logger.error(
+            "[Step 5] Gave up after retries for traits=%s: %r",
+            sorted(sub_traits.keys()), last_exc,
+        )
+    return None
+
+
+async def _step5_run_chunk_async(
+    agent: Agent,
+    sub_traits: Dict[str, GlobalTrait],
+    sub_events: List[EventNode],
+    timeout_s: float,
+) -> Optional[WorldTraitTimelineExtraction]:
+    """Async variant of :func:`_step5_run_chunk` using ``asyncio.wait_for``."""
+    deps = _WorldTraitTimelineDeps(world_traits=sub_traits, events=sub_events)
+    prompt = (
+        f"Analyze the following {len(sub_traits)} world trait(s) against "
+        f"{len(sub_events)} events and identify any inflection points."
+    )
+    last_exc: Optional[BaseException] = None
+    for attempt in range(2):
+        try:
+            if timeout_s > 0:
+                result = await asyncio.wait_for(
+                    agent.run(prompt, deps=deps, **_user_kwargs()),
+                    timeout=timeout_s,
+                )
+            else:
+                result = await agent.run(prompt, deps=deps, **_user_kwargs())
+            return result.output
+        except asyncio.TimeoutError as te:
+            last_exc = te
+            logger.warning(
+                "[Step 5·Async] Timed out after %.0fs (attempt %d/2) for "
+                "traits=%s; will retry once.",
+                timeout_s, attempt + 1, sorted(sub_traits.keys()),
+            )
+            continue
+        except (TimeoutError, ConnectionError) as exc:
+            last_exc = exc
+            logger.warning(
+                "[Step 5·Async] Transient error %r (attempt %d/2) for traits=%s; "
+                "will retry once.", exc, attempt + 1, sorted(sub_traits.keys()),
+            )
+            continue
+        except Exception:
+            logger.exception(
+                "[Step 5·Async] Non-transient failure for traits=%s; not retrying.",
+                sorted(sub_traits.keys()),
+            )
+            return None
+    if last_exc is not None:
+        logger.error(
+            "[Step 5·Async] Gave up after retries for traits=%s: %r",
+            sorted(sub_traits.keys()), last_exc,
+        )
+    return None
+
+
 def extract_world_trait_timelines(
     ws: WorldStateV1,
     config: ExtractionConfig | None = None,
 ) -> WorldStateV1:
-    """Step 5: Post-assembly world trait timeline extraction.
+    """Step 5: Post-assembly world trait timeline extraction (gap-filler).
 
-    Given a fully assembled ``WorldStateV1`` with all events resolved,
-    runs a single focused LLM call to identify inflection points where
-    world traits changed due to specific events.
-
-    Returns the world state with ``state_timeline`` populated on each
-    ``GlobalTrait`` that experienced changes.
+    Per-chunk ``WorldTraitUpdate`` outputs (folded by
+    ``assemble_world_state``) are the authoritative source. This pass
+    fills gaps for WORLD_ ids that received zero per-chunk updates,
+    and does so per-trait with lexical event pre-filtering so each LLM
+    call sees a focused prompt rather than the entire event timeline.
     """
     config = config or ExtractionConfig()
 
@@ -12749,49 +13318,52 @@ def extract_world_trait_timelines(
         logger.info("[Step 5] No world traits — skipping timeline extraction.")
         return ws
 
-    agent = _build_world_trait_timeline_agent(config)
-    deps = _WorldTraitTimelineDeps(
-        world_traits=ws.world_traits,
-        events=ws.events,
-    )
-
-    logger.info(
-        "[Step 5] Extracting world trait timelines (%d traits, %d events) …",
-        len(ws.world_traits), len(ws.events),
-    )
-
-    try:
-        result = agent.run_sync(
-            f"Analyze the following {len(ws.world_traits)} world trait(s) against "
-            f"{len(ws.events)} events and identify any inflection points.",
-            deps=deps,
-            **_user_kwargs(),
+    chunk_covered = getattr(ws, "_chunk_world_trait_ids", frozenset())
+    gap_traits = {wid: wt for wid, wt in ws.world_traits.items() if wid not in chunk_covered}
+    if not gap_traits:
+        logger.info(
+            "[Step 5] All %d world traits covered by per-chunk updates "
+            "— skipping LLM gap-filler.", len(ws.world_traits),
         )
-        extraction = result.output
-        log_agent_output(logger, "WorldTraitTimeline", extraction)
-    except Exception:
-        logger.exception("[Step 5] World trait timeline extraction FAILED — skipping.")
         return ws
 
-    # Apply timelines to the world state
+    agent = _build_world_trait_timeline_agent(config)
+    timeout_s = float(getattr(config, "per_agent_call_timeout_seconds", 0) or 0)
+
+    logger.info(
+        "[Step 5] Gap-filling timelines for %d/%d world traits (per-trait LLM calls) …",
+        len(gap_traits), len(ws.world_traits),
+    )
+
+    aggregated: Dict[str, List[WorldTraitSnapshot]] = {}
+    for wid, wt in gap_traits.items():
+        sub_events = _step5_filter_events_for_trait(wt, ws.events)
+        extraction = _step5_run_chunk(agent, {wid: wt}, sub_events, timeout_s)
+        if extraction is None:
+            continue
+        log_agent_output(logger, "WorldTraitTimeline", extraction)
+        if wid in extraction.timelines and extraction.timelines[wid]:
+            aggregated[wid] = extraction.timelines[wid]
+
+    if not aggregated:
+        logger.info("[Step 5] Gap-filler produced no timelines — returning world unchanged.")
+        return ws
+
     updated_traits: Dict[str, GlobalTrait] = {}
     changes_applied = 0
     for wid, wt in ws.world_traits.items():
-        if wid in extraction.timelines and extraction.timelines[wid]:
-            sorted_timeline = sorted(extraction.timelines[wid], key=_snapshot_sort_key)
+        if wid in aggregated:
+            sorted_timeline = sorted(aggregated[wid], key=_snapshot_sort_key)
             updated_traits[wid] = wt.model_copy(update={"state_timeline": sorted_timeline})
             changes_applied += 1
-            logger.info(
-                "[Step 5] %s: %d inflection point(s) identified.",
-                wid, len(sorted_timeline),
-            )
+            logger.info("[Step 5] %s: %d inflection point(s) identified.", wid, len(sorted_timeline))
         else:
             updated_traits[wid] = wt
 
     ws = ws.model_copy(update={"world_traits": updated_traits})
     logger.info(
-        "[Step 5] World trait timeline extraction complete — %d/%d traits changed.",
-        changes_applied, len(ws.world_traits),
+        "[Step 5] Gap-filler complete — %d/%d gap traits filled.",
+        changes_applied, len(gap_traits),
     )
     return ws
 
@@ -12800,54 +13372,67 @@ async def extract_world_trait_timelines_async(
     ws: WorldStateV1,
     config: ExtractionConfig | None = None,
 ) -> WorldStateV1:
-    """Async variant of :func:`extract_world_trait_timelines`."""
+    """Async per-trait variant of :func:`extract_world_trait_timelines`.
+
+    Runs gap-filler calls in parallel via ``asyncio.gather`` with per-call
+    ``asyncio.wait_for`` timeouts.
+    """
     config = config or ExtractionConfig()
 
     if not ws.world_traits:
         logger.info("[Step 5·Async] No world traits — skipping timeline extraction.")
         return ws
 
+    chunk_covered = getattr(ws, "_chunk_world_trait_ids", frozenset())
+    gap_traits = {wid: wt for wid, wt in ws.world_traits.items() if wid not in chunk_covered}
+    if not gap_traits:
+        logger.info(
+            "[Step 5·Async] All %d world traits covered by per-chunk updates "
+            "— skipping LLM gap-filler.", len(ws.world_traits),
+        )
+        return ws
+
     agent = _build_world_trait_timeline_agent(config)
-    deps = _WorldTraitTimelineDeps(
-        world_traits=ws.world_traits,
-        events=ws.events,
-    )
+    timeout_s = float(getattr(config, "per_agent_call_timeout_seconds", 0) or 0)
 
     logger.info(
-        "[Step 5·Async] Extracting world trait timelines (%d traits, %d events) …",
-        len(ws.world_traits), len(ws.events),
+        "[Step 5·Async] Gap-filling timelines for %d/%d world traits (parallel per-trait) …",
+        len(gap_traits), len(ws.world_traits),
     )
 
-    try:
-        result = await agent.run(
-            f"Analyze the following {len(ws.world_traits)} world trait(s) against "
-            f"{len(ws.events)} events and identify any inflection points.",
-            deps=deps,
-            **_user_kwargs(),
-        )
-        extraction = result.output
-    except Exception:
-        logger.exception("[Step 5·Async] World trait timeline extraction FAILED — skipping.")
+    async def _one(wid: str, wt: GlobalTrait) -> Tuple[str, Optional[WorldTraitTimelineExtraction]]:
+        sub_events = _step5_filter_events_for_trait(wt, ws.events)
+        extraction = await _step5_run_chunk_async(agent, {wid: wt}, sub_events, timeout_s)
+        return wid, extraction
+
+    results = await asyncio.gather(*[_one(wid, wt) for wid, wt in gap_traits.items()])
+
+    aggregated: Dict[str, List[WorldTraitSnapshot]] = {}
+    for wid, extraction in results:
+        if extraction is None:
+            continue
+        if wid in extraction.timelines and extraction.timelines[wid]:
+            aggregated[wid] = extraction.timelines[wid]
+
+    if not aggregated:
+        logger.info("[Step 5·Async] Gap-filler produced no timelines — returning world unchanged.")
         return ws
 
     updated_traits: Dict[str, GlobalTrait] = {}
     changes_applied = 0
     for wid, wt in ws.world_traits.items():
-        if wid in extraction.timelines and extraction.timelines[wid]:
-            sorted_timeline = sorted(extraction.timelines[wid], key=_snapshot_sort_key)
+        if wid in aggregated:
+            sorted_timeline = sorted(aggregated[wid], key=_snapshot_sort_key)
             updated_traits[wid] = wt.model_copy(update={"state_timeline": sorted_timeline})
             changes_applied += 1
-            logger.info(
-                "[Step 5·Async] %s: %d inflection point(s) identified.",
-                wid, len(sorted_timeline),
-            )
+            logger.info("[Step 5·Async] %s: %d inflection point(s) identified.", wid, len(sorted_timeline))
         else:
             updated_traits[wid] = wt
 
     ws = ws.model_copy(update={"world_traits": updated_traits})
     logger.info(
-        "[Step 5·Async] World trait timeline extraction complete — %d/%d traits changed.",
-        changes_applied, len(ws.world_traits),
+        "[Step 5·Async] Gap-filler complete — %d/%d gap traits filled.",
+        changes_applied, len(gap_traits),
     )
     return ws
 

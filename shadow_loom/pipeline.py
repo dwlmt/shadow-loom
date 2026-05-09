@@ -1101,13 +1101,18 @@ def _augment_topology_with_sandbox_deltas(
                 inertia=inertia,
             ),
         )
-        # Skip duplicate snapshots at the same (fabula_time, world_id)
-        # so re-runs don't pile up identical entries.
+        # Skip duplicate snapshots at the same (fabula_time, world_id,
+        # triggered_by) so per-chunk Consequences-fold snapshots (already
+        # appended to ``base_wt.state_timeline`` during
+        # ``assemble_world_state``) are not re-stamped by post-assembly
+        # engine cycles writing through this helper. Including
+        # ``triggered_by`` lets two genuinely distinct events at the
+        # same tick still both land.
         existing_keys = {
-            (s.fabula_time, getattr(s, "world_id", "factual"))
+            (s.fabula_time, getattr(s, "world_id", "factual"), getattr(s, "triggered_by", None))
             for s in base_wt.state_timeline
         }
-        if (snap.fabula_time, snap.world_id) in existing_keys:
+        if (snap.fabula_time, snap.world_id, snap.triggered_by) in existing_keys:
             return
         wt_copy = base_wt.model_copy(update={
             "state_timeline": list(base_wt.state_timeline) + [snap],
@@ -1346,6 +1351,19 @@ def _augment_topology_with_sandbox_deltas(
             truth=bool(new_truth),
             triggered_by="DO_OPERATOR",
         ))
+        # Pearl-Rung-2 cross-link: if a GlobalTrait carries
+        # ``proposition_id == pid`` (set during ingestion's reconcile_affect
+        # step 8 lexical linking), the truth-clamp also moves the world
+        # trait. Magnitude tracks proposition truth: 1.0 when true, 0.0
+        # when false. The merge fold honours inertia attenuation when the
+        # snapshot lands on the canonical timeline.
+        for wt_id, wt in world_state.world_traits.items():
+            if getattr(wt, "proposition_id", None) == pid:
+                _upsert_world_trait_snapshot(
+                    wt_id, "magnitude",
+                    1.0 if bool(new_truth) else 0.0,
+                    int(ftt),
+                )
 
     # Belief mutations → either a new Belief or a confidence overwrite.
     for bm in physics_result.get("belief_mutations") or []:
@@ -1428,6 +1446,26 @@ def _augment_topology_with_sandbox_deltas(
             logger.debug(
                 "[Bridge] Could not build ChunkConcernSnapshot for %s.%s.", ccn_id, field,
             )
+
+    # World-trait mutations → WorldTraitSnapshot via the merge-fold
+    # helper. Per-chunk Consequences updates and Rung-2 ``DoWorldTrait``
+    # surgeries land via the same code path so inertia attenuation and
+    # ``(fabula_time, world_id, triggered_by)`` dedup are consistent.
+    for wm in physics_result.get("world_trait_mutations") or []:
+        if isinstance(wm, dict):
+            wt_id = wm.get("world_trait_id")
+            new_val = wm.get("new_value")
+            ftt = wm.get("fabula_time")
+        else:
+            wt_id = getattr(wm, "world_trait_id", None)
+            new_val = getattr(wm, "new_value", None)
+            ftt = getattr(wm, "fabula_time", None)
+        if not wt_id or new_val is None:
+            continue
+        _upsert_world_trait_snapshot(
+            wt_id, "magnitude", float(new_val),
+            int(ftt) if ftt is not None else fabula_time_now,
+        )
 
     # --- Observation reveals (Rung 1) -----------------------------------
     # ``observation_facts`` is a Dict[node_id, value_str] declaring

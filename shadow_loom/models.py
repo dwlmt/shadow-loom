@@ -570,6 +570,18 @@ class GlobalTrait(AMWNNode):
         description="Chronological snapshots of state changes through the story. "
                     "Empty = trait unchanged throughout narrative.",
     )
+    proposition_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional PROP_ id this world trait reifies. When set, the trait"
+            " doubles as a first-class proposition the audience can hold beliefs"
+            " about (e.g. 'the prophecy is binding', 'the empire is watching')."
+            " Pearl-Rung-2 BeliefMutation clamps on the linked proposition"
+            " surface as additional WorldTraitSnapshot entries so propagation"
+            " reflects the surgical change. Concerns/beliefs may target either id;"
+            " the reconciler resolves cross-references at merge time."
+        ),
+    )
 
     _coerce_domains = field_validator("affected_domains", mode="before")(
         lambda v: _coerce_domain_list(v)
@@ -1005,15 +1017,34 @@ class CausalEdge(AMWNEdge):
                 f"source_id '{self.source_id}' is a world trait — causality_type must be "
                 f"'affordance_gate', 'ambient_propagation', 'mutation', or 'chain_reaction', got '{ct}'."
             )
+        # WORLD_ → WORLD_ cross-trait dependencies (e.g. WARTIME → SURVEILLANCE_STATE).
+        # The destination is a state node, not an event, so chain_reaction / mutation
+        # both behave structurally; the runtime treats them like any other state-to-state
+        # edge. Permit them explicitly so the validator does not block authored W→W edges.
+        tgt_is_world = self.target_id.startswith("WORLD_")
+        if src_is_world and tgt_is_world and ct not in ("chain_reaction", "mutation"):
+            raise ValueError(
+                f"WORLD_→WORLD_ edge '{self.source_id}'→'{self.target_id}' must use "
+                f"causality_type 'chain_reaction' or 'mutation', got '{ct}'."
+            )
         if tgt_is_event and ct not in ("chain_reaction", "affordance_gate"):
             raise ValueError(
                 f"target_id '{self.target_id}' is an event — causality_type must be "
                 f"'chain_reaction' or 'affordance_gate', got '{ct}'."
             )
-        if not tgt_is_event and ct not in ("mutation", "mutation_social", "ambient_propagation"):
+        if not tgt_is_event and ct not in ("mutation", "mutation_social", "ambient_propagation", "chain_reaction"):
             raise ValueError(
                 f"target_id '{self.target_id}' is a state node — causality_type must be "
-                f"'mutation', 'mutation_social', or 'ambient_propagation', got '{ct}'."
+                f"'mutation', 'mutation_social', 'ambient_propagation', or 'chain_reaction', got '{ct}'."
+            )
+        # ``chain_reaction`` against a state-node target is only legal when the
+        # source is also a WORLD_ trait (cross-trait dependency, e.g.
+        # WARTIME → SURVEILLANCE_STATE). Forbid it for entity/event sources to
+        # keep the structural contract tight.
+        if not tgt_is_event and ct == "chain_reaction" and not src_is_world:
+            raise ValueError(
+                f"chain_reaction into state-node target '{self.target_id}' is only "
+                f"permitted from a WORLD_ source; got source '{self.source_id}'."
             )
         # mutation_social requires rel_counterpart_id
         if ct == "mutation_social" and not self.rel_counterpart_id:

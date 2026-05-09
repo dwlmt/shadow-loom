@@ -1299,10 +1299,31 @@ def ws_to_causal_force_data(
             f"force: {ce.causal_force}<br/>"
             f"evidence: {ce.evidence_strength}"
         )
+        # Distinguish WORLD_→WORLD_ chain_reaction / mutation edges:
+        # they encode global-force coupling (one ambient force amplifies
+        # or attenuates another) and would otherwise be visually
+        # indistinguishable from the dominant Event→Event causal mesh.
+        # Render them in the WorldTrait teal at a slightly thicker
+        # weight with a dashed style so the audit eye can pick them
+        # out at a glance.
+        is_world_to_world = (
+            ce.source_id.startswith("WORLD_")
+            and ce.target_id.startswith("WORLD_")
+        )
+        if is_world_to_world:
+            line_style = {
+                "width": max(w, 2.0),
+                "color": NODE_COLORS["WorldTrait"],
+                "type": "dashed",
+                "opacity": 0.85,
+                "curveness": 0.2,
+            }
+        else:
+            line_style = {"width": w, "color": EDGE_COLORS["causal"]}
         links.append({
             "source": ce.source_id,
             "target": ce.target_id,
-            "lineStyle": {"width": w, "color": EDGE_COLORS["causal"]},
+            "lineStyle": line_style,
             "tooltip": {"formatter": tooltip},
         })
 

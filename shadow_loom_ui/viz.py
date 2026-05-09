@@ -3071,8 +3071,14 @@ def render_world_trait_state_card(
     mag_val = float(wt.magnitude.value) if wt and wt.magnitude else 0.0
     inertia = float(wt.magnitude.inertia) if wt and wt.magnitude else 0.0
     description = (wt.description or "").strip() if wt else ""
-    domains = ", ".join(getattr(wt, "affected_domains", []) or []) if wt else ""
+    domains_list: list[str] = list(getattr(wt, "affected_domains", []) or []) if wt else []
     category = getattr(wt, "category", "") if wt else ""
+    proposition_id = getattr(wt, "proposition_id", None) if wt else None
+    # Attenuation factor (1 - inertia) is the actual fraction of an
+    # impulse that survives the per-chunk merge fold: see
+    # ``_apply_world_trait_chunk_updates`` which folds new snapshots
+    # via ``base + (1-inertia) * (target - base)``.
+    attenuation_factor = max(0.0, min(1.0, 1.0 - inertia))
 
     # Magnitude band colours match the belief-card conviction palette.
     if mag_val < 0.34:
@@ -3119,10 +3125,36 @@ def render_world_trait_state_card(
                             "px-2 py-0.5 rounded-full bg-slate-200 "
                             "text-slate-700 font-mono"
                         )
-                        if domains:
-                            ui.label(domains).classes(
-                                "text-slate-500 truncate"
+                        # Attenuation badge: shows the per-chunk merge-fold
+                        # damping factor so the reader can see at a glance
+                        # how much of an authored impulse will land.
+                        ui.label(f"attn ×{attenuation_factor:.2f}").classes(
+                            "px-2 py-0.5 rounded-full bg-amber-100 "
+                            "text-amber-800 font-mono"
+                        ).tooltip(
+                            "Per-chunk merge-fold attenuation: "
+                            f"value_after = base + {attenuation_factor:.2f} × (target − base). "
+                            "High inertia ⇒ small attenuation factor ⇒ slow movement."
+                        )
+                        if proposition_id:
+                            ui.label(f"⇄ {proposition_id}").classes(
+                                "px-2 py-0.5 rounded-full bg-indigo-100 "
+                                "text-indigo-800 font-mono"
+                            ).tooltip(
+                                f"Linked proposition: {proposition_id}. "
+                                "Pearl-Rung-2 truth clamps on this proposition "
+                                "also shift this world trait."
                             )
+                    # Per-domain chips replace the flat csv text — one
+                    # rounded pill per affected domain so the canonical
+                    # 7-domain set is visually scannable.
+                    if domains_list:
+                        with ui.row().classes("w-full flex-wrap gap-1 text-xs"):
+                            for d in domains_list:
+                                ui.label(d).classes(
+                                    "px-2 py-0.5 rounded-full bg-slate-100 "
+                                    "text-slate-600 font-mono"
+                                )
                     with ui.element("div").classes(
                         "w-full h-2 rounded-full bg-slate-200 overflow-hidden"
                     ):

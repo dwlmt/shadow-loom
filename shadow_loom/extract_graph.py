@@ -325,8 +325,18 @@ def extract_ego_graph_from_memory(
     world_traits_payload: List[dict] = []
     for wt_id, wt in world_state.world_traits.items():
         wt_data = wt.model_dump()
-        if temporal_anchor is not None and wt.state_timeline:
-            reconstructed = reconstruct_world_trait_at(wt, temporal_anchor)
+        if wt.state_timeline:
+            # Resolve at ``temporal_anchor`` when supplied; otherwise pin to
+            # the *latest* snapshot so anchor-less callers (notably shadow
+            # merges and full-world dashboards) see the most recent shifted
+            # value rather than the static baseline. The instantiator's
+            # section H reads this same magnitude when generating
+            # auto-ambient WORLD_ → Entity edges, so anchor-less callers
+            # would otherwise propagate a stale baseline force.
+            target_ft = temporal_anchor
+            if target_ft is None:
+                target_ft = max(int(s.fabula_time) for s in wt.state_timeline)
+            reconstructed = reconstruct_world_trait_at(wt, int(target_ft))
             wt_data["magnitude"] = reconstructed["magnitude"]
             wt_data["description"] = reconstructed["description"]
         world_traits_payload.append(wt_data)

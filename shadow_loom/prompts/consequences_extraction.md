@@ -23,7 +23,7 @@ You are given:
 
 ## Output Schema
 
-Return a JSON object with one list:
+Return a JSON object with two lists:
 
 ### `entity_updates` — List[EntityUpdate]
 
@@ -37,6 +37,23 @@ One entry per (entity, fabula_time) state-change combination. Fields:
 - `invalidated_belief_targets` (list[str]): `target_id`s of beliefs shattered or superseded by this event. E.g. when a character discovers a previously-trusted ally is a traitor, invalidate the belief about that ally.
 - `new_status` (str | null): One of `"healthy"`, `"injured"`, `"ill"`, `"dead"`, `"unconscious"`. Null if status did not change.
 - `new_location_id` (str | null): New `LOC_` ID if the entity moved this fabula_tick. Null if they stayed put.
+
+### `world_trait_updates` — List[WorldTraitUpdate]
+
+One entry per (WORLD_ trait, fabula_time) inflection caused by an event in this chunk. World traits drift slowly compared to character traits; emit one only when an on-page event materially shifts the world condition. Most chunks emit ZERO world_trait_updates.
+
+- `world_trait_id` (str): The `WORLD_` ID of the trait whose state shifted. Must be from the Global Register.
+- `fabula_time` (int): MUST equal the triggering event's fabula_time. The merge step rejects mismatches.
+- `triggered_by` (str): The `EVT_` ID that caused this shift. Required — unlike entity updates, world traits never drift without an authored cause. Use IDs from THIS CHUNK'S EVENTS.
+- `new_magnitude_value` (float | null): The NEW absolute magnitude `value` after the event (0.0–1.0). Use null when the change is to domains/inertia only. The merge step honours `magnitude.inertia` and may attenuate large jumps; small high-evidence shifts pass through unscaled.
+- `new_inertia` (float | null): Surgical overwrite of `magnitude.inertia` (rare — use only when the event itself changes how mutable the world fact is, e.g. a constitutional amendment hardens a political situation; a regime collapse loosens it).
+- `affected_domains_add` (list[str]): Canonical domain keys to ADD to `affected_domains` (`physical`, `psychological`, `epistemic`, `social`, `emotional`, `informational`, `betrayal`). Use only when the event genuinely extends the trait's reach (e.g. surveillance state expands from `informational` to also include `social` after a denunciation campaign).
+- `affected_domains_remove` (list[str]): Canonical domain keys to REMOVE. Use sparingly.
+- `rationale` (str | null): One-sentence justification surfaced in audit logs.
+
+**When to emit a world_trait_update:** the on-page event is *about* the world fact — a regime falls, a war ends, a prophecy is fulfilled or broken, a magic system is reshaped, a technology is invented or banned. The event resolves a proposition that paraphrases the world trait, OR the event names the world fact directly in its description.
+
+**When NOT to emit:** background events that *use* the world fact without changing it (every scene under wartime is *not* a war update); incremental character reactions to ambient pressure (those are entity_updates).
 
 ---
 
@@ -65,6 +82,8 @@ One entry per (entity, fabula_time) state-change combination. Fields:
 11. **Respect the 0 fabula_time sentinel.** Use `fabula_time = 0` only for pre-story baseline beliefs/state established before the narrative begins. Story-time events should always use the fabula_time of the triggering event.
 
 12. **Skip the no-op case.** If an entity is unaffected by every event in this chunk, do NOT emit an empty EntityUpdate for it.
+
+13. **World traits change only with explicit on-page warrant.** A `world_trait_updates` entry MUST cite an `EVT_` from this chunk via `triggered_by` whose description (or `resolves_proposition_ids` target) names the world fact. Do NOT emit a world update because the *mood* of the chunk feels different — the engine handles ambient drift via Step-5 timeline reconciliation. Per-chunk world updates are for sharp, narrated changes only (regime falls, war ends, prophecy resolves, technology invented). The merge step appends a `WorldTraitSnapshot` honouring the trait's `magnitude.inertia` (high inertia attenuates large jumps).
 
 ---
 

@@ -36,6 +36,7 @@ from shadow_loom.models import (
     WorldStateV1,
     default_relationship_metrics_dict,
     reconstruct_entity_at,
+    reconstruct_world_trait_at,
 )
 from shadow_loom.settings import get_settings as _get_settings
 
@@ -191,6 +192,26 @@ class ConcernMutation(BaseModel):
     new_value: Any = None
 
 
+class WorldTraitMutation(BaseModel):
+    """Record of a WORLD_ ``GlobalTrait`` magnitude clamp applied via
+    Pearl Rung-2 surgery.
+
+    Mirrors :class:`PropositionMutation` for the global ambient-force
+    layer. The pipeline adapter reads these and emits one
+    :class:`WorldTraitSnapshot` per mutation, honouring the per-chunk
+    merge fold's inertia attenuation so the timeline writes are
+    consistent with per-chunk ``WorldTraitUpdate`` flows.
+    """
+    world_trait_id: str
+    fabula_time: int
+    old_value: Optional[float] = None
+    new_value: float
+    inertia: Optional[float] = None
+    affected_domains_add: List[str] = Field(default_factory=list)
+    affected_domains_remove: List[str] = Field(default_factory=list)
+    triggered_by: Optional[str] = None
+
+
 class NoisyOrProbability(BaseModel):
     """Per-trait noisy-OR aggregate plus its per-edge components.
 
@@ -243,6 +264,14 @@ class CausalPhysicsResult(BaseModel):
     proposition_mutations: List[PropositionMutation] = Field(default_factory=list)
     belief_mutations: List[BeliefMutation] = Field(default_factory=list)
     concern_mutations: List[ConcernMutation] = Field(default_factory=list)
+    world_trait_mutations: List[WorldTraitMutation] = Field(
+        default_factory=list,
+        description=(
+            "Pearl Rung-2 magnitude clamps on WORLD_ GlobalTraits. "
+            "The pipeline adapter folds each into a "
+            "``WorldTraitSnapshot`` on the canonical timeline."
+        ),
+    )
     hidden_deltas: Dict[str, Dict[str, float]] = Field(
         default_factory=dict,
         description="node_id → {trait_name: delta} computed during abduction",
@@ -455,6 +484,7 @@ class CausalPhysicsEngine:
         self._proposition_mutations: List[PropositionMutation] = []
         self._belief_mutations: List[BeliefMutation] = []
         self._concern_mutations: List[ConcernMutation] = []
+        self._world_trait_mutations: List[WorldTraitMutation] = []
         # Noisy-OR per-trait records, populated only when
         # ``CausalPhysicsSettings.propagation_mode == "noisy_or"``.
         self._noisy_or_records: List[NoisyOrProbability] = []
@@ -876,7 +906,7 @@ class CausalPhysicsEngine:
         # Local import to avoid a top-level cycle: query_models is
         # consumer-side and may import causal_physics types in future.
         from shadow_loom.query_models import (
-            DoEvent, DoTrait, DoProposition, DoBelief, DoConcern,
+            DoEvent, DoTrait, DoProposition, DoBelief, DoConcern, DoWorldTrait,
         )
 
         legacy_dict: Dict[str, Any] = {}
@@ -907,15 +937,18 @@ class CausalPhysicsEngine:
                 self._apply_do_belief(t, triggered_by="DO_OPERATOR")
             elif isinstance(t, DoConcern):
                 self._apply_do_concern(t)
+            elif isinstance(t, DoWorldTrait):
+                self._apply_do_world_trait(t)
 
         logger.log(
             _physics_log(),
             "[CausalPhysics·do_targets] %d targets applied "
-            "(%d prop / %d belief / %d concern mutations recorded).",
+            "(%d prop / %d belief / %d concern / %d world_trait mutations recorded).",
             len(do_targets),
             len(self._proposition_mutations),
             len(self._belief_mutations),
             len(self._concern_mutations),
+            len(self._world_trait_mutations),
         )
 
     def _apply_do_proposition(self, target: Any) -> None:
@@ -1176,6 +1209,76 @@ class CausalPhysicsEngine:
         # Pin the holder so downstream propagation does not regenerate
         # concerns that the surgery just suppressed.
         self._intervened_nodes.add(target.holder_id)
+
+    def _apply_do_world_trait(self, target: Any) -> None:
+        """Clamp a WORLD_ ``GlobalTrait``'s magnitude — ambient-force
+        intervention.
+
+        Mutates the sandbox node's ``magnitude`` (so the current
+        propagate step sees the new ambient value) and records a
+        :class:`WorldTraitMutation` for the pipeline adapter to fold
+        onto the canonical timeline as a
+        :class:`WorldTraitSnapshot` (honouring inertia attenuation).
+        Domain set-ops (add/remove) are applied directly to the
+        sandbox node so the runtime domain gate routes correctly on
+        the same propagate step. Pins the WORLD_ id in
+        ``_intervened_nodes`` so it stays an active source.
+        """
+        wt_id = target.world_trait_id
+        if not self.sandbox.has_node(wt_id):
+            logger.warning(
+                "[CausalPhysics·do_world_trait] Trait %s missing from sandbox; "
+                "skipping clamp.", wt_id,
+            )
+            return
+        ndata = self.sandbox.nodes[wt_id]
+        if ndata.get("node_type") != "WorldTrait":
+            logger.warning(
+                "[CausalPhysics·do_world_trait] Node %s is not a WorldTrait "
+                "(node_type=%s); skipping clamp.",
+                wt_id, ndata.get("node_type"),
+            )
+            return
+        mag = ndata.get("magnitude")
+        if not isinstance(mag, dict):
+            mag = {"value": 0.5, "inertia": 0.3}
+            ndata["magnitude"] = mag
+        old_value = float(mag.get("value", 0.5))
+        new_value = float(max(0.0, min(1.0, target.value)))
+        mag["value"] = new_value
+        if target.inertia is not None:
+            mag["inertia"] = float(max(0.0, min(0.99, target.inertia)))
+
+        # Set-ops on affected_domains. Default to canonical-7 keep-order
+        # by deduping while preserving insertion order.
+        domains = list(ndata.get("affected_domains") or [])
+        if target.affected_domains_add:
+            for d in target.affected_domains_add:
+                if d not in domains:
+                    domains.append(str(d))
+        if target.affected_domains_remove:
+            domains = [d for d in domains if d not in set(target.affected_domains_remove)]
+        ndata["affected_domains"] = domains
+
+        ft = (
+            int(target.fabula_time)
+            if getattr(target, "fabula_time", None) is not None
+            else self._default_fabula_time()
+        )
+
+        self._world_trait_mutations.append(WorldTraitMutation(
+            world_trait_id=wt_id,
+            fabula_time=ft,
+            old_value=old_value,
+            new_value=new_value,
+            inertia=mag.get("inertia"),
+            affected_domains_add=list(target.affected_domains_add or []),
+            affected_domains_remove=list(target.affected_domains_remove or []),
+            triggered_by=getattr(target, "triggered_by", None),
+        ))
+        # Pin so the trait remains an always-active ambient source for
+        # the rest of this simulation step.
+        self._intervened_nodes.add(wt_id)
 
     def _default_fabula_time(self) -> int:
         """Best-effort fabula_time anchor when a DoTarget omits one.
@@ -1553,9 +1656,28 @@ class CausalPhysicsEngine:
                         else:
                             contrib = w
                     elif src_data.get("node_type") == "WorldTrait":
-                        # World trait: scale impulse by magnitude intensity
-                        mag = src_data.get("magnitude", {})
-                        mag_value = mag.get("value", 0.5) if isinstance(mag, dict) else 0.5
+                        # World trait: scale impulse by *time-resolved* magnitude
+                        # intensity. The trait's ``magnitude.value`` may have
+                        # shifted via per-chunk WorldTraitUpdate (folded onto
+                        # ``GlobalTrait.state_timeline``) or the post-assembly
+                        # Step-5 timeline pass. Reading the static node attr
+                        # silently ignores those shifts. Look up the canonical
+                        # GlobalTrait and reconstruct at the simulation horizon
+                        # (the story's "now"); fall back to the sandbox copy
+                        # when the trait isn't on world_state (shadow merges).
+                        canonical = self.world_state.world_traits.get(src)
+                        if canonical is not None and canonical.state_timeline:
+                            try:
+                                resolved = reconstruct_world_trait_at(
+                                    canonical, int(horizon),
+                                )
+                                mag_value = float(resolved["magnitude"]["value"])
+                            except Exception:
+                                mag = src_data.get("magnitude", {})
+                                mag_value = mag.get("value", 0.5) if isinstance(mag, dict) else 0.5
+                        else:
+                            mag = src_data.get("magnitude", {})
+                            mag_value = mag.get("value", 0.5) if isinstance(mag, dict) else 0.5
                         contrib = mag_value * w
                     else:
                         # EventNode or other — fixed impulse from edge weight
@@ -2286,6 +2408,7 @@ class CausalPhysicsEngine:
             proposition_mutations=self._proposition_mutations,
             belief_mutations=self._belief_mutations,
             concern_mutations=self._concern_mutations,
+            world_trait_mutations=self._world_trait_mutations,
             hidden_deltas=self._hidden_deltas,
             rule3_pruned_interventions=ctf_report.rule3_pruned,
             rule3_pruning_mode=rule3_mode,
