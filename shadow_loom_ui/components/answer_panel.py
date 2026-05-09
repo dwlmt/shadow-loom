@@ -143,14 +143,14 @@ def _render_card(
                 help_popover(
                     title="Answer panel — read-only Q&A responses",
                     body_md=(
-                        "Surfaces the latest **Ask** or"
-                        " **Interrogation** result. These modes are"
-                        " read-only: they query the world model without"
-                        " generating prose or saving a version, so the"
-                        " Story tab and version tree stay unchanged.\n\n"
+                        "Surfaces the latest **Interrogation** result."
+                        " Interrogation is read-only: it queries the"
+                        " world model without generating prose or"
+                        " saving a version, so the Story tab and"
+                        " version tree stay unchanged.\n\n"
                         "### Card layout\n"
-                        "- **Mode badge** — *Ask* (general Q&A) or"
-                        " *Interrogation* (diagnostic causal Q&A).\n"
+                        "- **Mode badge** — *Interrogation*"
+                        " (diagnostic causal Q&A).\n"
                         "- **Confidence** — how well the world state"
                         " supports the claim.\n"
                         "  - 🟢 **Green ≥ 70%** — directly stated in"

@@ -298,7 +298,8 @@ class ExtractionSettings(BaseSettings):
     validation_payload_max_chars: int = Field(default=200_000)
     correction_subgraph_threshold_chars: int = Field(default=120_000)
     max_concurrent_chunks: int = Field(default=12)
-    per_chunk_timeout_seconds: float = Field(default=1200.0)
+    per_chunk_timeout_seconds: float = Field(default=0.0)
+    per_agent_call_timeout_seconds: float = Field(default=600.0)
     estimated_events_per_chunk: int = Field(default=10)
     enable_consequences_agent: bool = Field(default=True)
     chunk_consistency_audit: bool = Field(
@@ -1053,6 +1054,7 @@ class Settings:
             "correction_subgraph_threshold_chars": self.extraction.correction_subgraph_threshold_chars,
             "max_concurrent_chunks": self.extraction.max_concurrent_chunks,
             "per_chunk_timeout_seconds": self.extraction.per_chunk_timeout_seconds,
+            "per_agent_call_timeout_seconds": self.extraction.per_agent_call_timeout_seconds,
             "estimated_events_per_chunk": self.extraction.estimated_events_per_chunk,
             "enable_consequences_agent": self.extraction.enable_consequences_agent,
             "chunk_consistency_audit": self.extraction.chunk_consistency_audit,

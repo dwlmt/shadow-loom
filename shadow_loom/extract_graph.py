@@ -718,6 +718,7 @@ def extract_topology_from_prose(
     branch_world_id: Literal["factual", "shadow"] = "factual",
     branch_label: Optional[str] = None,
     preceding_prose: Optional[str] = None,
+    engine_priors: Optional[str] = None,
 ) -> "ChunkTopology":
     """Extract graph topology from generated prose using the existing physics + social agents.
 
@@ -835,6 +836,24 @@ def extract_topology_from_prose(
             f"re-extract events from this block) ===\n{snippet}\n\n"
             f"=== NEW PROSE TO EXTRACT FROM ===\n"
         )
+    if engine_priors:
+        # Engine-declared mutations / social shifts / sandbox spawns
+        # are deterministic priors produced by the CausalPhysicsEngine
+        # (rung-2 intervention, rung-3 abduction, directive
+        # plausibility check). Surface them so the Physics agent
+        # extracts events that are CONSISTENT with what the engine
+        # already declared, rather than re-deriving an alternate
+        # interpretation from prose alone. Without this hint, prose
+        # that softly verbalises a hard mutation (e.g. "Anakin's anger
+        # finally cracked his discipline") is often mis-extracted as
+        # a single mood beat rather than as the trait-flip the engine
+        # asserted.
+        physics_msg += (
+            f"\n=== ENGINE PRIORS (deterministic ground truth from "
+            f"the causal engine \u2014 align your event extraction with "
+            f"these; do NOT contradict them) ===\n{engine_priors}\n\n"
+            f"=== END ENGINE PRIORS ===\n\n"
+        )
     physics_msg += prose
 
     # --- Physics extraction (events + causal + spatial + entity_updates) ---
@@ -889,6 +908,13 @@ def extract_topology_from_prose(
         social_msg_parts.append(
             f"\n=== STORY SO FAR (prior prose for continuity \u2014 do NOT "
             f"re-extract channels/utterances/edges from this block) ===\n{snippet}"
+        )
+    if engine_priors:
+        social_msg_parts.append(
+            f"\n=== ENGINE PRIORS (deterministic ground truth from the "
+            f"causal engine \u2014 align relationship metrics and any new "
+            f"utterances with these; do NOT contradict them) ===\n"
+            f"{engine_priors}\n=== END ENGINE PRIORS ==="
         )
     social_msg_parts.append(f"\nORIGINAL TEXT:\n{prose}")
     social_msg = "\n".join(social_msg_parts)

@@ -2814,11 +2814,15 @@ The \textsc{Reasoning} tab
 (\texttt{components/reasoning\_tab.py}) is where queries are
 typed and where intervention / counterfactual traces are
 inspected. The chat box accepts natural-language queries that are
-parsed into one of the eight typed query objects
+parsed into one of the typed query objects
 (\texttt{ObservationQuery}, \texttt{InterventionQuery},
 \texttt{CounterfactualQuery}, \texttt{DirectiveQuery},
-\texttt{InterrogationQuery}, \texttt{GeneralQuery},
-\texttt{ManualEditQuery}, \texttt{EvaluationQuery}).
+\texttt{InterrogationQuery},
+\texttt{ManualEditQuery}, \texttt{EvaluationQuery}; a
+\texttt{GeneralQuery} fallback type also exists in the codebase
+but is no longer surfaced as an explicit chat mode \textemdash{}
+free-form questions are routed through
+\texttt{InterrogationQuery} instead).
 Write-mode queries route their result into this tab, where
 \texttt{reasoning\_helpers.py} formats the
 \texttt{CausalPhysicsResult}: each mutation is shown with its
@@ -2826,8 +2830,8 @@ $(I, \iota, \Delta)$ triple, each blocked propagation with the
 reason (inertia, affordance, spatial), each abduction back-fill
 with the evidence weight, and any hidden deltas with the
 syuzhet window in which they will be revealed.
-Read-mode queries (\texttt{InterrogationQuery},
-\texttt{GeneralQuery}) skip this tab entirely: they are dispatched
+Read-mode queries (\texttt{InterrogationQuery}) skip this tab
+entirely: they are dispatched
 through \texttt{shadow\_loom/answer.py} and surface in the
 dedicated \emph{Answer panel} above the chat bar
 (\texttt{components/answer\_panel.py}) as a card with the model's

@@ -94,12 +94,15 @@ in sequence (Step 3a → 3b → 3c). Consequences depends on Social's
 extracted utterance events and channels for belief provenance, so the
 two run sequentially within a chunk; chunk-level parallelism (gated by
 `ExtractionConfig.max_concurrent_chunks`, default 12) provides the
-throughput. A per-chunk soft timeout
-(`ExtractionConfig.per_chunk_timeout_seconds`, default `600` s) wraps
-the entire Socratic→Physics→Social→Consequences chain in
-`asyncio.wait_for`; a wedged LLM call is cancelled and that chunk
-yields an empty `ChunkTopology` (with all stage flags marked failed) so
-the rest of the run can proceed. Set to `0` to disable.
+throughput. A per-agent-call soft timeout
+(`ExtractionConfig.per_agent_call_timeout_seconds`, default `600` s) wraps
+each `X_agent.run(...)` call (Socratic / Physics / Social /
+Consequences / Affect, plus all chunk-level retries) in
+`asyncio.wait_for`; on timeout only the wedged call is cancelled and
+the surrounding per-stage `try/except` records the failure so the next
+stage still runs on whatever earlier stages produced. The legacy
+whole-chunk timeout (`per_chunk_timeout_seconds`, off by default) is
+retained as an outer last-resort guard. Set either to `0` to disable.
 
 | Step | Agent | Output | Prompt |
 |---|---|---|---|

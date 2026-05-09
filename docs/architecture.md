@@ -138,7 +138,7 @@ proposition / concern, emitting `PropositionSnapshot`s,
 are extracted in parallel under an `asyncio.Semaphore` gated by
 `ExtractionConfig.max_concurrent_chunks` (default `12`); each chunk's
 entire Socratic→Physics→Social→Consequences chain is wrapped in
-`asyncio.wait_for(timeout=ExtractionConfig.per_chunk_timeout_seconds)`
+`asyncio.wait_for(timeout=ExtractionConfig.per_agent_call_timeout_seconds)`
 (default `600` s, `0` disables) so a wedged LLM call is cancelled
 rather than holding the slot indefinitely. Each agent's output
 validator runs a **sanitiser layer** that clamps numeric ranges, drops

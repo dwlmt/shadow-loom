@@ -596,6 +596,19 @@ class ExtractionConfig(BaseModel):
             "deliberate flashbacks via negative fabula_time."
         ),
     )
+    actorless_choice_retry: bool = Field(
+        default=True,
+        description=(
+            "When true, a chunk that produced any ``event_type=choice`` "
+            "event with empty ``actor_ids`` triggers a single Physics "
+            "retry naming the offending event ids and asking the agent "
+            "to fill in the decider(s) or downgrade the event_type to "
+            "``outcome`` / ``revelation``. Same shape as the anon "
+            "retry; closes the gap where the post-hoc EventNode "
+            "validator only warned about actorless choices instead of "
+            "asking for a corrective re-extraction."
+        ),
+    )
     second_drift_pass: bool = Field(
         default=False,
         description=(
@@ -683,16 +696,33 @@ class ExtractionConfig(BaseModel):
         "a value of 0 would create ``asyncio.Semaphore(0)`` and hang every chunk.",
     )
     per_chunk_timeout_seconds: float = Field(
-        default=1200.0,
+        default=0.0,
         ge=0,
-        description="Per-chunk soft timeout (seconds) for the entire "
-        "Socratic\u2192Physics\u2192Social\u2192Consequences pipeline on a "
-        "single chunk. When >0, a wedged LLM call is cancelled and that "
-        "chunk yields an empty ChunkTopology so the rest of the run can "
-        "proceed; the chunk's stage flags are all set to 1 so the "
-        ">50%-of-chunks failure threshold still triggers if many chunks "
-        "time out. Default 1200s (20 min) accommodates slow local models "
-        "with multiple retries; set to 0 to disable.",
+        description="Outer per-chunk safety timeout (seconds) wrapping "
+        "the entire Socratic\u2192Physics\u2192Social\u2192Consequences "
+        "pipeline on a single chunk. **Off by default** \u2014 prefer "
+        "the finer-grained ``per_agent_call_timeout_seconds`` which "
+        "cancels just the wedged agent call and lets retries / "
+        "subsequent stages proceed. Set this >0 only as an outer "
+        "guard against pathological loops in the chunk-level retry "
+        "helpers themselves.",
+    )
+    per_agent_call_timeout_seconds: float = Field(
+        default=600.0,
+        ge=0,
+        description="Per-agent-call soft timeout (seconds). Each "
+        "``X_agent.run(...)`` invocation inside the per-chunk pipeline "
+        "(Socratic, Physics, Social, Consequences, Affect, plus all "
+        "chunk-level retries: anon / actorless-choice / scaffold-drift "
+        "/ fabula-monotonicity / channel-resync / parity / etc.) is "
+        "wrapped in ``asyncio.wait_for``. On timeout the call raises "
+        "``asyncio.TimeoutError`` and the surrounding try/except for "
+        "that specific stage records the failure and continues with "
+        "the next stage instead of voiding the whole chunk. Default "
+        "600s (10 min) is generous for slow providers; set to 0 to "
+        "disable per-call wrapping. This replaces the legacy whole-"
+        "chunk timeout \u2014 a single wedged agent no longer wipes "
+        "out the other stages' work.",
     )
     estimated_events_per_chunk: int = Field(
         default=10,
@@ -3990,6 +4020,33 @@ def _physics_anonymous_events(physics: "PhysicsExtraction") -> List[str]:
     return bad
 
 
+def _physics_actorless_choices(physics: "PhysicsExtraction") -> List[str]:
+    """Return the IDs of ``choice`` events that have empty ``actor_ids``.
+
+    A ``choice`` event models a deliberate decision and per the prompt
+    contract MUST name at least one decider. The post-hoc
+    :class:`EventNode` model validator only logs a warning for these
+    cases (so legitimate test fixtures and rare narrator-choice edge
+    cases stay constructible), which means a default extraction quietly
+    persists actorless choices and the warning surfaces only after the
+    chunk has already been merged. Detecting them here lets the chunk
+    loop trigger a corrective Physics retry while the agent context is
+    still hot, mirroring the existing anon / scaffold-drift / fabula-
+    monotonicity retries.
+
+    The Star Wars Kimi audit produced ~30 actorless choices per run
+    (events like ``EVT_LUKE_JOINS_DEATH_STAR_ATTACK`` and
+    ``EVT_HAN_RETURNS_TO_SAVE_LUKE`` whose IDs already encoded the
+    decider in the slug but whose ``actor_ids`` was an empty list).
+    Almost every case the LLM corrects on a single targeted retry.
+    """
+    bad: List[str] = []
+    for e in physics.events:
+        if e.event_type == "choice" and not (e.actor_ids or []):
+            bad.append(e.id)
+    return bad
+
+
 def _physics_missing_mutation_social(
     physics: "PhysicsExtraction",
     social: "SocialExtraction",
@@ -4446,6 +4503,44 @@ def _merge_anonymous_retry(
     return _merge_physics_retry(base_with_new_events, retry)
 
 
+def _merge_actorless_choice_retry(
+    base: "PhysicsExtraction",
+    retry: "PhysicsExtraction",
+) -> "PhysicsExtraction":
+    """Variant of :func:`_merge_anonymous_retry` for the actorless-choice
+    retry. Only patches ``actor_ids`` on matching ``choice`` events and
+    preserves every other field, then defers to
+    :func:`_merge_physics_retry` so any new/extended causal/spatial
+    edges the retry produced still merge in.
+    """
+    new_events: List["EventNode"] = []
+    seen_ids: set[str] = set()
+    retry_by_id = {r.id: r for r in retry.events}
+    for e in base.events:
+        retry_e = retry_by_id.get(e.id)
+        base_actorless_choice = (
+            e.event_type == "choice" and not (e.actor_ids or [])
+        )
+        if (
+            retry_e is not None
+            and base_actorless_choice
+            and (retry_e.actor_ids or [])
+        ):
+            new_events.append(
+                e.model_copy(update={"actor_ids": retry_e.actor_ids})
+            )
+        else:
+            new_events.append(e)
+        seen_ids.add(e.id)
+    for r in retry.events:
+        if r.id not in seen_ids:
+            new_events.append(r)
+            seen_ids.add(r.id)
+
+    base_with_new_events = base.model_copy(update={"events": new_events})
+    return _merge_physics_retry(base_with_new_events, retry)
+
+
 def _merge_consequences_retry(
     base: "ConsequencesExtraction",
     retry: "ConsequencesExtraction",
@@ -4858,7 +4953,13 @@ def _extraction_fingerprint(config: "ExtractionConfig") -> str:
     # Optional fields added by later fixes — tolerate absence on older
     # ExtractionConfig instances.
     for f in ("max_chunk_chars", "enable_chunk_carry_over",
-              "scaffold_drift_retry", "fabula_monotonicity_retry"):
+              "scaffold_drift_retry", "fabula_monotonicity_retry",
+              "actorless_choice_retry",
+              "per_agent_call_timeout_seconds"):
+        # Note: per_agent_call_timeout_seconds is included because a
+        # checkpoint produced under a tight timeout may have stage
+        # failures baked in (empty topology for the wedged stage);
+        # rerunning with a more generous timeout should re-extract.
         if hasattr(config, f):
             parts.append(f"{f}={getattr(config, f)!r}")
     try:
@@ -5637,6 +5738,47 @@ async def _extract_single_chunk_async(
     failure_flags: Dict[str, int] = {"physics": 0, "social": 0, "consequences": 0}
     stage_errors: Dict[str, str] = {}
 
+    # Per-agent-call timeout. Each X_agent.run(...) inside this
+    # function is wrapped in asyncio.wait_for via a thin proxy so the
+    # 30+ call sites below need no per-site change. On timeout the
+    # call raises asyncio.TimeoutError, which the existing per-stage
+    # try/except catches and records as the stage's failure cause \u2014
+    # subsequent stages still run on whatever the earlier stages
+    # produced (rather than the whole chunk being voided as before).
+    _call_timeout = getattr(config, "per_agent_call_timeout_seconds", 0) or 0
+    if _call_timeout > 0:
+
+        class _TimeoutAgent:
+            __slots__ = ("_agent", "_timeout", "_label")
+
+            def __init__(self, agent: Agent, label: str) -> None:
+                self._agent = agent
+                self._timeout = _call_timeout
+                self._label = label
+
+            async def run(self, *args, **kwargs):
+                try:
+                    return await asyncio.wait_for(
+                        self._agent.run(*args, **kwargs),
+                        timeout=self._timeout,
+                    )
+                except asyncio.TimeoutError as exc:
+                    raise asyncio.TimeoutError(
+                        f"{self._label}_agent.run did not complete within "
+                        f"{self._timeout:.0f}s (per_agent_call_timeout_seconds)"
+                    ) from exc
+
+            def __getattr__(self, name: str):
+                return getattr(self._agent, name)
+
+        socratic_agent = _TimeoutAgent(socratic_agent, "socratic")  # type: ignore[assignment]
+        physics_agent = _TimeoutAgent(physics_agent, "physics")  # type: ignore[assignment]
+        social_agent = _TimeoutAgent(social_agent, "social")  # type: ignore[assignment]
+        if consequences_agent is not None:
+            consequences_agent = _TimeoutAgent(consequences_agent, "consequences")  # type: ignore[assignment]
+        if affect_agent is not None:
+            affect_agent = _TimeoutAgent(affect_agent, "affect")  # type: ignore[assignment]
+
     fingerprint = _extraction_fingerprint(config)
 
     # Tier 3 #11 + audit fix #4/#5: try checkpoint before any agent calls.
@@ -5815,6 +5957,61 @@ async def _extract_single_chunk_async(
         except Exception:
             logger.exception(
                 "[Step 3a·Async] Chunk %d anon retry FAILED.", i + 1,
+            )
+
+    # Actorless-choice retry (async). A ``choice`` event MUST name a
+    # decider per the prompt contract, but the post-hoc EventNode
+    # validator only warns rather than raising (so test fixtures and
+    # rare narrator-choice edge cases stay constructible). That meant
+    # the LLM's structured output was accepted, the warning surfaced
+    # only after the chunk had already been merged, and there was no
+    # corrective retry. We catch them here while the agent context is
+    # still hot — same shape as the anon retry above.
+    actorless_ids = _physics_actorless_choices(physics)
+    if actorless_ids and config.actorless_choice_retry:
+        sample = actorless_ids[:6]
+        logger.info(
+            "[Step 3a\u00b7Async] Chunk %d: %d actorless choice event(s) "
+            "(event_type=choice with empty actor_ids): %s\u2026 \u2014 "
+            "retrying with decider emphasis \u2026",
+            i + 1, len(actorless_ids), sample,
+        )
+        actorless_msg = (
+            "IMPORTANT: The previous extraction produced "
+            f"{len(actorless_ids)} event(s) with event_type=\"choice\" "
+            f"but EMPTY actor_ids: {sample}. Every choice event MUST "
+            "name at least one ENT_ in actor_ids \u2014 a deliberate "
+            "decision requires a decider. Re-emit those events with "
+            "the on-page decider(s) filled in, keeping the SAME id "
+            "and fabula_time so the merge step replaces the actorless "
+            "version. If after re-reading the chunk you cannot "
+            "identify any decider, change event_type to "
+            "\"outcome\" (consequence) or \"revelation\" (narrator-side "
+            "disclosure) instead \u2014 do NOT leave actor_ids empty on "
+            "a choice event.\n\n" + physics_msg
+        )
+        try:
+            actorless_result = await physics_agent.run(
+                actorless_msg, deps=physics_deps, **_user_kwargs(),
+            )
+            actorless_physics = actorless_result.output
+            merged_actorless = _merge_actorless_choice_retry(
+                physics, actorless_physics,
+            )
+            new_actorless = _physics_actorless_choices(merged_actorless)
+            if len(new_actorless) < len(actorless_ids):
+                physics = merged_actorless
+                logger.info(
+                    "[Step 3a\u00b7Async] Chunk %d: actorless-choice "
+                    "retry covered %d/%d actorless choice event(s).",
+                    i + 1,
+                    len(actorless_ids) - len(new_actorless),
+                    len(actorless_ids),
+                )
+        except Exception:
+            logger.exception(
+                "[Step 3a\u00b7Async] Chunk %d actorless-choice retry FAILED.",
+                i + 1,
             )
 
     # Collapse duplicate events from multi-pass extraction.
@@ -10178,6 +10375,206 @@ def _programmatic_validation(ws: WorldStateV1) -> List[ValidationIssue]:
     # --- Dead-actor validation ---
     issues.extend(_validate_dead_actors(ws))
 
+    # --- Orphan-event validation ---
+    issues.extend(_validate_orphan_events(ws))
+
+    # --- Entity status / state_timeline coherence ---
+    issues.extend(_validate_entity_status_coherence(ws))
+
+    # --- Orphan-proposition validation ---
+    issues.extend(_validate_orphan_propositions(ws))
+
+    return issues
+
+
+def _validate_orphan_events(ws: WorldStateV1) -> List[ValidationIssue]:
+    """Flag events that participate in zero causal edges.
+
+    An event with no incoming and no outgoing causal edge is functionally
+    invisible to the physics engine — counterfactual abduction d-separates
+    it from every other node, and the suspense/irony surfaces fall back to
+    the orphan-event prior (``_SUSPENSE_ORPHAN_EVENT_PROB`` ≈ 0.25). This
+    is the right fallback for a *handful* of one-shot scenic beats, but in
+    practice every plot-relevant event should sit in some chain. A high
+    orphan ratio means the extractor wrote down beats it never wired up,
+    and the correction loop should propose ``add_causal_edges`` to attach
+    them. We emit warnings (not errors) because the engine still runs;
+    the signal is for the auditor / correction agent to spot extraction
+    incompleteness.
+    """
+    issues: List[ValidationIssue] = []
+    if not ws.events:
+        return issues
+
+    in_count: dict[str, int] = {e.id: 0 for e in ws.events}
+    out_count: dict[str, int] = {e.id: 0 for e in ws.events}
+    for ce in ws.causal_topology:
+        if ce.source_id in out_count:
+            out_count[ce.source_id] += 1
+        if ce.target_id in in_count:
+            in_count[ce.target_id] += 1
+
+    orphans = [e.id for e in ws.events if in_count[e.id] == 0 and out_count[e.id] == 0]
+    if not orphans:
+        return issues
+
+    # Soft cap on per-event lines to keep the report readable; the
+    # correction agent only needs a few exemplars to start fixing.
+    sample = orphans[:25]
+    for eid in sample:
+        issues.append(ValidationIssue(
+            severity="warning", category="orphan_event",
+            detail=(
+                f"Event '{eid}' has no incoming or outgoing causal edges. "
+                f"Either wire it into causal_topology with at least one "
+                f"chain_reaction / mutation / mutation_social / "
+                f"affordance_gate edge, or drop it via drop_event_ids if "
+                f"it is genuinely scenic filler with no narrative "
+                f"consequence."
+            ),
+        ))
+    if len(orphans) > len(sample):
+        issues.append(ValidationIssue(
+            severity="warning", category="orphan_event",
+            detail=(
+                f"... plus {len(orphans) - len(sample)} more orphan events "
+                f"({len(orphans)} of {len(ws.events)} total — "
+                f"{100*len(orphans)/max(1,len(ws.events)):.0f}%). High "
+                f"orphan ratio is a strong signal that extraction left "
+                f"causal chains incomplete; consider an axis-coverage retry."
+            ),
+        ))
+    return issues
+
+
+def _validate_entity_status_coherence(ws: WorldStateV1) -> List[ValidationIssue]:
+    """Flag entities whose ``status`` disagrees with their state_timeline.
+
+    Two failure modes we observed in the wild and want to surface so the
+    correction agent can fix them via ``update_entity_status`` /
+    ``update_state_timeline``:
+
+    1. **Initial status says 'dead' but no death event exists** — usually
+       the extractor inferred the entity died off-page (a backstory
+       killing) without emitting the event itself. The downstream
+       physics engine then has a dead actor with no death timestamp,
+       which breaks ``_validate_dead_actors``' fabula-ordering check
+       (because ``death_times`` stays empty, every reference looks fine).
+    2. **Initial status says 'healthy' but a state_timeline snapshot
+       later flips status to 'dead'** — fine in itself, BUT if there is
+       *no* event in causal_topology that targets this entity at the
+       same fabula_time as the death snapshot, the death is unanchored
+       and the propagation engine will treat the entity as still alive
+       throughout the simulation.
+    """
+    issues: List[ValidationIssue] = []
+    if not ws.entities or not ws.events:
+        return issues
+
+    death_target_times: dict[str, list[int]] = {}
+    for evt in ws.events:
+        for tid in evt.target_ids:
+            if tid in ws.entities:
+                death_target_times.setdefault(tid, []).append(evt.fabula_time)
+
+    for eid, ent in ws.entities.items():
+        last_status = ent.status
+        last_status_time = None
+        for snap in ent.state_timeline:
+            if snap.status is not None:
+                if last_status_time is None or snap.fabula_time >= last_status_time:
+                    last_status = snap.status
+                    last_status_time = snap.fabula_time
+
+        # Case (1): initial status='dead' but no event ever targets this entity.
+        if ent.status == "dead" and eid not in death_target_times:
+            issues.append(ValidationIssue(
+                severity="warning", category="status_no_death_event",
+                detail=(
+                    f"Entity '{eid}' has initial status='dead' but no "
+                    f"event in causal_topology targets them. Either emit "
+                    f"a death event (outcome with target_ids=['{eid}']) "
+                    f"and wire it in, or revise the initial status to "
+                    f"'healthy' if the entity is alive at the start of "
+                    f"the narrative."
+                ),
+            ))
+
+        # Case (2): timeline flips to 'dead' without an anchoring event
+        # at the same (or earlier) fabula_time targeting this entity.
+        if last_status == "dead" and last_status_time is not None and ent.status != "dead":
+            anchors = [t for t in death_target_times.get(eid, []) if t <= last_status_time]
+            if not anchors:
+                issues.append(ValidationIssue(
+                    severity="warning", category="unanchored_death_snapshot",
+                    detail=(
+                        f"Entity '{eid}' state_timeline ends with "
+                        f"status='dead' at fabula={last_status_time} but "
+                        f"no event at or before that fabula_time targets "
+                        f"them. Add an outcome event with "
+                        f"target_ids=['{eid}'] anchoring the death."
+                    ),
+                ))
+
+    return issues
+
+
+def _validate_orphan_propositions(ws: WorldStateV1) -> List[ValidationIssue]:
+    """Flag PROP_s that are never referenced anywhere.
+
+    A proposition is meaningful only if some agent holds a belief or
+    concern about it, some utterance asserts/denies it, or some event
+    resolves it. PROP_s with zero references add storage and reasoning
+    cost without contributing to the model — usually they are leftover
+    catalogue entries from earlier passes that were never wired up.
+    """
+    issues: List[ValidationIssue] = []
+    if not ws.propositions:
+        return issues
+
+    referenced: set[str] = set()
+    for ent in ws.entities.values():
+        for b in ent.beliefs:
+            if b.proposition_id:
+                referenced.add(b.proposition_id)
+        for c in ent.concerns:
+            if c.proposition_id:
+                referenced.add(c.proposition_id)
+    for evt in ws.events:
+        if evt.asserts_proposition_id:
+            referenced.add(evt.asserts_proposition_id)
+        if evt.denies_proposition_id:
+            referenced.add(evt.denies_proposition_id)
+        for pid in evt.resolves_proposition_ids:
+            referenced.add(pid)
+
+    orphans = [p.proposition_id for p in ws.propositions if p.proposition_id not in referenced]
+    if not orphans:
+        return issues
+
+    sample = orphans[:20]
+    for pid in sample:
+        issues.append(ValidationIssue(
+            severity="warning", category="orphan_proposition",
+            detail=(
+                f"Proposition '{pid}' is in the catalogue but no entity "
+                f"believes/fears it, no event asserts/denies/resolves it. "
+                f"Wire it to ≥1 belief/concern/event (use "
+                f"set_belief_proposition_ids on an existing belief, or "
+                f"add_concerns referencing this PROP_, or set "
+                f"asserts_proposition_id on a relevant utterance via "
+                f"update_event_fields)."
+            ),
+        ))
+    if len(orphans) > len(sample):
+        issues.append(ValidationIssue(
+            severity="warning", category="orphan_proposition",
+            detail=(
+                f"... plus {len(orphans) - len(sample)} more orphan "
+                f"propositions ({len(orphans)} of {len(ws.propositions)} "
+                f"total)."
+            ),
+        ))
     return issues
 
 
@@ -12999,6 +13396,247 @@ def validate_world_state(
         merged.is_valid, len(merged.issues),
     )
     return merged
+
+
+# =====================================================================
+# Continuation Quality Bridge
+# =====================================================================
+#
+# When generated continuation prose (rung-1 / rung-2 / rung-3 / directive
+# / manual-edit) is parsed back into topology and folded into the parent
+# world via ``VersionedWorldModel.merge``, the resulting world state was
+# historically persisted *without* running the same auto-repair +
+# programmatic-validation + LLM-correction loop that raw-text ingestion
+# applies. That meant orphan events, dangling ids, retrograde
+# fabula_times, dead actors emitting events, and other structural
+# regressions could silently land on the canonical (or shadow) branch.
+#
+# ``validate_and_correct_world_state_async`` exposes that quality stack
+# as a reusable async helper. It is a slice of ``run_extraction_async``
+# from the auto-repair line through the correction retry loop and the
+# final-pass validation snapshot — no per-chunk extraction, no
+# ontology/affect/research re-passes, just the validation + correction
+# block. Callers are expected to have *already* assembled the world
+# state (via ``run_extraction_async`` for raw text or
+# ``extract_topology_from_prose`` + ``vwm.merge`` for continuation
+# prose); this helper turns it into a validated world state with the
+# same guarantees the ingestion pipeline gives.
+#
+# Returns ``(corrected_ws, report)``. The ``report`` is a
+# ``ValidationReport`` whose ``repairs`` field aggregates auto-repair
+# and correction-agent change logs across every iteration. When
+# ``report.is_valid`` is False the caller's quarantine policy decides
+# whether to persist the result (``patch_world_state_quarantined`` /
+# ``pipeline_quarantined`` source labels exist for this purpose).
+async def validate_and_correct_world_state_async(
+    world_state: WorldStateV1,
+    config: ExtractionConfig | None = None,
+    *,
+    log_prefix: str = "[ContinuationBridge]",
+) -> Tuple[WorldStateV1, ValidationReport]:
+    """Run auto-repair + validate + correction loop on an assembled world.
+
+    Mirrors the post-assembly quality block in
+    :func:`run_extraction_async` so continuation-prose merges (rung-2,
+    rung-3, directive, manual-edit) get the same structural guarantees
+    raw-text ingestion gives. Skips the per-chunk extraction stack
+    (Physics/Social/Affect) and the ontology / world-trait /
+    concern-extraction passes — those have already run upstream.
+    """
+
+    config = config or ExtractionConfig()
+    repairs: List[str] = []
+
+    # Auto-repair pass — cheap, idempotent, fixes the structural
+    # regressions a deterministic pass can handle (dangling ids,
+    # duplicate edges, normalised fabula_times) before the LLM is
+    # asked to look at anything.
+    try:
+        world_state, initial_repairs = _auto_repair(world_state)
+    except Exception:
+        logger.exception(
+            "%s Auto-repair raised; continuing with un-repaired world.",
+            log_prefix,
+        )
+        initial_repairs = []
+    if initial_repairs:
+        repairs.extend(initial_repairs)
+        logger.info(
+            "%s Auto-repair fixed %d issue(s).",
+            log_prefix, len(initial_repairs),
+        )
+
+    # Programmatic + LLM validation. Offloaded to a worker thread
+    # because ``validate_world_state`` calls ``agent.run_sync``
+    # internally and we may be inside a running event loop.
+    report = await asyncio.to_thread(validate_world_state, world_state, config)
+
+    pre_correction_event_signature = tuple(
+        (e.id, e.fabula_time) for e in world_state.events
+    )
+
+    # Correction retry loop — same shape as ``run_extraction_async``:
+    # oscillation guard, compact iteration log, empty-patch early exit,
+    # transient-failure tolerance.
+    seen_error_signatures: set[Tuple[Tuple[str, str], ...]] = set()
+    correction_history: List[Dict[str, Any]] = []
+    for retry_num in range(config.max_correction_retries):
+        prog_errors = [i for i in report.issues if i.severity == "error"]
+        if not prog_errors:
+            break
+
+        error_signature = tuple(sorted(
+            (i.category, i.detail) for i in prog_errors
+        ))
+        if error_signature in seen_error_signatures:
+            logger.warning(
+                "%s Same error set recurred (oscillation detected) — "
+                "breaking out with %d error(s) remaining.",
+                log_prefix, len(prog_errors),
+            )
+            break
+        seen_error_signatures.add(error_signature)
+
+        iter_log_prefix = (
+            f"{log_prefix}·Correction "
+            f"{retry_num + 1}/{config.max_correction_retries}"
+        )
+        logger.info(
+            "%s %d errors remain — running patch-based correction agent.",
+            iter_log_prefix, len(prog_errors),
+        )
+
+        iter_errors_compact = [
+            f"[{i.category}] {i.detail}" for i in prog_errors
+        ]
+        new_world_state, change_log, patch_status = await asyncio.to_thread(
+            _run_correction_patch,
+            world_state, prog_errors, config, iter_log_prefix,
+            correction_history,
+        )
+        correction_history.append({
+            "iteration": retry_num + 1,
+            "status": patch_status,
+            "errors": iter_errors_compact,
+            "changes": list(change_log),
+        })
+        if patch_status == "empty_patch":
+            logger.info(
+                "%s Correction agent returned an intentional empty patch; "
+                "ending correction loop with %d error(s) remaining.",
+                iter_log_prefix, len(prog_errors),
+            )
+            break
+        if not change_log:
+            # Transient failure (agent_failed / apply_failed /
+            # regression). Burn one slot and let the oscillation guard
+            # decide when to stop.
+            continue
+        world_state = new_world_state
+        repairs.extend(change_log)
+
+        world_state = _normalize_fabula_times(
+            world_state, config.fabula_time_spacing,
+        )
+        world_state, new_repairs = _auto_repair(world_state)
+        if new_repairs:
+            repairs.extend(new_repairs)
+        report = await asyncio.to_thread(
+            validate_world_state, world_state, config,
+        )
+
+    post_correction_event_signature = tuple(
+        (e.id, e.fabula_time) for e in world_state.events
+    )
+    if (
+        post_correction_event_signature != pre_correction_event_signature
+        and world_state.world_traits
+    ):
+        logger.info(
+            "%s Re-running world-trait timeline extraction after "
+            "correction touched events.",
+            log_prefix,
+        )
+        try:
+            world_state = await extract_world_trait_timelines_async(
+                world_state, config,
+            )
+            world_state, post_repairs = _auto_repair(world_state)
+            if post_repairs:
+                repairs.extend(post_repairs)
+            report = await asyncio.to_thread(
+                validate_world_state, world_state, config,
+            )
+        except Exception:
+            logger.exception(
+                "%s Post-correction timeline re-extraction failed — "
+                "keeping pre-correction timelines.",
+                log_prefix,
+            )
+
+    # Final-pass validation snapshot so ``report`` always describes
+    # the world state we actually return.
+    try:
+        final_report = await asyncio.to_thread(
+            validate_world_state, world_state, config,
+        )
+        final_report.repairs = list(repairs)
+        report = final_report
+    except Exception:
+        logger.exception(
+            "%s Final-pass validation failed — returning the "
+            "pre-final report.",
+            log_prefix,
+        )
+        report.repairs = list(repairs)
+
+    remaining_errors = [
+        i for i in report.issues if i.severity == "error"
+    ]
+    if remaining_errors:
+        logger.warning(
+            "%s Continuation quality bridge complete — %d error(s) "
+            "remain after %d auto-repair / correction iteration(s); "
+            "caller's quarantine policy applies.",
+            log_prefix, len(remaining_errors), len(correction_history),
+        )
+    else:
+        logger.info(
+            "%s Continuation quality bridge complete — clean (%d "
+            "auto-repair / correction iteration(s)).",
+            log_prefix, len(correction_history),
+        )
+
+    return world_state, report
+
+
+def validate_and_correct_world_state(
+    world_state: WorldStateV1,
+    config: ExtractionConfig | None = None,
+    *,
+    log_prefix: str = "[ContinuationBridge]",
+) -> Tuple[WorldStateV1, ValidationReport]:
+    """Synchronous wrapper around
+    :func:`validate_and_correct_world_state_async`.
+
+    Raises ``RuntimeError`` when called from inside a running event
+    loop — await the async version directly in that case.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        loop_running = False
+    else:
+        loop_running = True
+    if loop_running:
+        raise RuntimeError(
+            "validate_and_correct_world_state() called from inside a "
+            "running event loop. Await "
+            "validate_and_correct_world_state_async(...) instead."
+        )
+    return asyncio.run(validate_and_correct_world_state_async(
+        world_state, config, log_prefix=log_prefix,
+    ))
 
 
 # =====================================================================

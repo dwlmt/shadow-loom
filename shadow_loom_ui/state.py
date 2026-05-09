@@ -725,6 +725,8 @@ class AppState:
         from shadow_loom.ingestion import (
             WorldStatePatch as _WorldStatePatch,
             _apply_world_state_patch,
+            _auto_repair,
+            _programmatic_validation,
         )
 
         if self.world_state is None:
@@ -747,8 +749,60 @@ class AppState:
             logger.exception("[AppState] World-state patch apply failed")
             return False, [f"Patch application failed: {exc}"]
 
+        # ── Quality bridge: route the patched world through the same
+        # programmatic validators and auto-repair pass that raw-text
+        # ingestion uses. Previously this code path was a "back door"
+        # that skipped every consistency check (orphan events, dead
+        # actors, time ordering, status coherence, …) and persisted
+        # whatever the patcher emitted. The LLM-based validator is
+        # *not* called here because patches are meant to be cheap and
+        # synchronous; the programmatic checks alone catch the
+        # structural classes of regression that matter (dangling ids,
+        # type mismatches, broken edges).
+        try:
+            new_ws, repairs = _auto_repair(new_ws)
+        except Exception:
+            logger.exception("[AppState] _auto_repair raised on patched world")
+            repairs = []
+        if repairs:
+            changes = list(changes) + [f"(auto-repair) {r}" for r in repairs]
+
+        try:
+            issues = _programmatic_validation(new_ws)
+        except Exception:
+            logger.exception(
+                "[AppState] _programmatic_validation raised on patched world"
+            )
+            issues = []
+        errors = [i for i in issues if i.severity == "error"]
+        warnings = [i for i in issues if i.severity == "warning"]
+        quarantined = bool(errors)
+        if errors:
+            logger.warning(
+                "[AppState] Patched world failed validation \u2014 quarantining "
+                "(%d errors, %d warnings)",
+                len(errors), len(warnings),
+            )
+            for err in errors[:10]:
+                logger.warning(
+                    "[AppState]   [%s] %s", err.category, err.detail,
+                )
+            changes = list(changes) + [
+                f"(quarantined: {len(errors)} validation error(s)) "
+                f"{errors[0].detail}"
+            ]
+        elif warnings:
+            logger.info(
+                "[AppState] Patched world has %d validation warning(s); "
+                "persisting normally.",
+                len(warnings),
+            )
+
         # Re-seed the versioned model with the patched world so the
-        # next merge sees the corrected baseline.
+        # next merge sees the corrected baseline. We still load
+        # quarantined worlds into session state so the UI can show
+        # the user what the patch produced; the quarantine only
+        # affects persistence (source label + active-pointer move).
         self.load_world_state(new_ws)
 
         # Persist a new DB version so the patch is durable.
@@ -759,16 +813,27 @@ class AppState:
                 desc = description or typed_patch.notes or (
                     f"Structured patch ({len(changes)} change(s))"
                 )
+                if quarantined:
+                    desc = f"[QUARANTINED] {desc}"
+                source_label = (
+                    "patch_world_state_quarantined"
+                    if quarantined else "patch_world_state"
+                )
                 ver = save_version(
                     project_id=proj_id,
                     world_state_json=ws_json,
                     ancestor_id=self.current_version_row_id,
-                    source="patch_world_state",
+                    source=source_label,
                     description=desc,
                     user_id=self.user_id,
                 )
-                self.current_version_row_id = ver.id
-                if self.user_id is not None:
+                # Quarantined patches do not become the active version;
+                # the user / agent stays anchored on the parent so the
+                # next read tool returns the validated baseline rather
+                # than the broken patch result.
+                if not quarantined:
+                    self.current_version_row_id = ver.id
+                if self.user_id is not None and not quarantined:
                     try:
                         set_active_version(proj_id, self.user_id, ver.id)
                     except Exception:
@@ -778,14 +843,19 @@ class AppState:
                 try:
                     log_activity(
                         project_id=proj_id,
-                        action="patch_world_state",
+                        action=source_label,
                         user_id=self.user_id,
                         summary=desc,
                         version_id=ver.id,
                     )
                 except Exception:
                     pass
-                self.emit(StateEvent.VERSION_CHANGED, version=ver.version)
+                # Only fire VERSION_CHANGED for non-quarantined patches
+                # \u2014 a quarantined version exists in history but is
+                # not the active version, so the UI should keep showing
+                # the parent.
+                if not quarantined:
+                    self.emit(StateEvent.VERSION_CHANGED, version=ver.version)
             except Exception:
                 logger.exception("[AppState] Failed to persist patched world")
                 return True, changes + ["(warning) DB persistence failed"]
@@ -851,8 +921,16 @@ class AppState:
                 project_id=proj_id,
                 world_state_json=ws_json,
                 ancestor_id=ancestor,
-                source=source,
-                description=f"{source} query",
+                source=(
+                    f"{source}_quarantined"
+                    if getattr(pipeline_result, "continuation_quarantined", False)
+                    else source
+                ),
+                description=(
+                    f"[QUARANTINED] {source} query"
+                    if getattr(pipeline_result, "continuation_quarantined", False)
+                    else f"{source} query"
+                ),
                 changeset_json=changeset_json,
                 raw_query=raw_query,
                 parsed_query_json=parsed_query_json,

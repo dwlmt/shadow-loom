@@ -50,7 +50,12 @@ from shadow_loom.generation import (
     GenerationConfig,
     render_from_query,
 )
-from shadow_loom.ingestion import ExtractionConfig, run_extraction_async
+from shadow_loom.ingestion import (
+    ExtractionConfig,
+    run_extraction_async,
+    validate_and_correct_world_state,
+    validate_and_correct_world_state_async,
+)
 from shadow_loom.ingestion_diagnostics import capture_ingestion_warnings
 
 if TYPE_CHECKING:
@@ -340,6 +345,33 @@ class PipelineResult(BaseModel):
         description="Short error message when reextraction_failed is True.",
     )
 
+    # --- Continuation quality bridge (rung-1/2/3 + directive +
+    # manual-edit re-extraction) ---
+    continuation_quality_report: Optional[Any] = Field(
+        default=None,
+        description=(
+            "ValidationReport produced by the continuation-quality "
+            "bridge after re-extraction + merge. ``None`` when the "
+            "bridge did not run (skip_reextraction, generation "
+            "failure, or reextraction exception). ``is_valid=False`` "
+            "means structural errors persist after auto-repair + the "
+            "correction loop; the version is still persisted (current "
+            "behaviour) but ``continuation_quarantined`` is set so "
+            "downstream UIs/MCP can flag it."
+        ),
+    )
+    continuation_quarantined: bool = Field(
+        default=False,
+        description=(
+            "True when the continuation-quality bridge could not bring "
+            "the merged world to a clean state. The world model is "
+            "still returned (parity with current behaviour) but its "
+            "VersionRow is tagged with a ``_quarantined`` source so "
+            "operators can filter it out. When False, the merged world "
+            "passed structural validation."
+        ),
+    )
+
 
 # =====================================================================
 # Lay-user summary
@@ -569,6 +601,95 @@ def _stamp_brief_branch(
 _PRECEDING_PROSE_BUDGET_CHARS = 8000
 
 
+# =====================================================================
+# Continuation Quality Bridge — pipeline glue
+# =====================================================================
+#
+# After ``vwm.merge`` folds re-extracted topology into the parent world,
+# pipe the merged world state through the same auto-repair +
+# programmatic-validation + LLM-correction loop raw-text ingestion
+# uses. Without this bridge, structural regressions introduced by the
+# generator (orphan events, dangling ids, retrograde fabula_times,
+# dead actors emitting events, …) would silently land on the canonical
+# (or shadow) branch.
+#
+# Honours the user-stated constraint: NO merging into parent — the
+# continuation already lives in ``vwm_next.current``, which is a fresh
+# WorldStateV1 with ``ancestor_id`` lineage preserved by
+# ``VersionedWorldModel.merge``. We only *correct* it in place; the
+# version chain is unchanged.
+#
+# Uses the EXTRACTION model (``cfg.extraction_config.model`` =
+# ``EXTRACTION_MODEL`` env var with ``DEFAULT_MODEL`` fallback) — the
+# same LLM raw-text ingestion uses, never ``GENERATION_MODEL`` /
+# ``AUDITOR_MODEL``.
+
+def _run_continuation_quality_bridge_sync(
+    vwm_next: "VersionedWorldModel",
+    cfg: "PipelineConfig",
+    result: "PipelineResult",
+    *,
+    log_prefix: str,
+) -> "VersionedWorldModel":
+    """Validate-and-correct the merged continuation world (sync path).
+
+    Returns a possibly-rewritten ``VersionedWorldModel`` whose
+    ``current`` field is the corrected world state. Records the
+    quality report on ``result.continuation_quality_report`` and sets
+    ``result.continuation_quarantined`` when errors persist.
+    """
+    if cfg.extraction_config is None:
+        return vwm_next
+    try:
+        corrected_ws, report = validate_and_correct_world_state(
+            vwm_next.current,
+            cfg.extraction_config,
+            log_prefix=log_prefix,
+        )
+    except Exception:
+        logger.exception(
+            "%s Continuation quality bridge raised; persisting "
+            "un-validated merge result.",
+            log_prefix,
+        )
+        return vwm_next
+    result.continuation_quality_report = report
+    result.continuation_quarantined = not report.is_valid
+    if corrected_ws is vwm_next.current:
+        return vwm_next
+    return vwm_next.model_copy(update={"current": corrected_ws})
+
+
+async def _run_continuation_quality_bridge_async(
+    vwm_next: "VersionedWorldModel",
+    cfg: "PipelineConfig",
+    result: "PipelineResult",
+    *,
+    log_prefix: str,
+) -> "VersionedWorldModel":
+    """Async sibling of :func:`_run_continuation_quality_bridge_sync`."""
+    if cfg.extraction_config is None:
+        return vwm_next
+    try:
+        corrected_ws, report = await validate_and_correct_world_state_async(
+            vwm_next.current,
+            cfg.extraction_config,
+            log_prefix=log_prefix,
+        )
+    except Exception:
+        logger.exception(
+            "%s Continuation quality bridge raised; persisting "
+            "un-validated merge result.",
+            log_prefix,
+        )
+        return vwm_next
+    result.continuation_quality_report = report
+    result.continuation_quarantined = not report.is_valid
+    if corrected_ws is vwm_next.current:
+        return vwm_next
+    return vwm_next.model_copy(update={"current": corrected_ws})
+
+
 def _gather_preceding_prose(
     vwm: Optional[VersionedWorldModel],
     *,
@@ -743,6 +864,138 @@ def _stamp_brief_full(
     if factual_contrast and not brief.factual_contrast_summary:
         brief.factual_contrast_summary = factual_contrast
     return brief
+
+
+def _render_engine_priors(
+    physics_result: Dict[str, Any],
+    *,
+    max_items_per_section: int = 12,
+) -> Optional[str]:
+    """Compact one-shot summary of deterministic engine output.
+
+    Renders the trait mutations, hidden-deltas (rung-3 abduction),
+    social mutations, blocked interventions, and intervened nodes a
+    :class:`CausalPhysicsEngine` produced into a short text block the
+    Physics / Social extractors can use as ground-truth priors when
+    parsing continuation prose. Returns ``None`` when ``physics_result``
+    has no actionable engine output (rung-1 / observation, or sandbox
+    skipped) so the caller can omit the priors block entirely rather
+    than emit an empty section.
+    """
+    if not physics_result:
+        return None
+
+    mutations = physics_result.get("mutations") or []
+    hidden = physics_result.get("hidden_deltas") or {}
+    social_muts = physics_result.get("social_mutations") or []
+    blocked = physics_result.get("blocked") or []
+    intervened = physics_result.get("intervened_nodes") or []
+
+    sections: List[str] = []
+
+    def _coerce_field(item: Any, name: str) -> Any:
+        if isinstance(item, dict):
+            return item.get(name)
+        return getattr(item, name, None)
+
+    if intervened:
+        ids = [str(n) for n in intervened[:max_items_per_section]]
+        sections.append(
+            "Intervened nodes (do-operator targets): "
+            + ", ".join(ids)
+            + (
+                ""
+                if len(intervened) <= max_items_per_section
+                else f" (+{len(intervened) - max_items_per_section} more)"
+            )
+        )
+
+    if mutations:
+        lines = ["Trait mutations declared by the engine:"]
+        for m in mutations[:max_items_per_section]:
+            node = _coerce_field(m, "node_id")
+            trait = _coerce_field(m, "trait")
+            new_val = _coerce_field(m, "new_value")
+            try:
+                new_val_str = f"{float(new_val):+.2f}"
+            except (TypeError, ValueError):
+                new_val_str = str(new_val)
+            lines.append(f"  - {node}.{trait} \u2192 {new_val_str}")
+        if len(mutations) > max_items_per_section:
+            lines.append(
+                f"  ... (+{len(mutations) - max_items_per_section} more)"
+            )
+        sections.append("\n".join(lines))
+
+    if hidden:
+        lines = [
+            "Hidden deltas (Rung-3 abduction \u2014 backstory commits):"
+        ]
+        count = 0
+        for node, trait_dict in hidden.items():
+            if not isinstance(trait_dict, dict):
+                continue
+            for trait, val in trait_dict.items():
+                try:
+                    val_str = f"{float(val):+.2f}"
+                except (TypeError, ValueError):
+                    val_str = str(val)
+                lines.append(f"  - {node}.{trait} \u2192 {val_str}")
+                count += 1
+                if count >= max_items_per_section:
+                    break
+            if count >= max_items_per_section:
+                break
+        sections.append("\n".join(lines))
+
+    if social_muts:
+        lines = ["Social mutations declared by the engine:"]
+        for s in social_muts[:max_items_per_section]:
+            src = (
+                _coerce_field(s, "source_entity_id")
+                or _coerce_field(s, "source_id")
+            )
+            tgt = (
+                _coerce_field(s, "target_entity_id")
+                or _coerce_field(s, "target_id")
+            )
+            metric = _coerce_field(s, "metric")
+            new_val = _coerce_field(s, "new_value")
+            try:
+                new_val_str = f"{float(new_val):+.2f}"
+            except (TypeError, ValueError):
+                new_val_str = str(new_val)
+            lines.append(
+                f"  - {src} \u2192 {tgt} ({metric}) = {new_val_str}"
+            )
+        if len(social_muts) > max_items_per_section:
+            lines.append(
+                f"  ... (+{len(social_muts) - max_items_per_section} more)"
+            )
+        sections.append("\n".join(lines))
+
+    if blocked:
+        lines = [
+            "Interventions blocked by physics (do NOT extract events "
+            "that contradict these blocks):"
+        ]
+        for b in blocked[:max_items_per_section]:
+            node = _coerce_field(b, "node_id")
+            reason = (
+                _coerce_field(b, "reason")
+                or _coerce_field(b, "detail")
+                or "blocked"
+            )
+            lines.append(f"  - {node}: {reason}")
+        if len(blocked) > max_items_per_section:
+            lines.append(
+                f"  ... (+{len(blocked) - max_items_per_section} more)"
+            )
+        sections.append("\n".join(lines))
+
+    if not sections:
+        return None
+    return "\n\n".join(sections)
 
 
 def _augment_topology_with_sandbox_deltas(
@@ -1719,6 +1972,13 @@ def run_pipeline(
                 entity_updates_skipped=changeset.entity_updates_skipped if changeset else [],
                 new_version=vwm_next.version,
             ))
+            # Continuation quality bridge — same auto-repair +
+            # validation + correction loop as raw-text ingestion,
+            # using the EXTRACTION_MODEL.
+            vwm_next = _run_continuation_quality_bridge_sync(
+                vwm_next, cfg, result,
+                log_prefix="[Pipeline·ManualEdit·QualityBridge]",
+            )
             result.world_model = vwm_next
             logger.info(
                 "[Pipeline] Manual edit merge complete — v%d → v%d.",
@@ -1907,6 +2167,7 @@ def run_pipeline(
         try:
             spawns = promote_sandbox_spawns(ws, physics_state)
             _world_id, _branch_label = _resolve_branch_policy(query, cfg, vwm)
+            engine_priors = _render_engine_priors(physics_result)
             topology = extract_topology_from_prose(
                 prose=result.prose,
                 world_state=ws,
@@ -1915,6 +2176,7 @@ def run_pipeline(
                 branch_world_id=_world_id,
                 branch_label=_branch_label,
                 preceding_prose=_preceding_prose,
+                engine_priors=engine_priors,
             )
             description = (
                 f"Pipeline merge after {query.query_type} query"
@@ -1971,6 +2233,11 @@ def run_pipeline(
                 entity_updates_skipped=changeset.entity_updates_skipped if changeset else [],
                 new_version=vwm_next.version,
             ))
+            # Continuation quality bridge.
+            vwm_next = _run_continuation_quality_bridge_sync(
+                vwm_next, cfg, result,
+                log_prefix="[Pipeline·QualityBridge]",
+            )
             result.world_model = vwm_next
             logger.info(
                 "[Pipeline] Merge complete — v%d → v%d (+%d events).",
@@ -2183,6 +2450,11 @@ async def run_pipeline_async(
                 entity_updates_skipped=changeset.entity_updates_skipped if changeset else [],
                 new_version=vwm_next.version,
             ))
+            # Continuation quality bridge (async).
+            vwm_next = await _run_continuation_quality_bridge_async(
+                vwm_next, cfg, result,
+                log_prefix="[Pipeline·Async·ManualEdit·QualityBridge]",
+            )
             result.world_model = vwm_next
         except Exception as _e:
             logger.exception("[Pipeline·Async] Manual edit re-extraction/merge failed.")
@@ -2316,12 +2588,14 @@ async def run_pipeline_async(
         try:
             spawns = promote_sandbox_spawns(ws, physics_state)
             _world_id, _branch_label = _resolve_branch_policy(query, cfg, vwm)
+            engine_priors = _render_engine_priors(physics_result)
             topology = extract_topology_from_prose(
                 prose=result.prose, world_state=ws, config=cfg.extraction_config,
                 spawns=spawns,
                 branch_world_id=_world_id,
                 branch_label=_branch_label,
                 preceding_prose=_preceding_prose,
+                engine_priors=engine_priors,
             )
             description = (
                 f"Pipeline merge after {query.query_type} query"
@@ -2368,6 +2642,11 @@ async def run_pipeline_async(
                 entity_updates_skipped=changeset.entity_updates_skipped if changeset else [],
                 new_version=vwm_next.version,
             ))
+            # Continuation quality bridge (async).
+            vwm_next = await _run_continuation_quality_bridge_async(
+                vwm_next, cfg, result,
+                log_prefix="[Pipeline·Async·QualityBridge]",
+            )
             result.world_model = vwm_next
         except Exception as _e:
             logger.exception("[Pipeline·Async] Re-extraction/merge failed.")

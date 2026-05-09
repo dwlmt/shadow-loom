@@ -27,7 +27,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _QUERY_TYPES = [
-    ("general", "Ask", "chat"),
+    # NB: "general" / Ask is intentionally omitted from this list so it
+    # no longer appears in the Mode picker. The underlying GeneralQuery
+    # code path is still reachable as the parser's last-resort fallback
+    # (see query_parsing._fallback_to_general_query) and the hint /
+    # rendering helpers below still recognise the value if it arrives.
     ("observation", "Continue", "auto_stories"),
     ("intervention", "Intervene", "flash_on"),
     ("counterfactual", "What-If", "alt_route"),
@@ -90,7 +94,6 @@ _MODE_HELP_BODY = (
     "| Mode | What it does |\n"
     "|---|---|\n"
     "| **Auto-detect** | Let the parser pick the right mode from your wording. |\n"
-    "| **Ask** | Read-only Q&A over the world graph. No prose, no version. |\n"
     "| **Continue** | Generate the next scene in chronological order. New factual version. |\n"
     "| **Intervene** | Force a state change and propagate consequences. New factual version. |\n"
     "| **What-If** | Re-run history under a changed past event. Forks a *shadow* branch. |\n"
@@ -113,7 +116,7 @@ _PROMPT_STARTERS = [
     ("Make this scene more suspenseful…", "directive"),
     ("Why does this character do that?", "interrogate"),
     ("Who knows what at this point in the story?", "interrogate"),
-    ("What are the active relationships right now?", "general"),
+    ("What are the active relationships right now?", "interrogate"),
 ]
 
 
