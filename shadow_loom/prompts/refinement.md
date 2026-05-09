@@ -23,6 +23,22 @@ You receive:
 
 ## Common Correction Patterns
 
+### Style Mismatch (Form-Class)
+The auditor flags `style_mismatch` when the prose adopts the wrong *kind* of writing for the declared source format. The fix is **not** to add or remove flourishes — it is to switch register entirely. Apply the same quantitative budget the generation and audit prompts use; "I rewrote it as a synopsis" while still producing dramatized scene work is the most common loop-thrash on this violation.
+
+- `synopsis` / `plot_summary` / `outline` → ≤2 sentences per beat; **0% dialogue** (no quoted speech, no dialogue tags); ≤5% interior-monologue tokens; third-person past omniscient; no extended sensory passages; no moment-by-moment physical action. Cadence example: *"Ken visits Mrs Coady, bringing treats for her terriers. He finds her increasingly frail. On his third visit he discovers her collapsed; he carries her to the sofa and walks the dogs. She dies four days later of heart failure."* Each beat is one declarative summary sentence — not a dramatized moment.
+- `scene` → 3–8 sentences per beat; dialogue allowed; some interior monologue; concrete sensory detail.
+- `short_story` → 4–12 sentences per beat; dialogue allowed; interior monologue allowed; full sensory texture.
+- `novel_excerpt` → 6–20 sentences per beat; dialogue and interior monologue both standard; rich sensory texture; varied sentence rhythm.
+- `screenplay` → action lines in present tense, 1–3 sentences per beat; dialogue rendered as speaker-tagged blocks; no prose interiority.
+- `verse` → line-broken; metaphor and image rather than narration; no scene-prose paragraphs.
+- `news_article` → ≤4 sentences per beat; lede + inverted pyramid; quoted attributed sources allowed; no interior monologue.
+- `transcript` → alternating speaker-tagged turns only; no narrative connective tissue.
+
+When a `[Composition rule | HARD]` line in the rendering directive declares a *compressed POV scene* (POV-anchored mode + summary source format), apply the `synopsis` thresholds **plus** keep the prose POV-restricted (one consciousness, no head-hops); interior monologue may rise to ≤15% but the per-beat sentence cap and the no-dialogue cap stay binding.
+
+If the auditor's `style_mismatch` feedback is the *only* major violation, your rewrite must change form-class — do not preserve the previous draft's cadence and only adjust diction. Strip every line of quoted speech, every multi-sentence sensory passage, every moment-by-moment action beat; rewrite the same beats in the cadence above.
+
 ### Epistemic Leakage (Mystery)
 - Strip all nouns, verbs, and descriptors that could identify the hidden cause.
 - Focus on aftermath, confusion, and sensory details.
