@@ -119,12 +119,13 @@ def build_social_tab(state: AppState) -> None:
                     "### View modes\n"
                     "- **Network** — combined graph of characters,"
                     " propositions (diamonds, sized by stakes) and"
-                    " concerns (triangles, green=desire / red=fear, sized"
-                    " by salience). Edges: relationship affinity"
-                    " (entity\u2194entity), beliefs"
-                    " (entity\u2192proposition, coloured by"
-                    " confidence), and concern-of"
-                    " (entity\u2192concern\u2192proposition).\n"
+                    " their epistemic / motivational links."
+                    " Edges: relationship affinity"
+                    " (entity\u2194entity), beliefs (solid amber"
+                    " arrow entity\u2192proposition, coloured by"
+                    " confidence), and desires/fears (dashed"
+                    " green/red arrow entity\u2192proposition,"
+                    " sized by salience).\n"
                     "- **Ego Graph** — same network restricted to"
                     " one focus character and its N-hop social /"
                     " epistemic neighbourhood. Pick the character"
@@ -569,7 +570,7 @@ def build_social_tab(state: AppState) -> None:
                                             net_show_props.value
                                         ),
                                         fabula_t=fabula_t_eff,
-                                        event_t=fabula_t,
+                                        event_t=fabula_t_eff,
                                         pov_id=pid,
                                     )
                                 ),
@@ -632,7 +633,7 @@ def build_social_tab(state: AppState) -> None:
                                                 net_show_props.value
                                             ),
                                             fabula_t=fabula_t_eff,
-                                            event_t=fabula_t,
+                                            event_t=fabula_t_eff,
                                             ego_id=eid,
                                             ego_max_hops=hp,
                                         )
@@ -680,7 +681,7 @@ def build_social_tab(state: AppState) -> None:
                                                 net_layout.value or "force"
                                             ),
                                             fabula_t=fabula_t_eff,
-                                            event_t=fabula_t,
+                                            event_t=fabula_t_eff,
                                             intermental_ids=ids,
                                             intermental_threshold=th,
                                         )

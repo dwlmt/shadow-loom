@@ -412,17 +412,31 @@ def render_social_layer_legend() -> None:
         with ui.row().classes("items-center gap-3 flex-wrap"):
             ui.label("Nodes:").classes("text-xs font-semibold text-slate-700")
             _chip("circle", "#F26B5E", "Character")
-            _chip("diamond", "#8a5cf0", "Proposition (size = stakes)")
-            _chip("tri", "#16a34a", "Desire (size = salience)")
-            _chip("tri", "#dc2626", "Fear (size = salience)")
+            _chip(
+                "diamond", "#8a5cf0",
+                "Proposition (size = stakes, border thickness = audience surprise)",
+            )
             _chip("rect", "#0ea5e9", "World trait (latent force)")
         with ui.row().classes("items-center gap-3 flex-wrap"):
-            ui.label("Edges:").classes("text-xs font-semibold text-slate-700")
-            _chip("line", "#16a34a", "Affinity +  /  ")
-            _chip("line", "#dc2626", "  Affinity \u2212")
-            _chip("line", "#6FBF3A", "Belief (high conf)")
-            _chip("line", "#3A7BD5", "Belief (mid conf)")
-            _chip("line", "#94a3b8", "Belief (low) / concern\u2192prop")
+            ui.label("Edges:").classes(
+                "text-xs font-semibold text-slate-700"
+            )
+            _chip("line", "#16a34a", "Affinity + (curved)")
+            _chip("line", "#dc2626", "Affinity \u2212 (curved)")
+            _chip(
+                "line", "#b45309",
+                "Belief: entity \u2192 prop (amber arrow, thicker = surer)",
+            )
+            _chip("line", "#fde68a", "\u2026low confidence")
+            _chip(
+                "line", "#16a34a",
+                "Desire: entity \u2192 prop (green dashed arrow)",
+            )
+            _chip(
+                "line", "#dc2626",
+                "Fear: entity \u2192 prop (red dashed arrow)",
+            )
+            _chip("line", "#0ea5e9", "World trait \u2192 prop (sky-blue dotted)")
 
 
 # ── Knowledge-asymmetry heatmap ───────────────────────────────────
@@ -5451,9 +5465,10 @@ def render_social_layer_graph(
     affinity edges) with a richer network where:
       • Characters are circles (coral),
       • Propositions are diamonds (iris) sized by stakes,
-      • Concerns are triangles/pins (green=desire / red=fear) sized by
-        salience, and
-      • Beliefs are entity→proposition edges coloured by confidence.
+      • Desires/fears are dashed green/red arrows from the holder
+        to the proposition (sized by salience), and
+      • Beliefs are solid amber arrows from holder to proposition
+        (coloured by confidence).
     All time-sliced when ``fabula_t`` is provided.
     """
     from shadow_loom_ui.viz_helpers import ws_to_social_layer_graph
@@ -5489,10 +5504,18 @@ def render_social_layer_graph(
         series_extra = {
             "layout": "force",
             "force": {
-                "repulsion": 320,
-                "gravity": 0.15,
-                "edgeLength": [80, 200],
+                "repulsion": 420,
+                "gravity": 0.12,
+                "edgeLength": [90, 220],
             },
+            # ``autoCurveness`` makes ECharts spread overlapping
+            # edges between the same node pair onto separate
+            # curves. Without it the entity\u2192prop belief edge,
+            # the entity\u2192prop direct desire/fear edge, and the
+            # entity\u2192concern\u2192prop two-hop path collapse
+            # visually onto each other and the desire/fear
+            # signalling looks like there's only a belief edge.
+            "autoCurveness": True,
         }
 
     chart = ui.echart({
@@ -5519,7 +5542,16 @@ def render_social_layer_graph(
                 "fontSize": 11,
                 "color": _CHART_TEXT,
             },
-            "lineStyle": {"curveness": 0.15, "opacity": 0.7},
+            # NOTE: do NOT set ``lineStyle`` at the series level here
+            # \u2014 ECharts treats the series-level ``lineStyle`` as a
+            # default that *overrides* per-link ``lineStyle`` for any
+            # property the link doesn't explicitly set, and in
+            # practice the wrapper merges them in a way that flattens
+            # per-link ``type`` (dashed vs solid) and ``curveness``,
+            # making belief edges, desire/fear edges, and concern
+            # \u2192 prop edges all look identical. Per-link styling
+            # (set in viz_helpers.ws_to_social_layer_graph) carries
+            # the full encoding.
             **series_extra,
         }],
     }).classes("w-full").style(f"height:{height}")

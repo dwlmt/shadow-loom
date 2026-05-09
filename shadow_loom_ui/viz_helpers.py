@@ -4904,40 +4904,19 @@ def ws_to_social_layer_graph(
 
     nodes: list[dict] = []
     links: list[dict] = []
-    # Per-node ``symbol`` / ``itemStyle`` should override category-level
-    # defaults in ECharts, but in practice (graph series with mixed
-    # symbols + categories rendered through NiceGUI's echart wrapper)
-    # the category default sometimes wins and proposition diamonds
-    # render as character-coloured circles. Setting an explicit
-    # ``symbol`` and ``itemStyle.color`` on each category gives ECharts
-    # a sane fallback per category index, so even if the per-node hint
-    # is dropped the diamonds still appear.
-    cats = [
-        {
-            "name": "Character",
-            "symbol": "circle",
-            "itemStyle": {"color": NODE_COLORS["Entity"]},
-        },
-        {
-            "name": "Proposition",
-            "symbol": "diamond",
-            "itemStyle": {"color": "#8a5cf0"},
-        },
-        {
-            "name": "Concern",
-            "symbol": "triangle",
-            # Neutral category default so ECharts has a complete
-            # categories config (omitting ``itemStyle`` on one
-            # category causes that category's nodes \u2014 and in some
-            # NiceGUI/ECharts code paths *adjacent* categories' nodes
-            # \u2014 to drop out of the render). Per-node
-            # ``itemStyle.color`` (green = desire, red = fear) still
-            # overrides this default at draw time, so concerns
-            # render in the right colour while propositions and
-            # world-traits remain visible.
-            "itemStyle": {"color": "#94a3b8"},
-        },
-    ]
+    # ECharts categories interact unreliably with per-node ``symbol``
+    # and ``itemStyle`` overrides through NiceGUI's echart wrapper:
+    # any colour set on a category silently masks per-node colour for
+    # nodes assigned to that category, and any *gap* in a category's
+    # ``itemStyle`` causes adjacent categories' nodes to drop from
+    # the render. We don't use ECharts' built-in legend here (a
+    # chip-strip legend above the chart documents the encoding), so
+    # categories only matter as a fallback. Collapse to a single
+    # neutral category and let per-node ``symbol`` + ``itemStyle``
+    # carry every visual distinction (Character circle, Proposition
+    # diamond, Desire green-triangle, Fear red-triangle, World Trait
+    # roundRect) -- that path renders reliably.
+    cats = [{"name": "Social"}]
 
     # --- Entity nodes -------------------------------------------------
     for eid, ent in ws.entities.items():
@@ -4969,22 +4948,27 @@ def ws_to_social_layer_graph(
                 prior = float(snap.get("audience_default_prior", prior))
             # Diamond, sized by stakes.
             size = 18 + 22 * max(0.0, min(1.0, float(stakes)))
-            # Audience-prior ring colour (white → iris) so the user
-            # can read at a glance how surprising the proposition is
-            # for the implied audience.
-            ring = ("#dc2626" if prior < 0.34
-                    else "#f59e0b" if prior < 0.67
-                    else "#16a34a")
+            # Audience-prior "surprise potential" is encoded as
+            # *border thickness* on a neutral grey border. Using
+            # colour here (red/amber/green) would collide with three
+            # other red/green encodings already on the chart
+            # (affinity, concern polarity, belief confidence). Width
+            # alone keeps the channel readable: a thin border = the
+            # audience expects this proposition (prior ≈ 0.5);
+            # a thick border = the audience holds a strong prior
+            # (either way) so the proposition will land as either
+            # confirmation or surprise.
+            border_w = 1.5 + 4.0 * abs(prior - 0.5)
             nodes.append({
                 "id": prop.proposition_id,
                 "name": desc[:40],
-                "category": 1,
+                "category": 0,
                 "symbol": "diamond",
                 "symbolSize": size,
                 "itemStyle": {
                     "color": "#8a5cf0",  # iris
-                    "borderColor": ring,
-                    "borderWidth": 2 + 3 * abs(prior - 0.5),
+                    "borderColor": "#475569",  # slate-600 — neutral
+                    "borderWidth": border_w,
                 },
                 "tooltip": {"formatter": (
                     f"<b>{desc}</b><br/>kind: {prop.kind}<br/>"
@@ -4995,7 +4979,29 @@ def ws_to_social_layer_graph(
             })
 
     # --- Concern nodes -----------------------------------------------
-    if include_concerns:
+    # Concerns are dual-encoded so the desire/fear-of-proposition
+    # relationship reads at the same visual weight as belief:
+    #   1. A small triangle node anchored to the entity (green =
+    #      desire, red = fear), sized by salience. This gives the
+    #      "fan of concerns radiating from a character" reading and
+    #      groups concerns visually by holder.
+    #   2. A *direct* entity \u2192 proposition edge (dashed,
+    #      arrowed, green/red, width by salience). This is the
+    #      counterpart to the belief edge and makes the
+    #      \"who wants/fears what\" reading immediate \u2014 without
+    #      it the desire/fear relationship was two hops away
+    #      (entity \u2192 triangle \u2192 prop) while beliefs were one,
+    #      so the chart looked like \"only beliefs touch propositions\".
+    # Concerns are rendered as **direct entity \u2192 proposition
+    # edges** rather than as a separate triangle node + two edges.
+    # The earlier triangle-node design produced visually busy
+    # graphs where the desire/fear relationship was two hops away
+    # from the proposition (entity \u2192 triangle \u2192 prop) while
+    # belief was one hop (entity \u2192 prop), so concerns read as
+    # secondary structure. Direct dashed green/red arrows put
+    # desires/fears on the same visual plane as beliefs (solid
+    # amber arrow) and make "who wants/fears what" immediate.
+    if include_concerns and include_propositions:
         for ent in ws.entities.values():
             for concern in ent.concerns:
                 if fabula_t is not None:
@@ -5007,63 +5013,39 @@ def ws_to_social_layer_graph(
                 else:
                     salience = concern.salience
                     polarity = concern.polarity
-                color = "#16a34a" if polarity == "desire" else "#dc2626"
-                cnid = f"{ent.id}::{concern.concern_id}"
-                size = 12 + 18 * max(0.0, min(1.0, float(salience)))
-                nodes.append({
-                    "id": cnid,
-                    "name": concern.kind or concern.concern_id,
-                    "category": 2,
-                    # Both polarities render as triangles so they read
-                    # consistently as "concerns"; the colour (green =
-                    # desire, red = fear) carries the polarity. The
-                    # previous ``pin`` symbol for fear was being
-                    # silently downgraded to a circle by ECharts in
-                    # some code paths, breaking visual consistency.
-                    "symbol": "triangle",
-                    "symbolSize": size,
-                    "itemStyle": {"color": color},
-                    "tooltip": {"formatter": (
-                        f"<b>{ent.name}</b> "
-                        f"{'desires' if polarity == 'desire' else 'fears'}"
-                        f"<br/>salience: {float(salience):.2f}"
-                        f"<br/>kind: {concern.kind or '—'}"
-                    )},
-                    "_sl_node_type": "Concern",
-                })
-                # Entity → Concern edge (holds). Width tracks salience
-                # but never drops below 1.5px, and opacity is high
-                # enough that the edge is visible against the
-                # off-white chart background even at minimum salience.
-                links.append({
-                    "source": ent.id,
-                    "target": cnid,
-                    "lineStyle": {
-                        "color": color,
-                        "width": max(1.5, float(salience) * 3.0),
-                        "type": "solid",
-                        "opacity": 0.85,
-                    },
-                })
-                # Concern → Proposition edge (about). Arrowed and
-                # coloured by polarity so the desire/fear vector is
-                # legible (Phelan instabilities).
-                if include_propositions and any(
+                if not any(
                     p.proposition_id == concern.proposition_id
                     for p in (ws.propositions or [])
                 ):
-                    links.append({
-                        "source": cnid,
-                        "target": concern.proposition_id,
-                        "symbol": ["none", "arrow"],
-                        "symbolSize": [4, 8],
-                        "lineStyle": {
-                            "color": color,
-                            "width": max(1.5, float(salience) * 2.0),
-                            "type": "dashed",
-                            "opacity": 0.8,
-                        },
-                    })
+                    continue
+                color = "#16a34a" if polarity == "desire" else "#dc2626"
+                links.append({
+                    "source": ent.id,
+                    "target": concern.proposition_id,
+                    "_sl_kind": (
+                        "desire" if polarity == "desire" else "fear"
+                    ),
+                    "_sl_holder": ent.id,
+                    "_sl_pid": concern.proposition_id,
+                    "_sl_concern_id": concern.concern_id,
+                    "_sl_salience": float(salience),
+                    "symbol": ["none", "arrow"],
+                    "symbolSize": [4, 9],
+                    "lineStyle": {
+                        "color": color,
+                        "width": max(1.5, float(salience) * 4.0),
+                        "type": "dashed",
+                        "opacity": 0.9,
+                        "curveness": -0.18,
+                    },
+                    "tooltip": {"formatter": (
+                        f"<b>{ent.name}</b> "
+                        f"{'desires' if polarity == 'desire' else 'fears'}"
+                        f"<br/>\u2192 {concern.proposition_id}"
+                        f"<br/>salience: {float(salience):.2f}"
+                        f"<br/>kind: {concern.kind or '\u2014'}"
+                    )},
+                })
 
     # --- Belief edges (Entity → Proposition) -------------------------
     if include_beliefs and include_propositions:
@@ -5082,13 +5064,19 @@ def ws_to_social_layer_graph(
                 ):
                     continue
                 conf = float(b.confidence)
-                # Confidence colour: grey → blue → green.
+                # Belief confidence uses an *amber* ramp (low = pale,
+                # high = deep) so it stays distinguishable from
+                # affinity edges (green/red) and concern edges
+                # (green/red, dashed). Amber is also colour-blind
+                # safe against red/green. Arrow points from holder
+                # to proposition so direction is unambiguous (this
+                # is an epistemic edge, not a symmetric tie).
                 if conf < 0.34:
-                    bcolor = "#94a3b8"
+                    bcolor = "#fde68a"   # amber-200 — weak/uncertain
                 elif conf < 0.67:
-                    bcolor = "#3A7BD5"
+                    bcolor = "#f59e0b"   # amber-500 — moderate
                 else:
-                    bcolor = "#6FBF3A"
+                    bcolor = "#b45309"   # amber-700 — strong/sure
                 links.append({
                     "source": ent.id,
                     "target": pid,
@@ -5097,11 +5085,26 @@ def ws_to_social_layer_graph(
                     "_sl_pid": pid,
                     "_sl_state": b.perceived_state,
                     "_sl_conf": conf,
+                    "symbol": ["none", "arrow"],
+                    "symbolSize": [4, 7],
                     "lineStyle": {
                         "color": bcolor,
                         "width": max(1.0, conf * 3.5),
                         "type": "solid",
-                        "opacity": 0.7,
+                        "opacity": 0.85,
+                        # Explicit opposite curveness from desire/fear
+                        # edges (-0.18) so the entity \u2192 prop belief
+                        # arrow and the entity \u2192 prop desire/fear
+                        # arrow sit on visibly separate arcs even when
+                        # both exist. Relying on ECharts'
+                        # ``autoCurveness`` here is unreliable: it only
+                        # auto-assigns to links *without* explicit
+                        # curveness, so the desire/fear edge (which
+                        # sets curveness) keeps its arc but belief is
+                        # left flat at curveness=0 and one edge type
+                        # ends up visually drawn on top of the other,
+                        # making desire/fear arrows disappear.
+                        "curveness": 0.18,
                     },
                     "tooltip": {"formatter": (
                         f"{ent.name} believes "
@@ -5120,6 +5123,11 @@ def ws_to_social_layer_graph(
                 else "#dc2626" if aff < 0
                 else "#94a3b8"
             )
+            # Curved + no arrow keeps relationship edges visually
+            # distinct from belief edges (straight + arrow) and
+            # concern edges (dashed + arrow), so the three edge
+            # types are unambiguous even when they overlap on the
+            # same entity.
             links.append({
                 "source": rel.source_entity_id,
                 "target": rel.target_entity_id,
@@ -5127,8 +5135,8 @@ def ws_to_social_layer_graph(
                     "color": color,
                     "width": max(1.0, abs(aff) * 4.0),
                     "type": "solid",
-                    "opacity": 0.55,
-                    "curveness": 0.15,
+                    "opacity": 0.7,
+                    "curveness": 0.25,
                 },
                 "tooltip": {"formatter": (
                     f"affinity={aff:+.2f}<br/>fear={float(rel.fear):.2f}"
@@ -5164,8 +5172,7 @@ def ws_to_social_layer_graph(
             nid = n["id"]
             visible = (
                 (nt == "Entity" and nid in known_entities) or
-                (nt == "Proposition" and nid in known_props) or
-                (nt == "Concern" and nid.startswith(f"{pov_id}::"))
+                (nt == "Proposition" and nid in known_props)
             )
             if not visible:
                 style = dict(n.get("itemStyle") or {})
@@ -5182,15 +5189,10 @@ def ws_to_social_layer_graph(
             if kind == "belief":
                 if lnk.get("_sl_holder") != pov_id:
                     continue
-            # Drop concern edges not owned by POV.
-            if isinstance(s, str) and "::" in s and not s.startswith(
-                f"{pov_id}::"
-            ):
-                continue
-            if isinstance(t, str) and "::" in t and not t.startswith(
-                f"{pov_id}::"
-            ):
-                continue
+            # Desire/fear edges: keep only those held by POV.
+            if kind in ("desire", "fear"):
+                if lnk.get("_sl_holder") != pov_id:
+                    continue
             kept_links.append(lnk)
         links = kept_links
         # Highlight POV node.
@@ -5302,7 +5304,7 @@ def ws_to_social_layer_graph(
             nodes.append({
                 "id": wid,
                 "name": trait.name,
-                "category": 3,
+                "category": 0,
                 "symbol": "roundRect",
                 "symbolSize": 26,
                 "itemStyle": {"color": "#0ea5e9"},
@@ -5315,21 +5317,18 @@ def ws_to_social_layer_graph(
             links.append({
                 "source": wid,
                 "target": pid,
+                "symbol": ["none", "arrow"],
+                "symbolSize": [4, 7],
                 "lineStyle": {
                     "color": "#0ea5e9",
-                    "width": 1.5,
+                    "width": 2.0,
                     "type": "dotted",
-                    "opacity": 0.5,
+                    "opacity": 0.75,
                 },
-                "tooltip": {"formatter": f"World trait ← {trait.name}"},
+                "tooltip": {"formatter": f"World trait → {trait.name}"},
             })
-        # Ensure category 3 is present in the cats list.
-        if not any(c.get("name") == "World Trait" for c in cats):
-            cats.append({
-                "name": "World Trait",
-                "symbol": "roundRect",
-                "itemStyle": {"color": "#0ea5e9"},
-            })
+        # (Categories collapsed to a single neutral entry above; per-node
+        # symbol/itemStyle carries the World Trait styling.)
 
     # --- Current-event entity filter -------------------------------------
     # When event_t is set (pinned cursor, not live) restrict entity nodes
@@ -5371,15 +5370,8 @@ def ws_to_social_layer_graph(
                 _active &= ws.entities.keys()
                 nodes = [
                     n for n in nodes
-                    if n.get("_sl_node_type") not in ("Entity", "Concern")
-                    or (n.get("_sl_node_type") == "Entity" and n["id"] in _active)
-                    or (
-                        n.get("_sl_node_type") == "Concern"
-                        and any(
-                            n["id"].startswith(f"{_eid}::")
-                            for _eid in _active
-                        )
-                    )
+                    if n.get("_sl_node_type") != "Entity"
+                    or n["id"] in _active
                 ]
                 _ce_node_ids = {n["id"] for n in nodes}
                 links = [

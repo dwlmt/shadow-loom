@@ -1291,12 +1291,14 @@ def ask(
       "What are the causal consequences of the murder?"
 
     ``mode`` selects the read-only query family:
-      - ``"interrogate"`` *(default)* — graph pathfinding with proof;
-        returns Causal Bridges as evidence for "who knows X?" /
-        "is there a path from A to B?" questions.
-      - ``"general"`` — broad Q&A over the world graph; the engine
-        answers in natural language without requiring explicit
-        causal-bridge proof.
+      - ``"general"`` *(default)* — broad Q&A over the world graph;
+        the engine answers in natural language without requiring
+        explicit causal-bridge proof. This matches the UI's **Ask**
+        mode.
+      - ``"interrogate"`` — graph pathfinding with proof; returns
+        Causal Bridges as evidence for "who knows X?" / "is there a
+        path from A to B?" questions. This matches the UI's
+        **Interrogation** mode.
 
     ``pov_entity_id`` (scaffold): if set, the world is filtered through that
     character's epistemic lens before analysis (utterances they could not
@@ -1320,7 +1322,7 @@ def ask(
             intelligibility_threshold=_settings.physics.intelligibility_threshold,
         )
 
-    qmode = (mode or "interrogate").lower()
+    qmode = (mode or "general").lower()
     if qmode not in ("general", "interrogate"):
         return {
             "error": (
