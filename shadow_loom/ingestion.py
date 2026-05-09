@@ -27,6 +27,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
@@ -1499,6 +1500,88 @@ def _user_context_scope(user_context: Dict[str, Optional[int]]):
         _user_context_var.reset(token)
 
 
+# ---------------------------------------------------------------------
+# Shared retry helper for global-scope LLM calls.
+#
+# Single-shot global calls (Step 1 ontology, Step 2.5 proposition
+# catalogue, Step-5 validation correction patch) have no per-chunk
+# fallback: when they fail the whole pipeline degrades. Provider-side
+# transients (OpenRouter occasionally returning a malformed JSON
+# envelope, the OpenAI SDK then raising ``json.JSONDecodeError``
+# before ever reaching pydantic-ai's own retry logic) used to take
+# down ingestion runs that would have succeeded on retry. The helper
+# below wraps any awaitable-producing factory in bounded
+# retry-with-exponential-backoff so a single bad response no longer
+# poisons a global stage.
+#
+# ``factory`` is a zero-arg callable (typically a lambda capturing
+# ``agent.run(text, deps=..., ...)``) so the coroutine is freshly
+# constructed on each attempt — coroutines are single-use.
+# ``label`` appears in log lines. ``max_attempts`` defaults to 3
+# (the catalogue / correction-patch budget) — Step 1 ontology calls
+# previously did 1 retry, so the new default keeps Step 1 strictly
+# better than before.
+# ---------------------------------------------------------------------
+
+async def _run_with_retry_async(
+    factory,
+    *,
+    label: str,
+    max_attempts: int = 3,
+):
+    """Run ``await factory()`` with bounded exponential-backoff retry.
+
+    Returns the awaited value. Raises the last exception when every
+    attempt fails so callers can decide whether to re-raise (Step 1)
+    or downgrade to an empty result (catalogue).
+    """
+    last_exc: Optional[BaseException] = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return await factory()
+        except Exception as exc:
+            last_exc = exc
+            if attempt < max_attempts:
+                backoff = 2 ** (attempt - 1)
+                logger.warning(
+                    "[%s] attempt %d/%d failed (%s: %s); retrying in %ds.",
+                    label, attempt, max_attempts,
+                    type(exc).__name__, exc, backoff,
+                )
+                await asyncio.sleep(backoff)
+    assert last_exc is not None
+    raise last_exc
+
+
+def _run_with_retry_sync(
+    factory,
+    *,
+    label: str,
+    max_attempts: int = 3,
+):
+    """Sync analogue of :func:`_run_with_retry_async`.
+
+    Used by sync-only call sites (``_run_correction_patch`` calls
+    ``agent.run_sync`` from a sync context). Sleeps with
+    ``time.sleep`` between attempts.
+    """
+    last_exc: Optional[BaseException] = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return factory()
+        except Exception as exc:
+            last_exc = exc
+            if attempt < max_attempts:
+                backoff = 2 ** (attempt - 1)
+                logger.warning(
+                    "[%s] attempt %d/%d failed (%s: %s); retrying in %ds.",
+                    label, attempt, max_attempts,
+                    type(exc).__name__, exc, backoff,
+                )
+                time.sleep(backoff)
+    assert last_exc is not None
+    raise last_exc
+
 
 async def extract_ontology_async(
     text: str,
@@ -1521,19 +1604,17 @@ async def extract_ontology_async(
     location_agent = _build_location_agent(config)
     logger.info("[Step 1a] Extracting locations with %s …", config.model)
     try:
-        loc_result = await location_agent.run(text, **user_context)
+        loc_result = await _run_with_retry_async(
+            lambda: location_agent.run(text, **user_context),
+            label="Step 1a",
+        )
         loc_register = loc_result.output
-    except Exception:
-        logger.exception("[Step 1a] Location extraction failed — retrying once …")
-        try:
-            loc_result = await location_agent.run(text, **user_context)
-            loc_register = loc_result.output
-        except Exception as exc:
-            raise RuntimeError(
-                "Step 1a (location extraction) failed twice — cannot "
-                "proceed without a location register. See logs above for "
-                "the underlying LLM/API error."
-            ) from exc
+    except Exception as exc:
+        raise RuntimeError(
+            "Step 1a (location extraction) failed after retries — cannot "
+            "proceed without a location register. See logs above for "
+            "the underlying LLM/API error."
+        ) from exc
     logger.info("[Step 1a] Extracted %d locations.", len(loc_register.locations))
 
     # --- Steps 1b + 1d (parallel; both no-deps after 1a) → 1c ---
@@ -1550,19 +1631,17 @@ async def extract_ontology_async(
         obj_deps = _ObjectDeps(location_register=loc_register)
         logger.info("[Step 1b] Extracting objects with %s …", config.model)
         try:
-            obj_result = await object_agent.run(text, deps=obj_deps, **user_context)
+            obj_result = await _run_with_retry_async(
+                lambda: object_agent.run(text, deps=obj_deps, **user_context),
+                label="Step 1b",
+            )
             return obj_result.output
-        except Exception:
-            logger.exception("[Step 1b] Object extraction failed — retrying once …")
-            try:
-                obj_result = await object_agent.run(text, deps=obj_deps, **user_context)
-                return obj_result.output
-            except Exception as exc:
-                raise RuntimeError(
-                    "Step 1b (object extraction) failed twice — cannot "
-                    "proceed without an object register. See logs above for "
-                    "the underlying LLM/API error."
-                ) from exc
+        except Exception as exc:
+            raise RuntimeError(
+                "Step 1b (object extraction) failed after retries — cannot "
+                "proceed without an object register. See logs above for "
+                "the underlying LLM/API error."
+            ) from exc
 
     async def _extract_entities(
         obj_register: ObjectRegister,
@@ -1576,37 +1655,33 @@ async def extract_ontology_async(
         )
         logger.info("[Step 1c] Extracting entities with %s …", config.model)
         try:
-            ent_result = await entity_agent.run(text, deps=ent_deps, **user_context)
+            ent_result = await _run_with_retry_async(
+                lambda: entity_agent.run(text, deps=ent_deps, **user_context),
+                label="Step 1c",
+            )
             return ent_result.output
-        except Exception:
-            logger.exception("[Step 1c] Entity extraction failed — retrying once …")
-            try:
-                ent_result = await entity_agent.run(text, deps=ent_deps, **user_context)
-                return ent_result.output
-            except Exception as exc:
-                raise RuntimeError(
-                    "Step 1c (entity extraction) failed twice — cannot "
-                    "proceed without an entity register. See logs above "
-                    "for the underlying LLM/API error."
-                ) from exc
+        except Exception as exc:
+            raise RuntimeError(
+                "Step 1c (entity extraction) failed after retries — cannot "
+                "proceed without an entity register. See logs above "
+                "for the underlying LLM/API error."
+            ) from exc
 
     async def _extract_world_traits() -> WorldTraitsRegister:
         world_traits_agent = _build_world_traits_agent(config)
         logger.info("[Step 1d] Extracting world traits with %s …", config.model)
         try:
-            wt_result = await world_traits_agent.run(text, **user_context)
+            wt_result = await _run_with_retry_async(
+                lambda: world_traits_agent.run(text, **user_context),
+                label="Step 1d",
+            )
             return wt_result.output
-        except Exception:
-            logger.exception("[Step 1d] World traits extraction failed — retrying once …")
-            try:
-                wt_result = await world_traits_agent.run(text, **user_context)
-                return wt_result.output
-            except Exception as exc:
-                raise RuntimeError(
-                    "Step 1d (world-traits extraction) failed twice — "
-                    "cannot proceed without a world-traits register. See "
-                    "logs above for the underlying LLM/API error."
-                ) from exc
+        except Exception as exc:
+            raise RuntimeError(
+                "Step 1d (world-traits extraction) failed after retries — "
+                "cannot proceed without a world-traits register. See "
+                "logs above for the underlying LLM/API error."
+            ) from exc
 
     # 1b and 1d run together (independent), then 1c sees both.
     obj_register, wt_register = await asyncio.gather(
@@ -1959,15 +2034,28 @@ async def extract_proposition_catalogue_async(
     agent = _build_proposition_catalogue_agent(config)
     deps = _PropCatalogueDeps(global_register=register)
     logger.info("[Step 2.5] Extracting proposition catalogue \u2026")
+    # Bounded retry-with-backoff. The catalogue is a single LLM call
+    # over the whole source text, so a transient provider flake (e.g.
+    # OpenRouter returning a malformed JSON envelope, prompting
+    # ``json.JSONDecodeError`` from the OpenAI SDK before we ever see
+    # the model output) collapses the *entire* catalogue and silently
+    # propagates as "no propositions" through every downstream stage:
+    # the per-chunk Affect Agent runs without PROP context, the
+    # reconciler has nothing to fold, and the saved ``WorldStateV1``
+    # ends up with belief / utterance / event references that point
+    # at PROP_ ids the registry never contained.
     try:
-        result = await agent.run(text, deps=deps, **_user_kwargs())
+        result = await _run_with_retry_async(
+            lambda: agent.run(text, deps=deps, **_user_kwargs()),
+            label="Step 2.5",
+        )
         catalogue = result.output
     except Exception:
         logger.exception(
-            "[Step 2.5] Proposition catalogue extraction FAILED \u2014 "
-            "returning empty catalogue (per-chunk extractors will run "
-            "with no PROP_ context; legacy post-pass clustering still "
-            "fires).",
+            "[Step 2.5] Proposition catalogue extraction FAILED after "
+            "retries \u2014 returning empty catalogue (per-chunk "
+            "extractors will run with no PROP_ context; legacy "
+            "post-pass clustering still fires).",
         )
         return PropositionCatalogue()
     logger.info(
@@ -13788,7 +13876,10 @@ def _run_correction_patch(
     )
 
     try:
-        result = agent.run_sync(correction_msg, **_user_kwargs())
+        result = _run_with_retry_sync(
+            lambda: agent.run_sync(correction_msg, **_user_kwargs()),
+            label=f"{log_prefix} correction-patch",
+        )
     except Exception:
         logger.exception("%s Correction agent FAILED — keeping previous state.", log_prefix)
         return world_state, [], "agent_failed"
@@ -13998,9 +14089,18 @@ def _step5_run_chunk(
                 "will retry once.", exc, attempt + 1, sorted(sub_traits.keys()),
             )
             continue
-        except Exception:
+        except Exception as exc:
+            last_exc = exc
+            if attempt + 1 < 2:
+                logger.warning(
+                    "[Step 5] Provider/parse error %s: %s (attempt %d/2) "
+                    "for traits=%s; will retry once.",
+                    type(exc).__name__, exc, attempt + 1,
+                    sorted(sub_traits.keys()),
+                )
+                continue
             logger.exception(
-                "[Step 5] Non-transient failure for traits=%s; not retrying.",
+                "[Step 5] Non-transient failure after retry for traits=%s.",
                 sorted(sub_traits.keys()),
             )
             return None
@@ -14050,9 +14150,18 @@ async def _step5_run_chunk_async(
                 "will retry once.", exc, attempt + 1, sorted(sub_traits.keys()),
             )
             continue
-        except Exception:
+        except Exception as exc:
+            last_exc = exc
+            if attempt + 1 < 2:
+                logger.warning(
+                    "[Step 5·Async] Provider/parse error %s: %s (attempt "
+                    "%d/2) for traits=%s; will retry once.",
+                    type(exc).__name__, exc, attempt + 1,
+                    sorted(sub_traits.keys()),
+                )
+                continue
             logger.exception(
-                "[Step 5·Async] Non-transient failure for traits=%s; not retrying.",
+                "[Step 5·Async] Non-transient failure after retry for traits=%s.",
                 sorted(sub_traits.keys()),
             )
             return None
@@ -15125,16 +15234,19 @@ def validate_world_state(
         preamble = "Programmatic validation found 0 issues.\n\n"
 
     try:
-        result = agent.run_sync(
-            preamble + f"Validate the following WorldStateV1 JSON:\n\n{ws_json}",
-            **_user_kwargs(),
+        result = _run_with_retry_sync(
+            lambda: agent.run_sync(
+                preamble + f"Validate the following WorldStateV1 JSON:\n\n{ws_json}",
+                **_user_kwargs(),
+            ),
+            label="Step 3·LLM validation",
         )
         llm_report = result.output
         llm_issues = llm_report.issues
         llm_suggestions = llm_report.suggestions
     except Exception as e:  # noqa: BLE001 — never crash import on validator failure
         logger.warning(
-            "[Step 3·LLM] Validation agent failed (%s: %s) — "
+            "[Step 3·LLM] Validation agent failed after retries (%s: %s) — "
             "falling back to programmatic-only validation.",
             type(e).__name__, e,
         )
