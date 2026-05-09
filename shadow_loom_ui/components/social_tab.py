@@ -119,7 +119,7 @@ def build_social_tab(state: AppState) -> None:
                     "### View modes\n"
                     "- **Network** — combined graph of characters,"
                     " propositions (diamonds, sized by stakes) and"
-                    " concerns (triangles=desire / pins=fear, sized"
+                    " concerns (triangles, green=desire / red=fear, sized"
                     " by salience). Edges: relationship affinity"
                     " (entity\u2194entity), beliefs"
                     " (entity\u2192proposition, coloured by"
@@ -580,19 +580,6 @@ def build_social_tab(state: AppState) -> None:
                                 ),
                                 height="540px",
                             )
-                        # A compact set of trait trajectories below the
-                        # network so the user always sees how each
-                        # character's inner state is moving alongside
-                        # the social structure they sit in.
-                        with ui.expansion(
-                            "Character trait trajectories",
-                            icon="show_chart",
-                            value=False,
-                        ).classes(
-                            "w-full bg-white border border-slate-200 "
-                            "rounded-xl mb-2"
-                        ):
-                            render_trait_trajectories_grid(ws)
 
                     elif mode == "ego":
                         ego_id = ego_select.value

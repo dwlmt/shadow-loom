@@ -438,6 +438,14 @@ def build_world_tab(state: AppState) -> None:
             # Snapshot the world model if a cursor is active. The
             # cursor value is on the active axis; resolve it back to
             # a fabula time for the entity/state replay.
+            #
+            # When no cursor is set (project just loaded), default to
+            # ``tmax`` so the Overview / Spatial / Information views
+            # show the *current* state of the story rather than the
+            # entire accumulated history. This mirrors the Social tab
+            # behaviour and matches user expectation: "show me where
+            # the story is now", with the slider available to scrub
+            # back through earlier moments.
             cursor_value = state.active_cursor
             fabula_t_eff: int | None = None
             if cursor_value is not None and tmax > 0:
@@ -448,6 +456,8 @@ def build_world_tab(state: AppState) -> None:
                         fabula_t_eff = eff
                 except Exception:
                     logger.exception("Snapshot failed; falling back to live")
+            elif cursor_value is None and tmax > 0:
+                fabula_t_eff = tmax
 
             # Update selectors
             entity_opts = {eid: ent.name for eid, ent in ws.entities.items()}

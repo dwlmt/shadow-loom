@@ -4904,10 +4904,39 @@ def ws_to_social_layer_graph(
 
     nodes: list[dict] = []
     links: list[dict] = []
+    # Per-node ``symbol`` / ``itemStyle`` should override category-level
+    # defaults in ECharts, but in practice (graph series with mixed
+    # symbols + categories rendered through NiceGUI's echart wrapper)
+    # the category default sometimes wins and proposition diamonds
+    # render as character-coloured circles. Setting an explicit
+    # ``symbol`` and ``itemStyle.color`` on each category gives ECharts
+    # a sane fallback per category index, so even if the per-node hint
+    # is dropped the diamonds still appear.
     cats = [
-        {"name": "Character"},
-        {"name": "Proposition"},
-        {"name": "Concern"},
+        {
+            "name": "Character",
+            "symbol": "circle",
+            "itemStyle": {"color": NODE_COLORS["Entity"]},
+        },
+        {
+            "name": "Proposition",
+            "symbol": "diamond",
+            "itemStyle": {"color": "#8a5cf0"},
+        },
+        {
+            "name": "Concern",
+            "symbol": "triangle",
+            # Neutral category default so ECharts has a complete
+            # categories config (omitting ``itemStyle`` on one
+            # category causes that category's nodes \u2014 and in some
+            # NiceGUI/ECharts code paths *adjacent* categories' nodes
+            # \u2014 to drop out of the render). Per-node
+            # ``itemStyle.color`` (green = desire, red = fear) still
+            # overrides this default at draw time, so concerns
+            # render in the right colour while propositions and
+            # world-traits remain visible.
+            "itemStyle": {"color": "#94a3b8"},
+        },
     ]
 
     # --- Entity nodes -------------------------------------------------
@@ -4985,8 +5014,13 @@ def ws_to_social_layer_graph(
                     "id": cnid,
                     "name": concern.kind or concern.concern_id,
                     "category": 2,
-                    "symbol": ("triangle" if polarity == "desire"
-                               else "pin"),
+                    # Both polarities render as triangles so they read
+                    # consistently as "concerns"; the colour (green =
+                    # desire, red = fear) carries the polarity. The
+                    # previous ``pin`` symbol for fear was being
+                    # silently downgraded to a circle by ECharts in
+                    # some code paths, breaking visual consistency.
+                    "symbol": "triangle",
                     "symbolSize": size,
                     "itemStyle": {"color": color},
                     "tooltip": {"formatter": (
@@ -4997,15 +5031,18 @@ def ws_to_social_layer_graph(
                     )},
                     "_sl_node_type": "Concern",
                 })
-                # Entity → Concern edge (holds).
+                # Entity → Concern edge (holds). Width tracks salience
+                # but never drops below 1.5px, and opacity is high
+                # enough that the edge is visible against the
+                # off-white chart background even at minimum salience.
                 links.append({
                     "source": ent.id,
                     "target": cnid,
                     "lineStyle": {
                         "color": color,
-                        "width": max(1.0, float(salience) * 3.0),
+                        "width": max(1.5, float(salience) * 3.0),
                         "type": "solid",
-                        "opacity": 0.6,
+                        "opacity": 0.85,
                     },
                 })
                 # Concern → Proposition edge (about). Arrowed and
@@ -5022,9 +5059,9 @@ def ws_to_social_layer_graph(
                         "symbolSize": [4, 8],
                         "lineStyle": {
                             "color": color,
-                            "width": max(1.0, float(salience) * 2.0),
+                            "width": max(1.5, float(salience) * 2.0),
                             "type": "dashed",
-                            "opacity": 0.55,
+                            "opacity": 0.8,
                         },
                     })
 
@@ -5288,7 +5325,11 @@ def ws_to_social_layer_graph(
             })
         # Ensure category 3 is present in the cats list.
         if not any(c.get("name") == "World Trait" for c in cats):
-            cats.append({"name": "World Trait"})
+            cats.append({
+                "name": "World Trait",
+                "symbol": "roundRect",
+                "itemStyle": {"color": "#0ea5e9"},
+            })
 
     # --- Current-event entity filter -------------------------------------
     # When event_t is set (pinned cursor, not live) restrict entity nodes

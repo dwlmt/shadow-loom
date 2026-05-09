@@ -207,48 +207,75 @@ def _open_expand_dialog(render_fn: Callable[[str], Any], title: str) -> None:
                     png_btn.tooltip("Save as PNG")
 
                     def _save_svg():
-                        # Prefer the ECharts instance API
-                        # (``renderToSVGString``); fall back to any
-                        # inline ``<svg>`` element so non-ECharts
-                        # diagrams (e.g. Mermaid) also export.
+                        # ECharts only exposes ``renderToSVGString`` /
+                        # ``getDataURL({type:'svg'})`` when the chart
+                        # was *initialised* with ``renderer: 'svg'``.
+                        # All our charts use the default canvas
+                        # renderer for performance, so the previous
+                        # implementation silently failed for every
+                        # ECharts diagram. Workaround: clone each
+                        # chart's option into a temporary hidden DOM
+                        # node, init a new ECharts instance there
+                        # with the SVG renderer, serialise its root
+                        # ``<svg>`` element, then dispose. Falls back
+                        # to any inline ``<svg>`` (Mermaid, etc.) if
+                        # no ECharts instance is found.
                         ui.run_javascript(
                             """
                             (() => {
                                 const root = document.querySelector('.q-dialog__inner');
-                                if (!root) return;
+                                if (!root) return 'NOROOT';
                                 let svgStr = null;
-                                // 1) ECharts instance lookup. ``echarts``
-                                //    is exposed globally by NiceGUI's
-                                //    bundled echarts integration.
+
+                                // 1) ECharts re-render in SVG mode.
                                 if (window.echarts && window.echarts.getInstanceByDom) {
                                     const candidates = root.querySelectorAll('div');
                                     for (const d of candidates) {
                                         const inst = window.echarts.getInstanceByDom(d);
                                         if (!inst) continue;
+                                        let opt;
+                                        try { opt = inst.getOption(); }
+                                        catch (e) { continue; }
+                                        if (!opt) continue;
+                                        const rect = d.getBoundingClientRect();
+                                        const w = Math.max(400, Math.round(rect.width || 1000));
+                                        const h = Math.max(300, Math.round(rect.height || 700));
+                                        const tmp = document.createElement('div');
+                                        tmp.style.position = 'fixed';
+                                        tmp.style.left = '-10000px';
+                                        tmp.style.top = '0';
+                                        tmp.style.width = w + 'px';
+                                        tmp.style.height = h + 'px';
+                                        document.body.appendChild(tmp);
                                         try {
-                                            if (typeof inst.renderToSVGString === 'function') {
-                                                svgStr = inst.renderToSVGString();
-                                                break;
+                                            const tmpChart = window.echarts.init(
+                                                tmp, null, {renderer: 'svg', width: w, height: h}
+                                            );
+                                            // Disable animation so the SVG
+                                            // is the final frame, not a
+                                            // mid-tween snapshot.
+                                            opt.animation = false;
+                                            opt.animationDuration = 0;
+                                            opt.animationDurationUpdate = 0;
+                                            tmpChart.setOption(opt, true);
+                                            // Force a synchronous layout pass.
+                                            tmpChart.resize({width: w, height: h});
+                                            const svgEl = tmp.querySelector('svg');
+                                            if (svgEl) {
+                                                svgStr = new XMLSerializer().serializeToString(svgEl);
                                             }
-                                            // SVG-renderer charts
-                                            // expose getDataURL with
-                                            // type 'svg' as a data URI
-                                            // we can decode.
-                                            const url = inst.getDataURL && inst.getDataURL({type: 'svg'});
-                                            if (url && url.startsWith('data:image/svg+xml')) {
-                                                const i = url.indexOf(',');
-                                                const payload = url.slice(i + 1);
-                                                svgStr = url.includes(';base64,')
-                                                    ? atob(payload)
-                                                    : decodeURIComponent(payload);
-                                                break;
-                                            }
-                                        } catch (e) { /* try next */ }
+                                            tmpChart.dispose();
+                                        } catch (e) {
+                                            console.error('SVG export failed', e);
+                                        } finally {
+                                            tmp.remove();
+                                        }
+                                        if (svgStr) break;
                                     }
                                 }
+
                                 // 2) Inline <svg> fallback (Mermaid,
-                                //    custom diagrams, ECharts in SVG
-                                //    renderer mode).
+                                //    custom diagrams).
                                 if (!svgStr) {
                                     const svgEl = root.querySelector('svg');
                                     if (svgEl) {
@@ -259,14 +286,22 @@ def _open_expand_dialog(render_fn: Callable[[str], Any], title: str) -> None:
                                     return 'NOSVG';
                                 }
                                 if (!svgStr.includes('xmlns=')) {
-                                    svgStr = svgStr.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
+                                    svgStr = svgStr.replace(
+                                        '<svg',
+                                        '<svg xmlns="http://www.w3.org/2000/svg"'
+                                    );
                                 }
-                                const blob = new Blob([svgStr], {type: 'image/svg+xml;charset=utf-8'});
+                                const blob = new Blob(
+                                    [svgStr],
+                                    {type: 'image/svg+xml;charset=utf-8'}
+                                );
                                 const url = URL.createObjectURL(blob);
                                 const a = document.createElement('a');
                                 a.href = url;
                                 a.download = 'shadow-loom-chart.svg';
+                                document.body.appendChild(a);
                                 a.click();
+                                a.remove();
                                 setTimeout(() => URL.revokeObjectURL(url), 1000);
                                 return 'OK';
                             })();
@@ -351,6 +386,12 @@ def render_social_layer_legend() -> None:
                 f"border-bottom:11px solid {color};"
             )
             return
+        if shape == "rect":
+            ui.element("div").style(
+                f"width:14px;height:10px;background:{color};"
+                "border-radius:3px;"
+            )
+            return
         if shape == "line":
             ui.element("div").style(
                 f"width:18px;height:3px;background:{color};border-radius:2px;"
@@ -373,7 +414,8 @@ def render_social_layer_legend() -> None:
             _chip("circle", "#F26B5E", "Character")
             _chip("diamond", "#8a5cf0", "Proposition (size = stakes)")
             _chip("tri", "#16a34a", "Desire (size = salience)")
-            _chip("circle", "#dc2626", "Fear (size = salience)")
+            _chip("tri", "#dc2626", "Fear (size = salience)")
+            _chip("rect", "#0ea5e9", "World trait (latent force)")
         with ui.row().classes("items-center gap-3 flex-wrap"):
             ui.label("Edges:").classes("text-xs font-semibold text-slate-700")
             _chip("line", "#16a34a", "Affinity +  /  ")

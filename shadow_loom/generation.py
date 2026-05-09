@@ -246,22 +246,42 @@ def _form_class_render_override(format_str: str, mode: str) -> str:
             "mode's default register) ===\n"
             f"  Source format: {format_str} \u2014 the source text is a "
             "compressed plot summary, not a scene. Read the rendering "
-            "mode template above as guidance about *what* to depict "
-            "(which beats, which abduction truths, which intervention "
-            "mechanism), NOT as a license to render a fully drawn "
-            "scene. Specifically:\n"
+            "mode template later in this brief as guidance about "
+            "*what* to depict (which beats, which abduction truths, "
+            "which intervention mechanism), NOT as a license to render "
+            "a fully drawn scene. The mode template's instructions to "
+            "\"render as the actual lived world\", \"render in plain "
+            "past-tense narration\", \"ground in concrete sensory "
+            "detail\", \"dilate time\", or anything similar are "
+            "**explicitly overridden** by the form-class budget below. "
+            "Specifically:\n"
             "  \u2022 Use compressed third-person past-tense plot summary "
-            "diction \u2014 one declarative sentence per story beat.\n"
-            "  \u2022 Do NOT add multi-sentence physical descriptions, "
-            "extended sensory passages, or interior monologue beyond what "
-            "the mode template *explicitly* requires (e.g. regret's "
-            "\"if only\u2026\" is still permitted; a lingering paragraph "
-            "of posture and gaze is not).\n"
+            "diction \u2014 one declarative sentence per story beat, "
+            "two at most.\n"
+            "  \u2022 **Zero quoted speech.** No dialogue, no dialogue "
+            "tags, no \"X said\" \u2014 ever. Speech acts are reported "
+            "as summary (\"X told Y about Z\"), never dramatised.\n"
+            "  \u2022 No multi-sentence physical descriptions, extended "
+            "sensory passages, moment-by-moment action, or interior "
+            "monologue beyond what the mode template *explicitly* "
+            "requires (e.g. regret's \"if only\u2026\" is still "
+            "permitted; a lingering paragraph of posture and gaze is "
+            "not).\n"
             "  \u2022 Honour the abduction / intervention payloads by "
-            "embedding them in the summary cadence: a single behavioural "
-            "cue per hidden truth, not a paragraph dramatising it.\n"
-            "  \u2022 The auditor will flag a `style_mismatch` violation "
-            "if the prose drifts into novelistic scene work."
+            "embedding them in the summary cadence: a single "
+            "behavioural cue per hidden truth, not a paragraph "
+            "dramatising it.\n"
+            "  \u2022 Cadence example to mirror (one beat = one "
+            "sentence, no quoted speech, no sensory dwelling): \"Ken "
+            "visits Mrs Coady, bringing treats for her terriers. He "
+            "finds her increasingly frail. On his third visit he "
+            "discovers her collapsed; he carries her to the sofa and "
+            "walks the dogs. She dies four days later of heart "
+            "failure.\"\n"
+            "  \u2022 The auditor will flag a `style_mismatch` "
+            "violation if the prose drifts into novelistic scene "
+            "work, and the refinement loop will be forced to rewrite "
+            "from scratch \u2014 do it right on the first pass."
         )
 
     if format_str in _NON_NARRATIVE_FORMS:
@@ -1697,6 +1717,35 @@ def assemble_rendering_prompt(
         ))
         sections.append("")
 
+    # === Form-class HARD override (top-of-brief banner) ===
+    # When the source format is a summary form (synopsis,
+    # plot_summary, outline) or a non-narrative form (news_article,
+    # historical_account, etc.) AND the rendering mode is one whose
+    # default template pulls toward scenic prose, surface the
+    # form-class budget as a HARD banner *before* the rendering
+    # directive's mode template can pull the renderer toward scene
+    # work. Without this hoist the renderer reliably ignores the
+    # form-class on the first pass — the override was previously
+    # appended after the rendering directive, where the mode
+    # template's "render as a lived scene" language was being read
+    # first and winning. The auditor would then catch the
+    # ``style_mismatch`` and the refinement loop would converge
+    # eventually, but every first-pass render was burnt. Hoisting
+    # makes the form-class the frame the rest of the brief is read
+    # through.
+    _early_form_override = ""
+    if (
+        brief.narrative_style is not None
+        and brief.rendering is not None
+    ):
+        _early_form_override = _form_class_render_override(
+            brief.narrative_style.format,
+            brief.rendering.rendering_mode,
+        )
+    if _early_form_override:
+        sections.append(_early_form_override)
+        sections.append("")
+
     # === Story so far (narrative continuity) ===
     # Concatenated prose from prior versions in the current session's
     # lineage so a chain of queries (counterfactual → intervention
@@ -1772,14 +1821,18 @@ def assemble_rendering_prompt(
         # action and sensory detail" \u2014 which directly contradicts
         # the STYLE FIDELITY block when the source format is a summary
         # form (synopsis, plot_summary, outline) or a non-narrative
-        # form (news_article, historical_account, etc.). Without this
-        # override the auditor reliably ping-pongs between
-        # ``style_mismatch`` (too scenic) and ``meta_narration`` /
-        # ``abduction_failure`` (too clinical) on every iteration of
-        # the refinement loop. We surface the form-class as an
-        # explicit HARD instruction that the rendering directive must
-        # be filtered through.
-        if brief.narrative_style is not None:
+        # form (news_article, historical_account, etc.). The override
+        # is now hoisted to a top-of-brief banner (see
+        # ``_early_form_override`` above) so the renderer reads it
+        # *before* the mode template can pull it toward scene work.
+        # We additionally re-anchor it here so anyone reading the
+        # rendering directive sees the same constraint inline rather
+        # than scrolling back up — the duplication is intentional and
+        # the wording is identical.
+        if (
+            brief.narrative_style is not None
+            and not _early_form_override
+        ):
             override = _form_class_render_override(
                 brief.narrative_style.format,
                 brief.rendering.rendering_mode,
@@ -1787,6 +1840,14 @@ def assemble_rendering_prompt(
             if override:
                 sections.append("")
                 sections.append(override)
+        elif _early_form_override:
+            sections.append("")
+            sections.append(
+                "(Form-class HARD override applies \u2014 see banner at "
+                "the top of this brief. The mode template above must be "
+                "filtered through that override; on any conflict, the "
+                "form-class budget wins.)"
+            )
         sections.append("")
 
     # === Effect-specific payloads ===
