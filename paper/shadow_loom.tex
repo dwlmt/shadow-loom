@@ -1844,7 +1844,18 @@ exactly one. The renderer also drops the \emph{abducted-cue}
 sub-directive whenever the Rung-3 abduction posterior is flat
 ($|\Delta| < 0.10$ on every trait), so the prose is no longer
 asked to dramatise observable behaviour for shifts the simulator
-itself called negligible.
+itself called negligible. Finally, the
+\texttt{ERASED~UTTERANCES~(HARD)} constraint block carries a
+\emph{structural fingerprint} of each erased speech act
+(speaker, addressees, target ids, truth-value, channel) rather
+than the canonical content: showing the verbatim text in a ``do
+not echo this'' instruction is the classic pink-elephant
+anti-pattern that makes the line the most salient phrase in the
+renderer's context, and the rewriter either reproduces it or
+paraphrases its evidentiary logic. Deterministic leak detection
+still reads the canonical \texttt{content} from the world state
+directly, so removing it from the brief weakens neither the
+constraint nor the audit.
 
 \paragraph{Cycle handling.} The propagator and the ingestion
 auto-repair pass distinguish \emph{temporal-collapse} cycles

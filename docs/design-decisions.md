@@ -726,7 +726,21 @@ distinguishes *temporal-collapse* artefacts from real causal loops:
    to invent body-language for shifts the simulator itself called
    negligible — and which the POV auditor would immediately flag
    as diagnostic gloss.
-6. **Temporal-collapse-aware SCC handling.** An `affordance_gate`
+6. **Erased-utterance fingerprint, not text.** The `ERASED
+   UTTERANCES (HARD)` constraint block (counterfactual / intervention
+   briefs) carries a *structural fingerprint* — speaker,
+   addressees, target-ids, truth-value, channel — but **not** the
+   canonical `content` of the erased utterance. Showing the
+   verbatim text in a "do not echo this" instruction is the
+   classic pink-elephant anti-pattern: it makes the line the
+   most salient phrase in the renderer's context, and the rewriter
+   either reproduces it or paraphrases its evidentiary logic. The
+   deterministic
+   `_withheld_utterance_leak_violations` check still reads
+   `world_state.events[].content` directly, and the LLM auditor
+   pattern-matches on the act-shape, so leak detection is
+   unaffected; only the renderer's exposure is removed.
+7. **Temporal-collapse-aware SCC handling.** An `affordance_gate`
    edge (`Entity → Event`) refers to the entity's *pre-event*
    state; a `mutation` edge (`Event → Entity`) refers to the
    *post-event* state. Collapsed onto a single entity node the

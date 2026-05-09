@@ -2169,12 +2169,31 @@ def _build_exclusion_constraints(
                 continue
             speaker = getattr(evt, "speaker_id", None) or "unknown"
             addressees = list(getattr(evt, "addressee_ids", []) or [])
-            content = (getattr(evt, "content", None) or "").strip()
-            if len(content) > 120:
-                content = content[:117] + "..."
-            snippet = f' \u2014 was: "{content}"' if content else ""
+            # Anti-pink-elephant: do NOT show ``content`` verbatim. The
+            # canonical text is exactly what we are forbidding the
+            # renderer to echo, so quoting it in the "do not echo"
+            # instruction reliably makes it the most salient phrase
+            # in the prompt and the renderer either reproduces it
+            # verbatim or paraphrases its evidentiary logic. Show only
+            # a *structural fingerprint* — the speech-act shape that
+            # is forbidden, not the wording. The id slug
+            # (e.g.\u00a0EVT_UTT_GEORGE_ORDERS_KEN_KILL_COADY) carries
+            # enough semantic content for the renderer to know which
+            # speech act is forbidden without showing it the line.
+            target_ids = list(getattr(evt, "target_ids", []) or [])
+            truth_value = getattr(evt, "truth_value", None) or ""
+            via_channel = getattr(evt, "via_channel_id", None) or ""
+            fp_parts: list[str] = []
+            if target_ids:
+                fp_parts.append(f"about={target_ids}")
+            if truth_value:
+                fp_parts.append(f"truth={truth_value}")
+            if via_channel:
+                fp_parts.append(f"via={via_channel}")
+            fingerprint = (" | " + ", ".join(fp_parts)) if fp_parts else ""
             lines.append(
-                f"  - {uid}: {speaker} \u2192 {addressees}{snippet}"
+                f"  - {uid}: speaker={speaker} \u2192 "
+                f"addressees={addressees}{fingerprint}"
             )
         if len(pruned_utts) > 20:
             lines.append(f"  - ...and {len(pruned_utts) - 20} more.")
@@ -2187,14 +2206,22 @@ def _build_exclusion_constraints(
                 # so an LLM that pattern-matches on the heading sees
                 # it verbatim, not just the prefix words inside a
                 # generic constraints dump.
-                f"=== ERASED UTTERANCES (HARD) === \u2014 these lines were SPOKEN "
-                f"in canon but the do-surgery severed their provenance "
-                f"and they DO NOT exist in this {world_label} world. "
-                "Do NOT have any character say, paraphrase, remember, "
-                "or react to them. If the same speaker would naturally "
-                "still talk to the same addressee in this scene, write "
-                "a NEW line consistent with the changed conditions \u2014 "
-                "do not echo the canonical wording.\n"
+                f"=== ERASED UTTERANCES (HARD) === \u2014 the speech acts "
+                f"identified below were SPOKEN in canon but the do-"
+                f"surgery severed their provenance and they DO NOT "
+                f"exist in this {world_label} world. The canonical "
+                "wording is intentionally NOT shown to you \u2014 only the "
+                "speaker, addressees, and topic structure. Do NOT have "
+                "any character perform this speech act in any form: "
+                "do not echo, paraphrase, remember, or recreate the "
+                "evidentiary logic, intent, or causal claim of the "
+                "erased line. If the same speaker would naturally "
+                "still talk to the same addressee in this scene, "
+                "invent a NEW line about a DIFFERENT subject (or a "
+                "different evidentiary justification) consistent with "
+                "the changed conditions. The auditor will flag both "
+                "verbatim quotation and structural paraphrase \u2014 the "
+                "act-shape is what is forbidden, not just the wording.\n"
                 + "\n".join(lines)
             ),
             evidence={"pruned_utterance_event_ids": pruned_utts},
