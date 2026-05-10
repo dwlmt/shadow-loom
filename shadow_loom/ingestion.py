@@ -10642,6 +10642,167 @@ deduplicate_causal = _deduplicate_causal
 deduplicate_channels = _deduplicate_channels
 
 
+def _infer_spatial_from_movement(
+    spatial_topology: List[SpatialEdge],
+    register: "GlobalRegister",
+    all_entity_updates: Dict[str, List["EntityStateSnapshot"]],
+    all_object_updates: Dict[str, List["ObjectStateSnapshot"]],
+    events: Optional[List[EventNode]] = None,
+) -> Tuple[List[SpatialEdge], int]:
+    """Backfill missing :class:`SpatialEdge`s implied by entity / object movement.
+
+    The Physics Agent runs *per chunk* and frequently neglects to emit
+    spatial edges between locations whose connection is implicit from
+    character movement (Tatooine → Alderaan via the Falcon, Inverness
+    → Dunsinane via the king's road). Without those edges the World
+    Map view shows a constellation of disconnected locations even for
+    fully-ingested worlds, downstream reachability queries fail, and
+    the auditor's spatial-logic check has nothing to verify against.
+
+    This pass walks two complementary movement sources:
+
+      1. **State-timeline transitions** — each entity's and object's
+         initial location followed by every ``state_timeline`` snapshot
+         that overrides ``location_id``.
+      2. **Event-attendance chains** — for every entity, the sequence
+         of locations of the events they actor / target across the
+         narrative (resolved via :attr:`EventNode.at_location_id` when
+         set). An entity who appears in events at LOC_A, LOC_B, LOC_C
+         in that fabula order traversed A→B and B→C even when the
+         per-chunk Physics Agent neglected to register the EntityUpdate.
+
+    Pairs are treated as undirected — an existing edge in either
+    direction satisfies the constraint, matching the default
+    ``bidirectional=True`` semantics. Synthesised edges carry
+    ``connection_type='inferred'`` so they are visually
+    distinguishable from author-supplied passages, and
+    ``established_at_fabula`` is set to the earliest transition tick
+    observed for the pair.
+
+    Returns the (possibly extended) edge list plus the count of edges
+    added.
+    """
+    known_locs = set(register.locations.keys())
+    # Existing pairs (undirected) — both directions already covered.
+    existing: Set[frozenset] = {
+        frozenset((e.source_id, e.target_id))
+        for e in spatial_topology
+    }
+
+    # Earliest transition tick per undirected pair.
+    transitions: Dict[frozenset, Tuple[str, str, int]] = {}
+
+    def _record(prev_loc: Optional[str], next_loc: Optional[str], tick: int) -> None:
+        if not prev_loc or not next_loc or prev_loc == next_loc:
+            return
+        if prev_loc not in known_locs or next_loc not in known_locs:
+            return
+        key = frozenset((prev_loc, next_loc))
+        if key in existing:
+            return
+        prior = transitions.get(key)
+        if prior is None or tick < prior[2]:
+            transitions[key] = (prev_loc, next_loc, tick)
+
+    # Entity movement chains.
+    for eid, ent in register.entities.items():
+        snaps = sorted(
+            all_entity_updates.get(eid, []), key=_snapshot_sort_key,
+        )
+        cur = getattr(ent, "location_id", None)
+        for s in snaps:
+            new_loc = getattr(s, "location_id", None)
+            if new_loc is None:
+                continue
+            _record(cur, new_loc, getattr(s, "fabula_time", 0))
+            cur = new_loc
+
+    # Object movement chains (a transported prop traces a passage too).
+    for oid, obj in register.objects.items():
+        snaps = sorted(
+            all_object_updates.get(oid, []),
+            key=lambda s: (s.fabula_time, s.triggered_by or ""),
+        )
+        cur = getattr(obj, "location_id", None)
+        for s in snaps:
+            if getattr(s, "set_location_null", False):
+                cur = None
+                continue
+            new_loc = getattr(s, "location_id", None)
+            if new_loc is None:
+                continue
+            _record(cur, new_loc, getattr(s, "fabula_time", 0))
+            cur = new_loc
+
+    # Event-attendance chains: per entity, the sequence of locations of
+    # the events they participate in (actor or non-channel target) in
+    # fabula order. Catches movement the per-chunk Physics Agent never
+    # registered as an EntityUpdate but which is implicit in the events
+    # themselves (Luke fights at Mos Eisley, then on the Falcon, then
+    # at the Death Star — three transitions implied without a single
+    # entity_update.new_location_id).
+    if events:
+        per_entity_events: Dict[str, List[Tuple[int, str]]] = {}
+        for evt in events:
+            loc = getattr(evt, "at_location_id", None)
+            if not loc or loc not in known_locs:
+                continue
+            tick = int(getattr(evt, "fabula_time", 0))
+            participants: Set[str] = set()
+            for aid in getattr(evt, "actor_ids", None) or []:
+                if isinstance(aid, str) and aid.startswith("ENT_"):
+                    participants.add(aid)
+            sid = getattr(evt, "speaker_id", None)
+            if isinstance(sid, str) and sid.startswith("ENT_"):
+                participants.add(sid)
+            # Targets are co-present *unless* the event is a
+            # channel-mediated utterance — in which case addressees
+            # may be remote and don't traverse to the location.
+            via_chan = getattr(evt, "via_channel_id", None)
+            if not via_chan:
+                for tid in getattr(evt, "target_ids", None) or []:
+                    if isinstance(tid, str) and tid.startswith("ENT_"):
+                        participants.add(tid)
+            for ent_id in participants:
+                per_entity_events.setdefault(ent_id, []).append((tick, loc))
+        for ent_id, hits in per_entity_events.items():
+            ent = register.entities.get(ent_id)
+            cur = getattr(ent, "location_id", None) if ent is not None else None
+            hits.sort(key=lambda h: h[0])
+            for tick, loc in hits:
+                _record(cur, loc, tick)
+                cur = loc
+
+    if not transitions:
+        return spatial_topology, 0
+
+    added: List[SpatialEdge] = []
+    for _key, (src, tgt, tick) in sorted(
+        transitions.items(),
+        key=lambda kv: (kv[1][2], kv[1][0], kv[1][1]),
+    ):
+        try:
+            added.append(SpatialEdge(
+                source_id=src,
+                target_id=tgt,
+                connection_type="inferred",
+                bidirectional=True,
+                established_at_fabula=int(tick),
+            ))
+        except Exception:
+            logger.warning(
+                "[Spatial-Infer] Failed to synthesise SpatialEdge %s→%s; "
+                "skipping.", src, tgt, exc_info=True,
+            )
+    if added:
+        logger.info(
+            "[Spatial-Infer] Synthesised %d SpatialEdge(s) from entity/object "
+            "movement that the per-chunk Physics Agent did not emit.",
+            len(added),
+        )
+    return spatial_topology + added, len(added)
+
+
 def _snapshot_sort_key(s) -> tuple:
     """Stable, deterministic sort key for snapshot lists.
 
@@ -10998,13 +11159,34 @@ def assemble_world_state(
     _warn_suspicious_mirror_dyads(social_topology)
     spatial_before = len(spatial_topology)
     spatial_topology = _deduplicate_spatial(spatial_topology)
+    # Movement-derived inference: the per-chunk Physics Agent often
+    # forgets to emit spatial edges between locations whose connection
+    # is implicit from character / object movement. Backfill from the
+    # post-coalesce entity & object timelines so the World Map view
+    # and reachability queries don't see a constellation of orphan
+    # locations even when the narrative clearly traverses them.
+    spatial_topology, _spatial_inferred = _infer_spatial_from_movement(
+        spatial_topology,
+        register,
+        all_entity_updates,
+        all_object_updates,
+        events=events,
+    )
+    spatial_after_infer = len(spatial_topology)
+    # Re-dedup so a synthesised edge that happens to duplicate an
+    # author-supplied passage (rare, but possible if the LLM emitted
+    # only one direction) still collapses correctly.
+    spatial_topology = _deduplicate_spatial(spatial_topology)
     causal_before = len(causal_topology)
     causal_topology = _deduplicate_causal(causal_topology)
     deduped_parts = []
     if social_before != len(social_topology):
         deduped_parts.append(f"social {social_before}→{len(social_topology)}")
     if spatial_before != len(spatial_topology):
-        deduped_parts.append(f"spatial {spatial_before}→{len(spatial_topology)}")
+        delta = f"spatial {spatial_before}→{len(spatial_topology)}"
+        if _spatial_inferred:
+            delta += f" (+{_spatial_inferred} inferred)"
+        deduped_parts.append(delta)
     if causal_before != len(causal_topology):
         deduped_parts.append(f"causal {causal_before}→{len(causal_topology)}")
     if raw_channel_count != len(channels):

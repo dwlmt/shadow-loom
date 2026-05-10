@@ -106,6 +106,119 @@ def apply_chart_theme() -> None:
 apply_chart_theme()
 
 
+# ── SVG export script ─────────────────────────────────────────────
+# Re-renders any ECharts instance inside the open dialog using the SVG
+# renderer (default canvas instances don't expose ``renderToSVGString``).
+# For force-graphs, the source chart's computed node coordinates are
+# captured and pinned via ``layout: 'none'`` so the SVG mirrors the
+# on-screen layout instead of restarting the simulation from the
+# origin. Falls back to any inline ``<svg>`` (Mermaid etc.). Returns
+# ``"OK"`` on success, ``"NOROOT"`` / ``"NOSVG"`` on failure.
+_SVG_EXPORT_JS = r"""
+(() => {
+    const root = document.querySelector('.q-dialog__inner');
+    if (!root) return 'NOROOT';
+    let svgStr = null;
+
+    if (window.echarts && window.echarts.getInstanceByDom) {
+        const candidates = root.querySelectorAll('div');
+        for (const d of candidates) {
+            const inst = window.echarts.getInstanceByDom(d);
+            if (!inst) continue;
+            let opt;
+            try { opt = inst.getOption(); }
+            catch (e) { continue; }
+            if (!opt) continue;
+            try {
+                const model = inst.getModel();
+                const sCount = (opt.series || []).length;
+                for (let si = 0; si < sCount; si++) {
+                    const s = opt.series[si];
+                    if (!s || s.type !== 'graph' || !Array.isArray(s.data)) continue;
+                    const sModel = model.getSeriesByIndex(si);
+                    if (!sModel) continue;
+                    const data = sModel.getData();
+                    for (let i = 0; i < s.data.length; i++) {
+                        const layout = data.getItemLayout(i);
+                        if (layout && Number.isFinite(layout[0]) && Number.isFinite(layout[1])) {
+                            s.data[i] = Object.assign({}, s.data[i], {
+                                x: layout[0],
+                                y: layout[1],
+                                fixed: true,
+                            });
+                        }
+                    }
+                    s.layout = 'none';
+                    if (s.force) s.force = Object.assign({}, s.force, {layoutAnimation: false});
+                }
+            } catch (e) {
+                console.warn('Position capture failed; falling back to fresh layout', e);
+            }
+            const rect = d.getBoundingClientRect();
+            const w = Math.max(400, Math.round(rect.width || 1000));
+            const h = Math.max(300, Math.round(rect.height || 700));
+            const tmp = document.createElement('div');
+            tmp.style.position = 'fixed';
+            tmp.style.left = '-10000px';
+            tmp.style.top = '0';
+            tmp.style.width = w + 'px';
+            tmp.style.height = h + 'px';
+            document.body.appendChild(tmp);
+            try {
+                const tmpChart = window.echarts.init(
+                    tmp, null, {renderer: 'svg', width: w, height: h}
+                );
+                opt.animation = false;
+                opt.animationDuration = 0;
+                opt.animationDurationUpdate = 0;
+                tmpChart.setOption(opt, true);
+                tmpChart.resize({width: w, height: h});
+                const svgEl = tmp.querySelector('svg');
+                if (svgEl) {
+                    svgStr = new XMLSerializer().serializeToString(svgEl);
+                }
+                tmpChart.dispose();
+            } catch (e) {
+                console.error('SVG export failed', e);
+            } finally {
+                tmp.remove();
+            }
+            if (svgStr) break;
+        }
+    }
+
+    if (!svgStr) {
+        const svgEl = root.querySelector('svg');
+        if (svgEl) {
+            svgStr = new XMLSerializer().serializeToString(svgEl);
+        }
+    }
+    if (!svgStr) {
+        return 'NOSVG';
+    }
+    if (!svgStr.includes('xmlns=')) {
+        svgStr = svgStr.replace(
+            '<svg',
+            '<svg xmlns="http://www.w3.org/2000/svg"'
+        );
+    }
+    const blob = new Blob(
+        [svgStr],
+        {type: 'image/svg+xml;charset=utf-8'}
+    );
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'shadow-loom-chart.svg';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    return 'OK';
+})();
+"""
+
+
 # ── Expand-to-dialog wrapper ───────────────────────────────────────
 
 def with_expand(
@@ -208,106 +321,32 @@ def _open_expand_dialog(render_fn: Callable[[str], Any], title: str) -> None:
                     png_btn.tooltip("Save as PNG")
 
                     def _save_svg():
-                        # ECharts only exposes ``renderToSVGString`` /
-                        # ``getDataURL({type:'svg'})`` when the chart
-                        # was *initialised* with ``renderer: 'svg'``.
-                        # All our charts use the default canvas
-                        # renderer for performance, so the previous
-                        # implementation silently failed for every
-                        # ECharts diagram. Workaround: clone each
-                        # chart's option into a temporary hidden DOM
-                        # node, init a new ECharts instance there
-                        # with the SVG renderer, serialise its root
-                        # ``<svg>`` element, then dispose. Falls back
-                        # to any inline ``<svg>`` (Mermaid, etc.) if
-                        # no ECharts instance is found.
-                        ui.run_javascript(
-                            """
-                            (() => {
-                                const root = document.querySelector('.q-dialog__inner');
-                                if (!root) return 'NOROOT';
-                                let svgStr = null;
-
-                                // 1) ECharts re-render in SVG mode.
-                                if (window.echarts && window.echarts.getInstanceByDom) {
-                                    const candidates = root.querySelectorAll('div');
-                                    for (const d of candidates) {
-                                        const inst = window.echarts.getInstanceByDom(d);
-                                        if (!inst) continue;
-                                        let opt;
-                                        try { opt = inst.getOption(); }
-                                        catch (e) { continue; }
-                                        if (!opt) continue;
-                                        const rect = d.getBoundingClientRect();
-                                        const w = Math.max(400, Math.round(rect.width || 1000));
-                                        const h = Math.max(300, Math.round(rect.height || 700));
-                                        const tmp = document.createElement('div');
-                                        tmp.style.position = 'fixed';
-                                        tmp.style.left = '-10000px';
-                                        tmp.style.top = '0';
-                                        tmp.style.width = w + 'px';
-                                        tmp.style.height = h + 'px';
-                                        document.body.appendChild(tmp);
-                                        try {
-                                            const tmpChart = window.echarts.init(
-                                                tmp, null, {renderer: 'svg', width: w, height: h}
-                                            );
-                                            // Disable animation so the SVG
-                                            // is the final frame, not a
-                                            // mid-tween snapshot.
-                                            opt.animation = false;
-                                            opt.animationDuration = 0;
-                                            opt.animationDurationUpdate = 0;
-                                            tmpChart.setOption(opt, true);
-                                            // Force a synchronous layout pass.
-                                            tmpChart.resize({width: w, height: h});
-                                            const svgEl = tmp.querySelector('svg');
-                                            if (svgEl) {
-                                                svgStr = new XMLSerializer().serializeToString(svgEl);
-                                            }
-                                            tmpChart.dispose();
-                                        } catch (e) {
-                                            console.error('SVG export failed', e);
-                                        } finally {
-                                            tmp.remove();
-                                        }
-                                        if (svgStr) break;
-                                    }
-                                }
-
-                                // 2) Inline <svg> fallback (Mermaid,
-                                //    custom diagrams).
-                                if (!svgStr) {
-                                    const svgEl = root.querySelector('svg');
-                                    if (svgEl) {
-                                        svgStr = new XMLSerializer().serializeToString(svgEl);
-                                    }
-                                }
-                                if (!svgStr) {
-                                    return 'NOSVG';
-                                }
-                                if (!svgStr.includes('xmlns=')) {
-                                    svgStr = svgStr.replace(
-                                        '<svg',
-                                        '<svg xmlns="http://www.w3.org/2000/svg"'
-                                    );
-                                }
-                                const blob = new Blob(
-                                    [svgStr],
-                                    {type: 'image/svg+xml;charset=utf-8'}
-                                );
-                                const url = URL.createObjectURL(blob);
-                                const a = document.createElement('a');
-                                a.href = url;
-                                a.download = 'shadow-loom-chart.svg';
-                                document.body.appendChild(a);
-                                a.click();
-                                a.remove();
-                                setTimeout(() => URL.revokeObjectURL(url), 1000);
-                                return 'OK';
-                            })();
-                            """
-                        )
+                        # Surface failures to the user instead of
+                        # silently no-op'ing in the browser console.
+                        async def _go():
+                            try:
+                                result = await ui.run_javascript(
+                                    _SVG_EXPORT_JS, timeout=10.0,
+                                )
+                            except Exception as exc:
+                                ui.notify(
+                                    f"SVG export failed: {exc}", type="negative"
+                                )
+                                return
+                            if result == "OK":
+                                ui.notify("SVG saved.", type="positive")
+                            elif result == "NOSVG":
+                                ui.notify(
+                                    "Couldn't find a chart to export. "
+                                    "Try Save PNG instead.",
+                                    type="warning",
+                                )
+                            else:
+                                ui.notify(
+                                    f"SVG export returned: {result}",
+                                    type="warning",
+                                )
+                        ui.timer(0.0, _go, once=True)
 
                     svg_btn = ui.button(
                         icon="image", on_click=_save_svg,
@@ -884,7 +923,32 @@ def render_world_map(
     chart = ui.echart({
         "backgroundColor": _CHART_BG,
         "tooltip": {**_CHART_TOOLTIP, "trigger": "item"},
-        "legend": {"data": [c["name"] for c in cats], "textStyle": {"color": _CHART_TEXT}},
+        "legend": [
+            # Category legend (node types) — auto-coloured from cats.
+            {
+                "data": [c["name"] for c in cats],
+                "textStyle": {"color": _CHART_TEXT},
+                "top": 0,
+                "left": "center",
+            },
+            # Edge-type legend rendered as inline items so users can
+            # decode line styles. ECharts only colours these from the
+            # ``icon`` field, so use coloured dashes via name+icon.
+            {
+                "data": [
+                    {"name": "located in", "icon": "path://M0,5 L20,5"},
+                    {"name": "channel", "icon": "path://M0,5 L4,5 M8,5 L12,5 M16,5 L20,5"},
+                    {"name": "utterance", "icon": "path://M0,5 L6,5 M10,5 L20,5"},
+                    {"name": "event ★", "icon": "circle"},
+                ],
+                "textStyle": {"color": _CHART_TEXT, "fontSize": 10},
+                "itemStyle": {"color": "#94a3b8"},
+                "top": 24,
+                "left": "center",
+                "selectedMode": False,
+                "tooltip": {"show": True},
+            },
+        ],
         "animationDuration": 600,
         "series": series,
     }).classes("w-full").style(f"height:{height}")

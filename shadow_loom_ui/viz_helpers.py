@@ -1161,13 +1161,56 @@ def ws_to_map_graph_data(
     nodes: list[dict] = []
     links: list[dict] = []
     cats = [
-        {"name": "Location"},
-        {"name": "Entity"},
-        {"name": "NarrativeObject"},
-        {"name": "Event"},
+        {"name": "Location", "itemStyle": {"color": NODE_COLORS["Location"]}},
+        {"name": "Entity", "itemStyle": {"color": NODE_COLORS["Entity"]}},
+        {"name": "Object", "itemStyle": {"color": NODE_COLORS["NarrativeObject"]}},
+        {"name": "Event (★)", "itemStyle": {"color": "#facc15"}},
     ]
 
     fabula_anchor = int(fabula_anchor)
+
+    # ── Inferred entity locations from nearby event anchors ──────
+    # When an entity has no resolved snapshot location at the
+    # cursor, fall back to the at_location_id of any event the
+    # entity participates in within ±event_window of the cursor.
+    # Captures the implicit invariant: "if something happens at a
+    # location the characters and objects involved are present
+    # together". Channel-mediated addressees are exempt from this
+    # inference.
+    inferred_loc: dict[str, str] = {}
+    inferred_obj_loc: dict[str, str] = {}
+    if ws.events:
+        ev_window_inf = max(int(event_window), int(channel_window), 0)
+        # Iterate nearest-cursor first so the closest event wins.
+        nearby = [
+            evt for evt in ws.events
+            if evt.fabula_time is not None
+            and abs(int(evt.fabula_time) - fabula_anchor) <= ev_window_inf
+        ]
+        nearby.sort(key=lambda e: abs(int(e.fabula_time) - fabula_anchor))
+        for evt in nearby:
+            try:
+                evt_loc = event_location_at(evt, ws, fallback="actor")
+            except Exception:
+                evt_loc = getattr(evt, "at_location_id", None)
+            if not evt_loc or evt_loc not in ws.locations:
+                continue
+            via = getattr(evt, "via_channel_id", None)
+            channel_addressees = (
+                set(evt.addressee_ids or []) if via else set()
+            )
+            participants = (
+                set(evt.actor_ids or [])
+                | (set(evt.target_ids or []) - channel_addressees)
+            )
+            sp = getattr(evt, "speaker_id", None)
+            if sp:
+                participants.add(sp)
+            for pid in participants:
+                if pid in ws.entities and pid not in inferred_loc:
+                    inferred_loc[pid] = evt_loc
+                elif pid in ws.objects and pid not in inferred_obj_loc:
+                    inferred_obj_loc[pid] = evt_loc
 
     # ── Locations (real + pseudo) ────────────────────────────────
     used_pseudo_offstage = False
@@ -1182,7 +1225,7 @@ def ws_to_map_graph_data(
             "id": lid,
             "name": loc.name,
             "category": 0,
-            "symbolSize": 44,
+            "symbolSize": [70, 28],
             "symbol": "roundRect",
             "itemStyle": {
                 "color": NODE_COLORS["Location"],
@@ -1190,7 +1233,15 @@ def ws_to_map_graph_data(
                 "borderColor": "#1e293b",
                 "borderWidth": 1,
             },
-            "label": {"show": True, "position": "inside", "color": "#ffffff", "fontSize": 11},
+            "label": {
+                "show": True,
+                "position": "inside",
+                "color": "#ffffff",
+                "fontSize": 10,
+                "overflow": "truncate",
+                "width": 64,
+                "ellipsis": "\u2026",
+            },
             "tooltip": {"formatter": tooltip},
             "_sl_node_type": "Location",
         })
@@ -1202,10 +1253,14 @@ def ws_to_map_graph_data(
                 "id": _MAP_OFFSTAGE_LOC_ID,
                 "name": "(off-stage)",
                 "category": 0,
-                "symbolSize": 36,
+                "symbolSize": [60, 24],
                 "symbol": "roundRect",
                 "itemStyle": {"color": "#475569", "opacity": 0.5},
-                "label": {"show": True, "position": "inside", "color": "#e2e8f0", "fontSize": 10},
+                "label": {
+                    "show": True, "position": "inside",
+                    "color": "#e2e8f0", "fontSize": 10,
+                    "overflow": "truncate", "width": 54,
+                },
                 "tooltip": {"formatter": "Entities/objects with no resolved location at this tick."},
                 "_sl_node_type": "Location",
             })
@@ -1219,10 +1274,14 @@ def ws_to_map_graph_data(
                 "id": _MAP_UNKNOWN_LOC_ID,
                 "name": "(unknown loc)",
                 "category": 0,
-                "symbolSize": 36,
+                "symbolSize": [60, 24],
                 "symbol": "roundRect",
                 "itemStyle": {"color": "#7c2d12", "opacity": 0.5},
-                "label": {"show": True, "position": "inside", "color": "#fed7aa", "fontSize": 10},
+                "label": {
+                    "show": True, "position": "inside",
+                    "color": "#fed7aa", "fontSize": 10,
+                    "overflow": "truncate", "width": 54,
+                },
                 "tooltip": {"formatter": "References to LOC_ ids not present in this world."},
                 "_sl_node_type": "Location",
             })
@@ -1265,6 +1324,10 @@ def ws_to_map_graph_data(
                 anchor_loc = resolved_loc
             elif resolved_loc:
                 anchor_loc = _ensure_unknown()
+            elif ent_id in inferred_loc:
+                # Implicit co-presence inference from a nearby event
+                # anchor (see ``inferred_loc`` build-up above).
+                anchor_loc = inferred_loc[ent_id]
             else:
                 anchor_loc = _ensure_offstage()
             entity_loc[ent_id] = anchor_loc
@@ -1294,13 +1357,20 @@ def ws_to_map_graph_data(
                 "tooltip": {"formatter": tooltip},
                 "_sl_node_type": "Entity",
             })
-            # Invisible attractor link to the entity's resolved
-            # location so the force layout pulls the marker inside its
-            # location pill.
+            # Visible "located_in" edge so the spatial pairing is
+            # legible without having to read the force layout. Kept
+            # thin and translucent so multiple entities sharing one
+            # location don't drown out the rest of the graph.
             links.append({
                 "source": anchor_loc,
                 "target": ent_id,
-                "lineStyle": {"opacity": 0.0, "width": 0.5},
+                "lineStyle": {
+                    "color": EDGE_COLORS.get("located_in", "#FF8C42"),
+                    "width": 1.0,
+                    "opacity": 0.55,
+                    "type": "solid",
+                },
+                "symbol": ["none", "none"],
                 "_sl_attractor": True,
             })
 
@@ -1336,6 +1406,10 @@ def ws_to_map_graph_data(
             elif resolved_loc:
                 anchor_id = _ensure_unknown()
                 placement = f"in {resolved_loc} (unknown)"
+            elif obj_id in inferred_obj_loc:
+                # Implicit inference from a nearby event anchor.
+                anchor_id = inferred_obj_loc[obj_id]
+                placement = f"in {anchor_id} (via event)"
             else:
                 anchor_id = _ensure_offstage()
                 placement = "off-stage"
@@ -1361,15 +1435,78 @@ def ws_to_map_graph_data(
                 "tooltip": {"formatter": tooltip},
                 "_sl_node_type": "NarrativeObject",
             })
+            # Visible placement edge: orange tangerine for in-location
+            # objects, dashed for held-by-entity.
+            held = anchor_id in ws.entities
             links.append({
                 "source": anchor_id,
                 "target": obj_id,
-                "lineStyle": {"opacity": 0.0, "width": 0.5},
+                "lineStyle": {
+                    "color": EDGE_COLORS.get(
+                        "owned_by" if held else "located_in",
+                        "#FF8C42",
+                    ),
+                    "width": 1.0,
+                    "opacity": 0.5,
+                    "type": "dashed" if held else "solid",
+                },
+                "symbol": ["none", "none"],
                 "_sl_attractor": True,
             })
 
-    # ── Active channel arcs (utterance-driven) ───────────────────
+    # ── Active channel arcs ──────────────────────────────────────
+    # Two passes: (1) for each Channel that is *active* at the
+    # cursor, draw a faint dotted arc between every pair of its
+    # ``participant_ids`` so the communication topology is visible
+    # at a glance even between utterances; (2) overlay a brighter
+    # dashed arc per utterance fired within ±channel_window of the
+    # cursor.
     if show_channels and show_entities:
+        ent_ids_present = {n["id"] for n in nodes if n.get("category") == 1}
+        for ch in (ws.channels or {}).values():
+            est = int(ch.established_at_fabula or 0)
+            term = ch.terminated_at_fabula
+            if est > fabula_anchor:
+                continue
+            if term is not None and int(term) <= fabula_anchor:
+                continue
+            parts = [p for p in (ch.participant_ids or []) if p in ent_ids_present]
+            if len(parts) < 2:
+                continue
+            arc_colour = NODE_COLORS.get("Channel", "#C46BD9")
+            tip = (
+                f"<b>{ch.name}</b><br/>"
+                f"medium: {ch.medium}<br/>"
+                f"directionality: {ch.directionality}"
+            )
+            if ch.directionality in ("broadcast", "simplex"):
+                src = parts[0]
+                pairs = [(src, tgt) for tgt in parts[1:]]
+                arrow = ["none", "arrow"]
+            else:
+                pairs = [
+                    (parts[i], parts[j])
+                    for i in range(len(parts))
+                    for j in range(i + 1, len(parts))
+                ]
+                arrow = ["none", "none"]
+            for src, tgt in pairs:
+                links.append({
+                    "source": src,
+                    "target": tgt,
+                    "lineStyle": {
+                        "color": arc_colour,
+                        "width": 1.0,
+                        "type": "dotted",
+                        "curveness": 0.2,
+                        "opacity": 0.45,
+                    },
+                    "symbol": arrow,
+                    "symbolSize": 4,
+                    "tooltip": {"formatter": tip},
+                    "_sl_channel_dormant": True,
+                })
+
         window = max(0, int(channel_window))
         for evt in ws.events or []:
             if evt.event_type != "utterance":
@@ -1397,6 +1534,7 @@ def ws_to_map_graph_data(
                 if ch.terminated_at_fabula is not None and int(ch.terminated_at_fabula) <= fabula_anchor:
                     continue
             medium = ch.medium if ch is not None else "direct"
+            ch_label = ch.name if ch is not None else "(no channel)"
             arc_colour = EDGE_COLORS.get("communicating_with", "#F5B43C")
             content = (evt.content or evt.description or "").strip()
             if len(content) > 120:
@@ -1405,6 +1543,7 @@ def ws_to_map_graph_data(
                 tip = (
                     f"<b>utterance @ t={evt_t}</b><br/>"
                     f"{speaker} \u2192 {addr}<br/>"
+                    f"channel: {ch_label}<br/>"
                     f"medium: {medium}"
                 )
                 if content:
@@ -1524,7 +1663,13 @@ def ws_to_map_graph_data(
             links.append({
                 "source": evt_loc,
                 "target": event_node_id,
-                "lineStyle": {"opacity": 0.0, "width": 0.5},
+                "lineStyle": {
+                    "color": "#a16207",
+                    "width": 1.0,
+                    "opacity": 0.55,
+                    "type": "dotted",
+                },
+                "symbol": ["none", "none"],
                 "_sl_attractor": True,
             })
 
@@ -4102,6 +4247,57 @@ def _compute_affective_scores_uncached(
         scores["mystery"] = 0.0
 
     rels = ws.social_topology
+    # ── Recent-activity pulse from the snapshot's tail ───────────
+    # ``conflict`` and ``danger`` computed purely from
+    # ``social_topology`` go flat across the timeline whenever the
+    # authored fixture pins most ``last_updated_fabula`` to t=0
+    # (a_fish_called_wanda is a pathological case: only 5 of 16
+    # social edges have updates after t=0, and ``fear`` is observed
+    # on just 3 edges world-wide). Fold in a recency pulse derived
+    # from the snapshot's own causal/event tail so the chart tracks
+    # the actual narrative beat at the cursor rather than the
+    # final-frame relationship summary.
+    recency_conflict = 0.0
+    recency_danger = 0.0
+    if ws.events:
+        ev_times = [e.fabula_time for e in ws.events if e.fabula_time is not None]
+        if ev_times:
+            t_max = max(ev_times)
+            t_min = min(ev_times)
+            span = max(1, t_max - t_min)
+            window_lo = t_max - max(1, span // 4)  # last quartile of the snapshot
+            recent_events = [
+                e for e in ws.events
+                if e.fabula_time is not None and e.fabula_time >= window_lo
+            ]
+            recent_causal = [
+                ce for ce in (ws.causal_topology or [])
+                if ce.fabula_time is not None and ce.fabula_time >= window_lo
+            ]
+            # Conflict pulse: share of recent mutation_social edges
+            # that pulled affinity down (negative force_signed proxy:
+            # we don't store sign so use any high-force social edge).
+            if recent_causal:
+                social_pulse = sum(
+                    1 for ce in recent_causal
+                    if ce.causality_type == "mutation_social"
+                    and ce.causal_force >= 5.0
+                ) / len(recent_causal)
+                recency_conflict = min(1.0, social_pulse)
+            # Danger pulse: share of recent high-force causal edges
+            # (any modality) — high causal_force events are typically
+            # threats / violence / consequence beats.
+            if recent_causal:
+                high_force_recent = sum(
+                    1 for ce in recent_causal if ce.causal_force >= 7.0
+                ) / len(recent_causal)
+                recency_danger = min(1.0, high_force_recent)
+            elif recent_events:
+                # No causal coverage — fall back to event density.
+                recency_danger = min(
+                    1.0, len(recent_events) / max(1, len(ws.events))
+                )
+
     if rels:
         # Per-axis observed-aware aggregates: an axis the LLM never
         # measured contributes nothing (issue #8). Aggregating over
@@ -4117,10 +4313,24 @@ def _compute_affective_scores_uncached(
         ]
         if observed_aff:
             negative = sum(1 for v in observed_aff if v < 0)
-            scores["conflict"] = min(1.0, negative / len(observed_aff))
+            base_conflict = negative / len(observed_aff)
+            # 60% baseline (final-frame topology) + 40% recency pulse.
+            scores["conflict"] = min(
+                1.0, 0.6 * base_conflict + 0.4 * recency_conflict
+            )
         if observed_fear:
             avg_fear = sum(observed_fear) / len(observed_fear)
-            scores["danger"] = min(1.0, max(0.0, avg_fear))
+            base_danger = max(0.0, avg_fear)
+            scores["danger"] = min(
+                1.0, 0.6 * base_danger + 0.4 * recency_danger
+            )
+        elif recency_danger > 0.0:
+            # No observed fear axis at all — surface the pulse so the
+            # gauge isn't dead silent on event-driven worlds.
+            scores["danger"] = recency_danger
+    elif recency_conflict or recency_danger:
+        scores["conflict"] = recency_conflict
+        scores["danger"] = recency_danger
 
     # Composite narrative tension.
     if rels or ws.events:

@@ -66,6 +66,7 @@ logger = logging.getLogger(__name__)
 _VIEW_MODES = {
     "overview": "Overview",
     "spatial": "Spatial",
+    "map": "Map",
     "information": "Information",
     "ego": "Ego-Graph",
     "temporal": "Temporal",
@@ -525,6 +526,29 @@ def build_world_tab(state: AppState) -> None:
                                 )
                             ),
                             title="Spatial map",
+                        )
+                    elif mode == "map":
+                        # Rich location map: locations as anchors,
+                        # entities + objects placed at their
+                        # current location, channel arcs near the
+                        # cursor, and event ★ glyphs at
+                        # ``EventNode.at_location_id`` with co-
+                        # presence borders (yellow=present,
+                        # red=displaced).
+                        with_expand(
+                            lambda h, ft=fabula_t_eff: render_world_map(
+                                ws,
+                                fabula_anchor=ft,
+                                show_entities=True,
+                                show_objects=True,
+                                show_channels=True,
+                                show_locked=True,
+                                show_events=True,
+                                channel_window=2,
+                                event_window=2,
+                                height=h,
+                            ),
+                            title="Location map (entities, objects, channels, events)",
                         )
                     elif mode == "information":
                         # Channels + utterance flow as a Sankey: who

@@ -26,7 +26,7 @@ def test_map_emits_three_categories():
     # still appear at the same indexes for back-compat with existing
     # node ``category`` ints.
     assert [c["name"] for c in cats] == [
-        "Location", "Entity", "NarrativeObject", "Event",
+        "Location", "Entity", "Object", "Event (★)",
     ]
     seen = {c["name"] for c in cats}
     cat_index = {c["name"]: i for i, c in enumerate(cats)}
@@ -34,8 +34,8 @@ def test_map_emits_three_categories():
     # Macbeth has at least one entity, location, object.
     assert cat_index["Location"] in by_cat
     assert cat_index["Entity"] in by_cat
-    assert cat_index["NarrativeObject"] in by_cat
-    assert {"Location", "Entity", "NarrativeObject"}.issubset(seen)
+    assert cat_index["Object"] in by_cat
+    assert {"Location", "Entity", "Object"}.issubset(seen)
 
 
 def test_map_layer_toggles_drop_categories():
@@ -217,7 +217,7 @@ def _build_copresence_ws():
 def test_map_emits_event_glyph_at_anchor():
     ws = _build_copresence_ws()
     nodes, links, cats = ws_to_map_graph_data(ws, fabula_anchor=10)
-    cat_event = next(i for i, c in enumerate(cats) if c["name"] == "Event")
+    cat_event = next(i for i, c in enumerate(cats) if c["name"].startswith("Event"))
     glyphs = [n for n in nodes if n.get("category") == cat_event]
     assert len(glyphs) == 1
     assert glyphs[0]["name"] == "\u2605"
@@ -232,7 +232,7 @@ def test_map_emits_event_glyph_at_anchor():
 def test_map_event_glyph_disabled_when_show_events_false():
     ws = _build_copresence_ws()
     nodes, _, cats = ws_to_map_graph_data(ws, fabula_anchor=10, show_events=False)
-    cat_event = next(i for i, c in enumerate(cats) if c["name"] == "Event")
+    cat_event = next(i for i, c in enumerate(cats) if c["name"].startswith("Event"))
     assert not any(n.get("category") == cat_event for n in nodes)
 
 
@@ -248,5 +248,5 @@ def test_map_bound_participants_get_yellow_border():
 def test_map_event_outside_window_skipped():
     ws = _build_copresence_ws()
     nodes, _, cats = ws_to_map_graph_data(ws, fabula_anchor=100, event_window=0)
-    cat_event = next(i for i, c in enumerate(cats) if c["name"] == "Event")
+    cat_event = next(i for i, c in enumerate(cats) if c["name"].startswith("Event"))
     assert not any(n.get("category") == cat_event for n in nodes)
