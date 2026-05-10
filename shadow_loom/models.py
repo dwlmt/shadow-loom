@@ -380,6 +380,19 @@ class Concern(AMWNNode):
         ),
     )
 
+    @property
+    def ambivalence_score(self) -> float:
+        """Heuristic ambivalence weight derived from ``counter_concern_ids``.
+
+        Returns ``salience`` when the concern carries at least one counter
+        link (the concern is one half of an ambivalent pair) and 0.0
+        otherwise. Downstream affect scorers multiply this onto inner-
+        conflict suspense; concerns with no counter link contribute 0.
+        """
+        if not self.counter_concern_ids:
+            return 0.0
+        return float(self.salience)
+
 
 class BeliefConfidenceShift(BaseModel):
     """Confidence/inertia overwrite on a single existing :class:`Belief`,

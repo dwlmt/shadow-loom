@@ -2158,13 +2158,20 @@ def _build_proposition_catalogue_agent(
                 "match ^CCN_[A-Z0-9_]+$. Do not invent EVT_ ids."
             )
 
+        if bad_id_count or bad_ref_count or bad_seed_count:
+            logger.info(
+                "[PropCatalogue] validator drops: bad_id=%d, bad_ref=%d, "
+                "bad_seed=%d (kept: %d props, %d seeds).",
+                bad_id_count, bad_ref_count, bad_seed_count,
+                len(deduped_props), len(deduped_seeds),
+            )
+
         return PropositionCatalogue(
             propositions=list(deduped_props.values()),
             concern_seeds=list(deduped_seeds.values()),
         )
 
     return agent
-
 
 def _catalogue_model_settings(config: ExtractionConfig) -> Dict[str, Any]:
     """Build the ``model_settings=`` dict for catalogue agent.run calls.
@@ -2203,25 +2210,70 @@ def _merge_catalogues(
     """
     by_id: Dict[str, Proposition] = {}
     by_desc: Dict[str, str] = {}  # normalised description -> proposition_id
-    # Remap of *dropped* PROP_ ids -> the canonical id they collapsed onto.
-    # Used to rewire concern seeds whose proposition was absorbed by an
-    # earlier-seen, identically-described proposition under a different id.
-    # Without this rewire, every seed referencing the dropped id was
-    # silently nuked downstream — the cause of the 0-seed catalogue
-    # observed in chunked-extraction runs (May 2026).
+    # Per-id token sets, for token-overlap (Jaccard) semantic dedupe.
+    # The exact-string ``by_desc`` map catches identical descriptions;
+    # token-Jaccard catches the common case where two chunks emit the
+    # same proposition with cosmetically different wording
+    # ("Macbeth murders Duncan" vs "Macbeth kills King Duncan"). Pure
+    # exact-string dedup misses these and the catalogue ships duplicate
+    # PROP_ ids for the same claim, fragmenting truth commits and seeds
+    # across both ids.
+    desc_tokens: Dict[str, Set[str]] = {}
     prop_id_remap: Dict[str, str] = {}
+
+    _STOPWORDS = {
+        "the", "a", "an", "of", "to", "in", "on", "at", "by", "for",
+        "with", "and", "or", "but", "is", "was", "are", "were", "be",
+        "been", "being", "has", "have", "had", "this", "that", "these",
+        "those", "it", "as", "from", "into",
+    }
 
     def _norm(s: str) -> str:
         return " ".join((s or "").lower().split())
 
+    def _content_toks(s: str) -> Set[str]:
+        return {
+            t for t in re.findall(r"[a-z]{3,}", (s or "").lower())
+            if t not in _STOPWORDS
+        }
+
+    def _semantic_match(toks: Set[str]) -> Optional[str]:
+        """Return existing prop_id whose description is a near-duplicate, or None.
+
+        Threshold: Jaccard \u2265 0.75 on content tokens AND \u2265 3 shared
+        tokens (cheap guard against 2-token false positives like
+        ``"king dies"`` matching ``"king lives"``).
+        """
+        if len(toks) < 3:
+            return None
+        best_id: Optional[str] = None
+        best_j = 0.0
+        for pid, other in desc_tokens.items():
+            if len(other) < 3:
+                continue
+            inter = toks & other
+            if len(inter) < 3:
+                continue
+            j = len(inter) / max(1, len(toks | other))
+            if j >= 0.75 and j > best_j:
+                best_j = j
+                best_id = pid
+        return best_id
+
     for cat in catalogues:
         for p in cat.propositions:
             norm = _norm(p.description)
+            toks = _content_toks(p.description)
             existing = by_id.get(p.proposition_id)
-            if existing is None and norm in by_desc:
-                # Same claim minted under a different id — collapse onto
-                # the first id seen, but union referents.
-                first_id = by_desc[norm]
+            semantic_match: Optional[str] = None
+            if existing is None and norm not in by_desc:
+                semantic_match = _semantic_match(toks)
+            if existing is None and (norm in by_desc or semantic_match):
+                # Same claim minted under a different id \u2014 collapse onto
+                # the first id seen, but union referents. Triggered by
+                # exact-string OR token-Jaccard semantic match.
+                first_id = by_desc.get(norm) or semantic_match
+                assert first_id is not None
                 first = by_id[first_id]
                 merged_refs = list(dict.fromkeys(
                     list(first.referent_ids) + list(p.referent_ids),
@@ -2234,7 +2286,7 @@ def _merge_catalogues(
                 prop_id_remap[p.proposition_id] = first_id
                 continue
             if existing is not None:
-                # Same id, second sighting — union referents only.
+                # Same id, second sighting \u2014 union referents only.
                 merged_refs = list(dict.fromkeys(
                     list(existing.referent_ids) + list(p.referent_ids),
                 ))
@@ -2246,6 +2298,7 @@ def _merge_catalogues(
             by_id[p.proposition_id] = p
             if norm:
                 by_desc[norm] = p.proposition_id
+            desc_tokens[p.proposition_id] = toks
 
     valid_prop_ids = set(by_id)
     seeds_by_key: Dict[Tuple[str, str, str], ConcernSeed] = {}
@@ -2449,7 +2502,14 @@ async def extract_proposition_catalogue_async(
                         ),
                         label=f"Step 2.5 chunk {idx + 1}/{n}",
                     )
-                    return res.output
+                    out = res.output
+                    logger.info(
+                        "[PropCatalogue] chunk %d/%d: emitted %d props, "
+                        "%d concern seeds (post-validator).",
+                        idx + 1, n,
+                        len(out.propositions), len(out.concern_seeds),
+                    )
+                    return out
                 except Exception:
                     logger.exception(
                         "[Step 2.5] Chunk %d/%d catalogue extraction "
@@ -2512,6 +2572,178 @@ async def extract_proposition_catalogue_async(
         pipeline_ckpt, text, register, fingerprint, catalogue,
     )
     return catalogue
+
+
+# =====================================================================
+# Step 2.5b — Global Concern Catalogue (Phase A3b)
+#
+# Runs once after the (possibly chunked) Proposition Catalogue is fully
+# merged. The chunked-catalogue stage tends to under-emit concern_seeds
+# because each chunk only sees a slice of the character's arc; this pass
+# sees the merged proposition list + the full text and is *authoritative*
+# for the catalogue's ``concern_seeds`` field.
+#
+# Failure cleanly degrades to the chunked-stage seeds (whatever they
+# managed to emit), so this layer cannot make things worse than the
+# pre-A3b baseline.
+# =====================================================================
+
+
+class _ConcernSeedsDraft(BaseModel):
+    """Wire-format the global concerns LLM agent returns."""
+    model_config = {"protected_namespaces": ()}
+    concern_seeds: List[ConcernSeed] = Field(default_factory=list)
+
+
+class _ConcernCatalogueDeps(BaseModel):
+    """Dependencies for the Phase A3b global concerns agent."""
+    model_config = {"protected_namespaces": ()}
+    global_register: GlobalRegister
+    propositions: List[Proposition] = Field(default_factory=list)
+
+
+def _build_concern_catalogue_agent(
+    config: ExtractionConfig,
+) -> Agent[_ConcernCatalogueDeps, _ConcernSeedsDraft]:
+    """Build the Phase A3b global concerns agent.
+
+    Output validator drops seeds whose entity / proposition is unknown
+    (same id-shape gate as the Phase A3 validator).
+    """
+    agent: Agent[_ConcernCatalogueDeps, _ConcernSeedsDraft] = Agent(
+        _resolve_model(config.model),
+        deps_type=_ConcernCatalogueDeps,
+        output_type=NativeOutput(_ConcernSeedsDraft),
+        system_prompt=_load_prompt("proposition_catalogue_concerns.md"),
+        retries=config.output_retries,
+    )
+
+    @agent.system_prompt
+    def inject_register_and_propositions(
+        ctx: RunContext[_ConcernCatalogueDeps],
+    ) -> str:
+        reg = ctx.deps.global_register
+        # Compact entity cards (concerns agent only needs name + status).
+        ent_lines: List[str] = []
+        for eid in sorted(reg.entities):
+            ent = reg.entities[eid]
+            ent_lines.append(
+                f"  - {eid}: {ent.name} [{getattr(ent, 'status', 'unknown')}]"
+            )
+        entities_block = "\n".join(ent_lines) if ent_lines else "  (none)"
+
+        prop_lines: List[str] = []
+        for p in ctx.deps.propositions:
+            prop_lines.append(
+                f"  - {p.proposition_id} ({p.kind}): {p.description}"
+            )
+        props_block = "\n".join(prop_lines) if prop_lines else "  (none)"
+
+        return (
+            "=== ONTOLOGY ENTITIES (from Step 1) ===\n"
+            f"{entities_block}\n"
+            "\n"
+            "=== PROPOSITION CATALOGUE (from Step 2.5) ===\n"
+            "Use ONLY these PROP_ ids in `proposition_id`. Do NOT mint "
+            "new PROP_ ids \u2014 if a character clearly cares about "
+            "something with no matching catalogue proposition, leave "
+            "the seed out.\n"
+            f"{props_block}\n"
+        )
+
+    @agent.output_validator
+    def validate_concern_ids(
+        ctx: RunContext[_ConcernCatalogueDeps],
+        result: _ConcernSeedsDraft,
+    ) -> _ConcernSeedsDraft:
+        reg = ctx.deps.global_register
+        valid_props = {p.proposition_id for p in ctx.deps.propositions}
+        ccn_re = re.compile(r"^CCN_[A-Z0-9_]+$")
+        kept: Dict[Tuple[str, str, str], ConcernSeed] = {}
+        bad_id = bad_ent = bad_prop = 0
+        for s in result.concern_seeds:
+            if not ccn_re.match(s.concern_id):
+                bad_id += 1
+                continue
+            if s.entity_id not in reg.entities:
+                bad_ent += 1
+                continue
+            if s.proposition_id not in valid_props:
+                bad_prop += 1
+                continue
+            kept[(s.entity_id, s.proposition_id, s.polarity)] = s
+        if bad_id or bad_ent or bad_prop:
+            logger.info(
+                "[ConcernCatalogue] validator drops: bad_id=%d, "
+                "bad_entity=%d, bad_prop=%d (kept %d seeds).",
+                bad_id, bad_ent, bad_prop, len(kept),
+            )
+        return _ConcernSeedsDraft(concern_seeds=list(kept.values()))
+
+    return agent
+
+
+async def extract_concern_catalogue_async(
+    text: str,
+    register: GlobalRegister,
+    catalogue: PropositionCatalogue,
+    config: ExtractionConfig,
+) -> PropositionCatalogue:
+    """Run Phase A3b: replace ``catalogue.concern_seeds`` with a
+    globally-extracted authoritative list.
+
+    On success: returns a new catalogue carrying the global seeds. The
+    union of (global, chunked-fallback) is taken so a global call that
+    misses a seed the chunked pass found is not a regression.
+
+    On failure: returns the input catalogue unchanged (chunked seeds
+    survive as the fallback).
+    """
+    if not catalogue.propositions:
+        # No propositions to anchor concerns to \u2014 skip cleanly.
+        return catalogue
+    agent = _build_concern_catalogue_agent(config)
+    deps = _ConcernCatalogueDeps(
+        global_register=register,
+        propositions=list(catalogue.propositions),
+    )
+    settings = _catalogue_model_settings(config)
+    msg = (
+        f"Extract every standing concern (fear / desire) for every "
+        f"named character in the source text below, anchored to the "
+        f"PROP_ ids in the catalogue.\n\nSOURCE TEXT:\n{text}"
+    )
+    try:
+        result = await _run_with_retry_async(
+            lambda: agent.run(
+                msg, deps=deps, model_settings=settings, **_user_kwargs(),
+            ),
+            label="Step 2.5b global concerns",
+        )
+        global_seeds = list(result.output.concern_seeds)
+    except Exception:
+        logger.exception(
+            "[Step 2.5b] Global concern catalogue extraction FAILED \u2014 "
+            "falling back to chunked catalogue seeds (%d).",
+            len(catalogue.concern_seeds),
+        )
+        return catalogue
+
+    # Union: global wins; chunked seeds for keys the global call missed
+    # are kept as backstop.
+    by_key: Dict[Tuple[str, str, str], ConcernSeed] = {}
+    for s in catalogue.concern_seeds:
+        by_key[(s.entity_id, s.proposition_id, s.polarity)] = s
+    for s in global_seeds:
+        # Global authoritative \u2014 overwrite any chunked entry.
+        by_key[(s.entity_id, s.proposition_id, s.polarity)] = s
+    merged = list(by_key.values())
+    logger.info(
+        "[Step 2.5b] Global concerns: %d seeds emitted, %d after union "
+        "with %d chunked-stage fallbacks.",
+        len(global_seeds), len(merged), len(catalogue.concern_seeds),
+    )
+    return catalogue.model_copy(update={"concern_seeds": merged})
 
 
 # =====================================================================
@@ -7695,8 +7927,10 @@ async def _extract_single_chunk_async(
                     "affect", f"{type(exc).__name__}: {exc}",
                 )
         else:
-            logger.debug(
-                "[Step 3d·Async] Chunk %d: no affect signal — skipping.",
+            logger.info(
+                "[Step 3d\u00b7Async] Chunk %d: no affect signal (no PROP_ "
+                "ref, no seeded entity, no catalogue referent overlap) "
+                "\u2014 skipping affect call.",
                 i + 1,
             )
 
@@ -10402,6 +10636,30 @@ def reconcile_affect(
     # ----------------------------------------------------------------
     world = apply_post_pass_fixes(world)
 
+    # Phase C summary diagnostics — visibility for the affect/concern
+    # cascade (May 2026). Without this the only signal of a 0-concern
+    # world was a downstream silent flat-suspense plot.
+    n_cat_props = len(catalogue.propositions) if catalogue is not None else 0
+    n_cat_seeds = len(catalogue.concern_seeds) if catalogue is not None else 0
+    n_chunk_truth = sum(len(t.proposition_truth_commits) for t in topologies)
+    n_chunk_prop_snaps = sum(len(t.proposition_snapshots) for t in topologies)
+    n_chunk_concern_snaps = sum(len(t.concern_snapshots) for t in topologies)
+    n_chunk_new_seeds = sum(len(t.new_concern_seeds) for t in topologies)
+    n_world_concerns = sum(len(e.concerns) for e in world.entities.values())
+    n_props_with_truth = sum(
+        1 for p in world.propositions if p.truth_at_fabula
+    )
+    logger.info(
+        "[Phase C] Affect cascade: catalogue %d props / %d seeds; "
+        "chunks contributed %d prop_snaps, %d truth_commits, "
+        "%d concern_snaps, %d new_seeds; world now has %d propositions "
+        "(%d with truth_at_fabula) and %d entity-concerns.",
+        n_cat_props, n_cat_seeds,
+        n_chunk_prop_snaps, n_chunk_truth,
+        n_chunk_concern_snaps, n_chunk_new_seeds,
+        len(world.propositions), n_props_with_truth, n_world_concerns,
+    )
+
     return world
 
 
@@ -10435,6 +10693,100 @@ def reconcile_affect(
 #      edges between world traits when one trait's description names
 #      another, so the constraint field is connected.
 # =====================================================================
+
+
+def _post_pass_bind_events_to_propositions(
+    world: WorldStateV1, repairs: List[str],
+) -> WorldStateV1:
+    """Append matching EVT_ ids onto catalogue propositions' ``referent_ids``.
+
+    The Phase A3 catalogue is forbidden from inventing EVT_ ids, so
+    catalogue ``event_occurs`` / ``outcome`` propositions almost always
+    arrive with referent_ids listing only ENT_/OBJ_/LOC_ participants
+    \u2014 no EVT_. Without an EVT_ in referent_ids, the
+    ``_post_pass_synthesize_truth_commits`` pass that follows cannot
+    synthesise a truth commit and the proposition stays
+    forever-uncommitted (the May 2026 Star Wars audit found 81/129
+    propositions in this state).
+
+    This pass closes the gap deterministically (no LLM cost):
+
+      For each catalogue ``event_occurs``/``outcome`` proposition with
+      no EVT_ in referent_ids, walk the assembled events and append any
+      whose ``description`` shares a strong lexical overlap with the
+      proposition ``description`` AND whose ``actor_ids`` /
+      ``target_ids`` overlap the proposition's ENT_/OBJ_ referents.
+
+    Conservative thresholds: requires \u22653 shared content tokens (after
+    stopword strip) AND at least one ENT_/OBJ_ overlap. False positives
+    here add a spurious truth commit; we'd rather under-bind.
+    """
+    if not world.propositions or not world.events:
+        return world
+    _STOP = {
+        "the", "a", "an", "of", "to", "in", "on", "at", "by", "for",
+        "with", "and", "or", "but", "is", "was", "are", "were", "be",
+        "been", "being", "has", "have", "had", "this", "that", "these",
+        "those", "it", "as", "from", "into", "his", "her", "their",
+        "its", "him", "she", "he", "they", "them",
+    }
+
+    def _toks(s: str) -> Set[str]:
+        return {
+            t for t in re.findall(r"[a-z]{3,}", (s or "").lower())
+            if t not in _STOP
+        }
+
+    new_props: List[Proposition] = []
+    n_bound = 0
+    for prop in world.propositions:
+        if prop.kind not in ("event_occurs", "outcome"):
+            new_props.append(prop)
+            continue
+        existing_evts = {
+            r for r in prop.referent_ids if r.startswith("EVT_")
+        }
+        if existing_evts:
+            new_props.append(prop)
+            continue
+        prop_toks = _toks(prop.description)
+        if not prop_toks:
+            new_props.append(prop)
+            continue
+        prop_ent_refs = {
+            r for r in prop.referent_ids
+            if r.startswith(("ENT_", "OBJ_", "LOC_"))
+        }
+        matched: List[str] = []
+        for evt in world.events:
+            evt_ents = (
+                set(getattr(evt, "actor_ids", []) or [])
+                | set(getattr(evt, "target_ids", []) or [])
+                | set(getattr(evt, "participant_ids", []) or [])
+            )
+            if prop_ent_refs and not (prop_ent_refs & evt_ents):
+                continue
+            evt_toks = _toks(getattr(evt, "description", ""))
+            shared = prop_toks & evt_toks
+            if len(shared) >= 3:
+                matched.append(evt.id)
+        if matched:
+            new_refs = list(prop.referent_ids) + matched
+            new_props.append(prop.model_copy(update={"referent_ids": new_refs}))
+            n_bound += len(matched)
+            repairs.append(
+                f"EVT-binding: {prop.proposition_id} += "
+                f"{matched[:3]}{'...' if len(matched) > 3 else ''}."
+            )
+        else:
+            new_props.append(prop)
+    if n_bound:
+        world = world.model_copy(update={"propositions": new_props})
+        logger.info(
+            "[Post-pass] EVT\u2192PROP binding: linked %d EVT_ id(s) onto "
+            "catalogue propositions with empty EVT_ referents.", n_bound,
+        )
+    return world
 
 
 def _post_pass_synthesize_truth_commits(
@@ -10688,6 +11040,115 @@ def _post_pass_close_resolved_concerns(
     return world
 
 
+def _post_pass_synthesize_concern_trajectory(
+    world: WorldStateV1, repairs: List[str],
+) -> WorldStateV1:
+    """Synthesise per-concern salience trajectory snapshots from events.
+
+    For each ``Concern`` with a non-empty ``state_timeline`` already, this
+    is a no-op (the per-chunk Affect agent owns trajectory). For concerns
+    whose timeline is empty (the common case after a 0-snapshot Affect
+    skip cascade), walk events that touch the concern's
+    ``proposition_id`` AND involve the concern-holder entity and emit
+    one ``ConcernSnapshot`` per touch:
+
+      - **spike**: salience := min(1.0, baseline + 0.30) at the event's
+        fabula_time, when the event asserts / denies / resolves the
+        proposition or shares strong referent overlap.
+      - **decay-after-resolution**: at the proposition's earliest
+        ``truth_at_fabula`` commit time, salience := max(0.10,
+        baseline \u00d7 0.40) \u2014 the standing concern "drops" once the
+        anchor question is settled.
+
+    Conservative: only fires on concerns whose proposition_id is in the
+    world's proposition register and whose entity is on the world. No
+    snapshots are emitted on top of an existing non-empty timeline.
+    """
+    if not world.entities or not world.propositions:
+        return world
+    prop_index = {p.proposition_id: p for p in world.propositions}
+    n_snaps = 0
+    n_concerns_touched = 0
+    for eid, ent in world.entities.items():
+        if not ent.concerns:
+            continue
+        new_concerns: List[Concern] = []
+        any_changed = False
+        for c in ent.concerns:
+            if c.state_timeline:
+                new_concerns.append(c)
+                continue
+            prop = prop_index.get(c.proposition_id)
+            if prop is None:
+                new_concerns.append(c)
+                continue
+            # Find events touching this proposition and this entity.
+            touches: List[Tuple[int, str]] = []  # (fabula_time, evt_id)
+            evt_referents = {
+                r for r in prop.referent_ids if r.startswith("EVT_")
+            }
+            for evt in world.events:
+                holder_in = (
+                    eid in (getattr(evt, "actor_ids", []) or [])
+                    or eid in (getattr(evt, "target_ids", []) or [])
+                    or eid in (getattr(evt, "participant_ids", []) or [])
+                )
+                if not holder_in:
+                    continue
+                hits = (
+                    evt.id in evt_referents
+                    or evt.asserts_proposition_id == c.proposition_id
+                    or evt.denies_proposition_id == c.proposition_id
+                    or c.proposition_id in (evt.resolves_proposition_ids or [])
+                )
+                if hits:
+                    touches.append((evt.fabula_time, evt.id))
+            if not touches:
+                new_concerns.append(c)
+                continue
+            touches.sort()
+            spike_salience = min(1.0, c.salience + 0.30)
+            snaps: List[ConcernSnapshot] = []
+            seen_times: Set[int] = set()
+            for ft, eid_evt in touches:
+                if ft in seen_times:
+                    continue
+                seen_times.add(ft)
+                snaps.append(ConcernSnapshot(
+                    fabula_time=ft,
+                    triggered_by=eid_evt,
+                    salience=spike_salience,
+                ))
+            # Decay snapshot at earliest truth commit (if any).
+            if prop.truth_at_fabula:
+                commit_t = min(prop.truth_at_fabula)
+                if commit_t not in seen_times:
+                    snaps.append(ConcernSnapshot(
+                        fabula_time=commit_t,
+                        salience=max(0.10, c.salience * 0.40),
+                    ))
+            if snaps:
+                snaps.sort(key=lambda s: s.fabula_time)
+                new_concerns.append(c.model_copy(update={"state_timeline": snaps}))
+                n_snaps += len(snaps)
+                n_concerns_touched += 1
+                any_changed = True
+            else:
+                new_concerns.append(c)
+        if any_changed:
+            world.entities[eid] = ent.model_copy(update={"concerns": new_concerns})
+    if n_snaps:
+        repairs.append(
+            f"Concern-trajectory: synthesised {n_snaps} snapshots across "
+            f"{n_concerns_touched} concern(s)."
+        )
+        logger.info(
+            "[Post-pass] Concern trajectory: synthesised %d snapshots "
+            "across %d concern(s).", n_snaps, n_concerns_touched,
+        )
+    return world
+
+
 def _post_pass_dedup_near_duplicate_events(
     world: WorldStateV1, repairs: List[str],
 ) -> WorldStateV1:
@@ -10917,10 +11378,12 @@ def apply_post_pass_fixes(
     consumer needs the raw extraction.
     """
     repairs: List[str] = []
+    world = _post_pass_bind_events_to_propositions(world, repairs)
     world = _post_pass_synthesize_truth_commits(world, repairs)
     world = _post_pass_synthesize_audience_beliefs(world, repairs)
     world = _post_pass_invalidate_contradicted_beliefs(world, repairs)
     world = _post_pass_close_resolved_concerns(world, repairs)
+    world = _post_pass_synthesize_concern_trajectory(world, repairs)
     if dedup_events:
         world = _post_pass_dedup_near_duplicate_events(world, repairs)
     world = _post_pass_infer_world_chain_reactions(world, repairs)
@@ -16056,6 +16519,11 @@ async def run_extraction_async(
             if config.enable_proposition_catalogue:
                 catalogue = await extract_proposition_catalogue_async(
                     text, register, config,
+                )
+                # Phase A3b: authoritative global concerns pass on top
+                # of the (possibly chunked) proposition catalogue.
+                catalogue = await extract_concern_catalogue_async(
+                    text, register, catalogue, config,
                 )
             topologies = await extract_topology_async(
                 chunks, register, config, catalogue=catalogue,

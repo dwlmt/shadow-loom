@@ -341,3 +341,123 @@ def test_catalogue_checkpoint_no_op_when_dir_is_none():
     _save_catalogue_checkpoint(None, "t", None, "fp", cat)  # type: ignore[arg-type]
     loaded = _load_catalogue_checkpoint(None, "t", None, "fp")  # type: ignore[arg-type]
     assert loaded is None
+
+
+# =====================================================================
+# Tests for the May 2026 affect/concern overhaul (post-F18 cascade fix).
+# =====================================================================
+
+
+def test_merge_catalogues_rewires_seeds_onto_collapsed_prop_id():
+    """Concern seeds against a description-collapsed PROP_ id must be
+    rewired onto the canonical id, not silently dropped (the bug that
+    produced 0-seed catalogues in chunked-extraction runs)."""
+    from shadow_loom.ingestion import _merge_catalogues
+    a = PropositionCatalogue(propositions=[
+        _prop("PROP_DUNCAN_DEAD", "Duncan is dead", refs=["ENT_DUNCAN"]),
+    ])
+    b = PropositionCatalogue(
+        propositions=[_prop("PROP_DEAD_DUNCAN", "Duncan is dead", refs=[])],
+        concern_seeds=[ConcernSeed(
+            concern_id="CCN_MACBETH_FEAR_DUNCAN_DEAD",
+            entity_id="ENT_MACBETH",
+            proposition_id="PROP_DEAD_DUNCAN",  # collapses onto PROP_DUNCAN_DEAD
+            polarity="fear", baseline_salience=0.6,
+        )],
+    )
+    merged = _merge_catalogues([a, b])
+    assert len(merged.propositions) == 1
+    assert merged.propositions[0].proposition_id == "PROP_DUNCAN_DEAD"
+    # Seed survives, rewired onto the canonical id.
+    assert len(merged.concern_seeds) == 1
+    assert merged.concern_seeds[0].proposition_id == "PROP_DUNCAN_DEAD"
+
+
+def test_merge_catalogues_semantic_token_jaccard_collapse():
+    """Cosmetically-different descriptions for the same claim should
+    collapse on token-Jaccard \u2265 0.75."""
+    from shadow_loom.ingestion import _merge_catalogues
+    a = PropositionCatalogue(propositions=[
+        _prop("PROP_MACBETH_KILLS_DUNCAN",
+              "Macbeth murders King Duncan in his bedchamber",
+              refs=["ENT_MACBETH"]),
+    ])
+    b = PropositionCatalogue(propositions=[
+        _prop("PROP_DUNCAN_KILLED_BY_MACBETH",
+              "Macbeth murders King Duncan in his bedchamber tonight",
+              refs=["ENT_DUNCAN"]),
+    ])
+    merged = _merge_catalogues([a, b])
+    assert len(merged.propositions) == 1
+    # Referents from both are unioned onto the canonical id.
+    assert sorted(merged.propositions[0].referent_ids) == ["ENT_DUNCAN", "ENT_MACBETH"]
+
+
+def test_post_pass_bind_events_to_propositions_lexical():
+    """The deterministic EVT\u2192PROP binding pass must append matching
+    EVT_ ids onto catalogue ``event_occurs`` propositions whose
+    ``referent_ids`` carries no EVT_."""
+    from shadow_loom.ingestion import _post_pass_bind_events_to_propositions
+    ws = _world()
+    # Add a catalogue prop with NO EVT_ in referents \u2014 just ENTs.
+    ws = ws.model_copy(update={"propositions": [Proposition(
+        proposition_id="PROP_DUNCAN_MURDERED",
+        kind="event_occurs",
+        referent_ids=["ENT_MACBETH", "ENT_DUNCAN"],
+        description="Macbeth murders Duncan in cold blood",
+    )]})
+    repairs: list[str] = []
+    new_ws = _post_pass_bind_events_to_propositions(ws, repairs)
+    bound = new_ws.propositions[0].referent_ids
+    assert "EVT_MURDER" in bound
+    assert any("EVT-binding" in r for r in repairs)
+
+
+def test_concern_ambivalence_score_zero_without_counter():
+    """``Concern.ambivalence_score`` is 0 when no counter_concern_ids."""
+    c = Concern(
+        concern_id="CCN_X", proposition_id="PROP_X", polarity="desire",
+        salience=0.8, counter_concern_ids=[],
+    )
+    assert c.ambivalence_score == 0.0
+
+
+def test_concern_ambivalence_score_equals_salience_with_counter():
+    """``Concern.ambivalence_score`` equals salience when paired."""
+    c = Concern(
+        concern_id="CCN_X", proposition_id="PROP_X", polarity="desire",
+        salience=0.8, counter_concern_ids=["CCN_Y"],
+    )
+    assert c.ambivalence_score == 0.8
+
+
+def test_post_pass_synthesize_concern_trajectory_emits_spike_and_decay():
+    """When a concern's timeline is empty and an event touches both
+    its proposition and entity, a spike snapshot is emitted at the
+    event time and a decay snapshot at the truth-commit time."""
+    from shadow_loom.ingestion import _post_pass_synthesize_concern_trajectory
+    ws = _world()
+    prop = Proposition(
+        proposition_id="PROP_DUNCAN_DEAD",
+        kind="outcome",
+        referent_ids=["ENT_DUNCAN", "EVT_MURDER"],
+        description="Duncan is dead",
+        truth_at_fabula={100: True},
+    )
+    ws = ws.model_copy(update={"propositions": [prop]})
+    macbeth = ws.entities["ENT_MACBETH"].model_copy(update={
+        "concerns": [Concern(
+            concern_id="CCN_MACBETH_DESIRE_DUNCAN_DEAD",
+            proposition_id="PROP_DUNCAN_DEAD",
+            polarity="desire",
+            salience=0.5,
+        )],
+    })
+    ws.entities["ENT_MACBETH"] = macbeth
+    repairs: list[str] = []
+    new_ws = _post_pass_synthesize_concern_trajectory(ws, repairs)
+    snaps = new_ws.entities["ENT_MACBETH"].concerns[0].state_timeline
+    assert len(snaps) >= 1
+    # First snapshot is the spike at the event's fabula_time.
+    assert snaps[0].fabula_time == 100
+    assert snaps[0].salience is not None and snaps[0].salience > 0.5
