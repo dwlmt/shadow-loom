@@ -1847,15 +1847,19 @@ def _mutability_score(
             else:
                 window = c.activation_fabula_window
                 _salience = float(c.salience)
-            if window:
+            if window and len(window) == 2:
                 lo, hi = window
                 inside = (lo <= event.fabula_time <= hi)
-                # Inside: this is the "expected line" for this concern
-                # (typical, low mutability bonus). Outside: the event
-                # violates the concern's window (atypical, high bonus).
+                # Inside the activation window means the concern is
+                # *live* at this fabula_time, so the event genuinely
+                # bears on it — contribute ``salience * 0.5``. Outside
+                # the window the concern is dormant (not yet acquired
+                # or already closed), so the event is irrelevant to
+                # mutability re-ranking and contributes 0.
                 typicality = 0.5 if inside else 1.0
             else:
-                # Always-on concern: every event is "in scope" → typical.
+                # Always-on concern (or cleared-window sentinel): the
+                # concern is live at every tick → always in scope.
                 typicality = 0.5
             score += _salience * (1.0 - typicality)
     return score

@@ -1498,10 +1498,16 @@ def _augment_topology_with_sandbox_deltas(
         elif field == "polarity" and new_val in ("desire", "fear"):
             snap_kwargs["polarity"] = new_val
         elif field == "active":
-            # encode an explicit window into "active" via fabula_window
-            # only if caller supplied [lo, hi]; otherwise skip silently.
+            # ``DoConcern`` emits two shapes: ``[lo, hi]`` (active=False;
+            # window collapsed past horizon) or ``None`` (active=True;
+            # always-on — window cleared). Encode the latter as the
+            # empty-list sentinel that ``reconstruct_concern_at`` already
+            # treats as ``always-active``. Anything else is malformed
+            # and skipped.
             if isinstance(new_val, (list, tuple)) and len(new_val) == 2:
                 snap_kwargs["activation_fabula_window"] = list(new_val)
+            elif new_val is None:
+                snap_kwargs["activation_fabula_window"] = []
             else:
                 continue
         else:

@@ -1593,7 +1593,7 @@ def reconstruct_concern_at(concern: "Concern", fabula_time: int) -> dict:
             kind = snap.kind
 
     active = True
-    if activation_fabula_window:
+    if activation_fabula_window and len(activation_fabula_window) == 2:
         lo, hi = activation_fabula_window
         active = lo <= fabula_time <= hi
 

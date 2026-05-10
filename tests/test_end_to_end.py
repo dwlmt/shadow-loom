@@ -89,11 +89,11 @@ def _build_sandbox(ws, focus_ids=None, query_type="intervention"):
     return AMWNInstantiator.create_sandbox(ego.model_dump(), query_type), ego.model_dump()
 
 
-def _mock_scene(prose="The shadow fell across the courtyard."):
+def _mock_scene(prose="The shadow fell across the courtyard.", rendering_mode="directive"):
     return GeneratedScene(
         prose=prose,
         pov_entity="ENT_TEST",
-        rendering_mode="directive",
+        rendering_mode=rendering_mode,
         constraints_honoured=["C1"],
         constraints_violated=[],
     )
@@ -429,7 +429,7 @@ class TestDirectiveEndToEnd:
         )
         brief = assembler.assemble(directive)
 
-        initial_scene = _mock_scene("Macbeth felt the dagger pull him forward.")
+        initial_scene = _mock_scene("Macbeth felt the dagger pull him forward.", rendering_mode="fear")
 
         # First audit fails, second passes
         mock_run_audit.side_effect = [
@@ -439,7 +439,7 @@ class TestDirectiveEndToEnd:
         # Re-generation agent returns refined scene
         mock_agent = MagicMock()
         mock_agent.run_sync.return_value = _mock_run_sync(
-            _mock_scene("Something unseen pulled him forward.")
+            _mock_scene("Something unseen pulled him forward.", rendering_mode="fear")
         )
         mock_gen_agent.return_value = mock_agent
 
@@ -470,11 +470,11 @@ class TestDirectiveEndToEnd:
         )
         brief = assembler.assemble(directive)
 
-        initial_scene = _mock_scene("Macbeth was afraid.")
+        initial_scene = _mock_scene("Macbeth was afraid.", rendering_mode="fear")
         mock_run_audit.return_value = _mock_failing_audit()
         mock_agent = MagicMock()
         mock_agent.run_sync.return_value = _mock_run_sync(
-            _mock_scene("Macbeth remained afraid.")
+            _mock_scene("Macbeth remained afraid.", rendering_mode="fear")
         )
         mock_gen_agent.return_value = mock_agent
 
@@ -504,7 +504,7 @@ class TestDirectiveEndToEnd:
         )
         brief = assembler.assemble(directive)
 
-        initial_scene = _mock_scene("Macbeth trembled.")
+        initial_scene = _mock_scene("Macbeth trembled.", rendering_mode="fear")
         mock_run_audit.return_value = _mock_passing_audit()
 
         loop_result = run_feedback_loop(
@@ -547,7 +547,7 @@ class TestDirectiveEndToEnd:
         )
         brief = assembler.assemble(directive)
 
-        initial_scene = _mock_scene("Test prose.")
+        initial_scene = _mock_scene("Test prose.", rendering_mode="fear")
         # Capture the prior_feedback arg across calls
         captured_feedback = []
 
@@ -561,7 +561,7 @@ class TestDirectiveEndToEnd:
 
         mock_run_audit.side_effect = capture_audit
         mock_agent = MagicMock()
-        mock_agent.run_sync.return_value = _mock_run_sync(_mock_scene("Revised."))
+        mock_agent.run_sync.return_value = _mock_run_sync(_mock_scene("Revised.", rendering_mode="fear"))
         mock_gen_agent.return_value = mock_agent
 
         result = run_feedback_loop(

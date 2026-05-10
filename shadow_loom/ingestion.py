@@ -5746,9 +5746,9 @@ def _social_mutation_coverage(
     the caller can threshold (e.g. < 0.6 → retry).
     """
     triples: set[Tuple[str, str, str]] = set()
-    for re in social.social_topology:
-        for axis in re.metrics.keys():
-            triples.add((re.source_entity_id, re.target_entity_id, axis))
+    for rel in social.social_topology:
+        for axis in rel.metrics.keys():
+            triples.add((rel.source_entity_id, rel.target_entity_id, axis))
     if not triples:
         return (0, 0)
     covered: set[Tuple[str, str, str]] = set()
@@ -6422,11 +6422,11 @@ def _audit_chunk_consistency(
         if ce.rel_counterpart_id:
             _flag_id(ce.rel_counterpart_id, "causal_edge.rel_counterpart_id")
 
-    for re in topo.social_topology:
-        _flag_id(re.source_entity_id, "relationship_edge.source_entity_id")
-        _flag_id(re.target_entity_id, "relationship_edge.target_entity_id")
-        if getattr(re, "triggered_by_event_id", None):
-            _flag_id(re.triggered_by_event_id, "relationship_edge.triggered_by_event_id")
+    for rel in topo.social_topology:
+        _flag_id(rel.source_entity_id, "relationship_edge.source_entity_id")
+        _flag_id(rel.target_entity_id, "relationship_edge.target_entity_id")
+        if getattr(rel, "triggered_by_event_id", None):
+            _flag_id(rel.triggered_by_event_id, "relationship_edge.triggered_by_event_id")
 
     for sp in topo.spatial_topology:
         _flag_id(sp.source_id, "spatial_edge.source_id")
@@ -9752,6 +9752,7 @@ def _coalesce_snapshots(
 def assemble_world_state(
     register: GlobalRegister,
     topologies: List[ChunkTopology],
+    catalogue: Optional["PropositionCatalogue"] = None,
 ) -> WorldStateV1:
     """
     Merge the Step 1 register and Step 2 chunk topologies into a
@@ -10306,28 +10307,31 @@ def reconcile_affect(
         "counter_concern_ids", "kind",
     )
     if concern_snap_buckets:
-        # Build (entity_id, concern_id) \u2192 Concern lookup.
-        concern_index: Dict[str, Tuple[str, Concern]] = {}
+        # Index by ccn_id but keep a *list* of (eid, concern) tuples so
+        # cross-entity collisions (same CCN_ id appearing on two
+        # holders) route the snapshot onto every matching concern
+        # instead of silently binding to whichever was iterated last.
+        concern_index: Dict[str, List[Tuple[str, Concern]]] = {}
         for eid, ent in world.entities.items():
             for c in ent.concerns:
-                concern_index[c.concern_id] = (eid, c)
+                concern_index.setdefault(c.concern_id, []).append((eid, c))
         for ccn_id, snaps in concern_snap_buckets.items():
-            entry = concern_index.get(ccn_id)
-            if entry is None:
+            entries = concern_index.get(ccn_id) or []
+            if not entries:
                 logger.debug(
                     "[Phase C] Dropping %d concern_snapshot(s) for unknown CCN_ id %s.",
                     len(snaps), ccn_id,
                 )
                 continue
-            eid, concern = entry
-            merged = list(concern.state_timeline) + snaps
-            merged = _coalesce_timeline(merged, _CONCERN_DIFF_FIELDS)
-            updated = concern.model_copy(update={"state_timeline": merged})
-            ent = world.entities[eid]
-            ent.concerns = [
-                updated if c.concern_id == ccn_id else c
-                for c in ent.concerns
-            ]
+            for eid, concern in entries:
+                merged = list(concern.state_timeline) + snaps
+                merged = _coalesce_timeline(merged, _CONCERN_DIFF_FIELDS)
+                updated = concern.model_copy(update={"state_timeline": merged})
+                ent = world.entities[eid]
+                ent.concerns = [
+                    updated if c.concern_id == ccn_id else c
+                    for c in ent.concerns
+                ]
 
     # ----------------------------------------------------------------
     # 6. Auto-close concerns whose anchor proposition has resolved but
@@ -10972,7 +10976,11 @@ def _post_pass_close_resolved_concerns(
     prop_index = {p.proposition_id: p for p in world.propositions}
     closed = 0
     for eid, ent in list(world.entities.items()):
-        # Death time of the owning entity (latest transition to dead).
+        # Death time of the owning entity (earliest transition to dead).
+        # ``min`` is intentional: a concern is closed at the *first*
+        # death event so the closure rung lands promptly even if the
+        # timeline contains a noisy duplicate or a resurrection→
+        # redeath sequence.
         death_t: Optional[int] = None
         for snap in ent.state_timeline:
             if snap.status == "dead":
@@ -16540,7 +16548,7 @@ async def run_extraction_async(
             )
 
         # Step 3: Assembly + Normalize + Auto-Repair + Validation (same as sync)
-        world_state = assemble_world_state(register, topologies)
+        world_state = assemble_world_state(register, topologies, catalogue=catalogue)
         world_state = _normalize_fabula_times(world_state, config.fabula_time_spacing)
         world_state, repairs = _auto_repair(world_state)
         if repairs:

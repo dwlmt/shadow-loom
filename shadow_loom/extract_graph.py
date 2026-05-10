@@ -1622,13 +1622,22 @@ def _apply_affect_to_world(
                 continue
             ccn_id = getattr(seed, "concern_id", None) or f"CCN_{holder_id}_{prop_id}_{polarity}".upper()
             try:
+                # Use explicit None checks so a legitimate 0.0
+                # baseline (intentionally suppressed concern) is
+                # preserved instead of silently coerced to 0.5 by
+                # the truthiness-based ``or`` fallback chain.
+                _baseline = getattr(seed, "baseline_salience", None)
+                if _baseline is None:
+                    _baseline = getattr(seed, "salience", None)
+                if _baseline is None:
+                    _baseline = 0.5
                 concern = Concern(
                     world_id=world_id,
                     concern_id=ccn_id,
                     proposition_id=prop_id,
                     polarity=polarity,
                     kind=getattr(seed, "kind", None),
-                    salience=getattr(seed, "baseline_salience", None) or getattr(seed, "salience", 0.5) or 0.5,
+                    salience=float(_baseline),
                     counter_concern_ids=list(getattr(seed, "counter_concern_ids", []) or []),
                 )
             except Exception:
@@ -1642,41 +1651,43 @@ def _apply_affect_to_world(
     # 6. Concern snapshots → Concern.state_timeline
     if topology.concern_snapshots:
         from shadow_loom.models import ConcernSnapshot
-        # Build a (entity_id, concern_id) → Concern index (concerns may
-        # be globally unique via concern_id but we still scope per-entity
-        # so we don't accidentally write across holders).
-        concern_index: Dict[str, "Concern"] = {}
+        # Index concerns by ccn_id but keep a *list* so cross-entity
+        # collisions (same CCN_ id appearing on two holders) route the
+        # snapshot onto every matching concern instead of silently
+        # binding to whichever was iterated last.
+        concern_index: Dict[str, List["Concern"]] = {}
         for ent in merged.entities.values():
             for c in ent.concerns:
-                concern_index[c.concern_id] = c
+                concern_index.setdefault(c.concern_id, []).append(c)
         for snap in topology.concern_snapshots:
-            target = concern_index.get(snap.concern_id)
-            if target is None:
+            targets = concern_index.get(snap.concern_id) or []
+            if not targets:
                 logger.warning(
                     "[merge·affect] Concern snapshot for unknown CCN %s — skipped.",
                     snap.concern_id,
                 )
                 continue
-            cs = ConcernSnapshot(
-                world_id=world_id,
-                fabula_time=snap.fabula_time,
-                triggered_by=snap.triggered_by,
-                salience=snap.salience,
-                polarity=snap.polarity,
-                activation_fabula_window=snap.activation_fabula_window,
-                counter_concern_ids=snap.counter_concern_ids,
-                kind=snap.kind,
-            )
-            existing_keys = {
-                (s.fabula_time, s.triggered_by, getattr(s, "world_id", "factual"))
-                for s in target.state_timeline
-            }
-            key = (cs.fabula_time, cs.triggered_by, cs.world_id)
-            if key in existing_keys:
-                continue
-            target.state_timeline.append(cs)
-            target.state_timeline.sort(key=lambda s: s.fabula_time)
-            changeset.concern_snapshots_added += 1
+            for target in targets:
+                cs = ConcernSnapshot(
+                    world_id=world_id,
+                    fabula_time=snap.fabula_time,
+                    triggered_by=snap.triggered_by,
+                    salience=snap.salience,
+                    polarity=snap.polarity,
+                    activation_fabula_window=snap.activation_fabula_window,
+                    counter_concern_ids=snap.counter_concern_ids,
+                    kind=snap.kind,
+                )
+                existing_keys = {
+                    (s.fabula_time, s.triggered_by, getattr(s, "world_id", "factual"))
+                    for s in target.state_timeline
+                }
+                key = (cs.fabula_time, cs.triggered_by, cs.world_id)
+                if key in existing_keys:
+                    continue
+                target.state_timeline.append(cs)
+                target.state_timeline.sort(key=lambda s: s.fabula_time)
+                changeset.concern_snapshots_added += 1
 
     # 7. Belief snapshots → EntityStateSnapshot.belief_confidence_updates
     # Affect-side per-character confidence drift. Folded onto the
