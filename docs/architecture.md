@@ -120,14 +120,35 @@ collapsed are *rewired* onto the canonical id rather than dropped
 (May 2026 fix to the 0-seed catalogue regression).
 
 **A3b — Global concern catalogue.** A second global LLM pass
-(`extract_concern_catalogue_async`) runs immediately after A3
-sees the merged proposition list plus the entire source text in a
-single window, and emits the *authoritative* `ConcernSeed` set
-for every named character. The chunked-stage seeds are kept as a
-union fallback so an A3b call that misses a seed the chunked pass
-found is not a regression. Truth commitments and snapshot drift
-are still deferred to the per-chunk Affect sub-stage (B4 in §2
-below).
+(`extract_concern_catalogue_async`) runs immediately after A3. It
+is itself a two-stage pipeline:
+
+* **A3b-pre — Socratic concern scaffold.** Before the formalizer
+  is asked to commit to a typed schema, a dedicated reasoning
+  agent (`_build_concern_scaffold_agent`,
+  `concern_scaffolding.md`) emits per-character Q/A pairs across
+  six categories (`desire`, `fear`, `stake`, `belief`,
+  `obstacle`, `ambivalence`), each citing PROP_ ids from the
+  catalogue where they fit. This mirrors the per-chunk Step 2
+  Socratic scaffold (§2 below) but ranges over the *whole text*
+  and is keyed on the global character register rather than a
+  chunk slice. The scaffold step exists because single-shot
+  concern extraction empirically returns an empty list whenever
+  fears/desires are implicit — the May 2026 0-concerns
+  regression that motivated this layer.
+* **A3b — Formalization.** The scaffold is folded into the
+  formalization agent's system prompt and the agent commits each
+  desire/fear Q/A pair to a typed `ConcernSeed` record anchored
+  to a catalogue PROP_ id.
+
+A3b sees the merged proposition list plus the entire source text
+in a single window, and emits the *authoritative* `ConcernSeed`
+set for every named character. The chunked-stage seeds are kept
+as a union fallback so an A3b call that misses a seed the chunked
+pass found is not a regression. Scaffold failure cleanly degrades
+to the legacy single-shot formalizer call. Truth commitments and
+snapshot drift are still deferred to the per-chunk Affect
+sub-stage (B4 in §2 below).
 
 ### Step 2: Topology extraction (per-chunk)
 

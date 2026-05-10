@@ -2595,11 +2595,214 @@ class _ConcernSeedsDraft(BaseModel):
     concern_seeds: List[ConcernSeed] = Field(default_factory=list)
 
 
+# -- Phase A3b-pre: Socratic concern scaffold ------------------------------
+# A pre-pass that generates per-character Q/A reasoning about each named
+# character's standing fears and desires *before* the formalization agent
+# is asked to commit them to ConcernSeed records. The chunked Phase A3
+# pass and the legacy single-shot A3b agent both routinely returned
+# zero seeds because the model could not see, in one glance, what each
+# character wanted across the whole narrative. This scaffold forces the
+# articulation step into its own LLM call whose only job is reasoning.
+
+ConcernQACategory = Literal[
+    "desire", "fear", "stake", "belief", "obstacle", "ambivalence",
+]
+
+
+class ConcernQAPair(BaseModel):
+    """One Socratic Q/A targeting one character's standing affect."""
+    entity_id: str = Field(
+        default="",
+        description="ENT_ id of the character this pair is about. "
+        "Empty string for cross-character framing questions.",
+    )
+    category: ConcernQACategory = Field(
+        description="Which affect dimension the question probes.",
+    )
+    question: str = Field(description="The question.")
+    answer: str = Field(
+        description="A 1-3 sentence answer; cites PROP_ ids when an "
+        "answer ties to a catalogue proposition.",
+    )
+
+
+class ConcernScaffold(BaseModel):
+    """Phase A3b-pre output: Socratic Q/A about every named character's
+    standing fears and desires. Pure reasoning; no typed concern seeds.
+    """
+    qa_pairs: List[ConcernQAPair] = Field(default_factory=list)
+
+
+class _ConcernScaffoldDeps(BaseModel):
+    """Dependencies for the Phase A3b-pre concern scaffold agent."""
+    model_config = {"protected_namespaces": ()}
+    global_register: GlobalRegister
+    propositions: List[Proposition] = Field(default_factory=list)
+
+
+def _build_concern_scaffold_agent(
+    config: ExtractionConfig,
+) -> Agent[_ConcernScaffoldDeps, ConcernScaffold]:
+    """Build the Phase A3b-pre Socratic concern scaffold agent."""
+    agent: Agent[_ConcernScaffoldDeps, ConcernScaffold] = Agent(
+        _resolve_model(config.model),
+        deps_type=_ConcernScaffoldDeps,
+        output_type=NativeOutput(ConcernScaffold),
+        system_prompt=_load_prompt("concern_scaffolding.md"),
+        retries=config.output_retries,
+    )
+
+    @agent.system_prompt
+    def inject_register_and_propositions(
+        ctx: RunContext[_ConcernScaffoldDeps],
+    ) -> str:
+        reg = ctx.deps.global_register
+        ent_lines: List[str] = []
+        for eid in sorted(reg.entities):
+            ent = reg.entities[eid]
+            ent_lines.append(
+                f"  - {eid}: {ent.name} [{getattr(ent, 'status', 'unknown')}]"
+            )
+        entities_block = "\n".join(ent_lines) if ent_lines else "  (none)"
+
+        prop_lines: List[str] = []
+        for p in ctx.deps.propositions:
+            prop_lines.append(
+                f"  - {p.proposition_id} ({p.kind}): {p.description}"
+            )
+        props_block = "\n".join(prop_lines) if prop_lines else "  (none)"
+
+        return (
+            "=== ONTOLOGY ENTITIES (from Step 1) ===\n"
+            f"{entities_block}\n"
+            "\n"
+            "=== PROPOSITION CATALOGUE (from Step 2.5) ===\n"
+            f"{props_block}\n"
+        )
+
+    @agent.output_validator
+    def validate_scaffold(
+        ctx: RunContext[_ConcernScaffoldDeps],
+        result: ConcernScaffold,
+    ) -> ConcernScaffold:
+        reg = ctx.deps.global_register
+        kept: List[ConcernQAPair] = []
+        bad_ent = 0
+        for p in result.qa_pairs:
+            if p.entity_id and p.entity_id not in reg.entities:
+                bad_ent += 1
+                continue
+            kept.append(p)
+        raw = len(result.qa_pairs)
+        logger.info(
+            "[ConcernScaffold] validator: raw=%d kept=%d (bad_entity=%d).",
+            raw, len(kept), bad_ent,
+        )
+        # Re-prompt on empty output when the corpus clearly has named
+        # characters and propositions to anchor concerns to. Same gate
+        # as the formalizer's empty-output retry.
+        if (
+            raw == 0
+            and len(reg.entities) >= 2
+            and len(ctx.deps.propositions) >= 3
+        ):
+            sample_ents = sorted(reg.entities)[:6]
+            raise ModelRetry(
+                "Your `qa_pairs` list was EMPTY, but the source text "
+                "contains named characters who clearly want and dread "
+                "things across the narrative. Re-emit with at least "
+                "one `desire` pair AND one `fear` pair per major "
+                "named character. Use ENT_ ids from this register: "
+                f"{sample_ents}. Cite PROP_ ids in answers where a "
+                "catalogue proposition fits."
+            )
+        return ConcernScaffold(qa_pairs=kept)
+
+    return agent
+
+
+def _format_concern_scaffold(scaffold: ConcernScaffold) -> str:
+    """Render a :class:`ConcernScaffold` as a prompt-injection block."""
+    if not scaffold.qa_pairs:
+        return "(no scaffold pairs)"
+    # Group by entity so the formalizer reads one character at a time.
+    by_ent: Dict[str, List[ConcernQAPair]] = {}
+    for p in scaffold.qa_pairs:
+        by_ent.setdefault(p.entity_id or "(global)", []).append(p)
+    lines: List[str] = []
+    for ent_id in sorted(by_ent):
+        lines.append(f"## {ent_id}")
+        for p in by_ent[ent_id]:
+            lines.append(f"  [{p.category}] Q: {p.question}")
+            lines.append(f"           A: {p.answer}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+async def _run_concern_scaffold_async(
+    text: str,
+    register: GlobalRegister,
+    catalogue: PropositionCatalogue,
+    config: ExtractionConfig,
+) -> Optional[ConcernScaffold]:
+    """Run the Phase A3b-pre Socratic scaffold. Returns ``None`` on
+    failure so the caller can degrade to the legacy single-shot path
+    without losing the chunked-stage seeds.
+    """
+    if not catalogue.propositions or not register.entities:
+        return None
+    agent = _build_concern_scaffold_agent(config)
+    deps = _ConcernScaffoldDeps(
+        global_register=register,
+        propositions=list(catalogue.propositions),
+    )
+    settings = _catalogue_model_settings(config)
+    ent_names = sorted(register.entities)
+    sample_ents = ent_names[:12]
+    sample_prop_ids = [p.proposition_id for p in catalogue.propositions[:8]]
+    msg = (
+        "For every named character in the source text, emit Socratic "
+        "Q/A pairs covering their standing desires and fears, citing "
+        "PROP_ ids from the catalogue where they fit.\n\n"
+        f"NAMED ENTITIES (use these ENT_ ids only): {sample_ents}"
+        f"{' …' if len(ent_names) > 12 else ''}\n"
+        f"PROPOSITIONS available (sample): {sample_prop_ids}"
+        f"{' …' if len(catalogue.propositions) > 8 else ''}\n\n"
+        "Required minimums: ≥1 `desire` and ≥1 `fear` pair per major "
+        "named character; protagonists also need an `ambivalence`, a "
+        "`belief`, and an `obstacle` pair. Empty output is "
+        "unacceptable unless the text contains no named characters.\n\n"
+        f"SOURCE TEXT:\n{text}"
+    )
+    try:
+        result = await _run_with_retry_async(
+            lambda: agent.run(
+                msg, deps=deps, model_settings=settings, **_user_kwargs(),
+            ),
+            label="Step 2.5b-pre concern scaffold",
+        )
+    except Exception:
+        logger.exception(
+            "[Step 2.5b-pre] Concern scaffold FAILED \u2014 formalizer "
+            "will run without scaffold context."
+        )
+        return None
+    scaffold = result.output
+    logger.info(
+        "[Step 2.5b-pre] Concern scaffold: %d Q/A pairs across %d "
+        "characters.",
+        len(scaffold.qa_pairs),
+        len({p.entity_id for p in scaffold.qa_pairs if p.entity_id}),
+    )
+    return scaffold
+
+
 class _ConcernCatalogueDeps(BaseModel):
     """Dependencies for the Phase A3b global concerns agent."""
     model_config = {"protected_namespaces": ()}
     global_register: GlobalRegister
     propositions: List[Proposition] = Field(default_factory=list)
+    scaffold: Optional[ConcernScaffold] = None
 
 
 def _build_concern_catalogue_agent(
@@ -2639,6 +2842,20 @@ def _build_concern_catalogue_agent(
             )
         props_block = "\n".join(prop_lines) if prop_lines else "  (none)"
 
+        scaffold_block = ""
+        if ctx.deps.scaffold is not None and ctx.deps.scaffold.qa_pairs:
+            scaffold_block = (
+                "\n=== CONCERN SCAFFOLD (Phase A3b-pre Socratic Q/A) ===\n"
+                "The reasoning below was produced by the upstream "
+                "concern scaffolder. Treat it as authoritative for "
+                "*which* fears/desires each character holds; your job "
+                "is to commit those Q/A pairs to typed ConcernSeed "
+                "records anchored to PROP_ ids. Every character with a "
+                "`desire` or `fear` Q/A pair MUST have at least one "
+                "matching ConcernSeed in your output.\n"
+                f"{_format_concern_scaffold(ctx.deps.scaffold)}\n"
+            )
+
         return (
             "=== ONTOLOGY ENTITIES (from Step 1) ===\n"
             f"{entities_block}\n"
@@ -2649,6 +2866,7 @@ def _build_concern_catalogue_agent(
             "something with no matching catalogue proposition, leave "
             "the seed out.\n"
             f"{props_block}\n"
+            f"{scaffold_block}"
         )
 
     @agent.output_validator
@@ -2747,10 +2965,16 @@ async def extract_concern_catalogue_async(
     if not catalogue.propositions:
         # No propositions to anchor concerns to \u2014 skip cleanly.
         return catalogue
+    # Phase A3b-pre: Socratic concern scaffold. Failure returns None
+    # and the formalizer runs without scaffold context (legacy path).
+    scaffold = await _run_concern_scaffold_async(
+        text, register, catalogue, config,
+    )
     agent = _build_concern_catalogue_agent(config)
     deps = _ConcernCatalogueDeps(
         global_register=register,
         propositions=list(catalogue.propositions),
+        scaffold=scaffold,
     )
     settings = _catalogue_model_settings(config)
     # Build a compact entity roster + prop sample for the user message.
@@ -2760,10 +2984,21 @@ async def extract_concern_catalogue_async(
     ent_names = sorted(register.entities)
     sample_ents = ent_names[:12]
     sample_prop_ids = [p.proposition_id for p in catalogue.propositions[:8]]
+    scaffold_hint = ""
+    if scaffold is not None and scaffold.qa_pairs:
+        scaffold_hint = (
+            f"\nThe upstream concern scaffold produced "
+            f"{len(scaffold.qa_pairs)} Q/A pairs across "
+            f"{len({p.entity_id for p in scaffold.qa_pairs if p.entity_id})}"
+            f" characters; commit each desire/fear pair in that "
+            f"scaffold to a ConcernSeed record (see system prompt for "
+            f"the scaffold).\n"
+        )
     msg = (
         f"Extract every standing concern (fear / desire) for every "
         f"named character in the source text below, anchored to the "
-        f"PROP_ ids in the catalogue.\n\n"
+        f"PROP_ ids in the catalogue.\n"
+        f"{scaffold_hint}\n"
         f"NAMED ENTITIES (use these ENT_ ids only): {sample_ents}"
         f"{' …' if len(ent_names) > 12 else ''}\n"
         f"PROPOSITIONS available (sample): {sample_prop_ids}"
