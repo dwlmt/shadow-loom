@@ -827,22 +827,42 @@ class EventNode(AMWNNode):
     def _warn_on_actorless_intentional_event(self) -> "EventNode":
         import logging as _logging
         _log = _logging.getLogger("shadow_loom.ingestion")
+        # Dedupe per (event_id, warning_kind) — pydantic's
+        # ``model_copy`` re-runs validators, so a single ingestion
+        # pass that remaps fabula_time / referent ids would otherwise
+        # log the same warning 3-4× per event. The seen-set lives on
+        # the class so it persists across instances within a process.
+        seen = type(self).__dict__.get("_actorless_warn_seen")
+        if seen is None:
+            seen = set()
+            try:
+                setattr(type(self), "_actorless_warn_seen", seen)
+            except Exception:
+                seen = None  # frozen / locked class — fall back to noisy.
         if self.event_type == "choice" and not self.actor_ids:
-            _log.warning(
-                "[Validator·EventNode] choice event %r has no actor_ids "
-                "(a deliberate decision requires at least one decider).",
-                self.id,
-            )
+            key = ("choice", self.id)
+            if seen is None or key not in seen:
+                _log.warning(
+                    "[Validator·EventNode] choice event %r has no actor_ids "
+                    "(a deliberate decision requires at least one decider).",
+                    self.id,
+                )
+                if seen is not None:
+                    seen.add(key)
         elif (
             self.event_type == "utterance"
             and not self.actor_ids
             and not self.speaker_id
         ):
-            _log.warning(
-                "[Validator·EventNode] utterance event %r has neither "
-                "actor_ids nor speaker_id.",
-                self.id,
-            )
+            key = ("utterance", self.id)
+            if seen is None or key not in seen:
+                _log.warning(
+                    "[Validator·EventNode] utterance event %r has neither "
+                    "actor_ids nor speaker_id.",
+                    self.id,
+                )
+                if seen is not None:
+                    seen.add(key)
         return self
 
 class AMWNEdge(BaseModel):
