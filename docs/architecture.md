@@ -143,7 +143,16 @@ is itself a two-stage pipeline:
 
 A3b sees the merged proposition list plus the entire source text
 in a single window, and emits the *authoritative* `ConcernSeed`
-set for every named character. The chunked-stage seeds are kept
+set for every named character. **Both A3b-pre and A3b are
+entity-batched**: when the global register exceeds
+`config.concern_catalogue_entity_batch_size` (default 6) named
+entities, the entities are partitioned into batches and each
+batch runs in parallel under the same `max_concurrent_chunks`
+semaphore as the proposition catalogue. Scaffold pairs union by
+`(entity_id, category, question)`; formalizer seeds union by
+`(entity_id, proposition_id, polarity)`. The formalizer's
+scaffold injection is per-batch sliced so each call's prompt
+stays bounded in cast size. The chunked-stage seeds are kept
 as a union fallback so an A3b call that misses a seed the chunked
 pass found is not a regression. Scaffold failure cleanly degrades
 to the legacy single-shot formalizer call. Truth commitments and

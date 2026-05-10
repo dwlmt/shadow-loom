@@ -31,7 +31,7 @@ import time
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Literal, Optional, Set, Tuple
 
 if TYPE_CHECKING:
     from shadow_loom.research import WorldFact
@@ -941,6 +941,26 @@ class ExtractionConfig(BaseModel):
             "naming / classification task with a single best answer "
             "per proposition, and the dedupe step downstream relies "
             "on stable id minting across re-runs."
+        ),
+    )
+    concern_catalogue_entity_batch_size: int = Field(
+        default=6,
+        ge=1,
+        description=(
+            "Maximum number of named entities asked about in a single "
+            "Phase A3b-pre concern scaffold call and a single Phase "
+            "A3b formalizer call. When the global register exceeds "
+            "this size, the entities are partitioned into batches and "
+            "each batch is run in parallel; results are unioned by "
+            "(entity_id, category, question) for the scaffold and by "
+            "(entity_id, proposition_id, polarity) for the formalizer. "
+            "Mitigates two empirical failure modes of single-shot "
+            "concern extraction on large casts: (a) prompt/output "
+            "overflow on long novels with many named characters, and "
+            "(b) recall collapse where the model focuses only on the "
+            "protagonist and silently skips secondaries. Set to a "
+            "very large number (e.g. 9999) to disable batching and "
+            "reproduce the legacy single-shot behaviour."
         ),
     )
 
@@ -2634,10 +2654,21 @@ class ConcernScaffold(BaseModel):
 
 
 class _ConcernScaffoldDeps(BaseModel):
-    """Dependencies for the Phase A3b-pre concern scaffold agent."""
+    """Dependencies for the Phase A3b-pre concern scaffold agent.
+
+    ``entity_batch`` is the set of ENT_ ids the agent is asked to emit
+    Q/A pairs for in this call. The system prompt still lists the full
+    register so the model can refer to off-batch characters by name
+    when describing relationships, but the validator drops any pair
+    whose ``entity_id`` falls outside ``entity_batch`` (other batches
+    will cover those entities). On unbatched calls (legacy / small
+    casts) ``entity_batch`` is empty and the validator falls back to
+    register-membership only.
+    """
     model_config = {"protected_namespaces": ()}
     global_register: GlobalRegister
     propositions: List[Proposition] = Field(default_factory=list)
+    entity_batch: List[str] = Field(default_factory=list)
 
 
 def _build_concern_scaffold_agent(
@@ -2672,12 +2703,35 @@ def _build_concern_scaffold_agent(
             )
         props_block = "\n".join(prop_lines) if prop_lines else "  (none)"
 
+        focus_block = ""
+        if ctx.deps.entity_batch:
+            focus_lines: List[str] = []
+            for eid in ctx.deps.entity_batch:
+                ent = reg.entities.get(eid)
+                if ent is None:
+                    continue
+                focus_lines.append(
+                    f"  - {eid}: {ent.name} "
+                    f"[{getattr(ent, 'status', 'unknown')}]"
+                )
+            focus_text = "\n".join(focus_lines) if focus_lines else "  (none)"
+            focus_block = (
+                "\n=== FOCUS ENTITIES (this batch) ===\n"
+                "Emit Q/A pairs ONLY for the entities below. Other "
+                "entities listed in the full register are covered by "
+                "sibling batches; if you reference them in answers (to "
+                "describe relationships, conflicts, etc.) do not emit "
+                "a separate pair targeting them.\n"
+                f"{focus_text}\n"
+            )
+
         return (
-            "=== ONTOLOGY ENTITIES (from Step 1) ===\n"
+            "=== ONTOLOGY ENTITIES (full register) ===\n"
             f"{entities_block}\n"
             "\n"
             "=== PROPOSITION CATALOGUE (from Step 2.5) ===\n"
             f"{props_block}\n"
+            f"{focus_block}"
         )
 
     @agent.output_validator
@@ -2686,27 +2740,39 @@ def _build_concern_scaffold_agent(
         result: ConcernScaffold,
     ) -> ConcernScaffold:
         reg = ctx.deps.global_register
+        batch = set(ctx.deps.entity_batch)
         kept: List[ConcernQAPair] = []
-        bad_ent = 0
+        bad_ent = off_batch = 0
         for p in result.qa_pairs:
             if p.entity_id and p.entity_id not in reg.entities:
                 bad_ent += 1
                 continue
+            if batch and p.entity_id and p.entity_id not in batch:
+                # Sibling batch will cover this entity — drop here to
+                # keep the union step's accounting clean.
+                off_batch += 1
+                continue
             kept.append(p)
         raw = len(result.qa_pairs)
         logger.info(
-            "[ConcernScaffold] validator: raw=%d kept=%d (bad_entity=%d).",
-            raw, len(kept), bad_ent,
+            "[ConcernScaffold] validator: raw=%d kept=%d "
+            "(bad_entity=%d, off_batch=%d, batch_size=%d).",
+            raw, len(kept), bad_ent, off_batch, len(batch),
         )
-        # Re-prompt on empty output when the corpus clearly has named
-        # characters and propositions to anchor concerns to. Same gate
-        # as the formalizer's empty-output retry.
+        # Re-prompt on empty output. When a batch is in effect, gate
+        # on the batch having at least 2 entities + the catalogue
+        # having ≥3 props; without a batch, gate on the full register.
+        # This avoids spurious retries when a tail batch happens to be
+        # walk-on parts the model legitimately skipped.
+        gate_size = len(batch) if batch else len(reg.entities)
         if (
             raw == 0
-            and len(reg.entities) >= 2
+            and gate_size >= 2
             and len(ctx.deps.propositions) >= 3
         ):
-            sample_ents = sorted(reg.entities)[:6]
+            sample_ents = (
+                sorted(batch)[:6] if batch else sorted(reg.entities)[:6]
+            )
             raise ModelRetry(
                 "Your `qa_pairs` list was EMPTY, but the source text "
                 "contains named characters who clearly want and dread "
@@ -2748,61 +2814,128 @@ async def _run_concern_scaffold_async(
     """Run the Phase A3b-pre Socratic scaffold. Returns ``None`` on
     failure so the caller can degrade to the legacy single-shot path
     without losing the chunked-stage seeds.
+
+    Entity-batched: when the global register exceeds
+    ``config.concern_catalogue_entity_batch_size`` named entities, the
+    entities are partitioned into batches and each batch is run in
+    parallel (bounded by ``config.max_concurrent_chunks``). Batch
+    results are unioned by ``(entity_id, category, question)``.
     """
     if not catalogue.propositions or not register.entities:
         return None
     agent = _build_concern_scaffold_agent(config)
-    deps = _ConcernScaffoldDeps(
-        global_register=register,
-        propositions=list(catalogue.propositions),
-    )
     settings = _catalogue_model_settings(config)
     ent_names = sorted(register.entities)
-    sample_ents = ent_names[:12]
     sample_prop_ids = [p.proposition_id for p in catalogue.propositions[:8]]
-    msg = (
-        "For every named character in the source text, emit Socratic "
-        "Q/A pairs covering their standing desires and fears, citing "
-        "PROP_ ids from the catalogue where they fit.\n\n"
-        f"NAMED ENTITIES (use these ENT_ ids only): {sample_ents}"
-        f"{' …' if len(ent_names) > 12 else ''}\n"
-        f"PROPOSITIONS available (sample): {sample_prop_ids}"
-        f"{' …' if len(catalogue.propositions) > 8 else ''}\n\n"
-        "Required minimums: ≥1 `desire` and ≥1 `fear` pair per major "
-        "named character; protagonists also need an `ambivalence`, a "
-        "`belief`, and an `obstacle` pair. Empty output is "
-        "unacceptable unless the text contains no named characters.\n\n"
-        f"SOURCE TEXT:\n{text}"
+
+    batch_size = max(1, getattr(
+        config, "concern_catalogue_entity_batch_size", 6,
+    ))
+    if len(ent_names) <= batch_size:
+        batches: List[List[str]] = [ent_names]
+    else:
+        batches = [
+            ent_names[i:i + batch_size]
+            for i in range(0, len(ent_names), batch_size)
+        ]
+    nb = len(batches)
+    logger.info(
+        "[Step 2.5b-pre] Concern scaffold: %d entities split into %d "
+        "batch(es) of <=%d.",
+        len(ent_names), nb, batch_size,
     )
-    try:
-        result = await _run_with_retry_async(
-            lambda: agent.run(
-                msg, deps=deps, model_settings=settings, **_user_kwargs(),
-            ),
-            label="Step 2.5b-pre concern scaffold",
-        )
-    except Exception:
+
+    sem = asyncio.Semaphore(max(1, getattr(
+        config, "max_concurrent_chunks", 4,
+    )))
+
+    async def _one(idx: int, batch: List[str]) -> Optional[ConcernScaffold]:
+        async with sem:
+            deps = _ConcernScaffoldDeps(
+                global_register=register,
+                propositions=list(catalogue.propositions),
+                entity_batch=list(batch),
+            )
+            msg = (
+                f"Concern scaffold batch {idx + 1} of {nb}. Emit "
+                f"Socratic Q/A pairs ONLY for the focus entities below "
+                f"(other characters are covered by sibling batches). "
+                f"Cite PROP_ ids from the catalogue where they fit.\n\n"
+                f"FOCUS ENTITIES (use these ENT_ ids only): {batch}\n"
+                f"PROPOSITIONS available (sample): {sample_prop_ids}"
+                f"{' …' if len(catalogue.propositions) > 8 else ''}\n\n"
+                "Required minimums per focus entity (when the entity "
+                "is more than a walk-on): ≥1 `desire` pair AND ≥1 "
+                "`fear` pair; for protagonists also an `ambivalence`, "
+                "a `belief`, and an `obstacle` pair.\n\n"
+                f"SOURCE TEXT:\n{text}"
+            )
+            try:
+                res = await _run_with_retry_async(
+                    lambda: agent.run(
+                        msg, deps=deps,
+                        model_settings=settings,
+                        **_user_kwargs(),
+                    ),
+                    label=f"Step 2.5b-pre batch {idx + 1}/{nb}",
+                )
+                out = res.output
+                logger.info(
+                    "[ConcernScaffold] batch %d/%d: emitted %d Q/A "
+                    "pairs across %d entities.",
+                    idx + 1, nb, len(out.qa_pairs),
+                    len({p.entity_id for p in out.qa_pairs if p.entity_id}),
+                )
+                return out
+            except Exception:
+                logger.exception(
+                    "[Step 2.5b-pre] Batch %d/%d FAILED \u2014 dropping "
+                    "this batch's contribution.",
+                    idx + 1, nb,
+                )
+                return None
+
+    results = await asyncio.gather(*[
+        _one(i, b) for i, b in enumerate(batches)
+    ])
+    succeeded = [r for r in results if r is not None]
+    if not succeeded:
         logger.exception(
-            "[Step 2.5b-pre] Concern scaffold FAILED \u2014 formalizer "
-            "will run without scaffold context."
+            "[Step 2.5b-pre] All %d concern scaffold batch(es) FAILED "
+            "\u2014 formalizer will run without scaffold context.", nb,
         )
         return None
-    scaffold = result.output
+
+    # Union by (entity_id, category, question). Collisions across
+    # batches should be rare (each entity lives in one batch) but the
+    # dedupe key handles the cross-batch framing-question case too.
+    by_key: Dict[Tuple[str, str, str], ConcernQAPair] = {}
+    for sc in succeeded:
+        for p in sc.qa_pairs:
+            by_key[(p.entity_id, p.category, p.question)] = p
+    merged = ConcernScaffold(qa_pairs=list(by_key.values()))
     logger.info(
-        "[Step 2.5b-pre] Concern scaffold: %d Q/A pairs across %d "
-        "characters.",
-        len(scaffold.qa_pairs),
-        len({p.entity_id for p in scaffold.qa_pairs if p.entity_id}),
+        "[Step 2.5b-pre] Concern scaffold: %d/%d batches succeeded; "
+        "merged to %d Q/A pairs across %d entities.",
+        len(succeeded), nb, len(merged.qa_pairs),
+        len({p.entity_id for p in merged.qa_pairs if p.entity_id}),
     )
-    return scaffold
+    return merged
 
 
 class _ConcernCatalogueDeps(BaseModel):
-    """Dependencies for the Phase A3b global concerns agent."""
+    """Dependencies for the Phase A3b global concerns agent.
+
+    ``entity_batch`` partitions the formalization call by entity in
+    the same way ``_ConcernScaffoldDeps.entity_batch`` does, so the
+    formalizer is robust to large casts. Empty list = legacy
+    single-shot behaviour.
+    """
     model_config = {"protected_namespaces": ()}
     global_register: GlobalRegister
     propositions: List[Proposition] = Field(default_factory=list)
     scaffold: Optional[ConcernScaffold] = None
+    entity_batch: List[str] = Field(default_factory=list)
 
 
 def _build_concern_catalogue_agent(
@@ -2856,8 +2989,31 @@ def _build_concern_catalogue_agent(
                 f"{_format_concern_scaffold(ctx.deps.scaffold)}\n"
             )
 
+        focus_block = ""
+        if ctx.deps.entity_batch:
+            focus_lines: List[str] = []
+            for eid in ctx.deps.entity_batch:
+                ent = reg.entities.get(eid)
+                if ent is None:
+                    continue
+                focus_lines.append(
+                    f"  - {eid}: {ent.name} "
+                    f"[{getattr(ent, 'status', 'unknown')}]"
+                )
+            focus_text = "\n".join(focus_lines) if focus_lines else "  (none)"
+            focus_block = (
+                "\n=== FOCUS ENTITIES (this batch) ===\n"
+                "Emit ConcernSeed records ONLY for the entities below "
+                "(other characters are covered by sibling batches). "
+                "You MAY reference off-batch entities in seed "
+                "descriptions when describing the threat / object of "
+                "the concern, but every emitted seed's `entity_id` "
+                "MUST be one of the focus entities below.\n"
+                f"{focus_text}\n"
+            )
+
         return (
-            "=== ONTOLOGY ENTITIES (from Step 1) ===\n"
+            "=== ONTOLOGY ENTITIES (full register) ===\n"
             f"{entities_block}\n"
             "\n"
             "=== PROPOSITION CATALOGUE (from Step 2.5) ===\n"
@@ -2867,6 +3023,7 @@ def _build_concern_catalogue_agent(
             "the seed out.\n"
             f"{props_block}\n"
             f"{scaffold_block}"
+            f"{focus_block}"
         )
 
     @agent.output_validator
@@ -2876,9 +3033,10 @@ def _build_concern_catalogue_agent(
     ) -> _ConcernSeedsDraft:
         reg = ctx.deps.global_register
         valid_props = {p.proposition_id for p in ctx.deps.propositions}
+        batch = set(ctx.deps.entity_batch)
         ccn_re = re.compile(r"^CCN_[A-Z0-9_]+$")
         kept: Dict[Tuple[str, str, str], ConcernSeed] = {}
-        bad_id = bad_ent = bad_prop = 0
+        bad_id = bad_ent = bad_prop = off_batch = 0
         raw_count = len(result.concern_seeds)
         for s in result.concern_seeds:
             if not ccn_re.match(s.concern_id):
@@ -2886,6 +3044,10 @@ def _build_concern_catalogue_agent(
                 continue
             if s.entity_id not in reg.entities:
                 bad_ent += 1
+                continue
+            if batch and s.entity_id not in batch:
+                # Sibling batch will cover this entity.
+                off_batch += 1
                 continue
             if s.proposition_id not in valid_props:
                 bad_prop += 1
@@ -2896,20 +3058,25 @@ def _build_concern_catalogue_agent(
         # surfaced as "0 seeds emitted" with no further detail).
         logger.info(
             "[ConcernCatalogue] validator: raw=%d kept=%d "
-            "(bad_id=%d, bad_entity=%d, bad_prop=%d).",
+            "(bad_id=%d, bad_entity=%d, bad_prop=%d, off_batch=%d, "
+            "batch_size=%d).",
             raw_count, len(kept), bad_id, bad_ent, bad_prop,
+            off_batch, len(batch),
         )
         # Force a re-prompt when the model returned an empty payload
-        # but the corpus clearly *should* yield seeds: at least 2 named
-        # entities and at least 3 propositions to anchor concerns to.
-        # Without this, a single weak first attempt silently ships an
-        # empty concerns layer for every story.
+        # but the corpus clearly *should* yield seeds: at least 2
+        # focus entities and at least 3 propositions to anchor concerns
+        # to. Without this, a single weak first attempt silently ships
+        # an empty concerns layer for every story.
+        gate_size = len(batch) if batch else len(reg.entities)
         if (
             raw_count == 0
-            and len(reg.entities) >= 2
+            and gate_size >= 2
             and len(ctx.deps.propositions) >= 3
         ):
-            sample_ents = sorted(reg.entities)[:6]
+            sample_ents = (
+                sorted(batch)[:6] if batch else sorted(reg.entities)[:6]
+            )
             sample_props = [
                 p.proposition_id for p in ctx.deps.propositions[:6]
             ]
@@ -2929,15 +3096,17 @@ def _build_concern_catalogue_agent(
         # the model tried, but every id was malformed. Surface the
         # exact catalogue ids so the retry can repair its references.
         if raw_count > 0 and not kept:
-            sample_ents = sorted(reg.entities)[:6]
+            sample_ents = (
+                sorted(batch)[:6] if batch else sorted(reg.entities)[:6]
+            )
             sample_props = [
                 p.proposition_id for p in ctx.deps.propositions[:6]
             ]
             raise ModelRetry(
                 f"All {raw_count} concern seeds you emitted were "
                 f"discarded (bad_id={bad_id}, bad_entity={bad_ent}, "
-                f"bad_prop={bad_prop}). Re-emit using ONLY canonical "
-                "ids. Sample valid entity ids: "
+                f"bad_prop={bad_prop}, off_batch={off_batch}). Re-emit "
+                "using ONLY canonical ids. Sample valid entity ids: "
                 f"{sample_ents}. Sample valid PROP_ ids: "
                 f"{sample_props}. CCN_ ids must match ^CCN_[A-Z0-9_]+$."
             )
@@ -2971,58 +3140,122 @@ async def extract_concern_catalogue_async(
         text, register, catalogue, config,
     )
     agent = _build_concern_catalogue_agent(config)
-    deps = _ConcernCatalogueDeps(
-        global_register=register,
-        propositions=list(catalogue.propositions),
-        scaffold=scaffold,
-    )
     settings = _catalogue_model_settings(config)
-    # Build a compact entity roster + prop sample for the user message.
-    # The system prompt already lists these, but repeating them in the
-    # user turn anchors the request and stops models that "forget" the
-    # system context from returning an empty payload.
     ent_names = sorted(register.entities)
-    sample_ents = ent_names[:12]
     sample_prop_ids = [p.proposition_id for p in catalogue.propositions[:8]]
-    scaffold_hint = ""
-    if scaffold is not None and scaffold.qa_pairs:
-        scaffold_hint = (
-            f"\nThe upstream concern scaffold produced "
-            f"{len(scaffold.qa_pairs)} Q/A pairs across "
-            f"{len({p.entity_id for p in scaffold.qa_pairs if p.entity_id})}"
-            f" characters; commit each desire/fear pair in that "
-            f"scaffold to a ConcernSeed record (see system prompt for "
-            f"the scaffold).\n"
-        )
-    msg = (
-        f"Extract every standing concern (fear / desire) for every "
-        f"named character in the source text below, anchored to the "
-        f"PROP_ ids in the catalogue.\n"
-        f"{scaffold_hint}\n"
-        f"NAMED ENTITIES (use these ENT_ ids only): {sample_ents}"
-        f"{' …' if len(ent_names) > 12 else ''}\n"
-        f"PROPOSITIONS available (sample): {sample_prop_ids}"
-        f"{' …' if len(catalogue.propositions) > 8 else ''}\n\n"
-        f"You MUST emit at least one ConcernSeed per major character "
-        f"(those appearing in 3+ scenes). Empty output is unacceptable "
-        f"unless the text contains no named characters.\n\n"
-        f"SOURCE TEXT:\n{text}"
+
+    # Entity-batched fan-out (same shape as the scaffold). Each batch
+    # gets its own scaffold slice (only Q/A pairs whose entity_id is
+    # in-batch or empty) so the formalizer's prompt does not bloat
+    # linearly in cast size.
+    batch_size = max(1, getattr(
+        config, "concern_catalogue_entity_batch_size", 6,
+    ))
+    if len(ent_names) <= batch_size:
+        batches: List[List[str]] = [ent_names]
+    else:
+        batches = [
+            ent_names[i:i + batch_size]
+            for i in range(0, len(ent_names), batch_size)
+        ]
+    nb = len(batches)
+    logger.info(
+        "[Step 2.5b] Concern formalizer: %d entities split into %d "
+        "batch(es) of <=%d.",
+        len(ent_names), nb, batch_size,
     )
-    try:
-        result = await _run_with_retry_async(
-            lambda: agent.run(
-                msg, deps=deps, model_settings=settings, **_user_kwargs(),
-            ),
-            label="Step 2.5b global concerns",
-        )
-        global_seeds = list(result.output.concern_seeds)
-    except Exception:
-        logger.exception(
-            "[Step 2.5b] Global concern catalogue extraction FAILED \u2014 "
-            "falling back to chunked catalogue seeds (%d).",
-            len(catalogue.concern_seeds),
+
+    sem = asyncio.Semaphore(max(1, getattr(
+        config, "max_concurrent_chunks", 4,
+    )))
+
+    def _scaffold_for(batch: Iterable[str]) -> Optional[ConcernScaffold]:
+        if scaffold is None:
+            return None
+        bset = set(batch)
+        sliced = [
+            p for p in scaffold.qa_pairs
+            if not p.entity_id or p.entity_id in bset
+        ]
+        return ConcernScaffold(qa_pairs=sliced) if sliced else None
+
+    async def _one(idx: int, batch: List[str]) -> List[ConcernSeed]:
+        async with sem:
+            batch_scaffold = _scaffold_for(batch)
+            deps = _ConcernCatalogueDeps(
+                global_register=register,
+                propositions=list(catalogue.propositions),
+                scaffold=batch_scaffold,
+                entity_batch=list(batch),
+            )
+            scaffold_hint = ""
+            if batch_scaffold is not None and batch_scaffold.qa_pairs:
+                covered = len({
+                    p.entity_id for p in batch_scaffold.qa_pairs
+                    if p.entity_id
+                })
+                scaffold_hint = (
+                    f"\nThe upstream concern scaffold produced "
+                    f"{len(batch_scaffold.qa_pairs)} Q/A pairs across "
+                    f"{covered} of this batch's entities; commit each "
+                    f"desire/fear pair in the scaffold to a "
+                    f"ConcernSeed record (see system prompt for the "
+                    f"scaffold).\n"
+                )
+            msg = (
+                f"Concern formalizer batch {idx + 1} of {nb}. Extract "
+                f"every standing concern (fear / desire) ONLY for the "
+                f"focus entities below, anchored to the PROP_ ids in "
+                f"the catalogue.\n"
+                f"{scaffold_hint}\n"
+                f"FOCUS ENTITIES (use these ENT_ ids only): {batch}\n"
+                f"PROPOSITIONS available (sample): {sample_prop_ids}"
+                f"{' …' if len(catalogue.propositions) > 8 else ''}\n\n"
+                f"You MUST emit at least one ConcernSeed per focus "
+                f"entity that appears in 3+ scenes. Empty output is "
+                f"unacceptable unless the focus entities are all "
+                f"walk-on parts.\n\n"
+                f"SOURCE TEXT:\n{text}"
+            )
+            try:
+                res = await _run_with_retry_async(
+                    lambda: agent.run(
+                        msg, deps=deps,
+                        model_settings=settings,
+                        **_user_kwargs(),
+                    ),
+                    label=f"Step 2.5b batch {idx + 1}/{nb}",
+                )
+                seeds = list(res.output.concern_seeds)
+                logger.info(
+                    "[ConcernCatalogue] batch %d/%d: emitted %d seeds.",
+                    idx + 1, nb, len(seeds),
+                )
+                return seeds
+            except Exception:
+                logger.exception(
+                    "[Step 2.5b] Batch %d/%d FAILED \u2014 dropping this "
+                    "batch's contribution.",
+                    idx + 1, nb,
+                )
+                return []
+
+    batch_results = await asyncio.gather(*[
+        _one(i, b) for i, b in enumerate(batches)
+    ])
+    if not any(batch_results):
+        # Every batch returned empty (or every batch failed). Surface
+        # the same fallback path as before: keep chunked-stage seeds.
+        logger.warning(
+            "[Step 2.5b] All %d concern formalizer batch(es) returned "
+            "no seeds \u2014 falling back to chunked catalogue seeds "
+            "(%d).",
+            nb, len(catalogue.concern_seeds),
         )
         return catalogue
+    global_seeds: List[ConcernSeed] = []
+    for seeds in batch_results:
+        global_seeds.extend(seeds)
 
     # Union: global wins; chunked seeds for keys the global call missed
     # are kept as backstop.
@@ -3034,9 +3267,9 @@ async def extract_concern_catalogue_async(
         by_key[(s.entity_id, s.proposition_id, s.polarity)] = s
     merged = list(by_key.values())
     logger.info(
-        "[Step 2.5b] Global concerns: %d seeds emitted, %d after union "
-        "with %d chunked-stage fallbacks.",
-        len(global_seeds), len(merged), len(catalogue.concern_seeds),
+        "[Step 2.5b] Global concerns: %d seeds emitted across %d "
+        "batches, %d after union with %d chunked-stage fallbacks.",
+        len(global_seeds), nb, len(merged), len(catalogue.concern_seeds),
     )
     return catalogue.model_copy(update={"concern_seeds": merged})
 
