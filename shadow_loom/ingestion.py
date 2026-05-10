@@ -54,6 +54,7 @@ from shadow_loom.models import (
     GlobalTrait,
     Location,
     NarrativeObject,
+    ObjectStateSnapshot,
     Proposition,
     PropositionSnapshot,
     RelationshipEdge,
@@ -297,6 +298,17 @@ class ChunkTopology(BaseModel):
     social_topology: List[RelationshipEdge] = Field(default_factory=list)
     spatial_topology: List[SpatialEdge] = Field(default_factory=list)
     entity_updates: List["EntityUpdate"] = Field(default_factory=list)
+    object_updates: List["ObjectUpdate"] = Field(
+        default_factory=list,
+        description=(
+            "Per-chunk surgical updates to NarrativeObject location / owner /"
+            " properties. Folded by ``assemble_world_state`` into"
+            " :class:`ObjectStateSnapshot` entries on"
+            " :attr:`NarrativeObject.state_timeline` so AMWN/ego-graph readers"
+            " see the time-correct object state instead of only its initial"
+            " location."
+        ),
+    )
     world_trait_updates: List["WorldTraitUpdate"] = Field(
         default_factory=list,
         description=(
@@ -390,6 +402,15 @@ class PhysicsExtraction(BaseModel):
     causal_topology: List[CausalEdge] = Field(default_factory=list)
     spatial_topology: List[SpatialEdge] = Field(default_factory=list)
     entity_updates: List["EntityUpdate"] = Field(default_factory=list)
+    object_updates: List["ObjectUpdate"] = Field(
+        default_factory=list,
+        description=(
+            "Per-chunk object snapshots (movement, ownership transfers,"
+            " property mutations). Same authoritative-path semantics as"
+            " entity_updates: each entry is folded into an"
+            " :class:`ObjectStateSnapshot` on the target object."
+        ),
+    )
 
 
 class SocialExtraction(BaseModel):
@@ -421,6 +442,15 @@ class ConsequencesExtraction(BaseModel):
     with event/edge extraction.
     """
     entity_updates: List["EntityUpdate"] = Field(default_factory=list)
+    object_updates: List["ObjectUpdate"] = Field(
+        default_factory=list,
+        description=(
+            "Per-chunk object snapshots — same vocabulary as PhysicsExtraction."
+            " The Consequences Agent re-emits these so prose-grounded movements"
+            " (a character picks up the dagger; the cup is poisoned) become"
+            " :class:`ObjectStateSnapshot` entries on the merged world state."
+        ),
+    )
     world_trait_updates: List["WorldTraitUpdate"] = Field(
         default_factory=list,
         description=(
@@ -480,6 +510,74 @@ class EntityUpdate(BaseModel):
         default=None, description="New status if changed.",
     )
     new_location_id: Optional[str] = Field(default=None, description="New location if entity moved.")
+
+
+class ObjectUpdate(BaseModel):
+    """Per-chunk delta: how a :class:`NarrativeObject`'s state changed during this chunk.
+
+    Mirrors :class:`EntityUpdate` for objects so picked-up / dropped /
+    transferred / mutated objects are recorded as snapshots on
+    :attr:`NarrativeObject.state_timeline` rather than silently losing
+    their movement history. Each entry is folded by
+    :func:`assemble_world_state` into a single
+    :class:`ObjectStateSnapshot` on the object so downstream readers
+    (AMWN sandbox, ego graph, brief assembler, auditor) see the
+    time-correct location / owner / properties at any fabula tick.
+
+    The two ``set_*_null`` flags disambiguate:
+      * ``new_location_id=None`` AND ``set_location_null=False`` → no
+        change to location this tick.
+      * ``new_location_id=None`` AND ``set_location_null=True`` →
+        the object was *picked up* and its location should be
+        explicitly cleared (it now lives in an inventory).
+
+    Same pattern applies to ``new_owner_id`` / ``set_owner_null`` for
+    drop / placement events.
+    """
+    object_id: str = Field(description="OBJ_ ID of the object that changed.")
+    fabula_time: int = Field(description="fabula_time when this change occurred.")
+    triggered_by: Optional[str] = Field(
+        default=None, description="EVT_ ID that caused this change.",
+    )
+    new_location_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "New LOC_ id when the object was placed / dropped / relocated. "
+            "Use null with ``set_location_null=True`` to mark a pickup."
+        ),
+    )
+    new_owner_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "New ENT_ id when the object was picked up / gifted / stolen / inherited. "
+            "Use null with ``set_owner_null=True`` to mark a drop."
+        ),
+    )
+    set_location_null: bool = Field(
+        default=False,
+        description=(
+            "Explicitly clear ``NarrativeObject.location_id`` "
+            "(object was picked up)."
+        ),
+    )
+    set_owner_null: bool = Field(
+        default=False,
+        description=(
+            "Explicitly clear ``NarrativeObject.owner_id`` "
+            "(object was dropped or placed)."
+        ),
+    )
+    properties_set: Dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Property keys to overwrite on the object (e.g. "
+            "``{'state': 'poisoned'}`` after the assassin tampers with it)."
+        ),
+    )
+    properties_unset: List[str] = Field(
+        default_factory=list,
+        description="Property keys to remove from the accumulated property dict.",
+    )
 
 
 class WorldTraitUpdate(BaseModel):
@@ -3702,6 +3800,100 @@ def _normalise_ambient_key(key: str) -> str:
     return _AMBIENT_TYPO_FIXES.get(norm, norm)
 
 
+def _auto_emit_affordance_gates(
+    causal_edges: List[CausalEdge],
+    events: List[EventNode],
+    objects: Dict[str, NarrativeObject],
+) -> List[CausalEdge]:
+    """Synthesise missing ``affordance_gate`` edges from object affordances.
+
+    Objects carry a list of ``Affordance`` records describing what they
+    *can* do (a poison can ``kill``, a letter can ``inform``, a key can
+    ``unlock``). Per the prior-audit gap (memory:
+    ``ingestion-prop-belief-concern-audit-2026-05-08.md``), these
+    affordances were stored as struct fields but never wired into
+    ``causal_topology`` as ``affordance_gate`` edges \u2014 leaving the
+    causal-physics gating machinery in
+    :mod:`shadow_loom.causal_physics` (which knows how to consult these
+    edges) with nothing to consult.
+
+    This deterministic post-processing pass closes that gap: for every
+    object that appears in an event's ``actor_ids`` or ``target_ids``,
+    if no ``affordance_gate`` edge already connects the object to that
+    event, emit one with ``mechanism`` derived from the most relevant
+    affordance ``action``. The pass is idempotent (existing edges are
+    preserved and not duplicated) and authoritative-respecting (any
+    LLM- or hand-authored ``affordance_gate`` edge wins on key
+    collision).
+
+    Returns the (possibly augmented) causal edge list. Logs a count of
+    synthesised edges so the ingestion-warnings UI surface can show
+    the auto-wiring as a structural fact.
+    """
+    if not objects or not events:
+        return causal_edges
+    # Existing (source, target, type) keys we don't want to duplicate.
+    existing_keys: set[tuple[str, str, str]] = {
+        (e.source_id, e.target_id, e.causality_type) for e in causal_edges
+    }
+    synthesised: List[CausalEdge] = []
+    for evt in events:
+        evt_refs = set(evt.actor_ids) | set(evt.target_ids)
+        if not evt_refs:
+            continue
+        for ref in evt_refs:
+            if not ref.startswith("OBJ_"):
+                continue
+            obj = objects.get(ref)
+            if obj is None or not obj.affordances:
+                continue
+            key = (obj.id, evt.id, "affordance_gate")
+            if key in existing_keys:
+                continue
+            # Derive a mechanism label from the first affordance whose
+            # action plausibly maps onto the canonical mechanism keys.
+            # Falls back to "physical" \u2014 a physical-prop interaction
+            # is the safe default for an OBJ_ participating in an
+            # event without a more specific cue.
+            mechanism = "physical"
+            for aff in obj.affordances:
+                action = (aff.action or "").strip().lower()
+                if action in ("inform", "reveal", "read", "decrypt", "translate"):
+                    mechanism = "epistemic"
+                    break
+                if action in ("kill", "wound", "strike", "shoot", "stab", "poison"):
+                    mechanism = "physical"
+                    break
+                if action in ("coerce", "command", "order", "intimidate"):
+                    mechanism = "social"
+                    break
+                if action in ("unlock", "open", "block", "barrier"):
+                    mechanism = "physical"
+                    break
+            try:
+                synth = CausalEdge(
+                    source_id=obj.id,
+                    target_id=evt.id,
+                    causality_type="affordance_gate",
+                    mechanism=mechanism,
+                    causal_force=3.0,
+                    evidence_strength="weak",
+                    fabula_time=evt.fabula_time,
+                )
+            except Exception:
+                # Validator (e.g. id-prefix mismatch) refused the synthetic
+                # edge; skip rather than abort the whole pass.
+                continue
+            synthesised.append(synth)
+            existing_keys.add(key)
+    if synthesised:
+        logger.info(
+            "[Validator\u00b7Physics] Auto-emitted %d affordance_gate edge(s) "
+            "from object affordances.", len(synthesised),
+        )
+    return causal_edges + synthesised
+
+
 def _sanitize_causal_edge(
     ce: CausalEdge, notes: List[str],
 ) -> Optional[CausalEdge]:
@@ -4417,6 +4609,69 @@ def _build_physics_agent(config: ExtractionConfig) -> Agent[_PhysicsDeps, Physic
                 if sanitised_eu is not None:
                     fixed_updates.append(sanitised_eu)
 
+        # --- Fix object_update IDs ---
+        # Mirrors the entity_updates pass above: fuzzy-resolve OBJ_ /
+        # ENT_ / LOC_ / EVT_ ids and drop entries whose primary OBJ_ id
+        # cannot be resolved against the Step-1 register. Same-tick
+        # set/unset conflicts (location_id set AND set_location_null)
+        # are silently flattened in favour of the explicit clear, since
+        # an explicit clear means the object was picked up and the
+        # location must be null at this tick.
+        fixed_object_updates: List[ObjectUpdate] = []
+        for ou in result.object_updates:
+            updates = {}
+            oid, _ = _fix_id(ou.object_id, object_ids_set, "ObjectUpdate.object_id", fixes)
+            if oid != ou.object_id:
+                updates["object_id"] = oid
+            if ou.triggered_by and ou.triggered_by not in valid:
+                trig, _ = _fix_id(ou.triggered_by, valid, "ObjectUpdate.triggered_by", fixes)
+                if trig != ou.triggered_by:
+                    updates["triggered_by"] = trig
+                if trig not in valid:
+                    bad.append(f"ObjectUpdate triggered_by '{ou.triggered_by}' is not a valid event.")
+            if ou.new_location_id and ou.new_location_id not in location_ids:
+                loc, _ = _fix_id(ou.new_location_id, location_ids, "ObjectUpdate.new_location_id", fixes)
+                if loc != ou.new_location_id:
+                    updates["new_location_id"] = loc
+                if loc not in location_ids:
+                    bad.append(
+                        f"ObjectUpdate new_location_id '{ou.new_location_id}' "
+                        f"is not a valid location."
+                    )
+            if ou.new_owner_id and ou.new_owner_id not in entity_ids:
+                own, _ = _fix_id(ou.new_owner_id, entity_ids, "ObjectUpdate.new_owner_id", fixes)
+                if own != ou.new_owner_id:
+                    updates["new_owner_id"] = own
+                if own not in entity_ids:
+                    bad.append(
+                        f"ObjectUpdate new_owner_id '{ou.new_owner_id}' "
+                        f"is not a valid entity."
+                    )
+            if oid not in object_ids_set:
+                bad.append(f"ObjectUpdate object_id '{ou.object_id}' is not a valid object.")
+                continue
+            cleaned_ou = ou.model_copy(update=updates) if updates else ou
+            # Reconcile explicit-null flags: a pickup naturally sets owner
+            # AND clears location; a drop sets location AND clears owner.
+            # If the LLM emits a value alongside its own clear flag, the
+            # explicit clear wins (and we log it).
+            extra_updates = {}
+            if cleaned_ou.set_location_null and cleaned_ou.new_location_id:
+                fixes.append(
+                    f"[Auto-Fix] ObjectUpdate {cleaned_ou.object_id}@{cleaned_ou.fabula_time}: "
+                    f"both new_location_id and set_location_null set; honouring the clear."
+                )
+                extra_updates["new_location_id"] = None
+            if cleaned_ou.set_owner_null and cleaned_ou.new_owner_id:
+                fixes.append(
+                    f"[Auto-Fix] ObjectUpdate {cleaned_ou.object_id}@{cleaned_ou.fabula_time}: "
+                    f"both new_owner_id and set_owner_null set; honouring the clear."
+                )
+                extra_updates["new_owner_id"] = None
+            if extra_updates:
+                cleaned_ou = cleaned_ou.model_copy(update=extra_updates)
+            fixed_object_updates.append(cleaned_ou)
+
         if fixes:
             logger.info("[Validator·Physics] Auto-fixed %d ID(s): %s", len(fixes), "; ".join(fixes))
 
@@ -4442,9 +4697,12 @@ def _build_physics_agent(config: ExtractionConfig) -> Agent[_PhysicsDeps, Physic
 
         return PhysicsExtraction(
             events=result.events,
-            causal_topology=fixed_causal,
+            causal_topology=_auto_emit_affordance_gates(
+                fixed_causal, result.events, reg.objects,
+            ),
             spatial_topology=fixed_spatial,
             entity_updates=fixed_updates,
+            object_updates=fixed_object_updates,
         )
 
     @agent.output_validator
@@ -4487,6 +4745,10 @@ def _build_physics_agent(config: ExtractionConfig) -> Agent[_PhysicsDeps, Physic
             causal_topology=cleaned_causal,
             spatial_topology=result.spatial_topology,
             entity_updates=cleaned_updates,
+            object_updates=[
+                ou for ou in result.object_updates
+                if ou.triggered_by not in dropped_set
+            ],
         )
 
     @agent.output_validator
@@ -4532,6 +4794,7 @@ def _build_physics_agent(config: ExtractionConfig) -> Agent[_PhysicsDeps, Physic
             causal_topology=new_causal,
             spatial_topology=new_spatial,
             entity_updates=result.entity_updates,
+            object_updates=result.object_updates,
         )
 
     @agent.output_validator
@@ -6036,11 +6299,18 @@ def _merge_physics_retry(
         if (eu.entity_id, eu.fabula_time) not in base_eu_keys
     ]
 
+    base_ou_keys = {(ou.object_id, ou.fabula_time) for ou in base.object_updates}
+    new_ous = list(base.object_updates) + [
+        ou for ou in retry.object_updates
+        if (ou.object_id, ou.fabula_time) not in base_ou_keys
+    ]
+
     return PhysicsExtraction(
         events=new_events,
         causal_topology=new_causal,
         spatial_topology=new_spatial,
         entity_updates=new_eus,
+        object_updates=new_ous,
     )
 
 
@@ -6166,11 +6436,23 @@ def _dedupe_scene_events(
         seen_eu.add(key)
         rewritten_eus.append(new_eu)
 
+    rewritten_ous: List["ObjectUpdate"] = []
+    seen_ou: set[tuple] = set()
+    for ou in physics.object_updates:
+        new_trig = _rewrite(ou.triggered_by) if ou.triggered_by else ou.triggered_by
+        new_ou = ou.model_copy(update={"triggered_by": new_trig})
+        key = (new_ou.object_id, new_ou.fabula_time)
+        if key in seen_ou:
+            continue
+        seen_ou.add(key)
+        rewritten_ous.append(new_ou)
+
     return PhysicsExtraction(
         events=kept_events,
         causal_topology=rewritten_causal,
         spatial_topology=physics.spatial_topology,
         entity_updates=rewritten_eus,
+        object_updates=rewritten_ous,
     )
 
 
@@ -7986,6 +8268,7 @@ async def _extract_single_chunk_async(
     # can wire belief provenance through utterance / channel ids) ---
     social = SocialExtraction()
     entity_updates_final = physics.entity_updates  # legacy fallback
+    object_updates_final: List[ObjectUpdate] = list(physics.object_updates)
 
     # Hoisted to outer scope so the mirror / anonymous-utterance retries
     # below (which reuse social_msg + social_deps) can see them after
@@ -8676,6 +8959,16 @@ async def _extract_single_chunk_async(
     consequences_out = await _run_consequences(social)
     if consequences_out is not None:
         entity_updates_final = consequences_out.entity_updates
+        if consequences_out.object_updates:
+            # Consequences re-emits object snapshots when it grounds a
+            # post-prose pickup / drop / mutation that the Physics pass
+            # missed. Append rather than replace so Physics-extracted
+            # object_updates (typically the strongest signal) are kept;
+            # the merge layer's same-tick coalescer dedups identical
+            # snapshots and the auditor flags genuine conflicts.
+            object_updates_final = object_updates_final + list(
+                consequences_out.object_updates
+            )
 
     # Merge utterance events from the Social Agent into the chunk's event list.
     merged_events = _merge_utterances_into_events(
@@ -8766,6 +9059,7 @@ async def _extract_single_chunk_async(
         social_topology=social.social_topology,
         spatial_topology=physics.spatial_topology,
         entity_updates=entity_updates_final,
+        object_updates=object_updates_final,
         proposition_snapshots=affect_props,
         proposition_truth_commits=affect_truth,
         concern_snapshots=affect_concerns,
@@ -10641,7 +10935,7 @@ def assemble_world_state(
     # Coalesce same-(entity, fabula_time) snapshots into a single
     # deterministic snapshot. Without this, two updates emitted by
     # different chunks for the same tick get appended verbatim and
-    # replay order becomes extraction-order dependent \u2014 producing
+    # replay order becomes extraction-order dependent — producing
     # unstable reconstructed state and double-applied belief mutations
     # (audit item #10). Merge rules per field:
     #   - traits: later (later in input order) wins per key
@@ -10650,6 +10944,29 @@ def assemble_world_state(
     #   - triggered_by / status / location_id: first non-null wins
     for eid, snaps in all_entity_updates.items():
         all_entity_updates[eid] = _coalesce_snapshots(snaps)
+
+    # --- Object updates → ObjectStateSnapshot --------------------------------
+    # Same authoritative-path semantics as entity_updates: every per-chunk
+    # ObjectUpdate is folded into a snapshot on
+    # NarrativeObject.state_timeline so AMWN sandboxes / ego graphs /
+    # the brief assembler / the auditor see the time-correct object
+    # position rather than the static initial value. Same-tick duplicates
+    # are merged trivially (later set/unset wins per key); cross-chunk
+    # ordering is stable thanks to fabula_time + object_id sort.
+    all_object_updates: Dict[str, List[ObjectStateSnapshot]] = {}
+    for topo in topologies:
+        for ou in topo.object_updates:
+            snap = ObjectStateSnapshot(
+                fabula_time=ou.fabula_time,
+                triggered_by=ou.triggered_by,
+                location_id=ou.new_location_id,
+                owner_id=ou.new_owner_id,
+                set_location_null=ou.set_location_null,
+                set_owner_null=ou.set_owner_null,
+                properties_set=dict(ou.properties_set),
+                properties_unset=list(ou.properties_unset),
+            )
+            all_object_updates.setdefault(ou.object_id, []).append(snap)
 
     # Sort events chronologically. Add stable secondary keys so two
     # extraction runs over the same input produce byte-identical AMWN
@@ -10781,7 +11098,16 @@ def assemble_world_state(
 
     ws = WorldStateV1(
         locations=register.locations,
-        objects=register.objects,
+        objects={
+            oid: (
+                obj.model_copy(update={"state_timeline": sorted(
+                    all_object_updates[oid], key=lambda s: (s.fabula_time, s.triggered_by or "")
+                )})
+                if oid in all_object_updates
+                else obj
+            )
+            for oid, obj in register.objects.items()
+        },
         entities={
             eid: (
                 ent.model_copy(update={"state_timeline": sorted(all_entity_updates[eid], key=_snapshot_sort_key)})

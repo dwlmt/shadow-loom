@@ -806,6 +806,10 @@ def _add_event(data: dict, commit: Callable, prefix: Optional[str]) -> None:
             ),
             ("fabula_time (auto)", "fabula_time", "int", _next_fabula_time(data)),
             ("syuzhet_index (auto)", "syuzhet_index", "int", _next_syuzhet_index(data)),
+            (
+                "at_location_id (LOC_…, optional; co-presence anchor)",
+                "at_location_id", "text", "",
+            ),
             # Utterance-only fields. Ignored for non-utterance events;
             # required when event_type == "utterance".
             ("utterance: content", "content", "text", ""),
@@ -844,6 +848,9 @@ def _build_event_skeleton(v: dict, prefix: Optional[str]) -> dict:
         "target_ids": [],
         "description": v.get("description", ""),
     }
+    at_loc = (v.get("at_location_id") or "").strip()
+    if at_loc:
+        skel["at_location_id"] = at_loc
     if et == "utterance":
         speaker = (v.get("speaker_id") or "").strip()
         if not speaker:

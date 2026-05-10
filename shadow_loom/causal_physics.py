@@ -212,6 +212,28 @@ class WorldTraitMutation(BaseModel):
     triggered_by: Optional[str] = None
 
 
+class ObjectMutation(BaseModel):
+    """Record of a :class:`NarrativeObject` clamp applied via Pearl Rung-2
+    surgery.
+
+    Mirrors :class:`WorldTraitMutation` for the prop layer. The pipeline
+    adapter reads these and emits one
+    :class:`~shadow_loom.ingestion.ObjectUpdate` per mutation onto the
+    chunk topology, which in turn folds into a single
+    :class:`ObjectStateSnapshot` on the canonical
+    :attr:`NarrativeObject.state_timeline` during the merge step.
+    """
+    object_id: str
+    fabula_time: int
+    new_location_id: Optional[str] = None
+    new_owner_id: Optional[str] = None
+    set_location_null: bool = False
+    set_owner_null: bool = False
+    properties_set: Dict[str, str] = Field(default_factory=dict)
+    properties_unset: List[str] = Field(default_factory=list)
+    triggered_by: Optional[str] = None
+
+
 class NoisyOrProbability(BaseModel):
     """Per-trait noisy-OR aggregate plus its per-edge components.
 
@@ -270,6 +292,15 @@ class CausalPhysicsResult(BaseModel):
             "Pearl Rung-2 magnitude clamps on WORLD_ GlobalTraits. "
             "The pipeline adapter folds each into a "
             "``WorldTraitSnapshot`` on the canonical timeline."
+        ),
+    )
+    object_mutations: List[ObjectMutation] = Field(
+        default_factory=list,
+        description=(
+            "Pearl Rung-2 clamps on OBJ_ NarrativeObjects (location / "
+            "owner / properties). The pipeline adapter folds each into "
+            "an ``ObjectUpdate`` on the chunk topology, which becomes "
+            "an ``ObjectStateSnapshot`` on the canonical timeline."
         ),
     )
     hidden_deltas: Dict[str, Dict[str, float]] = Field(
@@ -498,6 +529,7 @@ class CausalPhysicsEngine:
         self._belief_mutations: List[BeliefMutation] = []
         self._concern_mutations: List[ConcernMutation] = []
         self._world_trait_mutations: List[WorldTraitMutation] = []
+        self._object_mutations: List[ObjectMutation] = []
         # Noisy-OR per-trait records, populated only when
         # ``CausalPhysicsSettings.propagation_mode == "noisy_or"``.
         self._noisy_or_records: List[NoisyOrProbability] = []
@@ -921,6 +953,7 @@ class CausalPhysicsEngine:
         from shadow_loom.query_models import (
             DoEvent, DoTrait, DoProposition, DoBelief, DoConcern, DoWorldTrait,
             DoChannel, DoRelationship, DoCausalEdge, DoSpatialEdge,
+            DoNarrativeObject,
         )
 
         legacy_dict: Dict[str, Any] = {}
@@ -961,16 +994,29 @@ class CausalPhysicsEngine:
                 self._apply_do_causal_edge(t)
             elif isinstance(t, DoSpatialEdge):
                 self._apply_do_spatial_edge(t)
+            elif isinstance(t, DoNarrativeObject):
+                self._apply_do_object(t)
+
+        # Event-relocation surgery (Rung-2/3): rewrites
+        # ``EventNode.at_location_id`` and cascades EntityStateSnapshots
+        # for every primary actor at the event's fabula_time so the
+        # co-presence invariant continues to hold post-surgery. Run
+        # AFTER the legacy event/trait dispatch so the relocated event
+        # is still ``occurred`` when this runs.
+        for t in do_targets:
+            if isinstance(t, DoEvent) and t.new_at_location_id and t.occurred is True:
+                self._apply_do_event_relocation(t)
 
         logger.log(
             _physics_log(),
             "[CausalPhysics·do_targets] %d targets applied "
-            "(%d prop / %d belief / %d concern / %d world_trait mutations recorded).",
+            "(%d prop / %d belief / %d concern / %d world_trait / %d object mutations recorded).",
             len(do_targets),
             len(self._proposition_mutations),
             len(self._belief_mutations),
             len(self._concern_mutations),
             len(self._world_trait_mutations),
+            len(self._object_mutations),
         )
 
     def _apply_do_proposition(self, target: Any) -> None:
@@ -1354,6 +1400,87 @@ class CausalPhysicsEngine:
                 merged.update({k: float(v) for k, v in target.intelligibility.items()})
                 ch.intelligibility = merged
 
+    def _apply_do_event_relocation(self, target: Any) -> None:
+        """Rewrite an event's ``at_location_id`` and cascade
+        ``EntityStateSnapshot(location_id=...)`` for every primary actor
+        so the co-presence invariant continues to hold post-surgery.
+
+        Skips dead actors (their ``status`` makes physical relocation
+        meaningless) and logs the skip. Mirrors the change to both the
+        sandbox node attrs and ``world_state.events`` so re-extraction
+        observes the relocated event.
+        """
+        from shadow_loom.models import EntityStateSnapshot
+
+        new_loc = target.new_at_location_id
+        if not new_loc:
+            return
+        # Validate the target location exists in the world state.
+        if new_loc not in (self.world_state.locations or {}):
+            logger.warning(
+                "[CausalPhysics\u00b7do_event_relocation] Unknown LOC_ id %r "
+                "for event %s; skipping relocation.",
+                new_loc, target.event_id,
+            )
+            return
+        # Locate the event in world_state.events (a list).
+        evt = None
+        for e in (self.world_state.events or []):
+            if e.id == target.event_id:
+                evt = e
+                break
+        if evt is None:
+            logger.warning(
+                "[CausalPhysics\u00b7do_event_relocation] Event %s not in "
+                "world_state.events; skipping relocation.", target.event_id,
+            )
+            return
+        old_loc = evt.at_location_id
+        evt.at_location_id = new_loc
+        # Sandbox mirror.
+        if self.sandbox.has_node(target.event_id):
+            self.sandbox.nodes[target.event_id]["at_location_id"] = new_loc
+            self._intervened_nodes.add(target.event_id)
+        # Resolve primary actors: speaker first for utterances, else
+        # actor_ids in declared order.
+        actor_ids: list[str] = []
+        if getattr(evt, "speaker_id", None):
+            actor_ids.append(evt.speaker_id)
+        for aid in (getattr(evt, "actor_ids", None) or []):
+            if aid not in actor_ids:
+                actor_ids.append(aid)
+        ft = int(evt.fabula_time)
+        cascaded = 0
+        skipped_dead: list[str] = []
+        entities = self.world_state.entities or {}
+        for aid in actor_ids:
+            actor = entities.get(aid) if isinstance(entities, dict) else None
+            if actor is None:
+                continue
+            if str(getattr(actor, "status", "") or "").lower() == "dead":
+                skipped_dead.append(aid)
+                continue
+            timeline = list(getattr(actor, "state_timeline", None) or [])
+            timeline.append(EntityStateSnapshot(
+                fabula_time=ft,
+                triggered_by=evt.id,
+                location_id=new_loc,
+            ))
+            timeline.sort(key=lambda s: s.fabula_time)
+            actor.state_timeline = timeline
+            # Sandbox mirror: also stash a flag so downstream consumers
+            # see the relocation was applied.
+            if self.sandbox.has_node(aid):
+                self.sandbox.nodes[aid]["location_id"] = new_loc
+                self._intervened_nodes.add(aid)
+            cascaded += 1
+        logger.info(
+            "[CausalPhysics\u00b7do_event_relocation] Event %s relocated "
+            "%s\u2192%s at fabula_time=%d; cascaded %d actor snapshot(s); "
+            "skipped %d dead actor(s).",
+            target.event_id, old_loc, new_loc, ft, cascaded, len(skipped_dead),
+        )
+
     def _apply_do_relationship(self, target: Any) -> None:
         """Clamp a single per-axis :class:`RelationshipMetric`.
 
@@ -1585,6 +1712,85 @@ class CausalPhysicsEngine:
         topology = list(self.world_state.spatial_topology or [])
         topology.append(edge)
         self.world_state.spatial_topology = topology
+
+    def _apply_do_object(self, target: Any) -> None:
+        """Clamp a :class:`NarrativeObject`'s position / ownership / properties.
+
+        Mutates the sandbox OBJ_ node in-place (so the same propagate
+        step sees the new location / owner / properties) and records
+        an :class:`ObjectMutation` for the pipeline adapter to fold
+        into a :class:`ObjectStateSnapshot` on the canonical
+        :attr:`NarrativeObject.state_timeline` via the
+        :class:`~shadow_loom.ingestion.ObjectUpdate` bridge. Also
+        mirrors the change onto :attr:`WorldStateV1.objects` so
+        downstream readers consulting the world directly observe the
+        clamp without re-running ingestion.
+
+        ``set_*_null`` flags clear the corresponding field; otherwise
+        an explicit ``new_*`` value overwrites and a missing one is
+        a no-op (matching :class:`ObjectStateSnapshot` semantics).
+        Pins the object id in ``_intervened_nodes`` so cascading
+        physics treats the surgery as authoritative for this step.
+        """
+        ft = (
+            int(target.fabula_time)
+            if getattr(target, "fabula_time", None) is not None
+            else self._default_fabula_time()
+        )
+        # Sandbox-side mutation.
+        if self.sandbox.has_node(target.object_id):
+            ndata = self.sandbox.nodes[target.object_id]
+            if target.set_location_null:
+                ndata["location_id"] = None
+            elif target.new_location_id is not None:
+                ndata["location_id"] = target.new_location_id
+            if target.set_owner_null:
+                ndata["owner_id"] = None
+            elif target.new_owner_id is not None:
+                ndata["owner_id"] = target.new_owner_id
+            if target.properties_set or target.properties_unset:
+                props = dict(ndata.get("properties") or {})
+                for k in target.properties_unset:
+                    props.pop(k, None)
+                for k, v in target.properties_set.items():
+                    props[k] = str(v)
+                ndata["properties"] = props
+            self._intervened_nodes.add(target.object_id)
+        else:
+            logger.warning(
+                "[CausalPhysics\u00b7do_object] Object %s missing from sandbox; "
+                "world-state mirror still applied.", target.object_id,
+            )
+        # World-state mirror (so directive assembly / re-extraction see it).
+        canonical = (self.world_state.objects or {}).get(target.object_id)
+        if canonical is not None:
+            if target.set_location_null:
+                canonical.location_id = None
+            elif target.new_location_id is not None:
+                canonical.location_id = target.new_location_id
+            if target.set_owner_null:
+                canonical.owner_id = None
+            elif target.new_owner_id is not None:
+                canonical.owner_id = target.new_owner_id
+            if target.properties_set or target.properties_unset:
+                props = dict(canonical.properties or {})
+                for k in target.properties_unset:
+                    props.pop(k, None)
+                for k, v in target.properties_set.items():
+                    props[k] = str(v)
+                canonical.properties = props
+
+        self._object_mutations.append(ObjectMutation(
+            object_id=target.object_id,
+            fabula_time=ft,
+            new_location_id=target.new_location_id,
+            new_owner_id=target.new_owner_id,
+            set_location_null=bool(target.set_location_null),
+            set_owner_null=bool(target.set_owner_null),
+            properties_set=dict(target.properties_set or {}),
+            properties_unset=list(target.properties_unset or []),
+            triggered_by=getattr(target, "triggered_by", None),
+        ))
 
     def _default_fabula_time(self) -> int:
         """Best-effort fabula_time anchor when a DoTarget omits one.
@@ -2743,6 +2949,7 @@ class CausalPhysicsEngine:
             belief_mutations=self._belief_mutations,
             concern_mutations=self._concern_mutations,
             world_trait_mutations=self._world_trait_mutations,
+            object_mutations=self._object_mutations,
             hidden_deltas=self._hidden_deltas,
             rule3_pruned_interventions=ctf_report.rule3_pruned,
             rule3_pruning_mode=rule3_mode,

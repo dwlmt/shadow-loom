@@ -778,6 +778,84 @@ temporal-collapse artefact.
 
 ---
 
+## D22. Events have an explicit spatial anchor (`EventNode.at_location_id`)
+
+**The decision.** Every `EventNode` carries an explicit
+`at_location_id: Optional[str]` naming the LOC_ where the event physically
+happens. The implicit invariant the field encodes:
+
+> *If something happens at a location the characters and objects involved
+> are present together — unless they are communicating over a `Channel`.*
+
+When `at_location_id` is `None`, the helper
+`event_location_at(evt, ws, fallback="actor")` resolves an effective
+location by reconstructing the primary actor's `location_id` at
+`evt.fabula_time`. Backfill is therefore deterministic and never
+hallucinated.
+
+**Why explicit, not derived.** A location field on `EventNode` looks like
+schema duplication of "where the actors are standing". It isn't:
+
+* **Channel-mediated participation** breaks the derived view. Macbeth and
+  Banquo can both *participate* in an utterance event over a courier
+  channel without being co-located. The event has one physical site (where
+  the words were spoken); the addressee is somewhere else, present only
+  through the channel. Without `at_location_id`, the renderer cannot tell
+  which participants belong on the page at the event's location.
+* **Co-presence violations** become checkable. The auditor's
+  `event_copresence_violation` and `event_copresence_omission` rules need
+  a single source of truth for "where the event happened" so they can flag
+  prose that stages a bound participant somewhere else, or that adds a
+  phantom witness to the event's location. With derived locations, the
+  ground-truth target shifts under the auditor's feet whenever an actor's
+  snapshot timeline is rewritten.
+* **Counterfactual surgery on space** becomes a typed operation.
+  `DoEvent.new_at_location_id` rewrites the anchor and cascades
+  `EntityStateSnapshot(location_id=...)` for bound participants in a
+  single step — the same do-operator semantics already used for traits and
+  status, generalised to space.
+* **The Map sub-tab** can render a star (★) glyph at every windowed
+  event's anchor and outline bound participants in yellow (correct
+  co-presence) or red dashed (phantom witness / displaced actor). Without
+  a single anchor, "where to draw the star" is ambiguous when actors split.
+
+**Implementation invariants.**
+
+* `at_location_id` is **optional** for backwards compatibility. Existing
+  fixtures and re-ingested worlds continue to pass without explicit values
+  — `event_location_at(..., fallback="actor")` resolves the effective
+  anchor from the primary actor.
+* On merge, `_apply_event_spatial_anchor_repairs` (in `extract_graph.py`)
+  validates every `at_location_id` against `world.locations`, reconciles
+  conflicts with the primary actor's reconstructed location at
+  `fabula_time`, auto-inserts `EntityStateSnapshot(location_id=...)` for
+  bound participants who were elsewhere, and records every rewrite on
+  `MergeChangeset.events_relocated` /
+  `MergeChangeset.copresence_repairs_applied`.
+* `DirectiveAssembler` emits one HARD spatial `ConstraintBlock` per
+  windowed event with `at_location_id`. Bound participants go to
+  `must_be_present`; channel-mediated addressees go to `channel_exempt`;
+  every other entity reconstructed elsewhere at `fabula_time` goes to
+  `must_not_be_present`.
+* The renderer's universal Rule 11 (in `prompts/generation.md`) makes
+  **implicit co-location the default** — the prose does not have to name
+  the location every paragraph; it only has to *not contradict* it.
+  Explicit naming of a different location for a bound participant during
+  the event is the violation, not the silence.
+* Rung-1 reveals of the form `EVT_X = LOC_Y` (or `at LOC_Y`) on
+  `observation_facts` are folded back into the event's anchor by the
+  pipeline bridge, with co-presence cascade re-run on the next merge.
+
+**Why optional rather than required.** Many extracted events (interior
+monologue, an entity's status change inferred at a distance, a world-trait
+mutation) have no obvious physical site. Forcing `at_location_id` would
+either silently default to misleading values or block ingestion on
+genuinely placeless events. Optionality + a deterministic fallback +
+auditor-enforced consistency where the field *is* set hits the same
+correctness target without the false positives.
+
+---
+
 ## What we rejected
 
 | Rejected | Why |

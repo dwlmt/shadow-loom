@@ -51,6 +51,7 @@ from shadow_loom.directive_assembly import (
     ThreatProximity,
     build_false_belief_grounding_constraints,
     build_false_proposition_constraints,
+    build_object_coherence_constraints,
     build_prevented_event_constraints,
     build_unrealised_concern_constraints,
     compute_hidden_channels_for,
@@ -1958,6 +1959,16 @@ def format_scene_context_for_prompt(
     chans_by_id: Dict[str, Dict[str, Any]] = {
         ch.get("id"): ch for ch in chans if ch.get("id")
     }
+    # Build a parallel lookup so event / utterance lines can resolve
+    # ``at_location_id`` to the location's narrative name. PR 5 of
+    # EventNode.at_location_id: the renderer needs the place name
+    # (not just the LOC_* id) so it can decide whether to anchor the
+    # scene explicitly or leave co-location implicit.
+    locs_by_id: Dict[str, Dict[str, Any]] = {
+        l.get("id"): l
+        for l in (ctx.get("current_locations") or ctx.get("relevant_locations") or [])
+        if l.get("id")
+    }
     if chans:
         sections.append(
             "Available communication channels (use these for new dialogue "
@@ -2009,6 +2020,19 @@ def format_scene_context_for_prompt(
             targets = evt.get("target_ids") or []
             desc = (evt.get("description") or "").strip()
             sections.append(f"  - {time_blob}{eid} ({etype}): {desc}")
+            # PR 5 of EventNode.at_location_id: surface the event's
+            # spatial anchor so the renderer knows where it happens.
+            # Implicit co-location is the default (Rule 11) — the
+            # renderer only NAMES the place when the scene needs
+            # anchoring; we still surface the id+name so the
+            # renderer can pick the right name when it does.
+            evt_loc = evt.get("at_location_id")
+            if evt_loc:
+                loc_node = locs_by_id.get(evt_loc) or {}
+                loc_name = loc_node.get("name") or evt_loc
+                sections.append(
+                    f"      at_location={evt_loc} ({loc_name})"
+                )
             if actors or targets:
                 ats = []
                 if actors:
@@ -2061,6 +2085,19 @@ def format_scene_context_for_prompt(
             sections.append(
                 f"  - {time_blob}{uid} — {speaker} → {addressees}{via_blob}{tv}"
             )
+            # PR 5 of EventNode.at_location_id: utterances also carry
+            # an ``at_location_id`` (the speaker's location at the
+            # moment of speaking). When set, surface it so the
+            # renderer knows where the speaker is standing —
+            # especially important when the utterance is channel-
+            # mediated and the addressees are physically elsewhere.
+            utt_loc = u.get("at_location_id")
+            if utt_loc:
+                loc_node = locs_by_id.get(utt_loc) or {}
+                loc_name = loc_node.get("name") or utt_loc
+                sections.append(
+                    f"      speaker_at={utt_loc} ({loc_name})"
+                )
             if desc:
                 sections.append(f"      {desc[:_utt_chars]}")
             if content:
@@ -2683,6 +2720,29 @@ def _entities_from_intervention_keys(
     return seen
 
 
+def _syuzhet_to_fabula_anchor(
+    world_state: WorldStateV1, syuzhet_anchor: Optional[int],
+) -> Optional[int]:
+    """Translate ``syuzhet_anchor`` → ``fabula_anchor``.
+
+    Used by :func:`build_object_coherence_constraints` (and any other
+    builder that needs to walk an object / entity / world-trait
+    state_timeline) so per-tick reconstructed positions reflect what
+    the reader has seen up to ``syuzhet_anchor``. Returns the maximum
+    ``fabula_time`` of any event whose ``syuzhet_index`` is at or
+    before the cap; ``None`` propagates when no anchor is supplied.
+    """
+    if syuzhet_anchor is None:
+        return None
+    fabula_anchor: Optional[int] = None
+    for evt in getattr(world_state, "events", []) or []:
+        if evt.syuzhet_index <= syuzhet_anchor and (
+            fabula_anchor is None or evt.fabula_time > fabula_anchor
+        ):
+            fabula_anchor = evt.fabula_time
+    return fabula_anchor
+
+
 def _user_intent_constraints(original_query: Optional[str]) -> List[ConstraintBlock]:
     """Lift the user's verbatim NL request into a HARD constraint.
 
@@ -2761,6 +2821,11 @@ def build_observation_brief(
     ))
     constraints.extend(build_false_belief_grounding_constraints(
         world_state, syuzhet_anchor, world_label="observed",
+    ))
+    constraints.extend(build_object_coherence_constraints(
+        world_state,
+        _syuzhet_to_fabula_anchor(world_state, syuzhet_anchor),
+        world_label="observed",
     ))
     scene_context = dict(physics_state) if isinstance(physics_state, dict) else {}
     if syuzhet_anchor is not None and isinstance(scene_context, dict):
@@ -3399,6 +3464,11 @@ def build_intervention_brief(
     constraints.extend(build_false_belief_grounding_constraints(
         world_state, syuzhet_anchor, world_label="intervened",
     ))
+    constraints.extend(build_object_coherence_constraints(
+        world_state,
+        _syuzhet_to_fabula_anchor(world_state, syuzhet_anchor),
+        world_label="intervened",
+    ))
 
     return CreativeBrief(
         target_effect="intervention",
@@ -3755,6 +3825,11 @@ def build_counterfactual_brief(
     ))
     constraints.extend(build_false_belief_grounding_constraints(
         world_state, syuzhet_anchor, world_label="counterfactual",
+    ))
+    constraints.extend(build_object_coherence_constraints(
+        world_state,
+        _syuzhet_to_fabula_anchor(world_state, syuzhet_anchor),
+        world_label="counterfactual",
     ))
 
     # Resolve target entities from the historical intervention keys

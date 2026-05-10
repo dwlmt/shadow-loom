@@ -12,8 +12,10 @@ from pydantic import BaseModel, Field
 
 from shadow_loom.models import (
     EntityStateSnapshot,
+    ObjectStateSnapshot,
     WorldStateV1,
     reconstruct_entity_at,
+    reconstruct_object_at,
     reconstruct_world_trait_at,
 )
 
@@ -281,11 +283,32 @@ def extract_ego_graph_from_memory(
 
     present_objects = []
     for obj_id, obj in world_state.objects.items():
-        is_on_active_floor = (obj.location_id in location_ids)
-        is_held_by_active_local = (obj.owner_id in present_entity_ids or obj.owner_id in focus_id_set)
+        # Reconstruct object position/ownership at the temporal anchor
+        # so picked-up / dropped / transferred objects are filtered into
+        # the ego graph at the right place in fabula time. Without this
+        # the AMWN sandbox sees only the object's *initial* location_id /
+        # owner_id and a dagger that started in the kitchen would never
+        # be visible in the bedroom scene where the murder takes place.
+        if temporal_anchor is not None and obj.state_timeline:
+            recon = reconstruct_object_at(obj, temporal_anchor)
+            effective_loc = recon["location_id"]
+            effective_owner = recon["owner_id"]
+        else:
+            effective_loc = obj.location_id
+            effective_owner = obj.owner_id
+        is_on_active_floor = (effective_loc in location_ids)
+        is_held_by_active_local = (
+            effective_owner in present_entity_ids
+            or effective_owner in focus_id_set
+        )
 
         if is_on_active_floor or is_held_by_active_local:
-            present_objects.append(obj.model_dump())
+            obj_data = obj.model_dump()
+            if temporal_anchor is not None and obj.state_timeline:
+                obj_data["location_id"] = effective_loc
+                obj_data["owner_id"] = effective_owner
+                obj_data["properties"] = recon["properties"]
+            present_objects.append(obj_data)
 
     # 3. The Relational Filter
     relevant_relationships = []
@@ -1507,6 +1530,8 @@ class MergeChangeset(BaseModel):
     social_edges_added: int = 0
     entity_updates_applied: int = 0
     entity_updates_skipped: List[str] = Field(default_factory=list)
+    object_updates_applied: int = 0
+    object_updates_skipped: List[str] = Field(default_factory=list)
     # Genesis-promoted nodes — populated when the upstream topology
     # carries ``new_entities`` / ``new_objects`` / ``new_locations``
     # / ``new_world_traits`` from a sandbox spawn. Default zero so
@@ -1542,6 +1567,22 @@ class MergeChangeset(BaseModel):
     # ``{"event_id": str, "missing_ids": list[str], "field": str}``.
     # Empty by default. Populated by the merge integrity pass.
     events_with_dangling_refs: List[Dict[str, Any]] = Field(default_factory=list)
+
+    # --- Spatial-anchor + co-presence repair (PR 2 of EventNode.at_location_id) ---
+    # ``events_relocated``: ``{event_id: new_location_id}`` for every
+    # event whose ``at_location_id`` was rewritten by the assembly
+    # validator (either to repair a conflict with the actor's
+    # reconstructed location, or to backfill from the actor when the
+    # field was empty). ``copresence_repairs_applied`` counts
+    # synthetic ``EntityStateSnapshot`` / ``ObjectStateSnapshot``
+    # entries inserted to bring a participant to the event location.
+    # ``copresence_repairs_skipped`` records cases where the validator
+    # detected a co-presence violation but declined to auto-repair
+    # (e.g. an entity is dead at fabula_time, or an object is
+    # destroyed) — the auditor will flag these for human review.
+    events_relocated: Dict[str, str] = Field(default_factory=dict)
+    copresence_repairs_applied: int = 0
+    copresence_repairs_skipped: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class WorldModelVersion(BaseModel):
@@ -2254,6 +2295,127 @@ def _populate_dangling_ref_ledger(
                 })
 
 
+# Logger that the ``shadow_loom.ingestion_diagnostics`` handler captures.
+_INGESTION_LOGGER = logging.getLogger("shadow_loom.ingestion")
+
+
+def _apply_event_spatial_anchor_repairs(
+    merged: WorldStateV1,
+    changeset: "MergeChangeset",
+) -> None:
+    """Validate ``EventNode.at_location_id`` and auto-repair co-presence.
+
+    For each event:
+      * If ``at_location_id`` references an unknown LOC_ id → log
+        ``[Validator·EventLocation] event_location_unknown`` and clear
+        the field (the actor-fallback path will take over).
+      * If ``at_location_id`` is set and disagrees with the primary
+        actor's reconstructed location at ``fabula_time`` → log
+        ``[Validator·EventLocation] event_location_conflict`` and
+        insert an :class:`EntityStateSnapshot` moving the actor to the
+        event's location at ``fabula_time``. The auditor's
+        ``event_copresence_violation`` rule will pick up any remaining
+        non-actor co-presence gaps; this pass intentionally only
+        repairs the *primary* actor so we never silently teleport
+        targets/witnesses around.
+      * If ``at_location_id`` is empty BUT the event has actors and the
+        primary actor has a known reconstructed location → backfill
+        ``at_location_id`` from the actor (recorded on
+        ``changeset.events_relocated``).
+
+    Utterances with ``via_channel_id`` are exempt — channel-mediated
+    speech-acts do not require physical co-location.
+    """
+    if not merged.events:
+        return
+
+    known_locs = set(merged.locations.keys())
+
+    for evt in merged.events:
+        # Channel-mediated utterances need no spatial anchor.
+        if evt.event_type == "utterance" and evt.via_channel_id:
+            continue
+
+        # 1) Unknown LOC_ id → clear and log.
+        if evt.at_location_id and evt.at_location_id not in known_locs:
+            _INGESTION_LOGGER.warning(
+                "[Validator·EventLocation] event_location_unknown: event %r "
+                "names at_location_id=%r which is not in world.locations; "
+                "clearing field and falling back to actor reconstruction.",
+                evt.id, evt.at_location_id,
+            )
+            evt.at_location_id = None
+
+        # Resolve primary actor (speaker_id wins for utterances).
+        primary: Optional[str] = None
+        if evt.speaker_id:
+            primary = evt.speaker_id
+        elif evt.actor_ids:
+            primary = evt.actor_ids[0]
+
+        actor_loc: Optional[str] = None
+        actor_obj = merged.entities.get(primary) if primary else None
+        if actor_obj is not None:
+            try:
+                actor_loc = reconstruct_entity_at(
+                    actor_obj, evt.fabula_time,
+                ).get("location_id")
+            except Exception:
+                actor_loc = getattr(actor_obj, "location_id", None)
+
+        # 2) Conflict → repair by moving the primary actor.
+        if evt.at_location_id and actor_loc and actor_loc != evt.at_location_id:
+            # Skip auto-repair if the actor is dead at fabula_time —
+            # surface as a skip so the auditor flags it.
+            try:
+                actor_status = reconstruct_entity_at(
+                    actor_obj, evt.fabula_time,
+                ).get("status")
+            except Exception:
+                actor_status = getattr(actor_obj, "status", "healthy")
+            if actor_status == "dead":
+                changeset.copresence_repairs_skipped.append({
+                    "event_id": evt.id,
+                    "participant_id": primary,
+                    "reason": "actor_dead_at_fabula_time",
+                    "fabula_time": evt.fabula_time,
+                })
+                _INGESTION_LOGGER.warning(
+                    "[Validator·EventLocation] event_copresence_conflict: "
+                    "event %r primary actor %r is dead at fabula=%d; "
+                    "skipping co-presence repair.",
+                    evt.id, primary, evt.fabula_time,
+                )
+                continue
+            _INGESTION_LOGGER.info(
+                "[Auto-Fix·EventLocation] event_location_conflict: event %r "
+                "at %r but actor %r reconstructed at %r at fabula=%d; "
+                "inserting EntityStateSnapshot to repair co-presence.",
+                evt.id, evt.at_location_id, primary, actor_loc, evt.fabula_time,
+            )
+            actor_obj.state_timeline.append(
+                EntityStateSnapshot(
+                    fabula_time=evt.fabula_time,
+                    triggered_by=evt.id,
+                    location_id=evt.at_location_id,
+                )
+            )
+            actor_obj.state_timeline.sort(key=lambda s: s.fabula_time)
+            changeset.copresence_repairs_applied += 1
+            continue
+
+        # 3) Backfill from actor when empty.
+        if not evt.at_location_id and actor_loc:
+            evt.at_location_id = actor_loc
+            changeset.events_relocated[evt.id] = actor_loc
+            _INGESTION_LOGGER.info(
+                "[Auto-Fix·EventLocation] event_location_backfilled: event "
+                "%r had no at_location_id; backfilled %r from primary actor "
+                "%r at fabula=%d.",
+                evt.id, actor_loc, primary, evt.fabula_time,
+            )
+
+
 class VersionedWorldModel(BaseModel):
     """Immutable-history wrapper around WorldStateV1.
 
@@ -2588,6 +2750,38 @@ class VersionedWorldModel(BaseModel):
             entity.state_timeline.sort(key=lambda s: s.fabula_time)
             changeset.entity_updates_applied += 1
 
+        # --- Object state updates ---
+        # Mirror of the entity_updates loop above so Pearl Rung-2/3
+        # ``DoNarrativeObject`` surgeries (and Rung-1 OBJ_ observation
+        # reveals) routed through ``topology.object_updates`` land as
+        # :class:`ObjectStateSnapshot` entries on the canonical
+        # :attr:`NarrativeObject.state_timeline`. Without this loop the
+        # bridge in ``pipeline._augment_topology_with_sandbox_deltas``
+        # would silently drop every object clamp on re-extraction.
+        for ou in getattr(topology, "object_updates", []) or []:
+            obj = merged.objects.get(ou.object_id)
+            if obj is None:
+                logger.warning(
+                    "Object update for unknown object '%s' \u2014 skipped.",
+                    ou.object_id,
+                )
+                changeset.object_updates_skipped.append(ou.object_id)
+                continue
+            snap = ObjectStateSnapshot(
+                world_id=world_id,
+                fabula_time=ou.fabula_time,
+                triggered_by=ou.triggered_by,
+                location_id=ou.new_location_id,
+                owner_id=ou.new_owner_id,
+                set_location_null=bool(ou.set_location_null),
+                set_owner_null=bool(ou.set_owner_null),
+                properties_set=dict(ou.properties_set or {}),
+                properties_unset=list(ou.properties_unset or []),
+            )
+            obj.state_timeline.append(snap)
+            obj.state_timeline.sort(key=lambda s: s.fabula_time)
+            changeset.object_updates_applied += 1
+
         # --- Affect ledger (P2 of prose-merge completeness) ---
         # Folds new propositions, truth commits, proposition snapshots,
         # new concerns, ConcernSeed materialisations, and concern
@@ -2609,6 +2803,13 @@ class VersionedWorldModel(BaseModel):
         # discard prose; the auditor's ``undeclared_element`` rule
         # is the upstream gate.
         _populate_dangling_ref_ledger(merged, changeset)
+
+        # PR 2 (EventNode.at_location_id): validate event spatial
+        # anchors and auto-repair co-presence by inserting synthetic
+        # EntityStateSnapshots when the primary actor's reconstructed
+        # location disagrees with the event's. Runs *after* the
+        # additive sections so it can read the merged event list.
+        _apply_event_spatial_anchor_repairs(merged, changeset)
 
         next_version = self.version + 1
         new_history = list(self.history) + [

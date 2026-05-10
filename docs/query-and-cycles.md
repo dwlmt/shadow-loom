@@ -89,6 +89,16 @@ Worked examples from the bundled fixtures:
   belief whose `acquired_via_channel_id` cites this pipeline is
   re-derived with the correct provenance.
 
+*Spatial relocation of an event* is a typed do-target on the same
+do-operator surface. A `DoEvent` with `new_at_location_id="LOC_X"`
+rewrites the event's `at_location_id` and cascades an
+`EntityStateSnapshot(location_id="LOC_X")` for every bound (non-channel)
+participant at `evt.fabula_time`, so re-extraction sees a coherent
+relocation rather than a spatial inconsistency. Channel-mediated
+addressees are exempt from the cascade — they reach the event through
+`via_channel_id` from wherever they already are. See
+[design-decisions.md §D22](design-decisions.md#d22-events-have-an-explicit-spatial-anchor-eventnodeat_location_id).
+
 ### 3. `CounterfactualQuery` — Rung 3, "abduction + intervention"
 
 ```python

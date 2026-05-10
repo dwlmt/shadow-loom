@@ -992,6 +992,47 @@ class AMWNInstantiator:
                     "no longer satisfies the gate (src_type=%s).",
                     src_id, tgt_id, src_data.get("node_type"),
                 )
+                continue
+            # Spatial gate: an OBJ-anchored affordance only fires when
+            # the event's primary actor is co-located with (or owns)
+            # the object at the event's fabula_time. We use the
+            # sandbox-resident ``location_id`` / ``owner_id`` snapshot
+            # (latest state) and the event's ``at_location_id``. If any
+            # of the three pieces of information is missing we leave
+            # the gate alone — this check is conservative.
+            if src_data.get("node_type") != "NarrativeObject":
+                continue
+            evt_loc = tgt_data.get("at_location_id")
+            if not evt_loc:
+                continue
+            obj_loc = src_data.get("location_id")
+            obj_owner = src_data.get("owner_id")
+            # Resolve primary actor: speaker first, else first actor_id.
+            actor_id = tgt_data.get("speaker_id")
+            if not actor_id:
+                actors = tgt_data.get("actor_ids") or []
+                if actors:
+                    actor_id = actors[0]
+            if not actor_id:
+                continue
+            # Co-location condition: the actor must be at the event
+            # location, AND the object must be either at the event
+            # location OR owned by the actor.
+            actor_data = sandbox.nodes.get(actor_id, {})
+            actor_loc = actor_data.get("location_id")
+            actor_at_evt = (actor_loc == evt_loc)
+            obj_with_actor = (obj_owner == actor_id) or (obj_loc == evt_loc)
+            if actor_at_evt and obj_with_actor:
+                continue  # gate satisfied
+            tgt_data["pruned"] = True
+            newly_pruned.append(tgt_id)
+            logger.info(
+                "[Surgery\u00b7AffordanceGate\u00b7Spatial] %s blocks %s \u2014 "
+                "actor %s at %r, object %s at %r/owner=%r, event at %r "
+                "(co-location violated).",
+                src_id, tgt_id, actor_id, actor_loc,
+                src_id, obj_loc, obj_owner, evt_loc,
+            )
         return newly_pruned
 
     @staticmethod

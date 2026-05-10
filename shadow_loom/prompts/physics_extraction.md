@@ -41,6 +41,7 @@ Each event occurring in this chunk. Fields:
   - **You MUST NOT emit `event_type="utterance"`** — utterances are the Social Agent's exclusive output. If a chunk contains dialogue / letters / prophecies / confessions / orders / rumours, leave them for Step 3b.
 - `actor_ids` (list[str]): The `ENT_` IDs of who performed or initiated this event. For joint actions, include all participants (e.g., `["ENT_MACBETH", "ENT_LADY_MACBETH"]`). **`event_type="choice"` events MUST have at least one actor** — a deliberate decision requires a decider; if you cannot identify the decider, the event is probably an `"outcome"` (consequence) or a natural/environmental event, not a choice. **`event_type="outcome"` events SHOULD also name an actor** whenever the outcome was caused by an identifiable on-page agent — `EVT_DUNCAN_DIES` lists `actor_ids=["ENT_MACBETH"]` (the assassin), with `target_ids=["ENT_DUNCAN"]` (the victim). Empty `actor_ids` is valid for outcomes ONLY when the cause is genuinely agentless (storms, earthquakes, accidents with no responsible party, fate/world-trait pressure). **`event_type="revelation"` events MUST have empty `actor_ids`** — revelations are narrator-side disclosures with no in-world agent. See Rule 7 for the full per-event-type field contract.
 - `target_ids` (list[str]): The `ENT_` or `OBJ_` IDs of who/what was acted upon. Empty list `[]` if not applicable. For diffuse effects, include all targets.
+- `at_location_id` (str | null): The `LOC_` ID where this event physically takes place. **Set this whenever the chunk names or strongly implies a setting** — the bedchamber where Duncan is murdered, the heath where the witches appear, the dining room where Scrooge refuses Fred. **The implicit co-presence rule:** every `actor_id` and non-channel `target_id` of an event is taken to be physically present at `at_location_id` at `fabula_time` UNLESS the event is an utterance with a `via_channel_id` (a phone call, telegram, mind-link, classified pipeline). The auditor enforces this — events whose actors cannot be at the named location at `fabula_time` will be flagged. **Leave null only when**: (a) the event is a channel-mediated utterance (let the Social Agent set `via_channel_id` instead), (b) the event is genuinely placeless (a narrator-side `revelation`, a global `WORLD_` shift), or (c) the chunk gives you no signal whatsoever about where it happened (the merge step will then backfill from the primary actor's reconstructed location).
 - `description` (str): One-sentence description of what happened.
 - `resolves_proposition_ids` (list[str], optional): For `outcome`-class events whose firing commits a catalogue proposition's truth value. Use only PROP_ ids from the Proposition Catalogue block in the system prompt. Empty list when the event does not resolve any catalogued proposition. **Do NOT invent PROP_ ids.**
 
@@ -153,6 +154,59 @@ If Macbeth murders Duncan (EVT_DUNCAN_MURDER at fabula_time 300):
   "new_status": null,
   "new_location_id": null
 }
+```
+
+### `object_updates` — List[ObjectUpdate]
+
+Per-object state changes caused by events in this chunk. The Step 1b
+ontology register captures each object's **initial** `location_id` /
+`owner_id` / `properties`. This list tracks how events **mutate** that
+state over time, the same way `entity_updates` track entity mutations.
+
+For each `OBJ_` whose location, owner, or properties changed during
+this chunk, emit one `ObjectUpdate`. Fields:
+- `object_id` (str): The `OBJ_` ID of the object that changed.
+- `fabula_time` (int): The fabula_time when this change occurred (should match the triggering event).
+- `triggered_by` (str | null): The `EVT_` ID that caused this change. Null for ambient/gradual changes.
+- `new_location_id` (str | null): New `LOC_` id when the object was *placed*, *dropped*, or *moved* to a location. Leave null when the object was picked up — see `set_location_null` below.
+- `new_owner_id` (str | null): New `ENT_` id when the object was *picked up*, *gifted*, *stolen*, or *inherited*. Leave null when the object was dropped — see `set_owner_null` below.
+- `set_location_null` (bool, default false): Set true to **explicitly clear** `location_id` (the object was picked up — it now lives in an inventory). Disambiguates from `new_location_id=null` meaning "no change to location this tick".
+- `set_owner_null` (bool, default false): Set true to **explicitly clear** `owner_id` (the object was dropped or placed). Disambiguates from `new_owner_id=null` meaning "no change to owner this tick".
+- `properties_set` (dict): Property keys to overwrite, e.g. `{"state": "poisoned"}` after the assassin tampers with it.
+- `properties_unset` (list[str]): Property keys to remove from the object's accumulated property dict.
+
+**Pickup / drop / transfer template:**
+- **Pickup** (Macbeth grabs the dagger off the table): `new_owner_id="ENT_MACBETH"`, `set_location_null=true`. Do NOT set `new_location_id`.
+- **Drop** (Macbeth drops the bloody dagger on the floor of LOC_DUNCANS_CHAMBER): `new_location_id="LOC_DUNCANS_CHAMBER"`, `set_owner_null=true`. Do NOT set `new_owner_id`.
+- **Transfer** (Lady Macbeth takes the dagger from Macbeth): `new_owner_id="ENT_LADY_MACBETH"`. Owner-to-owner transfers leave `set_*_null` false.
+- **Mutation** (the cup is poisoned): `properties_set={"state": "poisoned"}`. Use this for state changes that don't move or transfer the object.
+
+**Guidelines:**
+- Only emit object_updates for objects that **actually changed** in this chunk. Stationary props need no update.
+- Pickups, drops, and transfers are *the* commonest events that warrant an object_update. Without them, the engine sees the dagger as forever at its initial location, no matter how many scenes ago it was carried elsewhere.
+- Each `ObjectUpdate` should pair with the event in `triggered_by`: pickups pair with the choice/outcome event of grabbing; transfers pair with the gift/theft event; mutations pair with the tampering event.
+- **Object position drives spatial coherence in downstream stages.** If the dagger is at LOC_KITCHEN at fabula 100 and the murder happens in LOC_BEDROOM at fabula 300, you MUST emit an ObjectUpdate moving the dagger to LOC_BEDROOM (or onto the murderer as `new_owner_id`) before fabula 300, otherwise the auditor flags the murder as `object_position_mismatch`.
+
+**Example:**
+Macbeth picks up the dagger in his chamber (EVT_MACBETH_TAKES_DAGGER, fabula_time 280), then drops it on the floor of Duncan's chamber after the murder (EVT_MACBETH_DROPS_DAGGER, fabula_time 305):
+```json
+[
+  {
+    "object_id": "OBJ_DAGGER",
+    "fabula_time": 280,
+    "triggered_by": "EVT_MACBETH_TAKES_DAGGER",
+    "new_owner_id": "ENT_MACBETH",
+    "set_location_null": true
+  },
+  {
+    "object_id": "OBJ_DAGGER",
+    "fabula_time": 305,
+    "triggered_by": "EVT_MACBETH_DROPS_DAGGER",
+    "new_location_id": "LOC_DUNCANS_CHAMBER",
+    "set_owner_null": true,
+    "properties_set": {"state": "bloody"}
+  }
+]
 ```
 
 ---

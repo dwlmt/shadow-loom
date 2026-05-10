@@ -46,6 +46,7 @@ from shadow_loom_ui.viz_helpers import (
     ws_to_polar_event_data,
     ws_to_social_graph_data,
     ws_to_spatial_graph_data,
+    ws_to_map_graph_data,
     ws_to_sunburst_data,
     ws_to_theme_river_data,
     ws_to_timeline_data,
@@ -806,6 +807,84 @@ def render_spatial_map(
     chart = ui.echart({
         "backgroundColor": _CHART_BG,
         "tooltip": {**_CHART_TOOLTIP, "trigger": "item"},
+        "animationDuration": 600,
+        "series": series,
+    }).classes("w-full").style(f"height:{height}")
+
+    if on_click:
+        chart.on("click", on_click)
+    return chart
+
+
+# ── World Map (cursor-aware spatial+entities+objects+channels) ────
+
+def render_world_map(
+    ws: WorldStateV1,
+    *,
+    fabula_anchor: int,
+    show_entities: bool = True,
+    show_objects: bool = True,
+    show_channels: bool = True,
+    show_locked: bool = True,
+    show_events: bool = True,
+    channel_window: int = 0,
+    event_window: int = 0,
+    on_click: OnClick = None,
+    height: str = "100%",
+) -> ui.echart:
+    """World map at a fabula cursor.
+
+    Renders ``ws_to_map_graph_data`` as an ECharts force graph: each
+    Location is a labelled pill, every Entity sits inside its
+    fabula-anchored location, every NarrativeObject sits with its
+    owning Entity (when held) or on its location's floor. Active
+    communication channels are drawn as dashed amber arcs whenever an
+    utterance fires within ``\u00b1channel_window`` of the cursor (default
+    ``0`` \u2014 strict on-tick rule). PR 7 of EventNode.at_location_id
+    additionally draws a star (\u2605) glyph at the resolved location of
+    every event whose ``fabula_time`` lies within
+    ``\u00b1event_window`` of the cursor and outlines bound participants
+    in yellow (correct co-presence) or red dashed (phantom witness /
+    displaced actor) so co-presence violations are visible at a glance.
+    """
+    nodes, links, cats = ws_to_map_graph_data(
+        ws,
+        fabula_anchor=fabula_anchor,
+        show_entities=show_entities,
+        show_objects=show_objects,
+        show_channels=show_channels,
+        show_locked=show_locked,
+        show_events=show_events,
+        channel_window=channel_window,
+        event_window=event_window,
+    )
+    if not nodes:
+        return ui.label("No locations to display.").classes("text-grey q-pa-md")
+
+    show_labels = sum(1 for n in nodes if n.get("category") == 0) <= 25
+    series = [{
+        "type": "graph",
+        "layout": "force",
+        "roam": True,
+        "draggable": True,
+        "emphasis": {"focus": "adjacency"},
+        "categories": cats,
+        "data": nodes,
+        "links": links,
+        "force": {
+            "repulsion": 220,
+            "gravity": 0.18,
+            "edgeLength": [40, 120],
+            "layoutAnimation": True,
+        },
+        "label": {"show": show_labels, "position": "inside", "fontSize": 11, "color": _CHART_TEXT},
+        "lineStyle": {"curveness": 0.05, "opacity": 0.6},
+    }]
+
+    chart = ui.echart({
+        "backgroundColor": _CHART_BG,
+        "tooltip": {**_CHART_TOOLTIP, "trigger": "item"},
+        "legend": {"data": [c["name"] for c in cats], "textStyle": {"color": _CHART_TEXT}},
         "animationDuration": 600,
         "series": series,
     }).classes("w-full").style(f"height:{height}")

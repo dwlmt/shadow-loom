@@ -558,7 +558,10 @@ Rules:
       - DoConcern      → "With holder H's concern C clamped to
         salience S, …" (motivational; reweighs disposition, not facts).
       - DoTrait        → "With H's trait T clamped to V, …".
-      - DoEvent        → "Under do(E={occurred|prevented}), …".
+      - DoEvent        → "Under do(E={occurred|prevented}), …". When
+        ``new_at_location_id`` is set, render as "Under do(E moved
+        to LOC X), …" — the event still happens but at a
+        different location, dragging its actors with it.
   • When the surgery is vacuous (Rule 3 pruned target_node_ids) say so
     plainly and lower confidence; do NOT invent downstream ripples.
   • When typed AFFECTED PROPOSITIONS / BELIEFS / CONCERNS are listed,
@@ -603,7 +606,10 @@ Rules:
         Roese commission/omission frame).
       - DoTrait        → "Had H been less/more T, …".
       - DoEvent        → "Had E not occurred (or had it gone
-        differently), …".
+        differently), …". When ``new_at_location_id`` is set,
+        render as "Had E happened at LOC X instead, …" — the
+        relocated event drags its actors to that location at
+        ``fabula_time``.
   • Apply the narrative-form hedge:
       - tragic   → close with an "and yet" register; foreground regret.
       - comic    → close with an "and so" register; foreground relief.

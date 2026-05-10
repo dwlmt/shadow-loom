@@ -31,6 +31,18 @@ class DoEvent(BaseModel):
     target_kind: Literal["event"] = "event"
     event_id: str = Field(description="EVT_ id whose occurrence is clamped.")
     occurred: bool = Field(default=False, description="Clamped occurrence value.")
+    new_at_location_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional LOC_ id to relocate the event to. When set (and "
+            "``occurred`` remains True), the do-operator rewrites the "
+            "event's ``at_location_id`` and cascades an "
+            "``EntityStateSnapshot(location_id=new_at_location_id)`` for "
+            "every primary actor at the event's ``fabula_time`` so the "
+            "co-presence invariant continues to hold post-surgery. Has no "
+            "effect when ``occurred=False``."
+        ),
+    )
 
 
 class DoProposition(BaseModel):
@@ -352,12 +364,75 @@ class DoSpatialEdge(BaseModel):
     )
 
 
-# Discriminated union — Pydantic v2 dispatches on ``target_kind``.
+class DoNarrativeObject(BaseModel):
+    """Clamp a :class:`NarrativeObject`'s position / ownership / properties \u2014
+    prop-layer surgery.
+
+    Used for "if the dagger had stayed in Macbeth's hand", "suppose the
+    locket had never left the drawer", "what if the cup were poisoned
+    when Duncan arrived". Unset fields are left at their factual value;
+    ``set_location_null`` / ``set_owner_null`` toggle explicit clears
+    so a pickup ("now in inventory; no location") and a drop ("now on
+    the floor; no owner") are distinguishable from a no-op.
+
+    Lands on the sandbox's OBJ_ node (so the same propagate step sees
+    the new state) and is mirrored back via
+    :class:`ObjectMutation` so the pipeline adapter can fold a
+    :class:`ObjectStateSnapshot` onto the canonical
+    :attr:`NarrativeObject.state_timeline`.
+    """
+    target_kind: Literal["object"] = "object"
+    object_id: str = Field(description="OBJ_ id whose state is clamped.")
+    new_location_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "New LOC_ id (placed / dropped / relocated). Use null + "
+            "``set_location_null=True`` for pickup (clears location)."
+        ),
+    )
+    new_owner_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "New ENT_ id (picked up / gifted / stolen / inherited). "
+            "Use null + ``set_owner_null=True`` for drop (clears owner)."
+        ),
+    )
+    set_location_null: bool = Field(
+        default=False,
+        description="Explicitly clear ``NarrativeObject.location_id`` (pickup).",
+    )
+    set_owner_null: bool = Field(
+        default=False,
+        description="Explicitly clear ``NarrativeObject.owner_id`` (drop).",
+    )
+    properties_set: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Property keys to overwrite on the object.",
+    )
+    properties_unset: List[str] = Field(
+        default_factory=list,
+        description="Property keys to remove from the property dict.",
+    )
+    fabula_time: Optional[int] = Field(
+        default=None,
+        description="Fabula time of the clamp. Defaults to the query's anchor when unset.",
+    )
+    triggered_by: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional EVT_ id whose occurrence motivates this clamp. "
+            "Carried onto the resulting ObjectStateSnapshot for "
+            "audit attribution."
+        ),
+    )
+
+
 # Discriminated union — Pydantic v2 dispatches on ``target_kind``.
 DoTarget = Annotated[
     Union[
         DoEvent, DoProposition, DoBelief, DoConcern, DoTrait, DoWorldTrait,
         DoChannel, DoRelationship, DoCausalEdge, DoSpatialEdge,
+        DoNarrativeObject,
     ],
     Field(discriminator="target_kind"),
 ]

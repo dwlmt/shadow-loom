@@ -738,7 +738,7 @@ typed state each carries. All six share a common
 Node ID prefix & Pydantic class & Distinctive state \\
 \midrule
 \texttt{ENT\_} & \texttt{Entity} & \texttt{traits: Dict[str, TraitVector]}; \texttt{beliefs: List[Belief]}; \texttt{constants: List[str]}; \texttt{location\_id}; \texttt{status}; \texttt{state\_timeline} of \texttt{EntityStateSnapshot} deltas. \\
-\texttt{EVT\_} & \texttt{EventNode} & \texttt{event\_type} $\in$ \{\texttt{choice}, \texttt{outcome}, \texttt{revelation}, \texttt{utterance}\}; \texttt{actor\_ids}, \texttt{target\_ids}; \texttt{fabula\_time}, \texttt{syuzhet\_index}; for \texttt{utterance}: \texttt{speaker\_id}, \texttt{addressee\_ids}, \texttt{via\_channel\_id}, \texttt{content}, \texttt{truth\_value} $\in$ \{\texttt{true}, \texttt{false}, \texttt{unknown}, \texttt{performative}\} (the last covers prophecies / vows / orders, which alone may carry future-fabula \texttt{target\_ids}; see \S\ref{sec:utterance-temporal}). \\
+\texttt{EVT\_} & \texttt{EventNode} & \texttt{event\_type} $\in$ \{\texttt{choice}, \texttt{outcome}, \texttt{revelation}, \texttt{utterance}\}; \texttt{actor\_ids}, \texttt{target\_ids}; \texttt{fabula\_time}, \texttt{syuzhet\_index}; \texttt{at\_location\_id} (optional \texttt{LOC\_} anchor naming the physical site of the event; bound participants must be reconstructible there at \texttt{fabula\_time} unless they are reaching the event through \texttt{via\_channel\_id}); for \texttt{utterance}: \texttt{speaker\_id}, \texttt{addressee\_ids}, \texttt{via\_channel\_id}, \texttt{content}, \texttt{truth\_value} $\in$ \{\texttt{true}, \texttt{false}, \texttt{unknown}, \texttt{performative}\} (the last covers prophecies / vows / orders, which alone may carry future-fabula \texttt{target\_ids}; see \S\ref{sec:utterance-temporal}). \\
 \texttt{LOC\_} & \texttt{Location} & \texttt{ambient\_state: Dict[str, AmbientVector]} (e.g.\ \textit{tension}, \textit{bustle}, \textit{supernatural}); \texttt{capacity}; outgoing \texttt{SpatialEdge}s. \\
 \texttt{OBJ\_} & \texttt{Object} & \texttt{location\_id} or \texttt{owner\_id}; \texttt{properties}; \texttt{affordances: List[Affordance]} (typed action/target gates). \\
 \texttt{CHN\_} & \texttt{Channel} & \texttt{medium}, \texttt{directionality}, \texttt{participant\_ids}; \texttt{intelligibility: Dict[entity\_id, float]} per-participant; \texttt{established\_at\_fabula}, \texttt{terminated\_at\_fabula}; \texttt{discovered\_at\_syuzhet} (optional, marks reader-facing channel reveals). \\
@@ -1845,6 +1845,25 @@ success the re-extracted prose is merged into a new
 policy ($\texttt{auto} \mid \texttt{mainline} \mid
 \texttt{shadow}$); counterfactual queries default to a fresh
 \texttt{shadow} branch, preserving canon.
+
+\paragraph{Spatial co-presence checks.} A deterministic
+sub-pass cross-references the spatial \texttt{ConstraintBlock}s
+emitted by the directive assembler against the rendered prose to
+catch three event-anchor violations: \texttt{event\_location\_mismatch}
+(prose names a different location for the event itself);
+\texttt{event\_copresence\_violation} (prose stages a bound
+participant at a named location other than the event's
+\texttt{at\_location\_id} during the event window); and
+\texttt{event\_copresence\_omission} (prose stages an entity at
+the event's location whose snapshot timeline places them
+elsewhere at \texttt{fabula\_time}, i.e.\ a phantom witness).
+Channel-mediated addressees are exempt --- the
+\texttt{via\_channel\_id} arc, not bodily co-location, licenses
+their participation. The renderer's universal Rule~11 (in
+\texttt{prompts/generation.md}) makes \emph{implicit} co-location
+the default: prose need not name the event's location every
+paragraph; the auditor only fires on \emph{explicit}
+contradictions of the anchor.
 
 \paragraph{Convergence safeguards.} The naive iterate-until-the-auditor-passes
 loop has two failure modes that surface as non-convergence on

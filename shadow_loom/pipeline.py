@@ -1196,7 +1196,7 @@ def _augment_topology_with_sandbox_deltas(
         TraitVector,
         WorldTraitSnapshot,
     )
-    from shadow_loom.ingestion import EntityUpdate
+    from shadow_loom.ingestion import EntityUpdate, ObjectUpdate
 
     mutations = physics_result.get("mutations") or []
     hidden = physics_result.get("hidden_deltas") or {}
@@ -1626,6 +1626,52 @@ def _augment_topology_with_sandbox_deltas(
             int(ftt) if ftt is not None else fabula_time_now,
         )
 
+    # Object mutations → ObjectUpdate on the chunk topology. Pearl
+    # Rung-2 ``DoNarrativeObject`` surgeries land here so the merge
+    # step can fold each into a single ``ObjectStateSnapshot`` on the
+    # canonical ``NarrativeObject.state_timeline`` \u2014 keeping the
+    # bridge symmetric with ``EntityUpdate`` for entities and
+    # ``WorldTraitSnapshot`` for world traits.
+    for om in physics_result.get("object_mutations") or []:
+        if isinstance(om, dict):
+            obj_id = om.get("object_id")
+            ftt = om.get("fabula_time")
+            new_loc = om.get("new_location_id")
+            new_own = om.get("new_owner_id")
+            clr_loc = bool(om.get("set_location_null", False))
+            clr_own = bool(om.get("set_owner_null", False))
+            props_set = dict(om.get("properties_set") or {})
+            props_unset = list(om.get("properties_unset") or [])
+            trig = om.get("triggered_by")
+        else:
+            obj_id = getattr(om, "object_id", None)
+            ftt = getattr(om, "fabula_time", None)
+            new_loc = getattr(om, "new_location_id", None)
+            new_own = getattr(om, "new_owner_id", None)
+            clr_loc = bool(getattr(om, "set_location_null", False))
+            clr_own = bool(getattr(om, "set_owner_null", False))
+            props_set = dict(getattr(om, "properties_set", None) or {})
+            props_unset = list(getattr(om, "properties_unset", None) or [])
+            trig = getattr(om, "triggered_by", None)
+        if not obj_id:
+            continue
+        try:
+            topology.object_updates.append(ObjectUpdate(
+                object_id=obj_id,
+                fabula_time=int(ftt) if ftt is not None else fabula_time_now,
+                triggered_by=trig,
+                new_location_id=new_loc,
+                new_owner_id=new_own,
+                set_location_null=clr_loc,
+                set_owner_null=clr_own,
+                properties_set=props_set,
+                properties_unset=props_unset,
+            ))
+        except Exception:
+            logger.debug(
+                "[Bridge] Could not build ObjectUpdate for %s.", obj_id,
+            )
+
     # --- Observation reveals (Rung 1) -----------------------------------
     # ``observation_facts`` is a Dict[node_id, value_str] declaring
     # facts the POV (or audience) has now observed. Without a bridge
@@ -1644,6 +1690,10 @@ def _augment_topology_with_sandbox_deltas(
     #     entity_update on the carrier entity if any; otherwise a
     #     debug log (we don't currently model object-state timelines
     #     as snapshots).
+    #   * ``EVT_*`` → rewrite the event's ``at_location_id`` in place
+    #     when the value names a known LOC_ id (PR 6 of
+    #     EventNode.at_location_id). Co-presence repair cascades to
+    #     participants on the next merge_topology pass.
     obs_facts = physics_result.get("observation_facts") or {}
     for node_id, raw_value in obs_facts.items():
         if not isinstance(node_id, str) or raw_value is None:
@@ -1712,9 +1762,95 @@ def _augment_topology_with_sandbox_deltas(
             _upsert_world_trait_snapshot(
                 node_id, "magnitude", num, fabula_time_now,
             )
+        elif node_id.startswith("OBJ_"):
+            # Object reveals: parse the value as either an LOC_ id (the
+            # POV now sees the object somewhere), an ENT_ id (now in
+            # someone's possession), the literal "dropped" / "picked_up"
+            # sentinels, or a "key=value" property string. Anything else
+            # is logged and skipped \u2014 we will not silently drop or
+            # mis-bucket reveals.
+            obj = (world_state.objects or {}).get(node_id)
+            if obj is None:
+                continue
+            kwargs: Dict[str, Any] = {
+                "object_id": node_id,
+                "fabula_time": fabula_time_now,
+                "triggered_by": None,
+            }
+            v = value.strip()
+            if v.startswith("LOC_") and v in (world_state.locations or {}):
+                kwargs["new_location_id"] = v
+                kwargs["set_owner_null"] = True
+            elif v.startswith("ENT_") and v in (world_state.entities or {}):
+                kwargs["new_owner_id"] = v
+                kwargs["set_location_null"] = True
+            elif v.lower() in ("dropped", "placed"):
+                kwargs["set_owner_null"] = True
+            elif v.lower() in ("picked_up", "taken", "held"):
+                kwargs["set_location_null"] = True
+            elif "=" in v:
+                k, _, val = v.partition("=")
+                k = k.strip(); val = val.strip()
+                if k:
+                    kwargs["properties_set"] = {k: val}
+            else:
+                logger.debug(
+                    "[Bridge\u00b7observe] OBJ_ reveal %s=%r unrecognised "
+                    "(expected LOC_, ENT_, picked_up/dropped, or k=v); "
+                    "skipped.", node_id, raw_value,
+                )
+                continue
+            try:
+                topology.object_updates.append(ObjectUpdate(**kwargs))
+            except Exception:
+                logger.debug(
+                    "[Bridge\u00b7observe] Could not build ObjectUpdate for %s.",
+                    node_id,
+                )
+        elif node_id.startswith("EVT_"):
+            # PR 6 of EventNode.at_location_id: a Rung-1 reveal of the
+            # form ``EVT_X = LOC_Y`` (or the literal phrase ``at LOC_Y``)
+            # rewrites the event's spatial anchor in place. We do NOT
+            # touch the event's actor/target lists \u2014 co-presence
+            # repair (PR 2 of this series) handles cascading the move
+            # to participants on the next merge_topology pass. Anything
+            # else is logged and skipped.
+            ev = next(
+                (e for e in (world_state.events or []) if e.id == node_id),
+                None,
+            )
+            if ev is None:
+                logger.debug(
+                    "[Bridge\u00b7observe] EVT_ reveal %s=%r skipped \u2014 "
+                    "event not in world_state.events.", node_id, raw_value,
+                )
+                continue
+            v = value.strip()
+            # Accept either bare ``LOC_X`` or ``at LOC_X`` / ``@ LOC_X``.
+            for prefix in ("at ", "@ ", "@"):
+                if v.lower().startswith(prefix):
+                    v = v[len(prefix):].strip()
+                    break
+            if not v.startswith("LOC_") or v not in (world_state.locations or {}):
+                logger.debug(
+                    "[Bridge\u00b7observe] EVT_ reveal %s=%r unrecognised "
+                    "(expected a known LOC_ id, optionally prefixed by "
+                    "'at '); skipped.", node_id, raw_value,
+                )
+                continue
+            old_loc = ev.at_location_id
+            if old_loc == v:
+                continue
+            ev.at_location_id = v
+            logger.info(
+                "[Bridge\u00b7observe\u00b7EventLocation] Relocated %s "
+                "at_location_id=%r \u2192 %r (fabula_time=%s); co-presence "
+                "repair will cascade on next merge_topology.",
+                node_id, old_loc, v, ev.fabula_time,
+            )
         else:
             logger.debug(
-                "[Bridge·observe] Skipped reveal for non-ENT/WORLD node %s "
+                "[Bridge·observe] Skipped reveal for non-ENT/WORLD/OBJ node %s "
                 "(value=%r) — no snapshot path.", node_id, raw_value,
             )
 

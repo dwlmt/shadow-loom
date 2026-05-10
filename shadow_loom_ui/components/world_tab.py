@@ -34,6 +34,7 @@ from shadow_loom_ui.viz import (
     render_status_donut,
     render_sunburst,
     render_world_graph,
+    render_world_map,
     render_world_state_grid,
     render_world_trait_bars,
     render_world_treemap,
@@ -846,6 +847,7 @@ def _build_data_tables(state: AppState) -> None:
         ui.tab("spatial", label="Spatial Edges", icon="map")
         ui.tab("social", label="Social Edges", icon="people")
         ui.tab("info", label="Info Edges", icon="mail")
+        ui.tab("map", label="Map", icon="travel_explore")
 
     _table_props = "dense flat bordered"
 
@@ -889,6 +891,7 @@ def _build_data_tables(state: AppState) -> None:
                     {"name": "type", "label": "Type", "field": "type", "sortable": True},
                     {"name": "actors", "label": "Actors", "field": "actors"},
                     {"name": "targets", "label": "Targets", "field": "targets"},
+                    {"name": "at_location", "label": "At location", "field": "at_location", "sortable": True},
                     {"name": "description", "label": "Description", "field": "description"},
                     {"name": "superseded_by_event_id", "label": "Superseded by", "field": "superseded_by_event_id", "sortable": True},
                     {"name": "world_id", "label": "Branch", "field": "world_id", "sortable": True},
@@ -1041,6 +1044,105 @@ def _build_data_tables(state: AppState) -> None:
                 rows=[],
                 pagination={"rowsPerPage": 10},
             ).props(_table_props).classes("w-full")
+
+        with ui.tab_panel("map"):
+            subtab_help("world.map")
+            # Layer / channel-window controls. Stored in a small dict
+            # so the redraw closure (below) reads the latest values
+            # without re-creating the bindings.
+            map_state: dict = {
+                "show_entities": True,
+                "show_objects": True,
+                "show_channels": True,
+                "show_locked": True,
+                "show_events": True,
+                "channel_window": 0,
+                "event_window": 0,
+            }
+            with ui.row().classes("w-full items-center gap-3 q-mb-sm"):
+                _sw_ent = ui.switch("Entities", value=True).props("dense").classes("text-xs")
+                _sw_obj = ui.switch("Objects", value=True).props("dense").classes("text-xs")
+                _sw_ch = ui.switch("Channels", value=True).props("dense").classes("text-xs")
+                _sw_lk = ui.switch("Locked edges", value=True).props("dense").classes("text-xs")
+                _sw_ev = ui.switch("Events \u2605", value=True).props("dense").classes("text-xs")
+                ui.label("Channel window \u00b1").classes("text-xs text-slate-500 ml-2")
+                _slider_win = ui.slider(min=0, max=10, value=0, step=1).props("dense label").classes("w-32")
+                ui.label("Event window \u00b1").classes("text-xs text-slate-500 ml-2")
+                _slider_evt = ui.slider(min=0, max=10, value=0, step=1).props("dense label").classes("w-32")
+            map_container = ui.element("div").classes("w-full").style("height: 560px")
+
+            def _redraw_map(**kw):
+                ws = state.world_state
+                if ws is None:
+                    return
+                # Resolve the active cursor (axis-aware) to a fabula
+                # tick. Falls back to fabula_max so a freshly-loaded
+                # world shows its end-state rather than its pre-story
+                # baseline.
+                axis = getattr(state, "active_time_axis", "fabula") or "fabula"
+                cursor = getattr(state, "active_cursor", None)
+                fabula_anchor = 0
+                if cursor is not None:
+                    try:
+                        eff = resolve_cursor(ws, axis, cursor)
+                        if eff is not None:
+                            fabula_anchor = int(eff)
+                    except Exception:
+                        logger.debug("Map: resolve_cursor failed", exc_info=True)
+                if fabula_anchor == 0:
+                    try:
+                        _, tmax = axis_bounds(ws, "fabula")
+                        if tmax > 0 and cursor is None:
+                            fabula_anchor = int(tmax)
+                    except Exception:
+                        pass
+                map_container.clear()
+                with map_container:
+                    render_world_map(
+                        ws,
+                        fabula_anchor=fabula_anchor,
+                        show_entities=map_state["show_entities"],
+                        show_objects=map_state["show_objects"],
+                        show_channels=map_state["show_channels"],
+                        show_locked=map_state["show_locked"],
+                        show_events=map_state["show_events"],
+                        channel_window=int(map_state["channel_window"]),
+                        event_window=int(map_state["event_window"]),
+                        height="540px",
+                    )
+
+            def _on_layer(name):
+                def _h(e):
+                    map_state[name] = bool(e.value)
+                    _redraw_map()
+                return _h
+
+            _sw_ent.on_value_change(_on_layer("show_entities"))
+            _sw_obj.on_value_change(_on_layer("show_objects"))
+            _sw_ch.on_value_change(_on_layer("show_channels"))
+            _sw_lk.on_value_change(_on_layer("show_locked"))
+            _sw_ev.on_value_change(_on_layer("show_events"))
+
+            def _on_window(e):
+                map_state["channel_window"] = int(e.value or 0)
+                _redraw_map()
+
+            _slider_win.on_value_change(_on_window)
+
+            def _on_event_window(e):
+                map_state["event_window"] = int(e.value or 0)
+                _redraw_map()
+
+            _slider_evt.on_value_change(_on_event_window)
+
+            # Initial render + cursor / world-state subscriptions so
+            # the map keeps in lock-step with the rest of the World
+            # tab without needing its own slider.
+            _redraw_map()
+            state.on(StateEvent.WORLD_STATE_CHANGED, _redraw_map)
+            state.on(StateEvent.FABULA_CURSOR_CHANGED, _redraw_map)
+            state.on(StateEvent.SYUZHET_CURSOR_CHANGED, _redraw_map)
+            state.on(StateEvent.TIME_AXIS_CHANGED, _redraw_map)
 
     def _refresh_tables(**kw):
         ws = state.world_state

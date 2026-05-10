@@ -379,6 +379,49 @@ class AuditViolation(BaseModel):
         # name and use an existing referent or (b) move the name into
         # ``introduced_elements`` with a justification.
         "undeclared_element",
+        # Object-coherence checks (added once NarrativeObject acquired a
+        # full state_timeline). The deterministic auditor pass surfaces
+        # three new failure modes that were previously invisible:
+        #   * ``object_misuse`` — prose has a character perform an
+        #     action on an OBJ_ whose declared ``affordances`` do not
+        #     include that verb (e.g. "Macbeth read the dagger").
+        #   * ``object_position_mismatch`` — prose places an OBJ_ in a
+        #     room or in a character's hand that contradicts the
+        #     reconstructed ``location_id`` / ``owner_id`` at the
+        #     scene's fabula anchor (using
+        #     :func:`reconstruct_object_at`).
+        #   * ``entity_position_mismatch`` — prose places an ENT_ in a
+        #     room that contradicts the reconstructed ``location_id``
+        #     at the scene's fabula anchor (using
+        #     :func:`reconstruct_entity_at`).
+        # All three are HARD violations: they signal the renderer
+        # contradicting the engine's authoritative world state.
+        "object_misuse",
+        "object_position_mismatch",
+        "entity_position_mismatch",
+        # Event-location / co-presence checks (PR 4 of
+        # EventNode.at_location_id). The deterministic auditor pass
+        # surfaces three failure modes once events carry an
+        # ``at_location_id``:
+        #   * ``event_location_mismatch`` \u2014 prose places an event at
+        #     a location that contradicts the event's declared
+        #     ``at_location_id`` (e.g. the Duncan murder is moved to
+        #     the great hall when the schema names the bedchamber).
+        #   * ``event_copresence_violation`` \u2014 prose has an actor /
+        #     non-channel target *absent* at an event whose schema
+        #     binds them as present (the implicit co-presence rule:
+        #     every actor + non-channel target is present at
+        #     ``at_location_id`` at ``fabula_time`` UNLESS the event is
+        #     a channel-mediated utterance).
+        #   * ``event_copresence_omission`` \u2014 prose adds a present
+        #     character not bound to the event whose reconstructed
+        #     location at ``fabula_time`` is NOT the event's
+        #     ``at_location_id`` (a phantom witness).
+        # All three are HARD violations: they signal the renderer
+        # contradicting the engine's spatial / co-presence ledger.
+        "event_location_mismatch",
+        "event_copresence_violation",
+        "event_copresence_omission",
     ]
     severity: Literal["critical", "major", "minor"]
     description: str = Field(
@@ -2774,6 +2817,167 @@ def _undeclared_element_violations(
     return issues
 
 
+def _event_copresence_violations(
+    prose: str,
+    brief: CreativeBrief,
+    world_state: Optional[WorldStateV1],
+) -> List[AuditViolation]:
+    """Deterministic co-presence + event-location auditor pass.
+
+    For every spatial ConstraintBlock emitted by
+    :func:`build_event_copresence_constraints` (identified by an
+    ``evidence`` dict carrying ``event_id`` + ``at_location_id`` +
+    ``must_be_present``), check three rules:
+
+      * ``event_copresence_violation`` \u2014 a bound participant
+        (``must_be_present``) is named in prose at a location that
+        is not the event's ``at_location_id``. Conservative: only
+        flagged when prose contains both the participant name AND a
+        non-event location name within ~120 chars (verbatim phrase
+        check).
+      * ``event_copresence_omission`` \u2014 an entity in
+        ``must_not_be_present`` is named in prose AT the event
+        scene (verbatim mention of the entity name within ~120 chars
+        of the event location's name).
+      * ``event_location_mismatch`` \u2014 prose names the event's id /
+        description AND a *different* canonical location name within
+        ~120 chars.
+
+    The LLM auditor remains responsible for paraphrase / pronoun
+    cases. This pre-check guards the high-precision verbatim cases
+    so the refinement loop cannot converge on prose that contradicts
+    the engine's spatial ledger.
+    """
+    if world_state is None or not prose:
+        return []
+    prose_lower = prose.lower()
+    locations = world_state.locations or {}
+    entities = world_state.entities or {}
+    issues: List[AuditViolation] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    def _name(nid: str) -> str:
+        if nid in entities:
+            return getattr(entities[nid], "name", nid) or nid
+        if nid in locations:
+            return getattr(locations[nid], "name", nid) or nid
+        return nid
+
+    def _name_positions(name: str) -> list[int]:
+        if not name:
+            return []
+        n = name.strip().lower()
+        if len(n) < 3:
+            return []
+        out: list[int] = []
+        start = 0
+        while True:
+            i = prose_lower.find(n, start)
+            if i < 0:
+                break
+            out.append(i)
+            start = i + len(n)
+        return out
+
+    for block in (brief.constraints or []):
+        if block.constraint_type != "spatial":
+            continue
+        ev = block.evidence or {}
+        evt_id = ev.get("event_id")
+        loc_id = ev.get("at_location_id")
+        bound = ev.get("must_be_present") or []
+        absent = ev.get("must_not_be_present") or []
+        if not evt_id or not loc_id:
+            continue
+        loc_name = _name(loc_id)
+        loc_positions = _name_positions(loc_name)
+
+        # Rule 1: bound participant named near a different location name.
+        for pid in bound:
+            pname = _name(pid)
+            p_positions = _name_positions(pname)
+            if not p_positions:
+                continue
+            triggered = False
+            for pi in p_positions:
+                if triggered:
+                    break
+                # Find the closest other-location name within +/-120
+                for oloc_id, oloc in (locations.items() if isinstance(locations, dict) else []):
+                    if oloc_id == loc_id:
+                        continue
+                    other_name = getattr(oloc, "name", oloc_id) or oloc_id
+                    if len(other_name) < 3:
+                        continue
+                    for oi in _name_positions(other_name):
+                        if abs(oi - pi) <= 120:
+                            key = ("event_copresence_violation", evt_id, pid)
+                            if key in seen:
+                                triggered = True
+                                break
+                            seen.add(key)
+                            issues.append(AuditViolation(
+                                violation_type="event_copresence_violation",
+                                severity="major",
+                                description=(
+                                    f"Prose stages `{pid}` ({pname}) at "
+                                    f"`{oloc_id}` ({other_name}), but event "
+                                    f"`{evt_id}` is anchored at `{loc_id}` "
+                                    f"({loc_name}) and binds `{pid}` as "
+                                    f"co-present there."
+                                ),
+                                evidence_quote=prose[max(0, pi - 40): pi + len(pname) + 40],
+                                feedback=(
+                                    f"Either re-locate `{pid}` to `{loc_id}` "
+                                    f"({loc_name}) for event `{evt_id}` or "
+                                    f"render their participation as channel-"
+                                    f"mediated (only valid when the event has "
+                                    f"a `via_channel_id`). Do NOT show them "
+                                    f"acting at `{oloc_id}`."
+                                ),
+                            ))
+                            triggered = True
+                            break
+                    if triggered:
+                        break
+
+        # Rule 2: phantom witness (must_not_be_present named near the
+        # event location).
+        if loc_positions:
+            for pid in absent:
+                pname = _name(pid)
+                p_positions = _name_positions(pname)
+                if not p_positions:
+                    continue
+                for pi in p_positions:
+                    near = any(abs(li - pi) <= 120 for li in loc_positions)
+                    if not near:
+                        continue
+                    key = ("event_copresence_omission", evt_id, pid)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    issues.append(AuditViolation(
+                        violation_type="event_copresence_omission",
+                        severity="major",
+                        description=(
+                            f"Prose stages `{pid}` ({pname}) at the scene of "
+                            f"event `{evt_id}` (`{loc_id}` / {loc_name}), but "
+                            f"that character's reconstructed location at "
+                            f"fabula_time differs. Phantom witness."
+                        ),
+                        evidence_quote=prose[max(0, pi - 40): pi + len(pname) + 40],
+                        feedback=(
+                            f"Remove `{pid}` from the scene at `{loc_id}` or "
+                            f"justify their relocation by an explicit "
+                            f"movement event before this beat."
+                        ),
+                    ))
+                    break
+
+    return issues
+
+
 def run_audit(
     prose: str,
     brief: CreativeBrief,
@@ -2931,6 +3135,22 @@ def run_audit(
         audit.audit_summary = (
             f"{audit.audit_summary} [+{len(cascade_leaks)} ctf-calculus "
             f"exclusion leak(s)]"
+        ).strip()
+
+    # Deterministic event co-presence / spatial-anchor check (PR 4 of
+    # EventNode.at_location_id). Cross-references the spatial
+    # ConstraintBlocks emitted by ``build_event_copresence_constraints``
+    # against the prose for verbatim violations of MUST_BE_PRESENT
+    # and MUST_NOT_BE_PRESENT ledgers.
+    copresence_issues = _event_copresence_violations(
+        prose, brief, world_state,
+    )
+    if copresence_issues:
+        audit.violations = list(audit.violations) + copresence_issues
+        audit.passed = False
+        audit.audit_summary = (
+            f"{audit.audit_summary} [+{len(copresence_issues)} event "
+            f"co-presence violation(s)]"
         ).strip()
 
     logger.info(

@@ -1447,6 +1447,7 @@ def event_context_data(
             "description": evt.description or "",
             "actor_ids": list(evt.actor_ids),
             "target_ids": list(evt.target_ids),
+            "at_location_id": getattr(evt, "at_location_id", None),
             "superseded_by_event_id": getattr(evt, "superseded_by_event_id", None),
         },
         "actors": actors,

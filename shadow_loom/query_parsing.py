@@ -40,6 +40,7 @@ from shadow_loom.query_models import (
     DoConcern,
     DoProposition,
     DoWorldTrait,
+    DoNarrativeObject,
 )
 
 from shadow_loom.settings import get_settings as _get_settings, resolve_model as _resolve_model
@@ -719,6 +720,9 @@ def _build_do_target_item_model(world_state: WorldStateV1):
       * ``world_trait`` — DoWorldTrait(world_trait_id, value, inertia?,
         affected_domains_add?, affected_domains_remove?, fabula_time?,
         triggered_by?)
+      * ``object``      — DoNarrativeObject(object_id, new_location_id?,
+        new_owner_id?, set_location_null?, set_owner_null?,
+        properties_set?, properties_unset?, fabula_time?, triggered_by?)
 
     Every kind's id field is constrained to a ``Literal`` of valid IDs
     of the appropriate type. Other fields are Optional so a single
@@ -729,6 +733,8 @@ def _build_do_target_item_model(world_state: WorldStateV1):
     typed = _collect_typed_ids(world_state)
     ent_lit = _make_id_literal(typed["entity_ids"])
     evt_lit = _make_id_literal(typed["event_ids"])
+    obj_lit = _make_id_literal(typed["object_ids"])
+    loc_lit = _make_id_literal(typed["location_ids"])
     prop_lit = _make_id_literal(typed.get("proposition_ids", []))
     ccn_lit = _make_id_literal(typed.get("concern_ids", []))
     wt_lit = _make_id_literal(typed.get("world_trait_ids", []))
@@ -739,7 +745,7 @@ def _build_do_target_item_model(world_state: WorldStateV1):
     return create_model(
         "DoTargetItem",
         target_kind=(
-            Literal["event", "trait", "belief", "concern", "proposition", "world_trait"],
+            Literal["event", "trait", "belief", "concern", "proposition", "world_trait", "object"],
             Field(..., description="Discriminator for the do-target kind."),
         ),
         # event
@@ -748,6 +754,15 @@ def _build_do_target_item_model(world_state: WorldStateV1):
         occurred=(Optional[bool], Field(default=None,
             description="For target_kind='event': True forces the event "
                         "to occur, False prevents it.")),
+        new_at_location_id=(Optional[loc_lit], Field(default=None,
+            description="For target_kind='event': optional LOC_ id to "
+                        "relocate the event to. When set (and occurred is "
+                        "True / unset), the do-operator rewrites the "
+                        "event's at_location_id and cascades an "
+                        "EntityStateSnapshot for every primary actor at "
+                        "the event's fabula_time so the co-presence "
+                        "invariant continues to hold post-surgery. Has "
+                        "no effect when occurred=False.")),
         # trait
         entity_id=(Optional[ent_lit], Field(default=None,
             description="For target_kind='trait': ENT_ id whose trait is clamped.")),
@@ -809,9 +824,26 @@ def _build_do_target_item_model(world_state: WorldStateV1):
             description="For target_kind='world_trait' or 'proposition': fabula "
                         "tick of the clamp. Defaults to the query anchor.")),
         triggered_by=(Optional[evt_lit], Field(default=None,
-            description="For target_kind='world_trait': optional EVT_ id whose "
+            description="For target_kind='world_trait' or 'object': optional EVT_ id whose "
                         "occurrence motivates this clamp. Surfaced on the "
-                        "WorldTraitSnapshot for audit attribution.")),
+                        "WorldTraitSnapshot / ObjectStateSnapshot for audit attribution.")),
+        # object
+        object_id=(Optional[obj_lit], Field(default=None,
+            description="For target_kind='object': OBJ_ id whose state is clamped.")),
+        new_location_id=(Optional[loc_lit], Field(default=None,
+            description="For target_kind='object': new LOC_ id (placed/dropped/relocated). "
+                        "Use null with set_location_null=True for pickup.")),
+        new_owner_id=(Optional[ent_lit], Field(default=None,
+            description="For target_kind='object': new ENT_ id (picked up/gifted/stolen). "
+                        "Use null with set_owner_null=True for drop.")),
+        set_location_null=(Optional[bool], Field(default=None,
+            description="For target_kind='object': explicitly clear location_id (pickup).")),
+        set_owner_null=(Optional[bool], Field(default=None,
+            description="For target_kind='object': explicitly clear owner_id (drop).")),
+        properties_set=(Optional[Dict[str, str]], Field(default=None,
+            description="For target_kind='object': property keys to overwrite.")),
+        properties_unset=(Optional[List[str]], Field(default=None,
+            description="For target_kind='object': property keys to remove.")),
         __base__=BaseModel,
     )
 
@@ -1270,6 +1302,7 @@ def _do_target_items_to_typed(items: list[Any]) -> List[DoTarget]:
                 out.append(DoEvent(
                     event_id=eid,
                     occurred=data.get("occurred", True),
+                    new_at_location_id=data.get("new_at_location_id"),
                 ))
             elif kind == "trait":
                 eid = data.get("entity_id") or data.get("holder_id")
@@ -1363,6 +1396,40 @@ def _do_target_items_to_typed(items: list[Any]) -> List[DoTarget]:
                 if trig:
                     kwargs["triggered_by"] = str(trig)
                 out.append(DoWorldTrait(**kwargs))
+            elif kind == "object":
+                obj_id = data.get("object_id") or data.get("target_id") or data.get("node_id")
+                if not obj_id:
+                    continue
+                kwargs: Dict[str, Any] = {"object_id": obj_id}
+                new_loc = data.get("new_location_id")
+                if new_loc:
+                    kwargs["new_location_id"] = new_loc
+                new_own = data.get("new_owner_id")
+                if new_own:
+                    kwargs["new_owner_id"] = new_own
+                if data.get("set_location_null"):
+                    kwargs["set_location_null"] = True
+                if data.get("set_owner_null"):
+                    kwargs["set_owner_null"] = True
+                pset = data.get("properties_set")
+                if pset:
+                    kwargs["properties_set"] = {str(k): str(v) for k, v in pset.items()}
+                puns = data.get("properties_unset")
+                if puns:
+                    kwargs["properties_unset"] = list(puns)
+                ft = data.get("fabula_time")
+                if ft is not None:
+                    kwargs["fabula_time"] = int(ft)
+                trig = data.get("triggered_by")
+                if trig:
+                    kwargs["triggered_by"] = str(trig)
+                # Skip no-op clamps (no field to actually mutate).
+                if not any(k in kwargs for k in (
+                    "new_location_id", "new_owner_id", "set_location_null",
+                    "set_owner_null", "properties_set", "properties_unset",
+                )):
+                    continue
+                out.append(DoNarrativeObject(**kwargs))
             else:
                 continue
         except Exception:

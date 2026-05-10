@@ -377,6 +377,27 @@ def _render_event_dossier(state: AppState, ctx: Dict[str, Any]) -> None:
             "text-base text-slate-800 mt-2"
         )
 
+        # At-location anchor: surface the event's physical setting (and
+        # implicit co-presence anchor) when present. Clickable to jump
+        # to the location in the Explorer.
+        at_loc_id = evt.get("at_location_id")
+        if at_loc_id:
+            ws_full = state.world_state
+            loc_name = at_loc_id
+            if ws_full is not None and at_loc_id in ws_full.locations:
+                loc_name = ws_full.locations[at_loc_id].name
+            with ui.row().classes("items-center gap-1 mt-1 text-xs text-slate-600"):
+                ui.icon("place", color="teal", size="xs")
+                ui.label("at").classes("text-slate-500")
+                ui.button(
+                    loc_name,
+                    on_click=lambda lid=at_loc_id: state.select_node(lid, "Location"),
+                ).props("flat dense no-caps color=teal-8 size=sm").tooltip(
+                    "Event's physical setting. Actors and non-channel "
+                    "targets are taken to be co-present here at this "
+                    "fabula tick (utterances over a channel exempt)."
+                )
+
         # Supersession callout: when this event has been overridden
         # by a promoted counterfactual, surface the successor as a
         # clickable link so the reader can jump to the canonical

@@ -998,6 +998,7 @@ def build_affective_dashboard(state: AppState) -> None:
                             {"name": "type", "label": "Type", "field": "type", "sortable": True},
                             {"name": "actors", "label": "Actors", "field": "actors"},
                             {"name": "targets", "label": "Targets", "field": "targets"},
+                            {"name": "at_location", "label": "At location", "field": "at_location", "sortable": True},
                             {"name": "description", "label": "Description", "field": "description"},
                         ],
                         rows=[],

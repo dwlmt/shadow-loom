@@ -465,6 +465,86 @@ class EntityStateSnapshot(BaseModel):
     )
 
 
+class ObjectStateSnapshot(BaseModel):
+    """A point-in-time snapshot of a :class:`NarrativeObject`'s mutable state.
+
+    Stored on ``NarrativeObject.state_timeline`` in fabula_time order.
+    Mirrors :class:`EntityStateSnapshot`: only *changed* fields need
+    be populated — reconstruction merges each snapshot atop the
+    previous accumulated state.
+
+    Object movement (``location_id``), ownership transfer
+    (``owner_id``), and per-property mutations (``properties_set`` /
+    ``properties_unset``) all flow through this single snapshot type
+    so the per-fabula timeline can be reconstructed by
+    :func:`reconstruct_object_at`. Without it,
+    :class:`NarrativeObject` would carry only a static
+    ``location_id`` / ``owner_id`` and downstream readers (AMWN
+    sandbox, brief assembler, auditor) would see the *initial* state
+    no matter what fabula_time they query — exactly the asymmetry
+    that motivates this class relative to :class:`Entity` and
+    :class:`GlobalTrait`.
+    """
+    world_id: Literal["factual", "shadow"] = Field(
+        default="factual",
+        description=(
+            "AMWN branch this snapshot belongs to. Snapshots produced by a "
+            "shadow merge are tagged ``shadow`` so consumers walking a live "
+            "object's ``state_timeline`` can filter out off-branch entries."
+        ),
+    )
+    fabula_time: int = Field(description="fabula_time this snapshot is valid from.")
+    triggered_by: Optional[str] = Field(
+        default=None,
+        description="EVT_ ID that caused this object change (pickup, drop, transfer, mutation).",
+    )
+    location_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "New LOC_ id if the object moved (was dropped, placed, or relocated). "
+            "Null when the object is now held — see ``owner_id``. The reconstruction "
+            "helper uses an explicit ``set_location_null`` flag to disambiguate "
+            "'no change' (this field omitted) from 'cleared because picked up' "
+            "(``set_location_null=True``)."
+        ),
+    )
+    owner_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "New ENT_ id if ownership transferred (pickup, gift, theft, "
+            "inheritance). Null on drop — see ``set_owner_null``."
+        ),
+    )
+    set_location_null: bool = Field(
+        default=False,
+        description=(
+            "When True, explicitly clear ``NarrativeObject.location_id`` "
+            "(object was picked up — it now lives in an inventory). "
+            "Disambiguates from ``location_id=None`` meaning 'no change "
+            "to location this tick'."
+        ),
+    )
+    set_owner_null: bool = Field(
+        default=False,
+        description=(
+            "When True, explicitly clear ``NarrativeObject.owner_id`` "
+            "(object was dropped or placed). Disambiguates from "
+            "``owner_id=None`` meaning 'no change to owner this tick'."
+        ),
+    )
+    properties_set: Dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Property keys to overwrite (e.g. ``{'state': 'poisoned'}``). "
+            "Merged atop the accumulated property dict."
+        ),
+    )
+    properties_unset: List[str] = Field(
+        default_factory=list,
+        description="Property keys to remove from the accumulated property dict.",
+    )
+
+
 class WorldTraitSnapshot(BaseModel):
     """A point-in-time snapshot of a world trait's mutable state.
 
@@ -649,6 +729,19 @@ class NarrativeObject(AMWNNode):
     owner_id: Optional[str] = Field(description="Who is holding it? Null if on the ground.")
     properties: Dict[str, str] = Field(default_factory=dict, description="e.g., {'state': 'poisoned'}")
     affordances: List[Affordance]
+    state_timeline: List["ObjectStateSnapshot"] = Field(
+        default_factory=list,
+        description=(
+            "Chronological snapshots of mutable object state through the "
+            "story (movement, ownership transfers, property mutations). "
+            "Empty = the object's location/owner/properties are unchanged "
+            "throughout the narrative. Mirrors the snapshot pattern used "
+            "by :class:`Entity` and :class:`GlobalTrait`; replayed by "
+            ":func:`reconstruct_object_at` so AMWN sandboxes, ego graphs, "
+            "the brief assembler and the auditor see the time-correct "
+            "object position rather than only its initial value."
+        ),
+    )
 
 class Entity(AMWNNode):
     id: str = Field(description="Unique ID, e.g., ENT_MACBETH")
@@ -812,6 +905,24 @@ class EventNode(AMWNNode):
         ),
     )
 
+    # --- Spatial anchor (optional, but the canonical answer to "where") ---
+    at_location_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "LOC_ id where the event physically takes place. Optional for "
+            "backwards compatibility — when null, downstream consumers fall "
+            "back to the primary actor's reconstructed location at "
+            "``fabula_time`` via :func:`event_location_at`. The implicit "
+            "co-presence rule is: every actor and non-channel target of an "
+            "event must be at ``at_location_id`` at ``fabula_time`` UNLESS "
+            "the event is an utterance with ``via_channel_id`` and the "
+            "participant is reached through that channel. The auditor and "
+            "ingestion validator enforce this; the directive assembler "
+            "emits MUST_DEPICT_AT / MUST_BE_PRESENT constraints from it; "
+            "the Map sub-tab anchors the event glyph here."
+        ),
+    )
+
     # Tier 5 #17: ``choice`` events are by definition deliberate decisions —
     # they should have at least one actor. ``outcome`` events legitimately
     # admit empty ``actor_ids`` (natural disasters, ambient happenings).
@@ -859,6 +970,29 @@ class EventNode(AMWNNode):
                 _log.warning(
                     "[Validator·EventNode] utterance event %r has neither "
                     "actor_ids nor speaker_id.",
+                    self.id,
+                )
+                if seen is not None:
+                    seen.add(key)
+        # Spatial-anchor sanity for utterances: a face-to-face speech-act
+        # needs *somewhere* to take place. If neither a channel nor an
+        # explicit ``at_location_id`` is given but the speaker has named
+        # addressees, downstream co-presence audit will have nothing to
+        # check against — warn so ingestion can repair before the brief
+        # is assembled.
+        if (
+            self.event_type == "utterance"
+            and self.via_channel_id is None
+            and self.at_location_id is None
+            and (self.speaker_id or self.actor_ids)
+            and self.addressee_ids
+        ):
+            key = ("utterance_no_anchor", self.id)
+            if seen is None or key not in seen:
+                _log.warning(
+                    "[Validator·EventNode] utterance event %r has neither "
+                    "via_channel_id nor at_location_id but has addressees "
+                    "(downstream co-presence audit will be ungrounded).",
                     self.id,
                 )
                 if seen is not None:
@@ -1562,6 +1696,105 @@ def reconstruct_world_trait_at(trait: "GlobalTrait", fabula_time: int) -> dict:
         "magnitude": magnitude,
         "description": description,
     }
+
+
+def reconstruct_object_at(obj: "NarrativeObject", fabula_time: int) -> dict:
+    """Reconstruct a :class:`NarrativeObject`'s mutable state at a given fabula_time.
+
+    Starts from the object's initial fields and replays
+    :class:`ObjectStateSnapshot` entries up to *fabula_time* inclusive.
+    Mirrors :func:`reconstruct_entity_at` so AMWN sandboxes, ego
+    graphs, the brief assembler, the auditor and any other downstream
+    reader can see the object's correct position / ownership /
+    properties at any point in the narrative rather than only its
+    initial values.
+
+    Returns a dict with keys ``location_id``, ``owner_id``,
+    ``properties``. Snapshots are merged in fabula order; explicit
+    null-clear flags (``set_location_null`` / ``set_owner_null``)
+    distinguish "no change" from "cleared because picked up / dropped".
+    """
+    location_id: Optional[str] = obj.location_id
+    owner_id: Optional[str] = obj.owner_id
+    properties: Dict[str, str] = dict(obj.properties)
+
+    for snap in sorted(obj.state_timeline, key=lambda s: s.fabula_time):
+        if snap.fabula_time > fabula_time:
+            break
+        # Location: explicit clear wins, then explicit set, else no change.
+        if snap.set_location_null:
+            location_id = None
+        elif snap.location_id is not None:
+            location_id = snap.location_id
+        # Owner: same precedence.
+        if snap.set_owner_null:
+            owner_id = None
+        elif snap.owner_id is not None:
+            owner_id = snap.owner_id
+        # Property mutations: unset first, then set so an
+        # author can rename a key in one snapshot.
+        for k in snap.properties_unset:
+            properties.pop(k, None)
+        for k, v in snap.properties_set.items():
+            properties[k] = v
+
+    return {
+        "location_id": location_id,
+        "owner_id": owner_id,
+        "properties": properties,
+    }
+
+
+def event_location_at(
+    evt: "EventNode",
+    ws: Any,
+    *,
+    fallback: Literal["actor", "none"] = "actor",
+) -> Optional[str]:
+    """Return the LOC_ id where *evt* takes place at ``evt.fabula_time``.
+
+    Resolution order:
+      1. ``evt.at_location_id`` when explicitly set;
+      2. when ``fallback='actor'``: the reconstructed location of the
+         primary actor (``speaker_id`` for utterances, else first
+         ``actor_ids`` entry) at ``evt.fabula_time``;
+      3. otherwise ``None``.
+
+    ``ws`` is duck-typed: anything exposing an iterable ``entities``
+    attribute of objects with ``id`` + ``location_id`` (and a
+    ``state_timeline`` for replay) is acceptable. This keeps the
+    helper usable from auditor / map / directive code without
+    importing :class:`WorldStateV1`.
+    """
+    if evt.at_location_id:
+        return evt.at_location_id
+    if fallback != "actor":
+        return None
+    primary: Optional[str] = None
+    if evt.speaker_id:
+        primary = evt.speaker_id
+    elif evt.actor_ids:
+        primary = evt.actor_ids[0]
+    if not primary:
+        return None
+    entities = getattr(ws, "entities", None)
+    if entities is None:
+        return None
+    # ``WorldStateV1.entities`` is a dict ``{id: Entity}``; some lighter
+    # ws-shaped objects pass a list. Normalise to an iterable of Entity.
+    if isinstance(entities, dict):
+        ent = entities.get(primary)
+        ent_iter = [ent] if ent is not None else []
+    else:
+        ent_iter = list(entities)
+    for ent in ent_iter:
+        if getattr(ent, "id", None) != primary:
+            continue
+        try:
+            return reconstruct_entity_at(ent, evt.fabula_time).get("location_id")
+        except Exception:
+            return getattr(ent, "location_id", None)
+    return None
 
 
 def reconstruct_proposition_at(prop: "Proposition", fabula_time: int) -> dict:

@@ -361,6 +361,21 @@ _HELP: Dict[str, Tuple[str, str]] = {
             " medium, parties, fidelity, and reception."
         ),
     ),
+    "world.map": (
+        "Map — locations, entities, objects & active channels",
+        (
+            "Spatial view at the current fabula cursor. Locations"
+            " are drawn as labelled pills; each entity sits inside"
+            " its resolved location at this tick; each object sits"
+            " with its owning entity (when held) or on its"
+            " location's floor. Spatial topology renders as solid /"
+            " dashed (locked) edges. Channel arcs appear as dashed"
+            " amber lines only when an utterance fires within"
+            " \u00b1window ticks of the cursor (default 0 \u2014 strictly"
+            " on-tick). Toggle layers and the channel window with"
+            " the controls above the canvas."
+        ),
+    ),
     "social.propositions": (
         "Propositions \u2014 first-class storyworld facts",
         (

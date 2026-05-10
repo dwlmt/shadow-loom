@@ -242,6 +242,21 @@ Every `EventNode` carries:
   by 100).
 * `syuzhet_index` — *when the reader / viewer learns about it*
   (contiguous, dense, per-channel-of-narration).
+* `at_location_id` *(optional)* — *where in the story-world it
+  happened*. Optional for backwards compatibility; when unset, the
+  helper `event_location_at(evt, ws, fallback="actor")` resolves the
+  effective anchor from the primary actor's reconstructed
+  `location_id` at `evt.fabula_time`. The implicit invariant the
+  field encodes is *"if something happens at a location, the
+  characters and objects involved are present together — unless they
+  are communicating over a Channel."* Every actor and non-channel
+  target of the event is required to be reconstructible at
+  `at_location_id` at `evt.fabula_time`; channel-mediated addressees
+  remain at their own current location and are present only through
+  the `via_channel_id` arc. The auditor's `event_copresence_violation`
+  / `event_copresence_omission` rules and the Map sub-tab's ★ glyphs
+  + yellow / red borders both key off this field. See
+  [design-decisions.md §D22](design-decisions.md#d22-events-have-an-explicit-spatial-anchor-eventnodeat_location_id).
 
 Reservoir Dogs has `EVT_ORANGE_RECRUITED` at `fabula_time ≈ 1000` but
 `syuzhet_index ≈ 42` — long after the warehouse standoff. The causal

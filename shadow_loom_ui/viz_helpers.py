@@ -16,7 +16,9 @@ from typing import Any, Callable, Iterable, Optional
 from shadow_loom.models import (
     CausalEdge,
     WorldStateV1,
+    event_location_at,
     reconstruct_entity_at,
+    reconstruct_object_at,
     reconstruct_world_trait_at,
 )
 
@@ -1095,6 +1097,436 @@ def ws_to_spatial_graph_data(
             "target": se.target_id,
             "lineStyle": {"color": EDGE_COLORS["connected_to"], "width": 2, "type": style},
         })
+
+    return nodes, links, cats
+
+
+# ── Map view (spatial + entities + objects + active channels) ──────
+
+# Status-coloured entity markers used by the Map view. Kept small and
+# explicit so an unfamiliar status string is rendered grey rather than
+# silently dropped.
+_MAP_STATUS_COLORS: dict[str, str] = {
+    "healthy":     "#22c55e",  # emerald
+    "injured":     "#f59e0b",  # amber
+    "ill":         "#a855f7",  # violet
+    "unconscious": "#64748b",  # slate
+    "dead":        "#9ca3af",  # grey
+}
+
+_MAP_OFFSTAGE_LOC_ID = "__sl_offstage__"
+_MAP_UNKNOWN_LOC_ID = "__sl_unknown__"
+
+
+def ws_to_map_graph_data(
+    ws: WorldStateV1,
+    *,
+    fabula_anchor: int,
+    show_entities: bool = True,
+    show_objects: bool = True,
+    show_channels: bool = True,
+    show_locked: bool = True,
+    show_events: bool = True,
+    channel_window: int = 0,
+    event_window: int = 0,
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """Map-view graph: locations, entities-in-location, objects-on-entity-or-floor.
+
+    The single canvas behind the World tab's *Map* sub-tab. Resolves
+    each entity / object's position at ``fabula_anchor`` via the
+    snapshot-replay helpers in :mod:`shadow_loom.models` so movement
+    and ownership transfers track the cursor.
+
+    Parameters
+    ----------
+    fabula_anchor:
+        Cursor on the fabula axis; the snapshot helpers replay every
+        ``state_timeline`` entry up to and including this tick.
+    show_entities, show_objects, show_channels, show_locked:
+        Layer toggles. ``show_locked=False`` hides spatial edges
+        flagged ``is_locked``.
+    channel_window:
+        Show channel arcs for utterances whose ``fabula_time`` lies
+        within ``\u00b1channel_window`` of the cursor. ``0`` (the default
+        and the user-spec rule) renders an arc only when an utterance
+        fires *exactly* on the current tick.
+
+    Returns ``(nodes, links, categories)`` shaped for an ECharts
+    ``graph`` series. Categories are ``Location`` (0), ``Entity`` (1),
+    ``NarrativeObject`` (2). Off-stage / unknown-location entities and
+    objects are bucketed into pseudo-locations (rendered with a
+    distinct grey fill) so users can see them rather than have them
+    silently dropped from the canvas.
+    """
+    nodes: list[dict] = []
+    links: list[dict] = []
+    cats = [
+        {"name": "Location"},
+        {"name": "Entity"},
+        {"name": "NarrativeObject"},
+        {"name": "Event"},
+    ]
+
+    fabula_anchor = int(fabula_anchor)
+
+    # ── Locations (real + pseudo) ────────────────────────────────
+    used_pseudo_offstage = False
+    used_pseudo_unknown = False
+    real_loc_ids: set[str] = set()
+    for lid, loc in ws.locations.items():
+        real_loc_ids.add(lid)
+        tooltip = f"<b>{loc.name}</b>"
+        if loc.description:
+            tooltip += f"<br/>{loc.description[:120]}"
+        nodes.append({
+            "id": lid,
+            "name": loc.name,
+            "category": 0,
+            "symbolSize": 44,
+            "symbol": "roundRect",
+            "itemStyle": {
+                "color": NODE_COLORS["Location"],
+                "opacity": 0.85,
+                "borderColor": "#1e293b",
+                "borderWidth": 1,
+            },
+            "label": {"show": True, "position": "inside", "color": "#ffffff", "fontSize": 11},
+            "tooltip": {"formatter": tooltip},
+            "_sl_node_type": "Location",
+        })
+
+    def _ensure_offstage() -> str:
+        nonlocal used_pseudo_offstage
+        if not used_pseudo_offstage:
+            nodes.append({
+                "id": _MAP_OFFSTAGE_LOC_ID,
+                "name": "(off-stage)",
+                "category": 0,
+                "symbolSize": 36,
+                "symbol": "roundRect",
+                "itemStyle": {"color": "#475569", "opacity": 0.5},
+                "label": {"show": True, "position": "inside", "color": "#e2e8f0", "fontSize": 10},
+                "tooltip": {"formatter": "Entities/objects with no resolved location at this tick."},
+                "_sl_node_type": "Location",
+            })
+            used_pseudo_offstage = True
+        return _MAP_OFFSTAGE_LOC_ID
+
+    def _ensure_unknown() -> str:
+        nonlocal used_pseudo_unknown
+        if not used_pseudo_unknown:
+            nodes.append({
+                "id": _MAP_UNKNOWN_LOC_ID,
+                "name": "(unknown loc)",
+                "category": 0,
+                "symbolSize": 36,
+                "symbol": "roundRect",
+                "itemStyle": {"color": "#7c2d12", "opacity": 0.5},
+                "label": {"show": True, "position": "inside", "color": "#fed7aa", "fontSize": 10},
+                "tooltip": {"formatter": "References to LOC_ ids not present in this world."},
+                "_sl_node_type": "Location",
+            })
+            used_pseudo_unknown = True
+        return _MAP_UNKNOWN_LOC_ID
+
+    # ── Spatial edges between Locations ──────────────────────────
+    for se in ws.spatial_topology:
+        if se.destroyed_at_fabula is not None and int(se.destroyed_at_fabula) <= fabula_anchor:
+            continue
+        if se.established_at_fabula and int(se.established_at_fabula) > fabula_anchor:
+            continue
+        if se.is_locked and not show_locked:
+            continue
+        style = "dashed" if se.is_locked else "solid"
+        links.append({
+            "source": se.source_id,
+            "target": se.target_id,
+            "lineStyle": {
+                "color": EDGE_COLORS["connected_to"],
+                "width": 2,
+                "type": style,
+                "opacity": 0.6,
+            },
+            "symbol": ["none", "arrow" if not se.bidirectional else "none"],
+        })
+
+    # ── Entities resolved at the cursor ──────────────────────────
+    entity_loc: dict[str, str] = {}
+    if show_entities:
+        for ent_id, ent in ws.entities.items():
+            try:
+                snap = reconstruct_entity_at(ent, fabula_anchor)
+                resolved_loc = snap.get("location_id") or ent.location_id
+                resolved_status = snap.get("status") or ent.status
+            except Exception:
+                resolved_loc = ent.location_id
+                resolved_status = ent.status
+            if resolved_loc and resolved_loc in real_loc_ids:
+                anchor_loc = resolved_loc
+            elif resolved_loc:
+                anchor_loc = _ensure_unknown()
+            else:
+                anchor_loc = _ensure_offstage()
+            entity_loc[ent_id] = anchor_loc
+
+            colour = _MAP_STATUS_COLORS.get(resolved_status or "", "#94a3b8")
+            border = "#1e293b"
+            if resolved_status == "dead":
+                border = "#7f1d1d"
+            tooltip = (
+                f"<b>{ent.name}</b><br/>"
+                f"status: {resolved_status}<br/>"
+                f"loc: {resolved_loc or '(off-stage)'}"
+            )
+            nodes.append({
+                "id": ent_id,
+                "name": ent.name,
+                "category": 1,
+                "symbolSize": 14,
+                "symbol": "circle",
+                "itemStyle": {
+                    "color": colour,
+                    "borderColor": border,
+                    "borderWidth": 1.5,
+                    "opacity": 0.4 if resolved_status == "dead" else 1.0,
+                },
+                "label": {"show": False},
+                "tooltip": {"formatter": tooltip},
+                "_sl_node_type": "Entity",
+            })
+            # Invisible attractor link to the entity's resolved
+            # location so the force layout pulls the marker inside its
+            # location pill.
+            links.append({
+                "source": anchor_loc,
+                "target": ent_id,
+                "lineStyle": {"opacity": 0.0, "width": 0.5},
+                "_sl_attractor": True,
+            })
+
+    # ── Objects resolved at the cursor ───────────────────────────
+    if show_objects:
+        for obj_id, obj in ws.objects.items():
+            try:
+                snap = reconstruct_object_at(obj, fabula_anchor)
+            except Exception:
+                snap = {
+                    "location_id": obj.location_id,
+                    "owner_id": obj.owner_id,
+                    "properties": dict(obj.properties),
+                }
+            resolved_owner = snap.get("owner_id")
+            resolved_loc = snap.get("location_id")
+
+            if resolved_owner and resolved_owner in entity_loc:
+                anchor_id = resolved_owner
+                placement = f"held by {resolved_owner}"
+            elif resolved_loc and resolved_loc in real_loc_ids:
+                anchor_id = resolved_loc
+                placement = f"in {resolved_loc}"
+            elif resolved_owner:
+                # owner exists in the world but show_entities was off;
+                # fall back to the owner's resolved location if we can.
+                fallback = ws.entities.get(resolved_owner)
+                if fallback is not None and fallback.location_id in real_loc_ids:
+                    anchor_id = fallback.location_id
+                else:
+                    anchor_id = _ensure_offstage()
+                placement = f"held by {resolved_owner}"
+            elif resolved_loc:
+                anchor_id = _ensure_unknown()
+                placement = f"in {resolved_loc} (unknown)"
+            else:
+                anchor_id = _ensure_offstage()
+                placement = "off-stage"
+
+            props = snap.get("properties") or {}
+            prop_str = ", ".join(f"{k}={v}" for k, v in list(props.items())[:4])
+            tooltip = f"<b>{obj.name}</b><br/>{placement}"
+            if prop_str:
+                tooltip += f"<br/>{prop_str}"
+
+            nodes.append({
+                "id": obj_id,
+                "name": obj.name,
+                "category": 2,
+                "symbolSize": 9,
+                "symbol": "diamond",
+                "itemStyle": {
+                    "color": NODE_COLORS["NarrativeObject"],
+                    "borderColor": "#1e293b",
+                    "borderWidth": 1,
+                },
+                "label": {"show": False},
+                "tooltip": {"formatter": tooltip},
+                "_sl_node_type": "NarrativeObject",
+            })
+            links.append({
+                "source": anchor_id,
+                "target": obj_id,
+                "lineStyle": {"opacity": 0.0, "width": 0.5},
+                "_sl_attractor": True,
+            })
+
+    # ── Active channel arcs (utterance-driven) ───────────────────
+    if show_channels and show_entities:
+        window = max(0, int(channel_window))
+        for evt in ws.events or []:
+            if evt.event_type != "utterance":
+                continue
+            try:
+                evt_t = int(evt.fabula_time)
+            except Exception:
+                continue
+            if abs(evt_t - fabula_anchor) > window:
+                continue
+            speaker = evt.speaker_id
+            if not speaker:
+                # Fall back to first actor when speaker is unset.
+                speaker = next(iter(evt.actor_ids or []), None)
+            if not speaker or speaker not in ws.entities:
+                continue
+            addressees = [a for a in (evt.addressee_ids or []) if a in ws.entities]
+            if not addressees:
+                continue
+            # Channel lifecycle gating.
+            ch = ws.channels.get(evt.via_channel_id) if evt.via_channel_id else None
+            if ch is not None:
+                if ch.established_at_fabula and int(ch.established_at_fabula) > fabula_anchor:
+                    continue
+                if ch.terminated_at_fabula is not None and int(ch.terminated_at_fabula) <= fabula_anchor:
+                    continue
+            medium = ch.medium if ch is not None else "direct"
+            arc_colour = EDGE_COLORS.get("communicating_with", "#F5B43C")
+            content = (evt.content or evt.description or "").strip()
+            if len(content) > 120:
+                content = content[:117] + "\u2026"
+            for addr in addressees:
+                tip = (
+                    f"<b>utterance @ t={evt_t}</b><br/>"
+                    f"{speaker} \u2192 {addr}<br/>"
+                    f"medium: {medium}"
+                )
+                if content:
+                    tip += f"<br/><i>{content}</i>"
+                links.append({
+                    "source": speaker,
+                    "target": addr,
+                    "lineStyle": {
+                        "color": arc_colour,
+                        "width": 2.5,
+                        "type": "dashed",
+                        "curveness": 0.25,
+                        "opacity": 0.9,
+                    },
+                    "symbol": ["none", "arrow"],
+                    "symbolSize": 6,
+                    "tooltip": {"formatter": tip},
+                    "_sl_channel_arc": True,
+                })
+
+    # ── Event glyphs + co-presence highlights ─────────────────────
+    # PR 7 of EventNode.at_location_id. Render a star (★) glyph at
+    # every windowed event's resolved location; outline each bound
+    # participant in yellow when their reconstructed location matches
+    # the anchor, and in red dashed when it does NOT (a co-presence
+    # violation visible at a glance). Channel-mediated addressees are
+    # NOT highlighted as physical co-present — the channel arc above
+    # already encodes their virtual presence.
+    if show_events:
+        ev_window = max(0, int(event_window))
+        # Index entity nodes by id so we can mutate their itemStyle.
+        ent_nodes_by_id = {
+            n["id"]: n for n in nodes if n.get("category") == 1
+        }
+        for evt in ws.events or []:
+            try:
+                evt_t = int(evt.fabula_time)
+            except Exception:
+                continue
+            if abs(evt_t - fabula_anchor) > ev_window:
+                continue
+            try:
+                evt_loc = event_location_at(evt, ws, fallback="actor")
+            except Exception:
+                evt_loc = getattr(evt, "at_location_id", None)
+            if not evt_loc or evt_loc not in real_loc_ids:
+                continue
+
+            # Channel-mediated addressees are exempt from physical
+            # co-presence; everyone else bound by the event must be
+            # at ``evt_loc``.
+            via = getattr(evt, "via_channel_id", None)
+            ch = ws.channels.get(via) if via else None
+            channel_addressees: set[str] = set()
+            if ch is not None:
+                channel_addressees = set(evt.addressee_ids or [])
+            bound = set(evt.actor_ids or []) | (
+                set(evt.target_ids or []) - channel_addressees
+            )
+            speaker = getattr(evt, "speaker_id", None)
+            if speaker:
+                bound.add(speaker)
+
+            for pid in bound:
+                node = ent_nodes_by_id.get(pid)
+                if node is None:
+                    continue
+                # Where did the snapshot replay put them?
+                resolved = entity_loc.get(pid)
+                if resolved == evt_loc:
+                    # Correct co-presence — yellow border emphasis.
+                    node.setdefault("itemStyle", {})["borderColor"] = "#facc15"
+                    node["itemStyle"]["borderWidth"] = 2.5
+                else:
+                    # Phantom / displaced bound participant.
+                    node.setdefault("itemStyle", {})["borderColor"] = "#dc2626"
+                    node["itemStyle"]["borderWidth"] = 2.5
+                    node["itemStyle"]["borderType"] = "dashed"
+
+            # Star glyph at the event's anchor location.
+            desc = (evt.description or "").strip()
+            if len(desc) > 120:
+                desc = desc[:117] + "\u2026"
+            tip = (
+                f"<b>{evt.id}</b> ({evt.event_type}) @ t={evt_t}<br/>"
+                f"at {evt_loc}"
+            )
+            if desc:
+                tip += f"<br/>{desc}"
+            if channel_addressees:
+                tip += (
+                    "<br/><i>channel-mediated: "
+                    f"{', '.join(sorted(channel_addressees))}</i>"
+                )
+            event_node_id = f"__event_glyph__{evt.id}"
+            nodes.append({
+                "id": event_node_id,
+                "name": "\u2605",
+                "category": 3,
+                "symbol": "diamond",
+                "symbolSize": 12,
+                "itemStyle": {
+                    "color": "#facc15",
+                    "borderColor": "#a16207",
+                    "borderWidth": 1.0,
+                    "opacity": 0.95,
+                },
+                "label": {
+                    "show": True,
+                    "position": "inside",
+                    "color": "#1c1917",
+                    "fontSize": 12,
+                },
+                "tooltip": {"formatter": tip},
+                "_sl_node_type": "Event",
+            })
+            links.append({
+                "source": evt_loc,
+                "target": event_node_id,
+                "lineStyle": {"opacity": 0.0, "width": 0.5},
+                "_sl_attractor": True,
+            })
 
     return nodes, links, cats
 
@@ -4331,6 +4763,14 @@ def ws_to_event_rows(ws: WorldStateV1) -> list[dict]:
 
     rows: list[dict] = []
     for evt in sorted(ws.events, key=lambda e: e.fabula_time):
+        at_loc_id = getattr(evt, "at_location_id", None)
+        at_loc_name = "—"
+        if at_loc_id:
+            at_loc_name = (
+                ws.locations[at_loc_id].name
+                if at_loc_id in ws.locations
+                else at_loc_id
+            )
         rows.append({
             "id": evt.id,
             "fabula_time": evt.fabula_time,
@@ -4338,6 +4778,8 @@ def ws_to_event_rows(ws: WorldStateV1) -> list[dict]:
             "type": evt.event_type,
             "actors": ", ".join(_name_of(a) for a in evt.actor_ids) or "—",
             "targets": ", ".join(_name_of(t) for t in evt.target_ids) or "—",
+            "at_location": at_loc_name,
+            "at_location_id": at_loc_id,
             "description": evt.description,
             "world_id": evt.world_id,
             "superseded_by_event_id": getattr(evt, "superseded_by_event_id", None),

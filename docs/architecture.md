@@ -22,7 +22,7 @@ Pydantic v2 with `model_validator` constraints.
 | `Location` | `LOC_` | Spatial container with `ambient_state: Dict[str, AmbientVector]` (each ambient owns `value`, `volatility`, `evidence_strength`). |
 | `NarrativeObject` | `OBJ_` | Inanimate item with `affordances: List[Affordance]`. |
 | `Entity` | `ENT_` | Character / agent with `traits` (per-trait `TraitVector{value, inertia, evidence_strength}`), `beliefs`, `status`, `state_timeline`. |
-| `EventNode` | `EVT_` | Atomic happening anchored on both `fabula_time` and `syuzhet_index`. `event_type="utterance"` carries `content`, `speaker_id`, `addressee_ids`, `via_channel_id`, `truth_value`. |
+| `EventNode` | `EVT_` | Atomic happening anchored on both `fabula_time` and `syuzhet_index`, plus an optional `at_location_id` (the LOC_ where the event physically takes place; bound participants must be reconstructible there at `fabula_time` unless they are reaching the event through a `via_channel_id`). `event_type="utterance"` carries `content`, `speaker_id`, `addressee_ids`, `via_channel_id`, `truth_value`. |
 | `GlobalTrait` | `WORLD_` | World-level fact / law / regime ("magic system", "surveillance state"). `magnitude` is a `TraitVector` (`value`, `inertia`, `evidence_strength`). |
 | `Channel` | `CHN_` | Standing communication capability between participants. `medium`, `directionality` (`broadcast`/`duplex`/`simplex`), per-participant `intelligibility ∈ [0,1]` (replaces the legacy `is_encrypted` boolean), `established_at_fabula`, `terminated_at_fabula` (None while open). |
 

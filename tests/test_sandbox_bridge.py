@@ -226,3 +226,71 @@ class TestSocialDedupTieBreak:
         )
         result = _deduplicate_social([newer, older])
         assert result[0].metrics["affinity"].value == 0.9
+
+
+# =====================================================================
+# EVT_ at_location_id reveal (PR 6 of EventNode.at_location_id)
+# =====================================================================
+
+
+class TestEventLocationReveal:
+    def _ws(self):
+        from shadow_loom.models import EventNode, Location, WorldStateV1
+        return WorldStateV1(
+            locations={
+                "LOC_HALL": Location(name="Hall", description="d", ambient_state={}),
+                "LOC_GARDEN": Location(name="Garden", description="d", ambient_state={}),
+            },
+            objects={},
+            entities={},
+            events=[
+                EventNode(
+                    id="EVT_MEET", fabula_time=10, syuzhet_index=10,
+                    event_type="outcome", actor_ids=[],
+                    description="meet", at_location_id="LOC_HALL",
+                ),
+            ],
+            causal_topology=[],
+            world_traits={},
+        )
+
+    def test_bare_loc_value_rewrites_anchor(self):
+        ws = self._ws()
+        topo = ChunkTopology()
+        _augment_topology_with_sandbox_deltas(
+            topo, world_state=ws,
+            physics_result={"observation_facts": {"EVT_MEET": "LOC_GARDEN"}},
+            fabula_time_now=10,
+        )
+        assert ws.events[0].at_location_id == "LOC_GARDEN"
+
+    def test_at_prefix_value_rewrites_anchor(self):
+        ws = self._ws()
+        topo = ChunkTopology()
+        _augment_topology_with_sandbox_deltas(
+            topo, world_state=ws,
+            physics_result={"observation_facts": {"EVT_MEET": "at LOC_GARDEN"}},
+            fabula_time_now=10,
+        )
+        assert ws.events[0].at_location_id == "LOC_GARDEN"
+
+    def test_unknown_loc_skipped(self):
+        ws = self._ws()
+        topo = ChunkTopology()
+        _augment_topology_with_sandbox_deltas(
+            topo, world_state=ws,
+            physics_result={"observation_facts": {"EVT_MEET": "LOC_NONEXISTENT"}},
+            fabula_time_now=10,
+        )
+        assert ws.events[0].at_location_id == "LOC_HALL"
+
+    def test_unknown_event_id_skipped(self):
+        ws = self._ws()
+        topo = ChunkTopology()
+        _augment_topology_with_sandbox_deltas(
+            topo, world_state=ws,
+            physics_result={"observation_facts": {"EVT_GHOST": "LOC_GARDEN"}},
+            fabula_time_now=10,
+        )
+        # The known event is untouched.
+        assert ws.events[0].at_location_id == "LOC_HALL"

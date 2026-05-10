@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional, Literal, Set, Tuple
 import networkx as nx
 from pydantic import BaseModel, Field
 
-from shadow_loom.models import WorldStateV1, NarrativeStyle, reconstruct_entity_at, reconstruct_world_trait_at
+from shadow_loom.models import WorldStateV1, NarrativeStyle, reconstruct_entity_at, reconstruct_object_at, reconstruct_world_trait_at, event_location_at
 from shadow_loom.query_models import DirectiveQuery, DoTarget
 from shadow_loom.settings import (
     DirectiveAssemblySettings,
@@ -1516,6 +1516,232 @@ def compute_hidden_channels_for(
 # event carrying one of these tags is part of the world's *negative*
 # physics record — the renderer must not stage it as occurring.
 _PREVENTED_EVENT_TYPES = frozenset({"prevented", "never_happened", "removed"})
+
+
+def build_object_coherence_constraints(
+    world_state: WorldStateV1,
+    fabula_anchor: Optional[int],
+    *,
+    world_label: str = "this",
+) -> List[ConstraintBlock]:
+    """HARD constraints anchoring narrative objects to their physics state.
+
+    For every :class:`NarrativeObject` reconstructed at
+    ``fabula_anchor`` (using :func:`reconstruct_object_at`) emit a
+    constraint that names:
+      * the object's current ``location_id`` or ``owner_id`` (which-
+        ever applies), so the renderer cannot place it elsewhere;
+      * the object's ``affordances`` whitelist, so the renderer
+        cannot have a character perform an action the object does
+        not support (a poison can ``kill``, not ``read``).
+
+    Without these blocks, prose generation receives objects only as
+    free-text scene context, while entities receive *mathematical*
+    trait-trajectory constraints. The asymmetry routinely produced
+    drift — a dagger left in the kitchen reappearing in the bedroom,
+    a letter being "read aloud" when its only affordance is
+    ``inform`` (silent transmission). Mirrors the negative-physics
+    pattern used by ``build_prevented_event_constraints``.
+    """
+    if not getattr(world_state, "objects", None):
+        return []
+    blocks: List[ConstraintBlock] = []
+    for obj_id, obj in world_state.objects.items():
+        if fabula_anchor is not None and obj.state_timeline:
+            recon = reconstruct_object_at(obj, fabula_anchor)
+            location_id = recon["location_id"]
+            owner_id = recon["owner_id"]
+            properties = recon["properties"]
+        else:
+            location_id = obj.location_id
+            owner_id = obj.owner_id
+            properties = dict(obj.properties)
+        if owner_id:
+            position_clause = f"is in the possession of `{owner_id}`"
+        elif location_id:
+            position_clause = f"is located at `{location_id}`"
+        else:
+            # No declared position at this anchor — skip rather than emit
+            # a noisy "is somewhere" constraint that the renderer would
+            # have to ignore.
+            continue
+        affordance_actions = sorted({
+            (aff.action or "").strip().lower()
+            for aff in (obj.affordances or [])
+            if aff.action
+        })
+        affordance_clause = (
+            f" Its declared affordances are: {affordance_actions!r}; "
+            f"do NOT have any character perform an action on it that is "
+            f"not in this list."
+            if affordance_actions
+            else ""
+        )
+        prop_clause = (
+            f" Its current properties are {properties!r}; respect them "
+            f"(if `state` is `poisoned`, drinking from it is fatal; etc.)."
+            if properties else ""
+        )
+        blocks.append(ConstraintBlock(
+            constraint_type="spatial",
+            priority="hard",
+            instruction=(
+                f"In {world_label} world the object `{obj_id}` "
+                f"({obj.name}) {position_clause} at the scene's anchor. "
+                f"Do NOT place it elsewhere or have a character interact "
+                f"with it from a different location.{affordance_clause}"
+                f"{prop_clause}"
+            ),
+            evidence={
+                "object_id": obj_id,
+                "name": obj.name,
+                "location_id": location_id,
+                "owner_id": owner_id,
+                "affordances": affordance_actions,
+                "properties": properties,
+                "fabula_anchor": fabula_anchor,
+            },
+        ))
+    return blocks
+
+
+def build_event_copresence_constraints(
+    world_state: WorldStateV1,
+    fabula_anchor: Optional[int],
+    syuzhet_anchor: Optional[int],
+    *,
+    world_label: str = "this",
+    window: int = 1,
+) -> List[ConstraintBlock]:
+    """HARD constraints binding the prose to the engine's event-location
+    and co-presence ledger.
+
+    For every event in the scene window (``|fabula_time - fabula_anchor|
+    <= window`` AND ``syuzhet_index <= syuzhet_anchor`` when both are
+    set) that carries an ``at_location_id``, emit a single
+    ``ConstraintBlock`` naming three things the renderer must honour:
+
+      1. ``MUST_DEPICT_AT`` \u2014 the event happens at the named
+         location; do NOT relocate it.
+      2. ``MUST_BE_PRESENT`` \u2014 every actor + non-channel target is
+         physically present at that location at ``fabula_time``.
+         Channel-mediated participants (utterance with
+         ``via_channel_id`` set; addressees reached through that
+         channel) are exempt and listed separately.
+      3. ``MUST_NOT_BE_PRESENT`` \u2014 entities whose reconstructed
+         location at ``fabula_time`` is NOT the event's location
+         must NOT be staged at the event (no phantom witnesses).
+
+    The auditor's deterministic ``_event_copresence_violations``
+    pass consumes these constraints' ``evidence`` payloads.
+    """
+    if not getattr(world_state, "events", None):
+        return []
+    blocks: List[ConstraintBlock] = []
+    entities = world_state.entities or {}
+    locations = world_state.locations or {}
+    for evt in world_state.events:
+        loc_id = getattr(evt, "at_location_id", None)
+        if not loc_id:
+            continue
+        if syuzhet_anchor is not None and evt.syuzhet_index > syuzhet_anchor:
+            continue
+        if (
+            fabula_anchor is not None
+            and abs(int(evt.fabula_time) - int(fabula_anchor)) > window
+        ):
+            continue
+        loc_name = (
+            locations[loc_id].name
+            if loc_id in locations
+            else loc_id
+        )
+        # Resolve channel-mediated exemption.
+        channel_id = getattr(evt, "via_channel_id", None)
+        addressees = list(getattr(evt, "addressee_ids", None) or [])
+        actors = list(getattr(evt, "actor_ids", None) or [])
+        targets = list(getattr(evt, "target_ids", None) or [])
+        speaker = getattr(evt, "speaker_id", None)
+        if speaker and speaker not in actors:
+            actors = [speaker] + actors
+
+        bound_present: list[str] = []
+        channel_exempt: list[str] = []
+        seen_b: set[str] = set()
+        for pid in actors + targets + addressees:
+            if not pid or pid in seen_b:
+                continue
+            seen_b.add(pid)
+            # Speaker is always physically present at the event location;
+            # only addressees / non-speaker targets get the channel
+            # exemption.
+            if (
+                channel_id
+                and pid != speaker
+                and (pid in addressees or pid in targets)
+            ):
+                channel_exempt.append(pid)
+            else:
+                bound_present.append(pid)
+
+        # Phantom-witness ledger: entities whose reconstructed location
+        # at this event's fabula_time is NOT the event location.
+        must_not_be_present: list[dict[str, str]] = []
+        ft = int(evt.fabula_time)
+        for eid, ent in (entities.items() if isinstance(entities, dict) else []):
+            if eid in seen_b:
+                continue
+            try:
+                snap = reconstruct_entity_at(ent, ft)
+            except Exception:
+                continue
+            other_loc = snap.get("location_id") if isinstance(snap, dict) else None
+            if other_loc and other_loc != loc_id:
+                must_not_be_present.append({
+                    "entity_id": eid,
+                    "name": getattr(ent, "name", eid),
+                    "elsewhere_id": other_loc,
+                })
+
+        present_clause = (
+            f" The following must be physically present in the scene at "
+            f"`{loc_id}`: {bound_present!r}."
+            if bound_present else ""
+        )
+        channel_clause = (
+            f" The following are reached over channel `{channel_id}` and "
+            f"are NOT physically present at `{loc_id}`: {channel_exempt!r}; "
+            f"render their participation as channel-mediated (call, letter, "
+            f"telegram, mind-link, etc.)."
+            if channel_exempt else ""
+        )
+        absent_ids = [r["entity_id"] for r in must_not_be_present]
+        absent_clause = (
+            f" Do NOT stage these characters as present in the scene "
+            f"(they are elsewhere at fabula_time={ft}): {absent_ids!r}."
+            if absent_ids else ""
+        )
+        blocks.append(ConstraintBlock(
+            constraint_type="spatial",
+            priority="hard",
+            instruction=(
+                f"In {world_label} world, event `{evt.id}` "
+                f"({evt.event_type}) happens at `{loc_id}` ({loc_name}) "
+                f"at fabula_time={ft}. Do NOT relocate it.{present_clause}"
+                f"{channel_clause}{absent_clause}"
+            ),
+            evidence={
+                "event_id": evt.id,
+                "at_location_id": loc_id,
+                "fabula_time": ft,
+                "must_be_present": bound_present,
+                "channel_exempt": channel_exempt,
+                "via_channel_id": channel_id,
+                "must_not_be_present": absent_ids,
+                "must_not_be_present_detail": must_not_be_present,
+            },
+        ))
+    return blocks
 
 
 def build_prevented_event_constraints(
@@ -5310,6 +5536,40 @@ class DirectiveAssembler:
         ))
         constraints.extend(build_false_belief_grounding_constraints(
             self.world_state, syuzhet_anchor, world_label="this",
+        ))
+
+        # =============================================================
+        # OBJECT COHERENCE  (where each prop is + what it can do)
+        # =============================================================
+        # Translate syuzhet_anchor → fabula_anchor (max fabula_time of
+        # any event with syuzhet_index <= syuzhet_anchor) so
+        # ``reconstruct_object_at`` can walk each object's
+        # state_timeline to the correct tick. Falls back to None when
+        # the anchor is unset; the builder then uses the static
+        # initial position which is still better than nothing.
+        fabula_anchor: Optional[int] = None
+        if syuzhet_anchor is not None:
+            for evt in self.world_state.events:
+                if evt.syuzhet_index <= syuzhet_anchor and (
+                    fabula_anchor is None or evt.fabula_time > fabula_anchor
+                ):
+                    fabula_anchor = evt.fabula_time
+        constraints.extend(build_object_coherence_constraints(
+            self.world_state, fabula_anchor, world_label="this",
+        ))
+
+        # =============================================================
+        # EVENT CO-PRESENCE  (where each event happens + who is there)
+        # =============================================================
+        # PR 4 of EventNode.at_location_id. Pin every windowed event
+        # to its declared spatial anchor and cascade the implicit
+        # co-presence rule into MUST_BE_PRESENT / MUST_NOT_BE_PRESENT
+        # ledgers the auditor consumes deterministically.
+        constraints.extend(build_event_copresence_constraints(
+            self.world_state,
+            fabula_anchor,
+            syuzhet_anchor,
+            world_label="this",
         ))
 
         # =============================================================
