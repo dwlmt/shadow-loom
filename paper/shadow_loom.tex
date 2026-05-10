@@ -867,11 +867,24 @@ Given prose $P$, ingestion produces a $\mathcal{W}$ via:
 \item Five extraction agents over $P$ build a
       \texttt{GlobalRegister} of $\mathrm{WORLD}\_$, $\mathrm{ENT}\_$,
       $\mathrm{LOC}\_$, $\mathrm{OBJ}\_$ nodes plus a fuzzy alias
-      table. A single global \emph{proposition catalogue} pass
-      then mints $\mathrm{PROP}\_$ ids for every fact-claim the
-      story will need to track --- shared targets that downstream
-      utterances and beliefs reference rather than duplicating
-      free-text \texttt{perceived\_state}s.
+      table. A chunked-parallel \emph{proposition catalogue} pass
+      (Phase A3) then mints $\mathrm{PROP}\_$ ids for every
+      fact-claim the story will need to track --- shared targets
+      that downstream utterances and beliefs reference rather
+      than duplicating free-text \texttt{perceived\_state}s.
+      Per-chunk catalogues are union-deduped using both exact-string
+      and token-Jaccard ($\geq 0.75$) semantic match so
+      cosmetically-different phrasings of the same claim collapse
+      onto a single canonical $\mathrm{PROP}\_$ id; concern seeds
+      whose proposition collapsed are rewired onto the canonical
+      id rather than dropped. A second global pass (Phase A3b)
+      then sees the merged proposition list plus the entire
+      source text in a single window and emits the authoritative
+      $\mathrm{CCN}\_$ \emph{concern seed} set --- one
+      \texttt{(entity, proposition, polarity)} record per standing
+      fear or desire --- which the chunked stage tends to
+      under-emit because each chunk only sees a slice of the
+      character's arc.
 \item For each chunk, a Socratic Who/What/Where/When/Why/How
       scaffold dispatches three concurrent specialist agents:
       \emph{physics} (events, causal/spatial edges), \emph{social}
@@ -887,19 +900,37 @@ Given prose $P$, ingestion produces a $\mathcal{W}$ via:
       type constraints. The validator includes a temporal-coherence
       rule on utterances: see \S\ref{sec:utterance-temporal}.
 \item Three post-assembly passes complete the world model:
-      (a) \emph{concern extraction} per entity (standing fears
-      and desires that drive the affective-physics threat / hope
-      surfacing); (b) \emph{belief proposition clustering} (an
-      LLM clusters free-text \texttt{perceived\_state} strings
-      sharing a target into the catalogue's \texttt{PROP\_} ids);
-      (c) \emph{audience entity synthesis} ---
-      \texttt{\_maybe\_synthesise\_audience\_entity} constructs an
-      \texttt{ENT\_AUDIENCE} entity carrying graded belief
-      snapshots over each \texttt{Proposition} on the syuzhet
-      timeline. \texttt{ENT\_AUDIENCE} is what the propositional
-      affect scorers (\S\ref{sec:propositional}) read when
-      computing reader-side suspense, surprise, irony, and
-      mystery.
+      (a) \emph{concern extraction} per entity (gap-filler that
+      runs only for entities the catalogue's Phase A3b seeds
+      and the per-chunk affect agent's \texttt{new\_concern\_seeds}
+      did not already populate, so a single LLM call per
+      uncovered entity captures any standing fears or desires
+      missed upstream); (b) \emph{belief proposition clustering}
+      (an LLM clusters free-text \texttt{perceived\_state}
+      strings sharing a target into the catalogue's
+      \texttt{PROP\_} ids); (c) \emph{audience entity synthesis}
+      --- \texttt{\_maybe\_synthesise\_audience\_entity}
+      constructs an \texttt{ENT\_AUDIENCE} entity carrying
+      graded belief snapshots over each \texttt{Proposition} on
+      the syuzhet timeline. \texttt{ENT\_AUDIENCE} is what the
+      propositional affect scorers (\S\ref{sec:propositional})
+      read when computing reader-side suspense, surprise, irony,
+      and mystery.
+\item A deterministic \emph{Phase~C$'$} post-pass layer
+      (\texttt{apply\_post\_pass\_fixes}) closes documented LLM
+      gaps with no model cost: lexical $\mathrm{EVT}\_\!\to\!\mathrm{PROP}\_$
+      binding (token-overlap $\geq 3$ plus
+      $\mathrm{ENT}\_/\mathrm{OBJ}\_$ overlap) appends matching
+      event ids onto every \texttt{event\_occurs} / \texttt{outcome}
+      proposition with empty \texttt{EVT\_} referents;
+      \texttt{truth\_at\_fabula} is then synthesised from the
+      earliest referent event's fabula time; resolved concerns
+      are auto-closed; and a per-concern \emph{salience trajectory}
+      pass walks events touching each concern's proposition and
+      emits a salience spike at each touch plus a decay snapshot
+      at the proposition's earliest truth commit, restoring
+      per-concern dynamic range when the per-chunk affect agent
+      skipped a chunk or emitted no concern snapshots.
 \end{enumerate}
 
 \subsubsection{Utterance temporal coherence}

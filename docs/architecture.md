@@ -66,10 +66,12 @@ fear / desire about a specific proposition: `concern_id` (`CCN_*`),
 `proposition_id`, `polarity ∈ {desire, fear}`, `kind` (e.g.
 `betrayal`), `salience ∈ [0, 1]`, `activation_fabula_window`, and
 `counter_concern_ids` for ambivalence pairs (a character
-simultaneously *desiring* and *fearing* the same outcome). Both
-field families are populated either in Phase A3 (`Proposition
-Catalogue`) of ingestion or in the per-chunk Affect sub-stage
-(B4). Together they let the propositional / Bayesian affect
+simultaneously *desiring* and *fearing* the same outcome) — surfaced
+through the derived `Concern.ambivalence_score` property which
+returns `salience` when the concern is paired and `0.0` otherwise.
+Both field families are populated either in Phase A3 (`Proposition
+Catalogue`) / A3b (`Concern Catalogue`) of ingestion or in the
+per-chunk Affect sub-stage (B4). Together they let the propositional / Bayesian affect
 scorers in [`affect_unification.py`](../shadow_loom/affect_unification.py) reason
 about suspense / surprise / irony / mystery as belief-revision
 over named claims rather than only as graph-geometry of
@@ -105,16 +107,27 @@ Five LLM agents extract a `GlobalRegister` from prose:
 4. `extract_objects` → `OBJ_*` with affordances
 5. fuzzy-resolve cross-chunk references (handles aliasing, partial names)
 
-**A3 — Proposition catalogue.** A single global LLM pass
+**A3 — Proposition catalogue.** A chunked-parallel LLM pass
 (`extract_proposition_catalogue_async`) extracts every `Proposition`
 the narrative is *about* — outcome props (Will Macbeth become
-king? Will Linnet die?), trait/relation/identity claims, and a
-`ConcernSeed` list (per-entity polarity / salience anchored to a
-PROP id). The catalogue is laid down once with full-text
-attention so per-chunk extractors downstream can reference
-canonical PROP / CCN ids without re-defining them. Truth
-commitments and snapshot drift are deferred to the per-chunk
-Affect sub-stage (B4 in §2 below).
+king? Will Linnet die?), trait/relation/identity claims, and (as
+a hint) a partial `ConcernSeed` list per chunk. The chunked
+results are union-deduped by `_merge_catalogues` using both
+exact-string and **token-Jaccard ≥ 0.75** semantic match so
+cosmetically-different phrasings of the same claim collapse onto
+a single canonical PROP id; concern seeds whose proposition was
+collapsed are *rewired* onto the canonical id rather than dropped
+(May 2026 fix to the 0-seed catalogue regression).
+
+**A3b — Global concern catalogue.** A second global LLM pass
+(`extract_concern_catalogue_async`) runs immediately after A3
+sees the merged proposition list plus the entire source text in a
+single window, and emits the *authoritative* `ConcernSeed` set
+for every named character. The chunked-stage seeds are kept as a
+union fallback so an A3b call that misses a seed the chunked pass
+found is not a regression. Truth commitments and snapshot drift
+are still deferred to the per-chunk Affect sub-stage (B4 in §2
+below).
 
 ### Step 2: Topology extraction (per-chunk)
 
@@ -158,6 +171,16 @@ flashbacks and flashforwards are preserved across chunk boundaries instead
 of being re-sorted into reading order.
 
 After assembly completes and before validation, three async passes run over the assembled state: `extract_entity_concerns_async` populates each entity's `concerns` list from the proposition catalogue; `cluster_belief_propositions_async` groups raw belief targets into canonical `PROP_*` references so downstream affect scorers can reason over named claims; and `_maybe_synthesise_audience_entity` injects a reserved `ENT_AUDIENCE` entity (the omniscient-reader perspective) when no audience entity was already present in the register.
+
+**Phase C′ — deterministic narrative-quality post-passes** (`apply_post_pass_fixes`) run inside `reconcile_affect` after the catalogue + per-chunk affect outputs are folded onto the world. They close documented gaps in the LLM stages with no additional model cost:
+
+* `_post_pass_bind_events_to_propositions` — for each catalogue `event_occurs` / `outcome` proposition with no `EVT_` in `referent_ids`, lexically matches event descriptions (token-overlap ≥ 3 + ENT/OBJ overlap) and appends matching `EVT_` ids onto `referent_ids`. Without this, the catalogue's no-EVT-minting rule strands ~⅔ of outcome props with no truth commit (May 2026 Star Wars audit).
+* `_post_pass_synthesize_truth_commits` — derives `Proposition.truth_at_fabula` from the earliest `EVT_` referent's `fabula_time`.
+* `_post_pass_synthesize_audience_beliefs` — mirrors every committed truth onto the `ENT_AUDIENCE` belief stream.
+* `_post_pass_invalidate_contradicted_beliefs` — closes character beliefs that contradict a later truth commit.
+* `_post_pass_close_resolved_concerns` — auto-closes concerns whose anchor proposition has resolved.
+* `_post_pass_synthesize_concern_trajectory` — for every `Concern` with an empty `state_timeline`, walks events touching the concern's `proposition_id` and the holder entity, and emits a salience **spike** snapshot at each touch plus a **decay** snapshot at the proposition's earliest truth commit. Restores per-concern dynamic range when the per-chunk Affect agent skipped the chunk or emitted no concern snapshots.
+* `_post_pass_dedup_near_duplicate_events` and `_post_pass_infer_world_chain_reactions` — same-tick event collapse and lexical world-trait chain inference.
 
 `_programmatic_validation` runs `_validate_time_ordering`, which enforces four temporal invariants (contiguous unique `syuzhet_index`; reasonable `fabula_time` spacing; causal-edge cause-before-effect for `chain_reaction` edges; channel `established_at_fabula ≤ terminated_at_fabula`). A **fifth rule** (severity=error, category=temporal) was added for utterance temporal coherence: non-performative utterances (`truth_value ∈ {true, false, unknown}`) may not place `EVT_*` ids referring to future-fabula events in `target_ids` — if `target.fabula_time > utterance.fabula_time` the rule fires. Performative utterances (prophecies, vows, orders, declarations) are exempt because they posit or announce future states rather than report past ones; their downstream causal effects belong on `causal_topology` as `chain_reaction` edges, not in `target_ids`.
 
