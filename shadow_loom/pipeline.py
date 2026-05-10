@@ -2984,6 +2984,18 @@ def _run_answer_step(
         affected_beliefs=list(physics_result.get("affected_beliefs") or []) or None,
         affected_concerns=list(physics_result.get("affected_concerns") or []) or None,
         tragedy_form=physics_result.get("tragedy_form"),
+        # Phase-10: forward engine-emitted downstream cascades so the
+        # intervention / counterfactual Q&A answer agent can enumerate
+        # actual propagation rather than guess. (Interrogate keeps
+        # these as ``None`` because the physics path does not run a
+        # do-surgery there.)
+        mutations=list(physics_result.get("mutations") or []) or None,
+        social_mutations=list(physics_result.get("social_mutations") or []) or None,
+        proposition_mutations=list(physics_result.get("proposition_mutations") or []) or None,
+        belief_mutations=list(physics_result.get("belief_mutations") or []) or None,
+        concern_mutations=list(physics_result.get("concern_mutations") or []) or None,
+        blocked=list(physics_result.get("blocked") or []) or None,
+        causal_chain=list(physics_result.get("causal_chain") or []) or None,
     )
 
     physics_result["answer"] = card.answer
@@ -3148,6 +3160,15 @@ def _build_brief_for_query(
             affected_propositions=physics_result.get("affected_propositions"),
             affected_beliefs=physics_result.get("affected_beliefs"),
             affected_concerns=physics_result.get("affected_concerns"),
+            # Phase-10 downstream cascade payload — engine-emitted
+            # mutations/social/proposition/belief/concern records so
+            # the InterventionBranch sent to the renderer carries the
+            # actual propagation, not just ID lists.
+            social_mutations=physics_result.get("social_mutations"),
+            proposition_mutations=physics_result.get("proposition_mutations"),
+            belief_mutations=physics_result.get("belief_mutations"),
+            concern_mutations=physics_result.get("concern_mutations"),
+            causal_chain=physics_result.get("causal_chain"),
             syuzhet_anchor=syuzhet_anchor,
         )
     elif query.query_type == "counterfactual":
@@ -3170,6 +3191,17 @@ def _build_brief_for_query(
             affected_propositions=physics_result.get("affected_propositions"),
             affected_beliefs=physics_result.get("affected_beliefs"),
             affected_concerns=physics_result.get("affected_concerns"),
+            # Phase-10 downstream cascade payload (mirrors intervention
+            # rung above — without these the counterfactual prose
+            # silently skips engine-propagated consequences and lands
+            # too short).
+            mutations=physics_result.get("mutations"),
+            social_mutations=physics_result.get("social_mutations"),
+            proposition_mutations=physics_result.get("proposition_mutations"),
+            belief_mutations=physics_result.get("belief_mutations"),
+            concern_mutations=physics_result.get("concern_mutations"),
+            blocked=physics_result.get("blocked"),
+            causal_chain=physics_result.get("causal_chain"),
             syuzhet_anchor=syuzhet_anchor,
         )
     elif query.query_type == "directive":

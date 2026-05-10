@@ -443,7 +443,263 @@ def _format_threat_proximity(tp: ThreatProximity) -> str:
             "  AFFECTED CONCERNS (satisfaction or salience shifted): "
             + ", ".join(tp.affected_concerns)
         )
+    _emit_downstream_cascade_lines(tp, lines)
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------
+# Phase-10: shared downstream-consequence formatter
+# ---------------------------------------------------------------------
+#
+# The Rung-2 and Rung-3 surgeries propagate through the AMWN. The
+# engine records every trait/social/proposition/belief/concern mutation
+# that fired, and every propagation that was blocked by inertia / a
+# spatial affordance / a cycle / noisy-OR absorption. Without surfacing
+# these cascades the renderer only sees the surgery target (one node)
+# plus an id-list of "AFFECTED PROPOSITIONS / BELIEFS / CONCERNS",
+# which is why the prose lands too short and skips downstream
+# consequences. The helpers below render those cascades as
+# human-readable bullets that drop straight into the branch payload.
+#
+# Each formatter caps emitted lines (``_CASCADE_LINE_CAP``) so a noisy
+# propagation pass cannot blow out the prompt; the LLM still sees the
+# count and a "+ N more" hint when truncation fires.
+
+
+_CASCADE_LINE_CAP = 30
+
+
+def _format_trait_mutation_lines(
+    mutations: Optional[List[Dict[str, Any]]],
+) -> List[str]:
+    """Render TraitMutation dicts as ``ENT_X.fear: 0.30→0.65 (Δ+0.35, inertia=0.20)`` lines."""
+    if not mutations:
+        return []
+    out: List[str] = []
+    for m in mutations[:_CASCADE_LINE_CAP]:
+        node = m.get("node_id", "?")
+        trait = m.get("trait", "?")
+        old = m.get("old_value")
+        new = m.get("new_value")
+        impact = m.get("impact")
+        inertia = m.get("inertia")
+        try:
+            delta = float(new) - float(old)
+            sign = "+" if delta >= 0 else ""
+            out.append(
+                f"  {node}.{trait}: {float(old):.2f}\u2192{float(new):.2f} "
+                f"(\u0394{sign}{delta:.2f}"
+                + (f", impact={float(impact):.2f}" if impact is not None else "")
+                + (f", inertia={float(inertia):.2f}" if inertia is not None else "")
+                + ")"
+            )
+        except (TypeError, ValueError):
+            out.append(f"  {node}.{trait}: {old}\u2192{new}")
+    if len(mutations) > _CASCADE_LINE_CAP:
+        out.append(f"  ... + {len(mutations) - _CASCADE_LINE_CAP} more trait cascades")
+    return out
+
+
+def _format_social_mutation_lines(
+    mutations: Optional[List[Dict[str, Any]]],
+) -> List[str]:
+    """Render SocialMutation dicts as ``ENT_X→ENT_Y trust: +0.50→+0.20 (Δ-0.30)``."""
+    if not mutations:
+        return []
+    out: List[str] = []
+    for m in mutations[:_CASCADE_LINE_CAP]:
+        src = m.get("source_entity_id", "?")
+        tgt = m.get("target_entity_id", "?")
+        metric = m.get("metric", "?")
+        old = m.get("old_value")
+        new = m.get("new_value")
+        triggered_by = m.get("triggered_by")
+        try:
+            delta = float(new) - float(old)
+            sign = "+" if delta >= 0 else ""
+            line = (
+                f"  {src}\u2192{tgt} {metric}: {float(old):+.2f}\u2192{float(new):+.2f} "
+                f"(\u0394{sign}{delta:.2f})"
+            )
+        except (TypeError, ValueError):
+            line = f"  {src}\u2192{tgt} {metric}: {old}\u2192{new}"
+        if triggered_by:
+            line += f"  [from {triggered_by}]"
+        out.append(line)
+    if len(mutations) > _CASCADE_LINE_CAP:
+        out.append(f"  ... + {len(mutations) - _CASCADE_LINE_CAP} more relationship cascades")
+    return out
+
+
+def _format_proposition_mutation_lines(
+    mutations: Optional[List[Dict[str, Any]]],
+) -> List[str]:
+    """Render PropositionMutation dicts as ``PROP_X: False→True at t=120 (cascaded 3 beliefs)``."""
+    if not mutations:
+        return []
+    out: List[str] = []
+    for m in mutations[:_CASCADE_LINE_CAP]:
+        pid = m.get("proposition_id", "?")
+        old = m.get("old_truth")
+        new = m.get("new_truth")
+        ft = m.get("fabula_time")
+        cb = m.get("cascaded_belief_count", 0) or 0
+        head = f"  {pid}: {old}\u2192{new}"
+        if ft is not None:
+            head += f" at fabula_t={ft}"
+        if cb:
+            head += f" (cascaded {cb} belief update{'s' if cb != 1 else ''})"
+        out.append(head)
+    if len(mutations) > _CASCADE_LINE_CAP:
+        out.append(f"  ... + {len(mutations) - _CASCADE_LINE_CAP} more proposition cascades")
+    return out
+
+
+def _format_belief_mutation_lines(
+    mutations: Optional[List[Dict[str, Any]]],
+) -> List[str]:
+    """Render BeliefMutation dicts as ``ENT_X→ENT_Y conf: 0.30→0.80 (PROP_K via DO_OPERATOR)``."""
+    if not mutations:
+        return []
+    out: List[str] = []
+    for m in mutations[:_CASCADE_LINE_CAP]:
+        holder = m.get("holder_id", "?")
+        target = m.get("target_id", "?")
+        old = m.get("old_confidence")
+        new = m.get("new_confidence")
+        prop = m.get("proposition_id")
+        trig = m.get("triggered_by", "")
+        created = m.get("created", False)
+        try:
+            old_s = f"{float(old):.2f}" if old is not None else "(new)"
+            new_s = f"{float(new):.2f}"
+        except (TypeError, ValueError):
+            old_s, new_s = str(old), str(new)
+        line = f"  {holder}\u2192{target} conf: {old_s}\u2192{new_s}"
+        if prop:
+            line += f"  about {prop}"
+        if trig and trig != "DO_OPERATOR":
+            line += f"  (via {trig})"
+        if created:
+            line += "  [newly held]"
+        out.append(line)
+    if len(mutations) > _CASCADE_LINE_CAP:
+        out.append(f"  ... + {len(mutations) - _CASCADE_LINE_CAP} more belief cascades")
+    return out
+
+
+def _format_concern_mutation_lines(
+    mutations: Optional[List[Dict[str, Any]]],
+) -> List[str]:
+    """Render ConcernMutation dicts as ``ENT_X CCN_K salience: 0.40→0.90``."""
+    if not mutations:
+        return []
+    out: List[str] = []
+    for m in mutations[:_CASCADE_LINE_CAP]:
+        holder = m.get("holder_id", "?")
+        cid = m.get("concern_id", "?")
+        field = m.get("field", "?")
+        old = m.get("old_value")
+        new = m.get("new_value")
+        out.append(f"  {holder} {cid} {field}: {old}\u2192{new}")
+    if len(mutations) > _CASCADE_LINE_CAP:
+        out.append(f"  ... + {len(mutations) - _CASCADE_LINE_CAP} more concern cascades")
+    return out
+
+
+def _format_blocked_propagation_lines(
+    blocked: Optional[List[Dict[str, Any]]],
+) -> List[str]:
+    """Render BlockedPropagation dicts as ``ENT_X.fear blocked by inertia (impact=0.10, inertia=0.85)``."""
+    if not blocked:
+        return []
+    out: List[str] = []
+    for b in blocked[:_CASCADE_LINE_CAP]:
+        node = b.get("node_id", "?")
+        trait = b.get("trait", "?")
+        reason = b.get("reason", "unknown")
+        impact = b.get("impact")
+        inertia = b.get("inertia")
+        line = f"  {node}.{trait} blocked by {reason}"
+        if impact is not None and inertia is not None:
+            try:
+                line += f" (impact={float(impact):.2f}, inertia={float(inertia):.2f})"
+            except (TypeError, ValueError):
+                pass
+        out.append(line)
+    if len(blocked) > _CASCADE_LINE_CAP:
+        out.append(f"  ... + {len(blocked) - _CASCADE_LINE_CAP} more blocked propagations")
+    return out
+
+
+def _build_downstream_cascade_payload(
+    *,
+    mutations: Optional[List[Dict[str, Any]]] = None,
+    social_mutations: Optional[List[Dict[str, Any]]] = None,
+    proposition_mutations: Optional[List[Dict[str, Any]]] = None,
+    belief_mutations: Optional[List[Dict[str, Any]]] = None,
+    concern_mutations: Optional[List[Dict[str, Any]]] = None,
+    blocked: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, List[str]]:
+    """Bundle of pre-formatted cascade lines for InterventionBranch / CounterfactualBranch / ThreatProximity."""
+    return {
+        "downstream_trait_changes": _format_trait_mutation_lines(mutations),
+        "downstream_relationship_changes": _format_social_mutation_lines(social_mutations),
+        "proposition_cascade_detail": _format_proposition_mutation_lines(proposition_mutations),
+        "belief_cascade_detail": _format_belief_mutation_lines(belief_mutations),
+        "concern_cascade_detail": _format_concern_mutation_lines(concern_mutations),
+        "blocked_propagations_detail": _format_blocked_propagation_lines(blocked),
+    }
+
+
+def _emit_downstream_cascade_lines(branch: Any, lines: List[str]) -> None:
+    """Append the cascade sections from a branch onto a formatter line list.
+
+    ``branch`` is duck-typed: any object exposing the seven downstream-
+    cascade attributes added in directive_assembly. We use this from
+    :func:`_format_threat_proximity`, :func:`_format_intervention_branch`,
+    and :func:`_format_counterfactual` so all three rung-bearing
+    surfaces ground the prose in the engine's actual propagation log,
+    not just the surgery target.
+    """
+    sections = [
+        ("downstream_trait_changes",
+         "  DOWNSTREAM TRAIT CASCADES (do-surgery propagated through inertia):"),
+        ("downstream_relationship_changes",
+         "  DOWNSTREAM RELATIONSHIP CASCADES (social-tie metrics shifted):"),
+        ("proposition_cascade_detail",
+         "  PROPOSITION CASCADES (truth flips and cascaded belief updates):"),
+        ("belief_cascade_detail",
+         "  BELIEF CASCADES (per-holder confidence shifts):"),
+        ("concern_cascade_detail",
+         "  CONCERN CASCADES (utility salience / polarity / active shifts):"),
+        ("blocked_propagations_detail",
+         "  BLOCKED PROPAGATIONS (resistance prevented full cascade \u2014 render the resistance, do NOT silently skip the node):"),
+    ]
+    any_section = False
+    for attr, header in sections:
+        bullets = list(getattr(branch, attr, None) or [])
+        if not bullets:
+            continue
+        any_section = True
+        lines.append(header)
+        lines.extend(bullets)
+    chain = list(getattr(branch, "causal_chain", None) or [])
+    if chain:
+        any_section = True
+        lines.append(
+            "  CAUSAL CHAIN (events through which the surgery propagates "
+            "\u2014 render each link as an on-page beat):"
+        )
+        lines.append("    " + " \u2192 ".join(chain))
+    if any_section:
+        lines.append(
+            "  Rule: every cascade bullet above is a Rung-2/3 propagation "
+            "the engine actually fired. The prose must ground EACH one in "
+            "a concrete on-page event, utterance, sensory cue, or "
+            "behavioural shift \u2014 silently dropping a cascade will be "
+            "flagged as a miracle step by the auditor."
+        )
 
 
 def _format_intervention_branch(ib: InterventionBranch) -> str:
@@ -523,6 +779,7 @@ def _format_intervention_branch(ib: InterventionBranch) -> str:
         )
     if ib.tragedy_form:
         lines.append(f"  tragedy_form: {ib.tragedy_form}")
+    _emit_downstream_cascade_lines(ib, lines)
     lines.append(
         "  Rule: every node listed above is a Rung-2 sandbox flip. "
         "The prose must visibly ground each one in an on-page event "
@@ -890,6 +1147,7 @@ def _format_counterfactual(cf: CounterfactualBranch) -> str:
         if form_hedge:
             lines.append(form_hedge)
 
+    _emit_downstream_cascade_lines(cf, lines)
     return "\n".join(lines)
 
 
@@ -2594,6 +2852,185 @@ def _build_skipped_intervention_constraints(
     )]
 
 
+def _build_cascade_exclusion_constraints(
+    *,
+    blocked: Optional[List[Dict[str, Any]]],
+    rule3_pruned_interventions: Optional[List[str]],
+    mutations: Optional[List[Dict[str, Any]]] = None,
+    social_mutations: Optional[List[Dict[str, Any]]] = None,
+    proposition_mutations: Optional[List[Dict[str, Any]]] = None,
+    belief_mutations: Optional[List[Dict[str, Any]]] = None,
+    concern_mutations: Optional[List[Dict[str, Any]]] = None,
+    rule3_pruning_mode: Literal["advisory", "prune"] = "advisory",
+    world_label: str,
+    rung_label: str,
+) -> List[ConstraintBlock]:
+    """HARD pink-elephant EXCLUSIONS bounding the rendered cascade.
+
+    The complementary half of :func:`_emit_downstream_cascade_lines`
+    (which tells the renderer *what to render*). Three forbidden
+    categories, all rendered pink-elephant-safe \u2014 we name the
+    forbidden category by structural fingerprint (node + trait, edge
+    endpoints, ids) so the renderer knows which beat is off-limits
+    without being primed with the canonical phrasing of the forbidden
+    content.
+
+    Categories:
+
+    * **Cascade-bounded miracle prevention** \u2014 the engine's
+      propagation log is authoritative. Any downstream consequence
+      *not* enumerated in the cascade payload would be a miracle step
+      the auditor flags. We assert the bound rather than re-quote the
+      cascade (the cascade lines are emitted separately by the
+      ``intervention_branch`` / ``counterfactual_branch`` formatter,
+      and re-quoting them here would just bloat the prompt).
+    * **Blocked propagations** \u2014 the engine confirmed these targets
+      *resisted* the cascade. Naming the would-have-been new state in
+      the prose would silently undo the engine's verdict. We list
+      ``node.trait blocked by reason`` only \u2014 never the would-be
+      target value \u2014 so the renderer cannot pattern-match on the
+      blocked outcome.
+    * **Rule-3 pruned interventions** (counterfactual / intervention
+      pre-flight) \u2014 these surgeries are provably vacuous against
+      the user's query targets. The local clamp holds at the target
+      node, but the rest of the world is unchanged: no downstream
+      consequence may be invented for them. Advisory-mode pruning
+      surfaces the same list but as soft warning.
+    """
+    blocks: List[ConstraintBlock] = []
+
+    # 1. Cascade-bounded miracle prevention. Always emit when the
+    # engine produced any cascade at all (otherwise the renderer has
+    # no concrete cascade to bound against and the rule is vacuous).
+    cascade_present = bool(
+        mutations or social_mutations or proposition_mutations
+        or belief_mutations or concern_mutations
+    )
+    if cascade_present:
+        n_total = sum(len(x or []) for x in (
+            mutations, social_mutations, proposition_mutations,
+            belief_mutations, concern_mutations,
+        ))
+        blocks.append(ConstraintBlock(
+            constraint_type="mathematical",
+            priority="hard",
+            instruction=(
+                f"=== CASCADE-BOUNDED CONSEQUENCES (HARD) === \u2014 the "
+                f"{rung_label} surgery propagated exactly {n_total} "
+                f"downstream effect(s) listed under DOWNSTREAM TRAIT / "
+                f"RELATIONSHIP / PROPOSITION / BELIEF / CONCERN CASCADES "
+                f"in the {world_label} sandbox payload. That list is "
+                f"AUTHORITATIVE: render every cascade as a concrete "
+                f"on-page beat AND do NOT invent additional downstream "
+                f"effects beyond it. Any consequence the engine did not "
+                f"propagate would be a miracle step \u2014 the auditor "
+                f"flags both omitted cascades and invented consequences "
+                f"by counting the gap against this list."
+            ),
+            evidence={
+                "cascade_total": n_total,
+                "trait_count": len(mutations or []),
+                "social_count": len(social_mutations or []),
+                "proposition_count": len(proposition_mutations or []),
+                "belief_count": len(belief_mutations or []),
+                "concern_count": len(concern_mutations or []),
+            },
+        ))
+
+    # 2. Blocked-propagation pink-elephant block. Each blocked entry
+    # carries a "would-have-been" new_value; we deliberately do NOT
+    # surface it. The renderer is told the (node, trait) is forbidden
+    # to depict as changed, and that the *resistance* must be staged
+    # instead.
+    blocked_clean = [b for b in (blocked or []) if isinstance(b, dict)]
+    if blocked_clean:
+        lines = []
+        for b in blocked_clean[:25]:
+            node = b.get("node_id", "?")
+            trait = b.get("trait", "?")
+            reason = b.get("reason", "unknown")
+            lines.append(
+                f"  \u2022 {node}.{trait} \u2014 resistance: {reason}"
+            )
+        if len(blocked_clean) > 25:
+            lines.append(f"  \u2022 \u2026 + {len(blocked_clean) - 25} more.")
+        blocks.append(ConstraintBlock(
+            constraint_type="mathematical",
+            priority="hard",
+            instruction=(
+                f"=== BLOCKED PROPAGATIONS (HARD) === \u2014 the engine "
+                f"applied the {rung_label} cascade but the targets "
+                f"below RESISTED. They DID NOT reach the propagated "
+                f"state in the {world_label} world. Do NOT render any "
+                f"line that names, depicts, implies, or interiorises "
+                f"the (node, trait) below as having reached the new "
+                f"value \u2014 the would-have-been target is "
+                f"intentionally NOT shown to you so you cannot pattern-"
+                f"match on it. Render the RESISTANCE instead: the "
+                f"force, inertia, affordance constraint, or cyclic "
+                f"absorption that stopped the change from taking hold. "
+                f"The auditor cross-checks that no blocked target "
+                f"appears in its propagated state on-page.\n"
+                + "\n".join(lines)
+            ),
+            evidence={
+                "blocked_node_traits": [
+                    f"{b.get('node_id', '?')}.{b.get('trait', '?')}"
+                    for b in blocked_clean
+                ],
+            },
+        ))
+
+    # 3. Rule-3 pruned interventions. The local clamp holds at the
+    # target node, but downstream consequences are vacuous. In
+    # ``advisory`` mode the rule3 list is informational; in ``prune``
+    # mode the engine excised them and the renderer must treat them
+    # as if they were never applied.
+    pruned = list(rule3_pruned_interventions or [])
+    if pruned:
+        prune_mode_hard = rule3_pruning_mode == "prune"
+        lines = [f"  \u2022 {p}" for p in pruned[:25]]
+        if len(pruned) > 25:
+            lines.append(f"  \u2022 \u2026 + {len(pruned) - 25} more.")
+        if prune_mode_hard:
+            blocks.append(ConstraintBlock(
+                constraint_type="mathematical",
+                priority="hard",
+                instruction=(
+                    f"=== VACUOUS {rung_label} SURGERIES (HARD, Rule-3 "
+                    f"pruned) === \u2014 the do-surgeries below were "
+                    f"provably disconnected from the query's outcome "
+                    f"set on the AMWN. The local clamp at each target "
+                    f"holds in the {world_label} world, but NO "
+                    f"downstream consequence may be rendered for any "
+                    f"of them. Do NOT extend new effects to entities, "
+                    f"beliefs, or events not directly named by the "
+                    f"surgery target. The auditor flags any prose that "
+                    f"narrates a downstream effect traceable to a "
+                    f"pruned key.\n"
+                    + "\n".join(lines)
+                ),
+                evidence={"rule3_pruned_interventions": pruned},
+            ))
+        else:
+            blocks.append(ConstraintBlock(
+                constraint_type="mathematical",
+                priority="soft",
+                instruction=(
+                    f"VACUOUS {rung_label} SURGERIES (advisory, Rule-3 "
+                    f"flagged) \u2014 the do-surgeries below have no "
+                    f"directed path to the query outcomes. Renderer is "
+                    f"warned but not forced; the auditor will surface "
+                    f"any invented downstream consequence for these as "
+                    f"a soft finding.\n"
+                    + "\n".join(lines)
+                ),
+                evidence={"rule3_pruned_interventions": pruned},
+            ))
+
+    return blocks
+
+
 def _build_exclusion_constraints(
     pruned_utterance_event_ids: Optional[List[str]],
     disabled_channel_ids: Optional[List[str]],
@@ -2731,6 +3168,11 @@ def build_intervention_brief(
     affected_propositions: Optional[List[str]] = None,
     affected_beliefs: Optional[List[str]] = None,
     affected_concerns: Optional[List[str]] = None,
+    social_mutations: Optional[List[Dict[str, Any]]] = None,
+    proposition_mutations: Optional[List[Dict[str, Any]]] = None,
+    belief_mutations: Optional[List[Dict[str, Any]]] = None,
+    concern_mutations: Optional[List[Dict[str, Any]]] = None,
+    causal_chain: Optional[List[str]] = None,
     *,
     preceding_prose: Optional[str] = None,
     branch_world_id: Literal["factual", "shadow"] = "factual",
@@ -2921,6 +3363,26 @@ def build_intervention_brief(
         world_state,
         world_label="intervened",
     ))
+    # Pink-elephant cascade EXCLUSIONS: bound the rendered cascade
+    # to exactly the engine's propagation log, forbid depicting any
+    # blocked target in its propagated state, and (in prune mode)
+    # forbid downstream consequences for Rule-3 vacuous surgeries.
+    # The existing rule3 constraint above is broad-strokes advisory;
+    # this block names the forbidden categories pink-elephant-safely
+    # (no would-be value, no canonical wording) so both renderer and
+    # auditor enforce the same bound.
+    constraints.extend(_build_cascade_exclusion_constraints(
+        blocked=blocked,
+        rule3_pruned_interventions=None,  # already covered above
+        mutations=mutations,
+        social_mutations=social_mutations,
+        proposition_mutations=proposition_mutations,
+        belief_mutations=belief_mutations,
+        concern_mutations=concern_mutations,
+        rule3_pruning_mode=rule3_pruning_mode,
+        world_label="intervened",
+        rung_label="Rung-2 intervention",
+    ))
     # Negative-physics record: prevented events + false propositions.
     constraints.extend(_build_skipped_intervention_constraints(
         skipped_interventions,
@@ -3005,11 +3467,26 @@ def build_intervention_brief(
             affected_propositions=list(affected_propositions or []),
             affected_beliefs=list(affected_beliefs or []),
             affected_concerns=list(affected_concerns or []),
+            causal_chain=list(causal_chain or []),
+            **_build_downstream_cascade_payload(
+                mutations=mutations,
+                social_mutations=social_mutations,
+                proposition_mutations=proposition_mutations,
+                belief_mutations=belief_mutations,
+                concern_mutations=concern_mutations,
+                blocked=blocked,
+            ),
         ) if (
             getattr(query, "do_targets", None)
             or affected_propositions
             or affected_beliefs
             or affected_concerns
+            or mutations
+            or social_mutations
+            or proposition_mutations
+            or belief_mutations
+            or concern_mutations
+            or blocked
         ) else None,
         scene_context=(
             {**physics_state, "syuzhet_anchor": syuzhet_anchor}
@@ -3036,6 +3513,13 @@ def build_counterfactual_brief(
     affected_beliefs: Optional[List[str]] = None,
     affected_concerns: Optional[List[str]] = None,
     historical_do_targets: Optional[List[Dict[str, Any]]] = None,
+    mutations: Optional[List[Dict[str, Any]]] = None,
+    social_mutations: Optional[List[Dict[str, Any]]] = None,
+    proposition_mutations: Optional[List[Dict[str, Any]]] = None,
+    belief_mutations: Optional[List[Dict[str, Any]]] = None,
+    concern_mutations: Optional[List[Dict[str, Any]]] = None,
+    blocked: Optional[List[Dict[str, Any]]] = None,
+    causal_chain: Optional[List[str]] = None,
     *,
     preceding_prose: Optional[str] = None,
     branch_world_id: Literal["factual", "shadow"] = "factual",
@@ -3115,6 +3599,15 @@ def build_counterfactual_brief(
         affected_propositions=list(affected_propositions or []),
         affected_beliefs=list(affected_beliefs or []),
         affected_concerns=list(affected_concerns or []),
+        causal_chain=list(causal_chain or []),
+        **_build_downstream_cascade_payload(
+            mutations=mutations,
+            social_mutations=social_mutations,
+            proposition_mutations=proposition_mutations,
+            belief_mutations=belief_mutations,
+            concern_mutations=concern_mutations,
+            blocked=blocked,
+        ),
     )
 
     constraints = [
@@ -3231,6 +3724,21 @@ def build_counterfactual_brief(
         disabled_channel_ids,
         world_state,
         world_label="counterfactual",
+    ))
+    # Pink-elephant cascade EXCLUSIONS for Rung-3: same uniform
+    # bound as Rung-2 — render only the engine's propagation log,
+    # never depict blocked targets in their propagated state.
+    constraints.extend(_build_cascade_exclusion_constraints(
+        blocked=blocked,
+        rule3_pruned_interventions=None,  # covered elsewhere on this brief
+        mutations=mutations,
+        social_mutations=social_mutations,
+        proposition_mutations=proposition_mutations,
+        belief_mutations=belief_mutations,
+        concern_mutations=concern_mutations,
+        rule3_pruning_mode=rule3_pruning_mode,
+        world_label="counterfactual",
+        rung_label="Rung-3 counterfactual",
     ))
     # Negative-physics record: prevented events + false propositions.
     constraints.extend(_build_skipped_intervention_constraints(
@@ -3500,6 +4008,25 @@ def render_from_query(
             pruned_utterance_event_ids=physics_result.get("pruned_utterance_event_ids"),
             disabled_channel_ids=physics_result.get("disabled_channel_ids"),
             skipped_interventions=physics_result.get("skipped_interventions"),
+            # Phase-9 sandbox payload — typed surgery + flipped node id
+            # lists. Pipeline plumbing in ``pipeline._build_brief_for_query``
+            # already forwards these; mirror here so the direct
+            # ``render_from_query`` entry point produces the same
+            # rung-aware brief.
+            affected_propositions=physics_result.get("affected_propositions"),
+            affected_beliefs=physics_result.get("affected_beliefs"),
+            affected_concerns=physics_result.get("affected_concerns"),
+            # Phase-10 downstream cascade payload — engine-emitted
+            # SocialMutation / Proposition/Belief/Concern mutations.
+            # Without these, the InterventionBranch in the brief shows
+            # only the surgery target plus ID lists; the prose then
+            # lands too short and silently skips downstream effects
+            # the engine actually propagated.
+            social_mutations=physics_result.get("social_mutations"),
+            proposition_mutations=physics_result.get("proposition_mutations"),
+            belief_mutations=physics_result.get("belief_mutations"),
+            concern_mutations=physics_result.get("concern_mutations"),
+            causal_chain=physics_result.get("causal_chain"),
             preceding_prose=preceding_prose,
             branch_world_id=branch_world_id,
             branch_label=branch_label,
@@ -3520,6 +4047,20 @@ def render_from_query(
             pruned_utterance_event_ids=physics_result.get("pruned_utterance_event_ids"),
             disabled_channel_ids=physics_result.get("disabled_channel_ids"),
             skipped_interventions=physics_result.get("skipped_interventions"),
+            # Phase-9 sandbox payload (see intervention branch above
+            # for rationale).
+            affected_propositions=physics_result.get("affected_propositions"),
+            affected_beliefs=physics_result.get("affected_beliefs"),
+            affected_concerns=physics_result.get("affected_concerns"),
+            historical_do_targets=physics_result.get("historical_do_targets"),
+            # Phase-10 downstream cascade payload.
+            mutations=physics_result.get("mutations"),
+            social_mutations=physics_result.get("social_mutations"),
+            proposition_mutations=physics_result.get("proposition_mutations"),
+            belief_mutations=physics_result.get("belief_mutations"),
+            concern_mutations=physics_result.get("concern_mutations"),
+            blocked=physics_result.get("blocked"),
+            causal_chain=physics_result.get("causal_chain"),
             preceding_prose=preceding_prose,
             branch_world_id=branch_world_id,
             branch_label=branch_label,

@@ -280,6 +280,67 @@ class CounterfactualBranch(BaseModel):
             "between factual and counterfactual."
         ),
     )
+    # --- Downstream consequence cascades (Phase-10: rich brief) ---
+    # The Rung-3 surgery propagates through the AMWN. The engine
+    # records what mutated (TraitMutation / SocialMutation /
+    # Proposition/Belief/Concern mutations) and what was blocked by
+    # inertia. Surfacing these as human-readable bullets gives the
+    # renderer concrete consequences to ground prose in, instead of
+    # bare ID lists.
+    downstream_trait_changes: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Per-trait cascade lines (``ENT_X.fear: 0.30\u21920.65 "
+            "(impact=0.40, inertia=0.20)``) from the engine's "
+            "TraitMutation log under this counterfactual surgery."
+        ),
+    )
+    downstream_relationship_changes: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Per-axis social-tie cascade lines from SocialMutation "
+            "(``ENT_X\u2192ENT_Y trust: +0.50\u2192+0.20``)."
+        ),
+    )
+    proposition_cascade_detail: List[str] = Field(
+        default_factory=list,
+        description=(
+            "PropositionMutation detail lines including truth flip "
+            "direction and number of cascaded belief updates."
+        ),
+    )
+    belief_cascade_detail: List[str] = Field(
+        default_factory=list,
+        description=(
+            "BeliefMutation detail lines (holder, target, old\u2192new "
+            "confidence, triggering proposition)."
+        ),
+    )
+    concern_cascade_detail: List[str] = Field(
+        default_factory=list,
+        description=(
+            "ConcernMutation detail lines (holder, concern, field, "
+            "old\u2192new value)."
+        ),
+    )
+    blocked_propagations_detail: List[str] = Field(
+        default_factory=list,
+        description=(
+            "BlockedPropagation lines explaining why a cascade did "
+            "NOT take effect (inertia, spatial affordance, cycle, "
+            "noisy-OR absorbed) \u2014 the renderer must visibly "
+            "dramatise the resistance rather than skip the node."
+        ),
+    )
+    causal_chain: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Ordered list of EVT_ ids the surgery propagates through "
+            "on its way to the visible outcome \u2014 the prose must "
+            "render each link as an on-page beat, not skip from "
+            "surgery target to terminal consequence."
+        ),
+    )
     tragedy_form: Optional[Literal["tragic", "comic", "ironic", "neutral"]] = Field(
         default=None,
         description=(
@@ -363,6 +424,17 @@ class ThreatProximity(BaseModel):
             "whose salience changed under the intervention."
         ),
     )
+    # --- Downstream consequence cascades (Phase-10: rich brief) ---
+    # See :class:`CounterfactualBranch` for field semantics; mirrored
+    # here so an affective directive carrying Rung-2 surgery context
+    # surfaces the same cascade detail as a plain intervention brief.
+    downstream_trait_changes: List[str] = Field(default_factory=list)
+    downstream_relationship_changes: List[str] = Field(default_factory=list)
+    proposition_cascade_detail: List[str] = Field(default_factory=list)
+    belief_cascade_detail: List[str] = Field(default_factory=list)
+    concern_cascade_detail: List[str] = Field(default_factory=list)
+    blocked_propagations_detail: List[str] = Field(default_factory=list)
+    causal_chain: List[str] = Field(default_factory=list)
 
 
 class InterventionBranch(BaseModel):
@@ -421,6 +493,18 @@ class InterventionBranch(BaseModel):
             "whose salience changed under the intervention."
         ),
     )
+    # --- Downstream consequence cascades (Phase-10: rich brief) ---
+    # Mirror of the Rung-3 fields on :class:`CounterfactualBranch` so
+    # the Rung-2 sandbox brief surfaces the engine's actual cascade,
+    # not just the surgery target. See that class for field-by-field
+    # semantics.
+    downstream_trait_changes: List[str] = Field(default_factory=list)
+    downstream_relationship_changes: List[str] = Field(default_factory=list)
+    proposition_cascade_detail: List[str] = Field(default_factory=list)
+    belief_cascade_detail: List[str] = Field(default_factory=list)
+    concern_cascade_detail: List[str] = Field(default_factory=list)
+    blocked_propagations_detail: List[str] = Field(default_factory=list)
+    causal_chain: List[str] = Field(default_factory=list)
     tragedy_form: Optional[Literal["tragic", "comic", "ironic", "neutral"]] = Field(
         default=None,
         description=(
@@ -2343,8 +2427,25 @@ class DirectiveAssembler:
                        weight=w, mechanism=ce.mechanism)
         return g
 
+    # When set on the instance, overrides the syuzhet-anchored reveal
+    # set with a *fabula-anchored* one. Used by the fabula-sweep
+    # timeseries view: a single ``syuzhet_anchor`` cannot represent
+    # ``events with fabula_time \u2264 t`` when the author placed flashbacks
+    # (early-fabula events at late-syuzhet indices), so the sweep would
+    # incorrectly mark the whole story as "revealed" the moment the
+    # snapshot first contains any flashback target. Setting this
+    # attribute swaps the reveal predicate to ``fabula_time \u2264 fab``,
+    # which matches the physical-resolution semantics the sweep wants.
+    _fabula_anchor_override: Optional[int] = None
+
     def _revealed_event_ids(self, syuzhet_anchor: Optional[int]) -> set[str]:
         """Return IDs of events the reader has seen by *syuzhet_anchor*."""
+        fab = getattr(self, "_fabula_anchor_override", None)
+        if fab is not None:
+            return {
+                e.id for e in self.world_state.events
+                if e.fabula_time is not None and e.fabula_time <= fab
+            }
         if syuzhet_anchor is None:
             return {e.id for e in self.world_state.events}
         return {e.id for e in self.world_state.events
@@ -2696,7 +2797,9 @@ class DirectiveAssembler:
         of whether the excluded character had an epistemic gap,
         biasing the score upward by a fixed amount that never decayed.
         """
-        if syuzhet_anchor is None:
+        if syuzhet_anchor is None and getattr(
+            self, "_fabula_anchor_override", None
+        ) is None:
             return 0.0
 
         revealed = self._revealed_event_ids(syuzhet_anchor)
@@ -2771,7 +2874,12 @@ class DirectiveAssembler:
             for utt in self.world_state.events:
                 if utt.event_type != "utterance":
                     continue
-                if utt.syuzhet_index > syuzhet_anchor:
+                # Bound character knowledge by the reveal-set rather
+                # than a raw ``syuzhet_index`` compare, so the fabula
+                # sweep (which leaves ``syuzhet_anchor`` as ``None`` and
+                # uses ``_fabula_anchor_override`` instead) still gates
+                # the character's utterance knowledge correctly.
+                if utt.id not in revealed:
                     continue
                 if eid not in utt.addressee_ids and eid != utt.speaker_id:
                     continue
@@ -2897,6 +3005,15 @@ class DirectiveAssembler:
             )
 
             def _closure_proximity(evt) -> float:
+                # Closure proximity is a syuzhet-axis aesthetic
+                # (distance between the reader's current reading
+                # position and the future discourse position where the
+                # focal will hear the truth). Under a fabula sweep
+                # ``syuzhet_anchor`` is ``None`` and the concept does
+                # not transfer — fall back to the standing floor so the
+                # gap still contributes the base irony surface.
+                if syuzhet_anchor is None:
+                    return self._IRONY_PROXIMITY_FLOOR
                 target_fab = evt.fabula_time
                 later = min(
                     (s for s, f in participation_syuzhet
@@ -4398,7 +4515,9 @@ class DirectiveAssembler:
         measures, and which the existing test contract / directive
         optimiser expect as the default).
         """
-        if syuzhet_anchor is None:
+        if syuzhet_anchor is None and getattr(
+            self, "_fabula_anchor_override", None
+        ) is None:
             return 0.0  # reader knows everything → no surprise
 
         EPS = 0.01

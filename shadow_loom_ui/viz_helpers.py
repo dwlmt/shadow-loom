@@ -3469,6 +3469,7 @@ def _engine_structural_scores(
     syuzhet_anchor: int | None,
     *,
     surprise_local: bool = False,
+    fabula_anchor: int | None = None,
 ) -> dict[str, float]:
     """Run :class:`DirectiveAssembly`'s four structural affect scorers.
 
@@ -3500,6 +3501,14 @@ def _engine_structural_scores(
     except Exception:
         logger.debug("DirectiveAssembler init failed", exc_info=True)
         return out
+    # Fabula-anchored reveal-set override for the fabula timeseries
+    # sweep \u2014 see ``DirectiveAssembler._fabula_anchor_override``. When
+    # active we also force ``surprise_local=False`` because the local
+    # (Itti-Baldi per-step) form takes ``syuzhet_anchor - 1`` as the
+    # prior anchor, which has no meaning under a fabula reveal-set.
+    if fabula_anchor is not None:
+        assembler._fabula_anchor_override = int(fabula_anchor)
+        surprise_local = False
     metric_calls = (
         ("mystery", lambda eids, sa: assembler.compute_mystery_score(eids, sa)),
         ("dramatic_irony", lambda eids, sa: assembler.compute_dramatic_irony_score(eids, sa)),
@@ -3550,6 +3559,7 @@ def compute_affective_scores(
     syuzhet_anchor: int | None = None,
     ws_for_engine: WorldStateV1 | None = None,
     surprise_local: bool = False,
+    fabula_anchor: int | None = None,
 ) -> dict[str, float]:
     """Cached wrapper around :func:`_compute_affective_scores_uncached`.
 
@@ -3569,7 +3579,7 @@ def compute_affective_scores(
     eids_key = tuple(entity_ids) if entity_ids else ()
     engine_id = id(ws_for_engine) if ws_for_engine is not None else id(ws)
     cache_key = (id(ws), engine_id, _SNAPSHOT_REVISION, eids_key,
-                 syuzhet_anchor, surprise_local)
+                 syuzhet_anchor, surprise_local, fabula_anchor)
     cached = _AFFECT_SCORE_CACHE.get(cache_key)
     if cached is not None:
         return dict(cached)
@@ -3579,6 +3589,7 @@ def compute_affective_scores(
         syuzhet_anchor=syuzhet_anchor,
         ws_for_engine=ws_for_engine,
         surprise_local=surprise_local,
+        fabula_anchor=fabula_anchor,
     )
     if len(_AFFECT_SCORE_CACHE) >= _AFFECT_CACHE_MAX:
         _AFFECT_SCORE_CACHE.pop(next(iter(_AFFECT_SCORE_CACHE)))
@@ -3593,6 +3604,7 @@ def _compute_affective_scores_uncached(
     syuzhet_anchor: int | None = None,
     ws_for_engine: WorldStateV1 | None = None,
     surprise_local: bool = False,
+    fabula_anchor: int | None = None,
 ) -> dict[str, float]:
     """Compute basic affective/narrative scores from a world snapshot.
 
@@ -3743,7 +3755,7 @@ def _compute_affective_scores_uncached(
     # above still see the time-sliced relationship state.
     if entity_ids:
         engine_ws = ws_for_engine if ws_for_engine is not None else ws
-        if syuzhet_anchor is None:
+        if syuzhet_anchor is None and fabula_anchor is None:
             # Default: anchor *before* the first reveal so the entire
             # event list counts as the unrevealed tail. Anchoring at
             # ``max(syuzhet_index)`` (a previous version of this branch)
@@ -3753,6 +3765,13 @@ def _compute_affective_scores_uncached(
             # zeroing both scores on every unanchored snapshot. Using
             # ``min - 1`` keeps the reader at the narrative threshold
             # so the structural affects retain their full contrast.
+            #
+            # Skipped when ``fabula_anchor`` is supplied — in that case
+            # the scorers consult ``_fabula_anchor_override`` for their
+            # reveal-set and ``syuzhet_anchor`` must stay ``None`` so
+            # each scorer's internal ``is None`` branches route through
+            # the fabula-aware path instead of treating syuzhet=0 as a
+            # literal reader cursor at the start of the discourse.
             min_s = min(
                 (e.syuzhet_index for e in engine_ws.events), default=None
             )
@@ -3760,6 +3779,7 @@ def _compute_affective_scores_uncached(
         engine = _engine_structural_scores(
             engine_ws, entity_ids, syuzhet_anchor,
             surprise_local=surprise_local,
+            fabula_anchor=fabula_anchor,
         )
         scores.update(engine)
     return scores
@@ -3942,23 +3962,29 @@ def affective_timeseries(
     series: dict[str, list[float]] = {}
     for i, t in enumerate(times):
         snap = snapshot_world_at(ws, t)
-        # Reader's syuzhet position at fabula time t = the latest syuzhet
-        # index among events that have already happened in story-time.
         # The engine layer (suspense / mystery / dramatic_irony /
         # surprise) is run against the full ``ws`` rather than ``snap``
         # so its set-theoretic operands (``unrevealed``, ``hidden
-        # ancestors``, ``future trait state``) are non-empty — see the
+        # ancestors``, ``future trait state``) are non-empty \u2014 see the
         # block in ``_compute_affective_scores_uncached`` that consumes
         # ``ws_for_engine`` for the theory rationale.
-        anchor = max(
-            (e.syuzhet_index for e in snap.events), default=None,
-        )
+        #
+        # We pass ``fabula_anchor=t`` (and *not* a derived
+        # ``syuzhet_anchor``) so the engine's reveal-set is anchored on
+        # the fabula sweep's physical resolution semantics. Deriving a
+        # syuzhet anchor as ``max(syuzhet_index)`` over snap.events
+        # is incorrect when the author placed flashbacks (early-fabula
+        # events at late-syuzhet indices) \u2014 a single flashback in the
+        # opening fabula window would mark every later-syuzhet event
+        # as "revealed" and zero out suspense / surprise across the
+        # rest of the timeline.
         scores = compute_affective_scores(
             snap,
             entity_ids=entity_ids,
-            syuzhet_anchor=anchor,
+            syuzhet_anchor=None,
             ws_for_engine=ws,
             surprise_local=True,
+            fabula_anchor=t,
         )
         # Back-pad any newly-discovered metric so its column lines up
         # with previous time samples (missing = 0.0).

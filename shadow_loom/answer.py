@@ -667,6 +667,19 @@ def answer_question(
     affected_beliefs: Optional[List[str]] = None,
     affected_concerns: Optional[List[str]] = None,
     tragedy_form: Optional[str] = None,
+    # Phase-10: downstream consequence cascades. The intervention /
+    # counterfactual Q&A path historically only saw affected-id lists,
+    # so the agent could not enumerate cascading consequences. Mirror
+    # the engine-emitted mutation logs the generation brief now
+    # carries so the AnswerCard cites the actual propagation chain
+    # rather than a one-line surgery summary.
+    mutations: Optional[List[Dict[str, Any]]] = None,
+    social_mutations: Optional[List[Dict[str, Any]]] = None,
+    proposition_mutations: Optional[List[Dict[str, Any]]] = None,
+    belief_mutations: Optional[List[Dict[str, Any]]] = None,
+    concern_mutations: Optional[List[Dict[str, Any]]] = None,
+    blocked: Optional[List[Dict[str, Any]]] = None,
+    causal_chain: Optional[List[str]] = None,
 ) -> AnswerCard:
     """Answer a Q&A question using the supplied world-state slice.
 
@@ -754,6 +767,42 @@ def answer_question(
             user_msg_parts.append(
                 f"NARRATIVE FORM: {tragedy_form} \u2014 apply the matching "
                 "closing register per the system prompt."
+            )
+        # Phase-10: surface the engine-emitted downstream cascades so
+        # the answer agent can enumerate the actual propagation rather
+        # than guess "this surgery would affect X". Without this the
+        # AnswerCard.answer landed short and missed cascading effects
+        # the engine had already computed.
+        from shadow_loom.generation import (
+            _format_trait_mutation_lines,
+            _format_social_mutation_lines,
+            _format_proposition_mutation_lines,
+            _format_belief_mutation_lines,
+            _format_concern_mutation_lines,
+            _format_blocked_propagation_lines,
+        )
+        cascade_sections = [
+            ("DOWNSTREAM TRAIT CASCADES",
+             _format_trait_mutation_lines(mutations)),
+            ("DOWNSTREAM RELATIONSHIP CASCADES",
+             _format_social_mutation_lines(social_mutations)),
+            ("PROPOSITION CASCADES",
+             _format_proposition_mutation_lines(proposition_mutations)),
+            ("BELIEF CASCADES",
+             _format_belief_mutation_lines(belief_mutations)),
+            ("CONCERN CASCADES",
+             _format_concern_mutation_lines(concern_mutations)),
+            ("BLOCKED PROPAGATIONS",
+             _format_blocked_propagation_lines(blocked)),
+        ]
+        for header, bullets in cascade_sections:
+            if bullets:
+                user_msg_parts.append(f"{header}:")
+                user_msg_parts.extend(bullets)
+        if causal_chain:
+            user_msg_parts.append(
+                "CAUSAL CHAIN (events through which the surgery "
+                "propagates): " + " \u2192 ".join(causal_chain)
             )
     if branch_world_id == "shadow" and factual_contrast_summary:
         user_msg_parts.extend([

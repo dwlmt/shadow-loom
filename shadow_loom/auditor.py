@@ -352,6 +352,15 @@ class AuditViolation(BaseModel):
         "channel_intelligibility_violation",
         "withheld_utterance_leak",
         "belief_provenance_contradiction",
+        # ctf-calculus exclusion leaks (Rung-2 / Rung-3 do-surgery
+        # bookkeeping). Each maps to a HARD ``ConstraintBlock`` the
+        # brief builder emitted; the deterministic auditor pass scans
+        # prose for verbatim/structural breaches so the refinement
+        # loop cannot converge on output that contradicts the
+        # engine's exclusion ledger.
+        "pruned_utterance_leak",
+        "disabled_channel_leak",
+        "blocked_propagation_leak",
         # Source-style fidelity (NarrativeStyle profile from ingestion).
         "style_mismatch",
         # Meta-narration: prose comments on its own structure (timelines,
@@ -2417,6 +2426,181 @@ def _withheld_utterance_leak_violations(
     return issues
 
 
+def _cascade_exclusion_leak_violations(
+    prose: str,
+    brief: CreativeBrief,
+    world_state: Optional[WorldStateV1],
+) -> List[AuditViolation]:
+    """Deterministic scan for ctf-calculus EXCLUSION leaks.
+
+    Walks ``brief.constraints`` for the HARD blocks emitted by
+    :func:`shadow_loom.generation._build_exclusion_constraints` and
+    :func:`shadow_loom.generation._build_cascade_exclusion_constraints`
+    and verifies the prose did not breach them. Three independent
+    checks, each high-precision (substring length \u2265 12 / explicit
+    id-token match) so the refinement loop never chases false
+    positives:
+
+    * **pruned_utterance_leak** \u2014 do-surgery severed the
+      utterance's provenance; its canonical content must not
+      surface verbatim in the {intervened, counterfactual} branch.
+    * **disabled_channel_leak** \u2014 the channel id was severed by
+      do-surgery; prose must not name the ``CHN_`` token nor route
+      a line through it.
+    * **blocked_propagation_leak** \u2014 the engine's propagation
+      log marked ``(node, trait)`` as resisted; a sentence that
+      co-mentions node+trait is flagged for triage.
+
+    The check is a no-op when ``world_state`` is missing or the brief
+    carries no exclusion constraints.
+    """
+    if not prose or brief is None or world_state is None:
+        return []
+    issues: List[AuditViolation] = []
+    prose_lower = prose.lower()
+
+    pruned_utt_ids: List[str] = []
+    disabled_chan_ids: List[str] = []
+    blocked_pairs: List[str] = []
+    for c in (brief.constraints or []):
+        ev = getattr(c, "evidence", None) or {}
+        if not isinstance(ev, dict):
+            continue
+        pruned_utt_ids.extend(ev.get("pruned_utterance_event_ids", []) or [])
+        disabled_chan_ids.extend(ev.get("disabled_channel_ids", []) or [])
+        blocked_pairs.extend(ev.get("blocked_node_traits", []) or [])
+
+    # 1. Pruned utterance content leaks (verbatim, >=12 chars).
+    if pruned_utt_ids:
+        events_by_id = {e.id: e for e in getattr(world_state, "events", []) or []}
+        seen: set[str] = set()
+        for uid in pruned_utt_ids:
+            evt = events_by_id.get(uid)
+            if evt is None:
+                continue
+            content = (getattr(evt, "content", None) or "").strip()
+            if len(content) < 12:
+                continue
+            needle = content.lower()
+            if needle in prose_lower and needle not in seen:
+                seen.add(needle)
+                issues.append(AuditViolation(
+                    violation_type="pruned_utterance_leak",
+                    severity="critical",
+                    description=(
+                        f"Prose verbatim quotes do-surgery-pruned utterance "
+                        f"{uid}; the line was severed by the do-calculus "
+                        f"surgery and must not exist in this branch."
+                    ),
+                    evidence_quote=content[:200],
+                    feedback=(
+                        f"Remove the line attributed to "
+                        f"{getattr(evt, 'speaker_id', 'unknown')}. "
+                        f"This utterance's provenance was severed by the "
+                        f"do-surgery; if the same speaker/addressee pair "
+                        f"would still talk, invent a NEW line about a "
+                        f"DIFFERENT subject consistent with the changed "
+                        f"conditions."
+                    ),
+                ))
+
+    # 2. Disabled channel id / name leaks.
+    if disabled_chan_ids:
+        chans = getattr(world_state, "channels", {}) or {}
+        seen_ch: set[str] = set()
+        for cid in disabled_chan_ids:
+            if not cid or cid in seen_ch:
+                continue
+            if cid in prose:  # case-sensitive: CHN_ is uppercase
+                seen_ch.add(cid)
+                issues.append(AuditViolation(
+                    violation_type="disabled_channel_leak",
+                    severity="critical",
+                    description=(
+                        f"Prose names disabled channel {cid}; the do-"
+                        f"surgery severed this channel and it does not "
+                        f"exist in this branch."
+                    ),
+                    evidence_quote=cid,
+                    feedback=(
+                        f"Remove every reference to {cid}. Route the "
+                        f"affected speech act through a different "
+                        f"channel (or omit it) consistent with the "
+                        f"intervened/counterfactual world."
+                    ),
+                ))
+                continue
+            ch = chans.get(cid) if isinstance(chans, dict) else None
+            name = getattr(ch, "name", None) if ch is not None else None
+            if isinstance(name, str) and len(name) >= 6:
+                low = name.lower()
+                if low in prose_lower and low not in seen_ch:
+                    seen_ch.add(low)
+                    issues.append(AuditViolation(
+                        violation_type="disabled_channel_leak",
+                        severity="major",
+                        description=(
+                            f"Prose names disabled channel "
+                            f"\"{name}\" ({cid}); the do-surgery severed "
+                            f"this channel."
+                        ),
+                        evidence_quote=name,
+                        feedback=(
+                            f"Drop the reference to \"{name}\". The "
+                            f"channel was severed by the do-surgery."
+                        ),
+                    ))
+
+    # 3. Blocked propagation leaks: per-sentence node+trait co-mention.
+    if blocked_pairs:
+        ent_names: Dict[str, str] = {}
+        for store_attr in ("entities", "objects", "locations", "world_traits"):
+            store = getattr(world_state, store_attr, None) or {}
+            if isinstance(store, dict):
+                for nid, node in store.items():
+                    nm = getattr(node, "name", None)
+                    if isinstance(nm, str) and nm.strip():
+                        ent_names[nid] = nm.strip()
+        sentences = re.split(r"(?<=[.!?])\s+", prose)
+        seen_pairs: set[str] = set()
+        for pair in blocked_pairs:
+            if "." not in pair or pair in seen_pairs:
+                continue
+            node_id, trait = pair.split(".", 1)
+            trait_low = trait.replace("_", " ").lower().strip()
+            if len(trait_low) < 4:
+                continue
+            name_low = ent_names.get(node_id, "").lower()
+            for sent in sentences:
+                sl = sent.lower()
+                node_hit = (
+                    node_id in sent
+                    or (len(name_low) >= 3 and name_low in sl)
+                )
+                if node_hit and trait_low in sl:
+                    seen_pairs.add(pair)
+                    issues.append(AuditViolation(
+                        violation_type="blocked_propagation_leak",
+                        severity="major",
+                        description=(
+                            f"Prose names blocked propagation target "
+                            f"{pair}; the engine recorded this "
+                            f"(node, trait) as resisted \u2014 the "
+                            f"propagated state must not be depicted."
+                        ),
+                        evidence_quote=sent.strip()[:200],
+                        feedback=(
+                            f"Render the RESISTANCE for {pair}, not "
+                            f"the propagated state. Show the force, "
+                            f"inertia, or affordance constraint that "
+                            f"stopped the change from taking hold."
+                        ),
+                    ))
+                    break
+
+    return issues
+
+
 def _undeclared_element_violations(
     prose: str,
     world_state: Optional[WorldStateV1],
@@ -2727,6 +2911,26 @@ def run_audit(
         audit.audit_summary = (
             f"{audit.audit_summary} [+{len(undeclared)} undeclared "
             f"element(s)]"
+        ).strip()
+
+    # Deterministic ctf-calculus EXCLUSION leak check. Pulls evidence
+    # ids from the HARD ConstraintBlocks emitted by
+    # ``_build_exclusion_constraints`` /
+    # ``_build_cascade_exclusion_constraints`` and flags pruned
+    # utterance content, severed channel references, and blocked
+    # (node, trait) co-mentions. Mirrors the pink-elephant boundary
+    # the renderer was forbidden from crossing so the auditor cannot
+    # converge on prose that contradicts the engine's exclusion
+    # ledger.
+    cascade_leaks = _cascade_exclusion_leak_violations(
+        prose, brief, world_state,
+    )
+    if cascade_leaks:
+        audit.violations = list(audit.violations) + cascade_leaks
+        audit.passed = False
+        audit.audit_summary = (
+            f"{audit.audit_summary} [+{len(cascade_leaks)} ctf-calculus "
+            f"exclusion leak(s)]"
         ).strip()
 
     logger.info(

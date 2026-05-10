@@ -13985,6 +13985,155 @@ def _programmatic_validation(ws: WorldStateV1) -> List[ValidationIssue]:
                 ),
             ))
 
+    # --- E1.k WORLD_ trait causal + affective integration check ---
+    #
+    # A WORLD_ trait that is declared but never *acts* on the rest of
+    # the world is dead weight: the runtime physics has nothing to
+    # propagate through it, abduction cannot key on it, and downstream
+    # affect (belief / concern / proposition) never feels its pressure.
+    # The 2026-05-08 ingestion audit found this is the dominant cause
+    # of WORLD_ traits looking richer in the register than they behave
+    # in the simulation \u2014 authors record an ambient force in the
+    # description but never wire it.
+    #
+    # We require every WORLD_ trait to clear at least one of:
+    #
+    #   (a) **Causal integration** \u2014 referenced as either source
+    #       or target on a ``causal_topology`` edge (chain_reaction,
+    #       affordance_gate, mutation, mutation_social, abduction). A
+    #       WORLD_ that is never on any edge cannot influence
+    #       anything via the engine.
+    #   (b) **Event participation** \u2014 referenced in the
+    #       ``actor_ids`` / ``target_ids`` / ``location_id`` of any
+    #       EventNode. (Rare but legitimate: an event can target a
+    #       global state.)
+    #   (c) **Affective integration** \u2014 named in
+    #       ``Proposition.referent_ids`` of at least one Proposition
+    #       that some entity holds a Belief or Concern about. This
+    #       routes the WORLD_ trait through the affect substrate even
+    #       if it does not act through the causal engine directly.
+    #   (d) **Direct belief target** \u2014 some
+    #       ``Belief.target_id`` matches the WORLD_ id (legacy /
+    #       pre-proposition belief shape).
+    #
+    # WORLD_ traits that satisfy NONE of these are surfaced as
+    # warnings (not errors) so a deliberately-passive backdrop trait
+    # still passes ingestion; the LLM correction agent can promote
+    # the warning into a concrete repair (add a chain_reaction edge
+    # from the trait to the most semantically-related event, or
+    # bind the trait into a referent of an existing proposition).
+    if ws.world_traits:
+        causal_world_refs: set[str] = set()
+        for ce in ws.causal_topology:
+            if ce.source_id.startswith("WORLD_"):
+                causal_world_refs.add(ce.source_id)
+            if ce.target_id.startswith("WORLD_"):
+                causal_world_refs.add(ce.target_id)
+
+        event_world_refs: set[str] = set()
+        for evt in ws.events:
+            for tid in (
+                list(getattr(evt, "actor_ids", []) or [])
+                + list(getattr(evt, "target_ids", []) or [])
+            ):
+                if isinstance(tid, str) and tid.startswith("WORLD_"):
+                    event_world_refs.add(tid)
+            loc_id = getattr(evt, "location_id", None)
+            if isinstance(loc_id, str) and loc_id.startswith("WORLD_"):
+                event_world_refs.add(loc_id)
+
+        # Propositions that some entity actually holds a belief or
+        # concern about \u2014 a referent on an *unheld* proposition
+        # produces no affective signal, so we don't credit it.
+        held_prop_ids: set[str] = set()
+        for ent in ws.entities.values():
+            for b in (getattr(ent, "beliefs", None) or []):
+                pid = getattr(b, "proposition_id", None)
+                if isinstance(pid, str):
+                    held_prop_ids.add(pid)
+            for c in (getattr(ent, "concerns", None) or []):
+                pid = getattr(c, "proposition_id", None)
+                if isinstance(pid, str):
+                    held_prop_ids.add(pid)
+
+        affective_world_refs: set[str] = set()
+        for prop in ws.propositions:
+            if getattr(prop, "proposition_id", None) not in held_prop_ids:
+                continue
+            for rid in (getattr(prop, "referent_ids", None) or []):
+                if isinstance(rid, str) and rid.startswith("WORLD_"):
+                    affective_world_refs.add(rid)
+
+        belief_target_world_refs: set[str] = set()
+        for ent in ws.entities.values():
+            for b in (getattr(ent, "beliefs", None) or []):
+                tid = getattr(b, "target_id", None)
+                if isinstance(tid, str) and tid.startswith("WORLD_"):
+                    belief_target_world_refs.add(tid)
+
+        integrated = (
+            causal_world_refs | event_world_refs
+            | affective_world_refs | belief_target_world_refs
+        )
+        unintegrated = sorted(set(ws.world_traits.keys()) - integrated)
+        for wid in unintegrated:
+            wt = ws.world_traits[wid]
+            issues.append(ValidationIssue(
+                category="world_trait_unintegrated",
+                severity="warning",
+                detail=(
+                    f"WORLD_ trait {wid} ({wt.name!r}) is declared but "
+                    f"is not (a) on any causal edge, (b) referenced by "
+                    f"any event actor/target/location, (c) named in any "
+                    f"held Proposition's referent_ids, nor (d) any "
+                    f"Belief.target_id. The trait cannot influence "
+                    f"events, beliefs, or concerns through the engine. "
+                    f"Either add a causal_topology edge from this trait "
+                    f"to the events it pressurises (preferred: "
+                    f"chain_reaction or affordance_gate), or bind it as "
+                    f"a referent of a held Proposition so beliefs and "
+                    f"concerns about it route through the affect "
+                    f"substrate. If the trait is intentionally a "
+                    f"passive scenic backdrop, drop it from "
+                    f"``world_traits`` and record the fact in "
+                    f"``world_facts`` instead."
+                ),
+            ))
+
+        # Stronger sub-check: WORLD_ traits whose ONLY integration is
+        # being a causal *target* (in-edges only, no out-edges or
+        # affect linkage) are conduits the propagation engine writes
+        # *into* but never reads *out of*. They still satisfy (a) but
+        # don't actually pressurise anything. Surface separately so
+        # authors can decide whether to add a downstream edge.
+        for wid, wt in ws.world_traits.items():
+            has_out = any(
+                ce.source_id == wid for ce in ws.causal_topology
+            )
+            has_affect = (
+                wid in affective_world_refs
+                or wid in belief_target_world_refs
+            )
+            has_in = any(
+                ce.target_id == wid for ce in ws.causal_topology
+            )
+            if has_in and not has_out and not has_affect:
+                issues.append(ValidationIssue(
+                    category="world_trait_sink_only",
+                    severity="info",
+                    detail=(
+                        f"WORLD_ trait {wid} ({wt.name!r}) is a causal "
+                        f"sink (in-edges only) and is not referenced by "
+                        f"any held Proposition or Belief. It will "
+                        f"absorb propagation but never feed it forward "
+                        f"to events, beliefs, or concerns. Add at least "
+                        f"one out-edge (chain_reaction / affordance_gate "
+                        f"to the events it conditions) or bind it as a "
+                        f"Proposition referent to make the trait "
+                        f"observable downstream."
+                    ),
+                ))
+
     return issues
 
 
