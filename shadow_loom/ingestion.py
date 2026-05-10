@@ -2661,6 +2661,7 @@ def _build_concern_catalogue_agent(
         ccn_re = re.compile(r"^CCN_[A-Z0-9_]+$")
         kept: Dict[Tuple[str, str, str], ConcernSeed] = {}
         bad_id = bad_ent = bad_prop = 0
+        raw_count = len(result.concern_seeds)
         for s in result.concern_seeds:
             if not ccn_re.match(s.concern_id):
                 bad_id += 1
@@ -2672,11 +2673,55 @@ def _build_concern_catalogue_agent(
                 bad_prop += 1
                 continue
             kept[(s.entity_id, s.proposition_id, s.polarity)] = s
-        if bad_id or bad_ent or bad_prop:
-            logger.info(
-                "[ConcernCatalogue] validator drops: bad_id=%d, "
-                "bad_entity=%d, bad_prop=%d (kept %d seeds).",
-                bad_id, bad_ent, bad_prop, len(kept),
+        # Always log so "LLM returned 0" and "validator dropped all"
+        # are distinguishable in production logs (they previously both
+        # surfaced as "0 seeds emitted" with no further detail).
+        logger.info(
+            "[ConcernCatalogue] validator: raw=%d kept=%d "
+            "(bad_id=%d, bad_entity=%d, bad_prop=%d).",
+            raw_count, len(kept), bad_id, bad_ent, bad_prop,
+        )
+        # Force a re-prompt when the model returned an empty payload
+        # but the corpus clearly *should* yield seeds: at least 2 named
+        # entities and at least 3 propositions to anchor concerns to.
+        # Without this, a single weak first attempt silently ships an
+        # empty concerns layer for every story.
+        if (
+            raw_count == 0
+            and len(reg.entities) >= 2
+            and len(ctx.deps.propositions) >= 3
+        ):
+            sample_ents = sorted(reg.entities)[:6]
+            sample_props = [
+                p.proposition_id for p in ctx.deps.propositions[:6]
+            ]
+            raise ModelRetry(
+                "Your `concern_seeds` list was EMPTY, but the source "
+                "text contains named characters and the catalogue "
+                "contains propositions they could care about. Re-emit "
+                "with at least one ConcernSeed per named character that "
+                "appears in 3+ scenes. Use ENT_ ids from this register: "
+                f"{sample_ents}. Use PROP_ ids from this catalogue: "
+                f"{sample_props}. Even genre-default standing fears / "
+                "desires (a protagonist's desire for safety, an "
+                "antagonist's desire for power) belong in the seed "
+                "list at evidence_strength='weak'."
+            )
+        # Equivalent re-prompt when validation discarded *every* seed:
+        # the model tried, but every id was malformed. Surface the
+        # exact catalogue ids so the retry can repair its references.
+        if raw_count > 0 and not kept:
+            sample_ents = sorted(reg.entities)[:6]
+            sample_props = [
+                p.proposition_id for p in ctx.deps.propositions[:6]
+            ]
+            raise ModelRetry(
+                f"All {raw_count} concern seeds you emitted were "
+                f"discarded (bad_id={bad_id}, bad_entity={bad_ent}, "
+                f"bad_prop={bad_prop}). Re-emit using ONLY canonical "
+                "ids. Sample valid entity ids: "
+                f"{sample_ents}. Sample valid PROP_ ids: "
+                f"{sample_props}. CCN_ ids must match ^CCN_[A-Z0-9_]+$."
             )
         return _ConcernSeedsDraft(concern_seeds=list(kept.values()))
 
@@ -2708,10 +2753,25 @@ async def extract_concern_catalogue_async(
         propositions=list(catalogue.propositions),
     )
     settings = _catalogue_model_settings(config)
+    # Build a compact entity roster + prop sample for the user message.
+    # The system prompt already lists these, but repeating them in the
+    # user turn anchors the request and stops models that "forget" the
+    # system context from returning an empty payload.
+    ent_names = sorted(register.entities)
+    sample_ents = ent_names[:12]
+    sample_prop_ids = [p.proposition_id for p in catalogue.propositions[:8]]
     msg = (
         f"Extract every standing concern (fear / desire) for every "
         f"named character in the source text below, anchored to the "
-        f"PROP_ ids in the catalogue.\n\nSOURCE TEXT:\n{text}"
+        f"PROP_ ids in the catalogue.\n\n"
+        f"NAMED ENTITIES (use these ENT_ ids only): {sample_ents}"
+        f"{' …' if len(ent_names) > 12 else ''}\n"
+        f"PROPOSITIONS available (sample): {sample_prop_ids}"
+        f"{' …' if len(catalogue.propositions) > 8 else ''}\n\n"
+        f"You MUST emit at least one ConcernSeed per major character "
+        f"(those appearing in 3+ scenes). Empty output is unacceptable "
+        f"unless the text contains no named characters.\n\n"
+        f"SOURCE TEXT:\n{text}"
     )
     try:
         result = await _run_with_retry_async(
