@@ -155,6 +155,123 @@ class IntroducedConcernSpec(_IntroducedSpecBase):
     )
 
 
+class IntroducedChannelSpec(_IntroducedSpecBase):
+    """Renderer- or user-declared new ``Channel``.
+
+    Models a brand-new persistent communication capability between
+    participants \u2014 a courier route, a wiretap, a back-channel pact,
+    a magic mind-link. Distinct from a one-shot utterance (which is
+    an ``EventNode`` with ``event_type='utterance'``); a channel is
+    the *standing capability* over which utterances may travel.
+
+    Required fields mirror the smallest viable :class:`Channel`
+    constructor; advanced fields (intelligibility, evidence_strength,
+    discovered_at_syuzhet) default to neutral values that the
+    auditor and re-extractor refine from the prose.
+    """
+    medium: str = Field(
+        description=(
+            "Channel medium, e.g. 'telephone', 'mind_link', 'courier', "
+            "'classified_pipeline', 'magic_mirror'."
+        ),
+    )
+    participant_ids: List[str] = Field(
+        description=(
+            "ENT_ / OBJ_ ids of channel participants. Each must already "
+            "exist in the world OR be declared in the same "
+            "``IntroducedElements`` payload."
+        ),
+    )
+    directionality: Literal["broadcast", "duplex", "simplex"] = Field(
+        default="duplex",
+        description=(
+            "'duplex' = any participant may speak to any other; "
+            "'broadcast' = participants[0] speaks, the rest listen; "
+            "'simplex' = participants[0] \u2192 participants[1] only."
+        ),
+    )
+    intelligibility: Dict[str, float] = Field(
+        default_factory=dict,
+        description=(
+            "Optional per-participant decode probability \u2208 [0, 1]. "
+            "Missing entries default to 1.0 (fully intelligible)."
+        ),
+    )
+
+
+class IntroducedEventSpec(_IntroducedSpecBase):
+    """Renderer- or user-declared new ``EventNode``.
+
+    Lets a query author a brand-new event (typically a utterance,
+    revelation, or supplementary outcome the physics would not
+    otherwise stage) without going through prose re-extraction. The
+    pipeline pre-spawns this onto ``WorldStateV1.events`` so
+    do-surgeries (``DoEvent(event_id=...)``) can clamp its
+    occurrence and downstream physics can see it as available
+    causal substrate.
+
+    The ``description`` carried on ``_IntroducedSpecBase.justification``
+    explains *why* the event had to be invented; ``description`` here
+    is the in-prose rendition the renderer should use.
+    """
+    fabula_time: int = Field(
+        description="Strict chronological tick of the event.",
+    )
+    syuzhet_index: int = Field(
+        description="Reader-side sequence position of the event.",
+    )
+    event_type: Literal["choice", "outcome", "revelation", "utterance"] = Field(
+        default="outcome",
+        description=(
+            "See :class:`shadow_loom.models.EventNode.event_type`. "
+            "Defaults to 'outcome' for the common 'something happened' case."
+        ),
+    )
+    actor_ids: List[str] = Field(
+        default_factory=list,
+        description="ENT_ / OBJ_ ids that performed the event (empty for natural events).",
+    )
+    target_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "ENT_ / OBJ_ / EVT_ ids the event acts upon. For utterances, "
+            "the entities/events the speech-act is *about*."
+        ),
+    )
+    description: str = Field(
+        description="In-prose narrative description of what happened.",
+    )
+    content: Optional[str] = Field(
+        default=None,
+        description=(
+            "For utterance / revelation events: the proposition transmitted "
+            "or revealed (the epistemic payload downstream beliefs reference)."
+        ),
+    )
+    via_channel_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "For utterance events: optional CHN_ id of the standing channel "
+            "this message travelled over. May reference a co-declared "
+            "``IntroducedChannelSpec``."
+        ),
+    )
+    speaker_id: Optional[str] = Field(
+        default=None,
+        description="For utterance events: ENT_ id of the speaker.",
+    )
+    addressee_ids: List[str] = Field(
+        default_factory=list,
+        description="For utterance events: ENT_ ids the speaker intends to reach.",
+    )
+    truth_value: Optional[Literal["true", "false", "unknown", "performative"]] = Field(
+        default=None,
+        description=(
+            "For utterance events: whether ``content`` is true in the storyworld."
+        ),
+    )
+
+
 class IntroducedElements(BaseModel):
     """Per-cycle birth list for new top-level world elements.
 
@@ -169,6 +286,16 @@ class IntroducedElements(BaseModel):
     can target them. Renderer-declared introductions (via
     ``GeneratedScene.introduced_elements``) flow through re-extraction
     as authoritative spawns.
+
+    Note: ``query.introduce`` is on ``_QueryBase`` so every query type
+    \u2014 including ostensibly read-only Observation, Interrogation, and
+    General \u2014 inherits the introduction channel. This is deliberate:
+    a "read" query may need to declare a previously-unmodelled
+    referent (a witness whose existence is presupposed by the
+    question, an off-page location the user wants to ask about)
+    before the read resolves. The introduction is stamped into the
+    factual world-state once and persists, so the same id can be
+    referenced from later queries without re-declaration.
     """
     entities: List[IntroducedEntitySpec] = Field(default_factory=list)
     locations: List[IntroducedLocationSpec] = Field(default_factory=list)
@@ -176,11 +303,14 @@ class IntroducedElements(BaseModel):
     world_traits: List[IntroducedWorldTraitSpec] = Field(default_factory=list)
     propositions: List[IntroducedPropositionSpec] = Field(default_factory=list)
     concerns: List[IntroducedConcernSpec] = Field(default_factory=list)
+    channels: List[IntroducedChannelSpec] = Field(default_factory=list)
+    events: List[IntroducedEventSpec] = Field(default_factory=list)
 
     def is_empty(self) -> bool:
         return not (
             self.entities or self.locations or self.objects
             or self.world_traits or self.propositions or self.concerns
+            or self.channels or self.events
         )
 
     def declared_ids(self) -> set[str]:
@@ -192,18 +322,21 @@ class IntroducedElements(BaseModel):
         for spec_list in (
             self.entities, self.locations, self.objects,
             self.world_traits, self.propositions, self.concerns,
+            self.channels, self.events,
         ):
             out.update(s.id for s in spec_list)
         return out
 
     def declared_names(self) -> set[str]:
-        """Display names across every named kind. Propositions are
-        excluded (their ``name`` is the content sentence, not a noun
-        the renderer would use as a referent)."""
+        """Display names across every named kind. Propositions and
+        events are excluded (their ``name`` carries content text /
+        descriptions rather than a noun the renderer would use as a
+        scene referent)."""
         out: set[str] = set()
         for spec_list in (
             self.entities, self.locations,
             self.objects, self.world_traits,
+            self.channels,
         ):
             out.update(s.name for s in spec_list)
         return out
@@ -232,4 +365,6 @@ class IntroducedElements(BaseModel):
             world_traits=_extend(self.world_traits, other.world_traits),
             propositions=_extend(self.propositions, other.propositions),
             concerns=_extend(self.concerns, other.concerns),
+            channels=_extend(self.channels, other.channels),
+            events=_extend(self.events, other.events),
         )

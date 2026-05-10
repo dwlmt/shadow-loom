@@ -24,14 +24,14 @@ Pydantic v2 with `model_validator` constraints.
 | `Entity` | `ENT_` | Character / agent with `traits` (per-trait `TraitVector{value, inertia, evidence_strength}`), `beliefs`, `status`, `state_timeline`. |
 | `EventNode` | `EVT_` | Atomic happening anchored on both `fabula_time` and `syuzhet_index`. `event_type="utterance"` carries `content`, `speaker_id`, `addressee_ids`, `via_channel_id`, `truth_value`. |
 | `GlobalTrait` | `WORLD_` | World-level fact / law / regime ("magic system", "surveillance state"). `magnitude` is a `TraitVector` (`value`, `inertia`, `evidence_strength`). |
-| `Channel` | `CHN_` | Standing communication capability between participants. `medium`, `directionality` (`broadcast`/`duplex`/`simplex`), per-participant `intelligibility ∈ [0,1]` (replaces the legacy `is_encrypted` boolean), `established_at_fabula`. |
+| `Channel` | `CHN_` | Standing communication capability between participants. `medium`, `directionality` (`broadcast`/`duplex`/`simplex`), per-participant `intelligibility ∈ [0,1]` (replaces the legacy `is_encrypted` boolean), `established_at_fabula`, `terminated_at_fabula` (None while open). |
 
 ### Edges
 
 | Class | Topology | Notes |
 |---|---|---|
 | `CausalEdge` | event⇄event / event→state / state→event / state→state | Single class with five `causality_type` modalities; validator enforces source/target type matches modality. |
-| `RelationshipEdge` | entity⇄entity | Per-axis `metrics` dict (`affinity` / `fear` / `power_dynamic`); each axis owns its own `value`, `inertia`, `evidence_strength`, `last_updated_fabula`. Read via flat back-compat properties. |
+| `RelationshipEdge` | entity⇄entity | Per-axis `metrics` dict (`affinity` / `fear` / `power_dynamic`); each axis owns its own `value`, `inertia`, `evidence_strength`, `last_updated_fabula`. Edge-level lifecycle fields `established_at_fabula` and `ended_at_fabula` gate the entire relationship — time-slicers drop the edge before establishment / at-or-after end, distinct from per-axis staleness. Read via flat back-compat properties. |
 | `SpatialEdge` | location→location | Optional `is_locked` + `barrier_item_id`. |
 
 Note: communication is no longer modelled as an edge. Standing capability lives on the `Channel` *node*; discrete messages are first-class `EventNode`s with `event_type="utterance"` referencing a channel via `via_channel_id`.
@@ -207,12 +207,12 @@ After assembly completes and before validation, three async passes run over the 
 * `_post_pass_bind_events_to_propositions` — for each catalogue `event_occurs` / `outcome` proposition with no `EVT_` in `referent_ids`, lexically matches event descriptions (token-overlap ≥ 3 + ENT/OBJ overlap) and appends matching `EVT_` ids onto `referent_ids`. Without this, the catalogue's no-EVT-minting rule strands ~⅔ of outcome props with no truth commit (May 2026 Star Wars audit).
 * `_post_pass_synthesize_truth_commits` — derives `Proposition.truth_at_fabula` from the earliest `EVT_` referent's `fabula_time`.
 * `_post_pass_synthesize_audience_beliefs` — mirrors every committed truth onto the `ENT_AUDIENCE` belief stream.
-* `_post_pass_invalidate_contradicted_beliefs` — closes character beliefs that contradict a later truth commit.
-* `_post_pass_close_resolved_concerns` — auto-closes concerns whose anchor proposition has resolved.
+* `_post_pass_invalidate_contradicted_beliefs` — closes character beliefs that contradict a later truth commit. Invalidation snapshots use a **composite key** `"target_id::PROP_..."` when the belief carries a `proposition_id`, so co-located beliefs about the same target with different propositions are not over-invalidated. `reconstruct_entity_at` accepts both bare `target_id` (coarse, drops every belief about the target) and composite keys (fine-grained, drops only the matching `target_id::proposition_id` pair).
+* `_post_pass_close_resolved_concerns` — auto-closes concerns on **both** realised (desire→`true` / fear→`false`) and **materialised** (desire→`false` / fear→`true`) outcomes (per `prompts/affect_extraction.md` §9), tracking a `close_kind` ∈ {`realised`, `materialised`, `owner_dead`}. When the kind is `materialised` or `owner_dead` the concern's `activation_fabula_window` upper bound is clamped to the closing event's fabula time so post-resolution affect detectors operate on the resolving event rather than the standing concern.
 * `_post_pass_synthesize_concern_trajectory` — for every `Concern` with an empty `state_timeline`, walks events touching the concern's `proposition_id` and the holder entity, and emits a salience **spike** snapshot at each touch plus a **decay** snapshot at the proposition's earliest truth commit. Restores per-concern dynamic range when the per-chunk Affect agent skipped the chunk or emitted no concern snapshots.
 * `_post_pass_dedup_near_duplicate_events` and `_post_pass_infer_world_chain_reactions` — same-tick event collapse and lexical world-trait chain inference.
 
-`_programmatic_validation` runs `_validate_time_ordering`, which enforces four temporal invariants (contiguous unique `syuzhet_index`; reasonable `fabula_time` spacing; causal-edge cause-before-effect for `chain_reaction` edges; channel `established_at_fabula ≤ terminated_at_fabula`). A **fifth rule** (severity=error, category=temporal) was added for utterance temporal coherence: non-performative utterances (`truth_value ∈ {true, false, unknown}`) may not place `EVT_*` ids referring to future-fabula events in `target_ids` — if `target.fabula_time > utterance.fabula_time` the rule fires. Performative utterances (prophecies, vows, orders, declarations) are exempt because they posit or announce future states rather than report past ones; their downstream causal effects belong on `causal_topology` as `chain_reaction` edges, not in `target_ids`.
+`_programmatic_validation` runs `_validate_time_ordering`, which enforces seven temporal invariants. **Rules 1–4** (contiguous unique `syuzhet_index`; reasonable `fabula_time` spacing; causal-edge cause-before-effect for `chain_reaction` edges; channel `established_at_fabula ≤ terminated_at_fabula`) plus a **fifth rule** for utterance temporal coherence: non-performative utterances (`truth_value ∈ {true, false, unknown}`) may not place `EVT_*` ids referring to future-fabula events in `target_ids` — if `target.fabula_time > utterance.fabula_time` the rule fires. Performative utterances (prophecies, vows, orders, declarations) are exempt because they posit or announce future states rather than report past ones; their downstream causal effects belong on `causal_topology` as `chain_reaction` edges, not in `target_ids`. **Rule 6** enforces utterance/channel temporal validity: an utterance whose `via_channel_id` references a channel with `fabula_time < established_at_fabula` warns; `fabula_time > terminated_at_fabula` errors (no speech through a dead channel). **Rule 7** enforces relationship lifecycle coherence: an edge with `ended_at_fabula < established_at_fabula` errors (severance precedes establishment), and any per-axis `last_updated_fabula > ended_at_fabula` errors (a severed relationship cannot mutate).
 
 #### Step 3d — Optional external research (segregated, off by default)
 
@@ -265,9 +265,9 @@ the slice relevant to the focal characters and time anchor:
 * 1-hop spatial neighbours of focus locations
 * co-located entities and objects
 * causal edges within `memory_limit` recent events
-* `RelationshipEdge`s and `Belief`s **time-sliced via
-  `reconstruct_entity_at(temporal_anchor)`** so beliefs formed in the future
-  do not leak in
+* `RelationshipEdge`s **time-sliced** by `_time_slice_relationship_at`: edge dropped if `temporal_anchor < established_at_fabula` or `temporal_anchor \u2265 ended_at_fabula`; otherwise per-axis metrics whose `last_updated_fabula > temporal_anchor` are stripped
+* `Belief`s **time-sliced via `reconstruct_entity_at(temporal_anchor)`** so beliefs formed in the future do not leak in (composite invalidation keys honoured \u2014 see Phase C\u2032 above)
+* events whose `superseded_by_event_id` points at another event in the surviving window are pruned (the successor won; the original record stays on `world_state.events` for replay/audit but is hidden from the projection)
 * relevant `Channel`s and `WORLD_*` traits
 
 This both saves LLM context window — addressing the well-documented
@@ -312,7 +312,7 @@ Causation:
   spatial (with affordance path-checking), inventory, relationship, state
   mutation, genesis (spawn new nodes), and comms (open / sever channels).
   Incoming causal edges into the intervened node are severed; downstream
-  edges are re-evaluated.
+  edges are re-evaluated. Surgeries are dispatched from a **typed `do_targets` list** on `InterventionQuery` / `CounterfactualQuery` (10 discriminated `DoTarget` variants on `target_kind`: `DoTrait`, `DoStatus`, `DoLocation`, `DoChannel`, `DoRelationship`, `DoCausalEdge`, `DoSpatialEdge`, `DoBelief`, `DoConcern`, `DoProposition`, `DoEvent`, `DoWorldTrait`); the legacy flat `interventions={"ENT_X.trait": val}` dict still works and is lifted into the same dispatcher. When typed targets are present the engine forces `use_causal_engine=True`, derives focus entities from the typed-target seeds, and skips the rung-2 vacuity short-circuit (the surgery has already mutated the sandbox even when no downstream propagation fires). `DoChannel(active=False)` stamps `terminated_at_fabula` so subsequent extracts cannot route utterances through the dead channel; `DoRelationship` mutates per-axis metrics on both the sandbox and the world-state mirror.
 * **Propagation.** Topological sort over the causal sub-graph. Per-trait
   signed delta:
 
@@ -518,7 +518,16 @@ For omniscient flows (POV-less observation, `interrogate`, `general`,
 `manual_edit`, `evaluate`), `extract_full_world_state` accepts
 `syuzhet_anchor` and prunes events whose `syuzhet_index` exceeds it,
 so future-narration content cannot leak into the renderer or auditor
-prompts even on the omniscient path.
+prompts even on the omniscient path. The same path also drops events
+whose `superseded_by_event_id` resolves to another event still inside
+the surviving window (the canonical record stays on `world_state.events`;
+only the projection is pruned).
+
+`compute_hidden_channels` derives a fabula anchor as the maximum
+`fabula_time` across events with `syuzhet_index \u2264 syuzhet_anchor`
+and skips any channel whose `terminated_at_fabula` lies at or before
+that anchor, so dead channels never surface as withheld-capability
+candidates once the source text has reached the termination point.
 
 For Q&A flows (`interrogate` / `general`), `answer.answer_question`
 also threads `narrative_style` through the LLM context under

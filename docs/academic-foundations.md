@@ -1343,7 +1343,12 @@ utterance. This is a discrete, narrative-domain analogue of:
 ### 6.2 Belief revision
 
 `EntityStateSnapshot.beliefs_added` / `beliefs_invalidated` is a coarse
-implementation of belief revision in the AGM tradition.
+implementation of belief revision in the AGM tradition. Invalidation
+keys carry **two granularities**: a bare `target_id` drops every belief
+about the target (coarse), while a composite `"target_id::PROP_..."`
+drops only the belief whose `(target_id, proposition_id)` pair matches
+(fine-grained), preserving co-located beliefs about the same target
+under different propositions.
 
 * Alchourrón, C. E., Gärdenfors, P., Makinson, D. (1985). "On the logic of theory change: Partial meet contraction and revision functions". *J. Symbolic Logic* 50(2): 510–530.
 

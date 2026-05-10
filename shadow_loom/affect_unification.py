@@ -1524,14 +1524,44 @@ class RegretAppraisal:
 def _focal_negative_event(
     world: WorldStateV1, focal_id: str, fabula_t: int,
 ) -> Optional[EventNode]:
-    """Most recent event ≤ ``fabula_t`` whose mutation edge negatively hits focal."""
+    """Most recent event ≤ ``fabula_t`` that hurt the focal.
+
+    Two flavours of harm are recognised:
+
+    1. **Trait-level harm** — a ``mutation`` causal edge with
+       ``trait_delta < 0`` whose target is the focal.
+    2. **Status-level harm to a cared-about other** — a ``mutation``
+       edge whose target is some other entity *with positive
+       affinity from the focal* (>0.2) and whose status flips to a
+       loss state (``dead``/``lost``/``destroyed``).
+
+    Without (2) the regret/rage paths only fire on focal-trait
+    decrements and silently miss canonical narrative losses (death
+    of an ally, captured loved one) which carry no trait_delta.
+    Theory: Lazarus (1991) primary-appraisal *goal congruence* is
+    violated by harm to cared-about goals just as much as by harm
+    to the self.
+    """
     candidates: List[Tuple[int, EventNode]] = []
     for ce in world.causal_topology:
-        if ce.causality_type != "mutation" or ce.target_id != focal_id:
-            continue
-        if ce.trait_delta is None or ce.trait_delta >= 0:
+        if ce.causality_type != "mutation":
             continue
         if ce.fabula_time > fabula_t:
+            continue
+        # Direct trait-decrement on focal.
+        if ce.target_id == focal_id and ce.trait_delta is not None and ce.trait_delta < 0:
+            evt = next((e for e in world.events if e.id == ce.source_id), None)
+            if evt is not None:
+                candidates.append((evt.fabula_time, evt))
+            continue
+        # Status-loss on a cared-about other.
+        tgt = ce.target_id
+        if tgt == focal_id or not isinstance(tgt, str) or not tgt.startswith("ENT_"):
+            continue
+        status = _status_at_fabula(world, tgt, fabula_t)
+        if status not in ("dead", "lost", "destroyed"):
+            continue
+        if _affinity_between(world, focal_id, tgt) <= 0.2:
             continue
         evt = next((e for e in world.events if e.id == ce.source_id), None)
         if evt is not None:
@@ -2006,9 +2036,14 @@ def compute_love_appraisal(
             )
 
     # Commitment: affinity inertia × normalised relationship age.
-    commitment = 0.0
+    # Sternberg (1986) commitment is *durability over time*, so the
+    # right age proxy is the fabula span across which this dyad has
+    # been on-stage — not a single ``last_updated_fabula`` instant
+    # (which collapsed age to 1 and pinned commitment at
+    # ``inertia × ε`` on every world). Approximate the dyad's
+    # first-seen fabula tick from the earliest event in which both
+    # participants appear (actor / target / addressee / participant).
     aff_inertia = 0.3
-    aff_first_ft = fabula_t
     aff_last_ft = fabula_t
     for rel in bs.world.social_topology:
         if rel.source_entity_id == focal_id and rel.target_entity_id == partner_id:
@@ -2016,9 +2051,21 @@ def compute_love_appraisal(
             if m is not None:
                 aff_inertia = m.inertia
                 aff_last_ft = m.last_updated_fabula
-                aff_first_ft = m.last_updated_fabula  # no first-seen field; proxy
                 break
-    age = max(0, fabula_t - aff_first_ft) + 1
+    aff_first_ft = fabula_t
+    for evt in bs.world.events:
+        if evt.fabula_time > fabula_t:
+            continue
+        ids = (
+            set(getattr(evt, "actor_ids", []) or [])
+            | set(getattr(evt, "target_ids", []) or [])
+            | set(getattr(evt, "addressee_ids", []) or [])
+            | set(getattr(evt, "participant_ids", []) or [])
+        )
+        if focal_id in ids and partner_id in ids:
+            if evt.fabula_time < aff_first_ft:
+                aff_first_ft = evt.fabula_time
+    age = max(0, aff_last_ft - aff_first_ft) + 1
     tau = _auto_tau_fabula(bs.world)
     commitment = aff_inertia * min(1.0, age / max(1.0, tau * 4))
 

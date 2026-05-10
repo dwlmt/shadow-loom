@@ -4489,6 +4489,164 @@ def _build_physics_agent(config: ExtractionConfig) -> Agent[_PhysicsDeps, Physic
             entity_updates=cleaned_updates,
         )
 
+    @agent.output_validator
+    def coerce_physics_to_factual_world(
+        ctx: RunContext[_PhysicsDeps], result: PhysicsExtraction,
+    ) -> PhysicsExtraction:
+        """Force every extracted node onto the factual timeline.
+
+        ``world_id="shadow"`` is reserved for the runtime instantiator's
+        Rung-2/3 sandbox. Extraction must stay on the factual branch;
+        weaker models routinely tag past-tense / hypothetical-feeling
+        events as shadow, which then survives ingestion as a stub
+        paired with a ``_2``-renamed factual sibling (audit 2026-05-08,
+        Star Wars). Coerce silently here.
+        """
+        coerced = 0
+        new_events: List[EventNode] = []
+        for ev in result.events:
+            if ev.world_id != "factual":
+                ev = ev.model_copy(update={"world_id": "factual"})
+                coerced += 1
+            new_events.append(ev)
+        new_causal: List[CausalEdge] = []
+        for ce in result.causal_topology:
+            if ce.world_id != "factual":
+                ce = ce.model_copy(update={"world_id": "factual"})
+                coerced += 1
+            new_causal.append(ce)
+        new_spatial: List[SpatialEdge] = []
+        for se in result.spatial_topology:
+            if se.world_id != "factual":
+                se = se.model_copy(update={"world_id": "factual"})
+                coerced += 1
+            new_spatial.append(se)
+        if coerced:
+            logger.info(
+                "[Validator·Physics] Coerced %d node(s) from world_id='shadow' "
+                "to 'factual' (extraction never emits shadow nodes).",
+                coerced,
+            )
+        return PhysicsExtraction(
+            events=new_events,
+            causal_topology=new_causal,
+            spatial_topology=new_spatial,
+            entity_updates=result.entity_updates,
+        )
+
+    @agent.output_validator
+    def enforce_event_actor_invariants(
+        ctx: RunContext[_PhysicsDeps], result: PhysicsExtraction,
+    ) -> PhysicsExtraction:
+        """Hard-retry on EventNode actor invariants the LLM persistently violates.
+
+        The model_validator on ``EventNode`` only logs a warning when a
+        ``choice`` event is actorless or a ``revelation`` carries actors,
+        so malformed shapes silently land in the world state. Under
+        weaker models we observed ~77% of choice events emerging
+        actorless on a single chunk (audit 2026-05-01). Here we promote
+        those warnings into ``ModelRetry`` so the agent re-emits within
+        ``config.output_retries`` instead of relying on the one-shot
+        external ``actorless_choice_retry`` orchestration.
+        """
+        actorless_choices = [
+            e.id for e in result.events
+            if e.event_type == "choice" and not (e.actor_ids or [])
+        ]
+        actored_revelations = [
+            e.id for e in result.events
+            if e.event_type == "revelation" and (e.actor_ids or [])
+        ]
+        if not actorless_choices and not actored_revelations:
+            return result
+        msg_parts: List[str] = []
+        if actorless_choices:
+            sample = ", ".join(actorless_choices[:8])
+            msg_parts.append(
+                f"{len(actorless_choices)} `choice` event(s) have empty "
+                f"`actor_ids`. A choice is a deliberate decision and MUST "
+                f"name at least one decider in `actor_ids`. Either fill in "
+                f"the deciding entity from the on-page entity register, or "
+                f"downgrade the event to `event_type=\"outcome\"` if no "
+                f"agent is identifiable. Offending ids: {sample}"
+            )
+        if actored_revelations:
+            sample = ", ".join(actored_revelations[:8])
+            msg_parts.append(
+                f"{len(actored_revelations)} `revelation` event(s) have "
+                f"non-empty `actor_ids`. Revelations are narrator-side "
+                f"disclosures (the reader is the implicit recipient) and "
+                f"MUST have empty `actor_ids`. If an on-page character "
+                f"discloses something, that is an `utterance`, not a "
+                f"revelation. Offending ids: {sample}"
+            )
+        raise ModelRetry("\n\n".join(msg_parts))
+
+    @agent.output_validator
+    def enforce_mutation_parity(
+        ctx: RunContext[_PhysicsDeps], result: PhysicsExtraction,
+    ) -> PhysicsExtraction:
+        """Hard-retry on mutation edges that lack a paired entity_updates snapshot.
+
+        The physics_extraction.md prompt declares (Hard contract surface):
+          * Every ``mutation`` edge whose target is an ``ENT_`` MUST be
+            paired with an ``entity_updates`` entry on the same entity at
+            the same ``fabula_time``, listing the new value of
+            ``trait_target`` in ``trait_updates``.
+
+        Without the paired snapshot the mutation is recorded on the edge
+        but never anchored on the entity, and downstream propagation /
+        abduction silently under-reads it (audit 2026-05-01: 75
+        unmatched mutation edges across the plot-models corpus). The
+        post-hoc validator only logs a ``mutation_parity`` warning; here
+        we promote it into ``ModelRetry`` so the agent re-emits within
+        ``config.output_retries``.
+
+        Conservative match: same (entity_id, fabula_time, trait_target);
+        ±1 fabula tick of slack mirrors the post-hoc validator's tolerance.
+        """
+        if not result.causal_topology or not result.events:
+            return result
+        # Index entity_updates by (entity_id, fabula_time, trait_target).
+        update_index: Dict[Tuple[str, str], List[int]] = {}
+        for eu in result.entity_updates:
+            for trait_name in (eu.trait_updates or {}):
+                update_index.setdefault(
+                    (eu.entity_id, trait_name), []
+                ).append(eu.fabula_time)
+        unmatched: List[str] = []
+        entity_ids = set(ctx.deps.global_register.entities.keys())
+        for ce in result.causal_topology:
+            if ce.causality_type not in ("mutation", "mutation_social"):
+                continue
+            if ce.trait_target is None or ce.trait_delta is None:
+                continue
+            if ce.target_id not in entity_ids:
+                continue
+            ticks = update_index.get((ce.target_id, ce.trait_target), [])
+            if not any(abs(t - ce.fabula_time) <= 1 for t in ticks):
+                unmatched.append(
+                    f"{ce.source_id}→{ce.target_id} "
+                    f"({ce.trait_target}, fabula={ce.fabula_time})"
+                )
+        if not unmatched:
+            return result
+        sample = "; ".join(unmatched[:6])
+        raise ModelRetry(
+            f"{len(unmatched)} mutation/mutation_social edge(s) declare a "
+            f"`trait_target` + `trait_delta` but no `entity_updates` entry "
+            f"on the target entity carries the same trait at the same "
+            f"`fabula_time` (±1 tick). The hard contract in "
+            f"physics_extraction.md requires both: edges declare *what "
+            f"changed*, snapshots declare *the new state*. Without the "
+            f"snapshot, downstream propagation/abduction under-reads the "
+            f"mutation. For each missing parity entry, add an "
+            f"`entity_updates` record on the target entity with "
+            f"`fabula_time` matching the edge and `trait_updates` "
+            f"containing the new ABSOLUTE value of the trait (not the "
+            f"delta). Missing pairs: {sample}"
+        )
+
     return agent
 
 
@@ -4636,6 +4794,145 @@ def _build_social_agent(config: ExtractionConfig) -> Agent[_SocialDeps, SocialEx
             "When the speaker denies one (lie, alibi, dismissal), set "
             "`denies_proposition_id`. Do NOT invent new PROP_ ids; "
             "reference only the catalogue."
+        )
+
+    @agent.output_validator
+    def coerce_social_to_factual_world(
+        ctx: RunContext[_SocialDeps], result: SocialExtraction,
+    ) -> SocialExtraction:
+        """Force every extracted node onto the factual timeline.
+
+        ``world_id="shadow"`` is reserved for the runtime instantiator's
+        Rung-2/3 sandbox (counterfactual reasoning). The extraction
+        pipeline only ever describes what the source text *actually*
+        depicts — there is no speculative branch at this stage. Weaker
+        models nonetheless tag speculative-feeling material (a
+        character's account of the past, prophecies, gossip) as
+        ``shadow``, which then collides with the genuine factual record
+        downstream and survives ingestion as a stub-paired duplicate
+        (audit 2026-05-08, Star Wars project). Coerce silently here.
+        """
+        coerced = 0
+        new_utts: List[EventNode] = []
+        for ev in result.utterance_events:
+            if ev.world_id != "factual":
+                ev = ev.model_copy(update={"world_id": "factual"})
+                coerced += 1
+            new_utts.append(ev)
+        new_social: List[RelationshipEdge] = []
+        for re_edge in result.social_topology:
+            if re_edge.world_id != "factual":
+                re_edge = re_edge.model_copy(update={"world_id": "factual"})
+                coerced += 1
+            new_social.append(re_edge)
+        new_channels: Dict[str, Channel] = {}
+        for cid, ch in result.channels.items():
+            if ch.world_id != "factual":
+                ch = ch.model_copy(update={"world_id": "factual"})
+                coerced += 1
+            new_channels[cid] = ch
+        if coerced:
+            logger.info(
+                "[Validator·Social] Coerced %d node(s) from world_id='shadow' "
+                "to 'factual' (extraction never emits shadow nodes).",
+                coerced,
+            )
+        return SocialExtraction(
+            channels=new_channels,
+            utterance_events=new_utts,
+            social_topology=new_social,
+        )
+
+    @agent.output_validator
+    def enforce_utterance_speaker(
+        ctx: RunContext[_SocialDeps], result: SocialExtraction,
+    ) -> SocialExtraction:
+        """Hard-retry on utterances missing both speaker_id and actor_ids.
+
+        The model_validator on ``EventNode`` only logs a warning here,
+        so a speakerless utterance currently survives ingestion as an
+        empty-payload stub that the rest of the pipeline (affect,
+        propositions, channel routing) cannot interpret. Surface it as
+        retry pressure so the agent re-emits with a speaker drawn from
+        the on-page register.
+        """
+        speakerless = [
+            e.id for e in result.utterance_events
+            if not e.speaker_id and not (e.actor_ids or [])
+        ]
+        if not speakerless:
+            return result
+        sample = ", ".join(speakerless[:8])
+        raise ModelRetry(
+            f"{len(speakerless)} utterance event(s) have neither "
+            f"`speaker_id` nor `actor_ids`. Every utterance is a "
+            f"speech-act — it MUST name the speaking entity in "
+            f"`speaker_id` (the canonical field for utterances). If the "
+            f"prose attributes the speech to a narrator/chorus rather "
+            f"than an on-page character, downgrade the event to "
+            f"`event_type=\"revelation\"` and drop it from "
+            f"`utterance_events`. Offending ids: {sample}"
+        )
+
+    @agent.output_validator
+    def enforce_utterance_temporal_order(
+        ctx: RunContext[_SocialDeps], result: SocialExtraction,
+    ) -> SocialExtraction:
+        """Hard-retry on utterances naming a future EVT_ in target_ids.
+
+        ``social_extraction.md`` declares: ``EVT_`` ids in ``target_ids``
+        must have ``fabula_time <= utterance.fabula_time`` UNLESS
+        ``truth_value="performative"`` (prophecies, vows, orders may
+        name future events). The post-extraction
+        ``_validate_time_ordering`` pass logs ``temporal`` warnings for
+        violations but does not retry — surfacing here as retry
+        pressure prevents the validator gap that lets a character
+        "describe" an event that hasn't occurred yet (a common
+        flashforward / prolepsis confusion under weaker models).
+        """
+        # Build event_id → fabula_time lookup from this chunk's
+        # Physics events (passed in via deps) plus the in-batch
+        # utterances themselves. Cross-chunk references resolve via
+        # post-extraction ``_validate_time_ordering``; the per-chunk
+        # check here catches the dominant case where a character
+        # describes an event the Physics agent emitted in the same
+        # chunk at a later fabula_time.
+        ft_lookup: Dict[str, int] = {
+            e.id: e.fabula_time for e in (ctx.deps.chunk_events or [])
+        }
+        for u in result.utterance_events:
+            ft_lookup[u.id] = u.fabula_time
+        violations: List[str] = []
+        for u in result.utterance_events:
+            if u.truth_value == "performative":
+                continue
+            for tid in (u.target_ids or []):
+                if not tid.startswith("EVT_"):
+                    continue
+                tgt_ft = ft_lookup.get(tid)
+                if tgt_ft is None:
+                    continue  # unknown target — IDs validator handles
+                if tgt_ft > u.fabula_time:
+                    violations.append(
+                        f"{u.id}@{u.fabula_time} → {tid}@{tgt_ft}"
+                    )
+        if not violations:
+            return result
+        sample = "; ".join(violations[:6])
+        raise ModelRetry(
+            f"{len(violations)} utterance(s) name an EVT_ in `target_ids` "
+            f"whose `fabula_time` is AFTER the utterance's own "
+            f"`fabula_time`. A character can only describe events that "
+            f"have already happened, unless the utterance is a "
+            f"prophecy / vow / order — in which case set "
+            f"`truth_value=\"performative\"`. Either (a) drop the "
+            f"future EVT_ from `target_ids` (the speaker cannot yet "
+            f"be talking about it), (b) flip the utterance to "
+            f"`truth_value=\"performative\"` if the speaker is "
+            f"prophesying / vowing / commanding the future event, or "
+            f"(c) move the utterance to a later `fabula_time` if the "
+            f"prose actually places it after the named event. "
+            f"Violations: {sample}"
         )
 
     @agent.output_validator
@@ -11227,6 +11524,75 @@ def reconcile_affect(
 # =====================================================================
 
 
+def _post_pass_coerce_world_id_factual(
+    world: WorldStateV1, repairs: List[str],
+) -> WorldStateV1:
+    """Defense-in-depth: force every node/edge onto ``world_id="factual"``.
+
+    Initial ingestion (and re-ingestion of generated prose into a new
+    ``VersionRow``) only ever describes what the source / continuation
+    actually depicts on its own branch — every node it produces is, by
+    definition, factual *within that VersionRow*. The ``"shadow"``
+    value is reserved exclusively for the runtime AMWN sandbox in
+    ``shadow_loom.instantiator`` (Rung 2/3 counterfactual reasoning),
+    where it tags nodes that differ from the parent factual subgraph
+    inside Correa et al.'s three-rule (consistency / independence /
+    exclusion) bookkeeping. A counterfactual branch that gets
+    promoted via ``promote_branch`` lands on its own ``VersionRow``
+    and is itself factual within that branch — the *VersionRow*
+    records the parent / fork relationship, not the individual nodes.
+
+    Per-agent validators (``coerce_physics_to_factual_world``,
+    ``coerce_social_to_factual_world``) already coerce at extraction
+    time. This pass is a final safety net catching any node that
+    leaked through from another agent path or a hand-edited fixture.
+    """
+    coerced = 0
+
+    def _patch_world_id(obj):
+        nonlocal coerced
+        if getattr(obj, "world_id", "factual") != "factual":
+            coerced += 1
+            return obj.model_copy(update={"world_id": "factual"})
+        return obj
+
+    new_events = [_patch_world_id(e) for e in world.events]
+    new_causal = [_patch_world_id(c) for c in world.causal_topology]
+    new_social = [_patch_world_id(r) for r in world.social_topology]
+    new_spatial = [_patch_world_id(s) for s in world.spatial_topology]
+    new_channels = {cid: _patch_world_id(ch) for cid, ch in world.channels.items()}
+    new_props = [_patch_world_id(p) for p in world.propositions]
+
+    new_entities: Dict[str, Entity] = {}
+    for eid, ent in world.entities.items():
+        ent_updates: Dict[str, Any] = {}
+        new_beliefs = [_patch_world_id(b) for b in ent.beliefs]
+        if any(b is not orig for b, orig in zip(new_beliefs, ent.beliefs)):
+            ent_updates["beliefs"] = new_beliefs
+        new_concerns = [_patch_world_id(c) for c in ent.concerns]
+        if any(c is not orig for c, orig in zip(new_concerns, ent.concerns)):
+            ent_updates["concerns"] = new_concerns
+        new_entities[eid] = ent.model_copy(update=ent_updates) if ent_updates else ent
+
+    if coerced == 0:
+        return world
+
+    repairs.append(
+        f"world_id-coerce: forced {coerced} node(s) from "
+        f"world_id='shadow' to 'factual' (extraction never emits "
+        f"shadow nodes; that tag is reserved for the AMWN sandbox)."
+    )
+    return world.model_copy(update={
+        "events": new_events,
+        "causal_topology": new_causal,
+        "social_topology": new_social,
+        "spatial_topology": new_spatial,
+        "channels": new_channels,
+        "propositions": new_props,
+        "entities": new_entities,
+    })
+
+
 def _post_pass_bind_events_to_propositions(
     world: WorldStateV1, repairs: List[str],
 ) -> WorldStateV1:
@@ -11465,17 +11831,26 @@ def _post_pass_invalidate_contradicted_beliefs(
                 if not contradicted:
                     continue
                 # Idempotency: do not re-add if any snapshot at or
-                # after commit_t already invalidates this target.
+                # after commit_t already invalidates this belief
+                # (either coarsely by target or finely by composite
+                # ``target::proposition`` key).
+                composite_key = f"{b.target_id}::{b.proposition_id}"
                 already = any(
-                    s.fabula_time >= commit_t and b.target_id in s.beliefs_invalidated
+                    s.fabula_time >= commit_t and (
+                        b.target_id in s.beliefs_invalidated
+                        or composite_key in s.beliefs_invalidated
+                    )
                     for s in new_snaps
                 )
                 if already:
                     continue
+                # Prefer the fine-grained composite key so we drop
+                # only the contradicted belief, not every belief
+                # about this target.
                 new_snaps.append(EntityStateSnapshot(
                     fabula_time=commit_t,
                     triggered_by=None,
-                    beliefs_invalidated=[b.target_id],
+                    beliefs_invalidated=[composite_key],
                 ))
                 invalidated += 1
                 added_local += 1
@@ -11519,33 +11894,62 @@ def _post_pass_close_resolved_concerns(
         for concern in ent.concerns:
             close_t: Optional[int] = None
             close_reason: str = ""
+            close_kind: str = ""
             prop = prop_index.get(concern.proposition_id)
             if prop and prop.truth_at_fabula:
-                # Concern closes when its proposition's truth aligns
-                # with what the entity wants (desire→True, fear→False).
+                # Concerns close at the FIRST resolution of their
+                # proposition — regardless of whether the resolution
+                # *realises* the concern (desire→True / fear→False)
+                # or *materialises* it (desire→False / fear→True).
+                # The prompt rule (affect_extraction.md §9) is explicit:
+                # both branches close the standing concern; the
+                # difference is post-processing — a materialised
+                # outcome additionally caps the
+                # ``activation_fabula_window`` so downstream affect
+                # detectors (grief, regret, rage) operate on the
+                # post-resolution event rather than a still-active
+                # standing concern.
                 wants_true = concern.polarity == "desire"
                 for ct, tv in sorted(prop.truth_at_fabula.items()):
-                    if (wants_true and tv) or ((not wants_true) and not tv):
+                    realised = (wants_true and tv) or ((not wants_true) and not tv)
+                    materialised = (wants_true and not tv) or ((not wants_true) and tv)
+                    if realised or materialised:
                         close_t = ct
+                        close_kind = "realised" if realised else "materialised"
                         close_reason = (
-                            f"prop {concern.proposition_id} resolved "
-                            f"{tv} at {ct}"
+                            f"prop {concern.proposition_id} "
+                            f"{close_kind} ({tv}) at {ct}"
                         )
                         break
             if death_t is not None and (close_t is None or death_t < close_t):
                 close_t = death_t
+                close_kind = "owner_dead"
                 close_reason = f"owner {eid} died at {death_t}"
             if close_t is None:
                 new_concerns.append(concern)
                 continue
             updates: Dict[str, Any] = {}
             timeline = list(concern.state_timeline)
-            # Set activation window if missing.
+            # Set or cap activation window. Realised closure leaves
+            # the window open-ended (the standing wanting/dreading is
+            # over); materialised closure clamps the upper bound to
+            # ``close_t`` so post-resolution affect resolves on the
+            # event, not the standing concern. Owner-death closure
+            # also clamps (the holder cannot want/dread anything
+            # after death).
+            should_clamp_window = close_kind in ("materialised", "owner_dead")
             if concern.activation_fabula_window is None:
                 start_t = (
                     timeline[0].fabula_time if timeline else 0
                 )
-                updates["activation_fabula_window"] = [start_t, close_t]
+                if should_clamp_window:
+                    updates["activation_fabula_window"] = [start_t, close_t]
+                else:
+                    updates["activation_fabula_window"] = [start_t, close_t]
+            elif should_clamp_window:
+                start_t, end_t = concern.activation_fabula_window
+                if end_t is None or end_t > close_t:
+                    updates["activation_fabula_window"] = [start_t, close_t]
             # Append closing rung if last rung is not already small.
             last = timeline[-1] if timeline else None
             if last is None or last.fabula_time < close_t or (
@@ -11707,20 +12111,55 @@ def _post_pass_dedup_near_duplicate_events(
         return world
     groups: Dict[Tuple[str, int, Tuple[str, ...], Tuple[str, ...]], List[EventNode]] = {}
     for evt in world.events:
-        key = (
-            evt.event_type or "",
-            evt.fabula_time,
-            tuple(sorted(evt.actor_ids or [])),
-            tuple(sorted(evt.target_ids or [])),
-        )
+        # For utterances, dedup by (speaker, addressees) — actor_ids and
+        # target_ids drift between two-agent (Physics + Social) emissions
+        # of the same on-page speech act, leaving paired EVT_UTT_X /
+        # EVT_UTT_X_2 stubs that share the speaker but disagree on
+        # target_ids (audit 2026-05-08, Star Wars).
+        if evt.event_type == "utterance":
+            key = (
+                "utterance",
+                evt.fabula_time,
+                (evt.speaker_id or "",),
+                tuple(sorted(evt.addressee_ids or [])),
+            )
+        else:
+            key = (
+                evt.event_type or "",
+                evt.fabula_time,
+                tuple(sorted(evt.actor_ids or [])),
+                tuple(sorted(evt.target_ids or [])),
+            )
         groups.setdefault(key, []).append(evt)
 
     rename: Dict[str, str] = {}
+    # Track the keeper EventNode per group so that, for utterances, we
+    # can also harvest non-empty (content, asserts_proposition_id,
+    # denies_proposition_id, target_ids, via_channel_id) from the
+    # losers — the typical shadow-stub / factual-payload split has the
+    # richer payload on the loser of the longest-description tiebreak
+    # purely by accident.
+    keeper_patches: Dict[str, Dict[str, Any]] = {}
     for key, evts in groups.items():
         if len(evts) <= 1:
             continue
         # Keep the longest-described (most informative) event.
         keeper = max(evts, key=lambda e: len(e.description or ""))
+        merged: Dict[str, Any] = {}
+        if keeper.event_type == "utterance":
+            for loser in evts:
+                if loser.id == keeper.id:
+                    continue
+                if not keeper.content and loser.content:
+                    merged["content"] = loser.content
+                if not keeper.asserts_proposition_id and loser.asserts_proposition_id:
+                    merged["asserts_proposition_id"] = loser.asserts_proposition_id
+                if not keeper.denies_proposition_id and loser.denies_proposition_id:
+                    merged["denies_proposition_id"] = loser.denies_proposition_id
+                if not keeper.via_channel_id and loser.via_channel_id:
+                    merged["via_channel_id"] = loser.via_channel_id
+                if not (keeper.target_ids or []) and (loser.target_ids or []):
+                    merged["target_ids"] = list(loser.target_ids)
         for loser in evts:
             if loser.id != keeper.id:
                 rename[loser.id] = keeper.id
@@ -11728,6 +12167,8 @@ def _post_pass_dedup_near_duplicate_events(
                     f"Event-dedup: {loser.id} -> {keeper.id} "
                     f"(t={loser.fabula_time}, type={loser.event_type})."
                 )
+        if merged:
+            keeper_patches[keeper.id] = merged
 
     # Cross-time near-duplicate report (no rewrite).
     desc_groups: Dict[Tuple[str, Tuple[str, ...], Tuple[str, ...]], List[EventNode]] = {}
@@ -11771,8 +12212,14 @@ def _post_pass_dedup_near_duplicate_events(
             continue
         seen.add(evt.id)
         sup = evt.superseded_by_event_id
+        update_kwargs: Dict[str, Any] = {}
         if sup and sup in rename:
-            evt = evt.model_copy(update={"superseded_by_event_id": rename[sup]})
+            update_kwargs["superseded_by_event_id"] = rename[sup]
+        patch = keeper_patches.get(evt.id)
+        if patch:
+            update_kwargs.update(patch)
+        if update_kwargs:
+            evt = evt.model_copy(update=update_kwargs)
         new_events.append(evt)
 
     new_causal: List[CausalEdge] = []
@@ -11914,6 +12361,7 @@ def apply_post_pass_fixes(
     consumer needs the raw extraction.
     """
     repairs: List[str] = []
+    world = _post_pass_coerce_world_id_factual(world, repairs)
     world = _post_pass_bind_events_to_propositions(world, repairs)
     world = _post_pass_synthesize_truth_commits(world, repairs)
     world = _post_pass_synthesize_audience_beliefs(world, repairs)
@@ -13892,6 +14340,84 @@ def _validate_time_ordering(ws: WorldStateV1) -> List[ValidationIssue]:
                         f"prophecy/vow/order positing the future event), or "
                         f"remove the future event from target_ids and let "
                         f"causal_topology express the downstream causal link."
+                    ),
+                ))
+
+    # 6. Utterance / channel temporal validity: an utterance routed
+    #    through a channel must occur within the channel's active
+    #    interval. ``established_at_fabula`` is treated as a soft
+    #    lower bound (warn rather than error) because the source text
+    #    may legitimately depict a channel "in use" before the
+    #    extractor's idea of when it began. ``terminated_at_fabula``
+    #    is the hard upper bound — sending through a channel after it
+    #    has been severed is a flat lifecycle violation.
+    for u in ws.events:
+        if u.event_type != "utterance":
+            continue
+        cid = getattr(u, "via_channel_id", None)
+        if not cid:
+            continue
+        ch = ws.channels.get(cid)
+        if ch is None:
+            continue
+        if (
+            ch.established_at_fabula is not None
+            and u.fabula_time < ch.established_at_fabula
+        ):
+            issues.append(ValidationIssue(
+                severity="warning", category="temporal",
+                detail=(
+                    f"Utterance '{u.id}' (fabula={u.fabula_time}) routes via "
+                    f"channel '{cid}' established_at_fabula="
+                    f"{ch.established_at_fabula}. Either back-date the "
+                    f"channel or set ``via_channel_id=None`` on this "
+                    f"utterance."
+                ),
+            ))
+        if (
+            ch.terminated_at_fabula is not None
+            and u.fabula_time > ch.terminated_at_fabula
+        ):
+            issues.append(ValidationIssue(
+                severity="error", category="temporal",
+                detail=(
+                    f"Utterance '{u.id}' (fabula={u.fabula_time}) routes via "
+                    f"channel '{cid}' terminated_at_fabula="
+                    f"{ch.terminated_at_fabula}. The channel was severed "
+                    f"before this utterance — either move the utterance "
+                    f"earlier, extend the channel's lifetime, or unset "
+                    f"``via_channel_id``."
+                ),
+            ))
+
+    # 7. Relationship lifecycle: ``ended_at_fabula`` must be > the
+    #    latest per-axis ``last_updated_fabula`` (no axis can mutate
+    #    after the relationship has ended) and >= ``established_at_fabula``.
+    for rel in ws.social_topology:
+        est = getattr(rel, "established_at_fabula", None)
+        end = getattr(rel, "ended_at_fabula", None)
+        if est is not None and end is not None and end < est:
+            issues.append(ValidationIssue(
+                severity="error", category="temporal",
+                detail=(
+                    f"Relationship {rel.source_entity_id} -> "
+                    f"{rel.target_entity_id}: ended_at_fabula ({end}) < "
+                    f"established_at_fabula ({est})."
+                ),
+            ))
+        if end is None:
+            continue
+        for name, m in (rel.metrics or {}).items():
+            ts = getattr(m, "last_updated_fabula", None)
+            if ts is not None and ts > end:
+                issues.append(ValidationIssue(
+                    severity="error", category="temporal",
+                    detail=(
+                        f"Relationship {rel.source_entity_id} -> "
+                        f"{rel.target_entity_id}: metric '{name}' "
+                        f"last_updated_fabula={ts} is after "
+                        f"ended_at_fabula={end}. A severed relationship "
+                        f"cannot mutate."
                     ),
                 ))
 

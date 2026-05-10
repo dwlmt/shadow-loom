@@ -920,6 +920,7 @@ class CausalPhysicsEngine:
         # consumer-side and may import causal_physics types in future.
         from shadow_loom.query_models import (
             DoEvent, DoTrait, DoProposition, DoBelief, DoConcern, DoWorldTrait,
+            DoChannel, DoRelationship, DoCausalEdge, DoSpatialEdge,
         )
 
         legacy_dict: Dict[str, Any] = {}
@@ -952,6 +953,14 @@ class CausalPhysicsEngine:
                 self._apply_do_concern(t)
             elif isinstance(t, DoWorldTrait):
                 self._apply_do_world_trait(t)
+            elif isinstance(t, DoChannel):
+                self._apply_do_channel(t)
+            elif isinstance(t, DoRelationship):
+                self._apply_do_relationship(t)
+            elif isinstance(t, DoCausalEdge):
+                self._apply_do_causal_edge(t)
+            elif isinstance(t, DoSpatialEdge):
+                self._apply_do_spatial_edge(t)
 
         logger.log(
             _physics_log(),
@@ -1292,6 +1301,290 @@ class CausalPhysicsEngine:
         # Pin so the trait remains an always-active ambient source for
         # the rest of this simulation step.
         self._intervened_nodes.add(wt_id)
+
+    # ------------------------------------------------------------------
+    # Edge-layer typed surgeries (DoChannel / DoRelationship /
+    # DoCausalEdge / DoSpatialEdge). Lightweight implementations: each
+    # mutates the sandbox graph (so the same propagate step sees the
+    # change) and mirrors back to ``world_state`` where applicable so
+    # downstream consumers reading the world directly observe the
+    # surgery. None of these record a typed mutation row \u2014 the
+    # auditor consumes the sandbox snapshot via ``physics_state`` and
+    # the world-state mirror via the standard re-extraction path.
+    # ------------------------------------------------------------------
+    def _apply_do_channel(self, target: Any) -> None:
+        """Toggle activation / re-tune intelligibility on a Channel.
+
+        Channel creation is handled by ``query.introduce.channels``
+        (pre-spawn into the world before physics); this surgery only
+        mutates an *existing* channel.
+        """
+        ft = (
+            int(target.fabula_time)
+            if getattr(target, "fabula_time", None) is not None
+            else self._default_fabula_time()
+        )
+        # Sandbox-side mutation: channel nodes carry ``node_type='Channel'``.
+        if self.sandbox.has_node(target.channel_id):
+            ndata = self.sandbox.nodes[target.channel_id]
+            if target.active is True:
+                ndata["terminated_at_fabula"] = None
+            elif target.active is False:
+                ndata["terminated_at_fabula"] = ft
+            if target.intelligibility:
+                intel = dict(ndata.get("intelligibility") or {})
+                intel.update({k: float(v) for k, v in target.intelligibility.items()})
+                ndata["intelligibility"] = intel
+            self._intervened_nodes.add(target.channel_id)
+        else:
+            logger.warning(
+                "[CausalPhysics\u00b7do_channel] Channel %s missing from sandbox; "
+                "world-state mirror still applied.", target.channel_id,
+            )
+        # World-state mirror so ego-graph re-extraction picks up the change.
+        canonical = self.world_state.channels or {}
+        ch = canonical.get(target.channel_id)
+        if ch is not None:
+            if target.active is True:
+                ch.terminated_at_fabula = None
+            elif target.active is False:
+                ch.terminated_at_fabula = ft
+            if target.intelligibility:
+                merged = dict(ch.intelligibility or {})
+                merged.update({k: float(v) for k, v in target.intelligibility.items()})
+                ch.intelligibility = merged
+
+    def _apply_do_relationship(self, target: Any) -> None:
+        """Clamp a single per-axis :class:`RelationshipMetric`.
+
+        Spawns a fresh metric record if the named pair has no existing
+        edge, so the dyad does not have to be pre-modelled to be
+        intervened on.
+        """
+        from shadow_loom.models import RelationshipMetric, RelationshipEdge
+        ft = (
+            int(target.fabula_time)
+            if getattr(target, "fabula_time", None) is not None
+            else self._default_fabula_time()
+        )
+        # Sandbox-side: locate or create the relationship edge attrs.
+        # Relationship edges are emitted with ``edge_type='relationship'``
+        # by the instantiator and may carry per-axis metrics in either
+        # the ``metrics`` dict or the legacy flat keys.
+        sb = self.sandbox
+        edge_key = None
+        if sb.has_node(target.source_entity_id) and sb.has_node(target.target_entity_id):
+            for k, attrs in sb.get_edge_data(
+                target.source_entity_id, target.target_entity_id, default={}
+            ).items() if sb.has_edge(target.source_entity_id, target.target_entity_id) else []:
+                if attrs.get("edge_type") == "relationship":
+                    edge_key = k
+                    break
+            if edge_key is None:
+                # No existing relationship \u2014 create one carrying just
+                # the clamped metric.
+                edge_key = sb.add_edge(
+                    target.source_entity_id,
+                    target.target_entity_id,
+                    edge_type="relationship",
+                    source_entity_id=target.source_entity_id,
+                    target_entity_id=target.target_entity_id,
+                    metrics={},
+                )
+            attrs = sb[target.source_entity_id][target.target_entity_id][edge_key]
+            metrics = attrs.setdefault("metrics", {})
+            entry = metrics.get(target.metric) or {}
+            entry["value"] = float(target.value)
+            entry["observed"] = True
+            entry["last_updated_fabula"] = ft
+            if target.inertia is not None:
+                entry["inertia"] = float(target.inertia)
+            metrics[target.metric] = entry
+            # Mirror onto the legacy flat key so consumers that only
+            # know the legacy shape (renderer dump, audit prompts) see
+            # the clamp without metric-dict expansion.
+            attrs[target.metric] = float(target.value)
+        else:
+            logger.warning(
+                "[CausalPhysics\u00b7do_relationship] Endpoint missing from "
+                "sandbox (%s -> %s); world-state mirror still applied.",
+                target.source_entity_id, target.target_entity_id,
+            )
+        # World-state mirror.
+        topology = list(self.world_state.social_topology or [])
+        rel = next(
+            (r for r in topology
+             if r.source_entity_id == target.source_entity_id
+             and r.target_entity_id == target.target_entity_id),
+            None,
+        )
+        if rel is None:
+            rel = RelationshipEdge(
+                source_entity_id=target.source_entity_id,
+                target_entity_id=target.target_entity_id,
+                metrics={},
+            )
+            topology.append(rel)
+            self.world_state.social_topology = topology
+        metric_entry = rel.metrics.get(target.metric)
+        if metric_entry is None:
+            rel.metrics[target.metric] = RelationshipMetric(
+                value=float(target.value),
+                inertia=float(target.inertia) if target.inertia is not None else 0.3,
+                observed=True,
+                last_updated_fabula=ft,
+            )
+        else:
+            metric_entry.value = float(target.value)
+            metric_entry.observed = True
+            metric_entry.last_updated_fabula = ft
+            if target.inertia is not None:
+                metric_entry.inertia = float(target.inertia)
+        # Pin both endpoints so propagation does not silently overwrite
+        # the clamped axis on the same step.
+        self._intervened_nodes.add(target.source_entity_id)
+        self._intervened_nodes.add(target.target_entity_id)
+
+    def _apply_do_causal_edge(self, target: Any) -> None:
+        """Add or sever a :class:`CausalEdge`.
+
+        ``add`` requires ``causality_type`` and ``mechanism``; missing
+        either is logged and skipped. ``sever`` removes every matching
+        edge between the named pair on both the sandbox and the
+        world-state's ``causal_topology``.
+        """
+        from shadow_loom.models import CausalEdge
+        ft = (
+            int(target.fabula_time)
+            if getattr(target, "fabula_time", None) is not None
+            else self._default_fabula_time()
+        )
+        if target.action == "sever":
+            # Sandbox side.
+            if self.sandbox.has_edge(target.source_id, target.target_id):
+                keys_to_drop = [
+                    k for k, attrs in self.sandbox[target.source_id][target.target_id].items()
+                    if attrs.get("edge_type") == "causal"
+                ]
+                for k in keys_to_drop:
+                    self.sandbox.remove_edge(target.source_id, target.target_id, key=k)
+            # World-state side.
+            self.world_state.causal_topology = [
+                e for e in (self.world_state.causal_topology or [])
+                if not (e.source_id == target.source_id and e.target_id == target.target_id)
+            ]
+            return
+        # action == "add"
+        if not target.causality_type or not target.mechanism:
+            logger.warning(
+                "[CausalPhysics\u00b7do_causal_edge] add missing "
+                "causality_type/mechanism (%s\u2192%s); skipping.",
+                target.source_id, target.target_id,
+            )
+            return
+        try:
+            edge = CausalEdge(
+                source_id=target.source_id,
+                target_id=target.target_id,
+                causality_type=target.causality_type,
+                causal_force=float(target.causal_force),
+                mechanism=target.mechanism,
+                fabula_time=ft,
+                trait_target=target.trait_target,
+                trait_delta=target.trait_delta,
+                rel_counterpart_id=target.rel_counterpart_id,
+            )
+        except Exception:
+            logger.exception(
+                "[CausalPhysics\u00b7do_causal_edge] CausalEdge validation failed for %s\u2192%s.",
+                target.source_id, target.target_id,
+            )
+            return
+        # Sandbox side.
+        if self.sandbox.has_node(target.source_id) and self.sandbox.has_node(target.target_id):
+            self.sandbox.add_edge(
+                target.source_id, target.target_id,
+                edge_type="causal",
+                **edge.model_dump(),
+            )
+        # World-state side.
+        topology = list(self.world_state.causal_topology or [])
+        topology.append(edge)
+        self.world_state.causal_topology = topology
+
+    def _apply_do_spatial_edge(self, target: Any) -> None:
+        """Add, sever, or lock-toggle a :class:`SpatialEdge`."""
+        from shadow_loom.models import SpatialEdge
+        ft = (
+            int(target.fabula_time)
+            if getattr(target, "fabula_time", None) is not None
+            else self._default_fabula_time()
+        )
+        sb = self.sandbox
+
+        def _matching_edge_keys() -> list:
+            if not sb.has_edge(target.source_id, target.target_id):
+                return []
+            return [
+                k for k, attrs in sb[target.source_id][target.target_id].items()
+                if attrs.get("edge_type") == "connected_to"
+            ]
+
+        if target.action == "sever":
+            for k in _matching_edge_keys():
+                sb.remove_edge(target.source_id, target.target_id, key=k)
+            self.world_state.spatial_topology = [
+                e for e in (self.world_state.spatial_topology or [])
+                if not (e.source_id == target.source_id and e.target_id == target.target_id)
+            ]
+            return
+
+        if target.action in ("lock", "unlock"):
+            new_locked = target.action == "lock"
+            for k in _matching_edge_keys():
+                attrs = sb[target.source_id][target.target_id][k]
+                attrs["is_locked"] = new_locked
+                if new_locked and target.barrier_item_id:
+                    attrs["barrier_item_id"] = target.barrier_item_id
+            for e in (self.world_state.spatial_topology or []):
+                if e.source_id == target.source_id and e.target_id == target.target_id:
+                    e.is_locked = new_locked
+                    if new_locked and target.barrier_item_id:
+                        e.barrier_item_id = target.barrier_item_id
+            return
+
+        # action == "add"
+        try:
+            edge = SpatialEdge(
+                source_id=target.source_id,
+                target_id=target.target_id,
+                connection_type=target.connection_type or "passage",
+                bidirectional=bool(target.bidirectional),
+                is_locked=False,
+                barrier_item_id=target.barrier_item_id,
+                established_at_fabula=ft,
+            )
+        except Exception:
+            logger.exception(
+                "[CausalPhysics\u00b7do_spatial_edge] SpatialEdge validation "
+                "failed for %s\u2192%s.", target.source_id, target.target_id,
+            )
+            return
+        if sb.has_node(target.source_id) and sb.has_node(target.target_id):
+            sb.add_edge(
+                target.source_id, target.target_id,
+                edge_type="connected_to",
+                **edge.model_dump(),
+            )
+            if edge.bidirectional:
+                sb.add_edge(
+                    target.target_id, target.source_id,
+                    edge_type="connected_to",
+                    **edge.model_dump(),
+                )
+        topology = list(self.world_state.spatial_topology or [])
+        topology.append(edge)
+        self.world_state.spatial_topology = topology
 
     def _default_fabula_time(self) -> int:
         """Best-effort fabula_time anchor when a DoTarget omits one.

@@ -321,8 +321,33 @@ def calculate_narrative_physics(
     # RUNG 2: INTERVENTION (do-calculus)
     # ==========================================
     elif request.query_type == "intervention":
+        # Typed do-target surface (DoChannel / DoRelationship /
+        # DoCausalEdge / DoSpatialEdge / DoBelief / DoConcern /
+        # DoProposition / DoWorldTrait / DoEvent / DoTrait). Coexists
+        # with the legacy ``request.interventions`` dict; both
+        # contribute to focus / shadow-path seeds so the ego graph
+        # admits the full causal lineage of every surgery regardless
+        # of which surface the user used.
+        typed_do_targets = list(getattr(request, "do_targets", None) or [])
+
         # --- Plausibility gate ---
-        bad = _check_intervention_plausibility(request.interventions, global_world_state)
+        # Plausibility is checked against a union of the legacy dict
+        # and the legacy-equivalent lift of the typed do-targets so
+        # typed-only requests (no ``request.interventions`` dict at
+        # all) are not falsely flagged as empty. The four edge-typed
+        # surgeries plus the affect-layer surgeries have no legacy
+        # representation; their feasibility is enforced inside
+        # :meth:`CausalPhysicsEngine.apply_do_targets` (which logs and
+        # skips on missing endpoints) so plausibility short-circuiting
+        # them here would forbid valid surgeries.
+        plausibility_view = dict(request.interventions or {})
+        plausibility_view.update(_lift_do_targets_to_legacy_dict(typed_do_targets))
+        # When typed-only and no DoEvent/DoTrait lifts produced any
+        # legacy keys, synthesise a sentinel ``.spawn`` key per typed
+        # target so the empty-dict short-circuit doesn't fire.
+        if not plausibility_view and typed_do_targets:
+            plausibility_view = {f"TYPED_{i}.spawn": True for i in range(len(typed_do_targets))}
+        bad = _check_intervention_plausibility(plausibility_view, global_world_state)
         if bad is not None:
             if not getattr(request, "force_implausible", False):
                 logger.warning("[Intervention] Implausible request: %s", bad["reason"])
@@ -342,10 +367,32 @@ def calculate_narrative_physics(
 
         # Collect ALL affected entities from the intervention keys
         focus_ids = _resolve_focus_entities(request.interventions, global_world_state)
-        logger.info("[Intervention] Resolved focus entities: %s from %d interventions", focus_ids, len(request.interventions))
+        if typed_do_targets:
+            for eid in _resolve_focus_from_do_targets(typed_do_targets, global_world_state):
+                if eid not in focus_ids:
+                    focus_ids.append(eid)
+        logger.info(
+            "[Intervention] Resolved focus entities: %s from %d legacy "
+            "interventions + %d typed do_targets",
+            focus_ids, len(request.interventions or {}), len(typed_do_targets),
+        )
+
+        # Shadow-path seeds: every node id named on the LHS of an
+        # intervention key (entity, event, world-trait, etc.) plus
+        # every node referenced by a typed do-target. Lets the
+        # ego-graph extractor walk the reverse causal graph and admit
+        # upstream lineage that lives outside the recency window.
+        intervention_seeds = {
+            k.split(".", 1)[0] for k in (request.interventions or {}) if k
+        }
+        intervention_seeds |= _do_target_seed_ids(typed_do_targets)
 
         # 1. Time-Slice
-        ego_graph = extract_ego_graph_from_memory(global_world_state, focus_ids, temporal_anchor, syuzhet_anchor=syuzhet_anchor)
+        ego_graph = extract_ego_graph_from_memory(
+            global_world_state, focus_ids, temporal_anchor,
+            syuzhet_anchor=syuzhet_anchor,
+            shadow_path_seed_ids=intervention_seeds,
+        )
 
         # 2. Build Sandbox & Apply Math
         shadow_graph = AMWNInstantiator.create_sandbox(ego_graph.model_dump(), "intervention")
@@ -359,19 +406,50 @@ def calculate_narrative_physics(
         logger.info("[Intervention] Sandbox built — %d nodes, %d edges. Applying surgeries.",
                      shadow_graph.number_of_nodes(), shadow_graph.number_of_edges())
 
+        # Typed do-targets only land via the engine path (legacy
+        # ``execute_interventions`` consumes only the string-keyed
+        # dict). Force the engine on when typed surgeries are present
+        # so callers using the default legacy path still see the
+        # typed surface bind through.
+        if typed_do_targets:
+            use_causal_engine = True
+
         if use_causal_engine:
             engine = CausalPhysicsEngine(shadow_graph, global_world_state)
+            # Apply typed do-targets first so the four edge surgeries
+            # (Channel/Relationship/CausalEdge/SpatialEdge) and the
+            # affect-layer surgeries (Belief/Concern/Proposition/
+            # WorldTrait) reach the sandbox. ``apply_do_targets``
+            # lifts DoEvent/DoTrait into the legacy keyspace and
+            # stashes them on ``_last_legacy_interventions`` so we
+            # can union them into the dict ``execute`` consumes for
+            # CTF preflight, plausibility, and provenance pruning.
+            interventions_for_execute = dict(request.interventions or {})
+            if typed_do_targets:
+                engine.apply_do_targets(typed_do_targets)
+                interventions_for_execute = {
+                    **interventions_for_execute,
+                    **(getattr(engine, "_last_legacy_interventions", {}) or {}),
+                }
             physics_result = engine.execute(
                 rung=2,
-                interventions=request.interventions,
+                interventions=interventions_for_execute,
                 target_node_ids=getattr(request, "target_node_ids", None) or [],
             )
 
             # Tier-2 vacuity check (after engine ran)
-            vacuous = _check_engine_vacuity(
-                physics_result, rung=2,
-                interventions=request.interventions,
-            )
+            # Skipped when typed do-targets ran: edge-typed surgeries
+            # (DoChannel/DoRelationship/DoCausalEdge/DoSpatialEdge) and
+            # affect-layer surgeries (DoBelief/DoConcern) need not
+            # produce a node-level delta to be functionally applied —
+            # the world-state mirror writes happen regardless.
+            if typed_do_targets:
+                vacuous = None
+            else:
+                vacuous = _check_engine_vacuity(
+                    physics_result, rung=2,
+                    interventions=interventions_for_execute,
+                )
             if vacuous is not None and not getattr(request, "force_implausible", False):
                 logger.warning("[Intervention] Engine vacuity: %s", vacuous["reason"])
                 return {
@@ -497,8 +575,23 @@ def calculate_narrative_physics(
     # RUNG 3: COUNTERFACTUAL
     # ==========================================
     elif request.query_type == "counterfactual":
+        # Typed historical do-target surface — see the rung-2 branch
+        # for the rationale; same union semantics apply at rung 3.
+        typed_historical_do_targets = list(
+            getattr(request, "historical_do_targets", None) or []
+        )
+
         # --- Plausibility gate ---
-        bad = _check_intervention_plausibility(request.historical_interventions, global_world_state)
+        plausibility_view = dict(request.historical_interventions or {})
+        plausibility_view.update(
+            _lift_do_targets_to_legacy_dict(typed_historical_do_targets)
+        )
+        if not plausibility_view and typed_historical_do_targets:
+            plausibility_view = {
+                f"TYPED_{i}.spawn": True
+                for i in range(len(typed_historical_do_targets))
+            }
+        bad = _check_intervention_plausibility(plausibility_view, global_world_state)
         forced = getattr(request, "force_implausible", False)
         if bad is not None and not forced:
             logger.warning("[Counterfactual] Implausible request: %s", bad["reason"])
@@ -518,9 +611,28 @@ def calculate_narrative_physics(
 
         # Determine the historical anchor point from the requested interventions
         try:
-            past_anchor = _calculate_past_anchor(request.historical_interventions, global_world_state)
+            past_anchor = _calculate_past_anchor(plausibility_view, global_world_state)
         except ValueError as exc:
-            if not forced:
+            # Typed-only request whose targets have no legacy
+            # representation (e.g. DoChannel, DoRelationship,
+            # DoCausalEdge, DoSpatialEdge): use the typed surface
+            # to derive an anchor before reporting paradox.
+            anchor_seeds = _do_target_seed_ids(typed_historical_do_targets)
+            anchor_times: List[int] = []
+            for seed in anchor_seeds:
+                evt = next((e for e in global_world_state.events if e.id == seed), None)
+                if evt:
+                    anchor_times.append(evt.fabula_time)
+                    continue
+                rel = [
+                    e.fabula_time for e in global_world_state.events
+                    if seed in (e.actor_ids or []) or seed in (e.target_ids or [])
+                ]
+                if rel:
+                    anchor_times.append(max(rel))
+            if anchor_times:
+                past_anchor = int(min(anchor_times))
+            elif not forced:
                 logger.warning("[Counterfactual] Temporal paradox: %s", exc)
                 return {
                     "status": "implausible",
@@ -535,25 +647,46 @@ def calculate_narrative_physics(
                         ],
                     },
                 }
-            # Forced: fall back to the simulation horizon (current 'now')
-            past_anchor = int(
-                max((e.fabula_time for e in global_world_state.events), default=0)
-            )
-            logger.warning(
-                "[Counterfactual] Forced past temporal paradox — anchoring at horizon %d",
-                past_anchor,
-            )
-            _forced_warning = _forced_warning or {
-                "reason": str(exc),
-                "unresolved_targets": [
-                    {"target": k, "reason": "no historical anchor"}
-                    for k in request.historical_interventions
-                ],
-            }
+            else:
+                # Forced: fall back to the simulation horizon (current 'now')
+                past_anchor = int(
+                    max((e.fabula_time for e in global_world_state.events), default=0)
+                )
+                logger.warning(
+                    "[Counterfactual] Forced past temporal paradox — anchoring at horizon %d",
+                    past_anchor,
+                )
+                _forced_warning = _forced_warning or {
+                    "reason": str(exc),
+                    "unresolved_targets": [
+                        {"target": k, "reason": "no historical anchor"}
+                        for k in request.historical_interventions
+                    ],
+                }
 
         focus_ids = _resolve_focus_entities(request.historical_interventions, global_world_state)
+        if typed_historical_do_targets:
+            for eid in _resolve_focus_from_do_targets(
+                typed_historical_do_targets, global_world_state
+            ):
+                if eid not in focus_ids:
+                    focus_ids.append(eid)
         logger.info("[Counterfactual] Point of Divergence: T=%d | Focus: %s", past_anchor, focus_ids)
-        ego_graph = extract_ego_graph_from_memory(global_world_state, focus_ids, past_anchor, syuzhet_anchor=syuzhet_anchor)
+        # Shadow-path seeds: counterfactual surgery LHS ids plus the
+        # rung-3 evidence conditions. Both must be reachable from the
+        # sandbox so abduction and twin-network surgery have the full
+        # causal lineage to reason over.
+        ctf_seeds: set = {
+            k.split(".", 1)[0]
+            for k in (request.historical_interventions or {}) if k
+        }
+        ctf_seeds.update(eid for eid in (request.evidence_node_ids or []) if eid)
+        ctf_seeds |= _do_target_seed_ids(typed_historical_do_targets)
+        ego_graph = extract_ego_graph_from_memory(
+            global_world_state, focus_ids, past_anchor,
+            syuzhet_anchor=syuzhet_anchor,
+            shadow_path_seed_ids=ctf_seeds,
+        )
         shadow_graph = AMWNInstantiator.create_sandbox(ego_graph.model_dump(), "counterfactual")
         # Phase-2: surface the audience-side utility layer onto the
         # historical sandbox; ``past_anchor`` is the Point of Divergence
@@ -565,21 +698,37 @@ def calculate_narrative_physics(
         logger.info("[Counterfactual] Historical sandbox built — %d nodes. Applying surgeries.",
                      shadow_graph.number_of_nodes())
 
+        # Force engine path when typed historical surgeries are
+        # supplied; see the rung-2 branch for rationale.
+        if typed_historical_do_targets:
+            use_causal_engine = True
+
         if use_causal_engine:
             engine = CausalPhysicsEngine(shadow_graph, global_world_state)
+            historical_for_execute = dict(request.historical_interventions or {})
+            if typed_historical_do_targets:
+                engine.apply_do_targets(typed_historical_do_targets)
+                historical_for_execute = {
+                    **historical_for_execute,
+                    **(getattr(engine, "_last_legacy_interventions", {}) or {}),
+                }
             physics_result = engine.execute(
                 rung=3,
-                interventions=request.historical_interventions,
+                interventions=historical_for_execute,
                 evidence_node_ids=request.evidence_node_ids,
                 target_node_ids=getattr(request, "target_node_ids", None) or [],
             )
 
             # Tier-2 vacuity check: did the abductive simulation produce anything?
-            vacuous = _check_engine_vacuity(
-                physics_result, rung=3,
-                interventions=request.historical_interventions,
-                evidence_node_ids=request.evidence_node_ids,
-            )
+            # Skipped when typed historical surgeries ran; see rung-2 rationale.
+            if typed_historical_do_targets:
+                vacuous = None
+            else:
+                vacuous = _check_engine_vacuity(
+                    physics_result, rung=3,
+                    interventions=historical_for_execute,
+                    evidence_node_ids=request.evidence_node_ids,
+                )
             if vacuous is not None and not forced:
                 logger.warning("[Counterfactual] Engine vacuity: %s", vacuous["reason"])
                 return {
@@ -754,7 +903,15 @@ def calculate_narrative_physics(
                 fallback,
             )
 
-        ego_graph = extract_ego_graph_from_memory(global_world_state, target_entity_ids, temporal_anchor, syuzhet_anchor=syuzhet_anchor)
+        # Directive briefs need the same shadow-path coverage as Pearl-
+        # rung sandboxes so DirectiveAssembler's epistemic-gap /
+        # tension / trajectory computations see the upstream lineage of
+        # the target entities, not just the most recent N events.
+        ego_graph = extract_ego_graph_from_memory(
+            global_world_state, target_entity_ids, temporal_anchor,
+            syuzhet_anchor=syuzhet_anchor,
+            shadow_path_seed_ids=set(target_entity_ids),
+        )
         ego_dump = ego_graph.model_dump()
 
         if use_causal_engine:
@@ -1673,12 +1830,15 @@ def _resolve_focus_from_do_targets(do_targets: List[Any], world_state: WorldStat
 
     DoBelief / DoConcern / DoTrait carry an explicit ``holder_id``;
     DoEvent's actor / target ids are looked up on the event;
-    DoProposition contributes the proposition's ``referent_ids``.
+    DoProposition contributes the proposition's ``referent_ids``;
+    DoChannel / DoRelationship / DoCausalEdge / DoSpatialEdge
+    contribute their endpoint ids when those resolve to entities.
     Falls back to a single arbitrary entity when nothing matches so the
     ego-graph extractor always has *something* to anchor on.
     """
     from shadow_loom.query_models import (
         DoEvent, DoTrait, DoBelief, DoConcern, DoProposition,
+        DoChannel, DoRelationship, DoCausalEdge, DoSpatialEdge,
     )
     focus: List[str] = []
     seen: set[str] = set()
@@ -1707,10 +1867,91 @@ def _resolve_focus_from_do_targets(do_targets: List[Any], world_state: WorldStat
             if prop:
                 for eid in (prop.referent_ids or []):
                     _add(eid)
+        elif isinstance(t, DoRelationship):
+            _add(t.source_entity_id)
+            _add(t.target_entity_id)
+        elif isinstance(t, DoChannel):
+            ch = (world_state.channels or {}).get(t.channel_id)
+            if ch:
+                for eid in (ch.participant_ids or []):
+                    _add(eid)
+        elif isinstance(t, DoCausalEdge):
+            _add(t.source_id)
+            _add(t.target_id)
+            _add(getattr(t, "rel_counterpart_id", None))
+        elif isinstance(t, DoSpatialEdge):
+            # Spatial endpoints are LOC_ ids; admit any entity at those
+            # locations as plausible focus.
+            for ent_id, ent in world_state.entities.items():
+                if ent.location_id in (t.source_id, t.target_id):
+                    _add(ent_id)
 
     if not focus and world_state.entities:
         focus.append(next(iter(world_state.entities)))
     return focus
+
+
+def _do_target_seed_ids(do_targets: List[Any]) -> set:
+    """Collect every node id mentioned on the LHS of a typed
+    :class:`DoTarget` for shadow-path expansion in the ego-graph
+    extractor. Mirrors the legacy ``intervention_seeds`` collection
+    from the dict-shaped surgery path so rung-2/3 prose sees the
+    upstream causal lineage of every typed surgery.
+    """
+    from shadow_loom.query_models import (
+        DoEvent, DoTrait, DoBelief, DoConcern, DoProposition, DoWorldTrait,
+        DoChannel, DoRelationship, DoCausalEdge, DoSpatialEdge,
+    )
+    seeds: set = set()
+    for t in do_targets:
+        if isinstance(t, DoEvent):
+            seeds.add(t.event_id)
+        elif isinstance(t, DoTrait):
+            seeds.add(t.holder_id)
+        elif isinstance(t, DoBelief):
+            seeds.add(t.holder_id)
+            if t.target_id:
+                seeds.add(t.target_id)
+        elif isinstance(t, DoConcern):
+            seeds.add(t.holder_id)
+        elif isinstance(t, DoProposition):
+            seeds.add(t.proposition_id)
+        elif isinstance(t, DoWorldTrait):
+            seeds.add(t.world_trait_id)
+        elif isinstance(t, DoChannel):
+            seeds.add(t.channel_id)
+        elif isinstance(t, DoRelationship):
+            seeds.add(t.source_entity_id)
+            seeds.add(t.target_entity_id)
+        elif isinstance(t, (DoCausalEdge, DoSpatialEdge)):
+            seeds.add(t.source_id)
+            seeds.add(t.target_id)
+    return {s for s in seeds if s}
+
+
+def _lift_do_targets_to_legacy_dict(do_targets: List[Any]) -> Dict[str, Any]:
+    """Lift the legacy-compatible subset of typed ``DoTarget``s into the
+    ``Dict[str, Any]`` shape consumed by ``engine.execute(...)``'s CTF
+    preflight, plausibility checks, and provenance pruner.
+
+    Only ``DoEvent`` (event clamps) and ``DoTrait`` (per-entity trait
+    clamps) round-trip cleanly into the legacy keyspace. The four
+    edge-typed surgeries (DoChannel / DoRelationship / DoCausalEdge /
+    DoSpatialEdge) and the affect-layer surgeries (DoBelief /
+    DoConcern / DoProposition / DoWorldTrait) have no legacy
+    representation \u2014 they reach the sandbox via
+    ``engine.apply_do_targets`` and bypass the legacy dict path.
+    """
+    from shadow_loom.query_models import DoEvent, DoTrait
+    out: Dict[str, Any] = {}
+    for t in do_targets:
+        if isinstance(t, DoEvent):
+            out[f"{t.event_id}.event_type"] = (
+                "prevented" if t.occurred is False else "occurred"
+            )
+        elif isinstance(t, DoTrait):
+            out[f"{t.holder_id}.traits.{t.trait_name}"] = float(t.value)
+    return out
 
 
 def apply_intervention(

@@ -38,6 +38,7 @@ from shadow_loom.directive_assembly import (
     EntanglementPair,
     FearProfile,
     GriefProfile,
+    InterventionBranch,
     InterventionMechanism,
     IronyProfile,
     JoyProfile,
@@ -48,8 +49,10 @@ from shadow_loom.directive_assembly import (
     RenderingDirective,
     SurpriseProfile,
     ThreatProximity,
+    build_false_belief_grounding_constraints,
     build_false_proposition_constraints,
     build_prevented_event_constraints,
+    build_unrealised_concern_constraints,
     compute_hidden_channels_for,
 )
 from shadow_loom.models import WorldStateV1
@@ -440,6 +443,92 @@ def _format_threat_proximity(tp: ThreatProximity) -> str:
             "  AFFECTED CONCERNS (satisfaction or salience shifted): "
             + ", ".join(tp.affected_concerns)
         )
+    return "\n".join(lines)
+
+
+def _format_intervention_branch(ib: InterventionBranch) -> str:
+    """Render the Rung-2 intervention sandbox for the generator.
+
+    Mirrors the rung-2 surgery + affected-node section of
+    :func:`_format_threat_proximity` without the threat / hope
+    framing — used for plain intervention briefs where there is no
+    threat reading but the prose still must ground every flipped
+    proposition / belief / concern under the do-surgery.
+    """
+    lines: List[str] = ["INTERVENTION SANDBOX (Rung-2 do-calculus):"]
+
+    do_target = ib.do_target
+    if do_target is not None:
+        kind = getattr(do_target, "target_kind", None)
+        if kind == "proposition":
+            lines.append(
+                f"  RUNG-2 SURGERY KIND: proposition \u2014 the world's "
+                f"truth about PROP {getattr(do_target, 'proposition_id', '?')} "
+                f"was clamped to {getattr(do_target, 'truth', '?')}."
+            )
+        elif kind == "belief":
+            lines.append(
+                f"  RUNG-2 SURGERY KIND: belief \u2014 "
+                f"{getattr(do_target, 'holder_id', '?')}'s confidence "
+                f"about PROP {getattr(do_target, 'proposition_id', '?')} "
+                f"was clamped to {getattr(do_target, 'confidence', '?')}."
+            )
+        elif kind == "concern":
+            lines.append(
+                f"  RUNG-2 SURGERY KIND: concern \u2014 "
+                f"{getattr(do_target, 'holder_id', '?')}'s concern "
+                f"{getattr(do_target, 'concern_id', '?')} was clamped."
+            )
+        elif kind == "trait":
+            lines.append(
+                f"  RUNG-2 SURGERY KIND: trait \u2014 "
+                f"{getattr(do_target, 'holder_id', '?')} was clamped to "
+                f"{getattr(do_target, 'trait_name', '?')}="
+                f"{getattr(do_target, 'value', '?')}."
+            )
+        elif kind == "event":
+            occurred = getattr(do_target, "occurred", None)
+            verb = "occurred" if occurred else "did not occur"
+            lines.append(
+                f"  RUNG-2 SURGERY KIND: event \u2014 EVT "
+                f"{getattr(do_target, 'event_id', '?')} {verb}."
+            )
+        elif kind == "world_trait":
+            lines.append(
+                f"  RUNG-2 SURGERY KIND: world_trait \u2014 "
+                f"{getattr(do_target, 'world_trait_id', '?')} was clamped to "
+                f"magnitude {getattr(do_target, 'value', '?')}."
+            )
+
+    if len(ib.do_targets) > 1:
+        lines.append(
+            f"  ADDITIONAL SURGERIES: {len(ib.do_targets) - 1} further "
+            "do-target(s) applied in this brief."
+        )
+
+    if ib.affected_propositions:
+        lines.append(
+            "  AFFECTED PROPOSITIONS (truth flipped post-intervention): "
+            + ", ".join(ib.affected_propositions[:20])
+        )
+    if ib.affected_beliefs:
+        lines.append(
+            "  AFFECTED BELIEFS (confidence shifted, holder\u2192target): "
+            + ", ".join(ib.affected_beliefs[:20])
+        )
+    if ib.affected_concerns:
+        lines.append(
+            "  AFFECTED CONCERNS (satisfaction or salience shifted): "
+            + ", ".join(ib.affected_concerns[:20])
+        )
+    if ib.tragedy_form:
+        lines.append(f"  tragedy_form: {ib.tragedy_form}")
+    lines.append(
+        "  Rule: every node listed above is a Rung-2 sandbox flip. "
+        "The prose must visibly ground each one in an on-page event "
+        "or utterance \u2014 silent off-page changes will be flagged "
+        "as miracle steps."
+    )
     return "\n".join(lines)
 
 
@@ -1155,6 +1244,39 @@ def _fmt_beliefs(beliefs: List[Any], *, max_items: int = 6) -> List[str]:
     return out
 
 
+def _fmt_concerns(concerns: List[Any], *, max_items: int = 6) -> List[str]:
+    """Render an entity's standing fears / desires.
+
+    Concerns name a proposition the entity wants true (``polarity='desire'``)
+    or dreads (``polarity='fear'``), with a per-entity ``salience``.
+    Surfaced into the prompt so the renderer can ground emotional beats
+    in the entity's standing motivational ledger and the auditor can
+    flag prose that violates concern polarity (e.g. a 'fear'-polarised
+    entity celebrating the proposition's realisation).
+    """
+    out: List[str] = []
+    if not concerns:
+        return out
+    # Surface the highest-salience concerns first \u2014 they're the
+    # ones a renderer/auditor should be most attentive to.
+    sorted_concerns = sorted(
+        (c for c in concerns if isinstance(c, dict)),
+        key=lambda c: float(c.get("salience", 0.0) or 0.0),
+        reverse=True,
+    )
+    for c in sorted_concerns[:max_items]:
+        cid = c.get("concern_id") or c.get("id") or "?"
+        polarity = c.get("polarity", "?")
+        salience = float(c.get("salience", 0.0) or 0.0)
+        prop_id = c.get("proposition_id", "?")
+        kind = c.get("kind") or ""
+        kind_blob = f" [{kind}]" if kind else ""
+        out.append(
+            f"      {polarity}s {prop_id}{kind_blob} (sal={salience:.2f}, {cid})"
+        )
+    return out
+
+
 def _normalise_omniscient_to_ego_shape(
     ctx: Dict[str, Any],
     *,
@@ -1240,6 +1362,10 @@ def _normalise_omniscient_to_ego_shape(
         "relevant_utterance_events": utterances,
         "recent_memory": recent_memory,
         "world_traits": wt_list,
+        # Carry the propositional ledger through so the omniscient /
+        # interrogation paths surface the same proposition data the
+        # ego-graph extractor exposes for ego views.
+        "relevant_propositions": list(ctx.get("propositions") or []),
     }
 
 
@@ -1347,6 +1473,16 @@ def _normalise_sandbox_to_ego_shape(ctx: Dict[str, Any]) -> Dict[str, Any]:
         "relevant_utterance_events": utterance_events,
         "recent_memory": recent_memory,
         "world_traits": world_traits,
+        # ``_stamp_utility_layer`` writes the time-sliced
+        # propositional ledger onto ``sandbox.graph['propositions']``
+        # for every Rung-2/3 sandbox; ``nx.node_link_data`` surfaces
+        # the graph-level attrs under the top-level ``graph`` key.
+        # Carry it through so the renderer/auditor see the same
+        # propositions for post-surgery scenes that the ego-graph
+        # extractor exposes for pre-surgery / observation scenes.
+        "relevant_propositions": list(
+            (ctx.get("graph") or {}).get("propositions") or []
+        ),
     }
 
 
@@ -1465,6 +1601,7 @@ def format_scene_context_for_prompt(
             sections.append(f"  - {name} ({eid}) — {status}, present at {loc}")
             sections.append(f"      traits: {_fmt_traits(ent.get('traits') or {})}")
             sections.extend(_fmt_beliefs(ent.get("beliefs") or [], max_items=_max_beliefs))
+            sections.extend(_fmt_concerns(ent.get("concerns") or []))
 
     # ------------------------------------------------------------
     # Co-present entities — also need traits / status so the renderer
@@ -1730,6 +1867,46 @@ def format_scene_context_for_prompt(
             if desc:
                 sections.append(f"      {desc[:200]}")
 
+    # ------------------------------------------------------------
+    # Propositions in scene \u2014 the live propositional ledger keyed
+    # to in-scene referents. Surface their kind, latest committed
+    # truth value (when known), audience prior, and stakes so the
+    # renderer can ground reveals/twists/dramatic-irony beats and the
+    # auditor can flag prose that asserts a FALSE-committed
+    # proposition as fact or contradicts a TRUE-committed one.
+    # ------------------------------------------------------------
+    props = ctx.get("relevant_propositions") or []
+    if props:
+        sections.append("Propositions in scene (latest committed truth):")
+        for p in props[:25]:
+            pid = p.get("proposition_id") or p.get("id") or "?"
+            kind = p.get("kind", "?")
+            desc = (p.get("description") or "").strip()
+            stakes = p.get("stakes")
+            prior = p.get("audience_default_prior")
+            truth_map = p.get("truth_at_fabula") or {}
+            truth_blob = ""
+            if isinstance(truth_map, dict) and truth_map:
+                items = sorted(
+                    ((int(t), bool(v)) for t, v in truth_map.items()),
+                    key=lambda kv: kv[0],
+                )
+                latest_t, latest_v = items[-1]
+                truth_blob = f", truth={latest_v}@t={latest_t}"
+            elif isinstance(truth_map, dict):
+                truth_blob = ", truth=open"
+            extras: list = []
+            if isinstance(stakes, (int, float)):
+                extras.append(f"stakes={float(stakes):.2f}")
+            if isinstance(prior, (int, float)):
+                extras.append(f"prior={float(prior):.2f}")
+            extras_blob = f" [{', '.join(extras)}]" if extras else ""
+            sections.append(
+                f"  - {pid} ({kind}{truth_blob}){extras_blob}: {desc[:160]}"
+            )
+        if len(props) > 25:
+            sections.append(f"  \u2026 (+{len(props) - 25} more propositions)")
+
     if not sections:
         return "(No scene context available.)"
     return "\n".join(sections)
@@ -1739,6 +1916,59 @@ def format_scene_context_for_prompt(
 # prefer the public ``format_scene_context_for_prompt`` name.
 def _format_scene_context(ctx: Dict[str, Any]) -> str:
     return format_scene_context_for_prompt(ctx)
+
+
+# Scenic-anchor stylistic-instruction substrings. When the form-class
+# override fires (synopsis / plot_summary / outline / non-narrative
+# forms), these phrases must be stripped from the brief before it
+# reaches the prompt — they directly instruct "render as a lived
+# scene" in the same words the override banner forbids, and the LLM
+# reliably defaults to the more concrete sensory language when the
+# two conflict. Substrings (case-sensitive) chosen to match the exact
+# strings baked into build_observation_brief / build_intervention_brief
+# / build_counterfactual_brief / build_brief / the directive fallback.
+_SCENIC_ANCHOR_SUBSTRINGS: tuple[str, ...] = (
+    "Ground the prose in concrete physical reality",
+    "moment by moment",
+    "lived present",
+    "what the POV character sees, hears, touches",
+    "Render this scene as the actual lived world",
+    "Render the scene as the lived present",
+    "Render the scene as the actual lived world",
+    "actual lived world",
+)
+
+
+def _strip_scenic_anchors_for_form_override(
+    brief: CreativeBrief,
+) -> CreativeBrief:
+    """Return a copy of ``brief`` with scenic-anchor lines stripped.
+
+    Removes ``stylistic_instructions`` entries and ``ConstraintBlock``
+    entries whose text matches any of :data:`_SCENIC_ANCHOR_SUBSTRINGS`.
+    Used when the form-class override (summary / non-narrative forms)
+    is active so the directive-level "render as a lived scene" anchors
+    don't override the form-class banner.
+    """
+    def _has_scenic_anchor(text: str) -> bool:
+        return any(s in text for s in _SCENIC_ANCHOR_SUBSTRINGS)
+
+    new_brief = brief.model_copy(deep=True)
+
+    rendering = new_brief.rendering
+    if rendering is not None and rendering.stylistic_instructions:
+        rendering.stylistic_instructions = [
+            si for si in rendering.stylistic_instructions
+            if not _has_scenic_anchor(si)
+        ]
+
+    if new_brief.constraints:
+        new_brief.constraints = [
+            c for c in new_brief.constraints
+            if not _has_scenic_anchor(getattr(c, "instruction", "") or "")
+        ]
+
+    return new_brief
 
 
 def assemble_rendering_prompt(
@@ -1806,7 +2036,22 @@ def assemble_rendering_prompt(
             brief.narrative_style.format,
             brief.rendering.rendering_mode,
         )
+    # When the form-class override fires (summary or non-narrative
+    # source), strip the scenic-anchor stylistic instructions and the
+    # "render as the actual lived world" hard ConstraintBlock from the
+    # brief BEFORE either reaches the prompt. Several builders
+    # (build_observation_brief, build_intervention_brief,
+    # build_counterfactual_brief, build_brief, the directive-fallback
+    # rendering directive) bake "Ground the prose in concrete physical
+    # reality — moment by moment / lived present" into the directive,
+    # which is exactly what the form-class banner forbids for synopsis
+    # / plot_summary / outline / non-narrative forms. Without this
+    # strip the renderer reads contradictory HARD instructions and
+    # reliably defaults to the more concrete sensory language — the
+    # auditor then flags ``style_mismatch`` and the refinement loop
+    # cycles without convergence.
     if _early_form_override:
+        brief = _strip_scenic_anchors_for_form_override(brief)
         sections.append(_early_form_override)
         sections.append("")
 
@@ -1917,6 +2162,10 @@ def assemble_rendering_prompt(
     # === Effect-specific payloads ===
     if brief.threat_proximity:
         sections.append(_format_threat_proximity(brief.threat_proximity))
+        sections.append("")
+
+    if brief.intervention_branch:
+        sections.append(_format_intervention_branch(brief.intervention_branch))
         sections.append("")
 
     if brief.surprise_profile:
@@ -2249,6 +2498,12 @@ def build_observation_brief(
     constraints.extend(build_false_proposition_constraints(
         world_state, syuzhet_anchor, world_label="observed",
     ))
+    constraints.extend(build_unrealised_concern_constraints(
+        world_state, syuzhet_anchor, world_label="observed",
+    ))
+    constraints.extend(build_false_belief_grounding_constraints(
+        world_state, syuzhet_anchor, world_label="observed",
+    ))
     scene_context = dict(physics_state) if isinstance(physics_state, dict) else {}
     if syuzhet_anchor is not None and isinstance(scene_context, dict):
         scene_context.setdefault("syuzhet_anchor", syuzhet_anchor)
@@ -2473,6 +2728,9 @@ def build_intervention_brief(
     pruned_utterance_event_ids: Optional[List[str]] = None,
     disabled_channel_ids: Optional[List[str]] = None,
     skipped_interventions: Optional[List[Dict[str, Any]]] = None,
+    affected_propositions: Optional[List[str]] = None,
+    affected_beliefs: Optional[List[str]] = None,
+    affected_concerns: Optional[List[str]] = None,
     *,
     preceding_prose: Optional[str] = None,
     branch_world_id: Literal["factual", "shadow"] = "factual",
@@ -2673,6 +2931,12 @@ def build_intervention_brief(
     constraints.extend(build_false_proposition_constraints(
         world_state, syuzhet_anchor, world_label="intervened",
     ))
+    constraints.extend(build_unrealised_concern_constraints(
+        world_state, syuzhet_anchor, world_label="intervened",
+    ))
+    constraints.extend(build_false_belief_grounding_constraints(
+        world_state, syuzhet_anchor, world_label="intervened",
+    ))
 
     return CreativeBrief(
         target_effect="intervention",
@@ -2724,6 +2988,29 @@ def build_intervention_brief(
             ],
         ),
         intervention_mechanisms=mechanisms,
+        # Rung-2 sandbox payload: typed do_target(s) + flipped
+        # propositions / beliefs / concerns. Mirrors the Rung-3
+        # ``counterfactual_branch`` channel so the renderer and
+        # auditor can verify the prose grounds every node the
+        # surgery touched. Empty when the legacy event-only path
+        # supplied the intervention.
+        intervention_branch=InterventionBranch(
+            do_target=(
+                list(getattr(query, "do_targets", None) or [None])[0]
+            ),
+            do_targets=[
+                t.model_dump() if hasattr(t, "model_dump") else dict(t)
+                for t in (getattr(query, "do_targets", None) or [])
+            ],
+            affected_propositions=list(affected_propositions or []),
+            affected_beliefs=list(affected_beliefs or []),
+            affected_concerns=list(affected_concerns or []),
+        ) if (
+            getattr(query, "do_targets", None)
+            or affected_propositions
+            or affected_beliefs
+            or affected_concerns
+        ) else None,
         scene_context=(
             {**physics_state, "syuzhet_anchor": syuzhet_anchor}
             if syuzhet_anchor is not None
@@ -2745,6 +3032,10 @@ def build_counterfactual_brief(
     pruned_utterance_event_ids: Optional[List[str]] = None,
     disabled_channel_ids: Optional[List[str]] = None,
     skipped_interventions: Optional[List[Dict[str, Any]]] = None,
+    affected_propositions: Optional[List[str]] = None,
+    affected_beliefs: Optional[List[str]] = None,
+    affected_concerns: Optional[List[str]] = None,
+    historical_do_targets: Optional[List[Dict[str, Any]]] = None,
     *,
     preceding_prose: Optional[str] = None,
     branch_world_id: Literal["factual", "shadow"] = "factual",
@@ -2805,6 +3096,14 @@ def build_counterfactual_brief(
     # echoes brief vocabulary verbatim and the meta-narration auditor
     # then rejects it.
     hist_keys = list(query.historical_interventions.keys())
+    # Phase-9 sandbox coverage: populate the structured surgery payload
+    # (do_target + affected_propositions / beliefs / concerns) so the
+    # renderer and auditor see WHICH nodes the Rung-3 surgery touches
+    # across the plot — not just the natural-language summary above.
+    # Without this both surfaces fell through to empty lists and the
+    # auditor's "RUNG-3 SURGERY KIND" / "AFFECTED PROPOSITIONS" lines
+    # rendered nothing, leaving the shadow path uncovered.
+    _hist_do_targets = list(getattr(query, "historical_do_targets", None) or [])
     cf_branch = CounterfactualBranch(
         actual_outcome="Events as they occurred in the established record.",
         simulated_outcome=(
@@ -2812,6 +3111,10 @@ def build_counterfactual_brief(
             f"{query.historical_interventions}"
         ),
         divergence_event_id=hist_keys[0].split(".")[0] if hist_keys else None,
+        do_target=_hist_do_targets[0] if _hist_do_targets else None,
+        affected_propositions=list(affected_propositions or []),
+        affected_beliefs=list(affected_beliefs or []),
+        affected_concerns=list(affected_concerns or []),
     )
 
     constraints = [
@@ -2937,6 +3240,12 @@ def build_counterfactual_brief(
         world_state, syuzhet_anchor, world_label="counterfactual",
     ))
     constraints.extend(build_false_proposition_constraints(
+        world_state, syuzhet_anchor, world_label="counterfactual",
+    ))
+    constraints.extend(build_unrealised_concern_constraints(
+        world_state, syuzhet_anchor, world_label="counterfactual",
+    ))
+    constraints.extend(build_false_belief_grounding_constraints(
         world_state, syuzhet_anchor, world_label="counterfactual",
     ))
 

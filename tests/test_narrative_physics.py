@@ -1005,15 +1005,29 @@ class TestChannels:
         )
         result = calculate_narrative_physics(query, macbeth_ws)
         G = nx.node_link_graph(result["physics_state"])
-        # Collect causal edges as (source, target) pairs with multiplicity
+        # Collect causal edges keyed by (source, target, mechanism,
+        # causality_type, trait_target). Two edges between the same
+        # pair are legitimately distinct when their mechanism /
+        # causality_type / trait_target differ (e.g. a single event
+        # can affect a target via separate ``mutation_social``
+        # branches on ``affinity`` and ``fear``). The dedup contract
+        # this test guards is the section-C fallback (``actor_id ->
+        # evt_id``) re-adding an edge that section-D already wired
+        # \u2014 which would surface as same-key duplicates.
         from collections import Counter
-        causal_pairs = Counter()
+        causal_keys = Counter()
         for u, v, d in G.edges(data=True):
-            if d.get("edge_type") == "causal":
-                causal_pairs[(u, v)] += 1
-        # No pair should have more than 1 causal edge
-        for pair, count in causal_pairs.items():
-            assert count == 1, f"Duplicate causal edge {pair} appears {count} times"
+            if d.get("edge_type") != "causal":
+                continue
+            key = (
+                u, v,
+                d.get("mechanism"),
+                d.get("causality_type"),
+                d.get("trait_target"),
+            )
+            causal_keys[key] += 1
+        for key, count in causal_keys.items():
+            assert count == 1, f"Duplicate causal edge {key} appears {count} times"
 
     def test_inventory_drop_after_teleport_uses_new_location(self):
         """Dropping an object after teleporting the owner should place it at the new room."""

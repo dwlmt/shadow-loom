@@ -20,6 +20,7 @@ You are given (via the system prompt the orchestrator stitches in front of this 
 > - `mechanism` should be one of: `physical`, `psychological`, `epistemic`, `social`, `emotional`, `informational`, `betrayal`. Long-form aliases (`physical_force`, `epistemic_revelation`, `social_coercion`) are auto-canonicalized to the short form. Off-list labels (`kinetic`, `chemical`, `seduction`, `coercion`, `deduction`) are tolerated but bypass mechanism-routing — only use them when you specifically *want* the impulse to apply uniformly to all the entity's traits.
 > - `causal_force` ∈ [0, 10], `trait_delta` ∈ [-1, 1], `propagation_delay` ≥ 0 — values outside these ranges are clamped (lossy).
 > - On `chain_reaction` edges (event→event), the target's `fabula_time` MUST be ≥ source `fabula_time + propagation_delay`. Inverted timing is rejected by `_validate_time_ordering` (e.g. an utterance can't be caused by an event that hasn't happened yet).
+> - **`world_id` is ALWAYS `"factual"`** on every event, edge, and entity_update you emit. The `"shadow"` value is reserved for the runtime counterfactual sandbox — extraction never produces shadow nodes. Past-tense narration, character recollections, prophecies, and gossip are all factual events on the story timeline (the prophecy was uttered, the recollected memory really happened) — they go on the factual branch, not on a shadow branch. Do not set `world_id` at all unless you mean `"factual"`; the schema defaults to factual and the validator coerces any stray `"shadow"` back to factual.
 
 ---
 

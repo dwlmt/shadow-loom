@@ -192,9 +192,173 @@ class DoWorldTrait(BaseModel):
     )
 
 
+class DoChannel(BaseModel):
+    """Mutate a standing :class:`Channel` \u2014 disable, re-enable, or
+    re-tune intelligibility.
+
+    Used for "if the wiretap had been discovered earlier", "suppose
+    the courier had been turned", "what if the mind-link had been
+    severed at chapter 8". The clamp lands on the sandbox's Channel
+    node (so any utterance/belief that resolves through it on the
+    same propagate step sees the new state) and is mirrored onto
+    ``WorldStateV1.channels`` so downstream consumers reading the
+    world directly observe the surgery.
+
+    Channel *creation* is handled by ``query.introduce.channels`` /
+    ``IntroducedChannelSpec`` so the brand-new birth path stays
+    distinct from the in-place clamp path.
+    """
+    target_kind: Literal["channel"] = "channel"
+    channel_id: str = Field(description="CHN_ id whose state is clamped.")
+    active: Optional[bool] = Field(
+        default=None,
+        description=(
+            "True = re-enable a previously-terminated channel "
+            "(clears ``terminated_at_fabula``). False = sever the "
+            "channel at this query's anchor."
+        ),
+    )
+    intelligibility: Optional[Dict[str, float]] = Field(
+        default=None,
+        description=(
+            "Per-participant decode-probability override \u2208 [0, 1]. "
+            "Keys overwrite the channel's existing intelligibility map."
+        ),
+    )
+    fabula_time: Optional[int] = Field(
+        default=None,
+        description="Fabula time of the clamp. Defaults to the query's anchor when unset.",
+    )
+
+
+class DoRelationship(BaseModel):
+    """Clamp a single per-axis :class:`RelationshipMetric` between two
+    entities \u2014 a social-fabric intervention.
+
+    Targets the canonical ``(source, target)`` directed pair. The
+    engine writes the clamp into both the sandbox edge attrs (so
+    propagation sees it on the same step) and the world-state's
+    ``social_topology`` (so directive assembly and re-extraction
+    observe the pinned axis). Spawns a fresh edge carrying only the
+    clamped metric when the named pair has no existing relationship.
+    """
+    target_kind: Literal["relationship"] = "relationship"
+    source_entity_id: str = Field(description="ENT_ id of the perspective entity.")
+    target_entity_id: str = Field(description="ENT_ id of the relationship counterpart.")
+    metric: Literal["affinity", "fear", "power_dynamic"] = Field(
+        description="Which per-axis metric to clamp.",
+    )
+    value: float = Field(
+        ge=-1.0, le=1.0,
+        description="Clamped metric value (typical range [-1.0, 1.0]).",
+    )
+    inertia: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0,
+        description="Override per-axis inertia; None leaves it unchanged.",
+    )
+    fabula_time: Optional[int] = Field(
+        default=None,
+        description="Fabula time of the clamp. Defaults to the query's anchor when unset.",
+    )
+
+
+class DoCausalEdge(BaseModel):
+    """Add or sever a :class:`CausalEdge` \u2014 mechanism-layer surgery.
+
+    Clamps the *existence* of a causal arrow between two pre-existing
+    nodes. Modifying force/mechanism on an existing edge is
+    intentionally not supported \u2014 use re-extraction or sever+add for
+    that. Distinct from :class:`DoEvent` (which clamps a node's
+    occurrence) because removing a single cause leaves the effect
+    free to be triggered by other parents, while preventing the
+    effect node itself blocks every parent at once.
+    """
+    target_kind: Literal["causal_edge"] = "causal_edge"
+    source_id: str = Field(description="EVT_/ENT_/OBJ_/LOC_/WORLD_ id of the cause.")
+    target_id: str = Field(description="EVT_/ENT_/OBJ_/LOC_/WORLD_ id of the effect.")
+    action: Literal["add", "sever"] = Field(
+        description="``add`` instantiates a new edge; ``sever`` removes the matching edge(s).",
+    )
+    causality_type: Optional[Literal[
+        "chain_reaction", "mutation", "mutation_social",
+        "affordance_gate", "ambient_propagation",
+    ]] = Field(
+        default=None,
+        description="Required for ``action='add'``. Mirrors :class:`CausalEdge.causality_type`.",
+    )
+    mechanism: Optional[str] = Field(
+        default=None,
+        description=(
+            "Required for ``action='add'``. Canonical short key "
+            "('physical', 'psychological', 'epistemic', 'social', "
+            "'emotional', 'informational', 'betrayal') or an off-list label."
+        ),
+    )
+    causal_force: float = Field(
+        default=5.0, ge=0.0, le=10.0,
+        description="Impact magnitude for ``action='add'``.",
+    )
+    trait_target: Optional[str] = Field(
+        default=None,
+        description="For mutation / mutation_social adds: the specific trait or metric affected.",
+    )
+    trait_delta: Optional[float] = Field(
+        default=None,
+        description="For mutation / mutation_social adds: signed magnitude of the change.",
+    )
+    rel_counterpart_id: Optional[str] = Field(
+        default=None,
+        description="For mutation_social adds: ENT_ id of the other entity in the dyad.",
+    )
+    fabula_time: Optional[int] = Field(
+        default=None,
+        description="Fabula time of the edge. Defaults to the query's anchor when unset.",
+    )
+
+
+class DoSpatialEdge(BaseModel):
+    """Add, sever, or lock-toggle a :class:`SpatialEdge` \u2014 architecture
+    surgery.
+
+    Used for "if the postern had been bricked up", "suppose the secret
+    passage from the tomb opened earlier", "what if the courtyard
+    gate had been unlocked when Banquo arrived".
+    """
+    target_kind: Literal["spatial_edge"] = "spatial_edge"
+    source_id: str = Field(description="LOC_ id of the source location.")
+    target_id: str = Field(description="LOC_ id of the target location.")
+    action: Literal["add", "sever", "lock", "unlock"] = Field(
+        description=(
+            "``add`` creates a new connection; ``sever`` removes the "
+            "matching edge(s); ``lock``/``unlock`` toggles "
+            "``is_locked`` on the existing edge."
+        ),
+    )
+    connection_type: Optional[str] = Field(
+        default=None,
+        description="For ``action='add'``: free-text classifier (e.g. 'doorway', 'corridor').",
+    )
+    bidirectional: bool = Field(
+        default=True,
+        description="For ``action='add'``: whether the edge is traversable both ways.",
+    )
+    barrier_item_id: Optional[str] = Field(
+        default=None,
+        description="For ``action='add'`` or ``action='lock'``: optional OBJ_ id whose state determines the lock.",
+    )
+    fabula_time: Optional[int] = Field(
+        default=None,
+        description="Fabula time of the clamp. Defaults to the query's anchor when unset.",
+    )
+
+
+# Discriminated union — Pydantic v2 dispatches on ``target_kind``.
 # Discriminated union — Pydantic v2 dispatches on ``target_kind``.
 DoTarget = Annotated[
-    Union[DoEvent, DoProposition, DoBelief, DoConcern, DoTrait, DoWorldTrait],
+    Union[
+        DoEvent, DoProposition, DoBelief, DoConcern, DoTrait, DoWorldTrait,
+        DoChannel, DoRelationship, DoCausalEdge, DoSpatialEdge,
+    ],
     Field(discriminator="target_kind"),
 ]
 

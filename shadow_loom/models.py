@@ -1247,6 +1247,31 @@ class RelationshipEdge(AMWNEdge):
         ),
     )
 
+    # --- Edge-level lifecycle (independent of per-axis freshness) ---
+    established_at_fabula: Optional[int] = Field(
+        default=None,
+        description=(
+            "Optional fabula tick at which this directed relationship "
+            "first becomes active (acquaintance, alliance, marriage, "
+            "etc.). ``None`` = active from the simulation start. "
+            "Time-slicing readers (omniscient extract, ego graph) hide "
+            "the edge from anchors before this tick."
+        ),
+    )
+    ended_at_fabula: Optional[int] = Field(
+        default=None,
+        description=(
+            "Optional fabula tick at which this directed relationship "
+            "is permanently severed (rupture, death, exile, divorce). "
+            "Distinct from per-axis staleness on "
+            "``RelationshipMetric.last_updated_fabula``: a relationship "
+            "with stale metrics is still *active*, just unobserved; an "
+            "ended relationship no longer participates in propagation. "
+            "Time-slicing readers drop the edge from anchors at or "
+            "after this tick."
+        ),
+    )
+
     @model_validator(mode="before")
     @classmethod
     def _migrate_flat_fields(cls, data: Any) -> Any:
@@ -1453,10 +1478,33 @@ def reconstruct_entity_at(entity: "Entity", fabula_time: int) -> dict:
         # Merge trait updates
         for k, tv in snap.traits.items():
             traits[k] = {"value": tv.value, "inertia": tv.inertia}
-        # Remove invalidated beliefs
+        # Remove invalidated beliefs.
+        # An invalidated entry may be either a bare ``target_id``
+        # (legacy / coarse: drops every belief about that target)
+        # or a ``"target_id::PROP_..."`` composite (fine-grained:
+        # drops only the belief whose ``proposition_id`` matches).
+        # The composite form keeps multi-belief same-target cases
+        # (e.g. one belief about an entity per distinct
+        # proposition) from being over-invalidated when only one of
+        # them is contradicted.
         if snap.beliefs_invalidated:
-            inv_set = set(snap.beliefs_invalidated)
-            beliefs = [b for b in beliefs if b.get("target_id") not in inv_set]
+            coarse: set = set()
+            fine: set = set()
+            for entry in snap.beliefs_invalidated:
+                if "::" in entry:
+                    fine.add(entry)
+                else:
+                    coarse.add(entry)
+            kept = []
+            for b in beliefs:
+                tid = b.get("target_id")
+                pid = b.get("proposition_id")
+                if tid in coarse:
+                    continue
+                if pid and f"{tid}::{pid}" in fine:
+                    continue
+                kept.append(b)
+            beliefs = kept
         # Add new beliefs
         for b in snap.beliefs_added:
             beliefs.append(b.model_dump())

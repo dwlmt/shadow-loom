@@ -26,9 +26,11 @@ from shadow_loom.models import WorldStateV1
 from shadow_loom.pipeline import (
     PipelineConfig,
     PipelineResult,
+    finish_reextraction,
     humanize_pipeline_result,
     run_pipeline,
 )
+import threading
 from shadow_loom.query_models import ManualEditQuery, UserRequest
 from shadow_loom.query_parsing import (
     QueryParseResult,
@@ -473,11 +475,24 @@ class AppState:
         ctx_ancestor_row_id = self.current_version_row_id
 
         logger.info("[AppState] Running pipeline: query_type=%s", query.query_type)
+        # Defer Steps 6–7 (prose re-extraction + merge) for write-class
+        # query types so the user sees the rendered prose immediately
+        # and the heavy ingest runs in a background thread. Read-only
+        # Q&A queries (general/interrogate/evaluate) never advance the
+        # world model and so don't need deferral.
+        readonly_query_types = ("general", "interrogate", "evaluate")
+        defer_this_run = (
+            query.query_type not in readonly_query_types
+            and not self.pipeline_config.skip_reextraction
+        )
+        run_cfg = self.pipeline_config
+        if defer_this_run and not run_cfg.defer_reextraction:
+            run_cfg = run_cfg.model_copy(update={"defer_reextraction": True})
         try:
             pipeline_result = run_pipeline(
                 query,
                 versioned_model=self.versioned_model,
-                config=self.pipeline_config,
+                config=run_cfg,
             )
         except Exception as e:
             logger.exception("[AppState] Pipeline execution failed")
@@ -556,10 +571,15 @@ class AppState:
         # store divergent prose/world state under the same version row.
         # Skip persistence entirely when context switched mid-flight — the
         # ancestor lineage we captured is no longer the user's current view.
+        # When Steps 6–7 are still pending we cannot persist the version
+        # yet — the world_model has not been advanced. The background
+        # thread spawned below will persist + emit WORLD_STATE_CHANGED
+        # once finish_reextraction completes.
         if (
             not short_circuited
             and not readonly_query
             and not pipeline_result.reextraction_failed
+            and not pipeline_result.reextraction_pending
             and not context_switched
         ):
             self._save_version_to_db(
@@ -604,7 +624,107 @@ class AppState:
         self.emit(StateEvent.PIPELINE_RESULT, result=result)
         self.emit(StateEvent.QUERY_COMPLETE, result=result)
 
+        # ----- Background Steps 6–7 (re-extraction + merge) ---------
+        # Prose was already returned to the caller. Run the deferred
+        # closure on a daemon thread so the UI gets updated world state
+        # later without blocking the original query response.
+        if (
+            pipeline_result.reextraction_pending
+            and not context_switched
+            and not readonly_query
+        ):
+            self._spawn_deferred_reextraction(
+                pipeline_result=pipeline_result,
+                query=query,
+                parse_result=parse_result,
+                project_id=ctx_project_id,
+                user_id=ctx_user_id,
+                ancestor_row_id=ctx_ancestor_row_id,
+            )
+
         return result
+
+    def _spawn_deferred_reextraction(
+        self,
+        *,
+        pipeline_result: PipelineResult,
+        query: UserRequest,
+        parse_result: Optional[QueryParseResult],
+        project_id: Optional[int],
+        user_id: Optional[int],
+        ancestor_row_id: Optional[int],
+    ) -> None:
+        """Run deferred Steps 6–7 in a daemon thread.
+
+        On completion: applies the new versioned world model, persists
+        to the DB if the project context still matches, and emits
+        ``WORLD_STATE_CHANGED`` so panels refresh.
+        """
+        def _worker() -> None:
+            try:
+                finish_reextraction(pipeline_result)
+            except Exception:
+                logger.exception(
+                    "[AppState] Deferred re-extraction failed"
+                )
+                return
+            # Bail if the user navigated away mid-flight.
+            project_switched = self.project_id != project_id
+            ctx_ancestor = ancestor_row_id
+            version_switched = (
+                ctx_ancestor is not None
+                and self.current_version_row_id != ctx_ancestor
+            )
+            if project_switched or version_switched:
+                logger.info(
+                    "[AppState] Deferred re-extraction completed but "
+                    "context switched (project=%s→%s, ancestor=%s→%s); "
+                    "discarding background result.",
+                    project_id, self.project_id,
+                    ctx_ancestor, self.current_version_row_id,
+                )
+                return
+            if (
+                pipeline_result.world_model is not None
+                and not pipeline_result.reextraction_failed
+            ):
+                self.versioned_model = pipeline_result.world_model
+                self.world_state = pipeline_result.world_model.current
+                self.emit(StateEvent.WORLD_STATE_CHANGED)
+                # Persist the now-advanced version, mirroring the
+                # synchronous-flow gating (skip readonly / failed /
+                # short-circuit cases).
+                if (
+                    query.query_type not in (
+                        "general", "interrogate", "evaluate",
+                    )
+                ):
+                    self._save_version_to_db(
+                        pipeline_result=pipeline_result,
+                        raw_query=getattr(query, "original_query", None)
+                        or getattr(query, "edited_prose", None)
+                        or (
+                            parse_result.parsed.reasoning
+                            if parse_result and parse_result.parsed
+                            else None
+                        ),
+                        parsed_query_json=(
+                            query.model_dump_json() if query else None
+                        ),
+                        source=query.query_type,
+                        project_id=project_id,
+                        user_id=user_id,
+                        ancestor_row_id=ancestor_row_id,
+                    )
+            # Re-emit PIPELINE_RESULT so any tab listening (e.g. audit /
+            # causality) refreshes against the now-merged world.
+            self.emit(StateEvent.PIPELINE_RESULT, result=self.last_result)
+
+        threading.Thread(
+            target=_worker,
+            name="deferred-reextraction",
+            daemon=True,
+        ).start()
 
     async def run_nl_query_async(
         self,

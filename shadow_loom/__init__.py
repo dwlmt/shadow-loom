@@ -51,6 +51,7 @@ from shadow_loom.extract_graph import (
 )
 from shadow_loom.pipeline import (
     run_pipeline, run_pipeline_async, PipelineConfig, PipelineResult, PipelineHistory,
+    finish_reextraction,
 )
 from shadow_loom.query_models import ManualEditQuery
 from shadow_loom.query_parsing import (
@@ -147,6 +148,7 @@ __all__ = [
     "MergeChangeset",
     "run_pipeline",
     "run_pipeline_async",
+    "finish_reextraction",
     "PipelineConfig",
     "PipelineResult",
     "PipelineHistory",

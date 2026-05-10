@@ -170,14 +170,20 @@ Three passes run after assembly (and world-trait timelines) complete, before val
 
 `validate_world_state` runs `_programmatic_validation` (hallucinated IDs,
 broken links, contradictions, duplicates, orphans), which includes
-`_validate_time_ordering`. That function enforces four temporal invariants
-(contiguous unique `syuzhet_index`; reasonable `fabula_time` spacing;
-causal-edge cause-before-effect; channel `established_at_fabula ≤
-terminated_at_fabula`) plus a **fifth** (Rule 5, severity=error,
-category=temporal): non-performative utterances (`truth_value ∈ {true,
+`_validate_time_ordering`. That function enforces seven temporal
+invariants. Rules 1\u20134: contiguous unique `syuzhet_index`; reasonable
+`fabula_time` spacing; causal-edge cause-before-effect; channel
+`established_at_fabula \u2264 terminated_at_fabula`. **Rule 5** (severity=error,
+category=temporal): non-performative utterances (`truth_value \u2208 {true,
 false, unknown}`) may not place `EVT_*` ids referring to future-fabula
-events in `target_ids`. Performative utterances (prophecies, vows, orders)
-are exempt. If errors remain, a
+events in `target_ids`. Performative utterances (prophecies, vows,
+orders) are exempt. **Rule 6** (utterance/channel temporal validity):
+warn when an utterance's `fabula_time` precedes its channel's
+`established_at_fabula`; error when it follows `terminated_at_fabula`
+(no speech through a dead channel). **Rule 7** (relationship lifecycle):
+edges with `ended_at_fabula < established_at_fabula` error; per-axis
+`last_updated_fabula > ended_at_fabula` errors (a severed relationship
+cannot mutate). If errors remain, a
 **correction agent** is invoked with the error summary + the current
 state. When the serialised state exceeds
 `correction_subgraph_threshold_chars` (default 400 KB) the prompt is

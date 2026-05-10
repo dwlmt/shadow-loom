@@ -57,6 +57,18 @@ def _time_slice_relationship_at(rel: Any, t: int) -> Optional[dict]:
     else:
         return None
 
+    # Edge-level lifecycle gate: the relationship has either not yet
+    # begun (``established_at_fabula > t``) or has already been
+    # severed (``ended_at_fabula <= t``). Drop the edge from the
+    # sliced view in both cases — per-axis freshness is irrelevant
+    # outside the active interval.
+    est = data.get("established_at_fabula")
+    if est is not None and est > t:
+        return None
+    end = data.get("ended_at_fabula")
+    if end is not None and end <= t:
+        return None
+
     metrics = data.get("metrics") if isinstance(data.get("metrics"), dict) else {}
     surviving: Dict[str, dict] = {}
     for name, m in metrics.items():
@@ -106,6 +118,60 @@ class EgoGraphPayload(BaseModel):
     relevant_utterance_events: List[dict] = Field(default_factory=list)
     recent_memory: List[dict]
     world_traits: List[dict] = Field(default_factory=list)
+    relevant_propositions: List[dict] = Field(
+        default_factory=list,
+        description=(
+            "Propositions whose ``referent_ids`` intersect the in-scene "
+            "node set, time-sliced to the temporal anchor. Surfacing "
+            "these into the ego-graph lets the renderer and auditor see "
+            "the live propositional ledger \u2014 what's true, what's "
+            "false, what's open \u2014 alongside the entity-level beliefs "
+            "and concerns the same characters carry."
+        ),
+    )
+
+# ==========================================
+# 1b. SHADOW-PATH ANCESTOR CLOSURE
+# ==========================================
+def _causal_ancestors(
+    world_state: WorldStateV1,
+    seed_ids: Set[str],
+    temporal_anchor: Optional[int],
+    max_hops: int = 8,
+) -> Set[str]:
+    """Reverse-BFS over ``world_state.causal_topology``.
+
+    Returns the set of node ids that can reach any seed via causal
+    edges, anchor-time-sliced. Used to expand the ego-graph's scene
+    set so Pearl-rung sandboxes (rungs 2 and 3) and directive briefs
+    can reason over upstream causal lineage that lives outside the
+    ``memory_limit`` recency window. Without this expansion an
+    intervention/counterfactual at the climax of a long plot cannot
+    reach the events that caused the present-day state, so the
+    sandbox's "shadow paths from across the plot" are structurally
+    severed at the recency boundary.
+    """
+    rev: Dict[str, List[str]] = {}
+    for ce in world_state.causal_topology:
+        if temporal_anchor is not None and ce.fabula_time > temporal_anchor:
+            continue
+        rev.setdefault(ce.target_id, []).append(ce.source_id)
+
+    visited: Set[str] = set()
+    frontier: Set[str] = set(seed_ids)
+    for _ in range(max_hops):
+        if not frontier:
+            break
+        next_frontier: Set[str] = set()
+        for nid in frontier:
+            for parent in rev.get(nid, []):
+                if parent in visited or parent in seed_ids:
+                    continue
+                visited.add(parent)
+                next_frontier.add(parent)
+        frontier = next_frontier
+    return visited
+
 
 # ==========================================
 # 2. THE IN-MEMORY EXTRACTION FUNCTION
@@ -116,6 +182,7 @@ def extract_ego_graph_from_memory(
     temporal_anchor: Optional[int] = None,
     memory_limit: int = 5,
     syuzhet_anchor: Optional[int] = None,
+    shadow_path_seed_ids: Optional[Set[str]] = None,
 ) -> EgoGraphPayload:
     
     """
@@ -250,6 +317,18 @@ def extract_ego_graph_from_memory(
         valid_events = [evt for evt in valid_events if evt.fabula_time <= temporal_anchor]
     if syuzhet_anchor is not None:
         valid_events = [evt for evt in valid_events if evt.syuzhet_index <= syuzhet_anchor]
+    # Drop superseded events from recency memory: when a counterfactual
+    # is promoted onto the factual mainline the original event is
+    # preserved on the world state for replay/audit but is no longer
+    # the canonical version downstream consumers should reason over.
+    # Retain when the named successor itself isn't (yet) in the valid
+    # window so the recency feed doesn't go silent on the seam.
+    valid_event_ids = {evt.id for evt in valid_events}
+    valid_events = [
+        evt for evt in valid_events
+        if evt.superseded_by_event_id is None
+        or evt.superseded_by_event_id not in valid_event_ids
+    ]
 
     valid_events = sorted(valid_events, key=lambda x: x.fabula_time, reverse=True)
     recent_memory = [evt.model_dump() for evt in valid_events[:memory_limit]]
@@ -305,6 +384,49 @@ def extract_ego_graph_from_memory(
     # 7. The Causal Filter (CausalEdges where both endpoints are in the scene)
     # Include WORLD_ IDs so causal edges from world traits pass the filter
     world_trait_ids = set(world_state.world_traits.keys())
+
+    # 7a. Shadow-path expansion (Pearl-rung sandboxes + directive briefs).
+    # When the caller is constructing a Rung-2/3 sandbox or a directive
+    # brief, recency-only ``recent_memory`` truncation severs the
+    # upstream causal lineage of intervention / evidence / focus
+    # targets. Walk the reverse causal graph from those seeds and
+    # admit any ancestor *events* into the scene so the sandbox can
+    # carry the full event-to-event shadow path. Ancestor *entities*
+    # are deliberately NOT injected: they would be admitted after
+    # ``relevant_relationships`` had already been filtered, leaving
+    # the entity present as a sandbox node but without its
+    # relationship edges \u2014 which silently re-routes do-surgery
+    # against a relationship from the inertia-checked path to the
+    # "create new edge" path, and admits stale event\u2192entity causal
+    # edges into the sandbox. Observation queries without a seed set
+    # keep the original recency-only behaviour.
+    if shadow_path_seed_ids:
+        seeds: Set[str] = set(shadow_path_seed_ids) | focus_id_set
+        ancestors = _causal_ancestors(world_state, seeds, temporal_anchor)
+        if ancestors:
+            existing_evt_ids = {e["id"] for e in recent_memory}
+            event_by_id = {e.id: e for e in world_state.events}
+            ancestor_events_added = 0
+            for nid in ancestors:
+                if nid in existing_evt_ids:
+                    continue
+                evt = event_by_id.get(nid)
+                if evt is None:
+                    continue
+                if temporal_anchor is not None and evt.fabula_time > temporal_anchor:
+                    continue
+                if syuzhet_anchor is not None and evt.syuzhet_index > syuzhet_anchor:
+                    continue
+                recent_memory.append(evt.model_dump())
+                existing_evt_ids.add(nid)
+                ancestor_events_added += 1
+            if ancestor_events_added:
+                logger.info(
+                    "[EgoGraph] Shadow-path expansion: +%d ancestor "
+                    "events (seeds=%d, ancestors=%d)",
+                    ancestor_events_added, len(seeds), len(ancestors),
+                )
+
     scene_node_ids = (
         focus_id_set
         | present_entity_ids
@@ -341,6 +463,33 @@ def extract_ego_graph_from_memory(
             wt_data["description"] = reconstructed["description"]
         world_traits_payload.append(wt_data)
 
+    # 9. Relevant propositions \u2014 propositions whose ``referent_ids``
+    # intersect the in-scene node set, time-sliced. Surfacing these
+    # alongside the entity-level beliefs/concerns lets the renderer
+    # and auditor see what's true / false / open in the world model
+    # for every prose-producing query type. Without this the
+    # propositional ledger only reaches the prompt as flipped-id
+    # lists on rung-2/3 deltas \u2014 the live propositions for the
+    # focal scene are invisible.
+    relevant_propositions: List[dict] = []
+    prop_scene_ids = scene_node_ids  # already includes focus + present + locs + memory
+    for prop in world_state.propositions:
+        refs = prop.referent_ids or []
+        if not refs:
+            # Project-wide propositions (no specific referent) are
+            # admitted unconditionally so the scene sees them.
+            pass
+        elif not any(r in prop_scene_ids for r in refs):
+            continue
+        prop_data = prop.model_dump()
+        if temporal_anchor is not None and isinstance(prop_data.get("truth_at_fabula"), dict):
+            prop_data["truth_at_fabula"] = {
+                int(t): v
+                for t, v in prop_data["truth_at_fabula"].items()
+                if int(t) <= temporal_anchor
+            }
+        relevant_propositions.append(prop_data)
+
     payload = EgoGraphPayload(
         focus_entities=focus_entities,
         current_locations=current_locations,
@@ -353,13 +502,15 @@ def extract_ego_graph_from_memory(
         relevant_utterance_events=relevant_utterance_events,
         recent_memory=recent_memory,
         world_traits=world_traits_payload,
+        relevant_propositions=relevant_propositions,
     )
 
-    logger.info("Multi-Ego GraphRAG complete — %d focus, %d locations, %d co-present, %d objects, %d relationships, %d causal, %d spatial, %d channels, %d utterances, %d memory",
+    logger.info("Multi-Ego GraphRAG complete — %d focus, %d locations, %d co-present, %d objects, %d relationships, %d causal, %d spatial, %d channels, %d utterances, %d memory, %d propositions",
                  len(focus_entities), len(current_locations), len(present_entities),
                  len(present_objects), len(relevant_relationships), len(relevant_causal_edges),
                  len(relevant_spatial_edges), len(relevant_channels),
-                 len(relevant_utterance_events), len(recent_memory))
+                 len(relevant_utterance_events), len(recent_memory),
+                 len(relevant_propositions))
     return payload
 
 
@@ -464,6 +615,26 @@ def extract_full_world_state(
             len(dump["events"]), pre_evt, s,
         )
 
+    # Drop superseded events from the omniscient view: when a successor
+    # event is itself in the surviving set, the older (overridden)
+    # event is no longer the canonical version downstream physics /
+    # render / audit consumers should reason over. Preserved on the
+    # raw ``world_state.events`` for replay/audit access; this is a
+    # render-time projection only.
+    surviving_ids = {evt.get("id") for evt in dump["events"]}
+    pre_evt = len(dump["events"])
+    dump["events"] = [
+        evt for evt in dump["events"]
+        if not evt.get("superseded_by_event_id")
+        or evt["superseded_by_event_id"] not in surviving_ids
+    ]
+    if len(dump["events"]) < pre_evt:
+        logger.info(
+            "Omniscient Graph supersession-pruned: %d/%d events kept "
+            "(removed %d superseded by surviving successors)",
+            len(dump["events"]), pre_evt, pre_evt - len(dump["events"]),
+        )
+
     return dump
 
 
@@ -507,6 +678,7 @@ def introduced_elements_to_spawns(
         "channels": {},
         "propositions": {},
         "concerns": {},
+        "events": {},
     }
     if introduced is None or getattr(introduced, "is_empty", lambda: True)():
         return out
@@ -619,10 +791,11 @@ def introduced_elements_to_spawns(
 
     for spec in getattr(introduced, "concerns", []) or []:
         try:
-            polarity_pn = "positive" if spec.polarity == "positive" else "negative"
-            # Concern.polarity uses ``desire``/``aversion`` in models.py;
-            # translate the renderer's positive/negative shorthand.
-            polarity_da = "desire" if polarity_pn == "positive" else "aversion"
+            # Spec polarity is "positive" / "negative"; the canonical
+            # ``Concern`` model only accepts ``Literal["desire", "fear"]``.
+            # Map directly without an intermediate vocabulary so the
+            # validation error doesn't get swallowed silently below.
+            polarity_da = "desire" if spec.polarity == "positive" else "fear"
             concern = Concern(
                 world_id="factual",
                 concern_id=spec.id,
@@ -637,6 +810,59 @@ def introduced_elements_to_spawns(
         except Exception:
             logger.exception(
                 "[introduced_elements_to_spawns] Concern %s invalid \u2014 skipped.",
+                spec.id,
+            )
+
+    # Channels \u2014 standing communication capabilities. Materialised
+    # alongside entity/location spawns so utterance events introduced
+    # in the same payload (or do-surgeries that target the channel)
+    # can resolve their ``via_channel_id``.
+    from shadow_loom.models import Channel, EventNode  # local import to avoid cycle
+    for spec in getattr(introduced, "channels", []) or []:
+        canonical_channels = world_state.channels or {}
+        if spec.id in canonical_channels or spec.id in out["channels"]:
+            continue
+        try:
+            out["channels"][spec.id] = Channel(
+                id=spec.id,
+                name=spec.name,
+                medium=spec.medium,
+                participant_ids=list(spec.participant_ids),
+                directionality=spec.directionality,
+                intelligibility=dict(spec.intelligibility),
+            )
+        except Exception:
+            logger.exception(
+                "[introduced_elements_to_spawns] Channel %s invalid \u2014 skipped.",
+                spec.id,
+            )
+
+    # Events \u2014 query-authored EventNodes. Materialised so the
+    # pipeline can append them to ``WorldStateV1.events`` before
+    # physics, letting ``DoEvent`` clamp their occurrence and giving
+    # the renderer a typed handle to cite.
+    existing_event_ids = {e.id for e in (world_state.events or [])}
+    for spec in getattr(introduced, "events", []) or []:
+        if spec.id in existing_event_ids or spec.id in out["events"]:
+            continue
+        try:
+            out["events"][spec.id] = EventNode(
+                id=spec.id,
+                fabula_time=int(spec.fabula_time),
+                syuzhet_index=int(spec.syuzhet_index),
+                event_type=spec.event_type,
+                actor_ids=list(spec.actor_ids),
+                target_ids=list(spec.target_ids),
+                description=spec.description,
+                content=spec.content,
+                via_channel_id=spec.via_channel_id,
+                speaker_id=spec.speaker_id,
+                addressee_ids=list(spec.addressee_ids),
+                truth_value=spec.truth_value,
+            )
+        except Exception:
+            logger.exception(
+                "[introduced_elements_to_spawns] Event %s invalid \u2014 skipped.",
                 spec.id,
             )
 

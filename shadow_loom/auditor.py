@@ -46,6 +46,13 @@ from shadow_loom.generation import (
     render_scene,
     _GenerationDeps,
     _build_generation_agent,
+    _format_counterfactual,
+    _format_causal_attribution,
+    _format_threat_proximity,
+    _format_intervention_branch,
+    _format_entanglement,
+    _format_interventions,
+    _format_abduction,
 )
 from shadow_loom.models import EventNode, WorldStateV1
 
@@ -1169,6 +1176,7 @@ def _format_propositional_context(brief: CreativeBrief) -> List[str]:
     # leaves the lists empty and the block is suppressed.
     for label, payload in (
         ("RUNG-2 INTERVENTION SIDE-EFFECTS", brief.threat_proximity),
+        ("RUNG-2 INTERVENTION SIDE-EFFECTS", brief.intervention_branch),
         ("RUNG-3 COUNTERFACTUAL SIDE-EFFECTS", brief.counterfactual_branch),
     ):
         if payload is None:
@@ -1637,27 +1645,11 @@ def assemble_audit_prompt(
                 )
             sections.append("")
 
-    # Intervention mechanisms for physics audit
+    # Intervention mechanisms for physics audit \u2014 use the renderer's
+    # formatter so the auditor sees the same VACUOUS / ADVISORY tags
+    # the prose was written under (Rule-3 pruned vs unproven paths).
     if brief.intervention_mechanisms:
-        sections.append(
-            "=== INTERVENTION PHYSICS (state changes that MUST have "
-            "mechanisms rendered) ==="
-        )
-        for m in brief.intervention_mechanisms:
-            sections.append(
-                f"  {m.node_id}: {m.old_state} → {m.new_state} "
-                f"via {m.mechanism_hint} (inertia={m.inertia:.2f})"
-            )
-        sections.append("")
-
-    # Abduction truths for physics audit
-    if brief.abduction_truths:
-        sections.append(
-            "=== ABDUCTION BACKGROUND TRUTHS (must be subtextually "
-            "present but NOT explicitly stated) ==="
-        )
-        for a in brief.abduction_truths:
-            sections.append(f"  {a.entity_id}: {a.hidden_variable}")
+        sections.append(_format_interventions(brief.intervention_mechanisms))
         sections.append("")
 
     # Relationship tensions: the per-axis (affinity / fear /
@@ -1682,46 +1674,57 @@ def assemble_audit_prompt(
             )
         sections.append("")
 
-    # Threat proximity for suspense/fear audit
+    # Threat proximity for suspense/fear audit — use the renderer's
+    # full formatter so the auditor sees identical text
+    # (affected_propositions / affected_beliefs / affected_concerns,
+    # tragedy_form, etc., not just the headline numbers).
     if brief.threat_proximity:
-        tp = brief.threat_proximity
         sections.append("=== THREAT PROXIMITY ===")
-        sections.append(f"  Threat: {tp.threat_description}")
-        sections.append(
-            f"  P(threat)={tp.threat_probability:.2f} "
-            f"P(hope)={tp.hope_probability:.2f}"
-        )
-        if tp.spatial_distance is not None:
-            sections.append(f"  Spatial distance: {tp.spatial_distance} hops")
+        sections.append(_format_threat_proximity(brief.threat_proximity))
         sections.append("")
 
-    # Counterfactual branch for regret audit
+    # Intervention sandbox (Rung-2 do-calculus) for plain
+    # intervention briefs that don't carry a threat reading. Surfaces
+    # the typed do_target + affected_propositions / affected_beliefs /
+    # affected_concerns so the auditor can validate that the prose
+    # grounds every flipped sandbox node — same as it does for
+    # threat-keyed briefs via ``threat_proximity`` above.
+    if brief.intervention_branch:
+        sections.append("=== INTERVENTION SANDBOX ===")
+        sections.append(_format_intervention_branch(brief.intervention_branch))
+        sections.append("")
+
+    # Counterfactual branch — use the renderer's formatter so the
+    # auditor sees the divergence point, the RUNG-3 SURGERY KIND
+    # framing (ontic vs epistemic vs motivational), and the
+    # Aristotelian / Frye tragedy_form hedge that the prose was
+    # written under. Previously the auditor only saw
+    # ``actual_outcome`` / ``simulated_outcome`` and could not
+    # validate that the prose matched the brief's surgery register.
     if brief.counterfactual_branch:
-        cf = brief.counterfactual_branch
         sections.append("=== COUNTERFACTUAL BRANCH ===")
-        sections.append(f"  Actual: {cf.actual_outcome}")
-        sections.append(f"  Simulated: {cf.simulated_outcome}")
+        sections.append(_format_counterfactual(brief.counterfactual_branch))
         sections.append("")
 
-    # Causal attribution for rage audit
+    # Causal attribution for rage audit — reuse renderer formatter so
+    # the causal_chain is visible to the auditor (it was previously
+    # dropped, leaving the auditor blind to the chain the prose was
+    # told to render).
     if brief.causal_attribution:
-        ca = brief.causal_attribution
         sections.append("=== CAUSAL ATTRIBUTION ===")
-        sections.append(
-            f"  Perpetrator: {ca.perpetrator_id}"
-            + (f" ({ca.perpetrator_name})" if ca.perpetrator_name else "")
-        )
-        sections.append(f"  Loss: {ca.loss_event_id} — {ca.loss_description}")
+        sections.append(_format_causal_attribution(brief.causal_attribution))
         sections.append("")
 
-    # Entanglement pairs for love audit
+    # Entanglement pairs for love audit — reuse renderer formatter.
     if brief.entanglement_pairs:
-        sections.append("=== ENTANGLEMENT PAIRS ===")
-        for p in brief.entanglement_pairs:
-            sections.append(
-                f"  {p.entity_a} ↔ {p.entity_b}: "
-                f"coupling={p.coupling_strength:.2f}"
-            )
+        sections.append(_format_entanglement(brief.entanglement_pairs))
+        sections.append("")
+
+    # Abduction truths for physics audit — reuse renderer formatter
+    # so the auditor sees the same hidden_variable phrasing it must
+    # validate against (subtextual presence, no explicit mention).
+    if brief.abduction_truths:
+        sections.append(_format_abduction(brief.abduction_truths))
         sections.append("")
 
     # Propositional / belief / concern surfacing — the renderer was
@@ -1963,6 +1966,7 @@ def _build_refinement_prompt(
     iteration: int,
     engine_failures: Optional[List[str]] = None,
     prior_violations: Optional[List[AuditViolation]] = None,
+    brief: Optional[CreativeBrief] = None,
 ) -> str:
     """Augment the original rendering prompt with auditor feedback.
 
@@ -2057,6 +2061,47 @@ def _build_refinement_prompt(
         "constraints AND the auditor corrections above. The auditor will "
         "check again."
     )
+
+    # Style re-anchor: when a style violation is active (or has been
+    # active in a prior iteration), the original STYLE FIDELITY block
+    # is now buried thousands of tokens above the rewrite footer and
+    # the rewriter reliably under-attends to it. Re-emit a compact
+    # restatement of the brief's style contract immediately before the
+    # rewrite footer so the contract sits in the same attention window
+    # as the violations being fixed. Without this the loop converges
+    # on local fixes (mode/POV/leak) but keeps drifting on density and
+    # word-band, never matching the source register.
+    style_types = {"style_mismatch", "register_drift", "word_band_violation"}
+    style_active = any(v.violation_type in style_types for v in violations) or any(
+        (pv.violation_type in style_types) for pv in (prior_violations or [])
+    )
+    if style_active and brief is not None and brief.narrative_style is not None:
+        try:
+            from shadow_loom.narrative_style import format_narrative_style_block
+            style_block = format_narrative_style_block(
+                brief.narrative_style,
+                header=(
+                    "STYLE FIDELITY (RE-EMITTED \u2014 the contract you are "
+                    "still drifting from)"
+                ),
+                original_query=brief.original_query,
+            )
+            feedback_lines.append("")
+            feedback_lines.append(
+                "The style contract below is the SAME contract that was "
+                "in your original prompt. The auditor has flagged a "
+                "style violation across this iteration (and possibly "
+                "earlier iterations). Restating it here so it sits in "
+                "the same attention window as the violations above:"
+            )
+            feedback_lines.append("")
+            feedback_lines.append(style_block)
+        except Exception:
+            logger.debug(
+                "[FeedbackLoop] Style re-anchor skipped \u2014 "
+                "format_narrative_style_block raised.",
+                exc_info=True,
+            )
 
     return original_rendering_prompt + "\n".join(feedback_lines)
 
@@ -3200,6 +3245,7 @@ def run_feedback_loop(
             iteration + 1,
             engine_failures=engine_failures,
             prior_violations=list(accumulated_violations),
+            brief=brief,
         )
 
         # Now extend with this iteration's violations so the *next*
@@ -3253,33 +3299,60 @@ def run_feedback_loop(
 
         # --- Refinement rendering_mode contract ---
         # The refinement agent is forbidden from mutating
-        # ``rendering_mode``. The auditor evaluates against the
-        # brief's mode; if the rewriter switches modes (e.g.
-        # counterfactual -> observation) every subsequent iteration
-        # is auditing a different rubric than the prose was written
-        # under and convergence becomes accidental. Reject the output,
-        # restore the previous scene, and surface as a generation
-        # error.
+        # ``rendering_mode`` (and ``pov_entity`` when the brief
+        # locked one). The auditor evaluates against the brief's
+        # mode; if the rewriter silently relabels the structured
+        # output, downstream consumers that key off
+        # ``GeneratedScene.rendering_mode`` (the prose-by-mode UI
+        # filter, the next iteration's audit prompt, the merge's
+        # branch policy) drift out of step with the brief.
+        #
+        # Previously this was a hard exit \u2014 we kept the prior scene
+        # and bailed the loop. In practice the rewriter often produces
+        # a correct rewrite under the brief's mode and only mislabels
+        # the metadata (the auditor judges against the brief's mode
+        # regardless), so aborting was discarding a usable improvement
+        # and pinning the user on the pre-refinement draft. Coerce the
+        # metadata back to the brief's expectation, log a warning so
+        # the regression is visible, and continue iterating.
         if (
             expected_rendering_mode is not None
             and current_scene.rendering_mode
             and current_scene.rendering_mode != expected_rendering_mode
         ):
-            logger.error(
+            logger.warning(
                 "[FeedbackLoop] Refinement agent mutated rendering_mode "
-                "(%r -> %r) at iteration %d; this is forbidden. "
-                "Restoring prior scene and exiting loop.",
+                "(%r -> %r) at iteration %d; coercing back to the "
+                "brief's mode and continuing. The auditor evaluates "
+                "against the brief, so the prose itself is still "
+                "judged correctly \u2014 only the metadata was wrong.",
                 expected_rendering_mode, current_scene.rendering_mode,
                 iteration + 1,
             )
-            correction_error = (
-                f"Refinement agent mutated rendering_mode "
-                f"{expected_rendering_mode!r} -> "
-                f"{current_scene.rendering_mode!r}; rejected."
+            current_scene = current_scene.model_copy(update={
+                "rendering_mode": expected_rendering_mode,
+            })
+
+        # Coerce ``pov_entity`` back when the brief locked one and the
+        # rewriter dropped it (commonly nulled at the same time as the
+        # mode flip above).
+        expected_pov = None
+        if getattr(brief, "rendering", None) is not None:
+            expected_pov = getattr(brief.rendering, "pov_lock", None)
+        if (
+            expected_pov
+            and getattr(current_scene, "pov_entity", None) != expected_pov
+        ):
+            logger.warning(
+                "[FeedbackLoop] Refinement agent dropped pov_entity "
+                "(%r -> %r) at iteration %d; coercing back to the "
+                "brief's pov_lock.",
+                expected_pov, getattr(current_scene, "pov_entity", None),
+                iteration + 1,
             )
-            if prior_scene is not None:
-                current_scene = prior_scene
-            break
+            current_scene = current_scene.model_copy(update={
+                "pov_entity": expected_pov,
+            })
 
         if current_scene.generation_error:
             # The render itself fell back to a placeholder; don't keep

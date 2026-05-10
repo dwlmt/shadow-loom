@@ -27,7 +27,7 @@ import asyncio
 import logging
 from typing import Any, Dict, List, Literal, Optional, TYPE_CHECKING
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 from shadow_loom.settings import get_settings as _get_settings
 
@@ -68,6 +68,23 @@ from shadow_loom.query_models import UserRequest, EvaluationQuery, EvaluationRes
 logger = logging.getLogger(__name__)
 
 
+# Mirrors ``shadow_loom.ingestion._VALID_STATUSES`` (kept here as a
+# tiny local copy to avoid an import cycle: ingestion already imports
+# pipeline-adjacent helpers). Used by ``_augment_topology_with_sandbox_deltas``
+# to coerce free-text observation_facts onto the EntityUpdate schema.
+_VALID_OBSERVATION_STATUSES: set[str] = {
+    "healthy", "injured", "ill", "dead", "unconscious",
+}
+_OBSERVATION_STATUS_ALIASES: Dict[str, str] = {
+    "alive": "healthy", "well": "healthy", "fine": "healthy",
+    "wounded": "injured", "hurt": "injured", "bleeding": "injured",
+    "sick": "ill", "diseased": "ill", "infected": "ill",
+    "deceased": "dead", "killed": "dead", "slain": "dead",
+    "ko": "unconscious", "knocked_out": "unconscious",
+    "asleep": "unconscious", "unconscious": "unconscious",
+}
+
+
 # =====================================================================
 # Anchor resolution helper
 # =====================================================================
@@ -96,7 +113,7 @@ def _apply_query_introductions(
     spawns = introduced_elements_to_spawns(introduced, ws)
     if not any(spawns.get(k) for k in (
         "entities", "objects", "locations", "world_traits",
-        "channels", "propositions", "concerns",
+        "channels", "propositions", "concerns", "events",
     )):
         return ws
     new_ws = ws.model_copy(deep=True)
@@ -125,14 +142,20 @@ def _apply_query_introductions(
             for c in clist:
                 if c.concern_id not in existing_ccn_ids:
                     holder.concerns.append(c)
+    if spawns.get("events"):
+        existing_event_ids = {e.id for e in (new_ws.events or [])}
+        for nid, evt in spawns["events"].items():
+            if nid not in existing_event_ids:
+                new_ws.events.append(evt)
     logger.info(
         "[Pipeline] query.introduce pre-spawn \u2014 +%d entities, +%d objects, "
         "+%d locations, +%d world_traits, +%d channels, +%d propositions, "
-        "+%d concern-attachments.",
+        "+%d concern-attachments, +%d events.",
         len(spawns.get("entities", {})), len(spawns.get("objects", {})),
         len(spawns.get("locations", {})), len(spawns.get("world_traits", {})),
         len(spawns.get("channels", {})), len(spawns.get("propositions", {})),
         sum(len(v) for v in spawns.get("concerns", {}).values()),
+        len(spawns.get("events", {})),
     )
     return new_ws
 
@@ -226,6 +249,17 @@ class PipelineConfig(BaseModel):
     skip_reextraction: bool = Field(
         default=False,
         description="Skip prose re-extraction and world-model merge (Step 6–7).",
+    )
+    defer_reextraction: bool = Field(
+        default=False,
+        description=(
+            "Return immediately after audit with prose ready, deferring "
+            "Steps 6–7 (re-extraction + merge) so the caller can show the "
+            "prose to the user and run the heavy ingestion in the "
+            "background. The pipeline stashes a closure on the result; "
+            "call ``finish_reextraction(result)`` later to drive it. Mutually "
+            "exclusive with ``skip_reextraction`` (skip wins)."
+        ),
     )
 
     # --- Ingestion ---
@@ -410,6 +444,17 @@ class PipelineResult(BaseModel):
         default=None,
         description="Short error message when reextraction_failed is True.",
     )
+    reextraction_pending: bool = Field(
+        default=False,
+        description=(
+            "True when ``cfg.defer_reextraction`` was set and the pipeline "
+            "returned with prose ready but Steps 6–7 not yet executed. The "
+            "caller MUST invoke ``finish_reextraction(result)`` (typically in "
+            "a background task) to perform the merge before persisting the "
+            "new version. While pending, ``world_model`` carries the "
+            "*pre-merge* model."
+        ),
+    )
 
     # --- Continuation quality bridge (rung-1/2/3 + directive +
     # manual-edit re-extraction) ---
@@ -437,6 +482,48 @@ class PipelineResult(BaseModel):
             "passed structural validation."
         ),
     )
+
+    # Private closure that finishes Steps 6\u20137 when the pipeline ran in
+    # ``defer_reextraction`` mode. ``finish_reextraction(result)`` invokes
+    # it; UI / MCP wrappers should never touch this attr directly.
+    _deferred_reextraction_fn: Optional[Any] = PrivateAttr(default=None)
+
+
+# =====================================================================
+# Deferred re-extraction entry point
+# =====================================================================
+
+def finish_reextraction(result: "PipelineResult") -> "PipelineResult":
+    """Drive the deferred Steps 6–7 (prose re-extraction + merge).
+
+    When ``run_pipeline`` was called with ``cfg.defer_reextraction=True``,
+    it returns immediately after audit with ``reextraction_pending=True``
+    and stashes a closure capturing the locals needed for the merge.
+    Call this from a background task to perform the heavy ingestion;
+    on return, ``result.world_model`` reflects the merged version and
+    ``result.reextraction_pending`` is False.
+
+    Idempotent: a second call after completion is a no-op. Safe to call
+    on a result that was never deferred (returns unchanged).
+    """
+    if not result.reextraction_pending:
+        return result
+    fn = result._deferred_reextraction_fn
+    if fn is None:
+        # Pending but no closure — someone deferred without setting up
+        # the closure. Treat as a programming error but stay resilient.
+        result.reextraction_pending = False
+        result.reextraction_failed = True
+        result.reextraction_error = (
+            "finish_reextraction called but no deferred closure was stashed."
+        )
+        return result
+    try:
+        fn()
+    finally:
+        result._deferred_reextraction_fn = None
+        result.reextraction_pending = False
+    return result
 
 
 # =====================================================================
@@ -1572,7 +1659,27 @@ def _augment_topology_with_sandbox_deltas(
             if value.startswith("LOC_") and value in (world_state.locations or {}):
                 update_kwargs["new_location_id"] = value
             else:
-                update_kwargs["new_status"] = value
+                # ``EntityUpdate.new_status`` is a Literal —
+                # observation_facts may carry free-text values from the
+                # physics engine (e.g. "well", "wounded", "deceased").
+                # Coerce common aliases; skip anything we cannot map
+                # rather than blowing up the merge.
+                coerced = str(value).lower().strip()
+                if coerced in _VALID_OBSERVATION_STATUSES:
+                    update_kwargs["new_status"] = coerced
+                else:
+                    alias = _OBSERVATION_STATUS_ALIASES.get(coerced)
+                    if alias is not None:
+                        update_kwargs["new_status"] = alias
+                    else:
+                        logger.debug(
+                            "[_augment_topology_with_sandbox_deltas] "
+                            "skipping observation_fact %r=%r — value is "
+                            "neither a LOC_ id nor a recognised entity "
+                            "status; nothing to anchor.",
+                            node_id, value,
+                        )
+                        continue
             existing = next(
                 (
                     eu for eu in topology.entity_updates
@@ -2175,7 +2282,11 @@ def run_pipeline(
             if query.query_type == "directive":
                 try:
                     from shadow_loom.extract_graph import extract_ego_graph_from_memory
-                    _ego = extract_ego_graph_from_memory(ws, brief.target_entities, syuzhet_anchor=eff_syuzhet)
+                    _ego = extract_ego_graph_from_memory(
+                        ws, brief.target_entities,
+                        syuzhet_anchor=eff_syuzhet,
+                        shadow_path_seed_ids=set(brief.target_entities or []),
+                    )
                     _assembler = DirectiveAssembler(
                         sandbox=None, ego_payload=_ego.model_dump(), world_state=ws,
                     )
@@ -2250,30 +2361,39 @@ def run_pipeline(
     # =================================================================
     # Steps 6–7: Prose re-extraction + merge
     # =================================================================
-    if cfg.skip_reextraction:
-        logger.info("[Pipeline] Steps 6–7: Re-extraction skipped.")
-    elif getattr(result.scene, "generation_error", None):
-        # The renderer fell back to a placeholder scene; merging that
-        # text into the canonical world state would pollute the graph
-        # with junk extracted from a "[Generation failed: ...]" string.
-        # Surface the failure on the result so the UI can show it and
-        # leave the world model untouched.
-        logger.error(
-            "[Pipeline] Steps 6–7: Re-extraction skipped — scene "
-            "carries generation_error=%s; refusing to merge fallback "
-            "prose into world state.",
-            result.scene.generation_error,
-        )
-        result.reextraction_failed = True
-        result.reextraction_error = (
-            f"Skipped re-extraction: generation failed "
-            f"({result.scene.generation_error})."
-        )
-        history.record(
-            "reextraction_merge",
-            {"error": "generation_failure_skipped"},
-        )
-    else:
+    def _do_steps_6_7() -> None:
+        """Execute prose re-extraction + merge against the captured locals.
+
+        Defined as a closure so it can either run inline (default) or be
+        stashed for ``finish_reextraction`` to drive later when the
+        caller passed ``cfg.defer_reextraction=True``. Mutates ``result``
+        and ``history`` in place — both are captured by the closure.
+        """
+        if cfg.skip_reextraction:
+            logger.info("[Pipeline] Steps 6–7: Re-extraction skipped.")
+            return
+        if getattr(result.scene, "generation_error", None):
+            # The renderer fell back to a placeholder scene; merging that
+            # text into the canonical world state would pollute the graph
+            # with junk extracted from a "[Generation failed: ...]" string.
+            # Surface the failure on the result so the UI can show it and
+            # leave the world model untouched.
+            logger.error(
+                "[Pipeline] Steps 6–7: Re-extraction skipped — scene "
+                "carries generation_error=%s; refusing to merge fallback "
+                "prose into world state.",
+                result.scene.generation_error,
+            )
+            result.reextraction_failed = True
+            result.reextraction_error = (
+                f"Skipped re-extraction: generation failed "
+                f"({result.scene.generation_error})."
+            )
+            history.record(
+                "reextraction_merge",
+                {"error": "generation_failure_skipped"},
+            )
+            return
         logger.info("[Pipeline] Steps 6–7: Extracting topology from prose and merging.")
         try:
             spawns = promote_sandbox_spawns(ws, physics_state)
@@ -2363,6 +2483,20 @@ def run_pipeline(
             history.record("reextraction_merge", {"error": "extraction_or_merge_failed"})
             result.reextraction_failed = True
             result.reextraction_error = str(_e)
+
+    if cfg.defer_reextraction and not cfg.skip_reextraction:
+        # Stash the closure for ``finish_reextraction`` to drive later.
+        # The caller (UI / MCP) gets prose immediately and runs the
+        # heavy ingest in a background task so it can show the prose
+        # to the user without blocking on extraction.
+        result.reextraction_pending = True
+        result._deferred_reextraction_fn = _do_steps_6_7
+        logger.info(
+            "[Pipeline] Steps 6–7 deferred — caller must invoke "
+            "finish_reextraction(result) to complete the merge."
+        )
+    else:
+        _do_steps_6_7()
 
     logger.info("[Pipeline] Complete — query_type=%s, prose=%s.",
                 query.query_type, "yes" if result.prose else "no")
@@ -2624,7 +2758,11 @@ async def run_pipeline_async(
             if query.query_type == "directive":
                 try:
                     from shadow_loom.extract_graph import extract_ego_graph_from_memory
-                    _ego = extract_ego_graph_from_memory(ws, brief.target_entities, syuzhet_anchor=eff_syuzhet)
+                    _ego = extract_ego_graph_from_memory(
+                        ws, brief.target_entities,
+                        syuzhet_anchor=eff_syuzhet,
+                        shadow_path_seed_ids=set(brief.target_entities or []),
+                    )
                     _assembler = DirectiveAssembler(
                         sandbox=None, ego_payload=_ego.model_dump(), world_state=ws,
                     )
@@ -3003,6 +3141,13 @@ def _build_brief_for_query(
             pruned_utterance_event_ids=physics_result.get("pruned_utterance_event_ids"),
             disabled_channel_ids=physics_result.get("disabled_channel_ids"),
             skipped_interventions=physics_result.get("skipped_interventions"),
+            # Sandbox-coverage payload (Rung-2). Mirrors the
+            # counterfactual plumbing below so the renderer and
+            # auditor see the typed do_target + every flipped
+            # proposition / belief / concern under the do-surgery.
+            affected_propositions=physics_result.get("affected_propositions"),
+            affected_beliefs=physics_result.get("affected_beliefs"),
+            affected_concerns=physics_result.get("affected_concerns"),
             syuzhet_anchor=syuzhet_anchor,
         )
     elif query.query_type == "counterfactual":
@@ -3015,6 +3160,16 @@ def _build_brief_for_query(
             pruned_utterance_event_ids=physics_result.get("pruned_utterance_event_ids"),
             disabled_channel_ids=physics_result.get("disabled_channel_ids"),
             skipped_interventions=physics_result.get("skipped_interventions"),
+            # Sandbox-coverage payload (Phase-9): the renderer and
+            # auditor render these as "AFFECTED PROPOSITIONS / BELIEFS /
+            # CONCERNS" and "RUNG-3 SURGERY KIND" off the
+            # CounterfactualBranch. Without plumbing them through here
+            # both surfaces saw empty lists and the structural shadow
+            # path was uncovered — only the NL ``simulated_outcome``
+            # string carried the surgery target.
+            affected_propositions=physics_result.get("affected_propositions"),
+            affected_beliefs=physics_result.get("affected_beliefs"),
+            affected_concerns=physics_result.get("affected_concerns"),
             syuzhet_anchor=syuzhet_anchor,
         )
     elif query.query_type == "directive":
@@ -3029,6 +3184,7 @@ def _build_brief_for_query(
         try:
             ego = extract_ego_graph_from_memory(
                 world_state, target_entities, syuzhet_anchor=syuzhet_anchor,
+                shadow_path_seed_ids=set(target_entities),
             )
             assembler = DirectiveAssembler(
                 sandbox=None,

@@ -365,6 +365,71 @@ class ThreatProximity(BaseModel):
     )
 
 
+class InterventionBranch(BaseModel):
+    """Generic Rung-2 sandbox payload for intervention briefs.
+
+    ``ThreatProximity`` historically carried Rung-2 surgery metadata
+    *coupled* to a threat/hope reading because suspense and fear were
+    the only directive effects that surfaced the do-operator. For
+    plain intervention queries (no threat reading) we still need to
+    surface the typed ``do_target`` and the
+    ``affected_propositions / affected_beliefs / affected_concerns``
+    sandbox so the renderer and auditor can verify that the prose
+    actually grounds every flipped node — without reusing the
+    threat-flavoured carrier.
+
+    Mirrors the rung-2 fields on :class:`ThreatProximity` so the
+    auditor's existing iteration over rung-2 side-effects can fold
+    this in alongside fear/suspense readings.
+    """
+    do_target: Optional[DoTarget] = Field(
+        default=None,
+        description=(
+            "The typed Rung-2 surgery the brief was assembled under "
+            "(DoEvent / DoProposition / DoBelief / DoConcern / "
+            "DoTrait / DoWorldTrait). ``None`` when the legacy "
+            "event-only path supplied the intervention."
+        ),
+    )
+    do_targets: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "All typed Rung-2 surgeries on the query, as plain dicts. "
+            "Used when the query carries multiple do-targets and the "
+            "renderer / auditor need to enumerate them rather than "
+            "narrate a single primary surgery."
+        ),
+    )
+    affected_propositions: List[str] = Field(
+        default_factory=list,
+        description=(
+            "PROP_ ids whose truth flipped between the factual world "
+            "and the post-intervention sandbox."
+        ),
+    )
+    affected_beliefs: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Holder→target keys (``ENT_X→ENT_Y``) whose confidence "
+            "shifted between factual and post-intervention sandbox."
+        ),
+    )
+    affected_concerns: List[str] = Field(
+        default_factory=list,
+        description=(
+            "CCN_ ids whose desire-satisfaction polarity flipped or "
+            "whose salience changed under the intervention."
+        ),
+    )
+    tragedy_form: Optional[Literal["tragic", "comic", "ironic", "neutral"]] = Field(
+        default=None,
+        description=(
+            "Aristotelian / Frye narrative-form classification of the "
+            "(actual − intervened) concern-satisfaction delta."
+        ),
+    )
+
+
 class SurpriseProfile(BaseModel):
     """Audience-belief revision payload — Itti-Baldi Bayesian surprise.
 
@@ -1088,6 +1153,19 @@ class CreativeBrief(BaseModel):
     rendering: Optional[RenderingDirective] = None
     counterfactual_branch: Optional[CounterfactualBranch] = None
     threat_proximity: Optional[ThreatProximity] = None
+    intervention_branch: Optional["InterventionBranch"] = Field(
+        default=None,
+        description=(
+            "Rung-2 sandbox payload populated for intervention "
+            "(do-calculus) briefs. Carries the typed do_target, the "
+            "list of all do_targets, and the "
+            "affected_propositions / affected_beliefs / "
+            "affected_concerns the engine flipped under the "
+            "intervention. Lets the renderer surface — and the auditor "
+            "verify — every node the surgery touched, mirroring the "
+            "Rung-3 ``counterfactual_branch`` channel."
+        ),
+    )
     surprise_profile: Optional["SurpriseProfile"] = Field(
         default=None,
         description=(
@@ -1490,6 +1568,231 @@ def build_false_proposition_constraints(
             + "\n".join(lines)
         ),
         evidence={"false_proposition_ids": [pid for pid, _, _ in falsified]},
+    )]
+
+
+def _latest_proposition_truth_map(
+    world_state: WorldStateV1,
+    syuzhet_anchor: Optional[int],
+) -> Dict[str, Optional[bool]]:
+    """Return ``{proposition_id: latest_committed_truth_or_None}``
+    sliced to ``syuzhet_anchor``.
+
+    ``None`` entries flag propositions whose latest commit is *open*
+    at the anchor (no truth value yet); callers can treat them as
+    "uncommitted" and skip pink-elephant emission.
+    """
+    out: Dict[str, Optional[bool]] = {}
+    props = getattr(world_state, "propositions", None) or []
+    if isinstance(props, dict):
+        prop_iter = list(props.values())
+    else:
+        prop_iter = list(props)
+    cap = syuzhet_anchor
+    for p in prop_iter:
+        pid = getattr(p, "id", None) or getattr(p, "proposition_id", None)
+        if not pid:
+            continue
+        truth_map = getattr(p, "truth_at_fabula", {}) or {}
+        if not truth_map:
+            out[pid] = None
+            continue
+        applicable = [
+            (int(t), bool(v))
+            for t, v in truth_map.items()
+            if cap is None or int(t) <= cap
+        ]
+        if not applicable:
+            out[pid] = None
+            continue
+        applicable.sort(key=lambda kv: kv[0])
+        out[pid] = applicable[-1][1]
+    return out
+
+
+def build_unrealised_concern_constraints(
+    world_state: WorldStateV1,
+    syuzhet_anchor: Optional[int],
+    *,
+    world_label: str = "this",
+) -> List[ConstraintBlock]:
+    """HARD pink-elephant block for concerns whose underlying
+    proposition will NOT have come true at this scene's anchor.
+
+    The renderer\u2019s temptation, given a richly motivated character,
+    is to grant the protagonist their desire (or vindicate their
+    fear) on-page \u2014 even when the physics records the underlying
+    proposition as committed FALSE. Surfacing the concern explicitly,
+    keyed to the holding entity, blocks that drift in both renderer
+    and auditor: they see ``Macbeth desires PROP_BECOMES_KING (false
+    at this anchor)`` and know not to stage the coronation.
+
+    Pairs with :func:`build_false_proposition_constraints` (which
+    targets the narration layer at the proposition level) by adding
+    an entity-level reading: *which character* is the one who
+    must NOT be shown getting their wish / fear realised here.
+    Belief-side mismatches (the character still *believes* the
+    proposition is true) remain allowed and feed dramatic irony.
+    """
+    truth_map = _latest_proposition_truth_map(world_state, syuzhet_anchor)
+    if not truth_map:
+        return []
+    entities = getattr(world_state, "entities", None) or {}
+    if isinstance(entities, dict):
+        entity_iter = list(entities.values())
+    else:
+        entity_iter = list(entities)
+    cap = syuzhet_anchor
+    rows: List[tuple] = []  # (entity_id, entity_name, concern, prop_truth)
+    for ent in entity_iter:
+        concerns = getattr(ent, "concerns", None) or []
+        if not concerns:
+            continue
+        eid = getattr(ent, "id", "?")
+        ename = getattr(ent, "name", eid)
+        for c in concerns:
+            pid = getattr(c, "proposition_id", None)
+            if not pid or pid not in truth_map:
+                continue
+            latest = truth_map[pid]
+            if latest is not False:
+                continue  # only emit when proposition is committed FALSE
+            # Window-gate: skip concerns that haven't activated yet
+            window = getattr(c, "activation_fabula_window", None)
+            if window and cap is not None:
+                try:
+                    start, end = int(window[0]), int(window[1])
+                except (ValueError, TypeError, IndexError):
+                    start, end = None, None
+                if start is not None and cap < start:
+                    continue
+                if end is not None and cap > end:
+                    continue
+            rows.append((eid, ename, c, latest))
+    if not rows:
+        return []
+    # Stable, salience-descending order so the highest-stakes
+    # pink-elephants land first inside the prompt cap.
+    rows.sort(key=lambda r: float(getattr(r[2], "salience", 0.0) or 0.0),
+              reverse=True)
+    lines: List[str] = []
+    for eid, ename, c, _truth in rows[:20]:
+        cid = getattr(c, "concern_id", "?")
+        polarity = getattr(c, "polarity", "?")
+        pid = getattr(c, "proposition_id", "?")
+        kind = getattr(c, "kind", None) or ""
+        kind_blob = f" [{kind}]" if kind else ""
+        verb = "fulfilled" if polarity == "desire" else "realised"
+        lines.append(
+            f"  - {ename} ({eid}) {polarity}s {pid}{kind_blob} "
+            f"\u2014 do NOT show this concern {verb} ({cid})"
+        )
+    if len(rows) > 20:
+        lines.append(f"  - ...and {len(rows) - 20} more.")
+    return [ConstraintBlock(
+        constraint_type="narrative",
+        priority="hard",
+        instruction=(
+            f"=== UNREALISED CONCERNS (HARD) === \u2014 these standing "
+            f"desires / fears are tied to propositions the physics "
+            f"commits FALSE at or before this scene's anchor in the "
+            f"{world_label} world. Do NOT stage the desire as "
+            "fulfilled, the fear as realised, or otherwise grant the "
+            "holder the proposition's content on-page. The character "
+            "may still *feel* the concern \u2014 longing, dread, "
+            "anticipation \u2014 but the proposition itself must remain "
+            "unrealised in the narration.\n"
+            + "\n".join(lines)
+        ),
+        evidence={
+            "unrealised_concern_ids": [
+                getattr(c, "concern_id", "?") for _, _, c, _ in rows
+            ],
+        },
+    )]
+
+
+def build_false_belief_grounding_constraints(
+    world_state: WorldStateV1,
+    syuzhet_anchor: Optional[int],
+    *,
+    world_label: str = "this",
+) -> List[ConstraintBlock]:
+    """HARD pink-elephant block for beliefs whose linked proposition
+    is committed FALSE at the anchor.
+
+    Pairs with :func:`build_false_proposition_constraints` from the
+    *belief* side: enumerates the entities who currently hold a
+    proposition-linked belief whose proposition is false. The
+    renderer must keep these as *believed* (interior life, dialogue
+    presupposition, biased perception) but never as ground truth in
+    narration. Without this entity-anchored reading, the renderer
+    routinely \u201cresolves\u201d a sympathetic believer's stance into
+    fact by accident.
+    """
+    truth_map = _latest_proposition_truth_map(world_state, syuzhet_anchor)
+    if not truth_map:
+        return []
+    entities = getattr(world_state, "entities", None) or {}
+    if isinstance(entities, dict):
+        entity_iter = list(entities.values())
+    else:
+        entity_iter = list(entities)
+    cap = syuzhet_anchor
+    rows: List[tuple] = []  # (entity_id, entity_name, belief)
+    for ent in entity_iter:
+        beliefs = getattr(ent, "beliefs", None) or []
+        if not beliefs:
+            continue
+        eid = getattr(ent, "id", "?")
+        ename = getattr(ent, "name", eid)
+        for b in beliefs:
+            pid = getattr(b, "proposition_id", None)
+            if not pid or pid not in truth_map:
+                continue
+            if truth_map[pid] is not False:
+                continue
+            # Time-gate: only beliefs already established at the anchor
+            est = getattr(b, "established_at_fabula", None)
+            if cap is not None and est is not None and int(est) > cap:
+                continue
+            rows.append((eid, ename, b))
+    if not rows:
+        return []
+    rows.sort(key=lambda r: float(getattr(r[2], "confidence", 0.0) or 0.0),
+              reverse=True)
+    lines: List[str] = []
+    for eid, ename, b in rows[:20]:
+        pid = getattr(b, "proposition_id", "?")
+        perc = (getattr(b, "perceived_state", "") or "").strip()
+        if len(perc) > 100:
+            perc = perc[:97] + "..."
+        conf = float(getattr(b, "confidence", 0.0) or 0.0)
+        perc_blob = f" \u2014 \"{perc}\"" if perc else ""
+        lines.append(
+            f"  - {ename} ({eid}) believes {pid} (conf={conf:.2f}){perc_blob}"
+        )
+    if len(rows) > 20:
+        lines.append(f"  - ...and {len(rows) - 20} more.")
+    return [ConstraintBlock(
+        constraint_type="narrative",
+        priority="hard",
+        instruction=(
+            f"=== FALSE-BELIEF GROUNDING (HARD) === \u2014 these entities "
+            f"hold beliefs whose linked proposition is committed FALSE "
+            f"at or before this scene's anchor in the {world_label} "
+            f"world. Render the belief as *believed* (interior "
+            "thought, biased dialogue, presupposed action) \u2014 NEVER "
+            "as ground-truth narration. The narrator's voice must not "
+            "endorse the believed content; the gap between belief and "
+            "fact is exactly what generates dramatic irony / "
+            "tragic-error / mistaken-identity beats and must be "
+            "preserved on the page.\n"
+            + "\n".join(lines)
+        ),
+        evidence={
+            "false_belief_entity_ids": sorted({eid for eid, _, _ in rows}),
+        },
     )]
 
 
@@ -1906,6 +2209,20 @@ class DirectiveAssembler:
         if syuzhet_anchor is None:
             return []
 
+        # Derive an effective fabula upper bound from the revealed
+        # syuzhet window so terminated channels are excluded once
+        # the source text has reached / passed their termination tick.
+        # ``fabula_anchor`` = max fabula_time among events with
+        # ``syuzhet_index <= syuzhet_anchor``; ``None`` when no
+        # event has been revealed yet (fall back to including all
+        # channels regardless of termination).
+        fabula_anchor: Optional[int] = None
+        for evt in self.world_state.events:
+            if evt.syuzhet_index > syuzhet_anchor:
+                continue
+            if fabula_anchor is None or evt.fabula_time > fabula_anchor:
+                fabula_anchor = evt.fabula_time
+
         # Build channel_id → earliest revealed utterance syuzhet_index.
         channel_first_utt: Dict[str, Optional[int]] = {
             cid: None for cid in self.world_state.channels.keys()
@@ -1923,6 +2240,16 @@ class DirectiveAssembler:
         hidden: List[HiddenChannel] = []
         intel_thresh = _get_settings().physics.intelligibility_threshold
         for cid, ch in self.world_state.channels.items():
+            # Time-slice: skip channels that have already been
+            # severed at this anchor. A dead channel cannot host
+            # future utterances, so surfacing it as hidden
+            # capability is misleading to the directive renderer.
+            if (
+                ch.terminated_at_fabula is not None
+                and fabula_anchor is not None
+                and ch.terminated_at_fabula <= fabula_anchor
+            ):
+                continue
             unintel = sorted([
                 pid for pid in ch.participant_ids
                 if float(ch.intelligibility.get(pid, 1.0)) < intel_thresh
@@ -4857,6 +5184,12 @@ class DirectiveAssembler:
             self.world_state, syuzhet_anchor, world_label="this",
         ))
         constraints.extend(build_false_proposition_constraints(
+            self.world_state, syuzhet_anchor, world_label="this",
+        ))
+        constraints.extend(build_unrealised_concern_constraints(
+            self.world_state, syuzhet_anchor, world_label="this",
+        ))
+        constraints.extend(build_false_belief_grounding_constraints(
             self.world_state, syuzhet_anchor, world_label="this",
         ))
 
