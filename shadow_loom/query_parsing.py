@@ -590,7 +590,7 @@ def _format_valid_ids_section(world_state: WorldStateV1) -> str:
 
 #: Query types that benefit from constrained structured output.
 _CONSTRAINED_QUERY_TYPES: set[str] = {
-    "observation", "intervention", "counterfactual", "directive", "interrogate",
+    "intervention", "counterfactual", "directive", "interrogate",
 }
 
 #: Allowed property roots per node prefix, advertised to the LLM via the
@@ -1186,80 +1186,16 @@ def _build_interrogation_dynamic_model(world_state: WorldStateV1):
     )
 
 
-def _build_observation_dynamic_model(world_state: WorldStateV1):
-    """Per-call model for *observation*: ``focus_entity_ids`` constrained
-    to entities, ``observations`` keys constrained to any valid graph
-    ID. Without this the LLM can hallucinate entity ids when asked to
-    "show this scene from X's POV".
-    """
-    typed = _collect_typed_ids(world_state)
-    ent_lit = _make_id_literal(typed["entity_ids"])
-    all_ids = (
-        typed["entity_ids"] + typed["object_ids"] + typed["location_ids"]
-        + typed["event_ids"] + typed["world_trait_ids"]
-        + typed.get("channel_ids", [])
-    )
-    all_lit = _make_id_literal(all_ids)
-
-    ObsItem = create_model(
-        "ObservationItem",
-        target_id=(
-            all_lit,
-            Field(
-                ...,
-                description=(
-                    "Graph node ID being observed. Must match a real "
-                    "ENT_/OBJ_/LOC_/EVT_/WORLD_/CHN_ id."
-                ),
-            ),
-        ),
-        observed_state=(
-            str,
-            Field(
-                ...,
-                description=(
-                    "Free-form description of the observed state, e.g. "
-                    "'asleep', 'empty', 'visible to ENT_BANQUO'."
-                ),
-            ),
-        ),
-        __base__=BaseModel,
-    )
-
-    return create_model(
-        "DynamicObservationOutput",
-        reasoning=(str, Field(..., description="Why this interpretation.")),
-        observations=(
-            List[ObsItem],
-            Field(
-                default_factory=list,
-                description=(
-                    "Optional facts to condition the next step on. Leave "
-                    "empty for a plain 'continue the story' observation."
-                ),
-            ),
-        ),
-        focus_entity_ids=(
-            List[ent_lit],
-            Field(
-                default_factory=list,
-                description=(
-                    "POV lock — entities whose perspective the next scene "
-                    "should foreground. Empty = omniscient."
-                ),
-            ),
-        ),
-        resolved_ids=(
-            List[ResolvedID],
-            Field(default_factory=list),
-        ),
-        __base__=BaseModel,
-        **_anchor_fields(world_state),
-    )
+# NOTE: ``observation`` queries intentionally do NOT have a constrained
+# dynamic-output model. The original ``_build_observation_dynamic_model``
+# was removed when ``observation`` was dropped from
+# ``_CONSTRAINED_QUERY_TYPES`` (see :func:`_select_output_model`) — a
+# constrained schema added churn (and ID-hallucination retries) for a
+# query class whose ``focus_entity_ids`` / ``observations`` slots are
+# already validated by the post-parse ``output_validator``.
 
 
 _DYNAMIC_MODEL_BUILDERS = {
-    "observation": _build_observation_dynamic_model,
     "intervention": _build_intervention_dynamic_model,
     "counterfactual": _build_counterfactual_dynamic_model,
     "directive": _build_directive_dynamic_model,
@@ -1327,10 +1263,15 @@ def _do_target_items_to_typed(items: list[Any]) -> List[DoTarget]:
                 # auto-resolves it from the (holder, target) pair when a
                 # unique proposition matches) and supports a
                 # ``perceived_state`` string for forging a brand-new
-                # belief. Skip only when the structurally-required
-                # holder/target are missing — every other field is
-                # optional.
+                # belief. Skip when the structurally-required
+                # holder/target are missing, OR when none of the
+                # belief-payload fields (proposition_id / confidence /
+                # perceived_state) is supplied — a do-belief target
+                # with neither a proposition handle nor a payload is
+                # a no-op the planner cannot act on.
                 if not holder or not tgt:
+                    continue
+                if pid is None and conf is None and perceived is None:
                     continue
                 kwargs: Dict[str, Any] = {
                     "holder_id": holder,

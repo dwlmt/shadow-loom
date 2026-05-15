@@ -98,6 +98,24 @@ _DOMAIN_ALIASES = {
     "environmental": "physical",
     "environment": "physical",
     "ecological": "physical",
+    # Institutional / aesthetic / professional registers seen in OSS
+    # extractions (e.g. The Grand Budapest Hotel, A Christmas Carol).
+    # Without these, off-list mechanism labels silently bypass the
+    # MECHANISM_TRAIT_MAP routing gate and shed ~80% of their pressure.
+    "legal": "social",
+    "juridical": "social",
+    "bureaucratic": "social",
+    "institutional": "social",
+    "procedural": "social",
+    "diplomatic": "social",
+    "aesthetic": "emotional",
+    "artistic": "emotional",
+    "sentimental": "emotional",
+    "nostalgic": "emotional",
+    "reputational": "social",
+    "honour": "social",
+    "honor": "social",
+    "familial": "social",
 }
 
 
@@ -127,6 +145,36 @@ _MECHANISM_ALIASES = {
     "physical_force": "physical",
     "epistemic_revelation": "epistemic",
     "social_coercion": "social",
+    # Institutional / aesthetic registers (mirrors _DOMAIN_ALIASES on
+    # the CausalEdge.mechanism boundary). OSS extractions for legal-
+    # heavy plots (Grand Budapest, court dramas) routinely emit
+    # 'legal'/'bureaucratic' here; map onto the canonical short keys.
+    "legal": "social",
+    "juridical": "social",
+    "bureaucratic": "social",
+    "institutional": "social",
+    "procedural": "social",
+    "diplomatic": "social",
+    "reputational": "social",
+    "honour": "social",
+    "honor": "social",
+    "familial": "social",
+    "aesthetic": "emotional",
+    "artistic": "emotional",
+    "sentimental": "emotional",
+    "nostalgic": "emotional",
+    "environmental": "physical",
+    "environment": "physical",
+    "ecological": "physical",
+    "economic": "social",
+    "financial": "social",
+    "political": "social",
+    "ideological": "epistemic",
+    "religious": "epistemic",
+    "moral": "psychological",
+    "ethical": "psychological",
+    "supernatural": "psychological",
+    "magical": "psychological",
 }
 
 

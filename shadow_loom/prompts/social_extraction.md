@@ -69,6 +69,17 @@ Each `Channel` has:
 - `participant_ids` (list[str]): All entity/object ids that participate. n-ary (≥ 2).
 - `directionality` (str): `"broadcast"` (one→many), `"duplex"` (any↔any), `"simplex"` (one-way; participant_ids[0] is the sender).
 - `intelligibility` (dict, optional): `{participant_id: float ∈ [0, 1]}` — how comprehensible the channel is per recipient. Default is fully comprehensible (omit the key). Use `< 0.5` for encrypted/coded channels for that listener; use intermediate values for partial comprehension (e.g. a recipient who only catches snippets).
+
+  **Intelligibility examples (May 2026 audit).** OSS extractions left this field empty in ~80% of cases, collapsing covert / encrypted / partial channels into "everyone hears everything". Use the table:
+
+  | Channel scenario | Per-participant intelligibility |
+  |---|---|
+  | Encrypted dispatch, only the keyholder reads it. | `{ENT_KEYHOLDER: 1.0, ENT_INTERCEPTOR: 0.0}` (intercept hears noise). |
+  | Tapped phone line — caller and callee speak normally, third party listens. | `{ENT_CALLER: 1.0, ENT_CALLEE: 1.0, ENT_TAPPER: 0.5}` (tapper hears one side cleanly, the other faintly). |
+  | Public broadcast / proclamation — everyone within earshot hears equally. | Omit the dict (default 1.0 for all participants). |
+  | Force-bond / mind-link — only bonded pair perceives it; bystanders see nothing. | `{ENT_BONDED_A: 1.0, ENT_BONDED_B: 1.0}` (no other entries — non-participants are not in `participant_ids` at all). |
+  | Coded language a child does not yet understand. | `{ENT_ADULT_A: 1.0, ENT_ADULT_B: 1.0, ENT_CHILD: 0.3}`. |
+  | Surveillance feed (one-way camera) — target unaware. | `{ENT_TARGET: 0.0, ENT_WATCHER: 1.0}`; pair with `directionality="simplex"`. |
 - `established_at_fabula` (int): When the channel came into being.
 - `terminated_at_fabula` (int | null): When it ended. Null if ongoing.
 - `evidence_strength` (str): `"weak"` / `"moderate"` / `"strong"`.
@@ -93,6 +104,45 @@ Required fields:
 - `syuzhet_index` (int): Narration-order index. Use a value strictly greater than the largest `syuzhet_index` of the Physics events in this chunk so utterances sort *after* the events they reference within the chunk.
 - `asserts_proposition_id` (str | null, optional): A PROP_ id from the Proposition Catalogue if the speaker is affirming that proposition's truth (e.g. a confession, an accusation, a sworn deposition). Null otherwise.
 - `denies_proposition_id` (str | null, optional): A PROP_ id from the Proposition Catalogue if the speaker is denying that proposition's truth (e.g. a lie, a denial, an alibi). Null otherwise. Mutually exclusive with `asserts_proposition_id` — an utterance that both asserts P and denies Q should split into two events.
+
+**Worked `asserts_proposition_id` / `denies_proposition_id` example.** Catalogue contains `PROP_KURTZ_ROGUE` (Kurtz has gone rogue) and `PROP_WILLARD_LOYAL` (Willard remains loyal to the chain of command). The same conversation produces three utterances:
+```json
+{
+  "id": "EVT_UTT_GENERAL_BRIEFS_WILLARD",
+  "event_type": "utterance",
+  "speaker_id": "ENT_GENERAL_CORMAN",
+  "addressee_ids": ["ENT_WILLARD"],
+  "content": "Colonel Kurtz has gone insane and is operating outside the chain of command.",
+  "truth_value": "true",
+  "asserts_proposition_id": "PROP_KURTZ_ROGUE",
+  "denies_proposition_id": null
+}
+```
+```json
+{
+  "id": "EVT_UTT_WILLARD_AFFIRMS_MISSION",
+  "event_type": "utterance",
+  "speaker_id": "ENT_WILLARD",
+  "addressee_ids": ["ENT_GENERAL_CORMAN"],
+  "content": "I will carry out the mission as ordered.",
+  "truth_value": "performative",
+  "asserts_proposition_id": "PROP_WILLARD_LOYAL",
+  "denies_proposition_id": null
+}
+```
+```json
+{
+  "id": "EVT_UTT_KURTZ_DENIES_MADNESS",
+  "event_type": "utterance",
+  "speaker_id": "ENT_KURTZ",
+  "addressee_ids": ["ENT_WILLARD"],
+  "content": "I am not insane — I see clearly.",
+  "truth_value": "false",
+  "asserts_proposition_id": null,
+  "denies_proposition_id": "PROP_KURTZ_ROGUE"
+}
+```
+Notice: an `assert` with `truth_value="false"` is a *lie* about the proposition; a `deny` with `truth_value="true"` is a *sincere denial*; the Bayesian abduction layer combines the two signals to update each listener's belief.
 
 ### `social_topology` — List[RelationshipEdge]
 

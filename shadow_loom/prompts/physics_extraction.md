@@ -229,6 +229,40 @@ Macbeth picks up the dagger in his chamber (EVT_MACBETH_TAKES_DAGGER, fabula_tim
    - **`event_type="utterance"` is FORBIDDEN at this stage.** Dialogue, letters, prophecies, confessions, orders, rumours, and any character-to-character speech-act belong to the Social Agent (Step 3b). Do not emit them here under any guise — not even rephrased as `"revelation"` or `"choice"`.
 
    In all cases, `description` is REQUIRED (one sentence, narration-side); `intensity` defaults to 1.0 and should rise above 2.0 only for pivotal beats (3-4 = a confession / death / betrayal, 5+ = cataclysm).
+
+   **Intensity calibration (0–10 scale).** Audit (May 2026) found 90%+ of OSS extractions clustered at 0.5 — connective beats indistinguishable from cataclysms. Use the full range:
+
+   | Intensity | Anchor examples |
+   |---|---|
+   | **0.5** | Connective beat: a character walks into a room; ambient mood; routine action with no plot weight. |
+   | **1.0** | Default: an ordinary on-page action that moves the scene (a conversation, a search, a journey leg). |
+   | **2.0** | Notable beat: a discovery, a charged encounter, a small reversal (Bilbo finds the ring; Elizabeth refuses Darcy's first proposal). |
+   | **3–4** | Pivotal beat: a confession, a betrayal, a death of a minor character (Banquo's murder; Gatsby's confrontation with Tom). |
+   | **5–7** | Cataclysm: a death of a major character, a coup, a war declared (Macbeth murders Duncan; the destruction of Alderaan). |
+   | **8–10** | Reserved for the singular catastrophe that defines the work (the bombing in *Apocalypse Now*; Romeo and Juliet's joint death). |
+
+   **Worked `resolves_proposition_ids` example.** Catalogue contains `PROP_DUNCAN_DEAD` (kind=`event_occurs`) and `PROP_MACBETH_KING` (kind=`outcome`). The murder beat resolves the first; the coronation beat resolves the second:
+   ```json
+   {
+     "id": "EVT_DUNCAN_MURDER",
+     "event_type": "outcome",
+     "actor_ids": ["ENT_MACBETH"],
+     "target_ids": ["ENT_DUNCAN"],
+     "intensity": 6.0,
+     "resolves_proposition_ids": ["PROP_DUNCAN_DEAD"]
+   }
+   ```
+   ```json
+   {
+     "id": "EVT_MACBETH_CROWNED",
+     "event_type": "outcome",
+     "actor_ids": ["ENT_MACBETH"],
+     "target_ids": ["ENT_MACBETH"],
+     "intensity": 4.0,
+     "resolves_proposition_ids": ["PROP_MACBETH_KING"]
+   }
+   ```
+   Reserve `resolves_proposition_ids` for `outcome` events that *commit* a catalogue proposition's truth value on-page; do not list propositions that are merely *suggested* or *foreshadowed*.
 8. **Every chunk should produce events.** If a chunk contains narrative text, there are events in it — even if they are emotional revelations, internal decisions, or atmospheric shifts. Re-read carefully before returning an empty list.
 9. **Consult the Socratic Scaffold.** The WHY and HOW answers identify hidden causal chains and affordance gates. Translate those reasoning chains into explicit CausalEdge entries. The WHO answers identify agents you should name in events. The WHEN answers help you assign correct fabula_time values.
 10. **Causal edges link ANY node types.** Set `causality_type` to match the source/target ID prefixes. Always include `mutation` edges (Event→Entity trait/status changes) and `mutation_social` edges (Event→Relationship metric changes) — these are how actions leave marks on characters and their relationships.

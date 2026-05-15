@@ -3634,7 +3634,7 @@ def _normalize_id_candidate(candidate: str) -> str:
     if not isinstance(candidate, str):
         return candidate
     s = candidate.strip()
-    for p in ("EVT_", "ENT_", "LOC_", "OBJ_", "WORLD_", "CHN_"):
+    for p in ("EVT_", "ENT_", "LOC_", "OBJ_", "WORLD_", "CHN_", "PROP_", "CCN_"):
         if s.upper().startswith(p):
             return p + s[len(p):]
     return s
@@ -3658,7 +3658,7 @@ def _fuzzy_resolve_id(candidate: str, valid_ids: set[str]) -> Optional[str]:
 
     # Determine prefix
     prefix = ""
-    for p in ("EVT_", "ENT_", "LOC_", "OBJ_", "WORLD_"):
+    for p in ("EVT_", "ENT_", "LOC_", "OBJ_", "WORLD_", "PROP_", "CHN_", "CCN_"):
         if candidate.startswith(p):
             prefix = p
             break
@@ -3688,6 +3688,26 @@ def _fuzzy_resolve_id(candidate: str, valid_ids: set[str]) -> Optional[str]:
             if match_len > best_len:
                 best = vid
                 best_len = match_len
+    if best is not None:
+        return best
+
+    # Final fallback: difflib SequenceMatcher for single-char typos
+    # (the OSS audit found PROP_ALDERAN_DESTROYED vs PROP_ALDERAAN_
+    # DESTROYED, which substring matching can't catch). Threshold
+    # 0.85 keeps spurious matches rare; longer ids tolerate one-char
+    # edits comfortably under that ratio.
+    import difflib as _difflib
+    candidates_close = _difflib.get_close_matches(
+        cand_base,
+        [vid[len(prefix):].replace("_", " ").lower().strip() for vid in same_prefix],
+        n=1,
+        cutoff=0.85,
+    )
+    if candidates_close:
+        target_base = candidates_close[0]
+        for vid in same_prefix:
+            if vid[len(prefix):].replace("_", " ").lower().strip() == target_base:
+                return vid
 
     return best
 
@@ -3713,7 +3733,7 @@ def _fix_id(candidate: str, valid_ids: set[str], field_label: str, fixes: List[s
     # Only warn for ID-shaped strings (looks like LOC_/OBJ_/ENT_/EVT_/CHN_/WORLD_).
     # Plain strings or empties go to the caller's existing handling.
     if candidate and "_" in candidate and candidate.split("_", 1)[0] in {
-        "LOC", "OBJ", "ENT", "EVT", "CHN", "WORLD",
+        "LOC", "OBJ", "ENT", "EVT", "CHN", "WORLD", "PROP", "CCN",
     }:
         prefix = candidate.split("_", 1)[0]
         if prefix == "EVT":
@@ -11446,6 +11466,106 @@ def _truth_value_to_bool(tv: Optional[str]) -> Optional[bool]:
     return None
 
 
+def _mint_world_trait_propositions(world: WorldStateV1) -> int:
+    """Auto-mint a ``Proposition`` for every ``GlobalTrait`` that lacks
+    one, and back-link it via ``GlobalTrait.proposition_id``.
+
+    The OSS-extraction audit (2026-05-15) found that 100% of world
+    traits across ingested plots had ``proposition_id=None``, so the
+    "audience holds a belief about the world" Pearl-Rung-2 substrate
+    was effectively unused. Minting a deterministic ``PROP_WORLD_*``
+    proposition per trait gives the affect-unification layer
+    something to attach beliefs and concerns to, and lets
+    counterfactual surgery on a world trait surface as a belief
+    mutation downstream.
+
+    Returns the number of newly-minted propositions.
+    """
+    if not world.world_traits:
+        return 0
+    existing_ids = {p.proposition_id for p in world.propositions}
+    minted: List[Proposition] = []
+    for wid, wt in world.world_traits.items():
+        if wt.proposition_id and wt.proposition_id in existing_ids:
+            continue
+        prop_id = wt.proposition_id or f"PROP_WORLD_{wid[len('WORLD_'):]}"
+        if prop_id in existing_ids:
+            # Catalogue already minted one with this id; just back-link.
+            wt.proposition_id = prop_id
+            continue
+        prop = Proposition(
+            proposition_id=prop_id,
+            kind="trait_holds",
+            referent_ids=[wid],
+            description=wt.description,
+            audience_default_prior=float(wt.magnitude.value),
+            stakes=float(wt.magnitude.value),
+        )
+        minted.append(prop)
+        existing_ids.add(prop_id)
+        wt.proposition_id = prop_id
+    if minted:
+        world.propositions = list(world.propositions) + minted
+        logger.info(
+            "[Phase C] Minted %d PROP_WORLD_* propositions from world_traits.",
+            len(minted),
+        )
+    return len(minted)
+
+
+def _auto_pair_ambivalent_concerns(world: WorldStateV1) -> int:
+    """Cross-link concerns of opposite polarity that share a proposition.
+
+    OSS audit (2026-05-15) found ~65% of concerns had no
+    ``counter_concern_ids`` populated, so ``Concern.ambivalence_score``
+    was uniformly 0.0 and inner-conflict suspense scoring was dead.
+    For every entity, group the entity's concerns by ``proposition_id``;
+    when a group has exactly one ``desire`` concern and one ``fear``
+    concern, cross-populate ``counter_concern_ids`` on each (skip when
+    already set). Larger groups (3+) are skipped — those need an LLM
+    pass to disambiguate which pair is genuinely ambivalent.
+
+    Returns the number of concern objects mutated.
+    """
+    n = 0
+    for ent in world.entities.values():
+        if len(ent.concerns) < 2:
+            continue
+        groups: Dict[str, List[Concern]] = {}
+        for c in ent.concerns:
+            # Skip concerns whose ``activation_fabula_window`` has been
+            # capped by the auto-close pass — pairing a closed concern
+            # to a still-active partner would inflate the
+            # ``ambivalence_score`` on a question that is already
+            # resolved.
+            if (
+                c.activation_fabula_window is not None
+                and len(c.activation_fabula_window) >= 2
+                and c.activation_fabula_window[1] is not None
+            ):
+                continue
+            groups.setdefault(c.proposition_id, []).append(c)
+        for pid, members in groups.items():
+            if len(members) != 2:
+                continue
+            polarities = {m.polarity for m in members}
+            if polarities != {"desire", "fear"}:
+                continue
+            a, b = members
+            if a.concern_id not in b.counter_concern_ids:
+                b.counter_concern_ids = list(b.counter_concern_ids) + [a.concern_id]
+                n += 1
+            if b.concern_id not in a.counter_concern_ids:
+                a.counter_concern_ids = list(a.counter_concern_ids) + [b.concern_id]
+                n += 1
+    if n:
+        logger.info(
+            "[Phase C] Auto-paired %d ambivalent concern links "
+            "(opposite-polarity over the same proposition).", n,
+        )
+    return n
+
+
 def reconcile_affect(
     world: WorldStateV1,
     catalogue: Optional["PropositionCatalogue"],
@@ -11461,6 +11581,14 @@ def reconcile_affect(
     # which is a leaf, so no cycle, but we keep the import local to
     # match the rest of the post-assembly call sites in this file.
     from shadow_loom.affect_unification import _coalesce_timeline
+
+    # ----------------------------------------------------------------
+    # 0. Auto-mint a Proposition for every world trait that lacks one.
+    #    Done first so step 1's catalogue merge sees the WORLD-derived
+    #    propositions in the index when looking for collisions, and
+    #    step 2's event sweep can write truth commits onto them.
+    # ----------------------------------------------------------------
+    _mint_world_trait_propositions(world)
 
     # ----------------------------------------------------------------
     # 1. Merge catalogue propositions into ``world.propositions``.
@@ -11495,21 +11623,40 @@ def reconcile_affect(
     #    ``denies_proposition_id`` at extraction time.
     # ----------------------------------------------------------------
     truth_writes: Dict[Tuple[str, int], bool] = {}
+    valid_prop_ids = set(prop_index.keys())
+
+    def _resolve_pid(pid: str) -> Optional[str]:
+        """Exact match first; fuzzy fallback for typo'd PROP_ ids."""
+        if pid in prop_index:
+            return pid
+        guess = _fuzzy_resolve_id(pid, valid_prop_ids)
+        if guess:
+            logger.debug(
+                "[Phase C] Fuzzy-resolved PROP id %s \u2192 %s in event sweep.",
+                pid, guess,
+            )
+        return guess
+
     for evt in world.events:
         for pid in evt.resolves_proposition_ids:
-            if pid in prop_index:
-                truth_writes[(pid, evt.fabula_time)] = True
-        if evt.asserts_proposition_id and evt.asserts_proposition_id in prop_index:
-            tv = _truth_value_to_bool(evt.truth_value)
-            # Default for assertions without an explicit truth_value is
-            # True (the speaker stands behind the claim); deny stays
-            # False.
-            if tv is None and evt.truth_value not in ("unknown", "performative"):
-                tv = True
-            if tv is not None:
-                truth_writes[(evt.asserts_proposition_id, evt.fabula_time)] = tv
-        if evt.denies_proposition_id and evt.denies_proposition_id in prop_index:
-            truth_writes[(evt.denies_proposition_id, evt.fabula_time)] = False
+            resolved = _resolve_pid(pid)
+            if resolved is not None:
+                truth_writes[(resolved, evt.fabula_time)] = True
+        if evt.asserts_proposition_id:
+            resolved = _resolve_pid(evt.asserts_proposition_id)
+            if resolved is not None:
+                tv = _truth_value_to_bool(evt.truth_value)
+                # Default for assertions without an explicit truth_value is
+                # True (the speaker stands behind the claim); deny stays
+                # False.
+                if tv is None and evt.truth_value not in ("unknown", "performative"):
+                    tv = True
+                if tv is not None:
+                    truth_writes[(resolved, evt.fabula_time)] = tv
+        if evt.denies_proposition_id:
+            resolved = _resolve_pid(evt.denies_proposition_id)
+            if resolved is not None:
+                truth_writes[(resolved, evt.fabula_time)] = False
 
     for (pid, fab), val in truth_writes.items():
         prop = prop_index[pid]
@@ -11997,6 +12144,13 @@ def reconcile_affect(
         len(world.propositions), n_props_with_truth, n_world_concerns,
     )
 
+    # ----------------------------------------------------------------
+    # 8. Auto-pair ambivalent concerns. Cross-link any two opposite-
+    #    polarity concerns the same entity holds over the same
+    #    proposition so ``Concern.ambivalence_score`` becomes non-zero.
+    # ----------------------------------------------------------------
+    _auto_pair_ambivalent_concerns(world)
+
     return world
 
 
@@ -12438,13 +12592,21 @@ def _post_pass_close_resolved_concerns(
                 continue
             updates: Dict[str, Any] = {}
             timeline = list(concern.state_timeline)
-            # Set or cap activation window. Realised closure leaves
-            # the window open-ended (the standing wanting/dreading is
-            # over); materialised closure clamps the upper bound to
-            # ``close_t`` so post-resolution affect resolves on the
-            # event, not the standing concern. Owner-death closure
+            # Set or cap activation window. Both realised and
+            # materialised closures clamp the upper bound to
+            # ``close_t`` when no window was previously set: once the
+            # anchor proposition has resolved (either way), the
+            # standing wanting/dreading is over and downstream
+            # affect detectors should operate on the resolution event
+            # rather than a still-open concern. The distinction
+            # between realised and materialised is preserved on the
+            # closing snapshot's ``triggered_by`` / kind metadata
+            # rather than via the window itself. Owner-death closure
             # also clamps (the holder cannot want/dread anything
-            # after death).
+            # after death). When a window already exists, only the
+            # *clamp* branch (materialised / owner_dead) tightens it;
+            # a realised closure leaves a previously-set window
+            # untouched so author-set bounds are honoured.
             should_clamp_window = close_kind in ("materialised", "owner_dead")
             if concern.activation_fabula_window is None:
                 start_t = (
@@ -12459,9 +12621,20 @@ def _post_pass_close_resolved_concerns(
                 if end_t is None or end_t > close_t:
                     updates["activation_fabula_window"] = [start_t, close_t]
             # Append closing rung if last rung is not already small.
+            # Skip when a snapshot already exists at ``close_t`` —
+            # closure semantics at this tick are already encoded by
+            # the ``activation_fabula_window`` clamp set above
+            # (``updates["activation_fabula_window"] = [start_t,
+            # close_t]``); a redundant 0.0 rung at the same
+            # fabula_time only inflates timeline length and confuses
+            # downstream readers.
             last = timeline[-1] if timeline else None
-            if last is None or last.fabula_time < close_t or (
-                last.salience is not None and last.salience > 0.1
+            if last is None or (
+                last.fabula_time != close_t
+                and (
+                    last.fabula_time < close_t
+                    or (last.salience is not None and last.salience > 0.1)
+                )
             ):
                 timeline.append(ConcernSnapshot(
                     fabula_time=close_t,
@@ -12891,6 +13064,160 @@ def apply_post_pass_fixes(
 # Auto-Repair — programmatically fix broken links
 # =====================================================================
 
+def _promote_sentient_objects(ws: WorldStateV1) -> Tuple[WorldStateV1, List[str]]:
+    """Promote OBJ_ records that act as agents (R2-D2, C-3PO, the Mirror)
+    into ENT_ entities so they participate in the affective / belief layer.
+
+    OSS audit (2026-05-15) found sentient narrative objects modelled as
+    ``NarrativeObject`` (because they are physical artefacts) but used
+    by the LLM as ``actor_ids`` / ``speaker_id`` on non-utterance
+    events. This left them invisible to every downstream reader that
+    keys off ``ws.entities`` (belief reconstruction, AMWN sandboxes,
+    suspense/irony scorers, the directive assembler). We detect any
+    ``OBJ_`` id that appears as a non-utterance actor or any speaker
+    and promote it to a minimal ``Entity``, renaming the id from
+    ``OBJ_<suffix>`` → ``ENT_<suffix>`` and rewriting every cross-ref.
+
+    Conservative defaults for the synthesised entity:
+      * status = 'healthy'
+      * traits = {} (empty psychology — the rest of the pipeline will
+        flesh this out via the standard concern / trait extraction
+        passes once the agent is visible as ENT_)
+      * location_id = original obj.location_id, falling back to
+        ``LOC_NONE`` (which the audience-synthesis pass guarantees).
+
+    Idempotent: a second call finds no remaining sentient OBJ_s and
+    returns ``(ws, [])`` unchanged.
+    """
+    repairs: List[str] = []
+    if not ws.objects or not ws.events:
+        return ws, repairs
+    obj_ids = set(ws.objects.keys())
+    sentient: Set[str] = set()
+    for evt in ws.events:
+        if evt.event_type != "utterance":
+            for aid in evt.actor_ids or []:
+                if isinstance(aid, str) and aid in obj_ids:
+                    sentient.add(aid)
+        sp = evt.speaker_id
+        if isinstance(sp, str) and sp in obj_ids:
+            sentient.add(sp)
+    if not sentient:
+        return ws, repairs
+
+    # Build rename map. ``ENT_<suffix>`` collisions are rare but
+    # possible (an existing entity already bears that suffix); fall
+    # back to ``ENT_FROM_<obj_suffix>`` in that case.
+    rename: Dict[str, str] = {}
+    for oid in sorted(sentient):
+        suffix = oid[len("OBJ_"):] if oid.startswith("OBJ_") else oid
+        candidate = f"ENT_{suffix}"
+        if candidate in ws.entities or candidate in rename.values():
+            candidate = f"ENT_FROM_{suffix}"
+            i = 2
+            while candidate in ws.entities or candidate in rename.values():
+                candidate = f"ENT_FROM_{suffix}_{i}"
+                i += 1
+        rename[oid] = candidate
+
+    fallback_loc = "LOC_NONE" if "LOC_NONE" in ws.locations else (
+        next(iter(ws.locations.keys()), "LOC_NONE")
+    )
+
+    # Move records.
+    for oid, new_id in rename.items():
+        obj = ws.objects.pop(oid)
+        loc_id = obj.location_id or fallback_loc
+        if loc_id not in ws.locations and "LOC_NONE" in ws.locations:
+            loc_id = "LOC_NONE"
+        ws.entities[new_id] = Entity(
+            id=new_id,
+            name=obj.name,
+            location_id=loc_id,
+            status="healthy",
+            traits={},
+        )
+        repairs.append(
+            f"Promoted sentient OBJ '{oid}' \u2192 ENT '{new_id}' "
+            f"(appeared as actor/speaker on a non-utterance event)."
+        )
+
+    # Rewrite all string-id slots that may reference the renamed ids.
+    def _r(s: Optional[str]) -> Optional[str]:
+        if s is None:
+            return None
+        return rename.get(s, s)
+
+    def _r_list(items: List[str]) -> List[str]:
+        return [rename.get(x, x) if isinstance(x, str) else x for x in items]
+
+    for evt in ws.events:
+        evt.actor_ids = _r_list(evt.actor_ids or [])
+        evt.target_ids = _r_list(evt.target_ids or [])
+        evt.addressee_ids = _r_list(evt.addressee_ids or [])
+        evt.speaker_id = _r(evt.speaker_id)
+    for ce in ws.causal_topology:
+        ce.source_id = _r(ce.source_id) or ce.source_id
+        ce.target_id = _r(ce.target_id) or ce.target_id
+        rcid = getattr(ce, "rel_counterpart_id", None)
+        if rcid is not None and rcid in rename:
+            ce.rel_counterpart_id = rename[rcid]
+    for se in ws.social_topology:
+        se.source_entity_id = _r(se.source_entity_id) or se.source_entity_id
+        se.target_entity_id = _r(se.target_entity_id) or se.target_entity_id
+    for ch in ws.channels.values():
+        ch.participant_ids = _r_list(ch.participant_ids or [])
+        if ch.intelligibility:
+            ch.intelligibility = {
+                rename.get(k, k): v for k, v in ch.intelligibility.items()
+            }
+    for prop in ws.propositions:
+        prop.referent_ids = _r_list(prop.referent_ids or [])
+    # Remaining objects' owner_id (and historical owner_id snapshots)
+    # may have pointed at a promoted record.
+    for obj in ws.objects.values():
+        if obj.owner_id and obj.owner_id in rename:
+            obj.owner_id = rename[obj.owner_id]
+        for osnap in obj.state_timeline:
+            if osnap.owner_id and osnap.owner_id in rename:
+                osnap.owner_id = rename[osnap.owner_id]
+    # Entity beliefs / concerns may target a renamed id. Also rewrite
+    # historical belief mutations on the per-snapshot timeline so
+    # ``reconstruct_entity_at`` keeps applying invalidations and
+    # confidence shifts after the rename.
+    def _r_invalidated(entry: str) -> str:
+        # Composite form ``"target::PROP_..."`` keeps the prop suffix
+        # intact; bare form is the target id alone.
+        if not isinstance(entry, str):
+            return entry
+        if "::" in entry:
+            tgt, _, rest = entry.partition("::")
+            return f"{rename.get(tgt, tgt)}::{rest}"
+        return rename.get(entry, entry)
+
+    for ent in ws.entities.values():
+        for b in ent.beliefs:
+            if b.target_id in rename:
+                b.target_id = rename[b.target_id]
+        for snap in ent.state_timeline:
+            for b in snap.beliefs_added:
+                if b.target_id in rename:
+                    b.target_id = rename[b.target_id]
+            if snap.beliefs_invalidated:
+                snap.beliefs_invalidated = [
+                    _r_invalidated(e) for e in snap.beliefs_invalidated
+                ]
+            for shift in (snap.belief_confidence_updates or []):
+                if shift.target_id in rename:
+                    shift.target_id = rename[shift.target_id]
+    if repairs:
+        logger.info(
+            "[Auto-repair] Promoted %d sentient OBJ \u2192 ENT records.",
+            len(rename),
+        )
+    return ws, repairs
+
+
 def _auto_repair(ws: WorldStateV1) -> Tuple[WorldStateV1, List[str]]:
     """
     Programmatically repair a WorldStateV1 by removing broken edges
@@ -12900,7 +13227,8 @@ def _auto_repair(ws: WorldStateV1) -> Tuple[WorldStateV1, List[str]]:
     but applied at the validation layer — strip provably broken
     references rather than forcing LLM re-extraction.
     """
-    repairs: List[str] = []
+    ws, promotion_repairs = _promote_sentient_objects(ws)
+    repairs: List[str] = list(promotion_repairs)
 
     valid_ids = (
         set(ws.locations.keys())
@@ -13110,13 +13438,139 @@ def _auto_repair(ws: WorldStateV1) -> Tuple[WorldStateV1, List[str]]:
             and evt.via_channel_id
             and evt.via_channel_id not in valid_channel_ids
         ):
-            repairs.append(
-                f"Cleared dangling via_channel_id '{evt.via_channel_id}' on utterance '{evt.id}'."
-            )
-            repaired_events.append(evt.model_copy(update={"via_channel_id": None}))
+            # Try a fuzzy resolve before clearing — common failure mode
+            # is the per-chunk extractor coining a CHN_ id with a
+            # slightly different spelling from the catalogue. The
+            # OSS-extraction audit (2026-05-15) showed many utterances
+            # losing their via_channel_id this way.
+            guess = _fuzzy_resolve_id(evt.via_channel_id, valid_channel_ids)
+            if guess:
+                repairs.append(
+                    f"Fuzzy-fixed via_channel_id on utterance '{evt.id}': "
+                    f"'{evt.via_channel_id}' \u2192 '{guess}'."
+                )
+                repaired_events.append(evt.model_copy(update={"via_channel_id": guess}))
+            else:
+                repairs.append(
+                    f"Cleared dangling via_channel_id '{evt.via_channel_id}' on utterance '{evt.id}'."
+                )
+                repaired_events.append(evt.model_copy(update={"via_channel_id": None}))
         else:
             repaired_events.append(evt)
     clean_events = repaired_events
+
+    # --- Fuzzy-fix dangling at_location_id on events ---
+    # OSS audit: typos like 'LOC_GRAND_BUDGET_HOTEL' (vs BUDAPEST)
+    # leak through; fuzzy-resolve against the registry before the
+    # auditor flags them.
+    repaired_events = []
+    for evt in clean_events:
+        if evt.at_location_id and evt.at_location_id not in location_ids:
+            guess = _fuzzy_resolve_id(evt.at_location_id, location_ids)
+            if guess:
+                repairs.append(
+                    f"Fuzzy-fixed at_location_id on event '{evt.id}': "
+                    f"'{evt.at_location_id}' \u2192 '{guess}'."
+                )
+                repaired_events.append(evt.model_copy(update={"at_location_id": guess}))
+            else:
+                repairs.append(
+                    f"Cleared dangling at_location_id '{evt.at_location_id}' on event '{evt.id}'."
+                )
+                repaired_events.append(evt.model_copy(update={"at_location_id": None}))
+        else:
+            repaired_events.append(evt)
+    clean_events = repaired_events
+
+    # --- Fuzzy-fix dangling proposition refs on events ---
+    # ``ws.propositions`` is empty during slot-A _auto_repair (runs
+    # before reconcile_affect) but populated for slot-B/correction-loop
+    # runs. Skip cleanly when unavailable.
+    valid_prop_ids = {p.proposition_id for p in ws.propositions}
+    if valid_prop_ids:
+        repaired_events = []
+        for evt in clean_events:
+            update: dict = {}
+            # resolves_proposition_ids
+            if evt.resolves_proposition_ids:
+                fixed: List[str] = []
+                changed = False
+                for pid in evt.resolves_proposition_ids:
+                    if pid in valid_prop_ids:
+                        fixed.append(pid)
+                        continue
+                    guess = _fuzzy_resolve_id(pid, valid_prop_ids)
+                    if guess:
+                        fixed.append(guess)
+                        repairs.append(
+                            f"Fuzzy-fixed resolves_proposition_ids on '{evt.id}': "
+                            f"'{pid}' \u2192 '{guess}'."
+                        )
+                        changed = True
+                    else:
+                        repairs.append(
+                            f"Dropped dangling resolves_proposition_ids "
+                            f"'{pid}' on '{evt.id}'."
+                        )
+                        changed = True
+                if changed:
+                    update["resolves_proposition_ids"] = fixed
+            # asserts / denies
+            for fld in ("asserts_proposition_id", "denies_proposition_id"):
+                pid = getattr(evt, fld)
+                if pid and pid not in valid_prop_ids:
+                    guess = _fuzzy_resolve_id(pid, valid_prop_ids)
+                    if guess:
+                        update[fld] = guess
+                        repairs.append(
+                            f"Fuzzy-fixed {fld} on '{evt.id}': '{pid}' \u2192 '{guess}'."
+                        )
+                    else:
+                        update[fld] = None
+                        repairs.append(
+                            f"Cleared dangling {fld} '{pid}' on '{evt.id}'."
+                        )
+            repaired_events.append(evt.model_copy(update=update) if update else evt)
+        clean_events = repaired_events
+
+        # Sweep proposition referent_ids the same way.
+        all_node_ids = (
+            entity_ids | set(ws.objects.keys()) | location_ids
+            | world_trait_ids | event_id_set | set(clean_channels.keys())
+        )
+        new_props: List[Proposition] = []
+        props_changed = False
+        for prop in ws.propositions:
+            if not prop.referent_ids:
+                new_props.append(prop)
+                continue
+            fixed_refs: List[str] = []
+            ref_changed = False
+            for rid in prop.referent_ids:
+                if rid in all_node_ids:
+                    fixed_refs.append(rid)
+                    continue
+                guess = _fuzzy_resolve_id(rid, all_node_ids)
+                if guess:
+                    fixed_refs.append(guess)
+                    repairs.append(
+                        f"Fuzzy-fixed referent_id on proposition "
+                        f"'{prop.proposition_id}': '{rid}' \u2192 '{guess}'."
+                    )
+                    ref_changed = True
+                else:
+                    repairs.append(
+                        f"Dropped dangling referent_id '{rid}' on "
+                        f"proposition '{prop.proposition_id}'."
+                    )
+                    ref_changed = True
+            if ref_changed:
+                new_props.append(prop.model_copy(update={"referent_ids": fixed_refs}))
+                props_changed = True
+            else:
+                new_props.append(prop)
+        if props_changed:
+            ws = ws.model_copy(update={"propositions": new_props})
 
     # --- Fuzzy-fix entity state_timeline.triggered_by references ---
     # Common failure mode: a consequences-extractor pass coined an EVT_ ID
@@ -13331,6 +13785,97 @@ def _auto_repair(ws: WorldStateV1) -> Tuple[WorldStateV1, List[str]]:
                 )
         repaired_utterances.append(evt.model_copy(update=update) if update else evt)
     clean_events = repaired_utterances
+
+    # --- Backfill EntityStateSnapshot.location_id from event.at_location_id ---
+    # When an event names an actor at a specific at_location_id but the
+    # actor's last-known location is elsewhere, synthesise a snapshot
+    # so the temporal-reconstruction reader sees the actor at the
+    # right place at the right time.
+    new_entities_loc: Dict[str, Entity] = {}
+    entities_loc_changed = False
+    for eid, ent in ws.entities.items():
+        # Build sorted timeline once per entity.
+        snaps_by_fab: Dict[int, EntityStateSnapshot] = {
+            s.fabula_time: s for s in ent.state_timeline
+        }
+        last_loc: Optional[str] = ent.location_id
+        # Walk events that involve this entity in fabula order.
+        relevant = sorted(
+            [
+                e for e in clean_events
+                if e.at_location_id and e.at_location_id in location_ids
+                and (eid in (e.actor_ids or [])
+                     or (e.event_type == "utterance" and e.speaker_id == eid))
+                # Skip remote utterances — channel-mediated speakers
+                # need not be co-present with the event location.
+                and not (e.event_type == "utterance" and e.via_channel_id)
+            ],
+            key=lambda e: e.fabula_time,
+        )
+        # Walk timeline + events together to track last_loc.
+        timeline_ticks = sorted(snaps_by_fab.keys())
+        ti = 0
+        added_any = False
+        for evt in relevant:
+            # Apply any earlier snapshots that update location.
+            while ti < len(timeline_ticks) and timeline_ticks[ti] <= evt.fabula_time:
+                snap_loc = snaps_by_fab[timeline_ticks[ti]].location_id
+                if snap_loc is not None:
+                    last_loc = snap_loc
+                ti += 1
+            if last_loc == evt.at_location_id:
+                continue
+            # Need a new snapshot at evt.fabula_time bumping location.
+            existing = snaps_by_fab.get(evt.fabula_time)
+            if existing is None:
+                snaps_by_fab[evt.fabula_time] = EntityStateSnapshot(
+                    fabula_time=evt.fabula_time,
+                    triggered_by=evt.id,
+                    location_id=evt.at_location_id,
+                )
+                timeline_ticks = sorted(snaps_by_fab.keys())
+            elif existing.location_id is None:
+                snaps_by_fab[evt.fabula_time] = existing.model_copy(
+                    update={"location_id": evt.at_location_id}
+                )
+            else:
+                # Existing snapshot already commits a different location
+                # at this tick — author intent wins, don't overwrite.
+                last_loc = existing.location_id
+                continue
+            last_loc = evt.at_location_id
+            added_any = True
+            repairs.append(
+                f"Backfilled state_timeline location for '{eid}' at "
+                f"fabula={evt.fabula_time} \u2192 '{evt.at_location_id}' "
+                f"(triggered by '{evt.id}')."
+            )
+        if added_any:
+            new_tl = [snaps_by_fab[t] for t in sorted(snaps_by_fab.keys())]
+            new_entities_loc[eid] = ent.model_copy(update={"state_timeline": new_tl})
+            entities_loc_changed = True
+        else:
+            new_entities_loc[eid] = ent
+    if entities_loc_changed:
+        ws = ws.model_copy(update={"entities": new_entities_loc})
+
+    # --- Drop the LOC_NONE sentinel only when ENT_AUDIENCE is absent ---
+    # The audience synthesis step injects LOC_NONE so ENT_AUDIENCE has
+    # a non-null ``location_id`` (Entity requires one). We can only
+    # safely drop the sentinel when there is no audience entity at
+    # all — otherwise we'd leave a dangling reference. The affect
+    # scorers already special-case LOC_NONE (skipped from spatial
+    # propagation), so leaving it in the registry is benign.
+    if (
+        "LOC_NONE" in ws.locations
+        and "ENT_AUDIENCE" not in ws.entities
+        and not any(ent.location_id == "LOC_NONE" for ent in ws.entities.values())
+    ):
+        new_locs = dict(ws.locations)
+        new_locs.pop("LOC_NONE", None)
+        ws = ws.model_copy(update={"locations": new_locs})
+        repairs.append("Dropped unused LOC_NONE sentinel.")
+        location_ids = set(ws.locations.keys())
 
     if repairs:
         logger.info("[Auto-Repair] Applied %d repairs.", len(repairs))

@@ -101,3 +101,25 @@ cross-listing is load-bearing — a one-sided seed loses the ambivalence.
 8. **Be conservative with weak evidence**: if a concern is purely genre-archetypal (a soldier *probably* fears dishonour) with no on-page support, mark it `evidence_strength="weak"` and use a low `baseline_salience` (0.2–0.3). The post-pass coverage gate uses these to fill gaps without polluting the foreground.
 9. **No duplicates**: same proposition under two different ids, or two concerns with the same `(entity_id, proposition_id, polarity)` triple, will be coalesced by the reconciler — preferring the entry with stronger evidence. To avoid losing detail, dedup yourself.
 10. **Audience priors and stakes are calibrations, not guesses**: a runaway 1.0 stakes on every proposition is the same as 0.5 on every proposition. Use the full 0.0–1.0 range and reserve 0.8+ for the genuine load-bearing questions.
+
+### Calibration grid (May 2026 audit)
+
+Extractions clustered `audience_default_prior` at 0.5 and `stakes` at 0.7 across nearly every proposition. The numbers must *vary*. Use the table below as a starting point, then move within each band based on the specific work:
+
+| `audience_default_prior` | When to use | Example |
+|---|---|---|
+| **0.85–0.95** | Telegraphed inevitability — title / opening prologue / genre forces it. | Romeo & Juliet die (announced in the prologue). |
+| **0.65–0.80** | Expected outcome — strongly foreshadowed but not guaranteed. | Macbeth becomes king; Frodo reaches Mount Doom. |
+| **0.45–0.60** | Open question — narrative actively keeps both sides live. | Will Elizabeth marry Darcy? Who killed Mrs Boynton? |
+| **0.20–0.40** | Underdog / against-the-grain hope or dread. | Han Solo returns to help at the climax. |
+| **0.05–0.15** | Blindsiding twist — audience has no priors pointing this way. | Snape was loyal; Verbal Kint *is* Keyser Söze. |
+
+| `stakes` | When to use | Example |
+|---|---|---|
+| **0.90–1.00** | Load-bearing climax question — the work's headline tension. | Will Sauron be defeated? Does Macbeth die? |
+| **0.70–0.85** | Major plot question — drives a whole act / subplot. | Will Pip learn his benefactor's identity? |
+| **0.45–0.65** | Important beat — affects the climax obliquely. | Does Wickham's elopement become public? |
+| **0.20–0.40** | Subplot / secondary-character outcome. | Does Mr Collins find a wife? |
+| **0.05–0.15** | Background colour — narratively cited but non-load-bearing. | A passing rumour about a minor character. |
+
+Genre weighting: in genre-fiction (mystery, thriller, horror) the *whodunit / whether-the-monster-kills-the-protag* line carries `stakes ≈ 1.0`; in literary fiction the central interpretive question (who Pip really is, what marriage means) does. A worked-through catalogue of ~30 propositions for a feature-length work should show `audience_default_prior` and `stakes` distributions that span the full range — if every entry is between 0.4 and 0.7, recalibrate.

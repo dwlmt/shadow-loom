@@ -125,6 +125,63 @@ VIOLATION_EXPLANATIONS: Dict[str, str] = {
         "instead of rendering the world as a lived scene. Rewrite as "
         "embodied action and observation."
     ),
+    "pruned_utterance_leak": (
+        "Counterfactual surgery severed an utterance's provenance, "
+        "but its canonical content surfaced verbatim in the "
+        "intervened branch. Rewrite so the pruned line is no longer "
+        "quoted, paraphrased, or implied."
+    ),
+    "disabled_channel_leak": (
+        "Counterfactual surgery disabled a channel, but the prose "
+        "still routes a message through it (or names the channel "
+        "id). Re-route the information through an active channel "
+        "or remove the reference."
+    ),
+    "blocked_propagation_leak": (
+        "The propagation engine marked a (node, trait) pair as "
+        "resisted, but the prose co-asserts both. Either drop the "
+        "trait reference or surface the resistance explicitly."
+    ),
+    "undeclared_element": (
+        "Prose introduced a new entity / location / object / world "
+        "trait / proposition / concern without declaring it in "
+        "``GeneratedScene.introduced_elements``. Either remove the "
+        "name and re-use an existing referent or move it into the "
+        "declared-introductions list."
+    ),
+    "object_misuse": (
+        "A character performed an action on an object whose "
+        "declared ``affordances`` do not include that verb. Either "
+        "add the affordance to the object or rewrite the action."
+    ),
+    "object_position_mismatch": (
+        "Prose placed an object in a location or hand that "
+        "contradicts the reconstructed object position at the "
+        "scene's fabula time. Move the object on-page first, or "
+        "fix the prose to match its known position."
+    ),
+    "entity_position_mismatch": (
+        "Prose placed a character in a location that contradicts "
+        "the reconstructed entity position at the scene's fabula "
+        "time. Move the character on-page first, or fix the prose "
+        "to match their known position."
+    ),
+    "event_location_mismatch": (
+        "Prose placed an event at a location that contradicts the "
+        "event's declared ``at_location_id``. Use the schema's "
+        "location, or update the schema if the move is intentional."
+    ),
+    "event_copresence_violation": (
+        "An actor or non-channel target bound to the event was "
+        "absent in the prose. Channel-mediated utterances aside, "
+        "every bound participant must be present at the event's "
+        "location at fabula time."
+    ),
+    "event_copresence_omission": (
+        "Prose added a phantom witness — a character whose "
+        "reconstructed location at fabula time is not the event's "
+        "``at_location_id``. Remove them or move them on-page first."
+    ),
 }
 
 

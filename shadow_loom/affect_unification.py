@@ -477,6 +477,42 @@ def synthesise_audience_entity(world: WorldStateV1) -> Entity:
         )
         audience.state_timeline.append(snap)
 
+    # ------------------------------------------------------------------
+    # Audience concern seeding.
+    #
+    # The OSS-extraction audit (2026-05-15) found that ENT_AUDIENCE
+    # had zero concerns across every ingested plot, which silently
+    # zeroed out every dramatic-irony / suspense / surprise score
+    # that multiplies through audience concern salience. We seed one
+    # concern per ``kind='outcome'`` proposition (the Brewer-
+    # Lichtenstein open-question class that drives suspense) using
+    # the proposition's own ``audience_default_prior`` and ``stakes``
+    # to weight the per-entity ``salience``. Polarity is ``desire``
+    # by default (the audience wants the open question resolved
+    # *positively*); the affect agent is free to overlay a
+    # ``ConcernSnapshot`` that flips polarity on a given fabula tick.
+    # ------------------------------------------------------------------
+    for prop in world.propositions:
+        if prop.kind != "outcome":
+            continue
+        ccn_id = f"CCN_AUDIENCE_{prop.proposition_id[len('PROP_'):]}"
+        # Salience = average of audience's prior interest and the
+        # proposition's narrative stakes. Both are in [0, 1] so the
+        # mean stays in range.
+        salience = max(
+            0.05,
+            min(1.0, 0.5 * (prop.audience_default_prior + prop.stakes)),
+        )
+        audience.concerns.append(
+            Concern(
+                concern_id=ccn_id,
+                proposition_id=prop.proposition_id,
+                polarity="desire",
+                salience=salience,
+                kind="outcome",
+            )
+        )
+
     world.entities[AUDIENCE_ID] = audience
     return audience
 
