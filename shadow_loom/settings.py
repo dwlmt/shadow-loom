@@ -1153,7 +1153,11 @@ class _MergedSystemPromptsModel:
         # model id on later retries to escape a sticky bad provider.
         # See https://openrouter.ai/docs/features/provider-routing.
         _ROUTING_SUFFIXES = (":nitro", ":floor", ":online")
-        fallback_after = max(1, _PROVIDER_RETRY_ATTEMPTS // 2)
+        # Drop the suffix on the very next attempt after the first
+        # malformed-completion / 5xx \u2014 a stuck provider rarely
+        # recovers within a single backoff window, and OpenRouter's
+        # bare-id route shops every healthy provider for the model.
+        fallback_after = 1
         last_exc: Exception | None = None
         try:
             for attempt in range(_PROVIDER_RETRY_ATTEMPTS):
