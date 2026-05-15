@@ -1793,12 +1793,28 @@ def _apply_affect_to_world(
         changeset.propositions_added += 1
 
     # 2. Truth commits → Proposition.truth_at_fabula
+    #
+    # Branch safety: a shadow merge must not flip the truth value of
+    # a factual-tagged proposition (and vice versa); the truth-flip
+    # would otherwise propagate into the canonical mainline via the
+    # next read of ``truth_at_fabula``. Skipped commits are logged
+    # at INFO with the ``[merge·affect]`` prefix so divergence is
+    # auditable.
     for commit in topology.proposition_truth_commits:
         prop = prop_index.get(commit.proposition_id)
         if prop is None:
             logger.warning(
                 "[merge·affect] Truth commit for unknown PROP %s — skipped.",
                 commit.proposition_id,
+            )
+            continue
+        prop_world = getattr(prop, "world_id", "factual") or "factual"
+        if prop_world != world_id:
+            logger.info(
+                "[merge·affect] Skipped truth commit on PROP %s "
+                "(prop.world_id=%s, merge_world_id=%s) — "
+                "cross-branch write blocked.",
+                commit.proposition_id, prop_world, world_id,
             )
             continue
         existing = prop.truth_at_fabula.get(commit.fabula_time)
@@ -1808,12 +1824,24 @@ def _apply_affect_to_world(
         changeset.proposition_truths_committed += 1
 
     # 3. Proposition framing snapshots → Proposition.state_timeline
+    #
+    # Branch safety: same rule as truth commits — a shadow merge
+    # must not append snapshots onto a factual-tagged proposition.
     for snap in topology.proposition_snapshots:
         prop = prop_index.get(snap.proposition_id)
         if prop is None:
             logger.warning(
                 "[merge·affect] Snapshot for unknown PROP %s — skipped.",
                 snap.proposition_id,
+            )
+            continue
+        prop_world = getattr(prop, "world_id", "factual") or "factual"
+        if prop_world != world_id:
+            logger.info(
+                "[merge·affect] Skipped framing snapshot on PROP %s "
+                "(prop.world_id=%s, merge_world_id=%s) — "
+                "cross-branch write blocked.",
+                snap.proposition_id, prop_world, world_id,
             )
             continue
         from shadow_loom.models import PropositionSnapshot
@@ -1838,12 +1866,26 @@ def _apply_affect_to_world(
         changeset.proposition_snapshots_added += 1
 
     # 4. New concerns (direct genesis) under a holder
+    #
+    # Branch safety: a shadow merge must not seed new concerns onto
+    # a factual-tagged entity (and vice versa); the concerns would
+    # otherwise become indistinguishable from canonical-mainline
+    # affect once read back.
     for entity_id, concerns in topology.new_concerns.items():
         ent = merged.entities.get(entity_id)
         if ent is None:
             logger.warning(
                 "[merge·affect] new_concerns for unknown entity %s — skipped.",
                 entity_id,
+            )
+            continue
+        ent_world = getattr(ent, "world_id", "factual") or "factual"
+        if ent_world != world_id:
+            logger.info(
+                "[merge·affect] Skipped %d new_concern(s) on %s "
+                "(ent.world_id=%s, merge_world_id=%s) — "
+                "cross-branch write blocked.",
+                len(concerns), entity_id, ent_world, world_id,
             )
             continue
         existing_keys = {
@@ -1878,6 +1920,15 @@ def _apply_affect_to_world(
                 logger.warning(
                     "[merge·affect] ConcernSeed for unknown holder %s — skipped.",
                     holder_id,
+                )
+                continue
+            ent_world = getattr(ent, "world_id", "factual") or "factual"
+            if ent_world != world_id:
+                logger.info(
+                    "[merge·affect] Skipped ConcernSeed on %s "
+                    "(ent.world_id=%s, merge_world_id=%s) — "
+                    "cross-branch write blocked.",
+                    holder_id, ent_world, world_id,
                 )
                 continue
             prop_id = getattr(seed, "proposition_id", None)
@@ -1934,7 +1985,23 @@ def _apply_affect_to_world(
                     snap.concern_id,
                 )
                 continue
-            for target in targets:
+            # Branch safety: only stamp snapshots onto concerns whose
+            # ``world_id`` matches the merge branch. Cross-branch
+            # writes are skipped; if every match is filtered out we
+            # log once and move on.
+            in_branch = [
+                c for c in targets
+                if (getattr(c, "world_id", "factual") or "factual") == world_id
+            ]
+            if not in_branch:
+                logger.info(
+                    "[merge·affect] Skipped concern snapshot for CCN %s — "
+                    "no concern with that id on branch=%s (found %d "
+                    "cross-branch match(es)).",
+                    snap.concern_id, world_id, len(targets),
+                )
+                continue
+            for target in in_branch:
                 cs = ConcernSnapshot(
                     world_id=world_id,
                     fabula_time=snap.fabula_time,
@@ -2015,6 +2082,7 @@ def _apply_belief_confidence_updates(
     topology: "ChunkTopology",
     *,
     changeset: "MergeChangeset",
+    merge_world_id: Literal["factual", "shadow"] = "factual",
 ) -> None:
     """Apply each ``EntityUpdate.belief_confidence_updates`` entry by
     overwriting the matching existing :class:`Belief` on the entity.
@@ -2022,11 +2090,24 @@ def _apply_belief_confidence_updates(
     The match is by ``target_id`` (and ``proposition_id`` when set). If
     no matching belief exists the update is dropped with a warning —
     creation should go through ``new_beliefs`` on the same EntityUpdate.
+
+    Branch safety: a shadow merge must not rewrite confidence on a
+    factual-tagged entity (and vice versa). Cross-branch writes are
+    skipped at INFO level with the ``[merge·belief]`` prefix.
     """
     for eu in topology.entity_updates:
         for upd in eu.belief_confidence_updates:
             ent = merged.entities.get(eu.entity_id)
             if ent is None:
+                continue
+            ent_world = getattr(ent, "world_id", "factual") or "factual"
+            if ent_world != merge_world_id:
+                logger.info(
+                    "[merge·belief] Skipped confidence update on %s "
+                    "(ent.world_id=%s, merge_world_id=%s) — "
+                    "cross-branch write blocked.",
+                    eu.entity_id, ent_world, merge_world_id,
+                )
                 continue
             matched = False
             for belief in ent.beliefs:
@@ -2053,25 +2134,64 @@ def _apply_deletions(
     topology: "ChunkTopology",
     *,
     changeset: "MergeChangeset",
+    merge_world_id: Literal["factual", "shadow"] = "factual",
 ) -> None:
     """Run the deletion pass before additive merge sections.
 
     Cascades dependent edges/snapshots when a parent node is removed
     (e.g. removing an entity also drops its concerns and any social
     edges or beliefs naming it).
+
+    Branch safety: a merge running on ``world_id == "shadow"`` must
+    not destroy factual-tagged events / channels / entities / objects
+    / locations / propositions / concerns / edges, and vice versa.
+    Without this guard a shadow-branch manual edit (which carries
+    populated ``removed_*`` fields, e.g. retracted utterances) would
+    silently delete canonical mainline state. Shadow merges therefore
+    only delete ``world_id == "shadow"`` items; factual merges only
+    delete ``world_id == "factual"`` items. Items with no world_id
+    attribute (legacy data) are conservatively treated as factual.
     """
+
+    def _wid(obj) -> str:
+        # Tolerate elements missing the field (legacy / dict-coerced)
+        # and treat them as factual so we never silently nuke them.
+        return getattr(obj, "world_id", "factual") or "factual"
+
+    def _branch_match(obj) -> bool:
+        return _wid(obj) == merge_world_id
+
     # --- Events
     if topology.removed_event_ids:
-        drop = set(topology.removed_event_ids)
+        drop_req = set(topology.removed_event_ids)
+        # Branch-filter: only delete events on the merge's branch.
+        evt_index = {e.id: e for e in merged.events}
+        drop = {
+            eid for eid in drop_req
+            if eid in evt_index and _branch_match(evt_index[eid])
+        }
+        skipped = drop_req - drop
+        if skipped:
+            logger.info(
+                "[merge·delete] Skipped %d event deletion(s) on branch=%s "
+                "because targets live on the other branch: %s",
+                len(skipped), merge_world_id, sorted(skipped),
+            )
         before = len(merged.events)
         merged.events = [e for e in merged.events if e.id not in drop]
         removed_n = before - len(merged.events)
         changeset.events_removed += removed_n
         # Cascade: drop causal/spatial/social edges referencing dropped events.
+        # Cascade is unconditional on the dropped IDs (those events are gone
+        # on this branch by definition); branch-mismatched edges naming a
+        # surviving cross-branch event are left alone.
         before_c = len(merged.causal_topology)
         merged.causal_topology = [
             c for c in merged.causal_topology
-            if c.source_id not in drop and c.target_id not in drop
+            if not (
+                (c.source_id in drop or c.target_id in drop)
+                and _branch_match(c)
+            )
         ]
         changeset.causal_edges_removed += before_c - len(merged.causal_topology)
 
@@ -2081,7 +2201,10 @@ def _apply_deletions(
         before = len(merged.causal_topology)
         merged.causal_topology = [
             c for c in merged.causal_topology
-            if (c.source_id, c.target_id, c.causality_type, c.fabula_time) not in keys
+            if not (
+                (c.source_id, c.target_id, c.causality_type, c.fabula_time) in keys
+                and _branch_match(c)
+            )
         ]
         changeset.causal_edges_removed += before - len(merged.causal_topology)
 
@@ -2091,7 +2214,10 @@ def _apply_deletions(
         before = len(merged.social_topology)
         merged.social_topology = [
             r for r in merged.social_topology
-            if (r.source_entity_id, r.target_entity_id) not in keys
+            if not (
+                (r.source_entity_id, r.target_entity_id) in keys
+                and _branch_match(r)
+            )
         ]
         changeset.social_edges_removed += before - len(merged.social_topology)
 
@@ -2101,17 +2227,31 @@ def _apply_deletions(
         before = len(merged.spatial_topology)
         merged.spatial_topology = [
             s for s in merged.spatial_topology
-            if (s.source_id, s.target_id) not in keys
+            if not (
+                (s.source_id, s.target_id) in keys
+                and _branch_match(s)
+            )
         ]
         changeset.spatial_edges_removed += before - len(merged.spatial_topology)
 
     # --- Channels
     if topology.removed_channel_ids:
-        drop_chan = set(topology.removed_channel_ids)
+        drop_req = set(topology.removed_channel_ids)
+        drop_chan = {
+            cid for cid in drop_req
+            if cid in merged.channels
+            and _branch_match(merged.channels[cid])
+        }
+        skipped = drop_req - drop_chan
+        if skipped:
+            logger.info(
+                "[merge·delete] Skipped %d channel deletion(s) on branch=%s "
+                "(other-branch targets): %s",
+                len(skipped), merge_world_id, sorted(skipped),
+            )
         for cid in drop_chan:
-            if cid in merged.channels:
-                del merged.channels[cid]
-                changeset.channels_removed += 1
+            del merged.channels[cid]
+            changeset.channels_removed += 1
         # Cascade: scrub channel pointers on events and beliefs.
         for evt in merged.events:
             if getattr(evt, "via_channel_id", None) in drop_chan:
@@ -2123,16 +2263,30 @@ def _apply_deletions(
 
     # --- Entities (cascade beliefs/concerns/edges)
     if topology.removed_entity_ids:
-        drop = set(topology.removed_entity_ids)
+        drop_req = set(topology.removed_entity_ids)
+        drop = {
+            eid for eid in drop_req
+            if eid in merged.entities
+            and _branch_match(merged.entities[eid])
+        }
+        skipped = drop_req - drop
+        if skipped:
+            logger.info(
+                "[merge·delete] Skipped %d entity deletion(s) on branch=%s "
+                "(other-branch targets): %s",
+                len(skipped), merge_world_id, sorted(skipped),
+            )
         for eid in drop:
-            if eid in merged.entities:
-                del merged.entities[eid]
-                changeset.entities_removed += 1
-        # Drop social edges naming a dropped entity.
+            del merged.entities[eid]
+            changeset.entities_removed += 1
+        # Drop social edges naming a dropped entity (only on this branch).
         before_s = len(merged.social_topology)
         merged.social_topology = [
             r for r in merged.social_topology
-            if r.source_entity_id not in drop and r.target_entity_id not in drop
+            if not (
+                (r.source_entity_id in drop or r.target_entity_id in drop)
+                and _branch_match(r)
+            )
         ]
         changeset.social_edges_removed += before_s - len(merged.social_topology)
         # Drop other entities' beliefs targeting a dropped entity.
@@ -2141,28 +2295,69 @@ def _apply_deletions(
 
     # --- Objects
     for oid in topology.removed_object_ids:
-        if oid in merged.objects:
-            del merged.objects[oid]
-            changeset.objects_removed += 1
+        obj = merged.objects.get(oid)
+        if obj is None:
+            continue
+        if not _branch_match(obj):
+            logger.info(
+                "[merge·delete] Skipped object deletion on branch=%s "
+                "(other-branch target): %s",
+                merge_world_id, oid,
+            )
+            continue
+        del merged.objects[oid]
+        changeset.objects_removed += 1
 
     # --- Locations
     for lid in topology.removed_location_ids:
-        if lid in merged.locations:
-            del merged.locations[lid]
-            changeset.locations_removed += 1
+        loc = merged.locations.get(lid)
+        if loc is None:
+            continue
+        if not _branch_match(loc):
+            logger.info(
+                "[merge·delete] Skipped location deletion on branch=%s "
+                "(other-branch target): %s",
+                merge_world_id, lid,
+            )
+            continue
+        del merged.locations[lid]
+        changeset.locations_removed += 1
 
     # --- World traits
     for wid in topology.removed_world_trait_ids:
-        if wid in merged.world_traits:
-            del merged.world_traits[wid]
-            changeset.world_traits_removed += 1
+        wt = merged.world_traits.get(wid)
+        if wt is None:
+            continue
+        if not _branch_match(wt):
+            logger.info(
+                "[merge·delete] Skipped world_trait deletion on branch=%s "
+                "(other-branch target): %s",
+                merge_world_id, wid,
+            )
+            continue
+        del merged.world_traits[wid]
+        changeset.world_traits_removed += 1
 
     # --- Propositions (also drop concerns referencing them; scrub
     # proposition pointers on surviving events and beliefs).
     if topology.removed_proposition_ids:
-        drop = set(topology.removed_proposition_ids)
+        drop_req = set(topology.removed_proposition_ids)
+        prop_index = {p.proposition_id: p for p in merged.propositions}
+        drop = {
+            pid for pid in drop_req
+            if pid in prop_index and _branch_match(prop_index[pid])
+        }
+        skipped = drop_req - drop
+        if skipped:
+            logger.info(
+                "[merge·delete] Skipped %d proposition deletion(s) on "
+                "branch=%s (other-branch targets): %s",
+                len(skipped), merge_world_id, sorted(skipped),
+            )
         before = len(merged.propositions)
-        merged.propositions = [p for p in merged.propositions if p.proposition_id not in drop]
+        merged.propositions = [
+            p for p in merged.propositions if p.proposition_id not in drop
+        ]
         changeset.propositions_removed += before - len(merged.propositions)
         for ent in merged.entities.values():
             before_c = len(ent.concerns)
@@ -2184,20 +2379,28 @@ def _apply_deletions(
 
     # --- Concerns (entity_id, concern_id)
     if topology.removed_concern_ids:
-        drop = set((eid, cid) for eid, cid in topology.removed_concern_ids)
-        removed_cids = {cid for _eid, cid in drop}
-        for eid, cid in drop:
+        drop_pairs = set((eid, cid) for eid, cid in topology.removed_concern_ids)
+        removed_cids: set[str] = set()
+        for eid, cid in drop_pairs:
             ent = merged.entities.get(eid)
             if ent is None:
                 continue
-            before_c = len(ent.concerns)
-            ent.concerns = [c for c in ent.concerns if c.concern_id != cid]
-            changeset.concerns_removed += before_c - len(ent.concerns)
+            kept: list = []
+            for c in ent.concerns:
+                if c.concern_id == cid and _branch_match(c):
+                    changeset.concerns_removed += 1
+                    removed_cids.add(cid)
+                    continue
+                kept.append(c)
+            ent.concerns = kept
         # Scrub counter_concern_ids on surviving concerns.
         for ent in merged.entities.values():
             for c in ent.concerns:
                 ccids = getattr(c, "counter_concern_ids", None)
                 if ccids:
+                    c.counter_concern_ids = [
+                        x for x in ccids if x not in removed_cids
+                    ]
                     c.counter_concern_ids = [
                         x for x in ccids if x not in removed_cids
                     ]
@@ -2208,9 +2411,16 @@ def _apply_supersession(
     topology: "ChunkTopology",
     *,
     changeset: "MergeChangeset",
+    merge_world_id: Literal["factual", "shadow"] = "factual",
 ) -> None:
     """Stamp ``superseded_by_event_id`` on overridden events and rewrite
-    cross-references on beliefs / concerns / propositions / new events."""
+    cross-references on beliefs / concerns / propositions / new events.
+
+    Branch safety: a shadow merge must not stamp supersession on
+    factual-tagged events (or rewrite belief provenance on factual-
+    tagged entities). Cross-branch writes are skipped at INFO level
+    with the ``[merge·supersede]`` prefix.
+    """
     if not topology.supersedes_event_ids:
         return
     mapping = dict(topology.supersedes_event_ids)
@@ -2222,13 +2432,27 @@ def _apply_supersession(
                 "[merge·supersede] Old event %s not found — supersession skipped.", old_id,
             )
             continue
+        evt_world = getattr(old_evt, "world_id", "factual") or "factual"
+        if evt_world != merge_world_id:
+            logger.info(
+                "[merge·supersede] Skipped supersession on %s "
+                "(evt.world_id=%s, merge_world_id=%s) — "
+                "cross-branch write blocked.",
+                old_id, evt_world, merge_world_id,
+            )
+            continue
         if old_evt.superseded_by_event_id == new_id:
             continue
         old_evt.superseded_by_event_id = new_id
         changeset.events_superseded += 1
 
-    # Rewrite belief provenance.
+    # Rewrite belief provenance — only on holders that match the
+    # merge branch, so a shadow supersession can't silently rewrite
+    # factual belief provenance pointers.
     for ent in merged.entities.values():
+        ent_world = getattr(ent, "world_id", "factual") or "factual"
+        if ent_world != merge_world_id:
+            continue
         for b in ent.beliefs:
             if b.acquired_via_event_id in mapping:
                 b.acquired_via_event_id = mapping[b.acquired_via_event_id]
@@ -2609,7 +2833,10 @@ class VersionedWorldModel(BaseModel):
         # --- Deletion pass (P2 of prose-merge completeness) — runs
         # before additive sections so a single merge can replace-then-
         # add cleanly. Cascades dependent edges/snapshots.
-        _apply_deletions(merged, topology, changeset=changeset)
+        _apply_deletions(
+            merged, topology, changeset=changeset,
+            merge_world_id=world_id,
+        )
 
         # --- Genesis-promoted nodes (entities / objects / locations /
         # world_traits) — written first so subsequent edge / event /
@@ -2619,12 +2846,37 @@ class VersionedWorldModel(BaseModel):
         # affordances / domains, set-union of constants) from the
         # incoming record so re-extractions enrich rather than
         # silently drop data.
+        #
+        # Branch safety: a shadow merge must NOT backfill a factual-
+        # tagged node (and vice versa). Cross-branch backfill would
+        # silently leak shadow-derived traits / beliefs / affordances
+        # into the canonical mainline node. When the existing node
+        # belongs to the other branch, the incoming record is dropped
+        # at INFO level with a ``[merge\u00b7genesis]`` skip log; if
+        # the caller wants the node on this branch, the topology must
+        # tag it with ``world_id == merge_world_id``.
+        def _genesis_branch_match(existing_obj) -> bool:
+            existing_world = (
+                getattr(existing_obj, "world_id", "factual") or "factual"
+            )
+            return existing_world == world_id
+
         for eid, ent in topology.new_entities.items():
             existing = merged.entities.get(eid)
             if existing is not None:
+                if not _genesis_branch_match(existing):
+                    logger.info(
+                        "[merge\u00b7genesis] Skipped entity backfill on %s "
+                        "(existing.world_id=%s, merge_world_id=%s) \u2014 "
+                        "cross-branch write blocked.",
+                        eid,
+                        getattr(existing, "world_id", "factual"),
+                        world_id,
+                    )
+                    continue
                 merged.entities[eid] = _backfill_entity(existing, ent)
                 logger.debug(
-                    "[VersionedWorldModel·merge] Spawn entity %s already exists — backfilled.",
+                    "[VersionedWorldModel\u00b7merge] Spawn entity %s already exists \u2014 backfilled.",
                     eid,
                 )
                 continue
@@ -2633,9 +2885,19 @@ class VersionedWorldModel(BaseModel):
         for oid, obj in topology.new_objects.items():
             existing_obj = merged.objects.get(oid)
             if existing_obj is not None:
+                if not _genesis_branch_match(existing_obj):
+                    logger.info(
+                        "[merge\u00b7genesis] Skipped object backfill on %s "
+                        "(existing.world_id=%s, merge_world_id=%s) \u2014 "
+                        "cross-branch write blocked.",
+                        oid,
+                        getattr(existing_obj, "world_id", "factual"),
+                        world_id,
+                    )
+                    continue
                 merged.objects[oid] = _backfill_object(existing_obj, obj)
                 logger.debug(
-                    "[VersionedWorldModel·merge] Spawn object %s already exists — backfilled.",
+                    "[VersionedWorldModel\u00b7merge] Spawn object %s already exists \u2014 backfilled.",
                     oid,
                 )
                 continue
@@ -2644,9 +2906,19 @@ class VersionedWorldModel(BaseModel):
         for lid, loc in topology.new_locations.items():
             existing_loc = merged.locations.get(lid)
             if existing_loc is not None:
+                if not _genesis_branch_match(existing_loc):
+                    logger.info(
+                        "[merge\u00b7genesis] Skipped location backfill on %s "
+                        "(existing.world_id=%s, merge_world_id=%s) \u2014 "
+                        "cross-branch write blocked.",
+                        lid,
+                        getattr(existing_loc, "world_id", "factual"),
+                        world_id,
+                    )
+                    continue
                 merged.locations[lid] = _backfill_location(existing_loc, loc)
                 logger.debug(
-                    "[VersionedWorldModel·merge] Spawn location %s already exists — backfilled.",
+                    "[VersionedWorldModel\u00b7merge] Spawn location %s already exists \u2014 backfilled.",
                     lid,
                 )
                 continue
@@ -2655,9 +2927,19 @@ class VersionedWorldModel(BaseModel):
         for wid, wt in topology.new_world_traits.items():
             existing_wt = merged.world_traits.get(wid)
             if existing_wt is not None:
+                if not _genesis_branch_match(existing_wt):
+                    logger.info(
+                        "[merge\u00b7genesis] Skipped world_trait backfill on %s "
+                        "(existing.world_id=%s, merge_world_id=%s) \u2014 "
+                        "cross-branch write blocked.",
+                        wid,
+                        getattr(existing_wt, "world_id", "factual"),
+                        world_id,
+                    )
+                    continue
                 merged.world_traits[wid] = _backfill_world_trait(existing_wt, wt)
                 logger.debug(
-                    "[VersionedWorldModel·merge] World trait %s already exists — backfilled.",
+                    "[VersionedWorldModel\u00b7merge] World trait %s already exists \u2014 backfilled.",
                     wid,
                 )
                 continue
@@ -2736,6 +3018,28 @@ class VersionedWorldModel(BaseModel):
                 )
                 changeset.entity_updates_skipped.append(eu.entity_id)
                 continue
+            # Branch safety: the snapshot we're about to append is
+            # tagged with the merge ``world_id``. Appending a shadow
+            # snapshot onto a factual-tagged entity (or vice versa)
+            # would pollute the canonical timeline that replay helpers
+            # such as ``reconstruct_entity_at`` walk in fabula order
+            # \u2014 silently leaking shadow-derived traits / beliefs /
+            # status changes into factual reconstructions. Skip with
+            # an INFO log; if the caller needs the snapshot on this
+            # branch, the topology must reference the branch-tagged
+            # holder id.
+            holder_world = getattr(entity, "world_id", "factual") or "factual"
+            if holder_world != world_id:
+                logger.info(
+                    "[merge\u00b7entity-update] Skipped snapshot on %s "
+                    "(holder.world_id=%s, merge_world_id=%s) \u2014 "
+                    "cross-branch write blocked.",
+                    eu.entity_id,
+                    holder_world,
+                    world_id,
+                )
+                changeset.entity_updates_skipped.append(eu.entity_id)
+                continue
             snap = EntityStateSnapshot(
                 world_id=world_id,
                 fabula_time=eu.fabula_time,
@@ -2767,6 +3071,24 @@ class VersionedWorldModel(BaseModel):
                 )
                 changeset.object_updates_skipped.append(ou.object_id)
                 continue
+            # Branch safety: mirror of the entity-update guard above.
+            # An object's ``state_timeline`` is replayed in fabula
+            # order without per-snapshot ``world_id`` filtering by the
+            # object reconstruction helpers, so a shadow snapshot
+            # written onto a factual-tagged object would pollute every
+            # later factual reconstruction.
+            holder_world = getattr(obj, "world_id", "factual") or "factual"
+            if holder_world != world_id:
+                logger.info(
+                    "[merge\u00b7object-update] Skipped snapshot on %s "
+                    "(holder.world_id=%s, merge_world_id=%s) \u2014 "
+                    "cross-branch write blocked.",
+                    ou.object_id,
+                    holder_world,
+                    world_id,
+                )
+                changeset.object_updates_skipped.append(ou.object_id)
+                continue
             snap = ObjectStateSnapshot(
                 world_id=world_id,
                 fabula_time=ou.fabula_time,
@@ -2788,9 +3110,15 @@ class VersionedWorldModel(BaseModel):
         # snapshots into the merged world.
         _apply_affect_to_world(merged, topology, world_id=world_id, changeset=changeset)
         # Belief confidence overwrites (Pearl Rung-2 BeliefMutation bridge).
-        _apply_belief_confidence_updates(merged, topology, changeset=changeset)
+        _apply_belief_confidence_updates(
+            merged, topology, changeset=changeset,
+            merge_world_id=world_id,
+        )
         # Supersession (mainline-promoted counterfactual override).
-        _apply_supersession(merged, topology, changeset=changeset)
+        _apply_supersession(
+            merged, topology, changeset=changeset,
+            merge_world_id=world_id,
+        )
 
         # ── Referential-integrity pass ─────────────────────────────
         # Walk every event in the merged world and verify each

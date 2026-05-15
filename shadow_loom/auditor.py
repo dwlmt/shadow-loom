@@ -1497,12 +1497,37 @@ def assemble_audit_prompt(
         sections.append(f"  pacing: {r.pacing}")
         sections.append(f"  sensory_focus: {r.sensory_focus}")
         if r.pov_lock:
-            sections.append(
-                f"  pov_lock: {r.pov_lock} \u2014 the prose MUST stay "
-                f"inside this entity's perception. Flag head-hopping "
-                f"or omniscient narration as a violation under the "
-                f"`physics` category (rationale prefix `pov_lock:`)."
-            )
+            if r.pov_policy == "single" or not r.additional_pov_locks:
+                sections.append(
+                    f"  pov_lock: {r.pov_lock} \u2014 the prose MUST stay "
+                    f"inside this entity's perception. Flag head-hopping "
+                    f"or omniscient narration as a violation under the "
+                    f"`physics` category (rationale prefix `pov_lock:`)."
+                )
+            else:
+                roster = ", ".join([r.pov_lock, *r.additional_pov_locks])
+                if r.pov_policy == "rotating":
+                    sections.append(
+                        f"  pov_policy: rotating \u2014 the prose MUST "
+                        f"stay inside one of these entities' "
+                        f"perceptions per beat (primary: {r.pov_lock}; "
+                        f"roster: {roster}). Head-hopping *within* a "
+                        f"single beat is a violation; rotating between "
+                        f"beats is licensed. Flag violations under the "
+                        f"`physics` category (rationale prefix "
+                        f"`pov_lock:`)."
+                    )
+                else:  # ensemble
+                    sections.append(
+                        f"  pov_policy: ensemble (omniscient-"
+                        f"constrained) \u2014 interiority is licensed "
+                        f"across {roster} (primary: {r.pov_lock}). "
+                        f"Entities OUTSIDE this roster remain "
+                        f"externally observed; rendering their "
+                        f"interiority is a violation under the "
+                        f"`physics` category (rationale prefix "
+                        f"`pov_lock:`)."
+                    )
         if r.tone_arc:
             sections.append(f"  tone_arc: {r.tone_arc}")
         if r.stylistic_instructions:
@@ -2420,6 +2445,133 @@ def run_evaluation(
 # Single Audit Pass
 # =====================================================================
 
+
+# Tokenization for the white-elephant semantic-similarity check.
+# Strips punctuation, lowercases, drops a small closed set of function
+# words so paraphrase detection isn't dominated by them. Keeping the
+# stop-word list tiny and explicit (rather than pulling in NLTK) keeps
+# the auditor dependency-free; the closed set covers the common
+# English determiners / copulas / pronouns that show up in any
+# utterance and would otherwise inflate Jaccard overlap.
+_PARAPHRASE_STOPWORDS: frozenset[str] = frozenset({
+    "a", "an", "the", "and", "or", "but", "if", "of", "to", "for",
+    "in", "on", "at", "by", "with", "from", "as", "is", "am", "are",
+    "was", "were", "be", "been", "being", "do", "does", "did", "have",
+    "has", "had", "i", "you", "he", "she", "it", "we", "they", "me",
+    "him", "her", "us", "them", "my", "your", "his", "its", "our",
+    "their", "this", "that", "these", "those", "so", "not", "no",
+    "yes", "will", "would", "shall", "should", "can", "could", "may",
+    "might", "must",
+})
+
+
+def _paraphrase_tokens(text: str) -> list[str]:
+    """Lowercase, strip punctuation, drop stopwords. Returns the
+    content-word token list used for shingle / Jaccard similarity.
+
+    Normalisation handles the common cases that would otherwise cause
+    false negatives:
+
+    * Apostrophes / smart quotes are *removed* (not converted to
+      space) so contractions collapse into their stem (``don't`` \u2192
+      ``dont``, ``it's`` \u2192 ``its``). The bare stem is fine for
+      shingle matching against another reworded sentence.
+    * Unicode dashes (en/em/figure/horizontal-bar) collapse to space
+      so hyphenated paraphrases split at the dash boundary.
+    * Everything else non-alphanumeric collapses to space.
+    """
+    if not text:
+        return []
+    # Strip apostrophes (ASCII + smart) so contractions stem cleanly.
+    cleaned = re.sub(r"[\u2018\u2019\u02bc']+", "", text.lower())
+    # Collapse unicode dashes to spaces before the broad punctuation
+    # pass so e.g. ``mother-in-law`` tokenises as three words.
+    cleaned = re.sub(r"[\u2010-\u2015\u2212-]+", " ", cleaned)
+    cleaned = re.sub(r"[^a-z0-9 ]+", " ", cleaned)
+    return [
+        t for t in cleaned.split()
+        if t and t not in _PARAPHRASE_STOPWORDS and len(t) > 1
+    ]
+
+
+def _shingle_jaccard(a: list[str], b: list[str], *, n: int = 3) -> float:
+    """Compute Jaccard similarity over content n-grams (default
+    trigrams) between two token lists. Returns 0.0 when either side
+    has fewer than ``n`` tokens. Used as a cheap, dependency-free
+    paraphrase detector for white-elephant exclusions."""
+    if len(a) < n or len(b) < n:
+        return 0.0
+    sa = {tuple(a[i:i + n]) for i in range(len(a) - n + 1)}
+    sb = {tuple(b[i:i + n]) for i in range(len(b) - n + 1)}
+    if not sa or not sb:
+        return 0.0
+    inter = len(sa & sb)
+    union = len(sa | sb)
+    return inter / union if union else 0.0
+
+
+# Threshold above which a candidate sentence is flagged as a
+# paraphrase of a withheld/pruned utterance. Two independent scorers
+# are run and either tripping flags a leak:
+#
+# * Trigram-Jaccard \u2265 0.45 \u2014 catches near-verbatim
+#   rewordings that share half the 3-word phrases on content tokens.
+# * Content-word containment \u2265 0.6 with \u22654 shared tokens
+#   \u2014 catches looser paraphrases where the distinctive
+#   nouns/verbs of the canonical utterance all reappear in a single
+#   sentence (e.g. "poisoned/chalice/Macbeth/drank" reordered into
+#   author-voice prose).
+#
+# Pure verbatim leaks are caught earlier by the substring check; this
+# layer exists for the white-elephant case where the renderer
+# reworded the line to bypass the verbatim filter.
+_PARAPHRASE_JACCARD_THRESHOLD: float = 0.45
+_PARAPHRASE_CONTAINMENT_THRESHOLD: float = 0.6
+_PARAPHRASE_CONTAINMENT_MIN_OVERLAP: int = 4
+# Minimum content-token count on the candidate sentence before
+# paraphrase scoring runs. Short fragments (<6 content tokens) are
+# noisy and trip the shingle scorer on incidental overlap.
+_PARAPHRASE_MIN_TOKENS: int = 6
+
+
+def _paraphrase_match(
+    canonical: str, prose_sentences: list[str],
+) -> Optional[tuple[str, float]]:
+    """Return ``(sentence, score)`` for the highest-scoring sentence
+    that exceeds either the trigram-Jaccard or content-containment
+    threshold, or ``None``. ``score`` is the larger of the two
+    sub-scores so callers can surface a single number.
+
+    Used for white-elephant paraphrase detection: catches the case
+    where the renderer reworded a withheld / pruned utterance into a
+    sentence that wouldn't trip the verbatim substring check.
+    """
+    canon_tokens = _paraphrase_tokens(canonical)
+    if len(canon_tokens) < _PARAPHRASE_MIN_TOKENS:
+        return None
+    canon_set = set(canon_tokens)
+    best: Optional[tuple[str, float]] = None
+    for sent in prose_sentences:
+        s_tokens = _paraphrase_tokens(sent)
+        if len(s_tokens) < _PARAPHRASE_MIN_TOKENS:
+            continue
+        jaccard = _shingle_jaccard(canon_tokens, s_tokens)
+        s_set = set(s_tokens)
+        overlap = len(canon_set & s_set)
+        containment = overlap / len(canon_set) if canon_set else 0.0
+        flagged_by_jaccard = jaccard >= _PARAPHRASE_JACCARD_THRESHOLD
+        flagged_by_containment = (
+            containment >= _PARAPHRASE_CONTAINMENT_THRESHOLD
+            and overlap >= _PARAPHRASE_CONTAINMENT_MIN_OVERLAP
+        )
+        if not (flagged_by_jaccard or flagged_by_containment):
+            continue
+        score = max(jaccard, containment)
+        if best is None or score > best[1]:
+            best = (sent.strip(), score)
+    return best
+
+
 def _withheld_utterance_leak_violations(
     prose: str,
     world_state: Optional[WorldStateV1],
@@ -2439,6 +2591,7 @@ def _withheld_utterance_leak_violations(
         return []
     issues: List[AuditViolation] = []
     prose_lower = prose.lower()
+    prose_sentences = re.split(r"(?<=[.!?])\s+", prose)
     seen: set[str] = set()
     for evt in getattr(world_state, "events", []) or []:
         if getattr(evt, "event_type", None) != "utterance":
@@ -2464,6 +2617,29 @@ def _withheld_utterance_leak_violations(
                     f"Remove the line attributed to {getattr(evt, 'speaker_id', 'unknown')}. "
                     f"This utterance happens later in narration order and "
                     f"the reader has not yet encountered it."
+                ),
+            ))
+            continue
+        # Paraphrase check: a trigram-overlap rewording also counts
+        # as a leak when the verbatim substring isn't present.
+        match = _paraphrase_match(content, prose_sentences)
+        if match is not None and needle not in seen:
+            sent, score = match
+            seen.add(needle)
+            issues.append(AuditViolation(
+                violation_type="withheld_utterance_leak",
+                severity="major",
+                description=(
+                    f"Prose paraphrases withheld utterance "
+                    f"{evt.id} (syuzhet={evt.syuzhet_index} > anchor "
+                    f"{syuzhet_anchor}; trigram Jaccard={score:.2f}); "
+                    f"the content must not surface yet, even reworded."
+                ),
+                evidence_quote=sent[:200],
+                feedback=(
+                    f"Reword or remove the sentence: it conveys the "
+                    f"same content as the withheld utterance attributed "
+                    f"to {getattr(evt, 'speaker_id', 'unknown')}."
                 ),
             ))
     return issues
@@ -2516,6 +2692,7 @@ def _cascade_exclusion_leak_violations(
     # 1. Pruned utterance content leaks (verbatim, >=12 chars).
     if pruned_utt_ids:
         events_by_id = {e.id: e for e in getattr(world_state, "events", []) or []}
+        prose_sentences = re.split(r"(?<=[.!?])\s+", prose)
         seen: set[str] = set()
         for uid in pruned_utt_ids:
             evt = events_by_id.get(uid)
@@ -2544,6 +2721,31 @@ def _cascade_exclusion_leak_violations(
                         f"would still talk, invent a NEW line about a "
                         f"DIFFERENT subject consistent with the changed "
                         f"conditions."
+                    ),
+                ))
+                continue
+            # Paraphrase check (white-elephant exclusion): the
+            # rewriter sometimes reworded the line to avoid the
+            # verbatim filter; trigram-Jaccard catches that.
+            match = _paraphrase_match(content, prose_sentences)
+            if match is not None and needle not in seen:
+                sent, score = match
+                seen.add(needle)
+                issues.append(AuditViolation(
+                    violation_type="pruned_utterance_leak",
+                    severity="major",
+                    description=(
+                        f"Prose paraphrases do-surgery-pruned utterance "
+                        f"{uid} (trigram Jaccard={score:.2f}); the line "
+                        f"was severed and must not exist in this branch, "
+                        f"even reworded."
+                    ),
+                    evidence_quote=sent[:200],
+                    feedback=(
+                        f"Reword or remove the sentence: it conveys the "
+                        f"same content as the pruned utterance "
+                        f"attributed to "
+                        f"{getattr(evt, 'speaker_id', 'unknown')}."
                     ),
                 ))
 
@@ -3759,20 +3961,27 @@ def run_feedback_loop(
 
         # Coerce ``pov_entity`` back when the brief locked one and the
         # rewriter dropped it (commonly nulled at the same time as the
-        # mode flip above).
+        # mode flip above). Under multi-POV policies (rotating /
+        # ensemble) accept any roster member; only coerce back when
+        # the rewriter dropped POV entirely or selected an entity
+        # outside the roster.
         expected_pov = None
+        expected_roster: list[str] = []
         if getattr(brief, "rendering", None) is not None:
             expected_pov = getattr(brief.rendering, "pov_lock", None)
+            expected_roster = [expected_pov] + list(
+                getattr(brief.rendering, "additional_pov_locks", []) or []
+            ) if expected_pov else []
+        current_pov = getattr(current_scene, "pov_entity", None)
         if (
             expected_pov
-            and getattr(current_scene, "pov_entity", None) != expected_pov
+            and (current_pov is None or current_pov not in expected_roster)
         ):
             logger.warning(
                 "[FeedbackLoop] Refinement agent dropped pov_entity "
                 "(%r -> %r) at iteration %d; coercing back to the "
-                "brief's pov_lock.",
-                expected_pov, getattr(current_scene, "pov_entity", None),
-                iteration + 1,
+                "brief's primary pov_lock (roster=%r).",
+                expected_pov, current_pov, iteration + 1, expected_roster,
             )
             current_scene = current_scene.model_copy(update={
                 "pov_entity": expected_pov,

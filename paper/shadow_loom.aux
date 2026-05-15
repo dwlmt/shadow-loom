@@ -123,7 +123,6 @@
 \citation{gu2026simpletom,kim2023fantom}
 \citation{cross2024hyp}
 \citation{lazer2009css}
-\citation{lazer2009css}
 \@writefile{toc}{\contentsline {paragraph}{Specific small constructions.}{6}{section*.18}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {5}Rationale for the design choices}{6}{section.5}\protected@file@percent }
 \newlabel{sec:rationale}{{5}{6}{Rationale for the design choices}{section.5}{}}
@@ -131,19 +130,21 @@
 \@writefile{toc}{\contentsline {paragraph}{Why both a causal and a narrative physics?}{6}{section*.20}\protected@file@percent }
 \@writefile{toc}{\contentsline {paragraph}{Why constrain the LLM rather than fine-tune one?}{6}{section*.21}\protected@file@percent }
 \@writefile{toc}{\contentsline {paragraph}{Why AMWN tagging at the persistence layer?}{6}{section*.22}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Branch isolation as a merge-time invariant.}{6}{section*.23}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {6}Why this might matter beyond fiction}{6}{section.6}\protected@file@percent }
 \newlabel{sec:relevance}{{6}{6}{Why this might matter beyond fiction}{section.6}{}}
-\@writefile{toc}{\contentsline {paragraph}{NLP / reasoning.}{6}{section*.23}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Computational social science and digital humanities.}{6}{section*.24}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Author tooling.}{6}{section*.25}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{An invitation to other research communities.}{6}{section*.26}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{NLP / reasoning.}{6}{section*.24}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Computational social science and digital humanities.}{6}{section*.25}\protected@file@percent }
+\citation{lazer2009css}
 \citation{correa2025amwn}
 \citation{wilmot2020suspense}
 \citation{kim2023fantom,gu2026simpletom,cross2024hyp,xu2025echoes}
-\bibdata{references}
-\bibcite{akoury2020storium}{{1}{2020}{{Akoury et~al.}}{{Akoury, Wang, Whiting, Hood, Peng, and Iyyer}}}
+\@writefile{toc}{\contentsline {paragraph}{Author tooling.}{7}{section*.26}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{An invitation to other research communities.}{7}{section*.27}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {7}Limitations and future evaluation}{7}{section.7}\protected@file@percent }
 \newlabel{sec:limits}{{7}{7}{Limitations and future evaluation}{section.7}{}}
+\bibdata{references}
+\bibcite{akoury2020storium}{{1}{2020}{{Akoury et~al.}}{{Akoury, Wang, Whiting, Hood, Peng, and Iyyer}}}
 \bibcite{alchourron1985agm}{{2}{1985}{{Alchourr{\'o}n et~al.}}{{Alchourr{\'o}n, G{\"a}rdenfors, and Makinson}}}
 \bibcite{austin1962how}{{3}{1962}{{Austin}}{{}}}
 \bibcite{baeyoung2008surprise}{{4}{2008}{{Bae and Young}}{{}}}
@@ -276,46 +277,46 @@
 \bibcite{zillmann1996suspense}{{131}{1996}{{Zillmann}}{{}}}
 \bibcite{zunshine2006theory}{{132}{2006}{{Zunshine}}{{}}}
 \bibcite{zwaan1998situation}{{133}{1998}{{Zwaan and Radvansky}}{{}}}
-\@writefile{toc}{\contentsline {section}{\numberline {A}Definitions and equations}{13}{section.A}\protected@file@percent }
-\newlabel{app:defs}{{A}{13}{Definitions and equations}{section.A}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.1}World model schema (\texttt  {WorldStateV1})}{13}{subsection.A.1}\protected@file@percent }
-\newlabel{app:schema}{{A.1}{13}{World model schema (\texttt {WorldStateV1})}{subsection.A.1}{}}
-\@writefile{toc}{\contentsline {paragraph}{Node types and their carrying state.}{13}{section*.29}\protected@file@percent }
-\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Node families in \texttt  {WorldStateV1}. Each \texttt  {ID\_} prefix maps to one Pydantic class in \texttt  {shadow\_loom/models.py} and carries its own typed state. The same six prefixes are used as node-ID conventions throughout the codebase, the bundled fixtures, and the renderer's brief.}}{13}{table.caption.30}\protected@file@percent }
-\newlabel{tab:nodes}{{1}{13}{Node families in \texttt {WorldStateV1}. Each \texttt {ID\_} prefix maps to one Pydantic class in \texttt {shadow\_loom/models.py} and carries its own typed state. The same six prefixes are used as node-ID conventions throughout the codebase, the bundled fixtures, and the renderer's brief}{table.caption.30}{}}
-\@writefile{toc}{\contentsline {paragraph}{Edge families and their roles.}{13}{section*.31}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Worked illustration --- a slice of \emph  {Macbeth}.}{14}{section*.32}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {A}Definitions and equations}{14}{section.A}\protected@file@percent }
+\newlabel{app:defs}{{A}{14}{Definitions and equations}{section.A}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.1}World model schema (\texttt  {WorldStateV1})}{14}{subsection.A.1}\protected@file@percent }
+\newlabel{app:schema}{{A.1}{14}{World model schema (\texttt {WorldStateV1})}{subsection.A.1}{}}
+\@writefile{toc}{\contentsline {paragraph}{Node types and their carrying state.}{14}{section*.30}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Node families in \texttt  {WorldStateV1}. Each \texttt  {ID\_} prefix maps to one Pydantic class in \texttt  {shadow\_loom/models.py} and carries its own typed state. The same six prefixes are used as node-ID conventions throughout the codebase, the bundled fixtures, and the renderer's brief.}}{14}{table.caption.31}\protected@file@percent }
+\newlabel{tab:nodes}{{1}{14}{Node families in \texttt {WorldStateV1}. Each \texttt {ID\_} prefix maps to one Pydantic class in \texttt {shadow\_loom/models.py} and carries its own typed state. The same six prefixes are used as node-ID conventions throughout the codebase, the bundled fixtures, and the renderer's brief}{table.caption.31}{}}
+\@writefile{toc}{\contentsline {paragraph}{Edge families and their roles.}{14}{section*.32}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Worked illustration --- a slice of \emph  {Macbeth}.}{15}{section*.33}\protected@file@percent }
 \citation{austin1962how}
 \citation{searle1969speech}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.2}Ingestion}{15}{subsection.A.2}\protected@file@percent }
-\newlabel{app:ingestion}{{A.2}{15}{Ingestion}{subsection.A.2}{}}
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {A.2.1}Utterance temporal coherence}{15}{subsubsection.A.2.1}\protected@file@percent }
-\newlabel{sec:utterance-temporal}{{A.2.1}{15}{Utterance temporal coherence}{subsubsection.A.2.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.2}Ingestion}{16}{subsection.A.2}\protected@file@percent }
+\newlabel{app:ingestion}{{A.2}{16}{Ingestion}{subsection.A.2}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {A.2.1}Utterance temporal coherence}{16}{subsubsection.A.2.1}\protected@file@percent }
+\newlabel{sec:utterance-temporal}{{A.2.1}{16}{Utterance temporal coherence}{subsubsection.A.2.1}{}}
 \citation{correa2025amwn}
 \citation{shpitser2007counterfactuals}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.3}Ego-graph slicing and AMWN sandbox}{16}{subsection.A.3}\protected@file@percent }
-\newlabel{app:amwn}{{A.3}{16}{Ego-graph slicing and AMWN sandbox}{subsection.A.3}{}}
-\@writefile{toc}{\contentsline {paragraph}{Causal diagram and AMWN proper.}{16}{section*.33}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Latent-free SCM and the optional U-confounder switch.}{16}{section*.34}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.3}Ego-graph slicing and AMWN sandbox}{17}{subsection.A.3}\protected@file@percent }
+\newlabel{app:amwn}{{A.3}{17}{Ego-graph slicing and AMWN sandbox}{subsection.A.3}{}}
+\@writefile{toc}{\contentsline {paragraph}{Causal diagram and AMWN proper.}{17}{section*.34}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Latent-free SCM and the optional U-confounder switch.}{17}{section*.35}\protected@file@percent }
 \citation{pearl2009causality,bareinboim2022pearl}
 \citation{correa2025amwn}
 \citation{correa2025amwn}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.4}Causal physics}{17}{subsection.A.4}\protected@file@percent }
-\newlabel{app:causal}{{A.4}{17}{Causal physics}{subsection.A.4}{}}
-\@writefile{toc}{\contentsline {paragraph}{Observation (rung~1 --- Correlation):}{17}{section*.35}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Action (rung~2 --- Interventions):}{17}{section*.36}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Abduction (rung~3 --- Counterfactuals):}{17}{section*.37}\protected@file@percent }
-\newlabel{eq:abduction}{{1}{17}{Abduction (rung~3 --- Counterfactuals):}{equation.1}{}}
-\@writefile{toc}{\contentsline {paragraph}{Counterfactual (ctf-) calculus pre-flight.}{17}{section*.38}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.4}Causal physics}{18}{subsection.A.4}\protected@file@percent }
+\newlabel{app:causal}{{A.4}{18}{Causal physics}{subsection.A.4}{}}
+\@writefile{toc}{\contentsline {paragraph}{Observation (rung~1 --- Correlation):}{18}{section*.36}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Action (rung~2 --- Interventions):}{18}{section*.37}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Abduction (rung~3 --- Counterfactuals):}{18}{section*.38}\protected@file@percent }
+\newlabel{eq:abduction}{{1}{18}{Abduction (rung~3 --- Counterfactuals):}{equation.1}{}}
+\@writefile{toc}{\contentsline {paragraph}{Counterfactual (ctf-) calculus pre-flight.}{18}{section*.39}\protected@file@percent }
 \citation{sternberg1978expositional,sternberg1992telling,brewer1982stories}
 \citation{trabasso1985sperry}
 \citation{iser1976akt}
-\@writefile{toc}{\contentsline {paragraph}{Propagation.}{18}{section*.39}\protected@file@percent }
-\newlabel{eq:impact}{{2}{18}{Propagation}{equation.2}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.5}Narrative physics (affective calculus)}{18}{subsection.A.5}\protected@file@percent }
-\newlabel{app:narrative}{{A.5}{18}{Narrative physics (affective calculus)}{subsection.A.5}{}}
-\@writefile{toc}{\contentsline {paragraph}{Mystery (Sternberg's curiosity).}{18}{section*.40}\protected@file@percent }
-\newlabel{eq:mystery}{{3}{18}{Mystery (Sternberg's curiosity)}{equation.3}{}}
+\@writefile{toc}{\contentsline {paragraph}{Propagation.}{19}{section*.40}\protected@file@percent }
+\newlabel{eq:impact}{{2}{19}{Propagation}{equation.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.5}Narrative physics (affective calculus)}{19}{subsection.A.5}\protected@file@percent }
+\newlabel{app:narrative}{{A.5}{19}{Narrative physics (affective calculus)}{subsection.A.5}{}}
+\@writefile{toc}{\contentsline {paragraph}{Mystery (Sternberg's curiosity).}{19}{section*.41}\protected@file@percent }
+\newlabel{eq:mystery}{{3}{19}{Mystery (Sternberg's curiosity)}{equation.3}{}}
 \citation{booth1974irony,muecke1969compass,gerrig1993narrative,pfister1988drama}
 \citation{pfister1988drama,cabanas2024toM}
 \citation{booth1974irony}
@@ -325,25 +326,25 @@
 \citation{wilmot2020suspense}
 \citation{zillmann1996suspense}
 \citation{comisky1982suspense}
-\@writefile{toc}{\contentsline {paragraph}{Dramatic irony \citep  {booth1974irony,muecke1969compass,gerrig1993narrative,pfister1988drama}.}{19}{section*.41}\protected@file@percent }
-\newlabel{eq:irony}{{5}{19}{Dramatic irony \citep {booth1974irony,muecke1969compass,gerrig1993narrative,pfister1988drama}}{equation.5}{}}
-\@writefile{toc}{\contentsline {paragraph}{Suspense \citep  {brewer1982stories,comisky1982suspense,ortony1988occ, zillmann1996suspense,lazarus1991emotion,cheong2015suspenser,elyfrankel2015suspense}.}{19}{section*.42}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Dramatic irony \citep  {booth1974irony,muecke1969compass,gerrig1993narrative,pfister1988drama}.}{20}{section*.42}\protected@file@percent }
+\newlabel{eq:irony}{{5}{20}{Dramatic irony \citep {booth1974irony,muecke1969compass,gerrig1993narrative,pfister1988drama}}{equation.5}{}}
+\@writefile{toc}{\contentsline {paragraph}{Suspense \citep  {brewer1982stories,comisky1982suspense,ortony1988occ, zillmann1996suspense,lazarus1991emotion,cheong2015suspenser,elyfrankel2015suspense}.}{20}{section*.43}\protected@file@percent }
 \citation{brewer1982stories}
 \citation{lazarus1991emotion}
 \citation{ortony1988occ}
 \citation{elyfrankel2015suspense}
 \citation{ortony1988occ}
-\newlabel{eq:suspense}{{13}{21}{Suspense \citep {brewer1982stories,comisky1982suspense,ortony1988occ, zillmann1996suspense,lazarus1991emotion,cheong2015suspenser,elyfrankel2015suspense}}{equation.13}{}}
-\@writefile{toc}{\contentsline {paragraph}{Surprise.}{21}{section*.43}\protected@file@percent }
-\newlabel{eq:loo-marginal}{{15}{21}{Surprise}{equation.15}{}}
+\newlabel{eq:suspense}{{13}{22}{Suspense \citep {brewer1982stories,comisky1982suspense,ortony1988occ, zillmann1996suspense,lazarus1991emotion,cheong2015suspenser,elyfrankel2015suspense}}{equation.13}{}}
+\@writefile{toc}{\contentsline {paragraph}{Surprise.}{22}{section*.44}\protected@file@percent }
+\newlabel{eq:loo-marginal}{{15}{22}{Surprise}{equation.15}{}}
 \citation{reagan2016arcs}
 \citation{lu2013visual}
 \citation{baeyoung2008surprise,tobin2018elements,bissell2025surprise}
 \citation{bissell2025surprise}
-\newlabel{eq:surprise}{{16}{22}{Surprise}{equation.16}{}}
-\newlabel{eq:surprise-saturation}{{18}{22}{Surprise}{equation.18}{}}
-\@writefile{toc}{\contentsline {paragraph}{Six emotion scorers}{22}{section*.44}\protected@file@percent }
-\newlabel{eq:emotion}{{21}{22}{Six emotion scorers}{equation.21}{}}
+\newlabel{eq:surprise}{{16}{23}{Surprise}{equation.16}{}}
+\newlabel{eq:surprise-saturation}{{18}{23}{Surprise}{equation.18}{}}
+\@writefile{toc}{\contentsline {paragraph}{Six emotion scorers}{23}{section*.45}\protected@file@percent }
+\newlabel{eq:emotion}{{21}{23}{Six emotion scorers}{equation.21}{}}
 \citation{ittibaldi2009surprise}
 \citation{schmidhuber1995rdia}
 \citation{reagan2016arcs}
@@ -351,128 +352,129 @@
 \citation{ittibaldi2009surprise}
 \citation{schmidhuber1995rdia}
 \citation{carroll2007closure}
-\@writefile{toc}{\contentsline {paragraph}{Two-axis sampling and dual-mode surprise.}{23}{section*.45}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Propositional belief-state affect (\texttt  {affect\_unification.py}).}{23}{section*.46}\protected@file@percent }
-\newlabel{eq:susp-prop}{{22}{23}{Propositional belief-state affect (\texttt {affect\_unification.py})}{equation.22}{}}
-\newlabel{eq:sur-prop}{{23}{23}{Propositional belief-state affect (\texttt {affect\_unification.py})}{equation.23}{}}
-\newlabel{eq:iro-prop}{{24}{23}{Propositional belief-state affect (\texttt {affect\_unification.py})}{equation.24}{}}
-\newlabel{eq:mys-prop}{{25}{23}{Propositional belief-state affect (\texttt {affect\_unification.py})}{equation.25}{}}
+\@writefile{toc}{\contentsline {paragraph}{Two-axis sampling and dual-mode surprise.}{24}{section*.46}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Propositional belief-state affect (\texttt  {affect\_unification.py}).}{24}{section*.47}\protected@file@percent }
+\newlabel{eq:susp-prop}{{22}{24}{Propositional belief-state affect (\texttt {affect\_unification.py})}{equation.22}{}}
+\newlabel{eq:sur-prop}{{23}{24}{Propositional belief-state affect (\texttt {affect\_unification.py})}{equation.23}{}}
+\newlabel{eq:iro-prop}{{24}{24}{Propositional belief-state affect (\texttt {affect\_unification.py})}{equation.24}{}}
+\newlabel{eq:mys-prop}{{25}{24}{Propositional belief-state affect (\texttt {affect\_unification.py})}{equation.25}{}}
 \citation{tan1996emotion}
 \citation{carroll1990philosophy}
 \citation{sayers1929omnibus,knox1929decalogue}
 \citation{friston2010freeenergy}
 \citation{brewer1982stories,sternberg1978expositional,vorderer1996suspense}
 \citation{vorderer1996suspense}
-\@writefile{toc}{\contentsline {paragraph}{Theory-driven refinements (May 2026).}{24}{section*.47}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Theory-driven refinements (May 2026).}{25}{section*.48}\protected@file@percent }
 \citation{gu2024judge}
-\newlabel{eq:tension}{{30}{25}{Theory-driven refinements (May 2026)}{equation.30}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.6}Generation}{25}{subsection.A.6}\protected@file@percent }
-\newlabel{app:generation}{{A.6}{25}{Generation}{subsection.A.6}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.7}Audit and feedback loop}{25}{subsection.A.7}\protected@file@percent }
-\newlabel{app:audit}{{A.7}{25}{Audit and feedback loop}{subsection.A.7}{}}
-\@writefile{toc}{\contentsline {paragraph}{Convergence safeguards.}{25}{section*.48}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Cycle handling.}{26}{section*.49}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {B}Worked examples on real plot fixtures}{26}{section.B}\protected@file@percent }
-\newlabel{app:examples}{{B}{26}{Worked examples on real plot fixtures}{section.B}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {B.1}World model --- Macbeth}{26}{subsection.B.1}\protected@file@percent }
-\newlabel{app:ex-worldmodel}{{B.1}{26}{World model --- Macbeth}{subsection.B.1}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {B.2}AMWN sandbox --- Macbeth ``what if Macbeth refuses?''}{27}{subsection.B.2}\protected@file@percent }
-\newlabel{app:ex-amwn}{{B.2}{27}{AMWN sandbox --- Macbeth ``what if Macbeth refuses?''}{subsection.B.2}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {B.3}Causal physics --- Macbeth propagation under ``Impact $>$ Inertia''}{27}{subsection.B.3}\protected@file@percent }
-\newlabel{app:ex-causal}{{B.3}{27}{Causal physics --- Macbeth propagation under ``Impact \texorpdfstring {$>$}{>} Inertia''}{subsection.B.3}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {B.4}Pearl-rung worked numerics --- Macbeth (real engine output)}{27}{subsection.B.4}\protected@file@percent }
-\newlabel{app:ex-pearl-rungs}{{B.4}{27}{Pearl-rung worked numerics --- Macbeth (real engine output)}{subsection.B.4}{}}
-\@writefile{toc}{\contentsline {paragraph}{Rung 1 --- Observation ($\texttt  {interventions}=\emptyset $).}{27}{section*.50}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Rung 2 --- Intervention ($\mathrm  {do}(\texttt  {ENT\_MACBETH.ambition}{=}0)$, target set $\{\texttt  {ENT\_DUNCAN}, \texttt  {ENT\_LADY\_MACBETH}\}$).}{27}{section*.51}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Rung 3 --- Counterfactual.}{28}{section*.53}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Romeo and Juliet --- $\mathrm  {do}(\texttt  {ENT\_FRIAR\_LAURENCE.diligence}{=}1)$.}{28}{section*.55}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Gone Girl --- abduction with no surviving propagation.}{28}{section*.56}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {B.5}Narrative physics --- Death on the Nile, Reservoir Dogs, Romeo and Juliet, Macbeth}{28}{subsection.B.5}\protected@file@percent }
-\newlabel{app:ex-narrative}{{B.5}{28}{Narrative physics --- Death on the Nile, Reservoir Dogs, Romeo and Juliet, Macbeth}{subsection.B.5}{}}
-\@writefile{toc}{\contentsline {paragraph}{Mystery (Macbeth Act II).}{29}{section*.57}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Dramatic irony (Death on the Nile).}{29}{section*.58}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Suspense (Romeo and Juliet, tomb scene).}{29}{section*.59}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Surprise (Reservoir Dogs reveal).}{29}{section*.60}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Emotion targets (Gone Girl, Brief Encounter).}{29}{section*.61}\protected@file@percent }
+\newlabel{eq:tension}{{30}{26}{Theory-driven refinements (May 2026)}{equation.30}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.6}Generation}{26}{subsection.A.6}\protected@file@percent }
+\newlabel{app:generation}{{A.6}{26}{Generation}{subsection.A.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.7}Audit and feedback loop}{26}{subsection.A.7}\protected@file@percent }
+\newlabel{app:audit}{{A.7}{26}{Audit and feedback loop}{subsection.A.7}{}}
+\@writefile{toc}{\contentsline {paragraph}{Spatial co-presence checks.}{26}{section*.49}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Convergence safeguards.}{27}{section*.50}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Cycle handling.}{27}{section*.51}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {B}Worked examples on real plot fixtures}{27}{section.B}\protected@file@percent }
+\newlabel{app:examples}{{B}{27}{Worked examples on real plot fixtures}{section.B}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {B.1}World model --- Macbeth}{27}{subsection.B.1}\protected@file@percent }
+\newlabel{app:ex-worldmodel}{{B.1}{27}{World model --- Macbeth}{subsection.B.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {B.2}AMWN sandbox --- Macbeth ``what if Macbeth refuses?''}{28}{subsection.B.2}\protected@file@percent }
+\newlabel{app:ex-amwn}{{B.2}{28}{AMWN sandbox --- Macbeth ``what if Macbeth refuses?''}{subsection.B.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {B.3}Causal physics --- Macbeth propagation under ``Impact $>$ Inertia''}{28}{subsection.B.3}\protected@file@percent }
+\newlabel{app:ex-causal}{{B.3}{28}{Causal physics --- Macbeth propagation under ``Impact \texorpdfstring {$>$}{>} Inertia''}{subsection.B.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {B.4}Pearl-rung worked numerics --- Macbeth (real engine output)}{28}{subsection.B.4}\protected@file@percent }
+\newlabel{app:ex-pearl-rungs}{{B.4}{28}{Pearl-rung worked numerics --- Macbeth (real engine output)}{subsection.B.4}{}}
+\@writefile{toc}{\contentsline {paragraph}{Rung 1 --- Observation ($\texttt  {interventions}=\emptyset $).}{29}{section*.52}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Rung 2 --- Intervention ($\mathrm  {do}(\texttt  {ENT\_MACBETH.ambition}{=}0)$, target set $\{\texttt  {ENT\_DUNCAN}, \texttt  {ENT\_LADY\_MACBETH}\}$).}{29}{section*.53}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Rung 3 --- Counterfactual.}{29}{section*.55}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Romeo and Juliet --- $\mathrm  {do}(\texttt  {ENT\_FRIAR\_LAURENCE.diligence}{=}1)$.}{29}{section*.57}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Gone Girl --- abduction with no surviving propagation.}{30}{section*.58}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {B.5}Narrative physics --- Death on the Nile, Reservoir Dogs, Romeo and Juliet, Macbeth}{30}{subsection.B.5}\protected@file@percent }
+\newlabel{app:ex-narrative}{{B.5}{30}{Narrative physics --- Death on the Nile, Reservoir Dogs, Romeo and Juliet, Macbeth}{subsection.B.5}{}}
+\@writefile{toc}{\contentsline {paragraph}{Mystery (Macbeth Act II).}{30}{section*.59}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Dramatic irony (Death on the Nile).}{30}{section*.60}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Suspense (Romeo and Juliet, tomb scene).}{30}{section*.61}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Surprise (Reservoir Dogs reveal).}{30}{section*.62}\protected@file@percent }
 \citation{riedlyoung2010narrative,yao2019planwrite,goldfarbtarrant2020aristotelian,yang2023doc}
-\@writefile{toc}{\contentsline {subsection}{\numberline {B.6}Directive assembly --- Romeo and Juliet}{30}{subsection.B.6}\protected@file@percent }
-\newlabel{app:ex-directive}{{B.6}{30}{Directive assembly --- Romeo and Juliet}{subsection.B.6}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {B.7}Generation --- the brief as safety envelope}{30}{subsection.B.7}\protected@file@percent }
-\newlabel{app:ex-generation}{{B.7}{30}{Generation --- the brief as safety envelope}{subsection.B.7}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {B.8}Corpus-scale audit of the four structural scorers}{30}{subsection.B.8}\protected@file@percent }
-\newlabel{app:scorer-audit}{{B.8}{30}{Corpus-scale audit of the four structural scorers}{subsection.B.8}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Per-scorer scale summary across 20 fixtures $\times $ 7 syuzhet anchors. The four structural scorers occupy different absolute bands by design: mystery is a population fraction near $1$ early in the syuzhet; surprise is a per-step KL spike near $0$ between revelation points. The six emotion scorers measure per-entity \emph  {closeness} to a per-effect trait target and so are flat across syuzhet but vary across worlds and entities.}}{30}{table.caption.62}\protected@file@percent }
-\newlabel{tab:scorer-scale}{{2}{30}{Per-scorer scale summary across 20 fixtures $\times $ 7 syuzhet anchors. The four structural scorers occupy different absolute bands by design: mystery is a population fraction near $1$ early in the syuzhet; surprise is a per-step KL spike near $0$ between revelation points. The six emotion scorers measure per-entity \emph {closeness} to a per-effect trait target and so are flat across syuzhet but vary across worlds and entities}{table.caption.62}{}}
+\@writefile{toc}{\contentsline {paragraph}{Emotion targets (Gone Girl, Brief Encounter).}{31}{section*.63}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {B.6}Directive assembly --- Romeo and Juliet}{31}{subsection.B.6}\protected@file@percent }
+\newlabel{app:ex-directive}{{B.6}{31}{Directive assembly --- Romeo and Juliet}{subsection.B.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {B.7}Generation --- the brief as safety envelope}{31}{subsection.B.7}\protected@file@percent }
+\newlabel{app:ex-generation}{{B.7}{31}{Generation --- the brief as safety envelope}{subsection.B.7}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {B.8}Corpus-scale audit of the four structural scorers}{31}{subsection.B.8}\protected@file@percent }
+\newlabel{app:scorer-audit}{{B.8}{31}{Corpus-scale audit of the four structural scorers}{subsection.B.8}{}}
 \citation{correa2025amwn}
-\@writefile{toc}{\contentsline {subsection}{\numberline {B.9}Tunables (\texttt  {DirectiveAssemblySettings})}{31}{subsection.B.9}\protected@file@percent }
-\newlabel{app:scorer-tunables}{{B.9}{31}{Tunables (\texttt {DirectiveAssemblySettings})}{subsection.B.9}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Externalised affective-scorer tunables (env-var prefix \texttt  {DIRECTIVE\_ASSEMBLY\_*}; full table including the \texttt  {HARM\_KIND\_SALIENCE} and \texttt  {TRAIT\_NARRATIVE\_SALIENCE} dictionaries in \texttt  {docs/settings.md~\S  8}).}}{31}{table.caption.63}\protected@file@percent }
-\newlabel{tab:scorer-tunables}{{3}{31}{Externalised affective-scorer tunables (env-var prefix \texttt {DIRECTIVE\_ASSEMBLY\_*}; full table including the \texttt {HARM\_KIND\_SALIENCE} and \texttt {TRAIT\_NARRATIVE\_SALIENCE} dictionaries in \texttt {docs/settings.md~\S 8})}{table.caption.63}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {B.10}Audit and feedback loop --- Gone Girl}{31}{subsection.B.10}\protected@file@percent }
-\newlabel{app:ex-audit}{{B.10}{31}{Audit and feedback loop --- Gone Girl}{subsection.B.10}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {C}End-to-end walkthrough on \emph  {Macbeth}}{32}{section.C}\protected@file@percent }
-\newlabel{app:walkthrough}{{C}{32}{End-to-end walkthrough on \emph {Macbeth}}{section.C}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {C.1}Step 0: the source text and the user's query}{32}{subsection.C.1}\protected@file@percent }
-\newlabel{app:wk-source}{{C.1}{32}{Step 0: the source text and the user's query}{subsection.C.1}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {C.2}Step 1: ingestion in detail}{32}{subsection.C.2}\protected@file@percent }
-\newlabel{app:wk-ingest}{{C.2}{32}{Step 1: ingestion in detail}{subsection.C.2}{}}
-\@writefile{toc}{\contentsline {paragraph}{Ontology pre-pass.}{32}{section*.64}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Per-chunk specialist fan-out.}{32}{section*.65}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Per-scorer scale summary across 20 fixtures $\times $ 7 syuzhet anchors. The four structural scorers occupy different absolute bands by design: mystery is a population fraction near $1$ early in the syuzhet; surprise is a per-step KL spike near $0$ between revelation points. The six emotion scorers measure per-entity \emph  {closeness} to a per-effect trait target and so are flat across syuzhet but vary across worlds and entities.}}{32}{table.caption.64}\protected@file@percent }
+\newlabel{tab:scorer-scale}{{2}{32}{Per-scorer scale summary across 20 fixtures $\times $ 7 syuzhet anchors. The four structural scorers occupy different absolute bands by design: mystery is a population fraction near $1$ early in the syuzhet; surprise is a per-step KL spike near $0$ between revelation points. The six emotion scorers measure per-entity \emph {closeness} to a per-effect trait target and so are flat across syuzhet but vary across worlds and entities}{table.caption.64}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {B.9}Tunables (\texttt  {DirectiveAssemblySettings})}{32}{subsection.B.9}\protected@file@percent }
+\newlabel{app:scorer-tunables}{{B.9}{32}{Tunables (\texttt {DirectiveAssemblySettings})}{subsection.B.9}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {B.10}Audit and feedback loop --- Gone Girl}{32}{subsection.B.10}\protected@file@percent }
+\newlabel{app:ex-audit}{{B.10}{32}{Audit and feedback loop --- Gone Girl}{subsection.B.10}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Externalised affective-scorer tunables (env-var prefix \texttt  {DIRECTIVE\_ASSEMBLY\_*}; full table including the \texttt  {HARM\_KIND\_SALIENCE} and \texttt  {TRAIT\_NARRATIVE\_SALIENCE} dictionaries in \texttt  {docs/settings.md~\S  8}).}}{33}{table.caption.65}\protected@file@percent }
+\newlabel{tab:scorer-tunables}{{3}{33}{Externalised affective-scorer tunables (env-var prefix \texttt {DIRECTIVE\_ASSEMBLY\_*}; full table including the \texttt {HARM\_KIND\_SALIENCE} and \texttt {TRAIT\_NARRATIVE\_SALIENCE} dictionaries in \texttt {docs/settings.md~\S 8})}{table.caption.65}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {C}End-to-end walkthrough on \emph  {Macbeth}}{33}{section.C}\protected@file@percent }
+\newlabel{app:walkthrough}{{C}{33}{End-to-end walkthrough on \emph {Macbeth}}{section.C}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {C.1}Step 0: the source text and the user's query}{33}{subsection.C.1}\protected@file@percent }
+\newlabel{app:wk-source}{{C.1}{33}{Step 0: the source text and the user's query}{subsection.C.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {C.2}Step 1: ingestion in detail}{33}{subsection.C.2}\protected@file@percent }
+\newlabel{app:wk-ingest}{{C.2}{33}{Step 1: ingestion in detail}{subsection.C.2}{}}
+\@writefile{toc}{\contentsline {paragraph}{Ontology pre-pass.}{33}{section*.66}\protected@file@percent }
 \citation{correa2025amwn}
-\@writefile{toc}{\contentsline {paragraph}{Validation and auto-repair.}{33}{section*.66}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {C.3}Step 2: query routing and ego-graph slicing}{33}{subsection.C.3}\protected@file@percent }
-\newlabel{app:wk-route}{{C.3}{33}{Step 2: query routing and ego-graph slicing}{subsection.C.3}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {C.4}Step 3: AMWN sandbox and the do-operator}{33}{subsection.C.4}\protected@file@percent }
-\newlabel{app:wk-amwn}{{C.4}{33}{Step 3: AMWN sandbox and the do-operator}{subsection.C.4}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {C.5}Step 4: causal physics propagation}{33}{subsection.C.5}\protected@file@percent }
-\newlabel{app:wk-prop}{{C.5}{33}{Step 4: causal physics propagation}{subsection.C.5}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {C.6}Step 5: narrative-physics scoring}{34}{subsection.C.6}\protected@file@percent }
-\newlabel{app:wk-narrative}{{C.6}{34}{Step 5: narrative-physics scoring}{subsection.C.6}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {C.7}Step 6: directive assembly and the brief}{34}{subsection.C.7}\protected@file@percent }
-\newlabel{app:wk-brief}{{C.7}{34}{Step 6: directive assembly and the brief}{subsection.C.7}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {C.8}Step 7: constrained rendering}{34}{subsection.C.8}\protected@file@percent }
-\newlabel{app:wk-render}{{C.8}{34}{Step 7: constrained rendering}{subsection.C.8}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {C.9}Step 8: audit, re-extraction, and merge}{35}{subsection.C.9}\protected@file@percent }
-\newlabel{app:wk-audit}{{C.9}{35}{Step 8: audit, re-extraction, and merge}{subsection.C.9}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {C.10}What this walkthrough demonstrates}{35}{subsection.C.10}\protected@file@percent }
-\newlabel{app:wk-summary}{{C.10}{35}{What this walkthrough demonstrates}{subsection.C.10}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {D}The authoring user interface}{35}{section.D}\protected@file@percent }
-\newlabel{app:ui}{{D}{35}{The authoring user interface}{section.D}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {D.1}Version sidebar}{35}{subsection.D.1}\protected@file@percent }
-\newlabel{app:ui-sidebar}{{D.1}{35}{Version sidebar}{subsection.D.1}{}}
-\@writefile{toc}{\contentsline {paragraph}{Example.}{35}{section*.67}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {D.2}Story tab}{36}{subsection.D.2}\protected@file@percent }
-\newlabel{app:ui-story}{{D.2}{36}{Story tab}{subsection.D.2}{}}
-\@writefile{toc}{\contentsline {paragraph}{Example.}{36}{section*.68}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {D.3}Explorer tab}{36}{subsection.D.3}\protected@file@percent }
-\newlabel{app:ui-explorer}{{D.3}{36}{Explorer tab}{subsection.D.3}{}}
-\@writefile{toc}{\contentsline {paragraph}{Example.}{36}{section*.69}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {D.4}World tab}{36}{subsection.D.4}\protected@file@percent }
-\newlabel{app:ui-world}{{D.4}{36}{World tab}{subsection.D.4}{}}
-\@writefile{toc}{\contentsline {paragraph}{Example.}{36}{section*.70}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {D.5}Causality tab}{36}{subsection.D.5}\protected@file@percent }
-\newlabel{app:ui-causality}{{D.5}{36}{Causality tab}{subsection.D.5}{}}
-\@writefile{toc}{\contentsline {paragraph}{Example: Macbeth Evolution sub-tab.}{36}{section*.71}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Example: Death on the Nile Affective Dashboard.}{37}{section*.72}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {D.6}Reasoning tab}{37}{subsection.D.6}\protected@file@percent }
-\newlabel{app:ui-reasoning}{{D.6}{37}{Reasoning tab}{subsection.D.6}{}}
-\@writefile{toc}{\contentsline {paragraph}{Example.}{37}{section*.73}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {D.7}Audit tab}{37}{subsection.D.7}\protected@file@percent }
-\newlabel{app:ui-audit}{{D.7}{37}{Audit tab}{subsection.D.7}{}}
-\@writefile{toc}{\contentsline {paragraph}{Example.}{37}{section*.74}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {D.8}Research tab}{37}{subsection.D.8}\protected@file@percent }
-\newlabel{app:ui-research}{{D.8}{37}{Research tab}{subsection.D.8}{}}
+\@writefile{toc}{\contentsline {paragraph}{Per-chunk specialist fan-out.}{34}{section*.67}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Validation and auto-repair.}{34}{section*.68}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {C.3}Step 2: query routing and ego-graph slicing}{34}{subsection.C.3}\protected@file@percent }
+\newlabel{app:wk-route}{{C.3}{34}{Step 2: query routing and ego-graph slicing}{subsection.C.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {C.4}Step 3: AMWN sandbox and the do-operator}{34}{subsection.C.4}\protected@file@percent }
+\newlabel{app:wk-amwn}{{C.4}{34}{Step 3: AMWN sandbox and the do-operator}{subsection.C.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {C.5}Step 4: causal physics propagation}{35}{subsection.C.5}\protected@file@percent }
+\newlabel{app:wk-prop}{{C.5}{35}{Step 4: causal physics propagation}{subsection.C.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {C.6}Step 5: narrative-physics scoring}{35}{subsection.C.6}\protected@file@percent }
+\newlabel{app:wk-narrative}{{C.6}{35}{Step 5: narrative-physics scoring}{subsection.C.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {C.7}Step 6: directive assembly and the brief}{35}{subsection.C.7}\protected@file@percent }
+\newlabel{app:wk-brief}{{C.7}{35}{Step 6: directive assembly and the brief}{subsection.C.7}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {C.8}Step 7: constrained rendering}{36}{subsection.C.8}\protected@file@percent }
+\newlabel{app:wk-render}{{C.8}{36}{Step 7: constrained rendering}{subsection.C.8}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {C.9}Step 8: audit, re-extraction, and merge}{36}{subsection.C.9}\protected@file@percent }
+\newlabel{app:wk-audit}{{C.9}{36}{Step 8: audit, re-extraction, and merge}{subsection.C.9}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {C.10}What this walkthrough demonstrates}{36}{subsection.C.10}\protected@file@percent }
+\newlabel{app:wk-summary}{{C.10}{36}{What this walkthrough demonstrates}{subsection.C.10}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {D}The authoring user interface}{36}{section.D}\protected@file@percent }
+\newlabel{app:ui}{{D}{36}{The authoring user interface}{section.D}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {D.1}Version sidebar}{37}{subsection.D.1}\protected@file@percent }
+\newlabel{app:ui-sidebar}{{D.1}{37}{Version sidebar}{subsection.D.1}{}}
+\@writefile{toc}{\contentsline {paragraph}{Example.}{37}{section*.69}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {D.2}Story tab}{37}{subsection.D.2}\protected@file@percent }
+\newlabel{app:ui-story}{{D.2}{37}{Story tab}{subsection.D.2}{}}
+\@writefile{toc}{\contentsline {paragraph}{Example.}{37}{section*.70}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {D.3}Explorer tab}{37}{subsection.D.3}\protected@file@percent }
+\newlabel{app:ui-explorer}{{D.3}{37}{Explorer tab}{subsection.D.3}{}}
+\@writefile{toc}{\contentsline {paragraph}{Example.}{37}{section*.71}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {D.4}World tab}{37}{subsection.D.4}\protected@file@percent }
+\newlabel{app:ui-world}{{D.4}{37}{World tab}{subsection.D.4}{}}
+\@writefile{toc}{\contentsline {paragraph}{Example.}{37}{section*.72}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {D.5}Causality tab}{37}{subsection.D.5}\protected@file@percent }
+\newlabel{app:ui-causality}{{D.5}{37}{Causality tab}{subsection.D.5}{}}
+\@writefile{toc}{\contentsline {paragraph}{Example: Macbeth Evolution sub-tab.}{38}{section*.73}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Example: Death on the Nile Affective Dashboard.}{38}{section*.74}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {D.6}Reasoning tab}{38}{subsection.D.6}\protected@file@percent }
+\newlabel{app:ui-reasoning}{{D.6}{38}{Reasoning tab}{subsection.D.6}{}}
 \@writefile{toc}{\contentsline {paragraph}{Example.}{38}{section*.75}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {D.9}Editor tab}{38}{subsection.D.9}\protected@file@percent }
-\newlabel{app:ui-editor}{{D.9}{38}{Editor tab}{subsection.D.9}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {D.7}Audit tab}{38}{subsection.D.7}\protected@file@percent }
+\newlabel{app:ui-audit}{{D.7}{38}{Audit tab}{subsection.D.7}{}}
 \@writefile{toc}{\contentsline {paragraph}{Example.}{38}{section*.76}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {D.10}Export tab}{38}{subsection.D.10}\protected@file@percent }
-\newlabel{app:ui-export}{{D.10}{38}{Export tab}{subsection.D.10}{}}
-\@writefile{toc}{\contentsline {paragraph}{Example.}{38}{section*.77}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {D.11}Performance discipline}{38}{subsection.D.11}\protected@file@percent }
-\newlabel{app:ui-perf}{{D.11}{38}{Performance discipline}{subsection.D.11}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {D.12}Cross-tab event bus}{38}{subsection.D.12}\protected@file@percent }
-\newlabel{app:ui-events}{{D.12}{38}{Cross-tab event bus}{subsection.D.12}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {D.13}Why a UI matters for a research artefact}{39}{subsection.D.13}\protected@file@percent }
-\newlabel{app:ui-why}{{D.13}{39}{Why a UI matters for a research artefact}{subsection.D.13}{}}
-\gdef \@abspage@last{39}
+\@writefile{toc}{\contentsline {subsection}{\numberline {D.8}Research tab}{39}{subsection.D.8}\protected@file@percent }
+\newlabel{app:ui-research}{{D.8}{39}{Research tab}{subsection.D.8}{}}
+\@writefile{toc}{\contentsline {paragraph}{Example.}{39}{section*.77}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {D.9}Editor tab}{39}{subsection.D.9}\protected@file@percent }
+\newlabel{app:ui-editor}{{D.9}{39}{Editor tab}{subsection.D.9}{}}
+\@writefile{toc}{\contentsline {paragraph}{Example.}{39}{section*.78}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {D.10}Export tab}{39}{subsection.D.10}\protected@file@percent }
+\newlabel{app:ui-export}{{D.10}{39}{Export tab}{subsection.D.10}{}}
+\@writefile{toc}{\contentsline {paragraph}{Example.}{39}{section*.79}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {D.11}Performance discipline}{39}{subsection.D.11}\protected@file@percent }
+\newlabel{app:ui-perf}{{D.11}{39}{Performance discipline}{subsection.D.11}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {D.12}Cross-tab event bus}{40}{subsection.D.12}\protected@file@percent }
+\newlabel{app:ui-events}{{D.12}{40}{Cross-tab event bus}{subsection.D.12}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {D.13}Why a UI matters for a research artefact}{40}{subsection.D.13}\protected@file@percent }
+\newlabel{app:ui-why}{{D.13}{40}{Why a UI matters for a research artefact}{subsection.D.13}{}}
+\gdef \@abspage@last{40}

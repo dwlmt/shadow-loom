@@ -216,7 +216,36 @@ class RenderingDirective(BaseModel):
     )
     pov_lock: Optional[str] = Field(
         default=None,
-        description="Entity ID to lock the narrative perspective to.",
+        description=(
+            "Primary entity ID to lock the narrative perspective to. "
+            "When ``pov_policy == 'single'`` (default) this is the "
+            "only licensed POV and head-hopping is a violation. When "
+            "``pov_policy == 'rotating'`` or ``'ensemble'`` this is "
+            "the *primary* / opening POV; ``additional_pov_locks`` "
+            "lists the other licensed perspectives."
+        ),
+    )
+    additional_pov_locks: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Additional licensed POV entity IDs beyond ``pov_lock``. "
+            "Empty under ``pov_policy='single'``. Under "
+            "``'rotating'`` each entity owns an internal-perception "
+            "beat (no head-hopping within a beat). Under "
+            "``'ensemble'`` the omniscient narrator may license "
+            "interiority across the roster simultaneously."
+        ),
+    )
+    pov_policy: Literal["single", "rotating", "ensemble"] = Field(
+        default="single",
+        description=(
+            "How POV is licensed across the brief's target entities. "
+            "``single`` = strict pov_lock, no head-hopping (default; "
+            "back-compat). ``rotating`` = each entity in "
+            "``[pov_lock] + additional_pov_locks`` gets its own beat. "
+            "``ensemble`` = omniscient-constrained narrator licensed "
+            "to render interiority across the roster."
+        ),
     )
     pacing: Literal["dilated", "normal", "accelerated", "sharp_pivot"] = Field(
         default="normal",

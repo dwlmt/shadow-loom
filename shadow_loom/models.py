@@ -1654,9 +1654,19 @@ def reconstruct_entity_at(entity: "Entity", fabula_time: int) -> dict:
     status: str = entity.status
     location_id: str = entity.location_id
 
+    # Branch-safe replay: only consume snapshots tagged with the same
+    # ``world_id`` as the holder entity. Defensive against legacy data
+    # where a cross-branch ``entity_updates`` merge wrote a shadow
+    # snapshot onto a factual-tagged entity (or vice versa); the
+    # write-side guard in ``VersionedWorldModel.merge`` now blocks
+    # that, but persisted worlds may still carry historical drift.
+    holder_world = getattr(entity, "world_id", "factual") or "factual"
     for snap in sorted(entity.state_timeline, key=lambda s: s.fabula_time):
         if snap.fabula_time > fabula_time:
             break
+        snap_world = getattr(snap, "world_id", holder_world) or holder_world
+        if snap_world != holder_world:
+            continue
         # Merge trait updates
         for k, tv in snap.traits.items():
             traits[k] = {"value": tv.value, "inertia": tv.inertia}
@@ -1766,9 +1776,18 @@ def reconstruct_object_at(obj: "NarrativeObject", fabula_time: int) -> dict:
     owner_id: Optional[str] = obj.owner_id
     properties: Dict[str, str] = dict(obj.properties)
 
+    # Branch-safe replay (mirror of ``reconstruct_entity_at``): only
+    # consume snapshots tagged with the same ``world_id`` as the
+    # holder object. Defends against legacy data that may pre-date
+    # the ``object_updates`` cross-branch write guard in
+    # ``VersionedWorldModel.merge``.
+    holder_world = getattr(obj, "world_id", "factual") or "factual"
     for snap in sorted(obj.state_timeline, key=lambda s: s.fabula_time):
         if snap.fabula_time > fabula_time:
             break
+        snap_world = getattr(snap, "world_id", holder_world) or holder_world
+        if snap_world != holder_world:
+            continue
         # Location: explicit clear wins, then explicit set, else no change.
         if snap.set_location_null:
             location_id = None

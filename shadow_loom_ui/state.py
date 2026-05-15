@@ -41,6 +41,7 @@ from shadow_loom.query_parsing import (
 from shadow_loom.db import (
     save_version,
     get_version_by_id,
+    get_version_lineage_rows,
     log_activity,
     set_active_version,
 )
@@ -1119,6 +1120,76 @@ class AppState:
         )
         self.emit(StateEvent.WORLD_STATE_CHANGED)
 
+    def _rehydrate_vwm_history_from_db(self, version_row_id: int) -> None:
+        """Replace ``versioned_model.history`` with the DB lineage.
+
+        ``VersionedWorldModel.from_world_state`` always seeds a single
+        synthetic ``WorldModelVersion(version=0, world_id="factual")``
+        which loses the loaded row's branch identity. If the user
+        selected a shadow head, the next pipeline run would consult
+        ``vwm.history[-1].world_id == "factual"`` via
+        ``_resolve_branch_policy`` and silently re-tag the new
+        version onto the factual mainline. ``_gather_preceding_prose``
+        would also lose all real prose continuity.
+
+        This rebuilds ``history`` by walking the DB ancestor chain and
+        materialising one ``WorldModelVersion`` per row carrying the
+        real ``world_id``, ``branch_label``, ``prose``, ``source``,
+        ``description``, and timestamp. Snapshots stay as the loaded
+        current world (older snapshots are not re-hydrated — they
+        would require deserialising every ancestor's
+        ``world_state_json`` and the rollback UI uses the DB version
+        list directly anyway).
+        """
+        # Local import keeps the module import graph identical to
+        # before this change (state.py historically only imported
+        # VersionedWorldModel from extract_graph).
+        from shadow_loom.extract_graph import (
+            WorldModelVersion,
+            WorldSnapshot,
+        )
+        if self.versioned_model is None:
+            return
+        try:
+            lineage = get_version_lineage_rows(version_row_id)
+        except Exception:
+            logger.exception(
+                "[AppState] Failed to load version lineage for "
+                "version_row_id=%s; keeping synthetic v0 history.",
+                version_row_id,
+            )
+            return
+        if not lineage:
+            return
+        history: list[WorldModelVersion] = []
+        for idx, row in enumerate(lineage):
+            history.append(WorldModelVersion(
+                # Use sequential 0,1,2 in-memory indices (matches
+                # how from_world_state seeds v0). The DB-side
+                # version number is independent and is consulted via
+                # ``current_version_row_id`` when the next save runs.
+                version=idx,
+                timestamp=str(row.created_at) if row.created_at else "",
+                source=row.source or "db_load",
+                description=row.description or "",
+                prose=row.prose,
+                world_id=row.world_id if row.world_id in ("factual", "shadow") else "factual",
+                branch_label=row.branch_label,
+            ))
+        # Only the current snapshot is materialised; rebuild it under
+        # the new head version index so ``rollback`` can still find
+        # version-0 if invoked.
+        head_version = history[-1].version
+        self.versioned_model = self.versioned_model.model_copy(update={
+            "history": history,
+            "snapshots": [
+                WorldSnapshot(
+                    version=head_version,
+                    world_state=self.versioned_model.current,
+                ),
+            ],
+        })
+
     def load_project(
         self,
         project_id: int,
@@ -1138,6 +1209,12 @@ class AppState:
         self.fabula_cursor = None
         self.syuzhet_cursor = None
         self.load_world_state(world_state)
+        # Re-hydrate VWM history from the DB lineage so the loaded
+        # row's branch identity (world_id, branch_label, prose)
+        # survives the swap. Without this, the next pipeline run on a
+        # shadow head would silently re-tag onto factual mainline.
+        if version_row_id is not None:
+            self._rehydrate_vwm_history_from_db(version_row_id)
         # Resolve the version *number* for the loaded row so the
         # version sidebar / header label can render "v{N}" without
         # waiting for the next save or rollback. Without this emit
@@ -1233,6 +1310,10 @@ class AppState:
         self.selected_node_type = None
         self.current_version_row_id = version_row_id
         self.load_world_state(ws)
+        # Carry the DB row's branch identity into the in-memory VWM
+        # history so subsequent queries inherit the correct world_id /
+        # branch_label and prose continuity walks the real lineage.
+        self._rehydrate_vwm_history_from_db(version_row_id)
         self.emit(StateEvent.FABULA_CURSOR_CHANGED, cursor=None)
         self.emit(StateEvent.SYUZHET_CURSOR_CHANGED, cursor=None)
         self.emit(StateEvent.NODE_SELECTED, node_id=None, node_type=None)

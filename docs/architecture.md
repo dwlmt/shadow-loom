@@ -722,6 +722,36 @@ shadow `world_id`; everything else stays on the factual mainline.
 `VersionedWorldModel.merge(world_id=..., branch_label=...)` re-tags the
 merged nodes/edges so per-branch retrieval stays clean.
 
+**Branch isolation invariants** (enforced at the merge boundary in
+[`VersionedWorldModel.merge`](../shadow_loom/extract_graph.py)):
+
+* **Deletions** — a merge running under `world_id="shadow"` cannot
+  remove factual-tagged entities, objects, locations, world traits,
+  events, channels, or causal/spatial/social edges (and vice versa).
+  Cross-branch deletes are skipped with an
+  `INFO [merge·delete]` log.
+* **Genesis backfill** — when a chunk re-emits a `new_entities` /
+  `new_objects` / `new_locations` / `new_world_traits` payload whose
+  id already exists on the **other** branch, the canonical record is
+  left untouched. The backfill is skipped with an
+  `INFO [merge·genesis]` log so a shadow re-extraction of `ENT_MACBETH`
+  cannot leak shadow-derived traits / beliefs / affordances into the
+  factual record.
+* **Per-tick state updates** — `entity_updates` / `object_updates` /
+  `belief_confidence_updates` / `affect` (truth commits, proposition
+  snapshots, concern snapshots, belief snapshots) / `supersession` are
+  refused on cross-branch holders. Each writes a tagged
+  `INFO [merge·entity-update]` / `[merge·object-update]` /
+  `[merge·belief]` / `[merge·affect]` / `[merge·supersede]` skip log.
+* **Replay-side defence** — `reconstruct_entity_at`,
+  `reconstruct_object_at`, `reconstruct_entity_at_causal` and
+  `reconstruct_world_trait_at_causal` filter snapshots and causal
+  mutations whose `world_id` differs from the holder's, so legacy data
+  predating the write-side guards still reconstructs cleanly.
+
+The full enforcement matrix is exercised by
+[`tests/test_rung_audit_fixes.py`](../tests/test_rung_audit_fixes.py).
+
 ---
 
 ## 9. The UI — `shadow_loom_ui/`

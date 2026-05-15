@@ -263,7 +263,25 @@ def _format_rendering_directive(r: RenderingDirective) -> str:
         f"SENSORY FOCUS: {r.sensory_focus}",
     ]
     if r.pov_lock:
-        parts.append(f"POV LOCKED TO: {r.pov_lock}")
+        if r.pov_policy == "single" or not r.additional_pov_locks:
+            parts.append(f"POV LOCKED TO: {r.pov_lock}")
+        else:
+            roster = ", ".join([r.pov_lock, *r.additional_pov_locks])
+            if r.pov_policy == "rotating":
+                parts.append(
+                    f"POV ROTATING ACROSS: {roster} (primary: "
+                    f"{r.pov_lock}). Each entity owns an internal-"
+                    "perception beat \u2014 no head-hopping within a "
+                    "single beat. Open from the primary POV."
+                )
+            else:  # ensemble
+                parts.append(
+                    f"POV ENSEMBLE (omniscient-constrained): {roster} "
+                    f"(primary: {r.pov_lock}). Narrator may license "
+                    "interiority across the listed roster within the "
+                    "same scene; entities outside the roster remain "
+                    "externally observed."
+                )
     if r.tone_arc:
         parts.append(f"TONAL ARC: {r.tone_arc}")
     if r.stylistic_instructions:
@@ -1056,50 +1074,68 @@ def _format_counterfactual(cf: CounterfactualBranch) -> str:
     # Phase-8: typed Pearl-rung surgery → renderer hint. The renderer
     # uses this to pick the right epistemic / ontic register and the
     # Aristotelian / Frye narrative-form hedge.
+    #
+    # Each branch below requires a complete set of fields on the
+    # ``do_target`` payload before the hint is emitted. A partial /
+    # malformed payload would otherwise surface literal placeholder
+    # tokens (``"?"``) in the rendered prose, which is worse than
+    # silently dropping the hint and letting the renderer fall back
+    # to the generic divergence framing above.
     do_target = getattr(cf, "do_target", None)
     if do_target is not None:
         kind = getattr(do_target, "target_kind", None)
         if kind == "proposition":
-            lines.append(
-                f"  RUNG-3 SURGERY KIND: proposition — render as "
-                f"\"if it had been the case that PROP {getattr(do_target, 'proposition_id', '?')} = "
-                f"{getattr(do_target, 'truth', '?')}\". This is an *ontic* "
-                f"counterfactual: the world's truth was different."
-            )
+            pid = getattr(do_target, "proposition_id", None)
+            truth = getattr(do_target, "truth", None)
+            if pid and truth is not None:
+                lines.append(
+                    f"  RUNG-3 SURGERY KIND: proposition — render as "
+                    f"\"if it had been the case that PROP {pid} = "
+                    f"{truth}\". This is an *ontic* "
+                    f"counterfactual: the world's truth was different."
+                )
         elif kind == "belief":
-            lines.append(
-                f"  RUNG-3 SURGERY KIND: belief — render as \"had "
-                f"{getattr(do_target, 'holder_id', '?')} believed "
-                f"otherwise about PROP "
-                f"{getattr(do_target, 'proposition_id', '?')}\". This is "
-                f"an *epistemic* counterfactual: the world is unchanged "
-                f"but the holder's confidence was clamped to "
-                f"{getattr(do_target, 'confidence', '?')}. Use hedged "
-                f"epistemic language (\"believed\", \"trusted\", \"knew\")."
-            )
+            holder = getattr(do_target, "holder_id", None)
+            pid = getattr(do_target, "proposition_id", None)
+            conf = getattr(do_target, "confidence", None)
+            if holder and pid and conf is not None:
+                lines.append(
+                    f"  RUNG-3 SURGERY KIND: belief — render as \"had "
+                    f"{holder} believed otherwise about PROP {pid}\". "
+                    f"This is an *epistemic* counterfactual: the world "
+                    f"is unchanged but the holder's confidence was "
+                    f"clamped to {conf}. Use hedged epistemic language "
+                    f"(\"believed\", \"trusted\", \"knew\")."
+                )
         elif kind == "concern":
-            lines.append(
-                f"  RUNG-3 SURGERY KIND: concern — render as \"without "
-                f"{getattr(do_target, 'holder_id', '?')}'s "
-                f"{getattr(do_target, 'concern_id', '?')}\". This is a "
-                f"*motivational* counterfactual: the holder's utility "
-                f"landscape was different. Use desire/fear language "
-                f"(Roese commission/omission frame)."
-            )
+            holder = getattr(do_target, "holder_id", None)
+            ccn = getattr(do_target, "concern_id", None)
+            if holder and ccn:
+                lines.append(
+                    f"  RUNG-3 SURGERY KIND: concern — render as \"without "
+                    f"{holder}'s {ccn}\". This is a "
+                    f"*motivational* counterfactual: the holder's utility "
+                    f"landscape was different. Use desire/fear language "
+                    f"(Roese commission/omission frame)."
+                )
         elif kind == "trait":
-            lines.append(
-                f"  RUNG-3 SURGERY KIND: trait — render as \"had "
-                f"{getattr(do_target, 'holder_id', '?')} been "
-                f"{getattr(do_target, 'trait_name', '?')}="
-                f"{getattr(do_target, 'value', '?')}\"."
-            )
+            holder = getattr(do_target, "holder_id", None)
+            trait = getattr(do_target, "trait_name", None)
+            value = getattr(do_target, "value", None)
+            if holder and trait and value is not None:
+                lines.append(
+                    f"  RUNG-3 SURGERY KIND: trait — render as \"had "
+                    f"{holder} been {trait}={value}\"."
+                )
         elif kind == "event":
+            evt_id = getattr(do_target, "event_id", None)
             occurred = getattr(do_target, "occurred", None)
-            verb = "occurred" if occurred else "not occurred"
-            lines.append(
-                f"  RUNG-3 SURGERY KIND: event — render as \"had EVT "
-                f"{getattr(do_target, 'event_id', '?')} {verb}\"."
-            )
+            if evt_id and occurred is not None:
+                verb = "occurred" if occurred else "not occurred"
+                lines.append(
+                    f"  RUNG-3 SURGERY KIND: event — render as \"had EVT "
+                    f"{evt_id} {verb}\"."
+                )
 
     if cf.affected_propositions:
         lines.append(
@@ -2683,6 +2719,56 @@ def assemble_rendering_prompt(
 # Brief builders for non-directive query types
 # =====================================================================
 
+def _resolve_pov_policy(
+    target_entities: Optional[List[str]],
+    *,
+    explicit_policy: Optional[str] = None,
+) -> tuple[Optional[str], List[str], Literal["single", "rotating", "ensemble"]]:
+    """Pick a POV lock + roster + policy from a brief's target entities.
+
+    Returns ``(pov_lock, additional_pov_locks, pov_policy)``.
+
+    Behaviour:
+
+    * No targets → ``(None, [], "single")``.
+    * Single target → ``(only, [], "single")``.
+    * Multiple targets → ``(first, rest, explicit_policy or "rotating")``.
+
+    Default multi-ego policy is ``"rotating"`` because the assembler
+    typically returns concrete POV-able entities (no abstract narrator
+    egos like ``ENT_AUDIENCE``); each gets its own beat. Callers that
+    want omniscient-constrained interiority can pass
+    ``explicit_policy='ensemble'``.
+
+    A common case is a focus list that mixes the queried entity with
+    ``ENT_AUDIENCE`` (the implicit reader-stand-in used during
+    extraction). ``ENT_AUDIENCE`` is filtered from the POV roster so
+    the prose isn't asked to render the audience's interiority, while
+    still being kept on ``brief.target_entities`` for downstream
+    assembly metrics.
+    """
+    if not target_entities:
+        return None, [], "single"
+    # Drop the audience pseudo-ego from POV licensing — it is never a
+    # POV character — but keep the rest of the roster.
+    real = [
+        e for e in target_entities
+        if e and e != "ENT_AUDIENCE"
+    ]
+    if not real:
+        return None, [], "single"
+    if len(real) == 1:
+        return real[0], [], "single"
+    policy_value: Literal["single", "rotating", "ensemble"]
+    if explicit_policy in ("single", "rotating", "ensemble"):
+        policy_value = explicit_policy  # type: ignore[assignment]
+    else:
+        policy_value = "rotating"
+    if policy_value == "single":
+        return real[0], [], "single"
+    return real[0], real[1:], policy_value
+
+
 def _entities_from_intervention_keys(
     intervention_keys: Iterable[str],
     world_state: WorldStateV1,
@@ -2782,7 +2868,9 @@ def build_observation_brief(
     skipped_interventions: Optional[List[Dict[str, Any]]] = None,
 ) -> CreativeBrief:
     """Build a lightweight CreativeBrief for observation queries."""
-    pov = query.focus_entity_ids[0] if query.focus_entity_ids else None
+    pov, extra_povs, pov_policy = _resolve_pov_policy(
+        query.focus_entity_ids,
+    )
     constraints: List[ConstraintBlock] = _user_intent_constraints(query.original_query)
     # Scene-internal grounding constraint (mirrors the counterfactual
     # rung). Without this the rung-1 prose is free to drift into
@@ -2851,6 +2939,8 @@ def build_observation_brief(
         rendering=RenderingDirective(
             rendering_mode="observation",
             pov_lock=pov,
+            additional_pov_locks=extra_povs,
+            pov_policy=pov_policy,
             pacing="normal",
             sensory_focus="wide",
             stylistic_instructions=[
@@ -3470,11 +3560,18 @@ def build_intervention_brief(
         world_label="intervened",
     ))
 
+    # Resolve POV roster from the do-targets so multi-entity
+    # interventions don't silently collapse to the first one. Defaults
+    # to ``rotating`` per-beat coverage; the assembler can later swap
+    # to ``ensemble`` for omniscient-constrained scenes.
+    _intervention_targets = _entities_from_intervention_keys(
+        query.interventions, world_state,
+    )
+    _intervention_pov = _resolve_pov_policy(_intervention_targets)
+
     return CreativeBrief(
         target_effect="intervention",
-        target_entities=_entities_from_intervention_keys(
-            query.interventions, world_state
-        ),
+        target_entities=_intervention_targets,
         original_query=query.original_query,
         constraints=constraints,
         narrative_style=getattr(world_state, "narrative_style", None),
@@ -3499,9 +3596,9 @@ def build_intervention_brief(
         ),
         rendering=RenderingDirective(
             rendering_mode="intervention",
-            pov_lock=(_entities_from_intervention_keys(
-                query.interventions, world_state
-            ) or [None])[0],
+            pov_lock=_intervention_pov[0],
+            additional_pov_locks=_intervention_pov[1],
+            pov_policy=_intervention_pov[2],
             pacing="normal",
             sensory_focus="normal",
             stylistic_instructions=[
@@ -3845,6 +3942,8 @@ def build_counterfactual_brief(
         if eid not in target_entities:
             target_entities.append(eid)
 
+    _ctf_pov = _resolve_pov_policy(target_entities)
+
     return CreativeBrief(
         target_effect="counterfactual",
         target_entities=target_entities,
@@ -3870,7 +3969,9 @@ def build_counterfactual_brief(
         ),
         rendering=RenderingDirective(
             rendering_mode="counterfactual",
-            pov_lock=target_entities[0] if target_entities else None,
+            pov_lock=_ctf_pov[0],
+            additional_pov_locks=_ctf_pov[1],
+            pov_policy=_ctf_pov[2],
             pacing="normal",
             sensory_focus="normal",
             stylistic_instructions=[
@@ -4177,6 +4278,7 @@ def render_from_query(
                 ),
                 evidence={},
             ))
+            _fb_pov = _resolve_pov_policy(target_ents)
             brief = CreativeBrief(
                 target_effect=target_eff,
                 target_entities=target_ents,
@@ -4186,7 +4288,9 @@ def render_from_query(
                 narrative_style=getattr(world_state, "narrative_style", None),
                 rendering=RenderingDirective(
                     rendering_mode=str(target_eff),
-                    pov_lock=target_ents[0] if target_ents else None,
+                    pov_lock=_fb_pov[0],
+                    additional_pov_locks=_fb_pov[1],
+                    pov_policy=_fb_pov[2],
                     pacing="normal",
                     sensory_focus="normal",
                     stylistic_instructions=[

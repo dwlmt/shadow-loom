@@ -65,6 +65,13 @@ def reconstruct_entity_at_causal(
             and ce.trait_target
             and ce.trait_delta is not None
             and ce.fabula_time <= fabula_time
+            # Branch safety: only apply mutations whose ``world_id``
+            # matches the holder entity's branch. A shadow-tagged
+            # mutation edge accidentally targeting a factual entity
+            # (or vice versa) would otherwise drift the canonical
+            # trait value silently.
+            and (getattr(ce, "world_id", "factual") or "factual")
+                == (getattr(ent, "world_id", "factual") or "factual")
         ),
         key=lambda c: c.fabula_time,
     )
@@ -120,6 +127,11 @@ def reconstruct_world_trait_at_causal(
             and ce.target_id == world_id
             and ce.trait_delta is not None
             and ce.fabula_time <= fabula_time
+            # Branch safety: mirror of the entity-side filter \u2014
+            # a shadow-tagged mutation must not drift the canonical
+            # global trait, and vice versa.
+            and (getattr(ce, "world_id", "factual") or "factual")
+                == (getattr(wt, "world_id", "factual") or "factual")
         ),
         key=lambda c: c.fabula_time,
     )

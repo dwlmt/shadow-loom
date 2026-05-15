@@ -2105,6 +2105,52 @@ def get_version_lineage(project_id: int, version: int) -> list[dict]:
         return chain
 
 
+def get_version_lineage_rows(version_row_id: int) -> list[VersionRow]:
+    """Walk the ancestor chain from ``version_row_id`` back to the root.
+
+    Returns the actual ``VersionRow`` objects ordered root → target so
+    callers can rebuild a full ``VersionedWorldModel.history`` (with
+    ``world_id``, ``branch_label``, ``prose`` carried per row) when
+    re-hydrating a session from the DB. Unlike :func:`get_version_lineage`
+    this returns the SQLModel rows themselves rather than a trimmed
+    dict shape, so the caller has access to every persisted field.
+
+    Returns ``[]`` when the row does not exist.
+    """
+    with get_session() as s:
+        target = s.get(VersionRow, version_row_id)
+        if target is None:
+            return []
+        # Eager-load the project's version graph once so we can walk
+        # ancestors without N round-trips. Branches in the same project
+        # share a small DAG so this is cheap.
+        rows = s.exec(
+            select(VersionRow).where(
+                VersionRow.project_id == target.project_id
+            )
+        ).all()
+        # Detach so the caller can use the returned rows after the
+        # session closes (SQLModel objects become unusable otherwise).
+        for r in rows:
+            s.expunge(r)
+        by_id: dict[int, VersionRow] = {r.id: r for r in rows}
+
+    chain: list[VersionRow] = []
+    seen: set[int] = set()
+    current: Optional[VersionRow] = by_id.get(version_row_id)
+    while current is not None:
+        if current.id in seen:
+            # Defensive: a corrupted DAG with a cycle should not loop.
+            break
+        seen.add(current.id)
+        chain.append(current)
+        if current.ancestor_id is None:
+            break
+        current = by_id.get(current.ancestor_id)
+    chain.reverse()
+    return chain
+
+
 def get_version_children(version_row_id: int) -> list[dict]:
     """Return direct child versions branching from a given version row."""
     with get_session() as s:
@@ -2203,6 +2249,7 @@ def promote_branch(
     *,
     user_id: int | None = None,
     description: str | None = None,
+    force: bool = False,
 ) -> VersionRow:
     """Copy a shadow-branch version onto the factual mainline as a new version.
 
@@ -2212,9 +2259,24 @@ def promote_branch(
     ``world_id`` is forced to ``'factual'``. The shadow source is left
     untouched so the fork remains browsable.
 
-    Raises ``VersionMutationError`` if the source version does not exist
-    or already lives on the factual mainline (use the standard
-    save/branch flows for those cases).
+    .. warning::
+
+       Promotion is **copy-forward**, not three-way merge. The shadow
+       snapshot replaces the factual world wholesale. If the factual
+       mainline has advanced beyond the shadow's fork point, those
+       factual-only changes are silently overwritten by the shadow
+       contents.
+
+       To guard against accidental data loss this function refuses
+       to promote when divergence is detected (factual head is not
+       the same row as the shadow's nearest factual ancestor).
+       Pass ``force=True`` to acknowledge the overwrite.
+
+    Raises ``VersionMutationError`` if:
+      * the source version does not exist;
+      * the source already lives on the factual mainline;
+      * factual mainline has diverged past the shadow's fork point
+        and ``force=False``.
     """
     with get_session() as s:
         src = s.get(VersionRow, version_row_id)
@@ -2237,10 +2299,54 @@ def promote_branch(
         ).first()
         ancestor_id = factual_head.id if factual_head is not None else None
 
+        # Walk back from the shadow source to its first factual
+        # ancestor — that's the fork point the shadow branched from.
+        # If the fork point is the current factual head, the canon
+        # has not advanced since the fork and a copy-forward is
+        # safe. Otherwise the factual mainline has diverged and the
+        # promotion would silently overwrite those advances.
+        rows = s.exec(
+            select(VersionRow).where(
+                VersionRow.project_id == src.project_id
+            )
+        ).all()
+        by_id: dict[int, VersionRow] = {r.id: r for r in rows}
+        fork_point: Optional[VersionRow] = None
+        cursor: Optional[VersionRow] = src
+        seen: set[int] = set()
+        while cursor is not None and cursor.id not in seen:
+            seen.add(cursor.id)
+            if cursor.world_id == "factual":
+                fork_point = cursor
+                break
+            if cursor.ancestor_id is None:
+                break
+            cursor = by_id.get(cursor.ancestor_id)
+
+    diverged = (
+        fork_point is not None
+        and factual_head is not None
+        and fork_point.id != factual_head.id
+    )
+    if diverged and not force:
+        raise VersionMutationError(
+            f"Cannot promote shadow v{src.version}: factual mainline has "
+            f"advanced from fork point v{fork_point.version} (id="
+            f"{fork_point.id}) to v{factual_head.version} (id="
+            f"{factual_head.id}). Promoting now would overwrite those "
+            "factual changes with the shadow snapshot. Pass force=True "
+            "to proceed anyway."
+        )
+
     promoted_desc = description or (
         f"Promoted shadow v{src.version}"
         + (f" ({src.branch_label})" if src.branch_label else "")
         + " to factual mainline"
+        + (
+            f" (force; overwrote factual v{fork_point.version}→"
+            f"v{factual_head.version})"
+            if diverged else ""
+        )
     )
     return save_version(
         project_id=src.project_id,
@@ -2254,7 +2360,13 @@ def promote_branch(
         prose=src.prose,
         user_id=user_id,
         world_id="factual",
-        branch_label=None,
+        # Preserve the source branch label as structured provenance
+        # so callers can query "which factual versions were promoted
+        # from shadow branch X" without substring-matching on the
+        # free-text description. ``branch_label`` on factual rows is
+        # otherwise unused (the convention is that only shadow forks
+        # carry one), so re-using the field is safe.
+        branch_label=src.branch_label,
     )
 
 

@@ -327,6 +327,22 @@ output can hand back `"high"`/`"low"`/etc. without retry. MCP
 Concurrent counterfactual exploration is safe by construction (each query
 gets its own sandbox).
 
+**Branch isolation at the merge boundary.** Sandbox commits go through
+[`VersionedWorldModel.merge(world_id=...)`](../shadow_loom/extract_graph.py),
+which enforces the invariant on every persisted write — not only on the
+sandbox round-trip. A merge running under one branch may not delete,
+backfill, snapshot, supersede, or affect-update a holder tagged with the
+*other* branch. Each blocked write is logged at INFO level with a tagged
+prefix (`[merge·delete]` / `[merge·genesis]` /
+`[merge·entity-update]` / `[merge·object-update]` / `[merge·belief]` /
+`[merge·affect]` / `[merge·supersede]`). Replay helpers
+(`reconstruct_entity_at`, `reconstruct_object_at`,
+`reconstruct_entity_at_causal`, `reconstruct_world_trait_at_causal`)
+also filter snapshots and causal mutations whose `world_id` differs from
+the holder's, providing a defence-in-depth read path for any data that
+predates the write-side guards. The full enforcement matrix is exercised
+by [`tests/test_rung_audit_fixes.py`](../tests/test_rung_audit_fixes.py).
+
 ---
 
 ## D7. The LLM is a renderer, not an author

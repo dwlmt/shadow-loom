@@ -35,7 +35,7 @@ pdflatex shadow_loom
 A reproducible source tarball is built by:
 
 ```bash
-make -C paper arxiv          # produces paper/shadow_loom_arxiv.tar.gz
+make arxiv          # produces paper/shadow_loom_arxiv.tar.gz
 ```
 
 The resulting tarball contains `shadow_loom.tex`, `references.bib`,

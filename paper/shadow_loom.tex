@@ -557,6 +557,25 @@ analogue of the AMWN graphical construction
 \citep{correa2025amwn}. A user can compare a shadow against canon,
 keep both, or promote.
 
+\paragraph{Branch isolation as a merge-time invariant.}
+Sandbox-and-promote is only sound if the merge boundary itself
+refuses cross-branch writes. Every mutation route through
+\texttt{VersionedWorldModel.merge(world\_id=...)} ---
+deletions, genesis backfill of re-emitted entity / object /
+location / world-trait records, per-tick \texttt{entity\_updates}
+and \texttt{object\_updates}, belief-confidence overwrites,
+affect snapshots, and event supersession --- compares the
+holder's \texttt{world\_id} against the merge branch and skips
+the write (with a tagged \texttt{INFO} log) when they
+disagree. The replay helpers
+(\texttt{reconstruct\_entity\_at}, \texttt{reconstruct\_object\_at},
+and the causal variants in \texttt{shadow\_loom/projections.py})
+mirror the guard on the read path: snapshots and causal
+mutations whose \texttt{world\_id} differs from the holder's
+holder are filtered out before reconstruction. The full
+enforcement matrix is exercised by
+\texttt{tests/test\_rung\_audit\_fixes.py}.
+
 
 \section{Why this might matter beyond fiction}
 \label{sec:relevance}

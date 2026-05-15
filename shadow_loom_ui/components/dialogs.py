@@ -371,7 +371,25 @@ def build_project_dialog(state: AppState) -> ui.dialog:
                             if not allowed:
                                 ui.notify("Access denied", type="negative")
                                 return
-                            snap = db.load_latest_snapshot(pid)
+                            # Honour the user's saved active-version
+                            # pointer so loading via the dialog lands
+                            # on the same version as the workspace
+                            # entry route. Falls back to latest when
+                            # no pointer is recorded.
+                            snap = None
+                            if state.user_id is not None:
+                                try:
+                                    snap = db.get_active_version(
+                                        pid, state.user_id,
+                                    )
+                                except Exception:
+                                    logger.exception(
+                                        "Failed to read active-version "
+                                        "pointer for project %s", pid,
+                                    )
+                                    snap = None
+                            if snap is None:
+                                snap = db.load_latest_snapshot(pid)
                             if snap is None:
                                 ui.notify("No versions found", type="warning")
                                 return
@@ -384,6 +402,20 @@ def build_project_dialog(state: AppState) -> ui.dialog:
                             state.load_db_version(
                                 ws, snap.id, version_number=snap.version,
                             )
+                            # Mirror the loaded version into the
+                            # active-version pointer (matches the
+                            # workspace route) so MCP read tools see
+                            # the same head as the UI.
+                            if state.user_id is not None:
+                                try:
+                                    db.set_active_version(
+                                        pid, state.user_id, snap.id,
+                                    )
+                                except Exception:
+                                    logger.exception(
+                                        "Failed to update active-version "
+                                        "pointer on dialog load",
+                                    )
                             state.emit(StateEvent.PROJECT_LOADED, project_id=pid)
                             ui.notify(f"Loaded {pname} (v{snap.version})")
                             dialog.close()

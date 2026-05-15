@@ -635,6 +635,16 @@ def _do_promote(
             description=description or None,
         )
     except db.VersionMutationError as exc:
+        msg = str(exc)
+        # Divergence guard: factual mainline advanced past the fork
+        # point. Offer an explicit force-overwrite confirmation
+        # rather than failing silently or silently overwriting.
+        if "force=True" in msg:
+            dialog.close()
+            _confirm_force_promote(
+                state, current, description, container, msg,
+            )
+            return
         ui.notify(f"Promote failed: {exc}", type="negative")
         return
     except Exception as exc:  # noqa: BLE001
@@ -666,6 +676,85 @@ def _do_promote(
                 )
     except Exception:
         logger.exception("Failed to load promoted version")
+
+    _render_versions(state, container)
+
+
+def _confirm_force_promote(
+    state: AppState,
+    current: dict,
+    description: str,
+    container,
+    divergence_msg: str,
+) -> None:
+    """Second-stage confirmation when promotion would overwrite factual changes.
+
+    Only invoked when ``promote_branch`` raised ``VersionMutationError``
+    indicating that the factual mainline has advanced beyond the
+    shadow's fork point. Surfacing the divergence in the UI (rather
+    than silently overwriting or silently rejecting) lets the user
+    make the trade-off explicitly.
+    """
+    with ui.dialog() as dialog, ui.card():
+        ui.label("Factual mainline has diverged").classes(
+            "text-base font-semibold text-warning"
+        )
+        ui.label(divergence_msg).classes("text-xs text-slate-500 max-w-md")
+        ui.label(
+            "Promoting now will replace the current factual head with "
+            "this shadow snapshot wholesale. Factual-only changes made "
+            "after the fork will be discarded."
+        ).classes("text-xs text-slate-500")
+        with ui.row().classes("justify-end gap-2 mt-2"):
+            ui.button("Cancel", on_click=dialog.close).props("flat")
+            ui.button(
+                "Force promote",
+                on_click=lambda: _do_force_promote(
+                    state, current, description, container, dialog,
+                ),
+            ).props("color=negative unelevated")
+    dialog.open()
+
+
+def _do_force_promote(
+    state: AppState, current: dict, description: str, container, dialog,
+) -> None:
+    try:
+        promoted = db.promote_branch(
+            current["id"],
+            user_id=state.user_id,
+            description=description or None,
+            force=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Forced branch promotion failed")
+        ui.notify(f"Promote failed: {exc}", type="negative")
+        return
+
+    dialog.close()
+    ui.notify(
+        f"Force-promoted shadow v{current['version']} \u2192 factual "
+        f"v{promoted.version}",
+        type="warning",
+    )
+
+    from shadow_loom.models import WorldStateV1
+    try:
+        ws = WorldStateV1.model_validate_json(promoted.world_state_json)
+        state.load_db_version(
+            ws, promoted.id, version_number=promoted.version,
+        )
+        if state.user_id is not None and state.project_id is not None:
+            try:
+                db.set_active_version(
+                    state.project_id, state.user_id, promoted.id,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to update active-version pointer after force promote"
+                )
+    except Exception:
+        logger.exception("Failed to load force-promoted version")
 
     _render_versions(state, container)
 
