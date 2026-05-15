@@ -1128,6 +1128,18 @@ class _MergedSystemPromptsModel:
         times with a short backoff. Genuine schema errors and 4xx
         client errors (``ModelHTTPError`` with status < 500) are
         re-raised after the first attempt — they won't get better.
+
+        **Provider-routing fallback.** OpenRouter model names may carry
+        a routing-strategy suffix such as ``:nitro`` (high-throughput,
+        single high-rate provider), ``:floor`` (cheapest provider) or
+        ``:online`` (web-search augmented). When the chosen provider
+        crashes, every retry hits the same dead provider and times out
+        the chunk. After the first half of the retry budget has been
+        burned on a malformed-completion stream, we strip the routing
+        suffix on the remaining attempts so OpenRouter falls back to
+        its full provider list (any healthy provider may answer).
+        ``self._model_name`` is restored afterwards so the next call
+        from the agent loop starts on the original routing strategy.
         """
         import asyncio
         import logging
@@ -1135,36 +1147,74 @@ class _MergedSystemPromptsModel:
         from pydantic_ai.models.openai import OpenAIChatModel
 
         log = logging.getLogger(__name__)
+        original_model_name = getattr(self, "_model_name", None)
+        # OpenRouter's documented per-model routing suffixes — when one
+        # of these is present we can safely fall back to the bare
+        # model id on later retries to escape a sticky bad provider.
+        # See https://openrouter.ai/docs/features/provider-routing.
+        _ROUTING_SUFFIXES = (":nitro", ":floor", ":online")
+        fallback_after = max(1, _PROVIDER_RETRY_ATTEMPTS // 2)
         last_exc: Exception | None = None
-        for attempt in range(_PROVIDER_RETRY_ATTEMPTS):
-            try:
-                return await OpenAIChatModel.request(self, *args, **kwargs)
-            except UnexpectedModelBehavior as exc:
-                last_exc = exc
-                if attempt + 1 >= _PROVIDER_RETRY_ATTEMPTS:
-                    raise
-                log.warning(
-                    "[Provider Retry] Malformed completion from %s "
-                    "(attempt %d/%d): %s",
-                    getattr(self, "model_name", "<unknown>"),
-                    attempt + 1, _PROVIDER_RETRY_ATTEMPTS, exc,
-                )
-            except ModelHTTPError as exc:
-                # Only retry on 5xx / 429; 4xx client errors won't recover.
-                status = getattr(exc, "status_code", None) or 0
-                retryable = status >= 500 or status == 429
-                if not retryable or attempt + 1 >= _PROVIDER_RETRY_ATTEMPTS:
-                    raise
-                last_exc = exc
-                log.warning(
-                    "[Provider Retry] HTTP %d from %s (attempt %d/%d): %s",
-                    status, getattr(self, "model_name", "<unknown>"),
-                    attempt + 1, _PROVIDER_RETRY_ATTEMPTS, exc,
-                )
-            await asyncio.sleep(_PROVIDER_RETRY_BACKOFF_S * (attempt + 1))
-        # Unreachable in practice — the loop either returns or re-raises.
-        assert last_exc is not None
-        raise last_exc
+        try:
+            for attempt in range(_PROVIDER_RETRY_ATTEMPTS):
+                # On later attempts, drop a provider-routing suffix so
+                # OpenRouter re-shops the request across all providers
+                # for the bare model id.
+                if (
+                    attempt >= fallback_after
+                    and original_model_name
+                    and isinstance(original_model_name, str)
+                    and any(original_model_name.endswith(s) for s in _ROUTING_SUFFIXES)
+                ):
+                    bare = original_model_name
+                    for suffix in _ROUTING_SUFFIXES:
+                        if bare.endswith(suffix):
+                            bare = bare[: -len(suffix)]
+                            break
+                    if getattr(self, "_model_name", None) != bare:
+                        log.warning(
+                            "[Provider Retry] Dropping routing suffix on %s "
+                            "\u2014 falling back to bare %s for retry %d/%d.",
+                            original_model_name, bare,
+                            attempt + 1, _PROVIDER_RETRY_ATTEMPTS,
+                        )
+                        self._model_name = bare  # type: ignore[attr-defined]
+                try:
+                    return await OpenAIChatModel.request(self, *args, **kwargs)
+                except UnexpectedModelBehavior as exc:
+                    last_exc = exc
+                    if attempt + 1 >= _PROVIDER_RETRY_ATTEMPTS:
+                        raise
+                    log.warning(
+                        "[Provider Retry] Malformed completion from %s "
+                        "(attempt %d/%d): %s",
+                        getattr(self, "model_name", "<unknown>"),
+                        attempt + 1, _PROVIDER_RETRY_ATTEMPTS, exc,
+                    )
+                except ModelHTTPError as exc:
+                    # Only retry on 5xx / 429; 4xx client errors won't recover.
+                    status = getattr(exc, "status_code", None) or 0
+                    retryable = status >= 500 or status == 429
+                    if not retryable or attempt + 1 >= _PROVIDER_RETRY_ATTEMPTS:
+                        raise
+                    last_exc = exc
+                    log.warning(
+                        "[Provider Retry] HTTP %d from %s (attempt %d/%d): %s",
+                        status, getattr(self, "model_name", "<unknown>"),
+                        attempt + 1, _PROVIDER_RETRY_ATTEMPTS, exc,
+                    )
+                await asyncio.sleep(_PROVIDER_RETRY_BACKOFF_S * (attempt + 1))
+            # Unreachable in practice — the loop either returns or re-raises.
+            assert last_exc is not None
+            raise last_exc
+        finally:
+            # Restore the original routing strategy so subsequent calls
+            # from the agent loop start fresh on the user's chosen tier.
+            if (
+                original_model_name is not None
+                and getattr(self, "_model_name", None) != original_model_name
+            ):
+                self._model_name = original_model_name  # type: ignore[attr-defined]
 
 
 # Number of times to retry a transient malformed response or 5xx HTTP
