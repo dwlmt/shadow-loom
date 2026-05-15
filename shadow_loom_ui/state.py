@@ -718,7 +718,24 @@ class AppState:
                     )
             # Re-emit PIPELINE_RESULT so any tab listening (e.g. audit /
             # causality) refreshes against the now-merged world.
-            self.emit(StateEvent.PIPELINE_RESULT, result=self.last_result)
+            # Mirror the synchronous path's payload shape: listeners
+            # expect an NLQueryResult, not the raw PipelineResult that
+            # ``self.last_result`` carries.
+            requested_effect = getattr(query, "target_effect", None)
+            requested_intensity = getattr(query, "intensity", None)
+            summary_text = humanize_pipeline_result(
+                pipeline_result,
+                requested_effect=requested_effect,
+                requested_intensity=requested_intensity,
+            )
+            deferred_result = NLQueryResult(
+                parse_result=parse_result or QueryParseResult(
+                    query=query, parsed=None, is_valid=True,
+                ),
+                pipeline_result=pipeline_result,
+                summary=summary_text,
+            )
+            self.emit(StateEvent.PIPELINE_RESULT, result=deferred_result)
 
         threading.Thread(
             target=_worker,
