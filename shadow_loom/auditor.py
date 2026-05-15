@@ -53,6 +53,7 @@ from shadow_loom.generation import (
     _format_entanglement,
     _format_interventions,
     _format_abduction,
+    _annotate_ids,
 )
 from shadow_loom.models import EventNode, WorldStateV1
 
@@ -1262,17 +1263,26 @@ def _format_propositional_context(brief: CreativeBrief) -> List[str]:
         if ap:
             out.append(
                 "  PROPOSITIONS whose truth flipped: "
-                + ", ".join(ap[:12])
+                + _annotate_ids(
+                    ap[:12],
+                    (getattr(payload, "affected_proposition_descriptions", None) or [])[:12],
+                )
             )
         if ab:
             out.append(
                 "  BELIEFS whose confidence shifted "
-                "(holder→target): " + ", ".join(ab[:12])
+                "(holder\u2192target): " + _annotate_ids(
+                    ab[:12],
+                    (getattr(payload, "affected_belief_descriptions", None) or [])[:12],
+                )
             )
         if ac:
             out.append(
                 "  CONCERNS whose polarity / salience shifted: "
-                + ", ".join(ac[:12])
+                + _annotate_ids(
+                    ac[:12],
+                    (getattr(payload, "affected_concern_descriptions", None) or [])[:12],
+                )
             )
         tragedy = getattr(payload, "tragedy_form", None)
         if tragedy:
@@ -1311,12 +1321,15 @@ def _format_propositional_context(brief: CreativeBrief) -> List[str]:
             ("omission", "omission_score"),
             ("downward_relief", "downward_relief_score"),
             ("mode", "mode"),
+            ("divergence_event", "divergence_description"),
+            ("loss_event", "loss_description"),
         ]),
         ("GRIEF APPRAISAL", brief.grief_profile, [
             ("coupling_strength", "coupling_strength"),
             ("stage", "stage"),
             ("unfinished_concerns", "unfinished_concern_count"),
             ("lost_entity", "lost_entity_id"),
+            ("loss_event", "loss_description"),
         ]),
         ("RAGE APPRAISAL", brief.rage_profile, [
             ("blocked_concern", "blocked_concern_score"),

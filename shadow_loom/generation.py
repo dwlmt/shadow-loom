@@ -391,6 +391,194 @@ def _form_class_render_override(format_str: str, mode: str) -> str:
     return ""
 
 
+# ---------------------------------------------------------------------
+# Do-target referent resolution
+# ---------------------------------------------------------------------
+#
+# The Pearl rung-2/rung-3 formatters historically emitted only the
+# do_target's *id* (e.g. ``EVT_KEN_KILLS_DOGS``, ``PROP_DUNCAN_DEAD``).
+# When the SCENE CONTEXT block did not also carry that id verbatim
+# (because it fell outside the recent_memory window, or because the
+# surgery target was a Proposition / Concern that scene context
+# doesn't surface), the renderer had no way to resolve the referent
+# and would confabulate a thematically-plausible but factually-wrong
+# scene around the surgery (e.g. inventing a literal "trial of the
+# local dog" for a counterfactual on Ken silencing Mrs Coady's dogs
+# at a separate location). The helper below resolves the do_target
+# against ``WorldStateV1`` so the brief carries the actual referent
+# text alongside the id.
+#
+# Returns ``None`` when the referent cannot be resolved (e.g. an id
+# the engine introduced in the sandbox); the formatter then falls
+# back to the bare id, which is correct behaviour for genuinely-novel
+# shadow-world ids.
+
+def _resolve_do_target_gloss(
+    world_state: WorldStateV1,
+    do_target: Any,
+) -> Optional[str]:
+    """Resolve a typed ``DoTarget`` to a short human-readable referent."""
+    if world_state is None or do_target is None:
+        return None
+    kind = getattr(do_target, "target_kind", None)
+    try:
+        if kind == "event":
+            evt_id = getattr(do_target, "event_id", None)
+            for evt in world_state.events:
+                if evt.id == evt_id:
+                    return (evt.description or "").strip() or None
+            return None
+        if kind == "proposition":
+            pid = getattr(do_target, "proposition_id", None)
+            for p in world_state.propositions or []:
+                if p.proposition_id == pid:
+                    return (p.description or "").strip() or None
+            return None
+        if kind == "belief":
+            holder = getattr(do_target, "holder_id", None)
+            target = getattr(do_target, "target_id", None)
+            pid = getattr(do_target, "proposition_id", None)
+            if pid:
+                for p in world_state.propositions or []:
+                    if p.proposition_id == pid:
+                        pdesc = (p.description or "").strip()
+                        if pdesc:
+                            return f"{holder}'s belief about \"{pdesc}\""
+            return (
+                f"{holder}'s belief about {target}"
+                if holder and target else None
+            )
+        if kind == "concern":
+            holder = getattr(do_target, "holder_id", None)
+            ccn = getattr(do_target, "concern_id", None)
+            for ent in world_state.entities.values():
+                for c in (getattr(ent, "concerns", None) or []):
+                    if getattr(c, "concern_id", None) == ccn:
+                        polarity = getattr(c, "polarity", "")
+                        prop_desc = ""
+                        for p in world_state.propositions or []:
+                            if p.proposition_id == getattr(c, "proposition_id", None):
+                                prop_desc = (p.description or "").strip()
+                                break
+                        if prop_desc:
+                            return f"{holder}'s {polarity} that {prop_desc}".strip()
+                        return f"{holder}'s {polarity} ({ccn})".strip()
+            return f"{holder}'s concern {ccn}" if holder and ccn else None
+        if kind == "trait":
+            holder = getattr(do_target, "holder_id", None)
+            trait = getattr(do_target, "trait_name", None)
+            ent = world_state.entities.get(holder) if holder else None
+            name = getattr(ent, "name", None) if ent is not None else None
+            who = name or holder
+            return f"{who}'s {trait}" if who and trait else None
+        if kind == "world_trait":
+            wt_id = getattr(do_target, "world_trait_id", None)
+            for wt in (getattr(world_state, "global_traits", None) or []):
+                if getattr(wt, "trait_id", None) == wt_id or getattr(wt, "id", None) == wt_id:
+                    return (getattr(wt, "description", None) or "").strip() or None
+            return None
+    except Exception:  # noqa: BLE001 — gloss is best-effort
+        return None
+    return None
+
+
+def _resolve_affected_descriptions(
+    world_state: WorldStateV1,
+    ids: List[str],
+    kind: str,
+) -> List[str]:
+    """Return human-readable description strings parallel to *ids*.
+
+    ``kind`` selects the resolution strategy:
+
+    * ``"event"``   — ``EventNode.description`` keyed by ``EventNode.id``.
+    * ``"prop"``    — ``Proposition.description`` keyed by
+                      ``Proposition.proposition_id``.
+    * ``"concern"`` — walk entity concerns; return
+                      ``"{entity.name}'s {polarity} that {prop_desc}"``.
+    * ``"belief"``  — parse ``ENT_X\\u2192ENT_Y`` and resolve entity names
+                      to ``"{hname}'s beliefs about {tname}"``.
+
+    Always returns a list of the same length as *ids*.  The raw id is
+    used as a fallback when resolution fails so callers can zip ids and
+    descriptions safely.  Wrapped in a broad ``except`` because
+    descriptions are best-effort — a missing description should never
+    surface as a runtime error.
+    """
+    if not ids or world_state is None:
+        return list(ids)
+    try:
+        if kind == "event":
+            evt_by_id = {e.id: e for e in world_state.events}
+            return [
+                (getattr(evt_by_id.get(eid), "description", None) or eid).strip() or eid
+                for eid in ids
+            ]
+        if kind == "prop":
+            prop_by_id = {
+                p.proposition_id: p for p in (world_state.propositions or [])
+            }
+            return [
+                (getattr(prop_by_id.get(pid), "description", None) or pid).strip() or pid
+                for pid in ids
+            ]
+        if kind == "concern":
+            ccn_index: Dict[str, Any] = {}
+            for entity in world_state.entities.values():
+                for c in (getattr(entity, "concerns", None) or []):
+                    ccn_index[c.concern_id] = (entity, c)
+            prop_by_id = {
+                p.proposition_id: p for p in (world_state.propositions or [])
+            }
+            out: List[str] = []
+            for cid in ids:
+                pair = ccn_index.get(cid)
+                if pair:
+                    entity, ccn = pair
+                    prop = prop_by_id.get(ccn.proposition_id)
+                    pdesc = (getattr(prop, "description", None) or "").strip()
+                    polarity = getattr(ccn, "polarity", "concern")
+                    if pdesc:
+                        out.append(f"{entity.name}'s {polarity} that {pdesc}")
+                    else:
+                        out.append(f"{entity.name}'s {polarity} ({cid})")
+                else:
+                    out.append(cid)
+            return out
+        if kind == "belief":
+            result: List[str] = []
+            for key in ids:
+                parts = key.split("\u2192", 1)
+                if len(parts) == 2:
+                    h = world_state.entities.get(parts[0])
+                    t = world_state.entities.get(parts[1])
+                    hname = getattr(h, "name", parts[0])
+                    tname = getattr(t, "name", parts[1])
+                    result.append(f"{hname}'s beliefs about {tname}")
+                else:
+                    result.append(key)
+            return result
+        return list(ids)
+    except Exception:  # noqa: BLE001 — descriptions are best-effort
+        return list(ids)
+
+
+def _annotate_ids(ids: List[str], descs: List[str]) -> str:
+    """Merge id and description lists into ``'ID ("desc")'`` strings.
+
+    When *descs* is a parallel list of the same length, each entry is
+    rendered as ``ID ("description")``; the raw id is used when the
+    description equals the id (i.e. fallback) or is empty.  Returns a
+    comma-joined string ready for insertion into a brief line.
+    """
+    if descs and len(descs) == len(ids):
+        return ", ".join(
+            f'{iid} ("{d}")' if d and d != iid else iid
+            for iid, d in zip(ids, descs)
+        )
+    return ", ".join(ids)
+
+
 def _format_threat_proximity(tp: ThreatProximity) -> str:
     lines = ["THREAT PROXIMITY:"]
     if tp.threat_event_id:
@@ -450,17 +638,26 @@ def _format_threat_proximity(tp: ThreatProximity) -> str:
     if getattr(tp, "affected_propositions", None):
         lines.append(
             "  AFFECTED PROPOSITIONS (truth flipped post-intervention): "
-            + ", ".join(tp.affected_propositions)
+            + _annotate_ids(
+                tp.affected_propositions,
+                getattr(tp, "affected_proposition_descriptions", None) or [],
+            )
         )
     if getattr(tp, "affected_beliefs", None):
         lines.append(
             "  AFFECTED BELIEFS (confidence shifted): "
-            + ", ".join(tp.affected_beliefs)
+            + _annotate_ids(
+                tp.affected_beliefs,
+                getattr(tp, "affected_belief_descriptions", None) or [],
+            )
         )
     if getattr(tp, "affected_concerns", None):
         lines.append(
             "  AFFECTED CONCERNS (satisfaction or salience shifted): "
-            + ", ".join(tp.affected_concerns)
+            + _annotate_ids(
+                tp.affected_concerns,
+                getattr(tp, "affected_concern_descriptions", None) or [],
+            )
         )
     _emit_downstream_cascade_lines(tp, lines)
     return "\n".join(lines)
@@ -704,13 +901,21 @@ def _emit_downstream_cascade_lines(branch: Any, lines: List[str]) -> None:
         lines.append(header)
         lines.extend(bullets)
     chain = list(getattr(branch, "causal_chain", None) or [])
+    chain_descs = list(getattr(branch, "causal_chain_descriptions", None) or [])
     if chain:
         any_section = True
         lines.append(
             "  CAUSAL CHAIN (events through which the surgery propagates "
             "\u2014 render each link as an on-page beat):"
         )
-        lines.append("    " + " \u2192 ".join(chain))
+        if chain_descs and len(chain_descs) == len(chain):
+            chain_rendered = " \u2192 ".join(
+                f'{eid} ("{d}")' if d and d != eid else eid
+                for eid, d in zip(chain, chain_descs)
+            )
+        else:
+            chain_rendered = " \u2192 ".join(chain)
+        lines.append(f"    {chain_rendered}")
     if any_section:
         lines.append(
             "  Rule: every cascade bullet above is a Rung-2/3 propagation "
@@ -784,17 +989,26 @@ def _format_intervention_branch(ib: InterventionBranch) -> str:
     if ib.affected_propositions:
         lines.append(
             "  AFFECTED PROPOSITIONS (truth flipped post-intervention): "
-            + ", ".join(ib.affected_propositions[:20])
+            + _annotate_ids(
+                ib.affected_propositions[:20],
+                (getattr(ib, "affected_proposition_descriptions", None) or [])[:20],
+            )
         )
     if ib.affected_beliefs:
         lines.append(
             "  AFFECTED BELIEFS (confidence shifted, holder\u2192target): "
-            + ", ".join(ib.affected_beliefs[:20])
+            + _annotate_ids(
+                ib.affected_beliefs[:20],
+                (getattr(ib, "affected_belief_descriptions", None) or [])[:20],
+            )
         )
     if ib.affected_concerns:
         lines.append(
             "  AFFECTED CONCERNS (satisfaction or salience shifted): "
-            + ", ".join(ib.affected_concerns[:20])
+            + _annotate_ids(
+                ib.affected_concerns[:20],
+                (getattr(ib, "affected_concern_descriptions", None) or [])[:20],
+            )
         )
     if ib.tragedy_form:
         lines.append(f"  tragedy_form: {ib.tragedy_form}")
@@ -1084,14 +1298,17 @@ def _format_counterfactual(cf: CounterfactualBranch) -> str:
     do_target = getattr(cf, "do_target", None)
     if do_target is not None:
         kind = getattr(do_target, "target_kind", None)
+        _gloss = getattr(cf, "do_target_gloss", None)
+        _gloss_str = f" (\"{_gloss}\")" if _gloss else ""
         if kind == "proposition":
             pid = getattr(do_target, "proposition_id", None)
             truth = getattr(do_target, "truth", None)
             if pid and truth is not None:
+                gloss_clause = f" — i.e. \"{_gloss}\"" if _gloss else ""
                 lines.append(
                     f"  RUNG-3 SURGERY KIND: proposition — render as "
                     f"\"if it had been the case that PROP {pid} = "
-                    f"{truth}\". This is an *ontic* "
+                    f"{truth}{gloss_clause}\". This is an *ontic* "
                     f"counterfactual: the world's truth was different."
                 )
         elif kind == "belief":
@@ -1099,9 +1316,10 @@ def _format_counterfactual(cf: CounterfactualBranch) -> str:
             pid = getattr(do_target, "proposition_id", None)
             conf = getattr(do_target, "confidence", None)
             if holder and pid and conf is not None:
+                gloss_clause = f" (\"{_gloss}\")" if _gloss else f"PROP {pid}"
                 lines.append(
                     f"  RUNG-3 SURGERY KIND: belief — render as \"had "
-                    f"{holder} believed otherwise about PROP {pid}\". "
+                    f"{holder} believed otherwise about {gloss_clause}\". "
                     f"This is an *epistemic* counterfactual: the world "
                     f"is unchanged but the holder's confidence was "
                     f"clamped to {conf}. Use hedged epistemic language "
@@ -1111,9 +1329,10 @@ def _format_counterfactual(cf: CounterfactualBranch) -> str:
             holder = getattr(do_target, "holder_id", None)
             ccn = getattr(do_target, "concern_id", None)
             if holder and ccn:
+                concern_label = _gloss or ccn
                 lines.append(
                     f"  RUNG-3 SURGERY KIND: concern — render as \"without "
-                    f"{holder}'s {ccn}\". This is a "
+                    f"{holder}'s {concern_label}\". This is a "
                     f"*motivational* counterfactual: the holder's utility "
                     f"landscape was different. Use desire/fear language "
                     f"(Roese commission/omission frame)."
@@ -1123,9 +1342,10 @@ def _format_counterfactual(cf: CounterfactualBranch) -> str:
             trait = getattr(do_target, "trait_name", None)
             value = getattr(do_target, "value", None)
             if holder and trait and value is not None:
+                trait_label = _gloss or f"{holder}'s {trait}"
                 lines.append(
                     f"  RUNG-3 SURGERY KIND: trait — render as \"had "
-                    f"{holder} been {trait}={value}\"."
+                    f"{trait_label} been {value}\"."
                 )
         elif kind == "event":
             evt_id = getattr(do_target, "event_id", None)
@@ -1134,23 +1354,32 @@ def _format_counterfactual(cf: CounterfactualBranch) -> str:
                 verb = "occurred" if occurred else "not occurred"
                 lines.append(
                     f"  RUNG-3 SURGERY KIND: event — render as \"had EVT "
-                    f"{evt_id} {verb}\"."
+                    f"{evt_id}{_gloss_str} {verb}\"."
                 )
 
     if cf.affected_propositions:
         lines.append(
             "  AFFECTED PROPOSITIONS (truth flipped factual\u2194counterfactual): "
-            + ", ".join(cf.affected_propositions)
+            + _annotate_ids(
+                cf.affected_propositions,
+                getattr(cf, "affected_proposition_descriptions", None) or [],
+            )
         )
     if cf.affected_beliefs:
         lines.append(
             "  AFFECTED BELIEFS (confidence shifted): "
-            + ", ".join(cf.affected_beliefs)
+            + _annotate_ids(
+                cf.affected_beliefs,
+                getattr(cf, "affected_belief_descriptions", None) or [],
+            )
         )
     if cf.affected_concerns:
         lines.append(
             "  AFFECTED CONCERNS (satisfaction flipped): "
-            + ", ".join(cf.affected_concerns)
+            + _annotate_ids(
+                cf.affected_concerns,
+                getattr(cf, "affected_concern_descriptions", None) or [],
+            )
         )
 
     if cf.tragedy_form:
@@ -1195,7 +1424,15 @@ def _format_causal_attribution(ca: CausalAttribution) -> str:
         f"  LOSS EVENT: {ca.loss_event_id} — {ca.loss_description}",
     ]
     if ca.causal_chain:
-        lines.append(f"  CAUSAL CHAIN: {' → '.join(ca.causal_chain)}")
+        descs = getattr(ca, "causal_chain_descriptions", None) or []
+        if descs and len(descs) == len(ca.causal_chain):
+            chain_parts = [
+                f"{eid} (\"{desc}\")" if desc else eid
+                for eid, desc in zip(ca.causal_chain, descs)
+            ]
+        else:
+            chain_parts = list(ca.causal_chain)
+        lines.append(f"  CAUSAL CHAIN: {' → '.join(chain_parts)}")
     return "\n".join(lines)
 
 
@@ -1331,6 +1568,12 @@ def _format_regret_profile(rp: RegretProfile) -> str:
             "register the averted darker outcome before the regret "
             "settles back in."
         )
+    _div_desc = getattr(rp, "divergence_description", None)
+    _loss_desc = getattr(rp, "loss_description", None)
+    if _div_desc:
+        lines.append(f"  Divergence event: \"{_div_desc}\"")
+    if _loss_desc:
+        lines.append(f"  Loss event: \"{_loss_desc}\"")
     return "\n".join(lines)
 
 
@@ -1348,6 +1591,9 @@ def _format_grief_profile(gp: GriefProfile) -> str:
     ]
     if gp.lost_entity_id:
         lines.append(f"  Lost: {gp.lost_entity_id}")
+    _grief_loss_desc = getattr(gp, "loss_description", None)
+    if _grief_loss_desc:
+        lines.append(f"  Loss event: \"{_grief_loss_desc}\"")
     stage_hints = {
         "denial": (
             "Render as numb routine — the focal moves through "
@@ -3600,6 +3846,7 @@ def build_intervention_brief(
         query.interventions, world_state,
     )
     _intervention_pov = _resolve_pov_policy(_intervention_targets)
+    _ib_primary_do_target = list(getattr(query, "do_targets", None) or [None])[0]
 
     return CreativeBrief(
         target_effect="intervention",
@@ -3656,17 +3903,28 @@ def build_intervention_brief(
         # surgery touched. Empty when the legacy event-only path
         # supplied the intervention.
         intervention_branch=InterventionBranch(
-            do_target=(
-                list(getattr(query, "do_targets", None) or [None])[0]
-            ),
+            do_target=_ib_primary_do_target,
+            do_target_gloss=_resolve_do_target_gloss(world_state, _ib_primary_do_target),
             do_targets=[
                 t.model_dump() if hasattr(t, "model_dump") else dict(t)
                 for t in (getattr(query, "do_targets", None) or [])
             ],
             affected_propositions=list(affected_propositions or []),
+            affected_proposition_descriptions=_resolve_affected_descriptions(
+                world_state, list(affected_propositions or []), "prop",
+            ),
             affected_beliefs=list(affected_beliefs or []),
+            affected_belief_descriptions=_resolve_affected_descriptions(
+                world_state, list(affected_beliefs or []), "belief",
+            ),
             affected_concerns=list(affected_concerns or []),
+            affected_concern_descriptions=_resolve_affected_descriptions(
+                world_state, list(affected_concerns or []), "concern",
+            ),
             causal_chain=list(causal_chain or []),
+            causal_chain_descriptions=_resolve_affected_descriptions(
+                world_state, list(causal_chain or []), "event",
+            ),
             **_build_downstream_cascade_payload(
                 mutations=mutations,
                 social_mutations=social_mutations,
@@ -3787,6 +4045,7 @@ def build_counterfactual_brief(
     # auditor's "RUNG-3 SURGERY KIND" / "AFFECTED PROPOSITIONS" lines
     # rendered nothing, leaving the shadow path uncovered.
     _hist_do_targets = list(getattr(query, "historical_do_targets", None) or [])
+    _cf_do_target = _hist_do_targets[0] if _hist_do_targets else None
     cf_branch = CounterfactualBranch(
         actual_outcome="Events as they occurred in the established record.",
         simulated_outcome=(
@@ -3794,11 +4053,24 @@ def build_counterfactual_brief(
             f"{query.historical_interventions}"
         ),
         divergence_event_id=hist_keys[0].split(".")[0] if hist_keys else None,
-        do_target=_hist_do_targets[0] if _hist_do_targets else None,
+        do_target=_cf_do_target,
+        do_target_gloss=_resolve_do_target_gloss(world_state, _cf_do_target),
         affected_propositions=list(affected_propositions or []),
+        affected_proposition_descriptions=_resolve_affected_descriptions(
+            world_state, list(affected_propositions or []), "prop",
+        ),
         affected_beliefs=list(affected_beliefs or []),
+        affected_belief_descriptions=_resolve_affected_descriptions(
+            world_state, list(affected_beliefs or []), "belief",
+        ),
         affected_concerns=list(affected_concerns or []),
+        affected_concern_descriptions=_resolve_affected_descriptions(
+            world_state, list(affected_concerns or []), "concern",
+        ),
         causal_chain=list(causal_chain or []),
+        causal_chain_descriptions=_resolve_affected_descriptions(
+            world_state, list(causal_chain or []), "event",
+        ),
         **_build_downstream_cascade_payload(
             mutations=mutations,
             social_mutations=social_mutations,

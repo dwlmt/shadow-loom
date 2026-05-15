@@ -661,7 +661,7 @@ def answer_question(
     *,
     query_type: str = "general",
     require_proof: bool = False,
-    world_state: Optional[WorldStateV1] = None,  # noqa: ARG001 — reserved
+    world_state: Optional[WorldStateV1] = None,
     config: Optional[GenerationConfig] = None,
     branch_world_id: Literal["factual", "shadow"] = "factual",
     branch_label: Optional[str] = None,
@@ -739,6 +739,16 @@ def answer_question(
     # Caller is expected to forward these from the rung-2 / rung-3
     # ``calculate_narrative_physics`` result dict (Phase-7 keys).
     if query_type in ("intervention", "counterfactual"):
+        from shadow_loom.generation import (
+            _resolve_affected_descriptions,
+            _annotate_ids,
+            _format_trait_mutation_lines,
+            _format_social_mutation_lines,
+            _format_proposition_mutation_lines,
+            _format_belief_mutation_lines,
+            _format_concern_mutation_lines,
+            _format_blocked_propagation_lines,
+        )
         rung_label = "RUNG-2" if query_type == "intervention" else "RUNG-3"
         if do_targets:
             user_msg_parts.extend([
@@ -755,19 +765,22 @@ def answer_question(
                 )
                 user_msg_parts.append(f"  - {kind}: {fields}")
         if affected_propositions:
+            _prop_descs = _resolve_affected_descriptions(world_state, affected_propositions, "prop") if world_state else []
             user_msg_parts.append(
                 "AFFECTED PROPOSITIONS (truth flipped under the surgery): "
-                + ", ".join(affected_propositions)
+                + _annotate_ids(affected_propositions, _prop_descs)
             )
         if affected_beliefs:
+            _belief_descs = _resolve_affected_descriptions(world_state, affected_beliefs, "belief") if world_state else []
             user_msg_parts.append(
                 "AFFECTED BELIEFS (confidence shifted under the surgery): "
-                + ", ".join(affected_beliefs)
+                + _annotate_ids(affected_beliefs, _belief_descs)
             )
         if affected_concerns:
+            _concern_descs = _resolve_affected_descriptions(world_state, affected_concerns, "concern") if world_state else []
             user_msg_parts.append(
                 "AFFECTED CONCERNS (satisfaction or salience shifted): "
-                + ", ".join(affected_concerns)
+                + _annotate_ids(affected_concerns, _concern_descs)
             )
         if tragedy_form:
             user_msg_parts.append(
@@ -779,14 +792,6 @@ def answer_question(
         # than guess "this surgery would affect X". Without this the
         # AnswerCard.answer landed short and missed cascading effects
         # the engine had already computed.
-        from shadow_loom.generation import (
-            _format_trait_mutation_lines,
-            _format_social_mutation_lines,
-            _format_proposition_mutation_lines,
-            _format_belief_mutation_lines,
-            _format_concern_mutation_lines,
-            _format_blocked_propagation_lines,
-        )
         cascade_sections = [
             ("DOWNSTREAM TRAIT CASCADES",
              _format_trait_mutation_lines(mutations)),
@@ -806,9 +811,16 @@ def answer_question(
                 user_msg_parts.append(f"{header}:")
                 user_msg_parts.extend(bullets)
         if causal_chain:
+            _chain_descs = _resolve_affected_descriptions(world_state, causal_chain, "event") if world_state else []
             user_msg_parts.append(
                 "CAUSAL CHAIN (events through which the surgery "
-                "propagates): " + " \u2192 ".join(causal_chain)
+                "propagates): " + " \u2192 ".join(
+                    f'{eid} ("{d}")' if d and d != eid else eid
+                    for eid, d in zip(
+                        causal_chain,
+                        _chain_descs if len(_chain_descs) == len(causal_chain) else causal_chain,
+                    )
+                )
             )
     if branch_world_id == "shadow" and factual_contrast_summary:
         user_msg_parts.extend([

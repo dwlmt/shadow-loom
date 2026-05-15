@@ -288,6 +288,21 @@ class CounterfactualBranch(BaseModel):
             "DoTrait). Lets the renderer pick rung-aware phrasing."
         ),
     )
+    do_target_gloss: Optional[str] = Field(
+        default=None,
+        description=(
+            "Human-readable description of what ``do_target`` refers "
+            "to in the world (e.g. the EventNode.description, the "
+            "Proposition.description, the Concern.description). "
+            "Populated by the brief builder by resolving the "
+            "``do_target`` id against ``WorldStateV1`` so the renderer "
+            "sees the actual referent rather than only its opaque id. "
+            "Without this gloss the renderer falls back to whatever "
+            "adjacent context the SCENE CONTEXT block happens to "
+            "carry, which can yield thematically-plausible but "
+            "factually-wrong confabulations of the surgery target."
+        ),
+    )
     affected_propositions: List[str] = Field(
         default_factory=list,
         description=(
@@ -307,6 +322,35 @@ class CounterfactualBranch(BaseModel):
         description=(
             "CCN_ ids whose desire-satisfaction polarity flipped "
             "between factual and counterfactual."
+        ),
+    )
+    # --- Parallel human-readable description lists ---
+    # Populated at brief-build time by resolving the raw id lists
+    # above against WorldStateV1. Without these the renderer sees
+    # only opaque PROP_/CCN_/ENT_ ids and may confabulate.
+    affected_proposition_descriptions: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Proposition.description strings parallel to "
+            "``affected_propositions`` (same order). Populated at "
+            "brief-build time so the renderer sees the natural-language "
+            "referent of each PROP_ id."
+        ),
+    )
+    affected_belief_descriptions: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Human-readable holder\u2192target labels parallel to "
+            "``affected_beliefs`` (same order). "
+            "E.g. \"Ken\u2019s beliefs about Mrs Coady\"."
+        ),
+    )
+    affected_concern_descriptions: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Human-readable concern labels parallel to "
+            "``affected_concerns`` (same order). "
+            "E.g. \"Ken\u2019s fear that Mrs Coady is alive\"."
         ),
     )
     # --- Downstream consequence cascades (Phase-10: rich brief) ---
@@ -368,6 +412,14 @@ class CounterfactualBranch(BaseModel):
             "on its way to the visible outcome \u2014 the prose must "
             "render each link as an on-page beat, not skip from "
             "surgery target to terminal consequence."
+        ),
+    )
+    causal_chain_descriptions: List[str] = Field(
+        default_factory=list,
+        description=(
+            "EventNode.description strings parallel to "
+            "``causal_chain`` (same order). Annotates each EVT_ id in "
+            "the chain so the renderer sees the actual event referent."
         ),
     )
     tragedy_form: Optional[Literal["tragic", "comic", "ironic", "neutral"]] = Field(
@@ -453,6 +505,28 @@ class ThreatProximity(BaseModel):
             "whose salience changed under the intervention."
         ),
     )
+    # --- Parallel human-readable description lists ---
+    affected_proposition_descriptions: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Proposition.description strings parallel to "
+            "``affected_propositions`` (same order)."
+        ),
+    )
+    affected_belief_descriptions: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Human-readable holder\u2192target labels parallel to "
+            "``affected_beliefs`` (same order)."
+        ),
+    )
+    affected_concern_descriptions: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Human-readable concern labels parallel to "
+            "``affected_concerns`` (same order)."
+        ),
+    )
     # --- Downstream consequence cascades (Phase-10: rich brief) ---
     # See :class:`CounterfactualBranch` for field semantics; mirrored
     # here so an affective directive carrying Rung-2 surgery context
@@ -464,6 +538,13 @@ class ThreatProximity(BaseModel):
     concern_cascade_detail: List[str] = Field(default_factory=list)
     blocked_propagations_detail: List[str] = Field(default_factory=list)
     causal_chain: List[str] = Field(default_factory=list)
+    causal_chain_descriptions: List[str] = Field(
+        default_factory=list,
+        description=(
+            "EventNode.description strings parallel to "
+            "``causal_chain`` (same order)."
+        ),
+    )
 
 
 class InterventionBranch(BaseModel):
@@ -490,6 +571,15 @@ class InterventionBranch(BaseModel):
             "(DoEvent / DoProposition / DoBelief / DoConcern / "
             "DoTrait / DoWorldTrait). ``None`` when the legacy "
             "event-only path supplied the intervention."
+        ),
+    )
+    do_target_gloss: Optional[str] = Field(
+        default=None,
+        description=(
+            "Human-readable description of what ``do_target`` refers "
+            "to in the world. Mirrors the same field on "
+            ":class:`CounterfactualBranch` so the renderer sees the "
+            "actual referent of the Rung-2 surgery, not just its id."
         ),
     )
     do_targets: List[Dict[str, Any]] = Field(
@@ -522,6 +612,28 @@ class InterventionBranch(BaseModel):
             "whose salience changed under the intervention."
         ),
     )
+    # --- Parallel human-readable description lists ---
+    affected_proposition_descriptions: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Proposition.description strings parallel to "
+            "``affected_propositions`` (same order)."
+        ),
+    )
+    affected_belief_descriptions: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Human-readable holder\u2192target labels parallel to "
+            "``affected_beliefs`` (same order)."
+        ),
+    )
+    affected_concern_descriptions: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Human-readable concern labels parallel to "
+            "``affected_concerns`` (same order)."
+        ),
+    )
     # --- Downstream consequence cascades (Phase-10: rich brief) ---
     # Mirror of the Rung-3 fields on :class:`CounterfactualBranch` so
     # the Rung-2 sandbox brief surfaces the engine's actual cascade,
@@ -534,6 +646,13 @@ class InterventionBranch(BaseModel):
     concern_cascade_detail: List[str] = Field(default_factory=list)
     blocked_propagations_detail: List[str] = Field(default_factory=list)
     causal_chain: List[str] = Field(default_factory=list)
+    causal_chain_descriptions: List[str] = Field(
+        default_factory=list,
+        description=(
+            "EventNode.description strings parallel to "
+            "``causal_chain`` (same order)."
+        ),
+    )
     tragedy_form: Optional[Literal["tragic", "comic", "ironic", "neutral"]] = Field(
         default=None,
         description=(
@@ -848,6 +967,17 @@ class CausalAttribution(BaseModel):
         default_factory=list,
         description="Ordered list of event IDs from perpetrator action to loss.",
     )
+    causal_chain_descriptions: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Human-readable description of each event in ``causal_chain``, "
+            "in the same order. Populated by the brief builder by resolving "
+            "each id against ``WorldStateV1.events``. Empty entries (ids that "
+            "could not be resolved) are left as empty strings. Surfaces so "
+            "the renderer sees what each step in the causal chain *was*, "
+            "not just its opaque id."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1005,7 +1135,23 @@ class RegretProfile(BaseModel):
         ),
     )
     divergence_event_id: Optional[str] = None
+    divergence_description: Optional[str] = Field(
+        default=None,
+        description=(
+            "Human-readable description of the divergence event — "
+            "the choice the focal made (or failed to make) that produced "
+            "the regret. Resolved from ``WorldStateV1`` at build time so "
+            "the renderer knows *what* the unchosen path branched from."
+        ),
+    )
     loss_event_id: Optional[str] = None
+    loss_description: Optional[str] = Field(
+        default=None,
+        description=(
+            "Human-readable description of the loss event. Resolved from "
+            "``WorldStateV1`` at build time."
+        ),
+    )
     mode: str = Field(
         default="none",
         description=(
@@ -1030,6 +1176,13 @@ class GriefProfile(BaseModel):
         ),
     )
     loss_event_id: Optional[str] = None
+    loss_description: Optional[str] = Field(
+        default=None,
+        description=(
+            "Human-readable description of the loss event. Resolved from "
+            "``WorldStateV1`` at build time."
+        ),
+    )
     lost_entity_id: Optional[str] = None
     stage: str = Field(
         default="none",
@@ -7217,6 +7370,20 @@ class DirectiveAssembler:
 
         if which == "regret":
             ap = compute_regret_appraisal(bs, focal, ft_now)
+            _divergence_desc: Optional[str] = None
+            _loss_desc: Optional[str] = None
+            if ap.divergence_event_id:
+                _div_evt = next(
+                    (e for e in self.world_state.events if e.id == ap.divergence_event_id),
+                    None,
+                )
+                _divergence_desc = _div_evt.description if _div_evt else None
+            if ap.loss_event_id:
+                _loss_evt = next(
+                    (e for e in self.world_state.events if e.id == ap.loss_event_id),
+                    None,
+                )
+                _loss_desc = _loss_evt.description if _loss_evt else None
             return RegretProfile(
                 agentive_regret_score=ap.agentive_regret_score,
                 disappointment_score=ap.disappointment_score,
@@ -7224,15 +7391,25 @@ class DirectiveAssembler:
                 omission_score=ap.omission_score,
                 downward_relief_score=ap.downward_relief_score,
                 divergence_event_id=ap.divergence_event_id,
+                divergence_description=_divergence_desc,
                 loss_event_id=ap.loss_event_id,
+                loss_description=_loss_desc,
                 mode=ap.mode,
             )
 
         if which == "grief":
             ap = compute_grief_appraisal(bs, focal, ft_now)
+            _grief_loss_desc: Optional[str] = None
+            if ap.loss_event_id:
+                _grief_loss_evt = next(
+                    (e for e in self.world_state.events if e.id == ap.loss_event_id),
+                    None,
+                )
+                _grief_loss_desc = _grief_loss_evt.description if _grief_loss_evt else None
             return GriefProfile(
                 coupling_strength=ap.coupling_strength,
                 loss_event_id=ap.loss_event_id,
+                loss_description=_grief_loss_desc,
                 lost_entity_id=ap.lost_entity_id,
                 stage=ap.stage,
                 unfinished_concern_count=ap.unfinished_concern_count,
@@ -7458,8 +7635,8 @@ class DirectiveAssembler:
         return CounterfactualBranch(
             actual_outcome=actual_evt.description,
             simulated_outcome=(
-                f"If {divergence_evt.id} had gone differently, "
-                f"the outcome '{actual_evt.id}' might have been averted."
+                f"If \"{divergence_evt.description}\" had gone differently, "
+                f"the outcome \"{actual_evt.description}\" might have been averted."
                 if divergence_evt
                 else "An alternate choice might have prevented this outcome."
             ),
@@ -7522,6 +7699,7 @@ class DirectiveAssembler:
                     loss_event_id=loss_evt.id,
                     loss_description=loss_evt.description,
                     causal_chain=[loss_evt.id],
+                    causal_chain_descriptions=[loss_evt.description],
                 )
             return None
 
@@ -7574,12 +7752,18 @@ class DirectiveAssembler:
             return None
 
         perp_ent = self.world_state.entities.get(perpetrator_id)
+        _evt_by_id = {e.id: e for e in self.world_state.events}
+        _chain_descs = [
+            _evt_by_id[eid].description if eid in _evt_by_id else ""
+            for eid in causal_chain
+        ]
         return CausalAttribution(
             perpetrator_id=perpetrator_id,
             perpetrator_name=perp_ent.name if perp_ent else None,
             loss_event_id=loss_evt.id,
             loss_description=loss_evt.description,
             causal_chain=causal_chain,
+            causal_chain_descriptions=_chain_descs,
         )
 
     def _build_entanglement_pairs(
