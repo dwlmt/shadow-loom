@@ -279,3 +279,106 @@ class TestMergeIntegrityPass:
         assert latest is not None
         assert latest.events_with_dangling_refs == []
         assert "ENT_NEW_GHOST" in new_vwm.current.entities
+
+
+# ---------------------------------------------------------------
+# Reuse-first / unjustified_introduction deterministic check
+# ---------------------------------------------------------------
+
+class TestUnjustifiedIntroductionAudit:
+
+    def test_empty_justification_flagged_critical(self):
+        """An IntroducedEntitySpec with whitespace ``justification`` should
+        fire a ``critical`` ``unjustified_introduction`` violation."""
+        from shadow_loom.auditor import _unjustified_introduction_violations
+
+        ws = macbeth_ws
+        loc_id = next(iter(ws.locations))
+        intro = IntroducedElements(entities=[IntroducedEntitySpec(
+            id="ENT_NEW_FOO", name="A foo",
+            justification="   ",
+            located_in=loc_id,
+        )])
+        viols = _unjustified_introduction_violations(intro, ws)
+        assert any(
+            v.violation_type == "unjustified_introduction"
+            and v.severity == "critical"
+            and "ENT_NEW_FOO" in v.description
+            for v in viols
+        )
+
+    def test_boilerplate_justification_flagged_major(self):
+        """Generic phrasing ('needed for the scene') with no reuse-first
+        reasoning should fire a ``major`` violation."""
+        from shadow_loom.auditor import _unjustified_introduction_violations
+
+        ws = macbeth_ws
+        loc_id = next(iter(ws.locations))
+        intro = IntroducedElements(entities=[IntroducedEntitySpec(
+            id="ENT_NEW_BAR", name="A bar",
+            justification="Needed for the scene.",
+            located_in=loc_id,
+        )])
+        viols = _unjustified_introduction_violations(intro, ws)
+        assert any(
+            v.violation_type == "unjustified_introduction"
+            and v.severity == "major"
+            and "ENT_NEW_BAR" in v.description
+            for v in viols
+        )
+
+    def test_concrete_justification_passes(self):
+        """A justification that names an existing candidate should NOT
+        be flagged."""
+        from shadow_loom.auditor import _unjustified_introduction_violations
+
+        ws = macbeth_ws
+        loc_id = next(iter(ws.locations))
+        intro = IntroducedElements(entities=[IntroducedEntitySpec(
+            id="ENT_NEW_BAZ", name="A baz",
+            justification=(
+                "Considered ENT_BANQUO but their reconstructed location "
+                "at this fabula tick is the courtyard, not the chamber "
+                "the scene requires."
+            ),
+            located_in=loc_id,
+        )])
+        viols = _unjustified_introduction_violations(intro, ws)
+        assert not any(
+            v.violation_type == "unjustified_introduction"
+            and "ENT_NEW_BAZ" in v.description
+            for v in viols
+        )
+
+    def test_name_collision_with_existing_entity_flagged(self):
+        """Reusing the display name of an existing entity for a new id
+        should fire a ``critical`` violation."""
+        from shadow_loom.auditor import _unjustified_introduction_violations
+
+        ws = macbeth_ws
+        # Pick a real entity name from the canonical Macbeth world.
+        existing_name = next(iter(ws.entities.values())).name
+        loc_id = next(iter(ws.locations))
+        intro = IntroducedElements(entities=[IntroducedEntitySpec(
+            id="ENT_NEW_DOPPELGANGER", name=existing_name,
+            justification=(
+                "Considered ENT_OTHER but the role mismatched; minting "
+                "a fresh entity for the prophecy."
+            ),
+            located_in=loc_id,
+        )])
+        viols = _unjustified_introduction_violations(intro, ws)
+        assert any(
+            v.violation_type == "unjustified_introduction"
+            and v.severity == "critical"
+            and existing_name in v.evidence_quote
+            for v in viols
+        )
+
+    def test_empty_introductions_no_violations(self):
+        from shadow_loom.auditor import _unjustified_introduction_violations
+
+        viols = _unjustified_introduction_violations(IntroducedElements(), macbeth_ws)
+        assert viols == []
+        viols = _unjustified_introduction_violations(None, macbeth_ws)
+        assert viols == []

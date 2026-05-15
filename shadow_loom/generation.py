@@ -2446,6 +2446,38 @@ def assemble_rendering_prompt(
     sections.append(_format_scene_context(brief.scene_context))
     sections.append("")
 
+    # === Reuse-first policy (HARD) ===
+    # The renderer MAY introduce new top-level elements (entities,
+    # locations, objects, world traits, channels, propositions,
+    # concerns, events) when the constraints or the user's request
+    # require them — but the auditor enforces a reuse-first policy.
+    # Surfaced inline here (not just in ``prompts/generation.md``) so
+    # the renderer reads the rule immediately after the inventory it
+    # is meant to scan, not buried in the system prompt.
+    sections.append(
+        "=== REUSE-FIRST POLICY (HARD — applies to every kind: "
+        "entities, locations, objects, world traits, channels, "
+        "propositions, concerns, events) ==="
+    )
+    sections.append(
+        "Before introducing ANY new element, scan the SCENE CONTEXT "
+        "above for an existing ENT_/LOC_/OBJ_/WT_/CHN_/PROP_/CCN_ "
+        "that fits the role, place, object, capability, or proposition "
+        "the constraints demand. Reuse it. Only declare a new element "
+        "in ``introduced_elements`` when no existing element matches. "
+        "When you do declare one, the ``justification`` field MUST "
+        "name the existing candidate(s) you considered (by id or "
+        "display name) and explain why each was insufficient (e.g. "
+        "\"considered ENT_FOO but their reconstructed location at "
+        "this fabula tick is the bedchamber, not the great hall\"). "
+        "Empty, generic, or boilerplate justifications "
+        "(\"needed for the scene\", \"required by the prompt\", \"to "
+        "advance the plot\") are a hard ``unjustified_introduction`` "
+        "audit violation. Reusing an existing display name for a new "
+        "id is also a hard violation — disambiguate or reuse."
+    )
+    sections.append("")
+
     # === Mathematical Constraints (the guardrails) ===
     sections.append("=== CONSTRAINTS (Step 9 — Semantic Prompt Injection) ===")
     sections.append(_format_constraints(brief.constraints))

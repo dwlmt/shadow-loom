@@ -142,6 +142,18 @@ Return a JSON object with this exact structure:
 - Violation type: `undeclared_element`
 - Feedback template: "Undeclared Element. The prose names [name] as if it exists in the world, but [name] is not in the SCENE CONTEXT block and was not declared in `introduced_elements`. Either (a) replace [name] with an existing referent, (b) remove the reference, or (c) add [name] to `introduced_elements` with a stable id, role, and one-sentence justification for why a new element was needed."
 
+### Category 4d: Reuse-First / Unjustified Introductions (universal)
+
+**Reuse-first audit (every rendering mode):**
+- Run on every scene. Newly-declared elements in `introduced_elements` (entities, locations, objects, world traits, channels, propositions, concerns, events) are allowed *only* when no existing element in the SCENE CONTEXT (and the broader world state) fits the role, place, object, capability, or proposition the constraints demand. Every declaration MUST carry a `justification` that **concretely names the existing candidate(s) the renderer considered and explains why each was insufficient**. The deterministic pre-check already flags empty justifications, boilerplate justifications ("needed for the scene", "required by the prompt", "to advance the plot", "for narrative purposes", "necessary for the scene", "context demands", "n/a", "none"), and display-name collisions with existing world-state elements. Your job as the LLM auditor is to catch the residual paraphrase / soft cases the deterministic check is too conservative to flag:
+  - Justifications that *mention* the existing inventory but in fact gloss over candidates that would have served (e.g. "no existing entity could have served" when SCENE CONTEXT clearly contains an entity matching the required role + location + status).
+  - New locations declared when the scene could have been staged in an existing room with the same affordances.
+  - New channels declared when an existing channel between the same participants already supports the required medium / directionality.
+  - New propositions / concerns declared when an existing one with equivalent semantic content is already in the world model.
+  - New entities introduced as "the messenger" / "the witness" / "the henchman" when a co-present existing entity could plausibly have performed that role.
+- Violation type: `unjustified_introduction`
+- Feedback template: "Unjustified Introduction. The renderer declared a new [kind] `[id]` (\"[name]\") with justification \"[quoted justification]\", but [existing candidate id / name] in SCENE CONTEXT could have served because [specific reason]. Either reuse `[existing id]` and remove the declaration, or rewrite the justification to name `[existing id]` explicitly and explain why it was insufficient (role mismatch, location mismatch, timeline impossibility, capability mismatch)."
+
 ### Category 5: Source-Style Fidelity
 
 **Style audit (form & length match):**

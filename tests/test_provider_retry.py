@@ -88,9 +88,11 @@ def _patch_openai_chat_model_request():
 
 
 class TestProviderRoutingFallback:
-    def test_drops_nitro_suffix_after_half_the_budget(self):
-        """A persistent malformed-completion stream eventually retries
-        against the bare model id (no ``:nitro``)."""
+    def test_drops_nitro_suffix_eagerly_after_first_failure(self):
+        """A persistent malformed-completion stream falls back to the
+        bare model id on the second attempt onward \u2014 a stuck
+        provider rarely recovers within one backoff window, so we
+        re-shop across all healthy providers as soon as possible."""
         # Script: every attempt fails. The retry loop should still
         # exhaust _PROVIDER_RETRY_ATTEMPTS and then re-raise.
         script = [_malformed_completion_error()] * _PROVIDER_RETRY_ATTEMPTS
@@ -99,16 +101,11 @@ class TestProviderRoutingFallback:
             asyncio.run(h.request())
         # All attempts ran.
         assert len(h._calls) == _PROVIDER_RETRY_ATTEMPTS
-        # First half stayed on the suffixed model id.
-        fallback_after = max(1, _PROVIDER_RETRY_ATTEMPTS // 2)
+        # First attempt stayed on the suffixed model id.
+        assert h._calls[0] == "qwen/qwen3-30b-a3b:nitro"
+        # Every subsequent attempt hit the bare model id.
         assert all(
-            name == "qwen/qwen3-30b-a3b:nitro"
-            for name in h._calls[:fallback_after]
-        )
-        # Remaining attempts hit the bare model id (suffix dropped).
-        assert all(
-            name == "qwen/qwen3-30b-a3b"
-            for name in h._calls[fallback_after:]
+            name == "qwen/qwen3-30b-a3b" for name in h._calls[1:]
         )
 
     def test_restores_original_model_name_on_exit(self):
@@ -132,8 +129,8 @@ class TestProviderRoutingFallback:
         h = _Harness("anthropic/claude-3.5-sonnet:floor", script)
         with pytest.raises(UnexpectedModelBehavior):
             asyncio.run(h.request())
-        fallback_after = max(1, _PROVIDER_RETRY_ATTEMPTS // 2)
-        assert h._calls[fallback_after] == "anthropic/claude-3.5-sonnet"
+        # Every attempt after the first hit the bare model id.
+        assert h._calls[1] == "anthropic/claude-3.5-sonnet"
 
     def test_no_suffix_means_no_fallback_swap(self):
         """Bare model ids retry as-is — no rewrite on later attempts."""

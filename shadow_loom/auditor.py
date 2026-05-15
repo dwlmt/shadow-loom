@@ -422,6 +422,26 @@ class AuditViolation(BaseModel):
         "event_location_mismatch",
         "event_copresence_violation",
         "event_copresence_omission",
+        # Reuse-first / justification check on per-cycle introductions.
+        # The renderer (and the user via ``query.introduce``) MAY mint
+        # new top-level world elements (entities, locations, objects,
+        # world traits, channels, propositions, concerns, events) when
+        # the constraints or user request demand them, but every
+        # introduction MUST carry a *concrete* ``justification`` that
+        # names the existing candidates considered and why each was
+        # insufficient. This violation fires when:
+        #   * ``justification`` is empty / whitespace, OR
+        #   * ``justification`` is generic boilerplate ("needed for
+        #     the scene", "required by the prompt", "to advance the
+        #     plot", "for narrative purposes", etc.), OR
+        #   * an existing element with the same display name is
+        #     already in ``WorldStateV1`` (the renderer is reinventing
+        #     a referent that already exists).
+        # Soft on the boilerplate axis (``major``) because the LLM
+        # auditor remains responsible for paraphrase cases; hard
+        # (``critical``) when the justification is missing entirely or
+        # the name collides with an existing element.
+        "unjustified_introduction",
     ]
     severity: Literal["critical", "major", "minor"]
     description: str = Field(
@@ -3019,6 +3039,195 @@ def _undeclared_element_violations(
     return issues
 
 
+# ----------------------------------------------------------------------
+# Reuse-first / justification deterministic check
+# ----------------------------------------------------------------------
+
+# Boilerplate phrases that do NOT count as a real justification. Kept
+# small and high-precision so the LLM auditor still owns the paraphrase
+# cases; this list catches the most common renderer evasions.
+_BOILERPLATE_JUSTIFICATIONS: tuple[str, ...] = (
+    "needed for the scene",
+    "needed for this scene",
+    "required by the prompt",
+    "required by the brief",
+    "required by the constraints",
+    "to advance the plot",
+    "for narrative purposes",
+    "for dramatic purposes",
+    "for the story",
+    "necessary for the scene",
+    "necessary for the story",
+    "context demands",
+    "the scene calls for",
+    "the prompt calls for",
+    "n/a",
+    "none",
+    "no existing element fits",  # the *empty* claim with no reasoning
+)
+
+# Words / phrases the renderer is expected to use when actually
+# articulating reuse-first reasoning ("no existing X because Y",
+# "considered ENT_FOO but ...", "the existing locations are all
+# indoors and the scene needs an outdoor ..."). Presence of any one
+# token is treated as a weak signal that the justification engaged
+# with the existing inventory.
+_JUSTIFICATION_REUSE_TOKENS: tuple[str, ...] = (
+    "existing", "considered", "candidate", "reused",
+    "instead of", "rather than", "no ", "none of",
+    "ent_", "loc_", "obj_", "wt_", "chn_", "prop_", "ccn_",
+)
+
+
+def _unjustified_introduction_violations(
+    introduced: Optional[IntroducedElements],
+    world_state: Optional[WorldStateV1],
+) -> List[AuditViolation]:
+    """Deterministic check that every per-cycle introduction carries a
+    concrete reuse-first justification.
+
+    Three failure modes are flagged:
+
+      1. **Empty justification** (``critical``) — the spec's
+         ``justification`` field is missing or whitespace.
+      2. **Boilerplate justification** (``major``) — the
+         justification matches one of ``_BOILERPLATE_JUSTIFICATIONS``
+         AND contains none of ``_JUSTIFICATION_REUSE_TOKENS``. The
+         renderer wrote a generic line that does not engage with the
+         existing world inventory.
+      3. **Name collision with an existing element** (``critical``)
+         — the spec's ``name`` matches (case-insensitive) an
+         existing entity / location / object / world-trait / channel
+         in ``world_state``. The renderer should have reused the
+         existing element instead of minting a duplicate id.
+
+    The check runs only when ``introduced`` is non-empty. When
+    ``world_state`` is ``None`` the name-collision pass is skipped
+    (the boilerplate / empty passes still run).
+    """
+    if introduced is None or introduced.is_empty():
+        return []
+
+    issues: List[AuditViolation] = []
+
+    # ---------- existing names (lower-cased) for collision pass ----------
+    existing_names_lower: set[str] = set()
+    if world_state is not None:
+        for attr in ("entities", "locations", "objects", "world_traits", "channels"):
+            coll = getattr(world_state, attr, None) or {}
+            if isinstance(coll, dict):
+                nodes = coll.values()
+            else:
+                nodes = coll
+            for node in nodes:
+                v = getattr(node, "name", None)
+                if isinstance(v, str) and v.strip():
+                    existing_names_lower.add(v.strip().lower())
+
+    # The seven named-spec collections; events are excluded from the
+    # name-collision pass (their ``name`` carries an event description,
+    # not a noun referent).
+    named_kinds: tuple[tuple[str, list, bool], ...] = (
+        ("entity", introduced.entities, True),
+        ("location", introduced.locations, True),
+        ("object", introduced.objects, True),
+        ("world_trait", introduced.world_traits, True),
+        ("channel", introduced.channels, True),
+        ("proposition", introduced.propositions, False),
+        ("concern", introduced.concerns, False),
+        ("event", introduced.events, False),
+    )
+
+    for kind, specs, check_name_collision in named_kinds:
+        for spec in specs:
+            sid = getattr(spec, "id", "<missing-id>")
+            sname = getattr(spec, "name", "") or ""
+            justification = (getattr(spec, "justification", "") or "").strip()
+
+            # 1. Empty / whitespace.
+            if not justification:
+                issues.append(AuditViolation(
+                    violation_type="unjustified_introduction",
+                    severity="critical",
+                    description=(
+                        f"Introduced {kind} `{sid}` (\"{sname}\") has an "
+                        f"empty ``justification``. Every per-cycle "
+                        f"introduction must explain why no existing "
+                        f"world-model element fits."
+                    ),
+                    evidence_quote="",
+                    feedback=(
+                        f"Populate ``introduced_elements.{kind}s[id={sid}]"
+                        f".justification`` with a one-sentence rationale "
+                        f"that names which existing {kind}(s) you "
+                        f"considered and why each was insufficient. If "
+                        f"an existing {kind} would have served, reuse "
+                        f"its id and remove this declaration."
+                    ),
+                ))
+                continue
+
+            # 2. Boilerplate phrasing with no reuse-first reasoning.
+            j_lower = justification.lower()
+            looks_boilerplate = any(
+                phrase in j_lower for phrase in _BOILERPLATE_JUSTIFICATIONS
+            )
+            engages_reuse = any(
+                tok in j_lower for tok in _JUSTIFICATION_REUSE_TOKENS
+            )
+            if looks_boilerplate and not engages_reuse:
+                issues.append(AuditViolation(
+                    violation_type="unjustified_introduction",
+                    severity="major",
+                    description=(
+                        f"Introduced {kind} `{sid}` (\"{sname}\") has a "
+                        f"boilerplate ``justification`` (\"{justification}\") "
+                        f"that does not engage with the existing world "
+                        f"inventory. Reuse-first policy requires the "
+                        f"renderer to name the existing candidates it "
+                        f"considered."
+                    ),
+                    evidence_quote=justification,
+                    feedback=(
+                        f"Rewrite the justification for `{sid}` to name "
+                        f"specific existing {kind}(s) you considered (by "
+                        f"id or display name) and explain why each was "
+                        f"insufficient — e.g. \"considered ENT_FOO but "
+                        f"their location at fabula_time conflicts\", or "
+                        f"\"no existing {kind} carries the required role\"."
+                    ),
+                ))
+
+            # 3. Name collision with an existing element.
+            if (
+                check_name_collision
+                and sname.strip()
+                and sname.strip().lower() in existing_names_lower
+            ):
+                issues.append(AuditViolation(
+                    violation_type="unjustified_introduction",
+                    severity="critical",
+                    description=(
+                        f"Introduced {kind} `{sid}` reuses the display "
+                        f"name \"{sname}\" of an existing {kind} already "
+                        f"in the world state. Reuse the existing id "
+                        f"instead of minting a duplicate."
+                    ),
+                    evidence_quote=sname,
+                    feedback=(
+                        f"Remove the ``introduced_elements.{kind}s`` "
+                        f"entry for `{sid}` and refer to the existing "
+                        f"{kind} by its canonical id in the prose. If "
+                        f"the new element is *different* from the "
+                        f"existing one despite sharing the name, "
+                        f"disambiguate the display name (e.g. "
+                        f"\"{sname} the Younger\")."
+                    ),
+                ))
+
+    return issues
+
+
 def _event_copresence_violations(
     prose: str,
     brief: CreativeBrief,
@@ -3317,6 +3526,25 @@ def run_audit(
         audit.audit_summary = (
             f"{audit.audit_summary} [+{len(undeclared)} undeclared "
             f"element(s)]"
+        ).strip()
+
+    # Deterministic reuse-first / justification check on every
+    # per-cycle introduction. Flags empty or boilerplate
+    # ``justification`` fields and display-name collisions with
+    # existing world-state elements. The renderer (and the user via
+    # ``query.introduce``) are free to mint new top-level elements,
+    # but every introduction must concretely justify why no existing
+    # element fit \u2014 see ``IntroducedElements`` and
+    # ``prompts/auditor.md`` Category 4c.
+    unjustified = _unjustified_introduction_violations(
+        introduced_elements, world_state,
+    )
+    if unjustified:
+        audit.violations = list(audit.violations) + unjustified
+        audit.passed = False
+        audit.audit_summary = (
+            f"{audit.audit_summary} [+{len(unjustified)} unjustified "
+            f"introduction(s)]"
         ).strip()
 
     # Deterministic ctf-calculus EXCLUSION leak check. Pulls evidence
