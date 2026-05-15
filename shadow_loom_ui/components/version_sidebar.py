@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 def _resolve_clicked_version(
-    args: dict, tree_data: list[dict],
+    args, tree_data: list[dict],
 ) -> dict | None:
     """Map an ECharts node-click payload to its DB version row.
 
@@ -46,28 +46,68 @@ def _resolve_clicked_version(
     shadow branch did nothing at all and Story / Audit / Source all
     kept rendering the previous branch's contents.
 
+    NiceGUI delivers ``e.args`` in two shapes depending on whether
+    the chart's ``on()`` registration set an ``args`` filter:
+
+    * with a filter (e.g. NiceGUI's own :py:meth:`EChart.on_click`),
+      ``e.args`` is a single dict of the requested fields;
+    * without a filter (our wiring), ``e.args`` is a *list* of the
+      full Vue ``$emit`` arguments — for ECharts' ``componentClick``
+      that's a one-element list ``[full_event_payload]``.
+
+    Tolerate both — and accept a JSON-string item in case NiceGUI
+    delivers the un-decoded ``stringifyEventArgs`` payload.
+
     Returns the matching dict from ``tree_data`` or ``None`` (e.g. for
     the synthetic multi-root wrapper, which has no ``_vid``).
     """
-    node = args.get("data") if isinstance(args.get("data"), dict) else {}
+    import json as _json
+
+    # Unwrap NiceGUI's list-shape (no args filter) and tolerate JSON
+    # strings produced by ``stringifyEventArgs``.
+    if isinstance(args, list):
+        args = args[0] if args else {}
+    if isinstance(args, str):
+        try:
+            args = _json.loads(args)
+        except (TypeError, ValueError):
+            args = {}
+    if not isinstance(args, dict):
+        return None
+
+    raw_data = args.get("data")
+    if isinstance(raw_data, str):
+        try:
+            raw_data = _json.loads(raw_data)
+        except (TypeError, ValueError):
+            raw_data = None
+    node = raw_data if isinstance(raw_data, dict) else {}
+
     # Prefer the per-node ``_vid`` payload — robust against label
     # decoration. Fall back to the top-level name in case a synthetic
     # root or future ECharts version nests differently.
     vid = node.get("_vid")
-    if vid is None and isinstance(args.get("_vid"), int):
-        vid = args["_vid"]
+    if vid is None:
+        top_vid = args.get("_vid")
+        if isinstance(top_vid, (int, str)):
+            vid = top_vid
+    if isinstance(vid, str) and vid.isdigit():
+        vid = int(vid)
     if vid is not None:
         for v in tree_data:
             if v["id"] == vid:
                 return v
     # Fallback: legacy label match against the *undecorated* name
-    # (``"v{version}"``). Only matches factual rows by design; shadow
-    # rows always carry ``_vid`` so they reach the handler via the
-    # path above.
+    # (``"v{version}"``) and the decorated shadow label
+    # (``"v{version} — {branch_label}"``).
     name = node.get("name") or args.get("name", "")
-    for v in tree_data:
-        if f"v{v['version']}" == name:
-            return v
+    if isinstance(name, str) and name:
+        for v in tree_data:
+            base = f"v{v['version']}"
+            if name == base:
+                return v
+            if name.startswith(f"{base} \u2014 "):
+                return v
     return None
 
 
@@ -170,8 +210,12 @@ def _render_versions(state: AppState, container) -> None:
         return
 
     def _on_version_click(e):
-        args = e.args if isinstance(e.args, dict) else {}
-        v = _resolve_clicked_version(args, tree_data)
+        # Pass ``e.args`` through verbatim — ``_resolve_clicked_version``
+        # tolerates dict, list, str, and ``None`` shapes. The previous
+        # ``if isinstance(e.args, dict) else {}`` guard silently
+        # discarded the actual payload, because NiceGUI delivers
+        # unfiltered chart events as a *list* of Vue ``$emit`` args.
+        v = _resolve_clicked_version(e.args, tree_data)
         if v is not None:
             _load_version(state, v)
 

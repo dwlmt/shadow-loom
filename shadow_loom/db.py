@@ -2244,6 +2244,48 @@ def list_branches(project_id: int) -> list[dict]:
     return branches
 
 
+def _retag_shadow_to_factual(world_state_json: str) -> str:
+    """Rewrite every ``"world_id": "shadow"`` inside a serialized
+    WorldStateV1 to ``"factual"`` before persisting a promoted branch.
+
+    ``promote_branch`` flips the *VersionRow*'s ``world_id`` to
+    ``"factual"``, but the world-state JSON it persists carries its
+    own per-node tags on entities, events, propositions, beliefs,
+    concerns, traits, locations, objects, etc. Downstream consumers
+    (prose renderer, auditor side-effects, MCP query routing,
+    AMWN graph filters) branch on those node tags rather than the row
+    tag, so leaving them as ``"shadow"`` makes a "promoted" version
+    still look like a shadow branch everywhere except the version DAG.
+
+    The walk is structural rather than a string substitution because
+    user-authored prose, descriptions, and source text may contain the
+    literal substring ``"world_id": "shadow"`` and we don't want to
+    rewrite those. Any non-string ``world_id`` value is left alone.
+    """
+    try:
+        data = json.loads(world_state_json)
+    except (TypeError, ValueError):
+        # Defensive: if the snapshot isn't parseable JSON, the
+        # downstream save_version call will fail loudly anyway. Return
+        # the original payload so the original error surfaces instead
+        # of being masked by a JSON re-encode failure.
+        return world_state_json
+
+    def _walk(node):
+        if isinstance(node, dict):
+            wid = node.get("world_id")
+            if isinstance(wid, str) and wid == "shadow":
+                node["world_id"] = "factual"
+            for v in node.values():
+                _walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                _walk(v)
+
+    _walk(data)
+    return json.dumps(data)
+
+
 def promote_branch(
     version_row_id: int,
     *,
@@ -2348,9 +2390,24 @@ def promote_branch(
             if diverged else ""
         )
     )
+
+    # Re-tag every per-node ``world_id == "shadow"`` inside the
+    # snapshot to ``"factual"`` before persisting. The VersionRow
+    # itself flips to ``world_id="factual"`` below, but the
+    # WorldStateV1 JSON carries its own per-node tags on entities,
+    # events, propositions, beliefs, concerns, traits, locations,
+    # objects, etc. — and downstream consumers (prose renderer,
+    # auditor side-effects, MCP query routing, AMWN graph filters)
+    # branch on those node tags, not the row tag. Without this rewrite
+    # a "promoted" version would still look like a shadow branch to
+    # every downstream surface that walks the world state JSON.
+    promoted_world_state_json = _retag_shadow_to_factual(
+        src.world_state_json,
+    )
+
     return save_version(
         project_id=src.project_id,
-        world_state_json=src.world_state_json,
+        world_state_json=promoted_world_state_json,
         ancestor_id=ancestor_id,
         source="promote_branch",
         description=promoted_desc,

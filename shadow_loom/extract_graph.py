@@ -668,6 +668,8 @@ def extract_full_world_state(
 def introduced_elements_to_spawns(
     introduced: "Any",
     world_state: WorldStateV1,
+    *,
+    world_id: Literal["factual", "shadow"] = "factual",
 ) -> Dict[str, Dict[str, Any]]:
     """Materialise renderer-declared :class:`IntroducedElements` as
     a ``spawns``-shaped payload that ``extract_topology_from_prose``
@@ -682,6 +684,15 @@ def introduced_elements_to_spawns(
     Existing canonical IDs are skipped so the function is idempotent
     if the renderer re-declares an element already in the canonical
     world (which shouldn't happen, but is harmless if it does).
+
+    ``world_id`` tags every spawned :class:`Proposition` and
+    :class:`Concern`. Defaults to ``"factual"``; callers running on a
+    shadow branch (counterfactual / what-if pipeline) must pass
+    ``"shadow"`` so the introductions land in the same AMWN
+    sub-graph as the rest of that branch's nodes — otherwise the
+    instantiator's three-rule bookkeeping (consistency / independence
+    / exclusion) sees factual props/concerns spawned inside a shadow
+    sandbox and the next merge or rollback misroutes them.
     """
     from shadow_loom.models import (
         Concern,
@@ -797,7 +808,7 @@ def introduced_elements_to_spawns(
             continue
         try:
             out["propositions"][spec.id] = Proposition(
-                world_id="factual",
+                world_id=world_id,
                 proposition_id=spec.id,
                 kind=spec.kind or "outcome",
                 referent_ids=[],
@@ -820,7 +831,7 @@ def introduced_elements_to_spawns(
             # validation error doesn't get swallowed silently below.
             polarity_da = "desire" if spec.polarity == "positive" else "fear"
             concern = Concern(
-                world_id="factual",
+                world_id=world_id,
                 concern_id=spec.id,
                 proposition_id=spec.proposition_id,
                 polarity=polarity_da,
@@ -1210,6 +1221,7 @@ def extract_topology_from_prose(
     )():
         rendered_spawns = introduced_elements_to_spawns(
             introduced_elements, world_state,
+            world_id=branch_world_id,
         )
         for k in ("entities", "objects", "locations", "world_traits",
                   "channels", "propositions"):
@@ -2039,6 +2051,22 @@ def _apply_affect_to_world(
                     bs.holder_id,
                 )
                 continue
+            # Branch safety: only stamp belief snapshots onto holders
+            # whose ``world_id`` matches the merge branch. Without
+            # this guard a shadow-fork affect snapshot would write
+            # onto the factual entity timeline (or vice versa),
+            # silently leaking counterfactual confidence drift onto
+            # canonical character beliefs. Mirrors the
+            # concern-snapshot guard a few blocks above.
+            ent_world = getattr(ent, "world_id", "factual") or "factual"
+            if ent_world != world_id:
+                logger.info(
+                    "[merge\u00b7affect] Skipped belief snapshot on %s "
+                    "(holder.world_id=%s, merge_world_id=%s) \u2014 "
+                    "cross-branch write blocked.",
+                    bs.holder_id, ent_world, world_id,
+                )
+                continue
             # Locate-or-create an EntityStateSnapshot at this
             # (fabula_time, triggered_by) so multiple Affect snapshots
             # at the same tick stack onto a single timeline entry.
@@ -2667,11 +2695,23 @@ class VersionedWorldModel(BaseModel):
         world_state: WorldStateV1,
         *,
         max_snapshots: int = 10,
+        world_id: Literal["factual", "shadow"] = "factual",
+        branch_label: Optional[str] = None,
     ) -> "VersionedWorldModel":
         """Create a new versioned world model from an existing WorldStateV1.
 
         The incoming ``world_state`` is deep-copied so that subsequent
         merges never mutate the caller's original.
+
+        ``world_id`` / ``branch_label`` seed the synthetic v0 history
+        entry's branch identity. Pipeline branch routing (Continue,
+        What-If, etc.) and the prose renderer's AMWN filter both
+        consult ``history[-1].world_id``; without seeding these from
+        the caller, every load of a shadow snapshot would silently
+        present as factual — so a ``Continue`` issued from a shadow
+        fork in the MCP would land back on the mainline. Defaults
+        keep behaviour for callers that legitimately start from a new
+        factual world (ingestion, tests).
         """
         frozen = copy.deepcopy(world_state)
         return VersionedWorldModel(
@@ -2682,6 +2722,8 @@ class VersionedWorldModel(BaseModel):
                     timestamp=datetime.now(timezone.utc).isoformat(),
                     source="original",
                     description="Initial world state.",
+                    world_id=world_id,
+                    branch_label=branch_label,
                 ),
             ],
             snapshots=[

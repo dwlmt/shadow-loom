@@ -269,6 +269,24 @@ def _start_reingest(state: AppState, edited_text: str) -> None:
     parent_version_row_id = state.current_version_row_id
     pname = state.project_name or f"Project {project_id}"
 
+    # Inherit branch identity from the parent version so re-ingesting
+    # while a shadow fork is selected lands the regenerated world on
+    # the same shadow branch (instead of silently snapping back to
+    # the factual mainline). When no parent version exists (fresh
+    # project), default to factual.
+    parent_world_id: str = "factual"
+    parent_branch_label: str | None = None
+    if parent_version_row_id is not None:
+        try:
+            parent_row = db.get_version_by_id(parent_version_row_id)
+            if parent_row is not None:
+                parent_world_id = parent_row.world_id or "factual"
+                parent_branch_label = parent_row.branch_label
+        except Exception:
+            logger.exception(
+                "[Re-ingest] Failed to read parent version branch identity",
+            )
+
     task = state.start_task(
         label=f"Re-ingest: {pname}",
         kind="ingestion",
@@ -334,6 +352,8 @@ def _start_reingest(state: AppState, edited_text: str) -> None:
                 source="manual_reingest",
                 description="Manual edit \u2014 full re-ingestion",
                 user_id=user_id,
+                world_id=parent_world_id,  # type: ignore[arg-type]
+                branch_label=parent_branch_label,
             )
 
             state.raw_text = edited_text

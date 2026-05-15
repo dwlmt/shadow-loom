@@ -92,14 +92,17 @@ _OBSERVATION_STATUS_ALIASES: Dict[str, str] = {
 def _apply_query_introductions(
     ws: WorldStateV1,
     query: "UserRequest",
+    *,
+    world_id: str = "factual",
 ) -> WorldStateV1:
     """Pre-spawn user-side ``query.introduce`` declarations into the
     working world state before physics runs.
 
     Returns a new :class:`WorldStateV1` (caller should re-bind their
-    variable). The pre-spawned nodes carry ``world_id="factual"`` and
-    are written directly into the typed registries, so do-surgeries
-    that target them resolve correctly during
+    variable). The pre-spawned nodes carry ``world_id`` from the
+    active VWM branch (defaults to ``"factual"`` for legacy callers)
+    and are written directly into the typed registries, so
+    do-surgeries that target them resolve correctly during
     :func:`calculate_narrative_physics`. The same payload is passed
     through to the renderer's ``GeneratedScene.introduced_elements``
     by the merge step so the auditor and re-extraction see the
@@ -110,7 +113,10 @@ def _apply_query_introductions(
     introduced = getattr(query, "introduce", None)
     if introduced is None or introduced.is_empty():
         return ws
-    spawns = introduced_elements_to_spawns(introduced, ws)
+    spawns = introduced_elements_to_spawns(
+        introduced, ws,
+        world_id=world_id,  # type: ignore[arg-type]
+    )
     if not any(spawns.get(k) for k in (
         "entities", "objects", "locations", "world_traits",
         "channels", "propositions", "concerns", "events",
@@ -2158,7 +2164,15 @@ def run_pipeline(
         "[Pipeline] Step 2: Narrative physics — query_type=%s, causal_engine=%s.",
         query.query_type, cfg.use_causal_engine,
     )
-    ws = _apply_query_introductions(ws, query)
+    # Inherit branch identity from the VWM head so renderer-introduced
+    # propositions/concerns land in the same AMWN sub-graph as the
+    # rest of the active branch (factual or shadow).
+    _active_branch_world_id = (
+        vwm.history[-1].world_id if vwm.history else "factual"
+    )
+    ws = _apply_query_introductions(
+        ws, query, world_id=_active_branch_world_id,
+    )
     eff_temporal, eff_syuzhet = _resolve_query_anchors(
         query, cfg.temporal_anchor, cfg.syuzhet_anchor, ws,
     )
@@ -2707,7 +2721,12 @@ async def run_pipeline_async(
         "[Pipeline·Async] Step 2: Narrative physics — query_type=%s, causal_engine=%s.",
         query.query_type, cfg.use_causal_engine,
     )
-    ws = _apply_query_introductions(ws, query)
+    _active_branch_world_id = (
+        vwm.history[-1].world_id if vwm.history else "factual"
+    )
+    ws = _apply_query_introductions(
+        ws, query, world_id=_active_branch_world_id,
+    )
     eff_temporal, eff_syuzhet = _resolve_query_anchors(
         query, cfg.temporal_anchor, cfg.syuzhet_anchor, ws,
     )

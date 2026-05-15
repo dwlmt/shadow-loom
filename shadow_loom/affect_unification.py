@@ -470,7 +470,7 @@ def synthesise_audience_entity(world: WorldStateV1) -> Entity:
             proposition_id=prop_id,
         )
         snap = EntityStateSnapshot(
-            world_id="factual",
+            world_id=getattr(evt, "world_id", "factual") or "factual",
             fabula_time=evt.fabula_time,
             triggered_by=evt.id,
             beliefs_added=[belief],

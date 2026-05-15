@@ -15,6 +15,7 @@ from shadow_loom.db import (
     get_active_version,
     get_latest_version,
     get_version,
+    get_version_by_id,
     save_version,
     set_active_version,
 )
@@ -104,10 +105,54 @@ def run_and_save(
     raw_query: str | None,
     *,
     skip_audit: bool = True,
-    skip_reextraction: bool = True,
+    skip_reextraction: bool | None = None,
 ) -> dict[str, Any]:
-    """Run pipeline, save new version, return response dict."""
-    vwm = VersionedWorldModel.from_world_state(world_state)
+    """Run pipeline, save new version, return response dict.
+
+    ``skip_reextraction=None`` (the default) routes by ``query_type``:
+    prose-rendering query types (``intervention``, ``counterfactual``,
+    ``directive``, ``manual_edit``) get re-extraction enabled so the
+    saved world graph reflects the prose just generated; other types
+    keep the old fast-path. The previous unconditional default of
+    ``True`` meant every MCP-driven Continue / What-If / Intervene
+    persisted prose against an *unchanged* world graph, so chained
+    MCP calls built on stale topology and the saved version's
+    AMWN nodes never inherited the new entities/events the prose
+    introduced.
+    """
+    # Derive re-extraction policy from query type when caller didn't
+    # explicitly set it. Keep the explicit override path so callers
+    # that need the old fast behaviour can still opt in.
+    if skip_reextraction is None:
+        prose_rendering_types = {
+            "intervention",
+            "counterfactual",
+            "directive",
+            "manual_edit",
+        }
+        skip_reextraction = (
+            getattr(query, "query_type", None) not in prose_rendering_types
+        )
+    # Seed the synthetic v0 in the VersionedWorldModel with the
+    # ancestor row's branch identity. ``from_world_state`` defaults
+    # to ``world_id="factual"``; if we accept that default for a
+    # ``world_state`` that was actually loaded from a shadow row, the
+    # pipeline's branch routing (which keys on
+    # ``vwm.history[-1].world_id``) silently demotes a shadow
+    # continuation back onto the factual mainline. Look up the
+    # ancestor's tag and propagate it.
+    seed_world_id: str = "factual"
+    seed_branch_label: str | None = None
+    if ancestor_row_id is not None:
+        ancestor_row = get_version_by_id(ancestor_row_id)
+        if ancestor_row is not None:
+            seed_world_id = ancestor_row.world_id or "factual"
+            seed_branch_label = ancestor_row.branch_label
+    vwm = VersionedWorldModel.from_world_state(
+        world_state,
+        world_id=seed_world_id,  # type: ignore[arg-type]
+        branch_label=seed_branch_label,
+    )
     cfg = PipelineConfig(
         skip_audit=skip_audit,
         skip_reextraction=skip_reextraction,

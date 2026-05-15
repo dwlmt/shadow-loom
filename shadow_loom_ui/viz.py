@@ -2916,7 +2916,17 @@ def render_version_tree(
     }).classes("w-full").style(f"height:{height}")
 
     if on_click:
-        chart.on("click", on_click)
+        # NiceGUI's ECharts wrapper re-emits ECharts' internal "click"
+        # as Vue ``componentClick`` (see nicegui/elements/echart/echart.js
+        # — ``this.chart.on("click", e => this.$emit("componentClick", e))``).
+        # Listening on bare ``"click"`` here registers a Vue ``onClick``
+        # listener, which never fires for ECharts node interactions —
+        # so previously every version-tree click silently no-op'd and
+        # Story / World / Audit / Reasoning all stayed pinned to the
+        # previously-loaded version. ``componentClick`` is the right
+        # event name and delivers the full ECharts params (including
+        # the ``data`` dict with our ``_vid`` / ``_version`` keys).
+        chart.on("componentClick", on_click)
     return chart
 
 

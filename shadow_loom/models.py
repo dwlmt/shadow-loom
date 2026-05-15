@@ -1742,9 +1742,20 @@ def reconstruct_world_trait_at(trait: "GlobalTrait", fabula_time: int) -> dict:
     magnitude = {"value": trait.magnitude.value, "inertia": trait.magnitude.inertia}
     description = trait.description
 
+    # Branch-safe replay (mirror of ``reconstruct_entity_at``): only
+    # consume snapshots tagged with the same ``world_id`` as the
+    # holder trait. Persisted worlds may carry historical drift from
+    # before the cross-branch write guards landed; without this
+    # filter a shadow-fork world-trait snapshot would silently
+    # advance the factual mainline's trait magnitude in every
+    # downstream replay (auditor, prose renderer, social/world tabs).
+    holder_world = getattr(trait, "world_id", "factual") or "factual"
     for snap in sorted(trait.state_timeline, key=lambda s: s.fabula_time):
         if snap.fabula_time > fabula_time:
             break
+        snap_world = getattr(snap, "world_id", holder_world) or holder_world
+        if snap_world != holder_world:
+            continue
         if snap.magnitude is not None:
             magnitude = {"value": snap.magnitude.value, "inertia": snap.magnitude.inertia}
         if snap.description is not None:
@@ -1882,9 +1893,18 @@ def reconstruct_proposition_at(prop: "Proposition", fabula_time: int) -> dict:
     audience_default_prior = prop.audience_default_prior
     description = prop.description
 
+    # Branch-safe replay (mirror of ``reconstruct_entity_at``): only
+    # consume snapshots tagged with the same ``world_id`` as the
+    # holder proposition. Without this guard a shadow-fork
+    # ``PropositionSnapshot`` would silently mutate the factual
+    # mainline's stakes/prior/description at every replay.
+    holder_world = getattr(prop, "world_id", "factual") or "factual"
     for snap in sorted(prop.state_timeline, key=lambda s: s.fabula_time):
         if snap.fabula_time > fabula_time:
             break
+        snap_world = getattr(snap, "world_id", holder_world) or holder_world
+        if snap_world != holder_world:
+            continue
         if snap.stakes is not None:
             stakes = snap.stakes
         if snap.audience_default_prior is not None:
@@ -1926,9 +1946,20 @@ def reconstruct_concern_at(concern: "Concern", fabula_time: int) -> dict:
     counter_concern_ids = list(concern.counter_concern_ids)
     kind = concern.kind
 
+    # Branch-safe replay (mirror of ``reconstruct_entity_at``): only
+    # consume snapshots tagged with the same ``world_id`` as the
+    # holder concern. Without this guard a shadow-fork
+    # ``ConcernSnapshot`` would silently overwrite the factual
+    # mainline's salience / polarity / activation window at every
+    # replay (audience suspense, irony, social weight all key off
+    # this).
+    holder_world = getattr(concern, "world_id", "factual") or "factual"
     for snap in sorted(concern.state_timeline, key=lambda s: s.fabula_time):
         if snap.fabula_time > fabula_time:
             break
+        snap_world = getattr(snap, "world_id", holder_world) or holder_world
+        if snap_world != holder_world:
+            continue
         if snap.salience is not None:
             salience = snap.salience
         if snap.polarity is not None:
