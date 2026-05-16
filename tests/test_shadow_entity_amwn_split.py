@@ -152,6 +152,158 @@ def test_shadow_clone_retags_nested_concerns_and_beliefs():
     assert all(c.world_id == "factual" for c in factual.concerns)
 
 
+def test_shadow_clone_retags_nested_state_timeline_snapshots():
+    """``reconstruct_*_at`` strictly filters ``snap.world_id ==
+    holder.world_id``, so deep-copied snapshots that keep the
+    factual tag would wipe the clone's entire shared pre-split
+    history on shadow reads. The clone helpers must retag every
+    surviving ``state_timeline`` snapshot to ``world_id='shadow'``
+    so the pre-split past replays correctly on the shadow side.
+
+    Covers entity / object / proposition / world_trait clones in
+    one regression."""
+    from shadow_loom.models import (
+        GlobalTrait,
+        NarrativeObject,
+        ObjectStateSnapshot,
+        Proposition,
+        PropositionSnapshot,
+        TraitVector,
+        WorldTraitSnapshot,
+        reconstruct_entity_at,
+        reconstruct_object_at,
+        reconstruct_proposition_at,
+        reconstruct_world_trait_at,
+    )
+
+    ws = _factual_world_with_coady()
+    # Add an object with pre-split history.
+    ws.objects["OBJ_DIAMONDS"] = NarrativeObject(
+        id="OBJ_DIAMONDS",
+        name="diamonds",
+        location_id=None,
+        owner_id=None,
+        properties={"hidden": "true"},
+        affordances=[],
+        state_timeline=[
+            ObjectStateSnapshot(
+                world_id="factual",
+                fabula_time=50,
+                triggered_by="EVT_PRE_TRIAL",
+                properties_set={"locked_in": "safe"},
+            ),
+        ],
+        world_id="factual",
+    )
+    # Add a proposition with pre-split framing.
+    prop = Proposition(
+        proposition_id="PROP_DOGS_DEAD",
+        kind="event_occurs",
+        description="the dogs are dead",
+        world_id="factual",
+        truth_at_fabula={50: True},
+        state_timeline=[
+            PropositionSnapshot(
+                world_id="factual",
+                fabula_time=50,
+                triggered_by="EVT_PRE_TRIAL",
+                stakes=0.8,
+            ),
+        ],
+    )
+    ws.propositions.append(prop)
+    # Add a world trait with pre-split history.
+    ws.world_traits["WORLD_TENSION"] = GlobalTrait(
+        id="WORLD_TENSION",
+        name="tension",
+        description="rising societal tension",
+        category="social_structure",
+        magnitude=TraitVector(value=0.3, inertia=0.4),
+        affected_domains=["social"],
+        world_id="factual",
+        state_timeline=[
+            WorldTraitSnapshot(
+                world_id="factual",
+                fabula_time=50,
+                triggered_by="EVT_PRE_TRIAL",
+                magnitude=TraitVector(value=0.5, inertia=0.4),
+            ),
+        ],
+    )
+
+    vwm = VersionedWorldModel.from_world_state(ws)
+    # Trigger a shadow clone of each via a single counterfactual merge.
+    from shadow_loom.ingestion import (
+        ObjectUpdate,
+        PropositionTruthCommit,
+    )
+    topology = ChunkTopology(
+        chunk_id="CHK_CF",
+        entity_updates=[EntityUpdate(
+            entity_id="ENT_MRS_COADY", fabula_time=200,
+            triggered_by="EVT_CF", new_status="healthy",
+        )],
+        object_updates=[ObjectUpdate(
+            object_id="OBJ_DIAMONDS", fabula_time=200,
+            triggered_by="EVT_CF",
+            properties_set={"recovered": "true"},
+        )],
+        proposition_truth_commits=[PropositionTruthCommit(
+            proposition_id="PROP_DOGS_DEAD",
+            fabula_time=200, truth=False,
+            triggered_by="EVT_CF",
+        )],
+    )
+    vwm2 = vwm.merge(topology, world_id="shadow", branch_label="cf_dogs")
+
+    # --- Entity clone: pre-split snapshot must replay on shadow side ---
+    ent_clone = vwm2.current.shadow_entities["cf_dogs"]["ENT_MRS_COADY"]
+    assert all(s.world_id == "shadow" for s in ent_clone.state_timeline)
+    # Replay seeds frailty=0.4; pre-split snap at t=100 raises it to 0.7.
+    recon_ent = reconstruct_entity_at(ent_clone, fabula_time=150)
+    assert recon_ent["traits"]["frailty"]["value"] == 0.7
+
+    # --- Object clone ---
+    obj_clone = vwm2.current.shadow_objects["cf_dogs"]["OBJ_DIAMONDS"]
+    assert all(s.world_id == "shadow" for s in obj_clone.state_timeline)
+    recon_obj = reconstruct_object_at(obj_clone, fabula_time=150)
+    # Pre-split snapshot applied locked_in=safe.
+    assert recon_obj["properties"].get("locked_in") == "safe"
+
+    # --- Proposition clone ---
+    prop_clone = vwm2.current.shadow_propositions["cf_dogs"]["PROP_DOGS_DEAD"]
+    assert all(s.world_id == "shadow" for s in prop_clone.state_timeline)
+    recon_prop = reconstruct_proposition_at(prop_clone, fabula_time=150)
+    assert recon_prop.get("stakes") == 0.8
+
+    # --- World trait clone (via the helper directly; no auto-call site yet) ---
+    from shadow_loom.extract_graph import _get_or_clone_shadow_world_trait
+    wt_clone = _get_or_clone_shadow_world_trait(
+        vwm2.current, "WORLD_TENSION",
+        branch_label="cf_dogs", suppressed_event_ids=set(),
+    )
+    assert wt_clone is not None
+    assert all(s.world_id == "shadow" for s in wt_clone.state_timeline)
+    recon_wt = reconstruct_world_trait_at(wt_clone, fabula_time=150)
+    assert recon_wt["magnitude"]["value"] == 0.5
+
+    # --- Factual originals untouched ---
+    assert all(
+        s.world_id == "factual"
+        for s in vwm2.current.entities["ENT_MRS_COADY"].state_timeline
+    )
+    assert all(
+        s.world_id == "factual"
+        for s in vwm2.current.objects["OBJ_DIAMONDS"].state_timeline
+    )
+    fact_prop = next(p for p in vwm2.current.propositions if p.proposition_id == "PROP_DOGS_DEAD")
+    assert all(s.world_id == "factual" for s in fact_prop.state_timeline)
+    assert all(
+        s.world_id == "factual"
+        for s in vwm2.current.world_traits["WORLD_TENSION"].state_timeline
+    )
+
+
 def test_shadow_merge_clones_factual_entity_into_sidecar():
     """First shadow entity_update on ``ENT_MRS_COADY`` materialises a
     clone into ``shadow_entities[branch_label]`` and routes the

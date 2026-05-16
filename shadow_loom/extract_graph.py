@@ -2396,17 +2396,27 @@ def _get_or_clone_shadow_entity(
         return None
     clone = copy.deepcopy(factual)
     clone.world_id = "shadow"
-    # Retag nested per-entity records (concerns) so they match the
-    # clone's branch. Without this, downstream merge logic that
-    # filters by ``world_id == "shadow"`` (e.g. concern-snapshot
-    # routing) silently drops shadow concern updates because the
-    # deep-copied nested records keep their factual tag.
+    # Retag every nested ``world_id``-bearing record on the clone so
+    # it consistently belongs to the new AMWN world W*ₙ. Without
+    # this, two latent silent-drop failures occur:
+    #   (1) Merge-time concern-snapshot routing filters targets by
+    #       ``Concern.world_id`` — deep-copied concerns retaining
+    #       ``world_id="factual"`` are invisible, and the snapshot
+    #       is dropped.
+    #   (2) Read-time replay (``reconstruct_entity_at``) skips
+    #       snapshots whose ``world_id`` differs from the holder,
+    #       so deep-copied snapshots keeping the factual tag would
+    #       wipe the clone's entire pre-split history on shadow
+    #       reads.
+    # The trim against ``suppressed_event_ids`` below drops genuinely
+    # severed history; everything that survives belongs to W*ₙ.
     # ``Belief`` has no ``world_id`` field and is not retagged.
-    # ``state_timeline`` snapshots are intentionally NOT retagged —
-    # they represent the genuinely shared past before the AMWN split
-    # point.
     for c in clone.concerns:
         c.world_id = "shadow"
+        for cs in getattr(c, "state_timeline", None) or []:
+            cs.world_id = "shadow"
+    for s in clone.state_timeline:
+        s.world_id = "shadow"
     sup = set(suppressed_event_ids or [])
     if sup:
         clone.state_timeline = [
@@ -2455,6 +2465,13 @@ def _get_or_clone_shadow_object(
         return None
     clone = copy.deepcopy(factual)
     clone.world_id = "shadow"
+    # Retag nested state-timeline snapshots so read-time replay
+    # (``reconstruct_object_at``) — which strictly filters
+    # ``snap.world_id == holder.world_id`` — sees the clone's
+    # shared pre-split history. The trim below drops genuinely
+    # severed history; survivors belong to W*ₙ.
+    for s in clone.state_timeline:
+        s.world_id = "shadow"
     sup = set(suppressed_event_ids or [])
     if sup:
         clone.state_timeline = [
@@ -2491,6 +2508,12 @@ def _get_or_clone_shadow_world_trait(
         return None
     clone = copy.deepcopy(factual)
     clone.world_id = "shadow"
+    # Retag nested state-timeline snapshots so ``reconstruct_world_trait_at``
+    # (which filters ``snap.world_id == holder.world_id``) sees the
+    # clone's shared pre-split history on shadow reads.
+    if hasattr(clone, "state_timeline") and clone.state_timeline:
+        for s in clone.state_timeline:
+            s.world_id = "shadow"
     sup = set(suppressed_event_ids or [])
     if sup and hasattr(clone, "state_timeline") and clone.state_timeline:
         clone.state_timeline = [
@@ -2548,6 +2571,12 @@ def _get_or_clone_shadow_proposition(
         return None
     clone = copy.deepcopy(factual)
     clone.world_id = "shadow"
+    # Retag nested state-timeline snapshots so ``reconstruct_proposition_at``
+    # (which filters ``snap.world_id == holder.world_id``) sees the
+    # clone's shared pre-split framing history on shadow reads.
+    if getattr(clone, "state_timeline", None):
+        for s in clone.state_timeline:
+            s.world_id = "shadow"
     sup_commits = suppressed_commits or set()
     surv_commits = surviving_commits or set()
     if sup_commits and isinstance(clone.truth_at_fabula, dict):
