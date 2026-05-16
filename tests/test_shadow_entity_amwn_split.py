@@ -117,6 +117,41 @@ def _factual_world_with_coady() -> WorldStateV1:
 # ---------------------------------------------------------------------
 
 
+def test_shadow_clone_retags_nested_concerns_and_beliefs():
+    """When the AMWN-split clone is materialised, nested per-entity
+    records (concerns, beliefs) must be retagged ``world_id='shadow'``.
+    Without retagging, downstream merge logic that filters by
+    ``world_id == "shadow"`` (concern-snapshot routing) silently
+    drops shadow concern updates because the deep-copied nested
+    records keep their factual tag. Regression for the *A Fish
+    Called Wanda* "concern snapshot dropped on shadow merge" log."""
+    from shadow_loom.models import Concern
+
+    ws = _factual_world_with_coady()
+    ws.entities["ENT_MRS_COADY"].concerns.append(Concern(
+        concern_id="CCN_COADY_FEARS_DOGS_HARM",
+        proposition_id="PROP_DOGS_DEAD",
+        polarity="fear",
+        salience=0.8,
+        world_id="factual",
+    ))
+    vwm = VersionedWorldModel.from_world_state(ws)
+    topology = ChunkTopology(
+        chunk_id="CHK_CF",
+        entity_updates=[EntityUpdate(
+            entity_id="ENT_MRS_COADY", fabula_time=200,
+            triggered_by="EVT_CF", new_status="healthy",
+        )],
+    )
+    vwm2 = vwm.merge(topology, world_id="shadow", branch_label="cf_dogs")
+    clone = vwm2.current.shadow_entities["cf_dogs"]["ENT_MRS_COADY"]
+    # Nested concerns retagged.
+    assert all(c.world_id == "shadow" for c in clone.concerns)
+    # Factual entity's nested concerns untouched.
+    factual = vwm2.current.entities["ENT_MRS_COADY"]
+    assert all(c.world_id == "factual" for c in factual.concerns)
+
+
 def test_shadow_merge_clones_factual_entity_into_sidecar():
     """First shadow entity_update on ``ENT_MRS_COADY`` materialises a
     clone into ``shadow_entities[branch_label]`` and routes the
@@ -347,10 +382,13 @@ def test_projected_for_branch_factual_returns_self():
 # ---------------------------------------------------------------------
 
 
-def test_shadow_merge_without_branch_label_falls_back_to_skip():
-    """A shadow merge with no ``branch_label`` cannot key a sidecar
-    entry; the write is skipped (same as legacy cross-branch block)
-    with an INFO log rather than mutating the factual entity."""
+def test_shadow_merge_without_branch_label_synthesizes_fallback():
+    """A shadow merge with no ``branch_label`` used to silently skip
+    the write (which corrupted downstream interrogation by leaving
+    factual baseline as the projected truth). The merge boundary now
+    synthesizes a fallback label and routes the write into a
+    ``shadow-orphan-*`` sidecar, with a WARNING log. The factual
+    entity is still untouched."""
     vwm = VersionedWorldModel.from_world_state(_factual_world_with_coady())
     topology = ChunkTopology(
         chunk_id="CHK_CF",
@@ -360,9 +398,12 @@ def test_shadow_merge_without_branch_label_falls_back_to_skip():
         )],
     )
     vwm2 = vwm.merge(topology, world_id="shadow", branch_label=None)
-    # No sidecar entry.
-    assert vwm2.current.shadow_entities == {}
-    # Factual untouched.
+    # A synthesized sidecar entry exists, keyed by a non-empty fallback.
+    assert vwm2.current.shadow_entities
+    synth_label = next(iter(vwm2.current.shadow_entities))
+    assert synth_label.startswith("shadow-orphan")
+    assert "ENT_MRS_COADY" in vwm2.current.shadow_entities[synth_label]
+    # Factual entity untouched.
     factual_triggers = {s.triggered_by for s in vwm2.current.entities["ENT_MRS_COADY"].state_timeline}
     assert "EVT_CF" not in factual_triggers
 

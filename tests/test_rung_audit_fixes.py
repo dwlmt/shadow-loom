@@ -659,18 +659,20 @@ class TestBranchSafeGenesisAndUpdates:
         with caplog.at_level(logging.INFO):
             vwm2 = vwm.merge(topology, world_id="shadow")
         ent = vwm2.current.entities["ENT_MACBETH"]
-        # Snapshot was NOT appended onto factual timeline.
+        # Factual timeline untouched: the shadow snapshot was routed
+        # into a synthesized ``shadow-orphan-*`` sidecar clone, not
+        # appended onto the factual holder.
         assert ent.state_timeline == []
-        # Replay still returns factual baseline (no leaked guilt).
+        # Replay on the factual holder still returns the baseline.
         from shadow_loom.models import reconstruct_entity_at
         recon = reconstruct_entity_at(ent, fabula_time=20)
         assert "guilt" not in recon["traits"]
         assert recon["status"] == "healthy"
-        assert any(
-            "[merge\u00b7entity-update]" in r.getMessage()
-            and "ENT_MACBETH" in r.getMessage()
-            for r in caplog.records
-        )
+        # Synthesized sidecar captured the shadow write.
+        assert vwm2.current.shadow_entities
+        synth_label = next(iter(vwm2.current.shadow_entities))
+        assert synth_label.startswith("shadow-orphan")
+        assert "ENT_MACBETH" in vwm2.current.shadow_entities[synth_label]
 
     def test_shadow_merge_skips_object_update_on_factual_holder(self, caplog):
         from shadow_loom.ingestion import ChunkTopology, ObjectUpdate
@@ -689,15 +691,16 @@ class TestBranchSafeGenesisAndUpdates:
         with caplog.at_level(logging.INFO):
             vwm2 = vwm.merge(topology, world_id="shadow")
         obj = vwm2.current.objects["OBJ_DAGGER"]
+        # Factual object timeline untouched: shadow write routed into
+        # synthesized sidecar.
         assert obj.state_timeline == []
         from shadow_loom.models import reconstruct_object_at
         recon = reconstruct_object_at(obj, fabula_time=20)
         assert "poisoned" not in recon["properties"]
-        assert any(
-            "[merge\u00b7object-update]" in r.getMessage()
-            and "OBJ_DAGGER" in r.getMessage()
-            for r in caplog.records
-        )
+        assert vwm2.current.shadow_objects
+        synth_label = next(iter(vwm2.current.shadow_objects))
+        assert synth_label.startswith("shadow-orphan")
+        assert "OBJ_DAGGER" in vwm2.current.shadow_objects[synth_label]
 
     def test_reconstruct_entity_at_filters_cross_branch_snapshots(self):
         """Defensive replay-side guard: even if a polluted timeline

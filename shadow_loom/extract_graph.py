@@ -2396,6 +2396,17 @@ def _get_or_clone_shadow_entity(
         return None
     clone = copy.deepcopy(factual)
     clone.world_id = "shadow"
+    # Retag nested per-entity records (concerns) so they match the
+    # clone's branch. Without this, downstream merge logic that
+    # filters by ``world_id == "shadow"`` (e.g. concern-snapshot
+    # routing) silently drops shadow concern updates because the
+    # deep-copied nested records keep their factual tag.
+    # ``Belief`` has no ``world_id`` field and is not retagged.
+    # ``state_timeline`` snapshots are intentionally NOT retagged —
+    # they represent the genuinely shared past before the AMWN split
+    # point.
+    for c in clone.concerns:
+        c.world_id = "shadow"
     sup = set(suppressed_event_ids or [])
     if sup:
         clone.state_timeline = [
@@ -3434,6 +3445,25 @@ class VersionedWorldModel(BaseModel):
         # Deep-copy the incoming topology so re-tagging world_id below
         # never mutates the caller's object.
         topology = copy.deepcopy(topology)
+        # Invariant: a shadow merge must carry a non-empty branch_label.
+        # An empty label silently drops shadow proposition truth commits
+        # (cross-branch writes are blocked at the sidecar boundary) and
+        # turns ``projected_for_branch`` into a no-op, so downstream
+        # reads return factual baseline and contradict the rendered
+        # counterfactual. Synthesize a stable fallback rather than
+        # propagate the corruption. The pipeline's
+        # ``_resolve_branch_policy`` is the canonical source of labels;
+        # this guard exists for direct callers (UI save_version, MCP,
+        # example_seeder) that may inherit a label-less legacy head.
+        if world_id == "shadow" and not branch_label:
+            depth = len(self.history)
+            branch_label = f"shadow-orphan-{depth}"
+            logger.warning(
+                "[merge] Shadow merge requested without branch_label "
+                "(source=%s) — synthesized branch_label=%r to avoid "
+                "silent cross-branch write loss.",
+                source, branch_label,
+            )
         if world_id != "factual":
             for evt in topology.events:
                 evt.world_id = world_id

@@ -173,6 +173,61 @@ class TestResolveBranchPolicy:
         world_id, _ = _resolve_branch_policy(q, cfg, vwm)
         assert world_id == "factual"
 
+    def test_shadow_fork_synthesizes_label_when_query_lacks_nl(self):
+        """Regression: a programmatically constructed shadow query with
+        no ``original_query`` / ``description`` must still receive a
+        non-empty ``branch_label``. An empty label silently drops
+        shadow proposition truth commits at the merge boundary and
+        makes ``projected_for_branch`` a no-op, so downstream
+        interrogation reads factual baseline and contradicts the
+        rendered counterfactual prose (the Mrs Coady / dogs regression
+        in *A Fish Called Wanda*)."""
+        q = CounterfactualQuery(
+            original_query=None,
+            historical_interventions={"EVT_DOG_DEATH": "averted"},
+            evidence_node_ids=["mrs_coady"],
+        )
+        cfg = PipelineConfig()
+        world_id, label = _resolve_branch_policy(q, cfg)
+        assert world_id == "shadow"
+        assert label, "shadow fork must never have empty branch_label"
+        assert "counterfactual" in label
+
+    def test_shadow_override_synthesizes_label_when_query_lacks_nl(self):
+        """Same invariant under explicit policy='shadow' on a non-CF query."""
+        q = InterventionQuery(
+            original_query=None,
+            interventions={"x.y": 1},
+        )
+        cfg = PipelineConfig(branch_policy="shadow")
+        world_id, label = _resolve_branch_policy(q, cfg)
+        assert world_id == "shadow"
+        assert label, "shadow fork must never have empty branch_label"
+
+    def test_merge_synthesizes_label_for_orphan_shadow_call(self, caplog):
+        """Defence-in-depth: a direct ``merge(world_id='shadow', branch_label=None)``
+        call (UI save_version on a legacy label-less head, MCP, seeder)
+        must synthesize a fallback label and warn — never propagate the
+        corruption that silently demotes shadow writes."""
+        import logging
+
+        from shadow_loom.extract_graph import VersionedWorldModel
+        from shadow_loom.ingestion import ChunkTopology
+
+        vwm = VersionedWorldModel.from_world_state(_empty_world_state())
+        topology = ChunkTopology()  # empty merge is a valid no-op
+        with caplog.at_level(logging.WARNING, logger="shadow_loom.extract_graph"):
+            vwm_next = vwm.merge(
+                topology,
+                source="test_orphan",
+                world_id="shadow",
+                branch_label=None,
+            )
+        head = vwm_next.history[-1]
+        assert head.world_id == "shadow"
+        assert head.branch_label, "merge must synthesize a label"
+        assert "branch_label" in caplog.text
+
 
 # =====================================================================
 # DB-level branch DAG queries

@@ -2342,6 +2342,14 @@ class WorldStateV1(BaseModel):
         shadow branch contradict the rendered counterfactual prose.
         """
         if branch_world_id != "shadow" or not branch_label:
+            if branch_world_id == "shadow" and not branch_label:
+                _logger.warning(
+                    "[projected_for_branch] Shadow read without "
+                    "branch_label — falling back to factual baseline. "
+                    "This indicates a pipeline bug: a shadow merge "
+                    "happened with an empty label and downstream "
+                    "reads will silently see factual state."
+                )
             return self
         sidecar = self.shadow_entities.get(branch_label) or {}
         obj_sidecar = self.shadow_objects.get(branch_label) or {}

@@ -728,6 +728,25 @@ def _resolve_branch_policy(
             inherited = getattr(vwm.history[-1], "branch_label", None)
             if inherited:
                 label = inherited
+        # Invariant: a shadow fork *must* have a non-empty branch_label.
+        # An empty label silently breaks proposition truth commits at the
+        # merge boundary (cross-branch writes are blocked when label is
+        # missing) and makes ``projected_for_branch`` a no-op, so the
+        # next observation reads factual baseline and contradicts the
+        # counterfactual prose. Synthesize a stable label from the query
+        # type and the current vwm depth when no natural-language source
+        # is available — this is exceptional but possible for queries
+        # constructed programmatically (tests, MCP, direct API calls).
+        if not label:
+            depth = len(vwm.history) if vwm is not None and vwm.history else 0
+            label = f"shadow-{query.query_type}-{depth}"
+            logger.warning(
+                "[branch·policy] Shadow fork requested without an "
+                "original_query/description — synthesized branch_label=%r "
+                "(query_type=%s). A missing label would silently route "
+                "shadow writes to the factual baseline.",
+                label, query.query_type,
+            )
     return world_id, label
 
 
