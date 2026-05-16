@@ -2285,8 +2285,24 @@ def run_pipeline(
     _active_branch_world_id = (
         vwm.history[-1].world_id if vwm.history else "factual"
     )
+    _active_branch_label = (
+        vwm.history[-1].branch_label if vwm.history else None
+    )
     ws = _apply_query_introductions(
         ws, query, world_id=_active_branch_world_id,
+    )
+    # AMWN-split projection: when the active branch is shadow,
+    # swap ``ws.entities`` for the merged factual + shadow_entities
+    # sidecar view so physics, interrogation, and brief-building all
+    # see the per-branch split copies (with their independently
+    # trimmed state_timelines and accumulated shadow snapshots)
+    # instead of the factual entity records. Factual branch reads
+    # short-circuit to ``self`` so there is zero overhead on the
+    # mainline path. See docs/academic-foundations.md §2.2 (Correa
+    # & Bareinboim 2025) for the AMWN construction.
+    ws = ws.projected_for_branch(
+        branch_world_id=_active_branch_world_id,
+        branch_label=_active_branch_label,
     )
     eff_temporal, eff_syuzhet = _resolve_query_anchors(
         query, cfg.temporal_anchor, cfg.syuzhet_anchor, ws,
@@ -2840,8 +2856,16 @@ async def run_pipeline_async(
     _active_branch_world_id = (
         vwm.history[-1].world_id if vwm.history else "factual"
     )
+    _active_branch_label = (
+        vwm.history[-1].branch_label if vwm.history else None
+    )
     ws = _apply_query_introductions(
         ws, query, world_id=_active_branch_world_id,
+    )
+    # AMWN-split projection — mirrors run_pipeline (sync).
+    ws = ws.projected_for_branch(
+        branch_world_id=_active_branch_world_id,
+        branch_label=_active_branch_label,
     )
     eff_temporal, eff_syuzhet = _resolve_query_anchors(
         query, cfg.temporal_anchor, cfg.syuzhet_anchor, ws,

@@ -2074,6 +2074,32 @@ class WorldStateV1(BaseModel):
     locations: Dict[str, Location]
     objects: Dict[str, NarrativeObject]
     entities: Dict[str, Entity]
+    shadow_entities: Dict[str, Dict[str, Entity]] = Field(
+        default_factory=dict,
+        description=(
+            "Per-shadow-branch entity sidecar implementing the "
+            "AMWN node-splitting construction of Correa & Bareinboim "
+            "2025 (see docs/academic-foundations.md §2.2). Keyed by "
+            "``branch_label`` then ``entity_id``. A split copy is "
+            "materialised lazily on the first shadow merge that "
+            "targets a factual entity — i.e. only when a ``do(·)`` "
+            "makes the entity's ancestral context diverge from "
+            "factual; un-touched entities remain *node-shadowed* "
+            "across worlds by sharing the factual record. On split, "
+            "``entities[id]`` is deep-copied, its ``state_timeline`` "
+            "is trimmed of any snapshot whose ``triggered_by`` is in "
+            "the intervention's ``suppressed_event_ids`` closure "
+            "(severing the incoming structural equations on the "
+            "split copy), the clone is tagged ``world_id='shadow'``, "
+            "and subsequent shadow snapshots accumulate ONLY on the "
+            "clone. Factual reads (``entities[id]``) never see "
+            "shadow snapshots; shadow reads through "
+            ":meth:`entities_for_branch` prefer the split copy over "
+            "the factual record. Sibling shadow branches are "
+            "independent AMWN worlds W*ₙ, keyed by their distinct "
+            "``branch_label``."
+        ),
+    )
     events: List[EventNode]
     world_traits: Dict[str, "GlobalTrait"] = Field(
         default_factory=dict,
@@ -2147,6 +2173,84 @@ class WorldStateV1(BaseModel):
                 "shadow_loom/models.py::Channel for the new schema."
             )
         return data
+
+    # ----------------------------------------------------------------
+    # AMWN-split entity sidecar accessors (Correa & Bareinboim 2025)
+    # ----------------------------------------------------------------
+
+    def entities_for_branch(
+        self,
+        branch_world_id: str = "factual",
+        branch_label: Optional[str] = None,
+    ) -> Dict[str, "Entity"]:
+        """Return the entity dict appropriate for the requested branch.
+
+        AMWN node-shadowing semantics: ``factual`` reads see ONLY
+        ``self.entities``. Shadow reads see
+        ``self.shadow_entities[branch_label]`` layered over
+        ``self.entities`` (split copy wins on collision; factual
+        fallthrough for entities the shadow branch never touched —
+        those entities remain *node-shadowed* between worlds, so the
+        factual record is the single shared representation).
+
+        ``branch_label=None`` on a shadow read falls back to factual
+        (defensive — the caller hasn't established a named twin).
+        Unknown ``branch_label`` likewise returns factual.
+        """
+        if branch_world_id != "shadow" or not branch_label:
+            return self.entities
+        sidecar = self.shadow_entities.get(branch_label) or {}
+        if not sidecar:
+            return self.entities
+        # Layered view: shadow clone wins, factual fallthrough.
+        merged: Dict[str, "Entity"] = dict(self.entities)
+        merged.update(sidecar)
+        return merged
+
+    def get_entity_for_branch(
+        self,
+        entity_id: str,
+        branch_world_id: str = "factual",
+        branch_label: Optional[str] = None,
+    ) -> Optional["Entity"]:
+        """Single-entity convenience over :meth:`entities_for_branch`."""
+        return self.entities_for_branch(branch_world_id, branch_label).get(
+            entity_id,
+        )
+
+    def projected_for_branch(
+        self,
+        branch_world_id: str = "factual",
+        branch_label: Optional[str] = None,
+    ) -> "WorldStateV1":
+        """Return a shallow-projected ``WorldStateV1`` whose ``entities``
+        dict reflects the requested branch.
+
+        Factual reads (``branch_world_id != 'shadow'`` or no
+        ``branch_label``) return ``self`` unchanged — zero overhead.
+        Shadow reads return a NEW ``WorldStateV1`` that re-uses every
+        other field by reference (events, edges, propositions, etc.
+        are shared with ``self``) but swaps ``entities`` for the
+        layered view computed by :meth:`entities_for_branch`. The
+        layered dict is itself a fresh dict so callers can iterate it
+        safely without mutating the underlying sidecar.
+
+        Downstream physics, brief-builders, and Q&A see the shadow
+        clones (with their independently-trimmed timelines and
+        accumulated shadow snapshots) instead of the factual entities
+        — closing the gap that previously let an interrogation on a
+        shadow branch contradict the rendered counterfactual prose.
+        """
+        if branch_world_id != "shadow" or not branch_label:
+            return self
+        sidecar = self.shadow_entities.get(branch_label) or {}
+        if not sidecar:
+            return self
+        return self.model_copy(update={
+            "entities": self.entities_for_branch(
+                branch_world_id, branch_label,
+            ),
+        })
 
     @model_validator(mode="after")
     def _mirror_missing_relationship_directions(self) -> "WorldStateV1":

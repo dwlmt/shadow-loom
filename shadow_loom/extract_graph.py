@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Set
 from pydantic import BaseModel, Field
 
 from shadow_loom.models import (
+    Entity,
     EntityStateSnapshot,
     ObjectStateSnapshot,
     WorldStateV1,
@@ -2157,6 +2158,67 @@ def _apply_belief_confidence_updates(
                 )
 
 
+def _get_or_clone_shadow_entity(
+    merged: WorldStateV1,
+    entity_id: str,
+    *,
+    branch_label: Optional[str],
+    suppressed_event_ids: Optional[set[str]] = None,
+) -> Optional["Entity"]:
+    """Return the shadow-branch split copy of ``entity_id``, creating
+    it on first touch via the AMWN node-splitting construction
+    (Correa & Bareinboim 2025; see docs/academic-foundations.md §2.2).
+
+    The split copy is materialised by deep-copying the factual entity
+    into ``merged.shadow_entities[branch_label][entity_id]`` (lazy:
+    only on the first shadow write that targets the entity — i.e.
+    only when a ``do(·)`` makes the entity's ancestral context
+    diverge from factual). Every snapshot whose ``triggered_by`` is
+    in ``suppressed_event_ids`` is then trimmed off the clone's
+    ``state_timeline`` because the structural-equation arc that
+    produced it has been severed in this AMWN world. Beliefs whose
+    ``acquired_via_event_id`` is in the suppressed set are likewise
+    trimmed (same provenance argument). The clone is tagged
+    ``world_id='shadow'``.
+
+    Subsequent shadow merges read the existing clone (no re-clone,
+    no re-trim) so accumulated shadow snapshots persist. Sibling
+    shadow branches (different ``branch_label``) are independent
+    AMWN worlds W*ₙ with their own split copies.
+
+    Returns ``None`` when no factual entity with that id exists and
+    no clone is present (caller logs as a normal unknown-entity skip).
+    """
+    if not branch_label:
+        return None
+    sidecar = merged.shadow_entities.setdefault(branch_label, {})
+    if entity_id in sidecar:
+        return sidecar[entity_id]
+    factual = merged.entities.get(entity_id)
+    if factual is None:
+        return None
+    clone = copy.deepcopy(factual)
+    clone.world_id = "shadow"
+    sup = set(suppressed_event_ids or [])
+    if sup:
+        clone.state_timeline = [
+            s for s in clone.state_timeline
+            if getattr(s, "triggered_by", None) not in sup
+        ]
+        clone.beliefs = [
+            b for b in clone.beliefs
+            if getattr(b, "acquired_via_event_id", None) not in sup
+        ]
+    sidecar[entity_id] = clone
+    logger.info(
+        "[merge\u00b7shadow-clone] AMWN-split entity %s on branch %r "
+        "(suppressed=%d snapshot(s)/belief(s)).",
+        entity_id, branch_label,
+        len(sup) if sup else 0,
+    )
+    return clone
+
+
 def _apply_deletions(
     merged: WorldStateV1,
     topology: "ChunkTopology",
@@ -3121,6 +3183,21 @@ class VersionedWorldModel(BaseModel):
         changeset.social_edges_added = len(merged.social_topology) - pre_social
 
         # --- Entity state updates ---
+        # Shadow-branch writes that target a factual entity are
+        # routed onto a per-branch SPLIT COPY in
+        # ``merged.shadow_entities`` (AMWN node-splitting; Correa &
+        # Bareinboim 2025 — see
+        # :meth:`WorldStateV1.entities_for_branch` and
+        # docs/academic-foundations.md §2.2). The split copy is
+        # materialised lazily on first touch via
+        # :func:`_get_or_clone_shadow_entity`, which also severs the
+        # incoming structural-equation arcs corresponding to
+        # ``topology.suppressed_event_ids`` from the clone's seeded
+        # timeline so no pruned-cause snapshot survives on the
+        # split. Factual writes (``world_id=='factual'``) keep their
+        # original same-branch path and write directly onto
+        # ``merged.entities[id]``.
+        _suppressed_set = set(topology.suppressed_event_ids or [])
         for eu in topology.entity_updates:
             entity = merged.entities.get(eu.entity_id)
             if entity is None:
@@ -3129,18 +3206,30 @@ class VersionedWorldModel(BaseModel):
                 )
                 changeset.entity_updates_skipped.append(eu.entity_id)
                 continue
-            # Branch safety: the snapshot we're about to append is
-            # tagged with the merge ``world_id``. Appending a shadow
-            # snapshot onto a factual-tagged entity (or vice versa)
-            # would pollute the canonical timeline that replay helpers
-            # such as ``reconstruct_entity_at`` walk in fabula order
-            # \u2014 silently leaking shadow-derived traits / beliefs /
-            # status changes into factual reconstructions. Skip with
-            # an INFO log; if the caller needs the snapshot on this
-            # branch, the topology must reference the branch-tagged
-            # holder id.
             holder_world = getattr(entity, "world_id", "factual") or "factual"
-            if holder_world != world_id:
+            target_entity: Optional["Entity"] = entity
+            if world_id == "shadow" and holder_world == "factual":
+                # AMWN node-split: route onto a per-branch split copy
+                # so the factual world is never mutated and the
+                # shadow branch carries its own independently-
+                # replayable state_timeline.
+                target_entity = _get_or_clone_shadow_entity(
+                    merged, eu.entity_id,
+                    branch_label=branch_label,
+                    suppressed_event_ids=_suppressed_set,
+                )
+                if target_entity is None:
+                    logger.info(
+                        "[merge\u00b7entity-update] Shadow write for %s "
+                        "could not be cloned (no branch_label) \u2014 "
+                        "cross-branch write blocked.",
+                        eu.entity_id,
+                    )
+                    changeset.entity_updates_skipped.append(eu.entity_id)
+                    continue
+            elif holder_world != world_id:
+                # Remaining mismatch (e.g. factual write onto a
+                # shadow-tagged holder) stays blocked as before.
                 logger.info(
                     "[merge\u00b7entity-update] Skipped snapshot on %s "
                     "(holder.world_id=%s, merge_world_id=%s) \u2014 "
@@ -3161,8 +3250,8 @@ class VersionedWorldModel(BaseModel):
                 status=eu.new_status,
                 location_id=eu.new_location_id,
             )
-            entity.state_timeline.append(snap)
-            entity.state_timeline.sort(key=lambda s: s.fabula_time)
+            target_entity.state_timeline.append(snap)
+            target_entity.state_timeline.sort(key=lambda s: s.fabula_time)
             changeset.entity_updates_applied += 1
 
         # --- Object state updates ---
