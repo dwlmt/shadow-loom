@@ -576,6 +576,43 @@ holder are filtered out before reconstruction. The full
 enforcement matrix is exercised by
 \texttt{tests/test\_rung\_audit\_fixes.py}.
 
+\paragraph{Node-splitting as a persistence-time sidecar.}
+The merge-time guard above blocks cross-branch overwrites of the
+factual record, but a positive shadow write
+(a counterfactual snapshot, a flipped proposition truth, a
+shadow-only ownership change) still has to land \emph{somewhere}
+on the persisted snapshot. \texttt{WorldStateV1} reifies the
+AMWN node-splitting construction of \citet{correa2025amwn} as
+four lazy per-branch sidecars
+--- \texttt{shadow\_entities}, \texttt{shadow\_objects},
+\texttt{shadow\_propositions}, \texttt{shadow\_world\_traits} ---
+each shaped
+$\textit{branch\_label} \to (\textit{id} \to \textit{record})$.
+A node is left node-shadowed (a single shared record backs every
+world) until a shadow merge writes to it; at that point a
+deep-copy clone is materialised in the appropriate sidecar, its
+\texttt{state\_timeline} is trimmed of snapshots whose
+\texttt{triggered\_by} lies in the suppression closure
+(severing the incoming structural equations on the split copy),
+and subsequent shadow snapshots accumulate only on the clone.
+Sibling shadow branches are independent AMWN worlds $W^*_n$
+keyed by their distinct \texttt{branch\_label}. Reads go through
+\texttt{WorldStateV1.projected\_for\_branch}, which returns a
+shallow \texttt{model\_copy} swapping the four projected dicts
+at once (and returns \texttt{self} unchanged for factual reads,
+so the cost is zero on the canonical mainline). The serialization
+contract is asymmetric: read paths consume the projected view
+(so an Inspector lookup on a shadow row sees the
+do$(\cdot)$-modified entity rather than the factual baseline),
+write paths consume the raw un-projected snapshot (so a
+\texttt{save\_version} round-trip preserves the factual baseline
++ sidecar as distinct dictionaries rather than collapsing them
+into a single conflated \texttt{entities} map). Promotion of a
+shadow branch to canon copies the projected view of the head row
+onto a new factual \texttt{VersionRow} rather than rewriting
+anything in place, so canon and shadow lineages remain
+independently auditable.
+
 
 \section{Why this might matter beyond fiction}
 \label{sec:relevance}

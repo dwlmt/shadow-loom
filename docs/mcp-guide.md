@@ -307,6 +307,29 @@ same branch tip.
 so the chosen counterfactual becomes canon while the shadow source stays
 browsable for diffing.
 
+### Branch-aware reads and writes (AMWN node-splitting)
+
+When the resolved version row sits on a shadow branch, every **read**
+tool (`inspect`, `search`, `get_relationships`, `list_channels`,
+`get_history`, `ask`, …) automatically loads the world state through
+`WorldStateV1.projected_for_branch(branch_world_id, branch_label)`
+via the internal `helpers.load_world_state_projected` helper, so the
+returned snapshot reflects the AMWN-split clones on that branch
+rather than the factual baseline. Factual rows return `self` and
+incur zero overhead.
+
+Every **write** tool that persists a new version
+(`patch_world_state`, `branch`, `run_and_save`, …) carries the
+ancestor row's `(world_id, branch_label)` into `save_version` via
+`helpers.load_world_state_with_branch`, so a structured patch
+applied to a shadow row stays on that shadow branch rather than
+silently demoting onto the factual mainline (which the prior
+`save_version` default of `world_id="factual"` used to do).
+Agents that want to fork a new shadow branch off the current row
+call `manage(action="branch", ...)` explicitly; agents that want
+to keep editing within the current branch can call
+`patch_world_state` and trust the branch identity is preserved.
+
 ---
 
 ## 4. The 5 resources

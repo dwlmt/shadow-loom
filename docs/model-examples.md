@@ -1130,6 +1130,20 @@ the `promote_branch` tool moves one to `factual` if the author wants
 it adopted. The full per-branch diff is journalled, so promotions are
 reversible. (See [mcp-guide.md](mcp-guide.md) for the tool list.)
 
+Internally, a shadow branch does **not** duplicate the whole world.
+Each shadow merge that mutates a shared node (an entity who is
+alive in canon but dies in the shadow, a magic object whose owner
+changes, a proposition whose truth flips) materialises a lazy
+per-branch split copy in `WorldStateV1.shadow_entities`,
+`shadow_objects`, `shadow_propositions` or `shadow_world_traits`
+— the AMWN node-splitting construction of Correa & Bareinboim
+2025. Untouched nodes remain shared. Reads on the shadow row go
+through `WorldStateV1.projected_for_branch`, which layers the
+clones over the factual baseline; reads on the factual row see
+the canon record unchanged. Promotion copies the projected view
+back onto a new factual `VersionRow` rather than rewriting
+anything in place.
+
 ---
 
 ## 16. Dad's Army — `GeneralQuery` and the comic ensemble graph

@@ -365,3 +365,109 @@ def test_shadow_merge_without_branch_label_falls_back_to_skip():
     # Factual untouched.
     factual_triggers = {s.triggered_by for s in vwm2.current.entities["ENT_MRS_COADY"].state_timeline}
     assert "EVT_CF" not in factual_triggers
+
+
+# ---------------------------------------------------------------------
+# H1 regression: existing sidecar clones must be re-trimmed on
+# subsequent merges that widen the suppression set.
+# ---------------------------------------------------------------------
+
+
+def test_subsequent_merge_re_trims_existing_clone_state_timeline():
+    """Multi-merge scenario: the first shadow merge creates a clone
+    with one shadow snapshot. The second shadow merge then expands
+    ``suppressed_event_ids`` to include the first merge's
+    ``triggered_by`` (simulating closure widening as a newly-pruned
+    descendant turns out to be the cause of a previously-accepted
+    snapshot). The clone's state_timeline must shed that snapshot
+    on the second merge \u2014 walking only ``merged.entities`` would
+    miss it because the clone lives in ``merged.shadow_entities``.
+    """
+    vwm = VersionedWorldModel.from_world_state(_factual_world_with_coady())
+    topo1 = ChunkTopology(
+        chunk_id="CHK_CF_1",
+        entity_updates=[EntityUpdate(
+            entity_id="ENT_MRS_COADY", fabula_time=200,
+            triggered_by="EVT_CF_INTERVIEW", new_status="injured",
+        )],
+    )
+    vwm2 = vwm.merge(topo1, world_id="shadow", branch_label="cf_dogs")
+    clone_v1 = vwm2.current.shadow_entities["cf_dogs"]["ENT_MRS_COADY"]
+    assert "EVT_CF_INTERVIEW" in {s.triggered_by for s in clone_v1.state_timeline}
+
+    # Second merge widens the suppression set to include the
+    # first-merge snapshot's triggered_by.
+    topo2 = ChunkTopology(
+        chunk_id="CHK_CF_2",
+        suppressed_event_ids=["EVT_CF_INTERVIEW"],
+    )
+    vwm3 = vwm2.merge(topo2, world_id="shadow", branch_label="cf_dogs")
+    clone_v2 = vwm3.current.shadow_entities["cf_dogs"]["ENT_MRS_COADY"]
+    clone_triggers = {s.triggered_by for s in clone_v2.state_timeline}
+    assert "EVT_CF_INTERVIEW" not in clone_triggers, (
+        "Existing sidecar clone must be re-trimmed when subsequent "
+        "merges widen ``suppressed_event_ids``."
+    )
+
+
+def test_subsequent_merge_re_trims_existing_clone_beliefs():
+    """Same regression for ``Belief.acquired_via_event_id`` provenance
+    on the clone: a belief acquired via an event suppressed by the
+    second merge must be dropped from the existing clone, not only
+    from the (unread) factual entity record."""
+    # Build a factual world where Coady carries a belief acquired via
+    # an event we'll suppress on the second merge.
+    coady = Entity(
+        id="ENT_MRS_COADY", name="Mrs Coady",
+        location_id="LOC_FLAT", status="healthy",
+        traits={"frailty": TraitVector(value=0.4, inertia=0.6)},
+        beliefs=[
+            Belief(
+                target_id="ENT_GEORGE",
+                perceived_state="George ordered the dogs killed",
+                confidence=0.8, evidence_strength="moderate",
+                proposition_id="PROP_GEORGE_GUILTY",
+                inertia=0.4,
+                acquired_via_event_id="EVT_KEN_CONFESSED_TO_HER",
+            ),
+        ],
+        state_timeline=[], world_id="factual",
+    )
+    ws = WorldStateV1(
+        entities={"ENT_MRS_COADY": coady},
+        events=[EventNode(
+            id="EVT_KEN_CONFESSED_TO_HER", fabula_time=80, syuzhet_index=80,
+            event_type="utterance", actor_ids=["ENT_KEN"],
+            target_ids=["ENT_MRS_COADY"],
+            description="Ken admits the dog-killing to Coady",
+            world_id="factual",
+        )],
+        causal_topology=[], spatial_topology=[], social_topology=[],
+        locations={}, objects={}, world_traits={},
+        propositions=[], channels={},
+    )
+    vwm = VersionedWorldModel.from_world_state(ws)
+    # First shadow merge: create a clone via an unrelated entity update.
+    topo1 = ChunkTopology(
+        chunk_id="CHK_1",
+        entity_updates=[EntityUpdate(
+            entity_id="ENT_MRS_COADY", fabula_time=200,
+            triggered_by="EVT_NEUTRAL", new_status="injured",
+        )],
+    )
+    vwm2 = vwm.merge(topo1, world_id="shadow", branch_label="cf")
+    clone_v1 = vwm2.current.shadow_entities["cf"]["ENT_MRS_COADY"]
+    assert "PROP_GEORGE_GUILTY" in {b.proposition_id for b in clone_v1.beliefs}
+    # Second merge: suppress the belief's acquisition event.
+    topo2 = ChunkTopology(
+        chunk_id="CHK_2",
+        suppressed_event_ids=["EVT_KEN_CONFESSED_TO_HER"],
+    )
+    vwm3 = vwm2.merge(topo2, world_id="shadow", branch_label="cf")
+    clone_v2 = vwm3.current.shadow_entities["cf"]["ENT_MRS_COADY"]
+    belief_props = {b.proposition_id for b in clone_v2.beliefs}
+    assert "PROP_GEORGE_GUILTY" not in belief_props, (
+        "Existing sidecar clone must shed beliefs whose "
+        "``acquired_via_event_id`` is in the widened suppression set."
+    )
+

@@ -199,7 +199,12 @@ def build_export_tab(state: AppState) -> None:
                 if state.world_state is None:
                     ui.notify("No world model loaded", type="warning")
                     return
-                data = state.world_state.model_dump_json(indent=2)
+                # Export the RAW row snapshot so the JSON keeps the
+                # factual baseline + ``shadow_*`` sidecars. The
+                # projected ``state.world_state`` would flatten
+                # shadow clones into ``entities`` and lose the
+                # factual baseline on re-import.
+                data = state.raw_world_state.model_dump_json(indent=2)
                 ui.download(
                     data.encode("utf-8"),
                     filename=f"{_world_filename_stem()}_world.json",
@@ -210,7 +215,7 @@ def build_export_tab(state: AppState) -> None:
                 if state.world_state is None:
                     ui.notify("No world model loaded", type="warning")
                     return
-                data = state.world_state.model_dump_json(indent=2)
+                data = state.raw_world_state.model_dump_json(indent=2)
                 ui.run_javascript(
                     f"navigator.clipboard.writeText({json.dumps(data)})"
                 )
@@ -264,7 +269,11 @@ def build_export_tab(state: AppState) -> None:
                 payload: dict = {
                     "project_id": state.project_id,
                     "project_name": state.project_name,
-                    "world_model": state.world_state.model_dump(mode="json"),
+                    # Bundle the RAW snapshot (factual baseline +
+                    # ``shadow_*`` sidecars) so the export round-trips
+                    # cleanly; the projected view would conflate the
+                    # two and corrupt the factual baseline on import.
+                    "world_model": state.raw_world_state.model_dump(mode="json"),
                 }
                 if row is not None:
                     payload["version"] = {

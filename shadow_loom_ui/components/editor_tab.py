@@ -124,7 +124,14 @@ def _render_editor(state: AppState, container) -> None:
         return
 
     can_edit = _user_can_edit(state)
-    current_json = state.world_state.model_dump_json(indent=2)
+    # Render the RAW row snapshot (not the AMWN-projected view) so
+    # the user sees the factual baseline + ``shadow_*`` sidecars
+    # distinctly and can edit either side without the editor
+    # silently conflating them. Saving the projected view would
+    # flatten shadow clones into ``entities`` and lose the factual
+    # baseline for every cloned id on the next reload.
+    raw_ws = state.raw_world_state
+    current_json = raw_ws.model_dump_json(indent=2)
 
     with container:
         # --- Header -----------------------------------------------------
@@ -1268,6 +1275,12 @@ def _do_save(state: AppState, new_ws: WorldStateV1) -> None:
         return
 
     parent_version_row_id = state.current_version_row_id
+    # Carry the loaded row's branch identity so a manual edit on a
+    # shadow row stays on that shadow branch instead of silently
+    # demoting to factual via the ``save_version`` default
+    # ``world_id='factual'`` — mirror of the patch_world_state +
+    # MCP-side fixes.
+    parent_world_id, parent_branch_label = state.head_branch()
 
     try:
         new_ver = db.save_version(
@@ -1277,6 +1290,8 @@ def _do_save(state: AppState, new_ws: WorldStateV1) -> None:
             source="manual_edit",
             description="Manual world-model edit",
             user_id=user_id,
+            world_id=parent_world_id,  # type: ignore[arg-type]
+            branch_label=parent_branch_label,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Manual edit save failed")

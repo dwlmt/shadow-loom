@@ -285,6 +285,46 @@ class TestPatchWorldState:
         )
         assert "error" not in result, result
 
+    def test_patch_on_shadow_row_preserves_branch_identity(self):
+        """Regression: a patch applied on a shadow-branch ancestor
+        row must persist the child row onto the SAME shadow branch
+        (same ``world_id`` and ``branch_label``). Before the fix,
+        ``patch_world_state`` called ``save_version`` without
+        passing branch identity, so every shadow-branch patch was
+        silently demoted onto the factual mainline by the
+        ``save_version`` default ``world_id='factual'``.
+        """
+        from shadow_loom.db import save_version as db_save_version, get_version
+        ws = deepcopy(macbeth_ws)
+        _, pid, _ = _seed(ws)
+        # Seed a shadow-branch row v1 manually so v0 (factual) has a
+        # shadow sibling.
+        shadow_row = db_save_version(
+            project_id=pid,
+            world_state_json=ws.model_dump_json(),
+            ancestor_id=None,
+            source="counterfactual",
+            description="seed shadow",
+            world_id="shadow",
+            branch_label="cf_test_branch",
+        )
+        # Patch on top of the shadow row.
+        result = patch_world_state(
+            _ctx(),
+            patch={"notes": "shadow-branch edit"},
+            project_id=pid,
+            version=shadow_row.version,
+        )
+        assert "error" not in result, result
+        child = get_version(pid, result["new_version"])
+        assert child is not None
+        assert child.world_id == "shadow", (
+            f"Expected child to stay on shadow branch, got world_id={child.world_id!r}"
+        )
+        assert child.branch_label == "cf_test_branch", (
+            f"Expected branch_label preserved, got {child.branch_label!r}"
+        )
+
 
 # ────────────────────────────────────────────────────────────────────
 # MCP inspect — pagination + at_time

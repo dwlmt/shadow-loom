@@ -2100,6 +2100,46 @@ class WorldStateV1(BaseModel):
             "``branch_label``."
         ),
     )
+    shadow_objects: Dict[str, Dict[str, "NarrativeObject"]] = Field(
+        default_factory=dict,
+        description=(
+            "Per-shadow-branch object sidecar — mirror of "
+            "``shadow_entities`` for ``NarrativeObject``. Lazy "
+            "AMWN-split copies of ``objects[id]`` are materialised "
+            "on the first shadow write that touches the object "
+            "(state_timeline append, owner/location change). "
+            "Keyed by ``branch_label`` then ``object_id``. See "
+            ":meth:`objects_for_branch`."
+        ),
+    )
+    shadow_propositions: Dict[str, Dict[str, "Proposition"]] = Field(
+        default_factory=dict,
+        description=(
+            "Per-shadow-branch proposition sidecar — mirror of "
+            "``shadow_entities`` for ``Proposition``. Lazy "
+            "AMWN-split copies are materialised on the first "
+            "shadow write that touches a factual-tagged "
+            "proposition (truth commit, framing snapshot). The "
+            "clone's ``truth_at_fabula`` and ``state_timeline`` "
+            "are trimmed of suppressed-event provenance at clone "
+            "time. New propositions authored by a shadow chunk "
+            "(``new_propositions`` with merge ``world_id='shadow'``) "
+            "land directly in the sidecar rather than the shared "
+            "``propositions`` list so factual reads never see them. "
+            "Keyed by ``branch_label`` then ``proposition_id``."
+        ),
+    )
+    shadow_world_traits: Dict[str, Dict[str, "GlobalTrait"]] = Field(
+        default_factory=dict,
+        description=(
+            "Per-shadow-branch world-trait sidecar — mirror of "
+            "``shadow_entities`` for ``GlobalTrait``. Lazy "
+            "AMWN-split copies of ``world_traits[id]`` are "
+            "materialised on the first shadow write. Keyed by "
+            "``branch_label`` then ``WORLD_`` id. See "
+            ":meth:`world_traits_for_branch`."
+        ),
+    )
     events: List[EventNode]
     world_traits: Dict[str, "GlobalTrait"] = Field(
         default_factory=dict,
@@ -2218,6 +2258,66 @@ class WorldStateV1(BaseModel):
             entity_id,
         )
 
+    def objects_for_branch(
+        self,
+        branch_world_id: str = "factual",
+        branch_label: Optional[str] = None,
+    ) -> Dict[str, "NarrativeObject"]:
+        """Mirror of :meth:`entities_for_branch` for objects."""
+        if branch_world_id != "shadow" or not branch_label:
+            return self.objects
+        sidecar = self.shadow_objects.get(branch_label) or {}
+        if not sidecar:
+            return self.objects
+        merged: Dict[str, "NarrativeObject"] = dict(self.objects)
+        merged.update(sidecar)
+        return merged
+
+    def world_traits_for_branch(
+        self,
+        branch_world_id: str = "factual",
+        branch_label: Optional[str] = None,
+    ) -> Dict[str, "GlobalTrait"]:
+        """Mirror of :meth:`entities_for_branch` for world traits."""
+        if branch_world_id != "shadow" or not branch_label:
+            return self.world_traits
+        sidecar = self.shadow_world_traits.get(branch_label) or {}
+        if not sidecar:
+            return self.world_traits
+        merged: Dict[str, "GlobalTrait"] = dict(self.world_traits)
+        merged.update(sidecar)
+        return merged
+
+    def propositions_for_branch(
+        self,
+        branch_world_id: str = "factual",
+        branch_label: Optional[str] = None,
+    ) -> List["Proposition"]:
+        """Mirror of :meth:`entities_for_branch` for propositions.
+
+        Propositions are stored as a ``List`` (not ``Dict``); the
+        layered view substitutes shadow clones for their factual
+        twins by ``proposition_id`` and appends any
+        shadow-branch-only new propositions at the end. Order
+        within each section is preserved.
+        """
+        if branch_world_id != "shadow" or not branch_label:
+            return self.propositions
+        sidecar = self.shadow_propositions.get(branch_label) or {}
+        if not sidecar:
+            return self.propositions
+        out: List["Proposition"] = []
+        seen: set[str] = set()
+        for p in self.propositions:
+            clone = sidecar.get(p.proposition_id)
+            out.append(clone if clone is not None else p)
+            seen.add(p.proposition_id)
+        # Shadow-only genesis propositions (never had a factual twin).
+        for pid, clone in sidecar.items():
+            if pid not in seen:
+                out.append(clone)
+        return out
+
     def projected_for_branch(
         self,
         branch_world_id: str = "factual",
@@ -2244,13 +2344,29 @@ class WorldStateV1(BaseModel):
         if branch_world_id != "shadow" or not branch_label:
             return self
         sidecar = self.shadow_entities.get(branch_label) or {}
-        if not sidecar:
+        obj_sidecar = self.shadow_objects.get(branch_label) or {}
+        prop_sidecar = self.shadow_propositions.get(branch_label) or {}
+        wt_sidecar = self.shadow_world_traits.get(branch_label) or {}
+        if not (sidecar or obj_sidecar or prop_sidecar or wt_sidecar):
             return self
-        return self.model_copy(update={
-            "entities": self.entities_for_branch(
+        update: Dict[str, Any] = {}
+        if sidecar:
+            update["entities"] = self.entities_for_branch(
                 branch_world_id, branch_label,
-            ),
-        })
+            )
+        if obj_sidecar:
+            update["objects"] = self.objects_for_branch(
+                branch_world_id, branch_label,
+            )
+        if prop_sidecar:
+            update["propositions"] = self.propositions_for_branch(
+                branch_world_id, branch_label,
+            )
+        if wt_sidecar:
+            update["world_traits"] = self.world_traits_for_branch(
+                branch_world_id, branch_label,
+            )
+        return self.model_copy(update=update)
 
     @model_validator(mode="after")
     def _mirror_missing_relationship_directions(self) -> "WorldStateV1":

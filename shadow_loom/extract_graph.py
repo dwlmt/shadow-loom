@@ -13,7 +13,10 @@ from pydantic import BaseModel, Field
 from shadow_loom.models import (
     Entity,
     EntityStateSnapshot,
+    GlobalTrait,
+    NarrativeObject,
     ObjectStateSnapshot,
+    Proposition,
     WorldStateV1,
     reconstruct_entity_at,
     reconstruct_object_at,
@@ -1784,21 +1787,74 @@ def _apply_affect_to_world(
     *,
     world_id: Literal["factual", "shadow"],
     changeset: "MergeChangeset",
+    branch_label: Optional[str] = None,
 ) -> None:
     """Fold proposition / concern additions and snapshots into ``merged``.
 
     Idempotent: re-applying the same topology against the same world
     introduces no duplicates. Mutates ``merged`` in place and updates
     ``changeset`` counters.
+
+    ``branch_label`` enables AMWN node-splitting for shadow merges:
+    truth commits / framing snapshots / concerns / belief snapshots
+    that would otherwise be blocked by the cross-branch guard are
+    instead routed onto a per-branch split copy of the carrier in
+    the appropriate sidecar (see ``_get_or_clone_shadow_proposition``
+    and ``_get_or_clone_shadow_entity``).
     """
     from shadow_loom.models import Proposition, Concern  # local to keep import-time graph clean
+
+    # Pre-compute suppressed-commit provenance once so per-call clone
+    # helpers can trim the new sidecar copies consistently with the
+    # ``_apply_deletions`` cascade (see same provenance rule there).
+    _suppressed_event_ids: set[str] = set(getattr(topology, "suppressed_event_ids", None) or [])
+    _suppressed_commits: set[tuple[str, int]] = set()
+    _surviving_commits: set[tuple[str, int]] = set()
+    if world_id == "shadow" and branch_label and _suppressed_event_ids:
+        def _committed_props_at_local(evt: Any) -> List[tuple[str, int]]:
+            ft = getattr(evt, "fabula_time", None)
+            if ft is None:
+                return []
+            pairs: List[tuple[str, int]] = []
+            pid_a = getattr(evt, "asserts_proposition_id", None)
+            if pid_a:
+                pairs.append((pid_a, int(ft)))
+            pid_d = getattr(evt, "denies_proposition_id", None)
+            if pid_d:
+                pairs.append((pid_d, int(ft)))
+            for pid_r in getattr(evt, "resolves_proposition_ids", None) or []:
+                pairs.append((pid_r, int(ft)))
+            return pairs
+        for evt in merged.events:
+            if evt.id in _suppressed_event_ids:
+                _suppressed_commits.update(_committed_props_at_local(evt))
+            else:
+                _surviving_commits.update(_committed_props_at_local(evt))
 
     # Index existing propositions by id for O(1) lookup.
     prop_index: Dict[str, Proposition] = {p.proposition_id: p for p in merged.propositions}
 
     # 1. New propositions (genesis) — dedup on proposition_id.
+    #
+    # Branch routing: on shadow merges with a named branch, route
+    # new propositions straight into the sidecar so factual reads
+    # never see them. Falls back to the legacy shared-list append
+    # for factual merges and for shadow merges without a named
+    # branch (defensive — same fallback as entity routing).
     for pid, prop in topology.new_propositions.items():
         if pid in prop_index:
+            continue
+        if world_id == "shadow" and branch_label:
+            sidecar = merged.shadow_propositions.setdefault(branch_label, {})
+            if pid in sidecar:
+                continue
+            new_prop = prop.model_copy(update={"world_id": "shadow"})
+            sidecar[pid] = new_prop
+            # Make the sidecar entry visible to subsequent
+            # ``prop_index`` lookups in this same call (truth
+            # commits / framing snapshots in steps 2 & 3 below).
+            prop_index[pid] = new_prop
+            changeset.propositions_added += 1
             continue
         new_prop = prop.model_copy(update={"world_id": world_id}) if world_id != "factual" else prop
         merged.propositions.append(new_prop)
@@ -1823,13 +1879,35 @@ def _apply_affect_to_world(
             continue
         prop_world = getattr(prop, "world_id", "factual") or "factual"
         if prop_world != world_id:
-            logger.info(
-                "[merge·affect] Skipped truth commit on PROP %s "
-                "(prop.world_id=%s, merge_world_id=%s) — "
-                "cross-branch write blocked.",
-                commit.proposition_id, prop_world, world_id,
-            )
-            continue
+            if world_id == "shadow" and branch_label:
+                # AMWN-split: materialise a per-branch clone of the
+                # factual proposition and route the truth commit
+                # onto the clone instead of mutating shared state.
+                clone = _get_or_clone_shadow_proposition(
+                    merged, commit.proposition_id,
+                    branch_label=branch_label,
+                    suppressed_commits=_suppressed_commits,
+                    suppressed_event_ids=_suppressed_event_ids,
+                    surviving_commits=_surviving_commits,
+                )
+                if clone is None:
+                    logger.info(
+                        "[merge·affect] Shadow truth commit on PROP %s "
+                        "could not be cloned (no branch_label) — "
+                        "cross-branch write blocked.",
+                        commit.proposition_id,
+                    )
+                    continue
+                prop = clone
+                prop_index[commit.proposition_id] = clone
+            else:
+                logger.info(
+                    "[merge·affect] Skipped truth commit on PROP %s "
+                    "(prop.world_id=%s, merge_world_id=%s) — "
+                    "cross-branch write blocked.",
+                    commit.proposition_id, prop_world, world_id,
+                )
+                continue
         existing = prop.truth_at_fabula.get(commit.fabula_time)
         if existing is not None and existing == commit.truth:
             continue  # idempotent re-apply
@@ -1850,13 +1928,32 @@ def _apply_affect_to_world(
             continue
         prop_world = getattr(prop, "world_id", "factual") or "factual"
         if prop_world != world_id:
-            logger.info(
-                "[merge·affect] Skipped framing snapshot on PROP %s "
-                "(prop.world_id=%s, merge_world_id=%s) — "
-                "cross-branch write blocked.",
-                snap.proposition_id, prop_world, world_id,
-            )
-            continue
+            if world_id == "shadow" and branch_label:
+                clone = _get_or_clone_shadow_proposition(
+                    merged, snap.proposition_id,
+                    branch_label=branch_label,
+                    suppressed_commits=_suppressed_commits,
+                    suppressed_event_ids=_suppressed_event_ids,
+                    surviving_commits=_surviving_commits,
+                )
+                if clone is None:
+                    logger.info(
+                        "[merge·affect] Shadow framing snapshot on PROP %s "
+                        "could not be cloned (no branch_label) — "
+                        "cross-branch write blocked.",
+                        snap.proposition_id,
+                    )
+                    continue
+                prop = clone
+                prop_index[snap.proposition_id] = clone
+            else:
+                logger.info(
+                    "[merge·affect] Skipped framing snapshot on PROP %s "
+                    "(prop.world_id=%s, merge_world_id=%s) — "
+                    "cross-branch write blocked.",
+                    snap.proposition_id, prop_world, world_id,
+                )
+                continue
         from shadow_loom.models import PropositionSnapshot
         ps = PropositionSnapshot(
             world_id=world_id,
@@ -1894,13 +1991,32 @@ def _apply_affect_to_world(
             continue
         ent_world = getattr(ent, "world_id", "factual") or "factual"
         if ent_world != world_id:
-            logger.info(
-                "[merge·affect] Skipped %d new_concern(s) on %s "
-                "(ent.world_id=%s, merge_world_id=%s) — "
-                "cross-branch write blocked.",
-                len(concerns), entity_id, ent_world, world_id,
-            )
-            continue
+            if world_id == "shadow" and branch_label:
+                # AMWN-split: route new concerns onto a per-branch
+                # split copy of the entity so the factual entity
+                # record is never mutated.
+                clone = _get_or_clone_shadow_entity(
+                    merged, entity_id,
+                    branch_label=branch_label,
+                    suppressed_event_ids=_suppressed_event_ids,
+                )
+                if clone is None:
+                    logger.info(
+                        "[merge·affect] Shadow new_concerns on %s "
+                        "could not be cloned (no branch_label) — "
+                        "cross-branch write blocked.",
+                        entity_id,
+                    )
+                    continue
+                ent = clone
+            else:
+                logger.info(
+                    "[merge·affect] Skipped %d new_concern(s) on %s "
+                    "(ent.world_id=%s, merge_world_id=%s) — "
+                    "cross-branch write blocked.",
+                    len(concerns), entity_id, ent_world, world_id,
+                )
+                continue
         existing_keys = {
             (c.proposition_id, c.polarity) for c in ent.concerns
         }
@@ -1937,13 +2053,29 @@ def _apply_affect_to_world(
                 continue
             ent_world = getattr(ent, "world_id", "factual") or "factual"
             if ent_world != world_id:
-                logger.info(
-                    "[merge·affect] Skipped ConcernSeed on %s "
-                    "(ent.world_id=%s, merge_world_id=%s) — "
-                    "cross-branch write blocked.",
-                    holder_id, ent_world, world_id,
-                )
-                continue
+                if world_id == "shadow" and branch_label:
+                    clone = _get_or_clone_shadow_entity(
+                        merged, holder_id,
+                        branch_label=branch_label,
+                        suppressed_event_ids=_suppressed_event_ids,
+                    )
+                    if clone is None:
+                        logger.info(
+                            "[merge·affect] Shadow ConcernSeed on %s "
+                            "could not be cloned (no branch_label) — "
+                            "cross-branch write blocked.",
+                            holder_id,
+                        )
+                        continue
+                    ent = clone
+                else:
+                    logger.info(
+                        "[merge·affect] Skipped ConcernSeed on %s "
+                        "(ent.world_id=%s, merge_world_id=%s) — "
+                        "cross-branch write blocked.",
+                        holder_id, ent_world, world_id,
+                    )
+                    continue
             prop_id = getattr(seed, "proposition_id", None)
             polarity = getattr(seed, "polarity", None)
             if not prop_id or not polarity:
@@ -1986,10 +2118,24 @@ def _apply_affect_to_world(
         # collisions (same CCN_ id appearing on two holders) route the
         # snapshot onto every matching concern instead of silently
         # binding to whichever was iterated last.
-        concern_index: Dict[str, List["Concern"]] = {}
+        #
+        # On shadow merges with a named branch, we also need to find
+        # the concern_id on entity *clones* in
+        # ``merged.shadow_entities[branch_label]`` (whose ``world_id``
+        # is ``"shadow"``) so a snapshot whose factual twin is being
+        # masked by an AMWN-split clone lands on the clone instead.
+        concern_index: Dict[str, List[tuple["Concern", str]]] = {}
         for ent in merged.entities.values():
             for c in ent.concerns:
-                concern_index.setdefault(c.concern_id, []).append(c)
+                concern_index.setdefault(c.concern_id, []).append(
+                    (c, ent.id),
+                )
+        if world_id == "shadow" and branch_label:
+            for ent in (merged.shadow_entities.get(branch_label) or {}).values():
+                for c in ent.concerns:
+                    concern_index.setdefault(c.concern_id, []).append(
+                        (c, ent.id),
+                    )
         for snap in topology.concern_snapshots:
             targets = concern_index.get(snap.concern_id) or []
             if not targets:
@@ -1999,13 +2145,30 @@ def _apply_affect_to_world(
                 )
                 continue
             # Branch safety: only stamp snapshots onto concerns whose
-            # ``world_id`` matches the merge branch. Cross-branch
-            # writes are skipped; if every match is filtered out we
-            # log once and move on.
+            # ``world_id`` matches the merge branch. On shadow merges
+            # with a named branch, attempt to route a snapshot onto a
+            # cross-branch concern via the entity sidecar before
+            # giving up.
             in_branch = [
-                c for c in targets
+                (c, eid) for (c, eid) in targets
                 if (getattr(c, "world_id", "factual") or "factual") == world_id
             ]
+            if not in_branch and world_id == "shadow" and branch_label:
+                # Try to clone the holder entity (any of the cross-
+                # branch matches will do — pick the first) so its
+                # concerns become shadow-tagged copies on the sidecar.
+                _src_eid = targets[0][1]
+                _clone = _get_or_clone_shadow_entity(
+                    merged, _src_eid,
+                    branch_label=branch_label,
+                    suppressed_event_ids=_suppressed_event_ids,
+                )
+                if _clone is not None:
+                    for cc in _clone.concerns:
+                        if cc.concern_id == snap.concern_id and (
+                            getattr(cc, "world_id", "factual") or "factual"
+                        ) == "shadow":
+                            in_branch.append((cc, _clone.id))
             if not in_branch:
                 logger.info(
                     "[merge·affect] Skipped concern snapshot for CCN %s — "
@@ -2014,7 +2177,7 @@ def _apply_affect_to_world(
                     snap.concern_id, world_id, len(targets),
                 )
                 continue
-            for target in in_branch:
+            for target, _eid in in_branch:
                 cs = ConcernSnapshot(
                     world_id=world_id,
                     fabula_time=snap.fabula_time,
@@ -2061,13 +2224,29 @@ def _apply_affect_to_world(
             # concern-snapshot guard a few blocks above.
             ent_world = getattr(ent, "world_id", "factual") or "factual"
             if ent_world != world_id:
-                logger.info(
-                    "[merge\u00b7affect] Skipped belief snapshot on %s "
-                    "(holder.world_id=%s, merge_world_id=%s) \u2014 "
-                    "cross-branch write blocked.",
-                    bs.holder_id, ent_world, world_id,
-                )
-                continue
+                if world_id == "shadow" and branch_label:
+                    clone = _get_or_clone_shadow_entity(
+                        merged, bs.holder_id,
+                        branch_label=branch_label,
+                        suppressed_event_ids=_suppressed_event_ids,
+                    )
+                    if clone is None:
+                        logger.info(
+                            "[merge·affect] Shadow belief snapshot on %s "
+                            "could not be cloned (no branch_label) — "
+                            "cross-branch write blocked.",
+                            bs.holder_id,
+                        )
+                        continue
+                    ent = clone
+                else:
+                    logger.info(
+                        "[merge\u00b7affect] Skipped belief snapshot on %s "
+                        "(holder.world_id=%s, merge_world_id=%s) \u2014 "
+                        "cross-branch write blocked.",
+                        bs.holder_id, ent_world, world_id,
+                    )
+                    continue
             # Locate-or-create an EntityStateSnapshot at this
             # (fabula_time, triggered_by) so multiple Affect snapshots
             # at the same tick stack onto a single timeline entry.
@@ -2112,6 +2291,7 @@ def _apply_belief_confidence_updates(
     *,
     changeset: "MergeChangeset",
     merge_world_id: Literal["factual", "shadow"] = "factual",
+    branch_label: Optional[str] = None,
 ) -> None:
     """Apply each ``EntityUpdate.belief_confidence_updates`` entry by
     overwriting the matching existing :class:`Belief` on the entity.
@@ -2131,13 +2311,30 @@ def _apply_belief_confidence_updates(
                 continue
             ent_world = getattr(ent, "world_id", "factual") or "factual"
             if ent_world != merge_world_id:
-                logger.info(
-                    "[merge·belief] Skipped confidence update on %s "
-                    "(ent.world_id=%s, merge_world_id=%s) — "
-                    "cross-branch write blocked.",
-                    eu.entity_id, ent_world, merge_world_id,
-                )
-                continue
+                if merge_world_id == "shadow" and branch_label:
+                    _sup = set(getattr(topology, "suppressed_event_ids", None) or [])
+                    clone = _get_or_clone_shadow_entity(
+                        merged, eu.entity_id,
+                        branch_label=branch_label,
+                        suppressed_event_ids=_sup,
+                    )
+                    if clone is None:
+                        logger.info(
+                            "[merge·belief] Shadow confidence update on %s "
+                            "could not be cloned (no branch_label) — "
+                            "cross-branch write blocked.",
+                            eu.entity_id,
+                        )
+                        continue
+                    ent = clone
+                else:
+                    logger.info(
+                        "[merge·belief] Skipped confidence update on %s "
+                        "(ent.world_id=%s, merge_world_id=%s) — "
+                        "cross-branch write blocked.",
+                        eu.entity_id, ent_world, merge_world_id,
+                    )
+                    continue
             matched = False
             for belief in ent.beliefs:
                 if belief.target_id != upd.target_id:
@@ -2215,6 +2412,155 @@ def _get_or_clone_shadow_entity(
         "(suppressed=%d snapshot(s)/belief(s)).",
         entity_id, branch_label,
         len(sup) if sup else 0,
+    )
+    return clone
+
+
+def _get_or_clone_shadow_object(
+    merged: WorldStateV1,
+    object_id: str,
+    *,
+    branch_label: Optional[str],
+    suppressed_event_ids: Optional[set[str]] = None,
+) -> Optional["NarrativeObject"]:
+    """Return the shadow-branch split copy of ``object_id``.
+
+    Mirror of :func:`_get_or_clone_shadow_entity` for
+    ``NarrativeObject``: lazy AMWN-split clone of
+    ``merged.objects[id]`` materialised in
+    ``merged.shadow_objects[branch_label][object_id]`` on first
+    shadow write. Snapshots on the clone whose ``triggered_by`` is
+    in the suppressed-event set are trimmed off (severed causal
+    arcs). Returns ``None`` when no factual object exists, or when
+    no ``branch_label`` was provided (caller logs as usual).
+    """
+    if not branch_label:
+        return None
+    sidecar = merged.shadow_objects.setdefault(branch_label, {})
+    if object_id in sidecar:
+        return sidecar[object_id]
+    factual = merged.objects.get(object_id)
+    if factual is None:
+        return None
+    clone = copy.deepcopy(factual)
+    clone.world_id = "shadow"
+    sup = set(suppressed_event_ids or [])
+    if sup:
+        clone.state_timeline = [
+            s for s in clone.state_timeline
+            if getattr(s, "triggered_by", None) not in sup
+        ]
+    sidecar[object_id] = clone
+    logger.info(
+        "[merge\u00b7shadow-clone] AMWN-split object %s on branch %r "
+        "(suppressed=%d snapshot(s)).",
+        object_id, branch_label,
+        len(sup) if sup else 0,
+    )
+    return clone
+
+
+def _get_or_clone_shadow_world_trait(
+    merged: WorldStateV1,
+    trait_id: str,
+    *,
+    branch_label: Optional[str],
+    suppressed_event_ids: Optional[set[str]] = None,
+) -> Optional["GlobalTrait"]:
+    """Mirror of :func:`_get_or_clone_shadow_entity` for
+    ``GlobalTrait``. Trims ``state_timeline`` by ``triggered_by``.
+    """
+    if not branch_label:
+        return None
+    sidecar = merged.shadow_world_traits.setdefault(branch_label, {})
+    if trait_id in sidecar:
+        return sidecar[trait_id]
+    factual = merged.world_traits.get(trait_id)
+    if factual is None:
+        return None
+    clone = copy.deepcopy(factual)
+    clone.world_id = "shadow"
+    sup = set(suppressed_event_ids or [])
+    if sup and hasattr(clone, "state_timeline") and clone.state_timeline:
+        clone.state_timeline = [
+            s for s in clone.state_timeline
+            if getattr(s, "triggered_by", None) not in sup
+        ]
+    sidecar[trait_id] = clone
+    logger.info(
+        "[merge\u00b7shadow-clone] AMWN-split world_trait %s on branch %r "
+        "(suppressed=%d snapshot(s)).",
+        trait_id, branch_label,
+        len(sup) if sup else 0,
+    )
+    return clone
+
+
+def _get_or_clone_shadow_proposition(
+    merged: WorldStateV1,
+    proposition_id: str,
+    *,
+    branch_label: Optional[str],
+    suppressed_commits: Optional[set[tuple[str, int]]] = None,
+    suppressed_event_ids: Optional[set[str]] = None,
+    surviving_commits: Optional[set[tuple[str, int]]] = None,
+) -> Optional["Proposition"]:
+    """Mirror of :func:`_get_or_clone_shadow_entity` for
+    ``Proposition``.
+
+    Lazy AMWN-split clone of ``merged.propositions[id]`` (located by
+    id scan; the registry is a list) materialised in
+    ``merged.shadow_propositions[branch_label][proposition_id]``.
+
+    Trim semantics on the clone:
+      * ``truth_at_fabula[ft]`` is dropped iff
+        ``(proposition_id, ft) in suppressed_commits`` AND not in
+        ``surviving_commits`` — same provenance rule used by the
+        cascade trim in :func:`_apply_deletions`.
+      * ``state_timeline`` entries whose ``triggered_by`` is in
+        ``suppressed_event_ids`` are dropped.
+
+    Returns ``None`` when the proposition does not exist or no
+    ``branch_label`` was supplied.
+    """
+    if not branch_label:
+        return None
+    sidecar = merged.shadow_propositions.setdefault(branch_label, {})
+    if proposition_id in sidecar:
+        return sidecar[proposition_id]
+    factual: Optional["Proposition"] = None
+    for p in merged.propositions:
+        if p.proposition_id == proposition_id:
+            factual = p
+            break
+    if factual is None:
+        return None
+    clone = copy.deepcopy(factual)
+    clone.world_id = "shadow"
+    sup_commits = suppressed_commits or set()
+    surv_commits = surviving_commits or set()
+    if sup_commits and isinstance(clone.truth_at_fabula, dict):
+        to_drop = {
+            int(ft) for (pid, ft) in sup_commits
+            if pid == proposition_id and (pid, ft) not in surv_commits
+        }
+        if to_drop:
+            clone.truth_at_fabula = {
+                int(k): v for k, v in clone.truth_at_fabula.items()
+                if int(k) not in to_drop
+            }
+    sup_events = set(suppressed_event_ids or [])
+    if sup_events and getattr(clone, "state_timeline", None):
+        clone.state_timeline = [
+            s for s in clone.state_timeline
+            if getattr(s, "triggered_by", None) not in sup_events
+        ]
+    sidecar[proposition_id] = clone
+    logger.info(
+        "[merge\u00b7shadow-clone] AMWN-split proposition %s on branch %r "
+        "(suppressed=%d commit(s)).",
+        proposition_id, branch_label,
+        len(sup_commits) if sup_commits else 0,
     )
     return clone
 
@@ -2324,28 +2670,60 @@ def _apply_deletions(
         # entity-level mutation those snapshots applied is no longer
         # justified). Object, world-trait, proposition, and concern
         # timelines carry the same field so we walk them too.
-        for ent in merged.entities.values():
+        #
+        # We must walk both the factual ``merged.entities`` dict AND
+        # any previously-materialised AMWN-split copies in
+        # ``merged.shadow_entities`` \u2014 a clone created on an
+        # earlier shadow merge had its timeline trimmed against the
+        # suppression set known at clone-time; the current merge may
+        # be expanding that set (e.g. closure widened to include a
+        # newly-suppressed descendant event), so existing clones
+        # need a fresh trim pass.
+        def _all_entity_records() -> List[Any]:
+            records: List[Any] = list(merged.entities.values())
+            for sidecar in (merged.shadow_entities or {}).values():
+                records.extend(sidecar.values())
+            return records
+
+        def _all_object_records() -> List[Any]:
+            records: List[Any] = list(merged.objects.values())
+            for sidecar in (merged.shadow_objects or {}).values():
+                records.extend(sidecar.values())
+            return records
+
+        def _all_world_trait_records() -> List[Any]:
+            records: List[Any] = list(merged.world_traits.values())
+            for sidecar in (merged.shadow_world_traits or {}).values():
+                records.extend(sidecar.values())
+            return records
+
+        def _all_proposition_records() -> List[Any]:
+            records: List[Any] = list(merged.propositions)
+            for sidecar in (merged.shadow_propositions or {}).values():
+                records.extend(sidecar.values())
+            return records
+        for ent in _all_entity_records():
             ent.state_timeline = [
                 s for s in ent.state_timeline
                 if getattr(s, "triggered_by", None) not in sup
             ]
-        for obj in merged.objects.values():
+        for obj in _all_object_records():
             obj.state_timeline = [
                 s for s in obj.state_timeline
                 if getattr(s, "triggered_by", None) not in sup
             ]
-        for wt in merged.world_traits.values():
+        for wt in _all_world_trait_records():
             wt.state_timeline = [
                 s for s in wt.state_timeline
                 if getattr(s, "triggered_by", None) not in sup
             ]
-        for prop in merged.propositions:
+        for prop in _all_proposition_records():
             if getattr(prop, "state_timeline", None):
                 prop.state_timeline = [
                     s for s in prop.state_timeline
                     if getattr(s, "triggered_by", None) not in sup
                 ]
-        for ent in merged.entities.values():
+        for ent in _all_entity_records():
             for concern in ent.concerns:
                 if getattr(concern, "state_timeline", None):
                     concern.state_timeline = [
@@ -2358,8 +2736,9 @@ def _apply_deletions(
         # belief-invalidation snapshots for the direct prune set;
         # this guards against closure-expansion drift where a
         # disjunctively-suppressed descendant event was the actual
-        # provenance source.
-        for ent in merged.entities.values():
+        # provenance source. Walks sidecar clones too (same rationale
+        # as the state_timeline trim above).
+        for ent in _all_entity_records():
             ent.beliefs = [
                 b for b in ent.beliefs
                 if getattr(b, "acquired_via_event_id", None) not in sup
@@ -2410,7 +2789,7 @@ def _apply_deletions(
                 for pid, ft in to_drop:
                     drop_by_prop.setdefault(pid, set()).add(ft)
                 dropped_n = 0
-                for prop in merged.propositions:
+                for prop in _all_proposition_records():
                     fts = drop_by_prop.get(prop.proposition_id)
                     if not fts:
                         continue
@@ -3356,7 +3735,26 @@ class VersionedWorldModel(BaseModel):
             # written onto a factual-tagged object would pollute every
             # later factual reconstruction.
             holder_world = getattr(obj, "world_id", "factual") or "factual"
-            if holder_world != world_id:
+            target_obj: Optional["NarrativeObject"] = obj
+            if world_id == "shadow" and holder_world == "factual":
+                # AMWN node-split for objects: mirror of the entity
+                # routing above. Lazy clone in
+                # ``merged.shadow_objects[branch_label][ou.object_id]``.
+                target_obj = _get_or_clone_shadow_object(
+                    merged, ou.object_id,
+                    branch_label=branch_label,
+                    suppressed_event_ids=_suppressed_set,
+                )
+                if target_obj is None:
+                    logger.info(
+                        "[merge\u00b7object-update] Shadow write for %s "
+                        "could not be cloned (no branch_label) \u2014 "
+                        "cross-branch write blocked.",
+                        ou.object_id,
+                    )
+                    changeset.object_updates_skipped.append(ou.object_id)
+                    continue
+            elif holder_world != world_id:
                 logger.info(
                     "[merge\u00b7object-update] Skipped snapshot on %s "
                     "(holder.world_id=%s, merge_world_id=%s) \u2014 "
@@ -3378,19 +3776,22 @@ class VersionedWorldModel(BaseModel):
                 properties_set=dict(ou.properties_set or {}),
                 properties_unset=list(ou.properties_unset or []),
             )
-            obj.state_timeline.append(snap)
-            obj.state_timeline.sort(key=lambda s: s.fabula_time)
+            target_obj.state_timeline.append(snap)
+            target_obj.state_timeline.sort(key=lambda s: s.fabula_time)
             changeset.object_updates_applied += 1
 
         # --- Affect ledger (P2 of prose-merge completeness) ---
         # Folds new propositions, truth commits, proposition snapshots,
         # new concerns, ConcernSeed materialisations, and concern
         # snapshots into the merged world.
-        _apply_affect_to_world(merged, topology, world_id=world_id, changeset=changeset)
+        _apply_affect_to_world(
+            merged, topology, world_id=world_id, changeset=changeset,
+            branch_label=branch_label,
+        )
         # Belief confidence overwrites (Pearl Rung-2 BeliefMutation bridge).
         _apply_belief_confidence_updates(
             merged, topology, changeset=changeset,
-            merge_world_id=world_id,
+            merge_world_id=world_id, branch_label=branch_label,
         )
         # Supersession (mainline-promoted counterfactual override).
         _apply_supersession(

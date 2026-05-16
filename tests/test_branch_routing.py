@@ -449,3 +449,163 @@ class TestAppStateBranchRehydration:
         )
         assert prose is not None
         assert "Shadow prose chunk." in prose
+
+
+# =====================================================================
+# UI-side raw vs projected world-state plumbing (Phase 5 — May 2026).
+#
+# After ``load_db_version`` / ``load_project`` ``state.world_state``
+# is the AMWN-projected view (shadow clones layered into ``entities``
+# so panel reads see the do(\u00b7)-modified world). That view is
+# UNSAFE to serialize: dumping it conflates the factual baseline with
+# the shadow clones, and a reload overwrites the factual entry for
+# every cloned id with the clone (factual baseline LOST). Every save
+# / export / JSON-editor path must therefore route through
+# ``state.raw_world_state`` and pass the loaded row's branch identity
+# (``state.head_branch()``) to ``save_version`` so the new row stays
+# on the same shadow branch.
+# =====================================================================
+
+
+class TestAppStateRawWorldStateAccessor:
+    def _seed_factual_then_shadow(self):
+        from copy import deepcopy
+        from shadow_loom.models import WorldStateV1
+        from tests.conftest import make_empty_world_state
+        uid, pid = _seed_project()
+        base = make_empty_world_state()
+        # Build a shadow row whose JSON has a populated
+        # ``shadow_entities`` sidecar entry that diverges from the
+        # factual baseline. We bypass the merge engine and write the
+        # JSON directly so the test isolates the raw-vs-projected
+        # plumbing from the merge logic.
+        from shadow_loom.models import Entity
+        ent = Entity(
+            id="ENT_X", name="X",
+            location_id="LOC_VOID", status="healthy",
+            traits={}, beliefs=[],
+        )
+        base.entities["ENT_X"] = ent
+        clone = deepcopy(ent)
+        clone.world_id = "shadow"
+        clone.status = "injured"
+        base.shadow_entities = {"cf": {"ENT_X": clone}}
+        v0 = save_version(
+            project_id=pid, world_state_json=base.model_dump_json(),
+            version=0, source="ingestion", description="root",
+            user_id=uid, world_id="factual",
+        )
+        s1 = save_version(
+            project_id=pid, world_state_json=base.model_dump_json(),
+            version=1, source="counterfactual",
+            description="alt fork",
+            user_id=uid, ancestor_id=v0.id,
+            world_id="shadow", branch_label="cf",
+            prose="shadow",
+        )
+        return uid, pid, base, s1
+
+    def test_raw_world_state_returns_unprojected_snapshot(self):
+        from shadow_loom.models import WorldStateV1
+        from shadow_loom_ui.state import AppState
+
+        uid, pid, base, s1 = self._seed_factual_then_shadow()
+        state = AppState()
+        state.user_id = uid
+        state.project_id = pid
+        ws = WorldStateV1.model_validate_json(s1.world_state_json)
+        state.load_db_version(ws, s1.id, version_number=s1.version)
+
+        # state.world_state is the PROJECTED view — entities[ENT_X]
+        # is the shadow clone.
+        assert state.world_state is not None
+        assert (
+            state.world_state.entities["ENT_X"].status
+            == "injured"
+        )
+        # state.raw_world_state is the un-projected snapshot —
+        # entities[ENT_X] is the factual baseline, the sidecar still
+        # holds the shadow clone.
+        raw = state.raw_world_state
+        assert raw is not None
+        assert raw.entities["ENT_X"].status == "healthy"
+        assert (
+            raw.shadow_entities["cf"]["ENT_X"].status
+            == "injured"
+        )
+
+    def test_to_json_round_trips_factual_baseline(self):
+        """Dumping ``to_json`` on a loaded shadow row must preserve
+        the factual baseline for cloned ids. Before the fix this
+        dumped the projected view and the factual baseline for any
+        cloned entity was lost on the next reload.
+        """
+        from shadow_loom.models import WorldStateV1
+        from shadow_loom_ui.state import AppState
+
+        uid, pid, _, s1 = self._seed_factual_then_shadow()
+        state = AppState()
+        state.user_id = uid
+        state.project_id = pid
+        ws = WorldStateV1.model_validate_json(s1.world_state_json)
+        state.load_db_version(ws, s1.id, version_number=s1.version)
+
+        round_tripped = WorldStateV1.model_validate_json(state.to_json())
+        assert round_tripped.entities["ENT_X"].status == "healthy"
+        assert (
+            round_tripped.shadow_entities["cf"]["ENT_X"].status
+            == "injured"
+        )
+
+    def test_head_branch_reports_loaded_row_identity(self):
+        from shadow_loom.models import WorldStateV1
+        from shadow_loom_ui.state import AppState
+
+        uid, pid, _, s1 = self._seed_factual_then_shadow()
+        state = AppState()
+        state.user_id = uid
+        state.project_id = pid
+        ws = WorldStateV1.model_validate_json(s1.world_state_json)
+        state.load_db_version(ws, s1.id, version_number=s1.version)
+
+        world_id, label = state.head_branch()
+        assert world_id == "shadow"
+        assert label == "cf"
+
+    def test_patch_world_state_preserves_branch_and_baseline(self):
+        """End-to-end regression for the UI patch flow: a no-op
+        patch on a shadow row must (1) persist as shadow with the
+        same branch_label and (2) round-trip the factual baseline +
+        sidecar intact.
+        """
+        from shadow_loom.models import WorldStateV1
+        from shadow_loom.ingestion import WorldStatePatch
+        from shadow_loom_ui.db import get_version_by_id
+        from shadow_loom_ui.state import AppState
+
+        uid, pid, _, s1 = self._seed_factual_then_shadow()
+        state = AppState()
+        state.user_id = uid
+        state.project_id = pid
+        state.current_version_row_id = s1.id
+        ws = WorldStateV1.model_validate_json(s1.world_state_json)
+        state.load_db_version(ws, s1.id, version_number=s1.version)
+
+        ok, _changes = state.apply_world_state_patch(
+            WorldStatePatch(notes="no-op"),
+            description="regression no-op",
+        )
+        assert ok
+
+        new_row = get_version_by_id(state.current_version_row_id)
+        assert new_row is not None
+        # (1) Branch identity preserved.
+        assert new_row.world_id == "shadow"
+        assert new_row.branch_label == "cf"
+        # (2) Factual baseline + sidecar both intact on the new row.
+        new_ws = WorldStateV1.model_validate_json(new_row.world_state_json)
+        assert new_ws.entities["ENT_X"].status == "healthy"
+        assert (
+            new_ws.shadow_entities["cf"]["ENT_X"].status
+            == "injured"
+        )

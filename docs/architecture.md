@@ -93,6 +93,61 @@ Every node and edge inherits `world_id: Literal["factual", "shadow"]`. The
 canonical graph is `factual`; counterfactual sandboxes spawn `shadow` mirror
 nodes (see §4 below).
 
+### AMWN node-splitting sidecar (Correa & Bareinboim, ICML 2025)
+
+When a shadow merge mutates a node that is shared with the factual
+world, Shadow-Loom does **not** mutate the canonical record in place.
+Instead it lazily materialises a per-branch **split copy** in one of
+four parallel sidecars on `WorldStateV1`:
+
+| Carrier | Sidecar field | Shape |
+|---|---|---|
+| `Entity` | `shadow_entities` | `Dict[branch_label, Dict[entity_id, Entity]]` |
+| `NarrativeObject` | `shadow_objects` | `Dict[branch_label, Dict[object_id, NarrativeObject]]` |
+| `Proposition` | `shadow_propositions` | `Dict[branch_label, Dict[proposition_id, Proposition]]` |
+| `GlobalTrait` | `shadow_world_traits` | `Dict[branch_label, Dict[trait_id, GlobalTrait]]` |
+
+This is a direct encoding of the AMWN *node-splitting* construction:
+nodes whose ancestral context is invariant across worlds remain
+**node-shadowed** (a single shared representation backs every world),
+while a node whose incoming structural equation is severed by a
+`do(·)` is split into per-world copies. The split is **lazy** — the
+copy is only created on the first shadow merge that writes to the
+node — so an untouched entity costs zero memory across N shadow
+branches.
+
+When a clone is materialised, its `state_timeline` is trimmed of any
+snapshot whose `triggered_by` is in the closure of the
+intervention's `suppressed_event_ids` (severing the incoming
+equations on the split copy), and the clone is tagged
+`world_id="shadow"`. Subsequent shadow snapshots accumulate **only**
+on the clone; the factual record is untouched. The same trim is
+re-applied to existing clones on later shadow merges whose
+suppression set has widened.
+
+Layered reads are served by `WorldStateV1.entities_for_branch`,
+`objects_for_branch`, `propositions_for_branch`,
+`world_traits_for_branch` (shadow clone wins on collision, factual
+fallthrough for untouched ids) and the single-shot
+`projected_for_branch(branch_world_id, branch_label)` which returns
+a shallow `model_copy` swapping the four projected dicts at once.
+Factual reads return `self` unchanged — zero overhead.
+
+#### Raw vs projected: serialization contract
+
+`projected_for_branch` is the **read** surface; persistence and
+export paths must route through the **raw** unprojected snapshot
+(`VersionedWorldModel.current` directly, exposed in the UI as
+`AppState.raw_world_state`). Dumping the projected view would
+overwrite the canonical factual entry for every cloned id with its
+shadow clone, losing the factual baseline on the next reload. All
+save / export / JSON-editor paths (state.py `to_json`,
+`apply_world_state_patch`, editor_tab, export_tab, MCP
+`patch_world_state` and `branch`) now follow this contract and
+carry `(world_id, branch_label)` explicitly into `save_version` so
+a write on a shadow row stays on that branch rather than silently
+demoting to factual via the default `world_id="factual"`.
+
 ---
 
 ## 2. Phase 1 — World State & Initialisation (Steps 1–5)

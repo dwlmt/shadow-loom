@@ -175,7 +175,29 @@ intervention nodes "split" from their factual counterparts) **and** we
 implement the three rules of the ctf-calculus as a pre-flight check on
 every Rung-2 (Intervention) and Rung-3 (Counterfactual) query in [`shadow_loom/amwn.py`](../shadow_loom/amwn.py)
 (`build_amwn`, `check_consistency`, `check_ctf_independence`,
-`check_exclusion`, `apply_ctf_calculus`):
+`check_exclusion`, `apply_ctf_calculus`).
+
+The **node-splitting construction itself** is implemented as a lazy
+per-branch sidecar on the persisted world state — four parallel
+dictionaries (`shadow_entities`, `shadow_objects`,
+`shadow_propositions`, `shadow_world_traits` on `WorldStateV1`),
+each keyed by `branch_label` then by node id. A node remains
+**node-shadowed** (a single shared record backs every world) until
+a shadow merge writes to it; at that point a deep-copy clone is
+materialised in the sidecar, its `state_timeline` is trimmed of
+snapshots whose `triggered_by` lies in the suppression closure
+(severing the incoming structural equations on the split copy),
+and subsequent shadow snapshots accumulate only on the clone.
+Sibling shadow branches are independent AMWN worlds W*ₙ keyed by
+their distinct `branch_label`. Reads go through
+`WorldStateV1.projected_for_branch(branch_world_id, branch_label)`,
+which returns a shallow `model_copy` swapping the four projected
+dicts at once (and returns `self` unchanged for factual reads, so
+the cost is zero on the canonical mainline). See
+[architecture.md §1 "AMWN node-splitting sidecar"](architecture.md#amwn-node-splitting-sidecar-correa--bareinboim-icml-2025)
+for the persistence + serialization contract.
+
+The ctf-calculus rule table:
 
 | ctf-calculus rule | Shadow-loom implementation |
 |---|---|

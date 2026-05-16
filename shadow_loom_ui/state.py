@@ -200,6 +200,48 @@ class AppState:
     # Event bus: multiple listeners per event
     _listeners: Dict[StateEvent, List[Callable]] = field(default_factory=dict)
 
+    # ---- Branch-aware accessors ----------------------------------
+    # ``world_state`` is the AMWN-PROJECTED view (shadow clones
+    # layered into ``entities`` etc. via :meth:`projected_for_branch`)
+    # — correct for UI reads but unsafe to serialize, because dumping
+    # it conflates the factual baseline with the shadow clones and
+    # the factual record for any cloned id is lost on round-trip
+    # (the clone overwrites the factual entry in ``entities`` while
+    # ``shadow_entities`` keeps the same clone, so a reload mistakes
+    # the clone for the canonical factual entity).
+    #
+    # ``raw_world_state`` returns the un-projected snapshot directly
+    # from the VWM history (which :meth:`load_db_version` /
+    # :meth:`load_project` keep raw). All save / export / JSON-editor
+    # paths MUST route through this so the persisted snapshot keeps
+    # the factual baseline and the sidecar intact. ``head_branch``
+    # surfaces the loaded row's ``(world_id, branch_label)`` so
+    # those paths can also pass branch identity to ``save_version``
+    # and avoid the silent demote-to-factual lineage corruption that
+    # the MCP equivalents were already fixed against.
+
+    @property
+    def raw_world_state(self) -> Optional[WorldStateV1]:
+        """Un-projected world state for the loaded row — use for
+        every save / export / JSON-editor path. UI reads should keep
+        using :attr:`world_state` (the projected view).
+        """
+        if self.versioned_model is not None and self.versioned_model.history:
+            return self.versioned_model.current
+        return self.world_state
+
+    def head_branch(self) -> tuple[str, Optional[str]]:
+        """Return ``(world_id, branch_label)`` of the loaded VWM head.
+
+        Defaults to ``("factual", None)`` when no VWM is loaded so
+        callers can always splat the result into ``save_version``
+        without conditional branching.
+        """
+        if self.versioned_model is not None and self.versioned_model.history:
+            head = self.versioned_model.history[-1]
+            return head.world_id, head.branch_label
+        return "factual", None
+
     # ---- Event bus ----
 
     def on(self, event: StateEvent, callback: Callable) -> None:
@@ -879,9 +921,20 @@ class AppState:
         else:
             typed_patch = patch
 
+        # Apply the patch to the RAW (un-projected) world so the
+        # factual baseline + shadow_* sidecars are preserved across
+        # the save round-trip. Patching the projected ``self
+        # .world_state`` would flatten the per-branch AMWN clones
+        # into ``entities`` and the subsequent
+        # ``new_ws.model_dump_json()`` would persist the conflated
+        # dict, silently overwriting the canonical factual baseline
+        # for every cloned id.
+        ws_for_patch = self.raw_world_state
+        if ws_for_patch is None:
+            return False, ["No active world state."]
         try:
             new_ws, changes = _apply_world_state_patch(
-                self.world_state, typed_patch,
+                ws_for_patch, typed_patch,
             )
         except Exception as exc:
             logger.exception("[AppState] World-state patch apply failed")
@@ -957,6 +1010,13 @@ class AppState:
                     "patch_world_state_quarantined"
                     if quarantined else "patch_world_state"
                 )
+                # Carry the loaded row's branch identity so a patch
+                # on a shadow row stays on that shadow branch instead
+                # of silently demoting to factual via the
+                # ``save_version`` default ``world_id='factual'`` —
+                # mirror of the MCP-side fix in
+                # ``shadow_loom_mcp/server.py::patch_world_state``.
+                _branch_world_id, _branch_label = self.head_branch()
                 ver = save_version(
                     project_id=proj_id,
                     world_state_json=ws_json,
@@ -964,6 +1024,8 @@ class AppState:
                     source=source_label,
                     description=desc,
                     user_id=self.user_id,
+                    world_id=_branch_world_id,
+                    branch_label=_branch_label,
                 )
                 # Quarantined patches do not become the active version;
                 # the user / agent stays anchored on the parent so the
@@ -1215,6 +1277,19 @@ class AppState:
         # shadow head would silently re-tag onto factual mainline.
         if version_row_id is not None:
             self._rehydrate_vwm_history_from_db(version_row_id)
+        # AMWN-split projection on load (same as ``load_db_version``):
+        # swap ``world_state.entities`` for the per-branch layered
+        # view so UI consumers see the do(\u00b7)-modified entities on
+        # a shadow row instead of the factual baseline. No-op on
+        # factual rows.
+        if self.versioned_model is not None and self.versioned_model.history:
+            _head = self.versioned_model.history[-1]
+            _projected = self.world_state.projected_for_branch(
+                branch_world_id=_head.world_id,
+                branch_label=_head.branch_label,
+            )
+            if _projected is not self.world_state:
+                self.world_state = _projected
         # Resolve the version *number* for the loaded row so the
         # version sidebar / header label can render "v{N}" without
         # waiting for the next save or rollback. Without this emit
@@ -1314,6 +1389,24 @@ class AppState:
         # history so subsequent queries inherit the correct world_id /
         # branch_label and prose continuity walks the real lineage.
         self._rehydrate_vwm_history_from_db(version_row_id)
+        # AMWN-split projection on load: when the loaded row is on a
+        # shadow branch, swap ``world_state.entities`` (and the other
+        # sidecar-managed dicts) for the per-branch layered view
+        # before any UI consumer reads it. Without this, every
+        # ``state.world_state.entities[id]`` lookup in viz.py,
+        # explorer_tab, reasoning_helpers, etc. returns the FACTUAL
+        # entity record \u2014 producing prose\u2194inspector drift on
+        # Rung-2/3 rows (the prose narrates the do(\u00b7)-modified
+        # world; the Inspector shows the factual baseline). Cheap:
+        # ``projected_for_branch`` returns ``self`` for factual rows.
+        if self.versioned_model is not None and self.versioned_model.history:
+            _head = self.versioned_model.history[-1]
+            _projected = self.world_state.projected_for_branch(
+                branch_world_id=_head.world_id,
+                branch_label=_head.branch_label,
+            )
+            if _projected is not self.world_state:
+                self.world_state = _projected
         self.emit(StateEvent.FABULA_CURSOR_CHANGED, cursor=None)
         self.emit(StateEvent.SYUZHET_CURSOR_CHANGED, cursor=None)
         self.emit(StateEvent.NODE_SELECTED, node_id=None, node_type=None)
@@ -1321,10 +1414,16 @@ class AppState:
             self.emit(StateEvent.VERSION_CHANGED, version=version_number)
 
     def to_json(self) -> str:
-        """Serialize the current world state to JSON for persistence."""
-        if self.world_state is None:
+        """Serialize the current world state to JSON for persistence.
+
+        Routes through :attr:`raw_world_state` so the dump preserves
+        the factual baseline + ``shadow_*`` sidecars; dumping the
+        projected :attr:`world_state` would conflate the two.
+        """
+        raw = self.raw_world_state
+        if raw is None:
             return "{}"
-        return self.world_state.model_dump_json(indent=2)
+        return raw.model_dump_json(indent=2)
 
     def select_node(self, node_id: str | None, node_type: str | None = None) -> None:
         """Select a node for cross-component inspector sync."""

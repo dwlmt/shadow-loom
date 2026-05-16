@@ -115,7 +115,13 @@ from shadow_loom_mcp.auth import (
     require_scope,
     verifier,
 )
-from shadow_loom_mcp.helpers import load_world_state, resolve_project, run_and_save
+from shadow_loom_mcp.helpers import (
+    load_world_state,
+    load_world_state_projected,
+    load_world_state_with_branch,
+    resolve_project,
+    run_and_save,
+)
 
 from shadow_loom.settings import get_settings as _get_settings
 
@@ -236,7 +242,7 @@ def open_project(
     if err:
         return {"error": err}
 
-    ws, ver_row_id = load_world_state(pid, version, ctx=ctx)
+    ws, ver_row_id = load_world_state_projected(pid, version, ctx=ctx)
     if ws is None:
         return {"error": "No world model found. Use 'ingest' first."}
 
@@ -335,7 +341,7 @@ def inspect(
     if err:
         return {"error": err}
 
-    ws, _ = load_world_state(pid, version, ctx=ctx)
+    ws, _ = load_world_state_projected(pid, version, ctx=ctx)
     if ws is None:
         return {"error": "No world model found."}
 
@@ -653,7 +659,7 @@ def search(
     if err:
         return {"error": err}
 
-    ws, _ = load_world_state(pid, version, ctx=ctx)
+    ws, _ = load_world_state_projected(pid, version, ctx=ctx)
     if ws is None:
         return {"error": "No world model found."}
 
@@ -760,7 +766,7 @@ def get_relationships(
     if err:
         return {"error": err}
 
-    ws, _ = load_world_state(pid, version, ctx=ctx)
+    ws, _ = load_world_state_projected(pid, version, ctx=ctx)
     if ws is None:
         return {"error": "No world model found."}
 
@@ -830,7 +836,7 @@ def list_channels(
     if err:
         return {"error": err}
 
-    ws, _ = load_world_state(pid, version, ctx=ctx)
+    ws, _ = load_world_state_projected(pid, version, ctx=ctx)
     if ws is None:
         return {"error": "No world model found."}
 
@@ -895,7 +901,7 @@ def get_channel_history(
     if err:
         return {"error": err}
 
-    ws, _ = load_world_state(pid, version, ctx=ctx)
+    ws, _ = load_world_state_projected(pid, version, ctx=ctx)
     if ws is None:
         return {"error": "No world model found."}
 
@@ -970,7 +976,7 @@ def who_can_hear(
     if err:
         return {"error": err}
 
-    ws, _ = load_world_state(pid, version, ctx=ctx)
+    ws, _ = load_world_state_projected(pid, version, ctx=ctx)
     if ws is None:
         return {"error": "No world model found."}
 
@@ -1041,7 +1047,7 @@ def trace_causality(
     if err:
         return {"error": err}
 
-    ws, _ = load_world_state(pid, version, ctx=ctx)
+    ws, _ = load_world_state_projected(pid, version, ctx=ctx)
     if ws is None:
         return {"error": "No world model found."}
 
@@ -1312,7 +1318,7 @@ def ask(
     if err:
         return {"error": err}
 
-    ws, _ = load_world_state(pid, version, ctx=ctx)
+    ws, _ = load_world_state_projected(pid, version, ctx=ctx)
     if ws is None:
         return {"error": "No world model found."}
 
@@ -1459,7 +1465,7 @@ def compute_tension(
     if err:
         return {"error": err}
 
-    ws, _ = load_world_state(pid, version, ctx=ctx)
+    ws, _ = load_world_state_projected(pid, version, ctx=ctx)
     if ws is None:
         return {"error": "No world model found."}
 
@@ -1630,8 +1636,8 @@ def diff_versions(
     if err:
         return {"error": err}
 
-    ws_a, _ = load_world_state(project_id, version_a, ctx=ctx)
-    ws_b, _ = load_world_state(project_id, version_b, ctx=ctx)
+    ws_a, _ = load_world_state_projected(project_id, version_a, ctx=ctx)
+    ws_b, _ = load_world_state_projected(project_id, version_b, ctx=ctx)
     if ws_a is None:
         return {"error": f"Version {version_a} not found."}
     if ws_b is None:
@@ -2296,7 +2302,7 @@ def evaluate(
     if err:
         return {"error": err}
 
-    ws, _ = load_world_state(pid, version, ctx=ctx)
+    ws, _ = load_world_state_projected(pid, version, ctx=ctx)
     if ws is None:
         return {"error": "No world model found."}
 
@@ -2660,7 +2666,9 @@ def patch_world_state(
     if err:
         return {"error": err}
 
-    ws, ancestor_row_id = load_world_state(pid, version, ctx=ctx)
+    ws, ancestor_row_id, ancestor_world_id, ancestor_branch_label = (
+        load_world_state_with_branch(pid, version, ctx=ctx)
+    )
     if ws is None:
         return {"error": "No world model found."}
 
@@ -2687,6 +2695,12 @@ def patch_world_state(
             source="patch_world_state",
             description=desc,
             user_id=user_row_id,
+            # Carry the ancestor row's branch identity so a patch on
+            # a shadow row stays on that shadow branch instead of
+            # silently demoting onto the factual mainline via the
+            # ``save_version`` default ``world_id='factual'``.
+            world_id=ancestor_world_id,
+            branch_label=ancestor_branch_label,
         )
     except Exception as exc:
         logger.exception("[patch_world_state] save_version failed")
@@ -2719,7 +2733,9 @@ def branch(
     if err:
         return {"error": err}
 
-    ws, ancestor_row_id = load_world_state(project_id, from_version, ctx=ctx)
+    ws, ancestor_row_id, ancestor_world_id, ancestor_branch_label = (
+        load_world_state_with_branch(project_id, from_version, ctx=ctx)
+    )
     if ws is None:
         return {"error": f"Version {from_version} not found."}
 
@@ -2732,6 +2748,14 @@ def branch(
         source="branch",
         description=f"Branched from v{from_version}",
         user_id=user_row_id,
+        # Carry the ancestor's branch identity onto the child node.
+        # Without this, branching from a shadow row would silently
+        # demote the child onto the factual mainline at the
+        # ``save_version`` default ``world_id='factual'`` and the
+        # next pipeline run on that child would author against the
+        # wrong AMWN world.
+        world_id=ancestor_world_id,
+        branch_label=ancestor_branch_label,
     )
 
     return {
@@ -3175,7 +3199,7 @@ def discover(
         pid, err = resolve_project(project_id, project_name, ctx)
         if err:
             return {"error": err}
-        ws, _ = load_world_state(pid, payload.get("version"), ctx=ctx)
+        ws, _ = load_world_state_projected(pid, payload.get("version"), ctx=ctx)
         if ws is None:
             return {"error": "No world model found."}
         at_time = payload.get("at_time")
@@ -3628,7 +3652,7 @@ def resource_world(project_id: int) -> str:
     proj = get_project(project_id)
     if proj is None or not proj.is_public:
         return json.dumps({"error": "Not found or access denied"})
-    ws, _ = load_world_state(project_id)
+    ws, _ = load_world_state_projected(project_id)
     if ws is None:
         return json.dumps({"error": "No world model"})
     return ws.model_dump_json(indent=2)
@@ -3640,7 +3664,7 @@ def resource_entity(project_id: int, entity_id: str) -> str:
     proj = get_project(project_id)
     if proj is None or not proj.is_public:
         return json.dumps({"error": "Not found or access denied"})
-    ws, _ = load_world_state(project_id)
+    ws, _ = load_world_state_projected(project_id)
     if ws is None:
         return json.dumps({"error": "No world model"})
     ent = ws.entities.get(entity_id)

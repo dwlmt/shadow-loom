@@ -309,12 +309,28 @@ Clicking **Save** runs:
 4. If warnings only → confirmation dialog summarising counts + warnings,
    button reads **"Save Anyway"**.
 5. On confirm: `db.save_version(... source="manual_edit", ancestor_id=
-   state.current_version_row_id, user_id=state.user_id)`. The new version
-   is a child of the current one; the previous version is preserved.
+   state.current_version_row_id, user_id=state.user_id, world_id=…,
+   branch_label=…)` — the branch identity is read from
+   `state.head_branch()` so an edit on a shadow row stays on that
+   shadow branch instead of silently demoting to factual mainline.
+   The new version is a child of the current one; the previous
+   version is preserved.
 6. `state.load_db_version(new_ws, new_ver.id, version_number=new_ver.version)`
    atomically swaps the active world; every tab re-renders.
 7. `db.set_active_version(...)` mirrors the new version into the
    active-version pointer so the MCP server's read tools default to it.
+
+> **Raw vs projected.** The Editor renders and saves the **raw**
+> (un-projected) world state — i.e. the persisted JSON with its
+> factual `entities` baseline + `shadow_entities` sidecar visible as
+> distinct top-level fields. Other tabs (Explorer, World, Story)
+> read the **projected** view, which layers the active shadow
+> branch's AMWN-split clones over the factual baseline so an
+> Inspector lookup on a shadow row returns the do(·)-modified
+> entity. Dumping the projected view to JSON would overwrite the
+> factual baseline for every cloned id; the Editor / Export paths
+> route through `AppState.raw_world_state` to keep the persisted
+> snapshot round-trippable.
 
 Permission rules match the Story tab: project owner OR project role
 `editor` / `admin`. Users without write access see a read-only textarea

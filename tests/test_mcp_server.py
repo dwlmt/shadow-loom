@@ -225,6 +225,52 @@ class TestInspect:
         result = inspect(_ctx(), "ENT_NONEXISTENT", project_id=pid)
         assert "error" in result
 
+    def test_inspect_on_shadow_row_returns_amwn_split_entity(self):
+        """Regression: when the requested version is on a shadow
+        branch and that branch has an AMWN-split clone of the
+        entity, ``inspect`` must return the clone's state (the
+        do(\u00b7)-modified counterfactual world), not the factual
+        baseline. Before the read-side projection fix, the MCP
+        ``load_world_state`` helper returned the un-projected world
+        and ``ws.entities[id]`` silently fell back to factual.
+        """
+        from copy import deepcopy as _deepcopy
+        from shadow_loom.db import save_version as db_save_version
+        from shadow_loom.models import Entity
+        ws = _deepcopy(macbeth_ws)
+        # Pick any entity and stage a shadow-only divergence by
+        # editing a clone copy and writing it into the sidecar.
+        eid = next(iter(ws.entities.keys()))
+        clone = ws.entities[eid].model_copy(deep=True)
+        clone.world_id = "shadow"
+        # Deterministic divergence: bump status to a value that
+        # cannot be present on the factual row.
+        clone.status = "injured"
+        ws.shadow_entities = {"cf_shadow": {eid: clone}}
+        _, pid, _ = _seed_project(ws=ws)  # v0 (factual seed)
+        # Create v1 as a shadow-branch sibling that carries the
+        # same JSON (sidecar is preserved in JSON).
+        shadow_row = db_save_version(
+            project_id=pid,
+            world_state_json=ws.model_dump_json(),
+            ancestor_id=None,
+            source="counterfactual",
+            description="seed shadow",
+            world_id="shadow",
+            branch_label="cf_shadow",
+        )
+        # Factual read: original status.
+        factual_result = inspect(_ctx(), eid, project_id=pid, version=0)
+        assert factual_result["status"] != "injured"
+        # Shadow-row read: AMWN-split clone's status.
+        shadow_result = inspect(
+            _ctx(), eid, project_id=pid, version=shadow_row.version,
+        )
+        assert shadow_result["status"] == "injured", (
+            f"Expected shadow projection to surface clone status; got "
+            f"{shadow_result.get('status')!r}"
+        )
+
 
 class TestSearch:
     def test_finds_macbeth(self):
@@ -544,6 +590,31 @@ class TestBranch:
         uid, pid, _ = _seed_project()
         result = branch(_ctx(), project_id=pid, from_version=999)
         assert "error" in result
+
+    def test_branch_from_shadow_preserves_branch_identity(self):
+        """Regression: branching from a shadow row must carry the
+        ancestor's ``world_id`` / ``branch_label`` onto the child.
+        Before the fix, ``branch`` called ``save_version`` without
+        passing branch identity so every shadow-branch ``branch``
+        call was silently demoted onto the factual mainline.
+        """
+        from shadow_loom.db import save_version as db_save_version, get_version
+        uid, pid, _ = _seed_project()
+        shadow_row = db_save_version(
+            project_id=pid,
+            world_state_json=deepcopy(macbeth_ws).model_dump_json(),
+            ancestor_id=None,
+            source="counterfactual",
+            description="seed shadow",
+            world_id="shadow",
+            branch_label="cf_test",
+        )
+        result = branch(_ctx(), project_id=pid, from_version=shadow_row.version)
+        assert "error" not in result, result
+        child = get_version(pid, result["new_version"])
+        assert child is not None
+        assert child.world_id == "shadow"
+        assert child.branch_label == "cf_test"
 
 
 class TestShare:

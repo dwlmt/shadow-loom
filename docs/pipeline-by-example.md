@@ -427,6 +427,22 @@ the AMWN pattern from
 shadow and factual share an ancestor graph, then diverge at the
 intervention point.
 
+When a shadow merge actually writes back onto a node that is shared
+with the factual world (e.g. a counterfactual snapshot landing on
+`ENT_MACBETH.state_timeline`), the merge does **not** mutate the
+factual record. It lazily materialises a per-branch split copy in
+one of four sidecars on `WorldStateV1` — `shadow_entities`,
+`shadow_objects`, `shadow_propositions`, `shadow_world_traits` —
+keyed by `branch_label` then by id, trims the clone's
+`state_timeline` of snapshots whose `triggered_by` was suppressed
+by the do(·) closure, and routes the new snapshot onto the clone.
+Sibling shadow branches are independent AMWN worlds W*ₙ. Reads on
+a shadow row go through `WorldStateV1.projected_for_branch`, which
+returns a shallow `model_copy` swapping the projected dicts in
+without touching the factual baseline. See
+[architecture.md §1 "AMWN node-splitting sidecar"](architecture.md#amwn-node-splitting-sidecar-correa--bareinboim-icml-2025)
+for the full contract.
+
 ---
 
 ## 3. Causal physics in motion

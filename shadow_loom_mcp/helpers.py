@@ -77,6 +77,35 @@ def load_world_state(
       1. The authenticated user's active-version pointer (per-project),
          when ``ctx`` is provided and a pointer exists.
       2. The project's latest version.
+
+    **Note**: returns the *raw* (un-projected) world state. Read-side
+    tools should prefer :func:`load_world_state_projected` so shadow
+    rows surface the per-branch AMWN-split layered view; only
+    write-side tools that need to round-trip the JSON unchanged or
+    that must persist into the same branch should use this raw path
+    (see :func:`load_world_state_with_branch`).
+    """
+    ws, vid, _, _ = load_world_state_with_branch(
+        project_id, version, ctx=ctx,
+    )
+    return ws, vid
+
+
+def load_world_state_with_branch(
+    project_id: int,
+    version: int | None = None,
+    *,
+    ctx: Context | None = None,
+) -> tuple[WorldStateV1 | None, int | None, str, str | None]:
+    """Load a world state and also return its branch identity.
+
+    Returns ``(ws, version_row_id, branch_world_id, branch_label)``.
+    Write-side tools (``patch_world_state``, ``branch``) call this so
+    the persisted child row keeps the same branch identity as its
+    ancestor — the previous ``(ws, vid)`` load lost ``world_id`` /
+    ``branch_label`` and silently demoted shadow-branch writes onto
+    the factual mainline at ``save_version`` (which defaults
+    ``world_id='factual'``).
     """
     if version is not None:
         ver = get_version(project_id, version)
@@ -89,9 +118,42 @@ def load_world_state(
         if ver is None:
             ver = get_latest_version(project_id)
     if ver is None:
-        return None, None
+        return None, None, "factual", None
     ws = WorldStateV1.model_validate_json(ver.world_state_json)
-    return ws, ver.id
+    return (
+        ws,
+        ver.id,
+        getattr(ver, "world_id", "factual") or "factual",
+        getattr(ver, "branch_label", None),
+    )
+
+
+def load_world_state_projected(
+    project_id: int,
+    version: int | None = None,
+    *,
+    ctx: Context | None = None,
+) -> tuple[WorldStateV1 | None, int | None]:
+    """Branch-aware load for read tools.
+
+    Equivalent to :func:`load_world_state` followed by
+    ``ws.projected_for_branch(branch_world_id, branch_label)`` so
+    every downstream reader of ``ws.entities`` / ``ws.objects`` /
+    ``ws.propositions`` / ``ws.world_traits`` sees the AMWN-split
+    layered view appropriate to the loaded row's branch. Factual
+    rows are returned unchanged (``projected_for_branch`` is a no-op
+    fast path).
+
+    Without this, every MCP read tool that consumes the loaded ws
+    silently returns the factual baseline even when the request
+    targets a shadow row — the same drift class fixed in the UI.
+    """
+    ws, vid, bw, bl = load_world_state_with_branch(
+        project_id, version, ctx=ctx,
+    )
+    if ws is None:
+        return None, None
+    return ws.projected_for_branch(branch_world_id=bw, branch_label=bl), vid
 
 
 # ── Pipeline run + save ──────────────────────────────────────────
