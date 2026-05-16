@@ -1990,6 +1990,297 @@ def build_prevented_event_constraints(
     )]
 
 
+def _expand_chain_reaction_closure(
+    world_state: WorldStateV1,
+    root_event_ids: List[str],
+) -> tuple[set[str], List[tuple[str, str, str]]]:
+    """Walk ``chain_reaction`` Event\u2192Event edges from a prune-root set
+    and return (closure_event_ids, edges_in_closure).
+
+    Local duplicate of :func:`shadow_loom.pipeline._compute_shadow_prune_closure`
+    plus edge-tracking: avoids a directive_assembly \u2192 pipeline import
+    cycle. Pearl's disjunctive structural-equation rule: an event Y
+    joins the closure iff every ``chain_reaction`` parent of Y is
+    already in the closure (over-determined effects with a surviving
+    sufficient cause are preserved).
+
+    Returned edges are ``(parent_id, child_id, mechanism)`` triples
+    for every chain_reaction edge whose target is in the closure
+    (so the renderer sees the full \"originally caused\" tree, not
+    just the leaves).
+    """
+    roots = set(root_event_ids or [])
+    if not roots:
+        return set(), []
+    parents_of: dict[str, list[tuple[str, str]]] = {}
+    for edge in getattr(world_state, "causal_topology", None) or []:
+        if getattr(edge, "causality_type", None) != "chain_reaction":
+            continue
+        mech = getattr(edge, "mechanism", "") or ""
+        parents_of.setdefault(edge.target_id, []).append((edge.source_id, mech))
+    closure = set(roots)
+    changed = True
+    while changed:
+        changed = False
+        for eid, parents in parents_of.items():
+            if eid in closure:
+                continue
+            if parents and all(p in closure for p, _ in parents):
+                closure.add(eid)
+                changed = True
+    edges: List[tuple[str, str, str]] = []
+    for child, parents in parents_of.items():
+        if child not in closure:
+            continue
+        for parent, mech in parents:
+            if parent in closure:
+                edges.append((parent, child, mech))
+    return closure, edges
+
+
+def build_prune_cascade_context_constraints(
+    world_state: WorldStateV1,
+    pruned_root_event_ids: Optional[List[str]],
+    *,
+    world_label: str = "this",
+) -> List[ConstraintBlock]:
+    """HARD context block: explain the ORIGINAL causal chains the
+    Rung-2/3 do-surgery severed, so the renderer knows what it must
+    NOT confabulate a replacement for.
+
+    Without this block the renderer sees only ``=== PREVENTED EVENTS
+    (HARD) ===`` (a bare list of event ids it must not stage) and is
+    free to invent a *novel* failure mode for any character whose
+    plan depended on the pruned event (e.g. a counterfactual that
+    prunes "Ken kills Mrs Coady's dogs" routinely produces prose
+    where the prosecution loses for the wrong reason \u2014 "missing
+    canine evidence" \u2014 because the renderer can see the trial
+    event downstream but not the actual link). Surfacing the original
+    parent\u2192child mechanisms lets the renderer route around the
+    severed chains explicitly rather than guessing.
+
+    Paired with :func:`build_dependent_state_substitution_constraints`
+    so the renderer also sees the *positive* substitutions (entities
+    whose state did NOT flip because their cause was pruned).
+    """
+    if not pruned_root_event_ids:
+        return []
+    closure, edges = _expand_chain_reaction_closure(
+        world_state, pruned_root_event_ids,
+    )
+    if not closure:
+        return []
+    events_by_id = {
+        getattr(e, "id", None): e
+        for e in getattr(world_state, "events", []) or []
+    }
+
+    def _desc(eid: str) -> str:
+        e = events_by_id.get(eid)
+        if e is None:
+            return ""
+        d = (getattr(e, "description", "") or "").strip()
+        if len(d) > 100:
+            d = d[:97] + "..."
+        return d
+
+    lines: List[str] = []
+    # Show roots first, then each chain_reaction edge in the closure
+    # so the renderer sees the full \"originally caused\" forest.
+    roots_sorted = sorted(set(pruned_root_event_ids) & closure)
+    if roots_sorted:
+        lines.append("  PRUNED ROOTS (the do-surgery removed these):")
+        for rid in roots_sorted[:20]:
+            snippet = _desc(rid)
+            tail = f" \u2014 {snippet}" if snippet else ""
+            lines.append(f"    - {rid}{tail}")
+        if len(roots_sorted) > 20:
+            lines.append(f"    - ...and {len(roots_sorted) - 20} more roots.")
+    if edges:
+        lines.append(
+            "  ORIGINAL CHAIN-REACTION LINKS now SEVERED "
+            "(parent \u2192 child, original mechanism):"
+        )
+        for parent, child, mech in edges[:30]:
+            p_desc = _desc(parent)
+            c_desc = _desc(child)
+            mech_tag = f" [{mech}]" if mech else ""
+            p_tail = f" \u2014 {p_desc}" if p_desc else ""
+            c_tail = f" \u2014 {c_desc}" if c_desc else ""
+            lines.append(
+                f"    - {parent}{p_tail}\n"
+                f"        \u2192 {child}{c_tail}{mech_tag}"
+            )
+        if len(edges) > 30:
+            lines.append(f"    - ...and {len(edges) - 30} more links.")
+    # Downstream-only (non-root) events in the closure, so the
+    # renderer sees the whole forbidden set at a glance.
+    downstream = sorted(closure - set(roots_sorted))
+    if downstream:
+        lines.append(
+            "  DOWNSTREAM EVENTS in the closure (also DO NOT occur):"
+        )
+        for did in downstream[:20]:
+            snippet = _desc(did)
+            tail = f" \u2014 {snippet}" if snippet else ""
+            lines.append(f"    - {did}{tail}")
+        if len(downstream) > 20:
+            lines.append(f"    - ...and {len(downstream) - 20} more.")
+    if not lines:
+        return []
+    instruction = (
+        f"=== SEVERED CAUSAL CHAINS (HARD, CONTEXT) === \u2014 the "
+        f"following original-world causal chains were SEVERED by the "
+        f"do-surgery. NONE of these events occur in the {world_label} "
+        f"world, and the original parent\u2192child links DO NOT fire. "
+        f"Use this map to understand WHICH downstream consequences "
+        f"are absent; do NOT invent a substitute mechanism that "
+        f"reaches the same outcome by another route, and do NOT "
+        f"reframe the absence as an evidentiary gap (\"missing "
+        f"evidence\", \"absent witness\", \"unexplained vacancy\") \u2014 "
+        f"the chain simply did not happen. Render the world AS IT "
+        f"NOW IS without the cascade.\n"
+        + "\n".join(lines)
+    )
+    return [ConstraintBlock(
+        constraint_type="narrative",
+        priority="hard",
+        instruction=instruction,
+        evidence={
+            "pruned_root_event_ids": list(roots_sorted),
+            "pruned_closure_event_ids": sorted(closure),
+            "severed_chain_reaction_edges": [
+                {"source": p, "target": c, "mechanism": m}
+                for p, c, m in edges
+            ],
+        },
+    )]
+
+
+def _holder_from_affected_belief_id(b: str) -> Optional[str]:
+    """Parse an ``affected_beliefs`` entry. narrative_physics emits
+    ``\"{holder_id}\u2192{target_id}\"``; older shapes may pass a bare
+    belief id. Returns the holder id when parseable, else None."""
+    if not b or not isinstance(b, str):
+        return None
+    if "\u2192" in b:
+        return b.split("\u2192", 1)[0] or None
+    return None
+
+
+def _holder_from_affected_concern_id(c: str) -> Optional[str]:
+    """Concern entries are ``\"{holder_id}.{concern_id}\"`` (dot-joined).
+    Returns the holder id when parseable, else None."""
+    if not c or not isinstance(c, str) or "." not in c:
+        return None
+    head = c.split(".", 1)[0]
+    return head or None
+
+
+def build_dependent_state_substitution_constraints(
+    world_state: WorldStateV1,
+    pruned_root_event_ids: Optional[List[str]],
+    affected_beliefs: Optional[List[str]] = None,
+    affected_concerns: Optional[List[str]] = None,
+    *,
+    world_label: str = "this",
+) -> List[ConstraintBlock]:
+    """HARD positive-substitution block: tell the renderer the
+    CURRENT post-prune status of every entity implicated by a severed
+    causal chain, and instruct it to render their plans as PROCEEDING
+    under the changed conditions rather than invent a substitute
+    failure mode.
+
+    The implicated set is the union of:
+      * ``actor_ids`` and ``target_ids`` of every event in the prune
+        closure (these are the characters whose fate the cascade
+        originally decided);
+      * holders parsed from ``affected_beliefs`` /
+        ``affected_concerns`` (these are the characters whose
+        epistemic/motivational state would have flipped).
+
+    For each implicated entity we surface their current ``status``,
+    ``location_id``, and (briefly) their key traits as the
+    ground-truth substitution. This is the positive complement to
+    :func:`build_prune_cascade_context_constraints` (which surfaces
+    only what is ABSENT). Together they give the renderer both the
+    severed structure and the post-surgery world to render against,
+    closing the gap that lets it confabulate (e.g. a counterfactual
+    that prevents Mrs Coady\u2019s death must render her ALIVE and
+    able to fulfil her original role \u2014 not invent a different
+    reason the prosecution fails).
+    """
+    if not pruned_root_event_ids and not affected_beliefs and not affected_concerns:
+        return []
+    closure, _edges = _expand_chain_reaction_closure(
+        world_state, list(pruned_root_event_ids or []),
+    )
+    events_by_id = {
+        getattr(e, "id", None): e
+        for e in getattr(world_state, "events", []) or []
+    }
+    implicated: set[str] = set()
+    for eid in closure:
+        e = events_by_id.get(eid)
+        if e is None:
+            continue
+        for a in (getattr(e, "actor_ids", None) or []):
+            if isinstance(a, str) and a.startswith("ENT_"):
+                implicated.add(a)
+        for t in (getattr(e, "target_ids", None) or []):
+            if isinstance(t, str) and t.startswith("ENT_"):
+                implicated.add(t)
+    for b in (affected_beliefs or []):
+        h = _holder_from_affected_belief_id(b)
+        if h and h.startswith("ENT_"):
+            implicated.add(h)
+    for c in (affected_concerns or []):
+        h = _holder_from_affected_concern_id(c)
+        if h and h.startswith("ENT_"):
+            implicated.add(h)
+    if not implicated:
+        return []
+    entities = getattr(world_state, "entities", {}) or {}
+    lines: List[str] = []
+    for eid in sorted(implicated)[:20]:
+        ent = entities.get(eid)
+        if ent is None:
+            lines.append(f"  - {eid}: (not in current world_state)")
+            continue
+        name = getattr(ent, "name", None) or eid
+        status = getattr(ent, "status", None) or "?"
+        loc = getattr(ent, "location_id", None) or "?"
+        lines.append(
+            f"  - {eid} ({name}): status={status!r}, location={loc} "
+            f"\u2014 render in this CURRENT state."
+        )
+    if len(implicated) > 20:
+        lines.append(f"  - ...and {len(implicated) - 20} more entities.")
+    instruction = (
+        f"=== DEPENDENT-STATE SUBSTITUTIONS (HARD) === \u2014 the entities "
+        f"below were implicated by the severed causal chains. Their "
+        f"post-surgery state is shown; render them in EXACTLY that "
+        f"state in the {world_label} world. If a character\u2019s "
+        f"established plan or social role depended on a pruned "
+        f"event (e.g. a witness whose death was pruned remains "
+        f"available to testify; a prosecution whose key fact was "
+        f"pruned still has its other facts), render that plan / role "
+        f"as PROCEEDING under the changed conditions \u2014 do NOT "
+        f"invent a substitute failure mode (missing evidence, "
+        f"alternative obstacle, contingency collapse) to recover the "
+        f"original outcome by another route. The severed chain "
+        f"simply did not happen; the entity continues from the "
+        f"pre-cascade state shown here.\n"
+        + "\n".join(lines)
+    )
+    return [ConstraintBlock(
+        constraint_type="narrative",
+        priority="hard",
+        instruction=instruction,
+        evidence={"implicated_entity_ids": sorted(implicated)},
+    )]
+
+
 def build_false_proposition_constraints(
     world_state: WorldStateV1,
     syuzhet_anchor: Optional[int],

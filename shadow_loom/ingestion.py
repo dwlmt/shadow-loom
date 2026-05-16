@@ -377,6 +377,26 @@ class ChunkTopology(BaseModel):
     # ``resolves_proposition_ids``) onto the new id.
     supersedes_event_ids: Dict[str, str] = Field(default_factory=dict)
 
+    # --- Shadow-branch suppression (counterfactual / intervention).
+    # Distinct from ``removed_event_ids`` (which respects branch
+    # isolation as a typo-safety net for manual edits): events listed
+    # here are deleted from the merged snapshot *regardless* of their
+    # ``world_id`` tag. The intent is to let Rung-2/3 surgeries on a
+    # shadow fork suppress factual-ancestor events whose causal
+    # preconditions no longer hold under the do-intervention — so the
+    # persisted shadow VersionRow's world_state_json actually reflects
+    # the counterfactual world the prose describes (Mrs Coady's death
+    # event must vanish from the snapshot once the dog-killing that
+    # caused it has been intervened away). The merge also cascades
+    # through causal edges and any state_timeline snapshots
+    # ``triggered_by`` a suppressed event.
+    #
+    # Populated only by ``_augment_topology_with_sandbox_deltas`` on
+    # intervention/counterfactual paths when ``world_id="shadow"``;
+    # never on factual merges or Rung-1 continuation/observation,
+    # where new events join the parent world additively.
+    suppressed_event_ids: List[str] = Field(default_factory=list)
+
 
 class QAPair(BaseModel):
     """A single Socratic question-answer pair from semantic scaffolding."""

@@ -49,10 +49,12 @@ from shadow_loom.directive_assembly import (
     RenderingDirective,
     SurpriseProfile,
     ThreatProximity,
+    build_dependent_state_substitution_constraints,
     build_false_belief_grounding_constraints,
     build_false_proposition_constraints,
     build_object_coherence_constraints,
     build_prevented_event_constraints,
+    build_prune_cascade_context_constraints,
     build_unrealised_concern_constraints,
     compute_hidden_channels_for,
 )
@@ -3823,6 +3825,21 @@ def build_intervention_brief(
     constraints.extend(build_prevented_event_constraints(
         world_state, syuzhet_anchor, world_label="intervened",
     ))
+    # Severed-chain CONTEXT + positive substitution. Without these
+    # the renderer routinely confabulates a substitute failure mode
+    # ("missing canine evidence", "absent witness") for any character
+    # whose plan depended on a pruned event. Both blocks are gated on
+    # the do-surgery actually pruning something (no-op on Rung-1).
+    constraints.extend(build_prune_cascade_context_constraints(
+        world_state, pruned_utterance_event_ids,
+        world_label="intervened",
+    ))
+    constraints.extend(build_dependent_state_substitution_constraints(
+        world_state, pruned_utterance_event_ids,
+        affected_beliefs=affected_beliefs,
+        affected_concerns=affected_concerns,
+        world_label="intervened",
+    ))
     constraints.extend(build_false_proposition_constraints(
         world_state, syuzhet_anchor, world_label="intervened",
     ))
@@ -4217,6 +4234,21 @@ def build_counterfactual_brief(
     ))
     constraints.extend(build_prevented_event_constraints(
         world_state, syuzhet_anchor, world_label="counterfactual",
+    ))
+    # Severed-chain CONTEXT + positive substitution (same pair as
+    # the Rung-2 brief above). Closes the gap that lets the renderer
+    # invent a NEW failure-mode for plans whose original cause was
+    # pruned: it now sees both the severed parent\u2192child links
+    # AND the current post-prune entity status to render against.
+    constraints.extend(build_prune_cascade_context_constraints(
+        world_state, pruned_utterance_event_ids,
+        world_label="counterfactual",
+    ))
+    constraints.extend(build_dependent_state_substitution_constraints(
+        world_state, pruned_utterance_event_ids,
+        affected_beliefs=affected_beliefs,
+        affected_concerns=affected_concerns,
+        world_label="counterfactual",
     ))
     constraints.extend(build_false_proposition_constraints(
         world_state, syuzhet_anchor, world_label="counterfactual",

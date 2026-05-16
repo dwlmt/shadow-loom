@@ -1632,7 +1632,15 @@ def assemble_audit_prompt(
         "FALSE PROPOSITIONS (HARD)" in (c.instruction or "")
         for c in (brief.constraints or [])
     )
-    if has_prevented or has_false_props:
+    has_severed_chains = any(
+        "SEVERED CAUSAL CHAINS (HARD" in (c.instruction or "")
+        for c in (brief.constraints or [])
+    )
+    has_dependent_subs = any(
+        "DEPENDENT-STATE SUBSTITUTIONS (HARD)" in (c.instruction or "")
+        for c in (brief.constraints or [])
+    )
+    if has_prevented or has_false_props or has_severed_chains or has_dependent_subs:
         sections.append(
             "=== NEGATIVE PHYSICS (the prose must NOT stage these "
             "as occurring) ==="
@@ -1660,6 +1668,38 @@ def assemble_audit_prompt(
                 "Flag prose that asserts a false proposition as "
                 "occurring/true. Violation type: `reasoning_failure` "
                 "with rationale prefix `false_proposition:`."
+            )
+        if has_severed_chains:
+            sections.append(
+                "  Severed causal chains: see the `=== SEVERED CAUSAL "
+                "CHAINS (HARD, CONTEXT) ===` block in the constraints "
+                "above. The do-surgery removed the listed root events "
+                "AND their disjunctive ``chain_reaction`` closure; "
+                "neither the roots nor the listed downstream "
+                "consequences occur in this world. Flag prose that "
+                "(a) stages any closure event as happening, or "
+                "(b) invents a SUBSTITUTE mechanism that reaches the "
+                "original downstream outcome by a different route "
+                "(e.g. \"missing evidence\", \"alternative witness\", "
+                "\"unexplained vacancy\" framings used to recover a "
+                "consequence whose original cause was pruned). "
+                "Violation type: `reasoning_failure` with rationale "
+                "prefix `severed_causal_chain:`."
+            )
+        if has_dependent_subs:
+            sections.append(
+                "  Dependent-state substitutions: see the `=== "
+                "DEPENDENT-STATE SUBSTITUTIONS (HARD) ===` block in "
+                "the constraints above. The listed entities must be "
+                "rendered in EXACTLY the post-surgery status shown; "
+                "their plans / roles continue from that state. Flag "
+                "prose that depicts any listed entity in a "
+                "pre-surgery status (e.g. as dead when the block "
+                "lists status='alive', or as absent when the block "
+                "lists a location) or that fabricates an alternative "
+                "obstacle to recover the pre-surgery outcome. "
+                "Violation type: `reasoning_failure` with rationale "
+                "prefix `dependent_state_substitution:`."
             )
         sections.append("")
 

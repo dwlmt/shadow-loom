@@ -2223,6 +2223,75 @@ def _apply_deletions(
         ]
         changeset.causal_edges_removed += before_c - len(merged.causal_topology)
 
+    # --- Shadow suppression (counterfactual / intervention cascade).
+    # Unlike ``removed_event_ids``, suppression bypasses the
+    # ``_branch_match`` filter: a shadow merge is allowed to delete
+    # factual-ancestor events whose causal preconditions no longer
+    # hold under the do-intervention. Without this, the persisted
+    # shadow VersionRow's snapshot would still list those factual
+    # events (Mrs Coady's heart-attack death cascading from a
+    # dog-killing that was intervened away), so a downstream
+    # interrogation reading the JSON would contradict the prose.
+    # Closure is computed caller-side in
+    # ``_augment_topology_with_sandbox_deltas`` using Pearl's
+    # disjunctive structural-equation reading on ``chain_reaction``
+    # edges (an effect persists if any surviving sufficient cause
+    # remains; pruned only when every ``chain_reaction`` parent is
+    # suppressed).
+    if topology.suppressed_event_ids:
+        sup = set(topology.suppressed_event_ids)
+        before_e = len(merged.events)
+        merged.events = [e for e in merged.events if e.id not in sup]
+        suppressed_n = before_e - len(merged.events)
+        changeset.events_removed += suppressed_n
+        # Cascade: causal edges touching suppressed events.
+        before_c = len(merged.causal_topology)
+        merged.causal_topology = [
+            c for c in merged.causal_topology
+            if c.source_id not in sup and c.target_id not in sup
+        ]
+        changeset.causal_edges_removed += before_c - len(merged.causal_topology)
+        # Cascade: drop entity state_timeline snapshots whose
+        # ``triggered_by`` references a suppressed event (the
+        # entity-level mutation those snapshots applied is no longer
+        # justified). World-trait and proposition/concern timelines
+        # carry the same field so we walk them too.
+        for ent in merged.entities.values():
+            ent.state_timeline = [
+                s for s in ent.state_timeline
+                if getattr(s, "triggered_by", None) not in sup
+            ]
+        for wt in merged.world_traits.values():
+            wt.state_timeline = [
+                s for s in wt.state_timeline
+                if getattr(s, "triggered_by", None) not in sup
+            ]
+        for prop in merged.propositions:
+            if getattr(prop, "state_timeline", None):
+                prop.state_timeline = [
+                    s for s in prop.state_timeline
+                    if getattr(s, "triggered_by", None) not in sup
+                ]
+        for ent in merged.entities.values():
+            for concern in ent.concerns:
+                if getattr(concern, "state_timeline", None):
+                    concern.state_timeline = [
+                        s for s in concern.state_timeline
+                        if getattr(s, "triggered_by", None) not in sup
+                    ]
+        # Cascade: drop beliefs whose ``acquired_via_event_id``
+        # provenance points at a suppressed event. The bridge in
+        # ``_augment_topology_with_sandbox_deltas`` already emits
+        # belief-invalidation snapshots for the direct prune set;
+        # this guards against closure-expansion drift where a
+        # disjunctively-suppressed descendant event was the actual
+        # provenance source.
+        for ent in merged.entities.values():
+            ent.beliefs = [
+                b for b in ent.beliefs
+                if getattr(b, "acquired_via_event_id", None) not in sup
+            ]
+
     # --- Causal edges (explicit keys)
     if topology.removed_causal_edge_keys:
         keys = {tuple(k) for k in topology.removed_causal_edge_keys}

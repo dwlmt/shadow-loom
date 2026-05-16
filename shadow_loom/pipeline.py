@@ -1157,6 +1157,74 @@ def _render_engine_priors(
     return "\n\n".join(sections)
 
 
+def _compute_shadow_prune_closure(
+    world_state: WorldStateV1,
+    root_event_ids: set[str],
+) -> set[str]:
+    """Expand a do-surgery prune set to its causal descendant closure.
+
+    Pearl's structural-equation semantics: under do(X), a downstream
+    variable Y is recomputed from its parents in the modified SCM.
+    Without explicit conjunctive / disjunctive annotations on edges
+    (Shadow Loom's ``CausalEdge`` carries ``causality_type`` but not
+    boolean function semantics), the principled default is the
+    *disjunctive* reading on direct-causation edges:
+
+      An event Y is pruned ⇔ Y has at least one ``chain_reaction``
+      incoming edge AND every such parent is in the pruned set.
+
+    This preserves over-determined effects (the Halpern-Pearl "actual
+    causation" intuition: Mrs Coady can die of *something else* if
+    that something else's preconditions still hold), and never prunes
+    exogenous events (no incoming chain_reaction parents → outside the
+    closure by definition).
+
+    ``enables`` / ``affordance_gate`` / ``ambient_propagation`` /
+    ``mutation`` edges are modifiers, not sufficient causes, so they
+    do not participate in the prune rule. The ``mutation`` family
+    represents an event's *effect* on state, not an event-to-event
+    causal precondition; an event causally downstream of a pruned
+    one transitively along chain_reaction is the right closure.
+
+    Iterates to fixpoint (closure is monotone in the prune set).
+
+    Returns the *expanded* prune set (includes the original roots).
+    Safe to call with an empty root set (returns empty).
+    """
+    if not root_event_ids:
+        return set()
+
+    # Build adjacency: child_event_id -> list of chain_reaction parent ids.
+    # Only Event→Event chain_reaction edges count for the disjunctive
+    # rule; everything else is a modifier.
+    parents_of: dict[str, list[str]] = {}
+    for edge in world_state.causal_topology or []:
+        if getattr(edge, "causality_type", None) != "chain_reaction":
+            continue
+        parents_of.setdefault(edge.target_id, []).append(edge.source_id)
+
+    event_ids = {e.id for e in world_state.events or []}
+    pruned = set(root_event_ids) & event_ids
+    # Seed roots even if not in event_ids (callers may pass stale IDs;
+    # they're harmless on the deletion pass).
+    pruned |= set(root_event_ids)
+
+    changed = True
+    while changed:
+        changed = False
+        for eid, parents in parents_of.items():
+            if eid in pruned:
+                continue
+            # Disjunctive rule: prune only when every chain_reaction
+            # parent is already pruned. An event with no
+            # chain_reaction parents is exogenous and never pruned.
+            if parents and all(p in pruned for p in parents):
+                pruned.add(eid)
+                changed = True
+
+    return pruned
+
+
 def _augment_topology_with_sandbox_deltas(
     topology: "ChunkTopology",
     *,
@@ -1165,6 +1233,7 @@ def _augment_topology_with_sandbox_deltas(
     fabula_time_now: int,
     fabula_time_historical: Optional[int] = None,
     world_id: Literal["factual", "shadow"] = "factual",
+    query_type: Optional[str] = None,
 ) -> "ChunkTopology":
     """Inject sandbox-derived state changes directly into the topology so
     the merge step persists physics deltas even if the LLM-generated
@@ -1859,6 +1928,52 @@ def _augment_topology_with_sandbox_deltas(
                 "[Bridge·observe] Skipped reveal for non-ENT/WORLD/OBJ node %s "
                 "(value=%r) — no snapshot path.", node_id, raw_value,
             )
+
+    # --- Shadow-branch suppression cascade (Rung-2 intervention /
+    # Rung-3 counterfactual only). ----------------------------------
+    # Physics' ``pruned_utterance_event_ids`` enumerates events the
+    # do-surgery rendered epistemically inert (event_type =
+    # 'prevented' / truth_value = 'false'). For a shadow merge we
+    # expand that set to its disjunctive ``chain_reaction``-closure
+    # (Pearl's structural-equation reading: a downstream event is
+    # pruned only when every direct-cause parent is pruned, so
+    # over-determined effects survive) and stash it on
+    # ``topology.suppressed_event_ids``. The merge step then deletes
+    # those events + cascade from the shadow snapshot regardless of
+    # their original ``world_id`` tag — so the persisted shadow
+    # VersionRow's world_state_json matches the prose the renderer
+    # generated (Mrs Coady's heart-attack event vanishes alongside
+    # the dog-killing that caused it).
+    #
+    # Strictly gated on (a) ``query_type`` being a true do-surgery
+    # query (intervention / counterfactual) and (b) the merge
+    # actually being onto a shadow branch. Rung-1 paths
+    # (observation, continuation, affective) and any factual save
+    # must keep additive merge semantics; new events from those
+    # queries join the parent world without ever deleting ancestors.
+    if (
+        world_id == "shadow"
+        and query_type in {"intervention", "counterfactual"}
+    ):
+        prune_roots = set(
+            physics_result.get("pruned_utterance_event_ids") or []
+        )
+        if prune_roots:
+            closure = _compute_shadow_prune_closure(
+                world_state, prune_roots,
+            )
+            if closure:
+                # Preserve any caller-set suppressions (none today,
+                # but cheap to be additive).
+                existing = set(topology.suppressed_event_ids or [])
+                topology.suppressed_event_ids = sorted(existing | closure)
+                logger.info(
+                    "[Bridge\u00b7shadow-prune] query_type=%s expanded %d "
+                    "physics-pruned event root(s) \u2192 %d-event "
+                    "deletion closure for shadow merge: %s",
+                    query_type, len(prune_roots), len(closure),
+                    sorted(closure),
+                )
 
     return topology
 
@@ -2599,6 +2714,7 @@ def run_pipeline(
                 fabula_time_now=_ft_now,
                 fabula_time_historical=_ft_hist,
                 world_id=_world_id,
+                query_type=getattr(query, "query_type", None),
             )
             vwm_next = vwm.merge(
                 topology,
@@ -3040,6 +3156,7 @@ async def run_pipeline_async(
                 fabula_time_now=_ft_now,
                 fabula_time_historical=_ft_hist,
                 world_id=_world_id,
+                query_type=getattr(query, "query_type", None),
             )
             vwm_next = vwm.merge(
                 topology, source="pipeline", description=description, prose=result.prose,
