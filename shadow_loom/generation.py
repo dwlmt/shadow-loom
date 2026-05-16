@@ -2649,16 +2649,43 @@ def assemble_rendering_prompt(
         _pp = brief.preceding_prose.strip()
         if len(_pp) > _pp_max:
             _pp = "…" + _pp[-_pp_max:]
-        sections.append("=== STORY SO FAR (prior prose for continuity) ===")
-        sections.append(_pp)
-        sections.append(
-            "Treat the prose above as established narrative this scene "
-            "must continue from. Honour its tone, point-of-view drift, "
-            "established facts about characters, and any unresolved "
-            "threads. Do NOT contradict events that have already been "
-            "narrated. The SCENE CONTEXT and CONSTRAINTS below take "
-            "precedence on any conflict with the world state."
-        )
+        # On a shadow render the joined tail mixes factual-canon
+        # ancestors (the canon the fork branched from, tagged
+        # ``(factual: …)`` by ``_gather_preceding_prose``) with the
+        # shadow continuation (``(shadow: …)``). Without an explicit
+        # precedence rule the renderer treats every block as fixed
+        # history and re-introduces canonical events the engine has
+        # explicitly suppressed (e.g. Mrs Coady's heart attack after
+        # the dog-killing is intervened away). The CONSTRAINTS /
+        # EXCLUSIONS block already enumerates the deletions; this
+        # wrapper just tells the LLM which side wins on conflict.
+        if brief.branch_world_id == "shadow":
+            sections.append("=== STORY SO FAR (mixed: factual canon + shadow fork tail) ===")
+            sections.append(_pp)
+            sections.append(
+                "The blocks tagged ``(factual: …)`` are the canon the "
+                "shadow fork diverges FROM — they describe what would "
+                "have happened on the mainline, NOT what is true on this "
+                "branch. Where the SCENE CONTEXT, CONSTRAINTS, or "
+                "EXCLUSIONS contradict a factual prose detail (a "
+                "suppressed event, a removed utterance, a pruned "
+                "channel, a flipped proposition), the engine output is "
+                "authoritative — do NOT re-narrate the superseded "
+                "canonical event. Blocks tagged ``(shadow: …)`` are this "
+                "fork's own continuation and remain in force; honour "
+                "their tone, POV, and established facts."
+            )
+        else:
+            sections.append("=== STORY SO FAR (prior prose for continuity) ===")
+            sections.append(_pp)
+            sections.append(
+                "Treat the prose above as established narrative this scene "
+                "must continue from. Honour its tone, point-of-view drift, "
+                "established facts about characters, and any unresolved "
+                "threads. Do NOT contradict events that have already been "
+                "narrated. The SCENE CONTEXT and CONSTRAINTS below take "
+                "precedence on any conflict with the world state."
+            )
         sections.append("")
 
     # === Header ===

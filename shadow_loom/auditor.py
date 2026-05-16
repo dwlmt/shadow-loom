@@ -1419,15 +1419,40 @@ def assemble_audit_prompt(
         _pp = brief.preceding_prose.strip()
         if len(_pp) > _pp_max:
             _pp = "…" + _pp[-_pp_max:]
-        sections.append("=== STORY SO FAR (background continuity \u2014 do NOT re-audit) ===")
-        sections.append(_pp)
-        sections.append(
-            "The prose above is the established narrative this scene "
-            "continues from. Use it only to judge continuity / tone / "
-            "voice consistency in the PROSE TO AUDIT above. Do NOT "
-            "raise violations against the STORY SO FAR text itself \u2014 "
-            "it is fixed history."
-        )
+        # Shadow-branch audits: the joined tail mixes factual-canon
+        # ancestors with the shadow continuation (see
+        # ``_gather_preceding_prose``). Without a precedence rule the
+        # auditor would flag any deliberate divergence-from-canon
+        # (suppressed events, removed utterances, flipped
+        # propositions) as a continuity violation, because the
+        # factual prose blocks still narrate the original outcome.
+        if brief.branch_world_id == "shadow":
+            sections.append("=== STORY SO FAR (mixed: factual canon + shadow fork tail \u2014 do NOT re-audit) ===")
+            sections.append(_pp)
+            sections.append(
+                "Blocks tagged ``(factual: \u2026)`` are the canon the shadow "
+                "fork diverges FROM \u2014 they are NOT in force on this "
+                "branch. Do NOT flag the PROSE TO AUDIT for contradicting "
+                "factual details that the engine has explicitly "
+                "superseded (a suppressed event, a removed utterance, a "
+                "flipped proposition). Use the factual blocks only to "
+                "judge tone / voice consistency; the BRANCH CONTEXT and "
+                "the world state are authoritative on what is true on "
+                "this branch. Blocks tagged ``(shadow: \u2026)`` are this "
+                "fork's prior continuation and ARE in force for "
+                "continuity judgments. Do NOT raise violations against "
+                "the STORY SO FAR text itself \u2014 it is fixed history."
+            )
+        else:
+            sections.append("=== STORY SO FAR (background continuity \u2014 do NOT re-audit) ===")
+            sections.append(_pp)
+            sections.append(
+                "The prose above is the established narrative this scene "
+                "continues from. Use it only to judge continuity / tone / "
+                "voice consistency in the PROSE TO AUDIT above. Do NOT "
+                "raise violations against the STORY SO FAR text itself \u2014 "
+                "it is fixed history."
+            )
         sections.append("")
 
     # === Branch context (AMWN shadow vs factual) ===
@@ -2360,6 +2385,19 @@ def assemble_evaluation_prompt(
             sections.append(
                 f"factual_contrast_summary: {brief.factual_contrast_summary}"
             )
+        sections.append(
+            "This evaluation is of a SHADOW branch \u2014 a Rung-2/3 fork "
+            "produced by a do(\u00b7) intervention. Any divergence from "
+            "``factual_contrast_summary`` (resurrected characters, "
+            "prevented events, flipped propositions, missing canonical "
+            "utterances) is INTENTIONAL and is what the branch exists "
+            "to explore. Do NOT penalise these divergences as "
+            "narrative inconsistency, plot-hole, or continuity "
+            "failures. Grade the prose on its own internal coherence, "
+            "tone, and craft \u2014 the factual contrast is a reference "
+            "point for what was changed, not a rubric the shadow "
+            "branch is expected to match."
+        )
         sections.append("")
 
     # Epistemic state

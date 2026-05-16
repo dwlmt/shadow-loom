@@ -2430,7 +2430,17 @@ class WorldStateV1(BaseModel):
         # doubling the repair count and obscuring the original
         # extraction error. Skipping the mirror leaves the lone broken
         # edge intact for the existing ID-validation pass to flag.
+        # Include shadow-genesis entities so a shadow branch that
+        # introduces a novel character (no factual twin, materialised
+        # in ``shadow_entities[label]`` by
+        # ``_get_or_clone_shadow_entity``) still gets its reverse
+        # social edges mirrored. Without this, edges naming a
+        # shadow-only entity are silently dropped from the mirror
+        # pass and the social topology stays asymmetric on that
+        # branch only.
         known_ids = set(self.entities.keys())
+        for sidecar in (self.shadow_entities or {}).values():
+            known_ids.update(sidecar.keys())
         indexed: dict[tuple[str, str], RelationshipEdge] = {
             (e.source_entity_id, e.target_entity_id): e for e in edges
         }

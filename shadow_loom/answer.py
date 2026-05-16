@@ -112,8 +112,16 @@ def _compress_world_state(
             loc = ent.get("location_id", "?")
             consts = ent.get("constants") or []
             const_str = f" [{', '.join(consts)}]" if consts else ""
+            # On a shadow read the projected ``entities`` dict layers
+            # shadow clones over the factual baseline; tag each row
+            # so the Q&A LLM can tell a do(·)-modified entity apart
+            # from a factual passthrough (matches the tagging the
+            # events / edges / channels / world-traits sections do).
+            wid_tag = ""
+            if branch_world_id == "shadow":
+                wid_tag = f" [{ent.get('world_id', 'factual')}]"
             lines.append(
-                f"- `{ent_id}` {name} — status={status}, "
+                f"- `{ent_id}` {name}{wid_tag} — status={status}, "
                 f"loc={loc}{const_str}"
             )
             # Traits (≥0.15 from neutral) — without these the LLM
@@ -182,7 +190,10 @@ def _compress_world_state(
         for obj_id, obj in list(objects.items())[:max_entities]:
             name = obj.get("name", obj_id)
             owner = obj.get("owner_id") or "—"
-            lines.append(f"- `{obj_id}` {name} (owner={owner})")
+            wid_tag = ""
+            if branch_world_id == "shadow":
+                wid_tag = f" [{obj.get('world_id', 'factual')}]"
+            lines.append(f"- `{obj_id}` {name}{wid_tag} (owner={owner})")
 
     events = physics_state.get("events", []) or []
     if events:
@@ -367,7 +378,15 @@ def _compress_world_state(
                     truth_part = f" truth=[{truth_str}]"
                 else:
                     truth_part = " truth=[uncommitted]"
-                lines.append(f"- `{pid}`{truth_part} — {desc}")
+                # Tag proposition rows with their AMWN ``world_id`` on
+                # shadow reads so the LLM can tell a shadow-clone
+                # commit (the do-surgery's truth on this branch) apart
+                # from a factual passthrough (still authoritative
+                # because the shadow merge did not split it).
+                wid_tag = ""
+                if branch_world_id == "shadow":
+                    wid_tag = f" [{p.get('world_id', 'factual')}]"
+                lines.append(f"- `{pid}`{wid_tag}{truth_part} \u2014 {desc}")
             if len(prop_iter) > max_events:
                 lines.append(
                     f"  …(+{len(prop_iter) - max_events} more propositions)"
@@ -836,11 +855,38 @@ def answer_question(
         _pp = preceding_prose.strip()
         if len(_pp) > _pp_max:
             _pp = "\u2026" + _pp[-_pp_max:]
-        user_msg_parts.extend([
-            "",
-            "=== STORY SO FAR (prior prose on this branch) ===",
-            _pp,
-        ])
+        # On a shadow fork the joined prose tail is a mix of factual
+        # ancestors (the canon the fork branched from) and shadow
+        # continuation. Without a banner the answer LLM treats every
+        # paragraph as authoritative "this branch" history and ends
+        # up asserting factual-only events (e.g. Mrs Coady's heart
+        # attack) that the shadow physics state has explicitly
+        # suppressed. Each block is already marked with its
+        # ``(factual: …)`` / ``(shadow: …)`` provenance by
+        # ``_gather_preceding_prose``; the wrapper here just promotes
+        # that distinction into an explicit precedence rule.
+        if branch_world_id == "shadow":
+            user_msg_parts.extend([
+                "",
+                "=== STORY SO FAR (mixed: factual canon + shadow fork tail) ===",
+                _pp,
+                "(The blocks tagged ``(factual: …)`` are the canon the "
+                "shadow fork diverges FROM \u2014 they describe what would "
+                "have happened on the mainline, NOT what is true on this "
+                "branch. Where the WORLD STATE block contradicts a "
+                "factual prose detail (a suppressed event, a flipped "
+                "proposition, a missing snapshot), the WORLD STATE is "
+                "authoritative; treat the conflicting factual prose as "
+                "superseded by the intervention. The blocks tagged "
+                "``(shadow: …)`` are this fork's own continuation and "
+                "remain in force.)",
+            ])
+        else:
+            user_msg_parts.extend([
+                "",
+                "=== STORY SO FAR (prior prose on this branch) ===",
+                _pp,
+            ])
     if narrative_style is not None:
         # Surface the source register so the LLM uses the same
         # diction / formality the rest of the pipeline mirrors. We

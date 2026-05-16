@@ -933,13 +933,19 @@ def _gather_preceding_prose(
 
     # Truncate from the front (drop oldest) until the joined block
     # fits the budget. Each block is wrapped with a small marker so
-    # the LLM can tell continuity from the active scene's task.
+    # the LLM can tell continuity from the active scene's task. The
+    # marker is always ``(world_id: label)`` form (factual versions
+    # without an explicit label render as ``(factual: mainline)``) so
+    # the downstream prompt wrappers in answer.py / generation.py /
+    # auditor.py can match a single ``(factual: \u2026)`` / ``(shadow: \u2026)``
+    # pattern when telling the LLM which blocks are in force on the
+    # active branch.
     blocks: list[str] = []
     for version, prose, wid, label in picked:
-        marker = f"--- v{version} ({wid}"
-        if label:
-            marker += f": {label}"
-        marker += ") ---"
+        marker_label = label if label else (
+            "mainline" if wid == "factual" else "unlabelled"
+        )
+        marker = f"--- v{version} ({wid}: {marker_label}) ---"
         blocks.append(f"{marker}\n{prose.strip()}")
 
     joined = "\n\n".join(blocks)

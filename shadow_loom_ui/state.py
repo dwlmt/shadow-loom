@@ -578,6 +578,7 @@ class AppState:
             )
             self.versioned_model = pipeline_result.world_model
             self.world_state = pipeline_result.world_model.current
+            self._reproject_world_state_to_vwm_head()
             if world_advanced:
                 self.emit(StateEvent.WORLD_STATE_CHANGED)
 
@@ -733,6 +734,7 @@ class AppState:
             ):
                 self.versioned_model = pipeline_result.world_model
                 self.world_state = pipeline_result.world_model.current
+                self._reproject_world_state_to_vwm_head()
                 self.emit(StateEvent.WORLD_STATE_CHANGED)
                 # Persist the now-advanced version, mirroring the
                 # synchronous-flow gating (skip readonly / failed /
@@ -1182,6 +1184,39 @@ class AppState:
         )
         self.emit(StateEvent.WORLD_STATE_CHANGED)
 
+    def _reproject_world_state_to_vwm_head(self) -> None:
+        """Re-project ``self.world_state`` onto the VWM head branch.
+
+        ``self.world_state`` is documented (L205) as the
+        AMWN-PROJECTED view (shadow clones layered into ``entities``
+        etc. via :meth:`projected_for_branch`). After any swap that
+        assigns ``self.world_state = self.versioned_model.current``
+        — the post-pipeline callback, the background re-extraction
+        handler, ``rollback_to`` — the assignment leaves
+        ``world_state`` as the raw merged ``WorldStateV1`` (factual
+        baseline only; shadow clones live in ``shadow_entities[branch_label]``
+        and its peers). Without re-projecting, every UI consumer that
+        reads ``state.world_state.entities[id]`` on a shadow head
+        sees the factual record — producing prose↔inspector drift,
+        invalid LLM query parsing (shadow-spawned entities absent
+        from the dynamic schema), and viz panels rendering the
+        wrong branch. Cheap: ``projected_for_branch`` returns
+        ``self`` for factual rows.
+
+        Mirrors the projection block at the end of ``load_db_version``
+        and ``load_project`` so all four code paths that mutate
+        ``self.world_state`` maintain the same invariant.
+        """
+        if self.versioned_model is None or not self.versioned_model.history:
+            return
+        _head = self.versioned_model.history[-1]
+        _projected = self.world_state.projected_for_branch(
+            branch_world_id=_head.world_id,
+            branch_label=_head.branch_label,
+        )
+        if _projected is not self.world_state:
+            self.world_state = _projected
+
     def _rehydrate_vwm_history_from_db(self, version_row_id: int) -> None:
         """Replace ``versioned_model.history`` with the DB lineage.
 
@@ -1313,6 +1348,7 @@ class AppState:
             raise ValueError("No versioned model to rollback.")
         self.versioned_model = self.versioned_model.rollback(version)
         self.world_state = self.versioned_model.current
+        self._reproject_world_state_to_vwm_head()
         # A version swap repositions the world; previously-active
         # cursors point into a different timeline and would render
         # garbage on the new one. Reset both so every time-aware panel
