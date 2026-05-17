@@ -9745,17 +9745,22 @@ async def extract_topology_async(
                 )
                 chunk_results.append((
                     ChunkTopology(),
-                    {"physics": 1, "social": 1, "consequences": 1},
-                    {"physics": err, "social": err, "consequences": err},
+                    {"physics": 1, "social": 1, "consequences": 1, "affect": 1},
+                    {"physics": err, "social": err, "consequences": err, "affect": err},
                 ))
             else:
                 chunk_results.append(r)
     topologies_list = [r[0] for r in chunk_results]
-    failure_counts: Dict[str, int] = {"physics": 0, "social": 0, "consequences": 0}
+    # ``affect`` is a per-chunk sub-stage (see ``_extract_single_chunk_async``);
+    # it MUST be present here so the aggregation loop below doesn't
+    # ``KeyError`` when any chunk's affect call raises.
+    failure_counts: Dict[str, int] = {
+        "physics": 0, "social": 0, "consequences": 0, "affect": 0,
+    }
     sample_errors: Dict[str, str] = {}
     for _, flags, errs in chunk_results:
         for stage, flag in flags.items():
-            failure_counts[stage] += flag
+            failure_counts[stage] = failure_counts.get(stage, 0) + flag
         for stage, msg in errs.items():
             sample_errors.setdefault(stage, msg)
     _check_chunk_failure_threshold(
@@ -13710,7 +13715,99 @@ def _auto_repair(ws: WorldStateV1) -> Tuple[WorldStateV1, List[str]]:
     valid_event_ids = {e.id for e in clean_events}
     valid_channel_ids_set = set(clean_channels.keys())
 
+    # --- Belief provenance: deterministic inference from utterance chains.
+    #
+    # When a belief has neither ``acquired_via_event_id`` nor
+    # ``acquired_via_channel_id`` set, AND exactly one utterance in
+    # the world plausibly produced it (the holder is on the receiving
+    # end, the belief target is a participant, and the utterance
+    # happens at-or-before the snapshot fabula_time when available),
+    # backfill the provenance fields. Conservative: skip whenever
+    # there is ambiguity (zero or >=2 candidates) so we never invent
+    # a false causal edge that abduction / counterfactual rollback
+    # would later rely on.
+    #
+    # The fuzzy/null repair pass below this block still runs over the
+    # inferred values, so any inference that picked an invalid id is
+    # auto-cleared.
+    utterance_index: List[EventNode] = [
+        e for e in clean_events if e.event_type == "utterance"
+    ]
+
+    def _candidate_utterances_for(
+        holder_id: str,
+        target_id: Optional[str],
+        before_fabula: Optional[int],
+    ) -> List[EventNode]:
+        out: List[EventNode] = []
+        for evt in utterance_index:
+            # Holder must be addressed by the utterance (otherwise
+            # they could not have heard it). A direct-witness belief
+            # where the holder is the speaker is also valid.
+            if not (
+                holder_id in (evt.addressee_ids or [])
+                or evt.speaker_id == holder_id
+            ):
+                continue
+            # The belief target must be a participant in the utterance:
+            # either the speaker (belief ABOUT the speaker), an
+            # addressee, or one of the actor/target ids.
+            participants = set(
+                (evt.actor_ids or [])
+                + (evt.target_ids or [])
+                + (evt.addressee_ids or [])
+            )
+            if evt.speaker_id:
+                participants.add(evt.speaker_id)
+            if target_id and target_id not in participants:
+                continue
+            # Don't pick utterances that happen AFTER the snapshot
+            # the belief lives in (the belief can't have been
+            # acquired by a future event).
+            if (
+                before_fabula is not None
+                and evt.fabula_time is not None
+                and evt.fabula_time > before_fabula
+            ):
+                continue
+            out.append(evt)
+        return out
+
+    def _infer_belief_provenance(
+        b: Belief,
+        holder_id: str,
+        *,
+        before_fabula: Optional[int] = None,
+    ) -> Belief:
+        if b.acquired_via_event_id or b.acquired_via_channel_id:
+            return b
+        candidates = _candidate_utterances_for(
+            holder_id, b.target_id, before_fabula,
+        )
+        # Conservative single-candidate threshold: ambiguous matches
+        # are left for the LLM correction loop or the auditor.
+        if len(candidates) != 1:
+            return b
+        cand = candidates[0]
+        update: dict = {"acquired_via_event_id": cand.id}
+        if cand.via_channel_id:
+            update["acquired_via_channel_id"] = cand.via_channel_id
+        repairs.append(
+            f"Inferred belief provenance for holder '{holder_id}' "
+            f"about target '{b.target_id}': "
+            f"acquired_via_event_id='{cand.id}'"
+            + (
+                f", acquired_via_channel_id='{cand.via_channel_id}'"
+                if cand.via_channel_id else ""
+            )
+            + " (single matching utterance)."
+        )
+        return b.model_copy(update=update)
+
     def _repair_belief(b: Belief, owner: str, *, in_snapshot_at: Optional[int] = None) -> Belief:
+        # Inference runs first so the dangling-ref repair below
+        # validates any newly-inferred ids.
+        b = _infer_belief_provenance(b, owner, before_fabula=in_snapshot_at)
         update: dict = {}
         if b.acquired_via_event_id and b.acquired_via_event_id not in valid_event_ids:
             resolved = _fuzzy_resolve_id(b.acquired_via_event_id, valid_event_ids)
@@ -17081,22 +17178,21 @@ def _run_correction_patch(
         return world_state, [], "agent_failed"
 
     patch: WorldStatePatch = result.output
-    if (
-        not patch.event_renames
-        and not patch.channel_renames
-        and not patch.drop_event_ids
-        and not patch.update_event_fields
-        and not patch.update_entity_location
-        and not patch.add_state_timeline_entries
-        and not patch.drop_causal_edges
-        and not patch.add_causal_edges
-        and not patch.drop_social_edges
-        and not patch.add_social_edges
-        and not patch.drop_spatial_edges
-        and not patch.add_spatial_edges
-        and not patch.drop_channel_ids
-        and not patch.add_channels
-    ):
+    # Generic emptiness check: a patch is "empty" iff every actionable
+    # field is at its default (empty container / falsy). The previous
+    # hand-rolled check enumerated only the 15 legacy fields and
+    # silently mis-classified patches touching only Phase E
+    # (propositions / concerns / belief-prop links), ontology repairs
+    # (entity/object/location renames + drops), channel intelligibility
+    # tweaks, or causal-edge direction swaps. Enumerating
+    # ``model_fields`` keeps this honest as new patch ops are added.
+    _NON_ACTIONABLE_PATCH_FIELDS = {"notes"}
+    is_empty = all(
+        not getattr(patch, name)
+        for name in type(patch).model_fields
+        if name not in _NON_ACTIONABLE_PATCH_FIELDS
+    )
+    if is_empty:
         logger.info(
             "%s Correction agent returned an empty patch (notes: %r).",
             log_prefix, patch.notes,

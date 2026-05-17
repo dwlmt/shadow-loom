@@ -19,6 +19,7 @@ caveats).
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -77,6 +78,105 @@ class AnswerCard(BaseModel):
 # =====================================================================
 
 
+def _coerce_sandbox_to_world_shape(
+    physics_state: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Translate ``nx.node_link_data(sandbox)`` to WorldStateV1 shape.
+
+    Rung-2 (intervention) and Rung-3 (counterfactual) physics emit
+    ``physics_state = nx.node_link_data(self.sandbox)`` — a
+    ``{"nodes": [...], "edges"|"links": [...], "graph": {...}}``
+    payload. The Q&A compressor reads from the WorldStateV1 dict shape
+    (``entities`` keyed by id, ``events`` as a list, ``social_topology``
+    as a list of relationship edges, etc.). Without this translation
+    the shadow-branch Q&A prompt was emitted with an empty world-state
+    block.
+
+    No-op when ``physics_state`` already looks like a WorldStateV1
+    dump (no ``nodes`` key, or no ``edges``/``links`` bucket).
+    """
+    if not isinstance(physics_state, dict):
+        return physics_state
+    if "nodes" not in physics_state:
+        return physics_state
+    edges_bucket = (
+        physics_state.get("edges")
+        if "edges" in physics_state
+        else physics_state.get("links")
+    )
+    if edges_bucket is None:
+        return physics_state
+
+    entities: Dict[str, Dict[str, Any]] = {}
+    objects: Dict[str, Dict[str, Any]] = {}
+    locations: Dict[str, Dict[str, Any]] = {}
+    world_traits: Dict[str, Dict[str, Any]] = {}
+    channels: Dict[str, Dict[str, Any]] = {}
+    events: List[Dict[str, Any]] = []
+    for n in physics_state.get("nodes") or []:
+        if not isinstance(n, dict):
+            continue
+        nid = n.get("id")
+        if not nid:
+            continue
+        nt = n.get("node_type")
+        node = {k: v for k, v in n.items() if k != "node_type"}
+        if nt == "Entity":
+            entities[nid] = node
+        elif nt == "NarrativeObject":
+            objects[nid] = node
+        elif nt == "Location":
+            locations[nid] = node
+        elif nt == "WorldTrait":
+            world_traits[nid] = node
+        elif nt == "Channel":
+            channels[nid] = node
+        elif nt == "EventNode":
+            events.append(node)
+
+    social: List[Dict[str, Any]] = []
+    spatial: List[Dict[str, Any]] = []
+    causal: List[Dict[str, Any]] = []
+    for link in edges_bucket or []:
+        if not isinstance(link, dict):
+            continue
+        et = link.get("edge_type")
+        src = link.get("source")
+        tgt = link.get("target")
+        if et == "relationship":
+            rel = dict(link)
+            rel.setdefault("source_entity_id", src)
+            rel.setdefault("target_entity_id", tgt)
+            social.append(rel)
+        elif et == "connected_to":
+            se = dict(link)
+            se.setdefault("source_id", src)
+            se.setdefault("target_id", tgt)
+            spatial.append(se)
+        elif et == "causal":
+            ce = dict(link)
+            ce.setdefault("source_id", src)
+            ce.setdefault("target_id", tgt)
+            causal.append(ce)
+
+    propositions = (
+        (physics_state.get("graph") or {}).get("propositions") or []
+    )
+
+    return {
+        "entities": entities,
+        "objects": objects,
+        "locations": locations,
+        "world_traits": world_traits,
+        "channels": channels,
+        "events": events,
+        "social_topology": social,
+        "spatial_topology": spatial,
+        "causal_topology": causal,
+        "propositions": propositions,
+    }
+
+
 def _compress_world_state(
     physics_state: Dict[str, Any] | None,
     *,
@@ -100,6 +200,17 @@ def _compress_world_state(
     """
     if not physics_state:
         return "(no world state available)"
+
+    # Rung-2/3 callers pass ``physics_state = nx.node_link_data(sandbox)``
+    # which is shaped ``{"nodes": [...], "edges": [...]}`` (NetworkX
+    # 3.4+; ``"links"`` on older releases). The compressor below
+    # expects the WorldStateV1 shape (``entities``, ``events``,
+    # ``social_topology``, ``spatial_topology``, ``channels``,
+    # ``world_traits``, ``propositions``). Without this translation
+    # the shadow-branch Q&A prompt's "World state at current temporal
+    # anchor:" block came out empty, blinding the answer agent to
+    # the very do-surgery the user was asking about.
+    physics_state = _coerce_sandbox_to_world_shape(physics_state)
 
     lines: List[str] = []
 
@@ -170,6 +281,66 @@ def _compress_world_state(
                     )
                 if len(beliefs) > 6:
                     lines.append(f"    …(+{len(beliefs) - 6} more beliefs)")
+            # Concerns — standing fears/desires referencing a
+            # proposition. Critical for "what does X want / fear",
+            # "why is X motivated to do Y", and any rung-1 question
+            # that turns on motivational state. Mirrors the
+            # rung-2/3 do_target_context's concern coverage so
+            # interrogation has parity with intervention reasoning.
+            concerns = ent.get("concerns") or []
+            if concerns:
+                shown_concerns: List[str] = []
+                for c in concerns[:6]:
+                    if not isinstance(c, dict):
+                        continue
+                    ccn = c.get("concern_id", "?")
+                    pol = c.get("polarity", "?")
+                    pid = c.get("proposition_id", "?")
+                    sal = c.get("salience")
+                    sal_str = (
+                        f" sal={float(sal):.2f}"
+                        if isinstance(sal, (int, float)) else ""
+                    )
+                    kind = c.get("kind")
+                    kind_str = f" kind={kind}" if kind else ""
+                    shown_concerns.append(
+                        f"{ccn}({pol} PROP {pid}{sal_str}{kind_str})"
+                    )
+                if shown_concerns:
+                    lines.append(
+                        "    concerns: " + " | ".join(shown_concerns)
+                    )
+                if len(concerns) > 6:
+                    lines.append(f"    …(+{len(concerns) - 6} more concerns)")
+            # State-timeline trajectory — the chain of history that
+            # tells the interrogator HOW this entity arrived at its
+            # current traits / location / beliefs. Without this an
+            # interrogation answer to "how did X end up here" or
+            # "what changed X" has to guess from events alone. Mirror
+            # of the rung-2/3 trait/world_trait history sections.
+            timeline = ent.get("state_timeline") or []
+            if timeline:
+                shown_snaps: List[str] = []
+                for snap in timeline[-4:]:
+                    if not isinstance(snap, dict):
+                        continue
+                    ft = snap.get("fabula_time", "?")
+                    trig = snap.get("triggered_by")
+                    sloc = snap.get("location_id")
+                    bits = [f"t={ft}"]
+                    if sloc:
+                        bits.append(f"loc={sloc}")
+                    if trig:
+                        bits.append(f"via={trig}")
+                    shown_snaps.append("[" + ", ".join(bits) + "]")
+                if shown_snaps:
+                    lines.append(
+                        "    history: " + " \u2192 ".join(shown_snaps)
+                    )
+                if len(timeline) > 4:
+                    lines.append(
+                        f"    …(+{len(timeline) - 4} earlier snapshots)"
+                    )
         if len(entities) > max_entities:
             lines.append(f"  …(+{len(entities) - max_entities} more entities)")
 
@@ -767,6 +938,7 @@ def answer_question(
             _format_belief_mutation_lines,
             _format_concern_mutation_lines,
             _format_blocked_propagation_lines,
+            _format_do_target_causal_context,
         )
         rung_label = "RUNG-2" if query_type == "intervention" else "RUNG-3"
         if do_targets:
@@ -783,6 +955,21 @@ def answer_question(
                     f"{k}={t[k]!r}" for k in payload_keys if t.get(k) is not None
                 )
                 user_msg_parts.append(f"  - {kind}: {fields}")
+                # Rich causal-neighbourhood block for every do-target
+                # kind so the answer agent can reason about the
+                # precursor chain / belief network / trait history
+                # around the clamp rather than treat the do-target
+                # as an opaque id. Mirror of the renderer / auditor
+                # ``do_target_context`` surface; the helper dispatches
+                # by ``target_kind`` so every clamp surface (event,
+                # proposition, belief, concern, trait, world_trait,
+                # channel, relationship, causal_edge, spatial_edge,
+                # object) is covered.
+                if world_state is not None:
+                    _de = SimpleNamespace(**t)
+                    _ctx = _format_do_target_causal_context(world_state, _de)
+                    if _ctx:
+                        user_msg_parts.append("    " + _ctx.replace("\n", "\n    "))
         if affected_propositions:
             _prop_descs = _resolve_affected_descriptions(world_state, affected_propositions, "prop") if world_state else []
             user_msg_parts.append(
@@ -912,6 +1099,19 @@ def answer_question(
         context_block,
     ])
     user_msg = "\n".join(user_msg_parts)
+
+    # Emit the full Q&A prompt at INFO so the answering agent's
+    # instructions can be analysed alongside the renderer / auditor
+    # / evaluator prompts. Wrapped with BEGIN/END markers for
+    # unambiguous extraction from the log stream.
+    logger.info(
+        "[Answer] Q&A prompt (q_type=%s, %d chars):\n"
+        "========== BEGIN ANSWER PROMPT ==========\n%s\n"
+        "========== END ANSWER PROMPT ==========",
+        query_type,
+        len(user_msg),
+        user_msg,
+    )
 
     agent = _build_answer_agent(config, query_type=query_type)
     try:

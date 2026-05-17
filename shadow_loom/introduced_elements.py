@@ -30,7 +30,7 @@ class _IntroducedSpecBase(BaseModel):
         description=(
             "Stable identifier following the project's prefix convention "
             "(``ENT_*`` for entities, ``LOC_*`` for locations, ``OBJ_*`` "
-            "for objects, ``WT_*`` for world traits, ``PROP_*`` for "
+            "for objects, ``WORLD_*`` for world traits, ``PROP_*`` for "
             "propositions, ``CCN_*`` for concerns). MUST NOT collide with "
             "any id already in ``WorldStateV1`` \u2014 the merge will reject "
             "duplicates."

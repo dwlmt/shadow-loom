@@ -18,7 +18,7 @@ Return a JSON object with this exact structure:
   "passed": true/false,
   "violations": [
     {
-      "violation_type": "epistemic_leakage | knowledge_contamination | low_kl_divergence | suspense_threshold | tonal_mismatch | magnitude_too_low | reasoning_failure | affective_failure | attribution_failure | empathy_weight | miracle_step | abduction_failure | utterance_truth_contradiction | channel_intelligibility_violation | withheld_utterance_leak | belief_provenance_contradiction | pruned_utterance_leak | disabled_channel_leak | blocked_propagation_leak | style_mismatch | meta_narration | undeclared_element | object_misuse | object_position_mismatch | entity_position_mismatch | event_location_mismatch | event_copresence_violation | event_copresence_omission",
+      "violation_type": "epistemic_leakage | knowledge_contamination | low_kl_divergence | suspense_threshold | tonal_mismatch | magnitude_too_low | reasoning_failure | affective_failure | attribution_failure | empathy_weight | miracle_step | abduction_failure | utterance_truth_contradiction | channel_intelligibility_violation | withheld_utterance_leak | belief_provenance_contradiction | pruned_utterance_leak | disabled_channel_leak | blocked_propagation_leak | style_mismatch | meta_narration | undeclared_element | unjustified_introduction | object_misuse | object_position_mismatch | entity_position_mismatch | event_location_mismatch | event_copresence_violation | event_copresence_omission",
       "severity": "critical | major | minor",
       "description": "What went wrong — specific, actionable.",
       "evidence_quote": "The exact passage from the prose that demonstrates the violation.",

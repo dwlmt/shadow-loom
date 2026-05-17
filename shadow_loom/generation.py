@@ -484,6 +484,714 @@ def _resolve_do_target_gloss(
     return None
 
 
+def _format_do_target_causal_context(
+    world_state: WorldStateV1,
+    do_target: Any,
+    *,
+    max_neighbours: int = 6,
+    max_history_hops: int = 3,
+) -> Optional[str]:
+    """Render a rich neighbourhood block around a do-surgery target.
+
+    The plain ``do_target_gloss`` gives the renderer the referent's
+    description, but a Rung-2/3 surgery on an outcome event ("Ken
+    accidentally kills the dogs while trying to silence Mrs Coady")
+    also requires the *causal precursors* (the order from George that
+    set the attempt in motion, the precondition states the attempt
+    relied on) and *causal successors* (the heart-attack the dog-
+    deaths caused) for the renderer to write a coherent alternative.
+    Without this neighbourhood the renderer either erases the entire
+    attempt (writing a friendly biscuit-delivery visit instead of a
+    failed murder) or invents a new outcome divorced from the
+    canonical mechanism.
+
+    Dispatches by ``do_target.target_kind`` so every clamp surface —
+    events, propositions, beliefs, concerns, traits, world traits,
+    channels, relationships, causal/spatial edges, objects — emits a
+    block describing both the referent and the canon history chain
+    around it (multi-hop event ancestors / state-timeline snapshots /
+    related beliefs and concerns). Returns ``None`` only when neither
+    the referent nor any neighbourhood data can be resolved.
+    ``max_neighbours`` caps each section so a heavily-connected hub
+    cannot blow out the prompt; ``max_history_hops`` bounds the
+    causal-ancestor / successor walk depth for event surgeries.
+    """
+    if world_state is None or do_target is None:
+        return None
+    target_kind = getattr(do_target, "target_kind", None)
+    if not target_kind:
+        return None
+    try:
+        events_list = list(getattr(world_state, "events", None) or [])
+        evt_by_id = {e.id: e for e in events_list}
+        entities_map = dict(getattr(world_state, "entities", None) or {})
+        objects_map = dict(getattr(world_state, "objects", None) or {})
+        locations_map = dict(getattr(world_state, "locations", None) or {})
+        world_traits_map = dict(getattr(world_state, "world_traits", None) or {})
+        channels_map = dict(getattr(world_state, "channels", None) or {})
+        propositions_list = list(getattr(world_state, "propositions", None) or [])
+        prop_by_id = {p.proposition_id: p for p in propositions_list}
+        causal_edges = list(getattr(world_state, "causal_topology", None) or [])
+        social_edges = list(getattr(world_state, "social_topology", None) or [])
+        spatial_edges = list(getattr(world_state, "spatial_topology", None) or [])
+
+        def _ent_name(eid: Optional[str]) -> str:
+            if not eid:
+                return "?"
+            ent = entities_map.get(eid)
+            if ent is None:
+                return eid
+            nm = (getattr(ent, "name", None) or "").strip()
+            return f"{eid}({nm})" if nm else eid
+
+        def _evt_line(eid: str, *, indent: str = "      ") -> str:
+            ev = evt_by_id.get(eid)
+            if ev is None:
+                return f"{indent}{eid}"
+            desc = (getattr(ev, "description", "") or "").strip()
+            ft = getattr(ev, "fabula_time", None)
+            si = getattr(ev, "syuzhet_index", None)
+            et = getattr(ev, "event_type", None) or "event"
+            loc = getattr(ev, "at_location_id", None)
+            bits: List[str] = []
+            if ft is not None:
+                bits.append(f"t={ft}")
+            if si is not None:
+                bits.append(f"syu={si}")
+            bits.append(f"type={et}")
+            if loc:
+                bits.append(f"at={loc}")
+            meta = f" [{', '.join(bits)}]" if bits else ""
+            head = f"{indent}{eid} — {desc}{meta}" if desc else f"{indent}{eid}{meta}"
+            actors = list(getattr(ev, "actor_ids", None) or [])
+            targets = list(getattr(ev, "target_ids", None) or [])
+            tail_bits: List[str] = []
+            if actors:
+                tail_bits.append(f"actors={actors}")
+            if targets:
+                tail_bits.append(f"targets={targets}")
+            if tail_bits:
+                head += f"\n{indent}  " + " ".join(tail_bits)
+            return head
+
+        # ------------------------------------------------------------------
+        # Multi-hop causal ancestor / successor walker over the event DAG.
+        # Walks ``max_history_hops`` deep, breadth-first, deduping by id and
+        # ordering output by fabula_time so the chain reads chronologically.
+        # ------------------------------------------------------------------
+        def _walk_event_chain(
+            seed: str,
+            direction: str,  # "in" (ancestors) or "out" (successors)
+            hops: int,
+        ) -> List[tuple[str, str, int]]:
+            """Return [(event_id, mechanism, hop_distance)] sorted by fabula time."""
+            visited: set[str] = {seed}
+            frontier: List[tuple[str, str]] = [(seed, "")]
+            collected: Dict[str, tuple[str, int]] = {}
+            for depth in range(1, hops + 1):
+                next_frontier: List[tuple[str, str]] = []
+                for node, _pmech in frontier:
+                    for edge in causal_edges:
+                        src = getattr(edge, "source_id", None)
+                        tgt = getattr(edge, "target_id", None)
+                        mech = (getattr(edge, "mechanism", "") or "").strip()
+                        if direction == "in" and tgt == node and src and src.startswith("EVT_"):
+                            if src in visited:
+                                continue
+                            visited.add(src)
+                            collected[src] = (mech, depth)
+                            next_frontier.append((src, mech))
+                        elif direction == "out" and src == node and tgt and tgt.startswith("EVT_"):
+                            if tgt in visited:
+                                continue
+                            visited.add(tgt)
+                            collected[tgt] = (mech, depth)
+                            next_frontier.append((tgt, mech))
+                if not next_frontier:
+                    break
+                frontier = next_frontier
+
+            def _ft(eid: str) -> int:
+                ev = evt_by_id.get(eid)
+                return getattr(ev, "fabula_time", 0) or 0 if ev else 0
+
+            return sorted(
+                [(eid, mech, depth) for eid, (mech, depth) in collected.items()],
+                key=lambda r: (_ft(r[0]), r[2], r[0]),
+            )
+
+        def _append_event_chain(
+            lines: List[str],
+            chain: List[tuple[str, str, int]],
+            header: str,
+            cap: int,
+        ) -> None:
+            if not chain:
+                return
+            lines.append(f"    {header}")
+            for eid, mech, depth in chain[:cap]:
+                row = _evt_line(eid, indent="      ")
+                tail = f" (hop={depth}"
+                if mech:
+                    tail += f", mechanism={mech}"
+                tail += ")"
+                row += tail
+                lines.append(row)
+            if len(chain) > cap:
+                lines.append(f"      \u2026 (+{len(chain) - cap} more)")
+
+        # ------------------------------------------------------------------
+        # Helpers that return short summary lines for each non-event kind.
+        # Every kind surfaces (a) the referent itself with current canon
+        # state, and (b) the relevant ledger neighbourhood so the renderer
+        # has the chains needed to write a coherent altered version.
+        # ------------------------------------------------------------------
+        def _prop_line(pid: str, *, indent: str = "      ") -> str:
+            p = prop_by_id.get(pid)
+            if p is None:
+                return f"{indent}{pid}"
+            desc = (getattr(p, "description", "") or "").strip()
+            kind = getattr(p, "kind", None) or "?"
+            stakes = getattr(p, "stakes", None)
+            truth = getattr(p, "truth_at_fabula", None) or {}
+            bits = [f"kind={kind}"]
+            if stakes is not None:
+                bits.append(f"stakes={stakes}")
+            if truth:
+                bits.append(
+                    "truth=" + ",".join(f"{ft}:{v}" for ft, v in sorted(truth.items()))
+                )
+            meta = f" [{', '.join(bits)}]"
+            return f"{indent}{pid} — {desc}{meta}"
+
+        def _proposition_section(pid: Optional[str]) -> List[str]:
+            if not pid:
+                return []
+            out: List[str] = [_prop_line(pid, indent="  ")]
+            # Beliefs across all entities targeting this proposition.
+            belief_rows: List[str] = []
+            for ent_id, ent in entities_map.items():
+                for b in getattr(ent, "beliefs", None) or []:
+                    if getattr(b, "proposition_id", None) != pid:
+                        continue
+                    belief_rows.append(
+                        f"      {_ent_name(ent_id)} believes "
+                        f"'{getattr(b, 'perceived_state', '')}' "
+                        f"(conf={getattr(b, 'confidence', 0):.2f}, "
+                        f"since t={getattr(b, 'established_at_fabula', 0)})"
+                    )
+            if belief_rows:
+                out.append("    held beliefs:")
+                out.extend(belief_rows[:max_neighbours])
+                if len(belief_rows) > max_neighbours:
+                    out.append(f"      \u2026 (+{len(belief_rows) - max_neighbours} more)")
+            # Concerns referencing this proposition.
+            concern_rows: List[str] = []
+            for ent_id, ent in entities_map.items():
+                for c in getattr(ent, "concerns", None) or []:
+                    if getattr(c, "proposition_id", None) != pid:
+                        continue
+                    concern_rows.append(
+                        f"      {_ent_name(ent_id)} {getattr(c, 'polarity', '?')}s it "
+                        f"(CCN={getattr(c, 'concern_id', '?')}, "
+                        f"salience={getattr(c, 'salience', 0):.2f})"
+                    )
+            if concern_rows:
+                out.append("    referenced by concerns:")
+                out.extend(concern_rows[:max_neighbours])
+                if len(concern_rows) > max_neighbours:
+                    out.append(f"      \u2026 (+{len(concern_rows) - max_neighbours} more)")
+            # Events whose referent_ids point at this proposition (commits / refutes).
+            p = prop_by_id.get(pid)
+            referent_ids = list(getattr(p, "referent_ids", None) or []) if p else []
+            evt_rows: List[str] = []
+            for ev in events_list:
+                if ev.id in referent_ids or any(
+                    rid in (list(getattr(ev, "actor_ids", None) or [])
+                            + list(getattr(ev, "target_ids", None) or []))
+                    for rid in referent_ids
+                ):
+                    evt_rows.append(_evt_line(ev.id, indent="      "))
+            if evt_rows:
+                out.append("    events touching its referents:")
+                out.extend(evt_rows[:max_neighbours])
+                if len(evt_rows) > max_neighbours:
+                    out.append(f"      \u2026 (+{len(evt_rows) - max_neighbours} more)")
+            return out
+
+        def _trait_history_snapshots(ent_id: str, trait_name: str) -> List[str]:
+            ent = entities_map.get(ent_id)
+            if ent is None:
+                return []
+            rows: List[str] = []
+            for snap in getattr(ent, "state_timeline", None) or []:
+                traits_snap = getattr(snap, "traits", None) or {}
+                if trait_name not in traits_snap:
+                    continue
+                tv = traits_snap.get(trait_name)
+                val = getattr(tv, "value", None) if tv is not None else None
+                ft = getattr(snap, "fabula_time", None)
+                trig = getattr(snap, "triggered_by", None)
+                bits = [f"t={ft}", f"value={val}"]
+                if trig:
+                    bits.append(f"via={trig}")
+                rows.append(f"      [{', '.join(bits)}]")
+            return rows
+
+        # ------------------------------------------------------------------
+        # Dispatch
+        # ------------------------------------------------------------------
+        lines: List[str] = []
+
+        if target_kind == "event":
+            evt_id = getattr(do_target, "event_id", None)
+            if not evt_id or evt_id not in evt_by_id:
+                return None
+            lines.append(f"DO-TARGET CAUSAL CONTEXT (factual canon around {evt_id}):")
+            lines.append(_evt_line(evt_id, indent="  "))
+            ancestors = _walk_event_chain(evt_id, "in", max_history_hops)
+            successors = _walk_event_chain(evt_id, "out", max_history_hops)
+            # Affordance-gate preconditions (1-hop, non-event sources surface
+            # as state guards: object availability, location reachability).
+            preconditions: List[tuple[str, str]] = []
+            for edge in causal_edges:
+                src = getattr(edge, "source_id", None)
+                tgt = getattr(edge, "target_id", None)
+                ctype = getattr(edge, "causality_type", None)
+                mech = (getattr(edge, "mechanism", "") or "").strip()
+                if tgt == evt_id and ctype == "affordance_gate" and src:
+                    preconditions.append((src, mech))
+            _append_event_chain(
+                lines, ancestors,
+                f"\u2190 ancestor chain (up to {max_history_hops} hops back):",
+                max_neighbours * 2,
+            )
+            _append_event_chain(
+                lines, successors,
+                f"\u2192 descendant chain (up to {max_history_hops} hops forward):",
+                max_neighbours * 2,
+            )
+            if preconditions:
+                lines.append("    \u2190 preconditions (affordance gates):")
+                for src, mech in preconditions[:max_neighbours]:
+                    row = f"      {src}"
+                    if mech:
+                        row += f" (mechanism={mech})"
+                    lines.append(row)
+                if len(preconditions) > max_neighbours:
+                    lines.append(f"      \u2026 (+{len(preconditions) - max_neighbours} more)")
+
+        elif target_kind == "proposition":
+            pid = getattr(do_target, "proposition_id", None)
+            if not pid:
+                return None
+            lines.append(f"DO-TARGET CAUSAL CONTEXT (factual canon around {pid}):")
+            lines.extend(_proposition_section(pid))
+
+        elif target_kind == "belief":
+            holder = getattr(do_target, "holder_id", None)
+            tgt_id = getattr(do_target, "target_id", None)
+            pid = getattr(do_target, "proposition_id", None)
+            label = f"belief({_ent_name(holder)} \u2192 {tgt_id})"
+            lines.append(f"DO-TARGET CAUSAL CONTEXT (factual canon around {label}):")
+            ent = entities_map.get(holder) if holder else None
+            existing = None
+            if ent is not None:
+                for b in getattr(ent, "beliefs", None) or []:
+                    if getattr(b, "target_id", None) == tgt_id and (
+                        pid is None or getattr(b, "proposition_id", None) == pid
+                    ):
+                        existing = b
+                        break
+            if existing is not None:
+                via_evt = getattr(existing, "acquired_via_event_id", None)
+                via_chn = getattr(existing, "acquired_via_channel_id", None)
+                lines.append(
+                    f"  holder={_ent_name(holder)} currently believes "
+                    f"'{getattr(existing, 'perceived_state', '')}' "
+                    f"(conf={getattr(existing, 'confidence', 0):.2f}, "
+                    f"since t={getattr(existing, 'established_at_fabula', 0)})"
+                )
+                if via_evt:
+                    lines.append(f"    acquired via event: {_evt_line(via_evt, indent='').strip()}")
+                if via_chn:
+                    ch = channels_map.get(via_chn)
+                    ch_name = (getattr(ch, "name", None) or "") if ch else ""
+                    lines.append(f"    acquired via channel: {via_chn}{(' — ' + ch_name) if ch_name else ''}")
+            else:
+                lines.append(f"  holder={_ent_name(holder)} has no prior belief about {tgt_id}")
+            if pid:
+                lines.append("  underlying proposition:")
+                lines.extend(_proposition_section(pid))
+            # Other entities' beliefs about the same target (for irony / common ground).
+            other_rows: List[str] = []
+            for other_id, other in entities_map.items():
+                if other_id == holder:
+                    continue
+                for b in getattr(other, "beliefs", None) or []:
+                    if getattr(b, "target_id", None) == tgt_id:
+                        other_rows.append(
+                            f"      {_ent_name(other_id)} believes "
+                            f"'{getattr(b, 'perceived_state', '')}' "
+                            f"(conf={getattr(b, 'confidence', 0):.2f})"
+                        )
+            if other_rows:
+                lines.append("    other entities' beliefs about same target:")
+                lines.extend(other_rows[:max_neighbours])
+                if len(other_rows) > max_neighbours:
+                    lines.append(f"      \u2026 (+{len(other_rows) - max_neighbours} more)")
+
+        elif target_kind == "concern":
+            holder = getattr(do_target, "holder_id", None)
+            ccn = getattr(do_target, "concern_id", None)
+            lines.append(
+                f"DO-TARGET CAUSAL CONTEXT (factual canon around concern "
+                f"{ccn} of {_ent_name(holder)}):"
+            )
+            ent = entities_map.get(holder) if holder else None
+            concern_obj = None
+            if ent is not None:
+                for c in getattr(ent, "concerns", None) or []:
+                    if getattr(c, "concern_id", None) == ccn:
+                        concern_obj = c
+                        break
+            if concern_obj is not None:
+                pol = getattr(concern_obj, "polarity", "?")
+                sal = getattr(concern_obj, "salience", 0)
+                kind = getattr(concern_obj, "kind", None)
+                cpid = getattr(concern_obj, "proposition_id", None)
+                window = getattr(concern_obj, "activation_fabula_window", None)
+                counters = list(getattr(concern_obj, "counter_concern_ids", None) or [])
+                lines.append(
+                    f"  {_ent_name(holder)} {pol}s PROP {cpid} "
+                    f"(salience={sal:.2f}"
+                    + (f", kind={kind}" if kind else "")
+                    + (f", active_window={window}" if window else "")
+                    + ")"
+                )
+                if counters:
+                    lines.append(f"    counter-concerns (ambivalence): {counters}")
+                if cpid:
+                    lines.append("  underlying proposition:")
+                    lines.extend(_proposition_section(cpid))
+            else:
+                lines.append(f"  concern {ccn} not found on {_ent_name(holder)}")
+
+        elif target_kind == "trait":
+            holder = getattr(do_target, "holder_id", None)
+            trait_name = getattr(do_target, "trait_name", None)
+            lines.append(
+                f"DO-TARGET CAUSAL CONTEXT (factual canon around trait "
+                f"{trait_name} of {_ent_name(holder)}):"
+            )
+            ent = entities_map.get(holder) if holder else None
+            if ent is not None:
+                traits = getattr(ent, "traits", None) or {}
+                tv = traits.get(trait_name) if trait_name else None
+                if tv is not None:
+                    lines.append(
+                        f"  baseline {trait_name}={getattr(tv, 'value', None)} "
+                        f"(inertia={getattr(tv, 'inertia', None)})"
+                    )
+                else:
+                    lines.append(f"  no baseline {trait_name} trait recorded")
+                hist = _trait_history_snapshots(holder, trait_name) if trait_name else []
+                if hist:
+                    lines.append("    history (state_timeline snapshots):")
+                    lines.extend(hist[:max_neighbours])
+                    if len(hist) > max_neighbours:
+                        lines.append(f"      \u2026 (+{len(hist) - max_neighbours} more)")
+                # Relationships mediated by this trait (social_topology).
+                rel_rows: List[str] = []
+                for edge in social_edges:
+                    src = getattr(edge, "source_entity_id", None)
+                    if src != holder:
+                        continue
+                    tgt = getattr(edge, "target_entity_id", None)
+                    metrics = getattr(edge, "metrics", None) or {}
+                    summary = ", ".join(
+                        f"{name}={getattr(m, 'value', 0):.2f}" for name, m in metrics.items()
+                    )
+                    rel_rows.append(f"      {_ent_name(src)}\u2192{_ent_name(tgt)}: {summary}")
+                if rel_rows:
+                    lines.append("    holder's outgoing relationships:")
+                    lines.extend(rel_rows[:max_neighbours])
+                    if len(rel_rows) > max_neighbours:
+                        lines.append(f"      \u2026 (+{len(rel_rows) - max_neighbours} more)")
+
+        elif target_kind == "world_trait":
+            wt_id = getattr(do_target, "world_trait_id", None)
+            lines.append(
+                f"DO-TARGET CAUSAL CONTEXT (factual canon around world trait {wt_id}):"
+            )
+            wt = world_traits_map.get(wt_id) if wt_id else None
+            if wt is not None:
+                nm = (getattr(wt, "name", None) or "").strip()
+                desc = (getattr(wt, "description", None) or "").strip()
+                mag = getattr(wt, "magnitude", None)
+                domains = list(getattr(wt, "affected_domains", None) or [])
+                head = f"  {wt_id}"
+                if nm:
+                    head += f" — {nm}"
+                if mag is not None:
+                    head += (
+                        f" [value={getattr(mag, 'value', None)}, "
+                        f"inertia={getattr(mag, 'inertia', None)}]"
+                    )
+                lines.append(head)
+                if desc:
+                    lines.append(f"    description: {desc}")
+                if domains:
+                    lines.append(f"    affected_domains: {domains}")
+                hist = list(getattr(wt, "state_timeline", None) or [])
+                if hist:
+                    lines.append("    magnitude history:")
+                    for snap in hist[-max_neighbours:]:
+                        m = getattr(snap, "magnitude", None)
+                        ft = getattr(snap, "fabula_time", None)
+                        trig = getattr(snap, "triggered_by", None)
+                        bits = [f"t={ft}"]
+                        if m is not None:
+                            bits.append(f"value={getattr(m, 'value', None)}")
+                        if trig:
+                            bits.append(f"via={trig}")
+                        lines.append(f"      [{', '.join(bits)}]")
+                # Events that triggered shifts in this world trait.
+                trig_rows: List[str] = []
+                trig_ids = {
+                    getattr(s, "triggered_by", None)
+                    for s in (getattr(wt, "state_timeline", None) or [])
+                    if getattr(s, "triggered_by", None)
+                }
+                for tid in trig_ids:
+                    if tid in evt_by_id:
+                        trig_rows.append(_evt_line(tid, indent="      "))
+                if trig_rows:
+                    lines.append("    events that shifted it:")
+                    lines.extend(trig_rows[:max_neighbours])
+                    if len(trig_rows) > max_neighbours:
+                        lines.append(f"      \u2026 (+{len(trig_rows) - max_neighbours} more)")
+            else:
+                lines.append(f"  world trait {wt_id} not found in ledger")
+
+        elif target_kind == "channel":
+            chn_id = getattr(do_target, "channel_id", None)
+            lines.append(
+                f"DO-TARGET CAUSAL CONTEXT (factual canon around channel {chn_id}):"
+            )
+            ch = channels_map.get(chn_id) if chn_id else None
+            if ch is not None:
+                nm = (getattr(ch, "name", None) or "").strip()
+                term = getattr(ch, "terminated_at_fabula", None)
+                intel = getattr(ch, "intelligibility", None) or {}
+                head = f"  {chn_id}"
+                if nm:
+                    head += f" — {nm}"
+                head += f" [terminated_at={term}]"
+                lines.append(head)
+                if intel:
+                    lines.append(
+                        "    intelligibility: "
+                        + ", ".join(f"{_ent_name(k)}={v:.2f}" for k, v in intel.items())
+                    )
+                # Utterances / events flowing through this channel.
+                ch_rows: List[str] = []
+                for ev in events_list:
+                    if getattr(ev, "channel_id", None) == chn_id:
+                        ch_rows.append(_evt_line(ev.id, indent="      "))
+                if ch_rows:
+                    lines.append("    utterances on this channel:")
+                    lines.extend(ch_rows[:max_neighbours])
+                    if len(ch_rows) > max_neighbours:
+                        lines.append(f"      \u2026 (+{len(ch_rows) - max_neighbours} more)")
+                # Beliefs acquired via this channel.
+                bel_rows: List[str] = []
+                for ent_id, ent in entities_map.items():
+                    for b in getattr(ent, "beliefs", None) or []:
+                        if getattr(b, "acquired_via_channel_id", None) == chn_id:
+                            bel_rows.append(
+                                f"      {_ent_name(ent_id)} learnt "
+                                f"'{getattr(b, 'perceived_state', '')}' "
+                                f"(conf={getattr(b, 'confidence', 0):.2f})"
+                            )
+                if bel_rows:
+                    lines.append("    beliefs acquired via this channel:")
+                    lines.extend(bel_rows[:max_neighbours])
+                    if len(bel_rows) > max_neighbours:
+                        lines.append(f"      \u2026 (+{len(bel_rows) - max_neighbours} more)")
+            else:
+                lines.append(f"  channel {chn_id} not found in ledger")
+
+        elif target_kind == "relationship":
+            src = getattr(do_target, "source_entity_id", None)
+            tgt = getattr(do_target, "target_entity_id", None)
+            metric = getattr(do_target, "metric", None)
+            lines.append(
+                f"DO-TARGET CAUSAL CONTEXT (factual canon around relationship "
+                f"{_ent_name(src)}\u2192{_ent_name(tgt)}.{metric}):"
+            )
+            edge_obj = None
+            for edge in social_edges:
+                if (
+                    getattr(edge, "source_entity_id", None) == src
+                    and getattr(edge, "target_entity_id", None) == tgt
+                ):
+                    edge_obj = edge
+                    break
+            if edge_obj is not None:
+                metrics = getattr(edge_obj, "metrics", None) or {}
+                for name, m in metrics.items():
+                    lines.append(
+                        f"  {name}: value={getattr(m, 'value', 0):.2f}, "
+                        f"inertia={getattr(m, 'inertia', 0):.2f}, "
+                        f"last_updated_fabula={getattr(m, 'last_updated_fabula', 0)}"
+                    )
+                est = getattr(edge_obj, "established_at_fabula", None)
+                end = getattr(edge_obj, "ended_at_fabula", None)
+                if est is not None or end is not None:
+                    lines.append(f"    lifecycle: established={est}, ended={end}")
+            else:
+                lines.append(f"  no existing relationship between {src} and {tgt}")
+            # Interaction events between the pair.
+            ix_rows: List[str] = []
+            for ev in events_list:
+                actors = list(getattr(ev, "actor_ids", None) or [])
+                targets = list(getattr(ev, "target_ids", None) or [])
+                involved = set(actors + targets)
+                if src in involved and tgt in involved:
+                    ix_rows.append(_evt_line(ev.id, indent="      "))
+            if ix_rows:
+                lines.append("    interaction history (events involving both):")
+                lines.extend(ix_rows[:max_neighbours])
+                if len(ix_rows) > max_neighbours:
+                    lines.append(f"      \u2026 (+{len(ix_rows) - max_neighbours} more)")
+
+        elif target_kind == "causal_edge":
+            src = getattr(do_target, "source_id", None)
+            tgt = getattr(do_target, "target_id", None)
+            action = getattr(do_target, "action", None)
+            lines.append(
+                f"DO-TARGET CAUSAL CONTEXT (factual canon around causal edge "
+                f"{src}\u2192{tgt}, action={action}):"
+            )
+            for nid in (src, tgt):
+                if nid in evt_by_id:
+                    lines.append(_evt_line(nid, indent="  "))
+                elif nid in entities_map:
+                    lines.append(f"  {_ent_name(nid)}")
+                elif nid in objects_map:
+                    nm = (getattr(objects_map[nid], "name", None) or "").strip()
+                    lines.append(f"  {nid}{(' — ' + nm) if nm else ''}")
+                elif nid in world_traits_map:
+                    nm = (getattr(world_traits_map[nid], "name", None) or "").strip()
+                    lines.append(f"  {nid}{(' — ' + nm) if nm else ''}")
+                else:
+                    lines.append(f"  {nid}")
+            # Existing edges between this pair.
+            existing_rows: List[str] = []
+            for edge in causal_edges:
+                if (
+                    getattr(edge, "source_id", None) == src
+                    and getattr(edge, "target_id", None) == tgt
+                ):
+                    mech = (getattr(edge, "mechanism", "") or "").strip()
+                    ctype = getattr(edge, "causality_type", None)
+                    force = getattr(edge, "causal_force", None)
+                    existing_rows.append(
+                        f"      type={ctype}, mechanism={mech}, force={force}"
+                    )
+            if existing_rows:
+                lines.append("    existing edges between this pair:")
+                lines.extend(existing_rows[:max_neighbours])
+            elif action == "add":
+                lines.append("    no existing edges between this pair (new arrow)")
+
+        elif target_kind == "spatial_edge":
+            src = getattr(do_target, "source_id", None)
+            tgt = getattr(do_target, "target_id", None)
+            action = getattr(do_target, "action", None)
+            lines.append(
+                f"DO-TARGET CAUSAL CONTEXT (factual canon around spatial edge "
+                f"{src}\u2192{tgt}, action={action}):"
+            )
+            for lid in (src, tgt):
+                loc = locations_map.get(lid)
+                if loc is not None:
+                    nm = (getattr(loc, "name", None) or "").strip()
+                    lines.append(f"  {lid}{(' — ' + nm) if nm else ''}")
+                else:
+                    lines.append(f"  {lid}")
+            edge_rows: List[str] = []
+            for edge in spatial_edges:
+                if (
+                    getattr(edge, "source_id", None) == src
+                    and getattr(edge, "target_id", None) == tgt
+                ):
+                    edge_rows.append(
+                        f"      type={getattr(edge, 'connection_type', None)}, "
+                        f"bidirectional={getattr(edge, 'bidirectional', None)}, "
+                        f"is_locked={getattr(edge, 'is_locked', None)}"
+                    )
+            if edge_rows:
+                lines.append("    existing connections:")
+                lines.extend(edge_rows[:max_neighbours])
+            elif action == "add":
+                lines.append("    no existing connection (new passage)")
+
+        elif target_kind == "object":
+            obj_id = getattr(do_target, "object_id", None)
+            lines.append(
+                f"DO-TARGET CAUSAL CONTEXT (factual canon around object {obj_id}):"
+            )
+            obj = objects_map.get(obj_id) if obj_id else None
+            if obj is not None:
+                nm = (getattr(obj, "name", None) or "").strip()
+                loc = getattr(obj, "location_id", None)
+                owner = getattr(obj, "owner_id", None)
+                head = f"  {obj_id}"
+                if nm:
+                    head += f" — {nm}"
+                head += f" [location={loc}, owner={_ent_name(owner) if owner else None}]"
+                lines.append(head)
+                hist = list(getattr(obj, "state_timeline", None) or [])
+                if hist:
+                    lines.append("    state history:")
+                    for snap in hist[-max_neighbours:]:
+                        ft = getattr(snap, "fabula_time", None)
+                        trig = getattr(snap, "triggered_by", None)
+                        sloc = getattr(snap, "location_id", None)
+                        sown = getattr(snap, "owner_id", None)
+                        bits = [f"t={ft}"]
+                        if sloc is not None:
+                            bits.append(f"loc={sloc}")
+                        if sown is not None:
+                            bits.append(f"owner={sown}")
+                        if trig:
+                            bits.append(f"via={trig}")
+                        lines.append(f"      [{', '.join(bits)}]")
+                # Events touching this object.
+                evt_rows: List[str] = []
+                for ev in events_list:
+                    targets = list(getattr(ev, "target_ids", None) or [])
+                    if obj_id in targets:
+                        evt_rows.append(_evt_line(ev.id, indent="      "))
+                if evt_rows:
+                    lines.append("    events targeting this object:")
+                    lines.extend(evt_rows[:max_neighbours])
+                    if len(evt_rows) > max_neighbours:
+                        lines.append(f"      \u2026 (+{len(evt_rows) - max_neighbours} more)")
+            else:
+                lines.append(f"  object {obj_id} not found in ledger")
+
+        else:
+            # Unknown kind — defensive fallthrough.
+            return None
+
+        return "\n".join(lines) if len(lines) > 1 else None
+    except Exception:  # noqa: BLE001 — context is best-effort
+        return None
+
+
 def _resolve_affected_descriptions(
     world_state: WorldStateV1,
     ids: List[str],
@@ -632,10 +1340,82 @@ def _format_threat_proximity(tp: ThreatProximity) -> str:
         elif kind == "event":
             occurred = getattr(do_target, "occurred", None)
             verb = "occurred" if occurred else "did not occur"
+            _evt_id = getattr(do_target, "event_id", "?")
+            _gloss = getattr(tp, "do_target_gloss", None)
+            _gloss_str = f" (\"{_gloss}\")" if _gloss else ""
             lines.append(
                 f"  RUNG-2 SURGERY KIND: event \u2014 EVT "
-                f"{getattr(do_target, 'event_id', '?')} {verb}."
+                f"{_evt_id}{_gloss_str} {verb}."
             )
+            if not occurred and _gloss:
+                # ``EVT_*`` outcomes typically encode the *result* of an
+                # actor's attempt (e.g. "Ken accidentally kills the
+                # dogs while trying to silence Mrs Coady"). Clamping
+                # the outcome to false does NOT erase the precursor
+                # attempt, the actor's motive, or the surrounding
+                # plan — only the specific outcome. Tell the
+                # renderer explicitly so it doesn't write a scene in
+                # which the attempt never happened.
+                lines.append(
+                    "    \u2192 The actor's underlying attempt, motive, and "
+                    "plan SURVIVE this clamp \u2014 only this specific "
+                    "outcome was prevented. Render the same attempt "
+                    "with a DIFFERENT outcome (e.g. it failed, missed, "
+                    "or hit a different target), not a scene in which "
+                    "the attempt never took place."
+                )
+        elif kind == "world_trait":
+            lines.append(
+                f"  RUNG-2 SURGERY KIND: world_trait \u2014 "
+                f"{getattr(do_target, 'world_trait_id', '?')} was clamped to "
+                f"magnitude {getattr(do_target, 'value', '?')}. Render the "
+                f"threat as it stands under that *ambient* shift."
+            )
+        elif kind == "channel":
+            lines.append(
+                f"  RUNG-2 SURGERY KIND: channel \u2014 CHN "
+                f"{getattr(do_target, 'channel_id', '?')} was clamped "
+                f"(active={getattr(do_target, 'active', '?')}). Render "
+                f"the threat with the channel's altered transmissibility "
+                f"in force \u2014 messages it carried may no longer land."
+            )
+        elif kind == "relationship":
+            lines.append(
+                f"  RUNG-2 SURGERY KIND: relationship \u2014 "
+                f"{getattr(do_target, 'source_entity_id', '?')}\u2192"
+                f"{getattr(do_target, 'target_entity_id', '?')}."
+                f"{getattr(do_target, 'metric', '?')} clamped to "
+                f"{getattr(do_target, 'value', '?')}. Render the threat "
+                f"through that *social* axis at its new value."
+            )
+        elif kind == "causal_edge":
+            lines.append(
+                f"  RUNG-2 SURGERY KIND: causal_edge \u2014 "
+                f"{getattr(do_target, 'action', '?')} edge "
+                f"{getattr(do_target, 'source_id', '?')}\u2192"
+                f"{getattr(do_target, 'target_id', '?')}. Render the "
+                f"threat with that mechanism added or severed."
+            )
+        elif kind == "spatial_edge":
+            lines.append(
+                f"  RUNG-2 SURGERY KIND: spatial_edge \u2014 "
+                f"{getattr(do_target, 'action', '?')} passage "
+                f"{getattr(do_target, 'source_id', '?')}\u2192"
+                f"{getattr(do_target, 'target_id', '?')}. Render the "
+                f"threat with that architecture in effect."
+            )
+        elif kind == "object":
+            lines.append(
+                f"  RUNG-2 SURGERY KIND: object \u2014 OBJ "
+                f"{getattr(do_target, 'object_id', '?')} was clamped "
+                f"(location={getattr(do_target, 'new_location_id', None)}, "
+                f"owner={getattr(do_target, 'new_owner_id', None)}). "
+                f"Render the threat with the object in its new state."
+            )
+
+    _ctx_block = getattr(tp, "do_target_context", None)
+    if _ctx_block:
+        lines.append("  " + _ctx_block.replace("\n", "\n  "))
 
     if getattr(tp, "affected_propositions", None):
         lines.append(
@@ -971,16 +1751,79 @@ def _format_intervention_branch(ib: InterventionBranch) -> str:
         elif kind == "event":
             occurred = getattr(do_target, "occurred", None)
             verb = "occurred" if occurred else "did not occur"
+            _evt_id = getattr(do_target, "event_id", "?")
+            _gloss = ib.do_target_gloss
+            _gloss_str = f" (\"{_gloss}\")" if _gloss else ""
             lines.append(
                 f"  RUNG-2 SURGERY KIND: event \u2014 EVT "
-                f"{getattr(do_target, 'event_id', '?')} {verb}."
+                f"{_evt_id}{_gloss_str} {verb}."
             )
+            if not occurred and _gloss:
+                # See _format_threat_proximity for the rationale: the
+                # actor's attempt/motive/plan survive a clamped
+                # outcome — only the specific result is
+                # prevented. The renderer must depict the same
+                # attempt with a different outcome.
+                lines.append(
+                    "    \u2192 The actor's underlying attempt, motive, and "
+                    "plan SURVIVE this clamp \u2014 only this specific "
+                    "outcome was prevented. Render the same attempt "
+                    "with a DIFFERENT outcome (e.g. it failed, missed, "
+                    "or hit a different target), not a scene in which "
+                    "the attempt never took place."
+                )
         elif kind == "world_trait":
             lines.append(
                 f"  RUNG-2 SURGERY KIND: world_trait \u2014 "
                 f"{getattr(do_target, 'world_trait_id', '?')} was clamped to "
                 f"magnitude {getattr(do_target, 'value', '?')}."
             )
+        elif kind == "channel":
+            lines.append(
+                f"  RUNG-2 SURGERY KIND: channel \u2014 CHN "
+                f"{getattr(do_target, 'channel_id', '?')} was clamped "
+                f"(active={getattr(do_target, 'active', '?')}). Messages "
+                f"that previously flowed across this channel must be "
+                f"rendered under the new transmissibility."
+            )
+        elif kind == "relationship":
+            lines.append(
+                f"  RUNG-2 SURGERY KIND: relationship \u2014 "
+                f"{getattr(do_target, 'source_entity_id', '?')}\u2192"
+                f"{getattr(do_target, 'target_entity_id', '?')}."
+                f"{getattr(do_target, 'metric', '?')} clamped to "
+                f"{getattr(do_target, 'value', '?')}. Render the *social* "
+                f"axis at its new value, not its factual value."
+            )
+        elif kind == "causal_edge":
+            lines.append(
+                f"  RUNG-2 SURGERY KIND: causal_edge \u2014 "
+                f"{getattr(do_target, 'action', '?')} edge "
+                f"{getattr(do_target, 'source_id', '?')}\u2192"
+                f"{getattr(do_target, 'target_id', '?')}. The mechanism "
+                f"itself was rewired \u2014 render downstream effects with "
+                f"the new wiring in force."
+            )
+        elif kind == "spatial_edge":
+            lines.append(
+                f"  RUNG-2 SURGERY KIND: spatial_edge \u2014 "
+                f"{getattr(do_target, 'action', '?')} passage "
+                f"{getattr(do_target, 'source_id', '?')}\u2192"
+                f"{getattr(do_target, 'target_id', '?')}. The architecture "
+                f"itself changed \u2014 render movement, sightlines, and "
+                f"reachability under the new topology."
+            )
+        elif kind == "object":
+            lines.append(
+                f"  RUNG-2 SURGERY KIND: object \u2014 OBJ "
+                f"{getattr(do_target, 'object_id', '?')} was clamped "
+                f"(location={getattr(do_target, 'new_location_id', None)}, "
+                f"owner={getattr(do_target, 'new_owner_id', None)}). "
+                f"Render the object in its new location / ownership."
+            )
+
+    if ib.do_target_context:
+        lines.append("  " + ib.do_target_context.replace("\n", "\n  "))
 
     if len(ib.do_targets) > 1:
         lines.append(
@@ -1358,6 +2201,92 @@ def _format_counterfactual(cf: CounterfactualBranch) -> str:
                     f"  RUNG-3 SURGERY KIND: event — render as \"had EVT "
                     f"{evt_id}{_gloss_str} {verb}\"."
                 )
+                if not occurred and _gloss:
+                    # Outcome events typically encode the *result* of
+                    # an actor's attempt (e.g. "Ken accidentally kills
+                    # the dogs while trying to silence Mrs Coady");
+                    # clamping the outcome to false does NOT erase the
+                    # precursor attempt, the actor's motive, or the
+                    # surrounding plan — only the specific outcome.
+                    # Tell the renderer explicitly so it doesn't write
+                    # a scene in which the attempt never happened.
+                    lines.append(
+                        "    → The actor's underlying attempt, motive, "
+                        "and plan SURVIVE this counterfactual — only "
+                        "this specific outcome was different. Render the "
+                        "same attempt with a DIFFERENT outcome (e.g. it "
+                        "failed, missed, or hit a different target), not "
+                        "a world in which the attempt never took place."
+                    )
+        elif kind == "world_trait":
+            wt_id = getattr(do_target, "world_trait_id", None)
+            value = getattr(do_target, "value", None)
+            if wt_id and value is not None:
+                wt_label = _gloss or wt_id
+                lines.append(
+                    f"  RUNG-3 SURGERY KIND: world_trait — render as \"had "
+                    f"{wt_label} stood at magnitude {value}\". This is an "
+                    f"*ambient* counterfactual: the global force on every "
+                    f"entity was different. Use environmental language."
+                )
+        elif kind == "channel":
+            chn_id = getattr(do_target, "channel_id", None)
+            active = getattr(do_target, "active", None)
+            if chn_id:
+                chn_label = _gloss or chn_id
+                lines.append(
+                    f"  RUNG-3 SURGERY KIND: channel — render as \"had "
+                    f"{chn_label} been {'open' if active else 'severed'}\". "
+                    f"This is an *informational* counterfactual: the "
+                    f"transmission capability itself was different."
+                )
+        elif kind == "relationship":
+            src = getattr(do_target, "source_entity_id", None)
+            tgt = getattr(do_target, "target_entity_id", None)
+            metric = getattr(do_target, "metric", None)
+            value = getattr(do_target, "value", None)
+            if src and tgt and metric and value is not None:
+                lines.append(
+                    f"  RUNG-3 SURGERY KIND: relationship — render as \"had "
+                    f"{src}'s {metric} toward {tgt} been {value}\". This is "
+                    f"a *social-fabric* counterfactual: the dyad's standing "
+                    f"on this axis was different."
+                )
+        elif kind == "causal_edge":
+            src = getattr(do_target, "source_id", None)
+            tgt = getattr(do_target, "target_id", None)
+            action = getattr(do_target, "action", None)
+            if src and tgt and action:
+                lines.append(
+                    f"  RUNG-3 SURGERY KIND: causal_edge — render as \"had "
+                    f"the mechanism {src}\u2192{tgt} been {action}ed\". "
+                    f"This is a *mechanism* counterfactual: the world's "
+                    f"causal wiring was different."
+                )
+        elif kind == "spatial_edge":
+            src = getattr(do_target, "source_id", None)
+            tgt = getattr(do_target, "target_id", None)
+            action = getattr(do_target, "action", None)
+            if src and tgt and action:
+                lines.append(
+                    f"  RUNG-3 SURGERY KIND: spatial_edge — render as \"had "
+                    f"the passage {src}\u2192{tgt} been {action}ed\". This "
+                    f"is an *architectural* counterfactual: reachability "
+                    f"and sightlines were different."
+                )
+        elif kind == "object":
+            obj_id = getattr(do_target, "object_id", None)
+            if obj_id:
+                obj_label = _gloss or obj_id
+                lines.append(
+                    f"  RUNG-3 SURGERY KIND: object — render as \"had "
+                    f"{obj_label} been positioned / owned differently\". "
+                    f"This is a *prop* counterfactual: the object's "
+                    f"availability or affordances were different."
+                )
+
+    if cf.do_target_context:
+        lines.append("  " + cf.do_target_context.replace("\n", "\n  "))
 
     if cf.affected_propositions:
         lines.append(
@@ -1929,10 +2858,18 @@ def _normalise_sandbox_to_ego_shape(ctx: Dict[str, Any]) -> Dict[str, Any]:
     pruned utterances, disabled channels, world-trait shifts) reaches
     the prompt verbatim, not a snapshot of the pre-surgery ego graph.
     """
-    if not isinstance(ctx, dict) or "nodes" not in ctx or "links" not in ctx:
+    # NetworkX 3.4+ emits ``node_link_data`` with the edges bucket
+    # keyed under ``"edges"``; older releases used ``"links"``. Accept
+    # either so the formatter is version-agnostic — without this the
+    # rung-2/3 scene context silently emptied on NetworkX \u22653.4 and
+    # the renderer/auditor saw "(No scene context available.)".
+    if not isinstance(ctx, dict) or "nodes" not in ctx or not (
+        "links" in ctx or "edges" in ctx
+    ):
         return ctx
     nodes = ctx.get("nodes") or []
-    links = ctx.get("links") or []
+    links = ctx.get("links") if "links" in ctx else ctx.get("edges")
+    links = links or []
 
     focus_entities: List[Dict[str, Any]] = []
     present_objects: List[Dict[str, Any]] = []
@@ -3890,7 +4827,17 @@ def build_intervention_brief(
         query.interventions, world_state,
     )
     _intervention_pov = _resolve_pov_policy(_intervention_targets)
-    _ib_primary_do_target = list(getattr(query, "do_targets", None) or [None])[0]
+    # Mirror the Rung-3 fallback chain in ``build_counterfactual_brief``:
+    # if no typed ``do_targets`` were supplied, coerce them from the
+    # legacy dotted-key ``interventions`` dict. Without this Rung-2
+    # queries parsed from the legacy LLM shape (``{"EVT_X.event_type":
+    # "prevented"}``) reach the renderer with ``do_target=None`` and
+    # the "RUNG-2 SURGERY KIND" / event-prevention hints silently drop.
+    _ib_do_targets = list(getattr(query, "do_targets", None) or [])
+    if not _ib_do_targets and getattr(query, "interventions", None):
+        from shadow_loom.query_models import _coerce_legacy_dict
+        _ib_do_targets = list(_coerce_legacy_dict(query.interventions))
+    _ib_primary_do_target = _ib_do_targets[0] if _ib_do_targets else None
 
     return CreativeBrief(
         target_effect="intervention",
@@ -3949,9 +4896,10 @@ def build_intervention_brief(
         intervention_branch=InterventionBranch(
             do_target=_ib_primary_do_target,
             do_target_gloss=_resolve_do_target_gloss(world_state, _ib_primary_do_target),
+            do_target_context=_format_do_target_causal_context(world_state, _ib_primary_do_target),
             do_targets=[
                 t.model_dump() if hasattr(t, "model_dump") else dict(t)
-                for t in (getattr(query, "do_targets", None) or [])
+                for t in _ib_do_targets
             ],
             affected_propositions=list(affected_propositions or []),
             affected_proposition_descriptions=_resolve_affected_descriptions(
@@ -4088,17 +5036,68 @@ def build_counterfactual_brief(
     # Without this both surfaces fell through to empty lists and the
     # auditor's "RUNG-3 SURGERY KIND" / "AFFECTED PROPOSITIONS" lines
     # rendered nothing, leaving the shadow path uncovered.
-    _hist_do_targets = list(getattr(query, "historical_do_targets", None) or [])
+    # Resolve the typed Rung-3 surgery target from (in priority order):
+    #   1. the ``historical_do_targets`` parameter forwarded by the
+    #      generation entry-point from ``physics_result``;
+    #   2. ``query.historical_do_targets`` populated by the typed query
+    #      coercion path;
+    #   3. a fallback coercion from the legacy dotted-key
+    #      ``query.historical_interventions`` dict.
+    # Without (1) and (3) the legacy path produced an empty
+    # ``do_target`` here, the renderer's ``RUNG-3 SURGERY KIND`` hint
+    # never fired, and the precursor-attempt-survival guidance for
+    # ``event``-kind surgeries was silently dropped — letting the
+    # renderer rewrite a prevented murder attempt as a benign visit
+    # instead of the intended "attempt survives, outcome differs"
+    # counterfactual.
+    def _as_do_target_list(items: Any) -> List[Any]:
+        from shadow_loom.query_models import DoTarget  # local to avoid cycle
+        out: List[Any] = []
+        for item in items or []:
+            if isinstance(item, dict):
+                # ``DoTarget`` is a discriminated union — validate via
+                # pydantic so the right variant is reconstructed.
+                try:
+                    from pydantic import TypeAdapter
+                    out.append(TypeAdapter(DoTarget).validate_python(item))
+                except Exception:
+                    continue
+            else:
+                out.append(item)
+        return out
+
+    _hist_do_targets = _as_do_target_list(historical_do_targets)
+    if not _hist_do_targets:
+        _hist_do_targets = list(
+            getattr(query, "historical_do_targets", None) or []
+        )
+    if not _hist_do_targets and getattr(query, "historical_interventions", None):
+        from shadow_loom.query_models import _coerce_legacy_dict
+        _hist_do_targets = list(
+            _coerce_legacy_dict(query.historical_interventions)
+        )
     _cf_do_target = _hist_do_targets[0] if _hist_do_targets else None
+    # Prefer the typed ``DoEvent.event_id`` for the divergence anchor
+    # when available — falls back to splitting the legacy dotted key.
+    # Without this fallback chain a counterfactual that supplies only
+    # typed ``historical_do_targets`` (no legacy ``historical_interventions``
+    # dict) reaches the renderer with ``divergence_event_id=None`` and
+    # the "POINT OF DIVERGENCE: …" line silently drops from the prompt.
+    _divergence_event_id: Optional[str] = None
+    if _cf_do_target is not None:
+        _divergence_event_id = getattr(_cf_do_target, "event_id", None)
+    if not _divergence_event_id and hist_keys:
+        _divergence_event_id = hist_keys[0].split(".")[0]
     cf_branch = CounterfactualBranch(
         actual_outcome="Events as they occurred in the established record.",
         simulated_outcome=(
             f"Events as they unfold under the changed conditions: "
             f"{query.historical_interventions}"
         ),
-        divergence_event_id=hist_keys[0].split(".")[0] if hist_keys else None,
+        divergence_event_id=_divergence_event_id,
         do_target=_cf_do_target,
         do_target_gloss=_resolve_do_target_gloss(world_state, _cf_do_target),
+        do_target_context=_format_do_target_causal_context(world_state, _cf_do_target),
         affected_propositions=list(affected_propositions or []),
         affected_proposition_descriptions=_resolve_affected_descriptions(
             world_state, list(affected_propositions or []), "prop",
@@ -4441,7 +5440,18 @@ def render_scene(
         brief.target_entities,
         brief.rendering.rendering_mode if brief.rendering else "default",
     )
-    logger.debug("[Generation] Prompt length: %d chars", len(rendering_prompt))
+    # Emit the full assembled prompt at INFO so downstream log
+    # analysis (live_e2e captures, audit replays, off-line prompt
+    # review) can see exactly how the renderer was instructed for
+    # this scene. Wrapped with explicit BEGIN/END markers so the
+    # multi-line block is unambiguous in the log stream.
+    logger.info(
+        "[Generation] Rendering prompt (%d chars):\n"
+        "========== BEGIN RENDERING PROMPT ==========\n%s\n"
+        "========== END RENDERING PROMPT ==========",
+        len(rendering_prompt),
+        rendering_prompt,
+    )
 
     agent = _build_generation_agent(config)
     deps = _GenerationDeps(rendering_prompt=rendering_prompt)

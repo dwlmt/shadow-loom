@@ -1934,15 +1934,23 @@ def _lift_do_targets_to_legacy_dict(do_targets: List[Any]) -> Dict[str, Any]:
     ``Dict[str, Any]`` shape consumed by ``engine.execute(...)``'s CTF
     preflight, plausibility checks, and provenance pruner.
 
-    Only ``DoEvent`` (event clamps) and ``DoTrait`` (per-entity trait
-    clamps) round-trip cleanly into the legacy keyspace. The four
-    edge-typed surgeries (DoChannel / DoRelationship / DoCausalEdge /
-    DoSpatialEdge) and the affect-layer surgeries (DoBelief /
-    DoConcern / DoProposition / DoWorldTrait) have no legacy
-    representation \u2014 they reach the sandbox via
+    Five DoTarget variants round-trip cleanly into the legacy keyspace:
+    ``DoEvent``, ``DoTrait``, ``DoProposition``, ``DoWorldTrait``, and
+    ``DoNarrativeObject`` (one key per ``location_id`` / ``owner_id``
+    mutation). The remaining edge / pair surgeries (DoBelief /
+    DoConcern / DoChannel / DoRelationship / DoCausalEdge /
+    DoSpatialEdge) cannot be encoded as a single dotted key (they
+    require a holder/target pair or edge endpoint information the
+    legacy shape never carried) \u2014 they reach the sandbox via
     ``engine.apply_do_targets`` and bypass the legacy dict path.
     """
-    from shadow_loom.query_models import DoEvent, DoTrait
+    from shadow_loom.query_models import (
+        DoEvent,
+        DoNarrativeObject,
+        DoProposition,
+        DoTrait,
+        DoWorldTrait,
+    )
     out: Dict[str, Any] = {}
     for t in do_targets:
         if isinstance(t, DoEvent):
@@ -1951,6 +1959,22 @@ def _lift_do_targets_to_legacy_dict(do_targets: List[Any]) -> Dict[str, Any]:
             )
         elif isinstance(t, DoTrait):
             out[f"{t.holder_id}.traits.{t.trait_name}"] = float(t.value)
+        elif isinstance(t, DoProposition):
+            out[f"{t.proposition_id}.truth"] = bool(t.truth)
+        elif isinstance(t, DoWorldTrait):
+            out[f"{t.world_trait_id}.value"] = float(t.value)
+        elif isinstance(t, DoNarrativeObject):
+            # Emit one dotted key per requested mutation. ``set_*_null``
+            # round-trips as a ``None`` value the coercer reverses back
+            # into the same null-mutation kwargs.
+            if t.new_location_id is not None:
+                out[f"{t.object_id}.location_id"] = t.new_location_id
+            elif getattr(t, "set_location_null", False):
+                out[f"{t.object_id}.location_id"] = None
+            if t.new_owner_id is not None:
+                out[f"{t.object_id}.owner_id"] = t.new_owner_id
+            elif getattr(t, "set_owner_null", False):
+                out[f"{t.object_id}.owner_id"] = None
     return out
 
 

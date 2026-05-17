@@ -303,6 +303,20 @@ class CounterfactualBranch(BaseModel):
             "factually-wrong confabulations of the surgery target."
         ),
     )
+    do_target_context: Optional[str] = Field(
+        default=None,
+        description=(
+            "Pre-rendered multi-line block of the factual causal "
+            "neighbourhood around the ``do_target`` (immediate causal "
+            "predecessors, successors, affordance preconditions, with "
+            "each event's description, fabula/syuzhet anchor, "
+            "actors/targets, location). Only populated for event-kind "
+            "surgeries on an outcome event \u2014 the renderer / auditor "
+            "need this to write the counterfactual as a DIFFERENT "
+            "outcome of the same attempt rather than erase the attempt "
+            "entirely."
+        ),
+    )
     affected_propositions: List[str] = Field(
         default_factory=list,
         description=(
@@ -484,6 +498,22 @@ class ThreatProximity(BaseModel):
             "intervention with the right epistemic / ontic register."
         ),
     )
+    do_target_gloss: Optional[str] = Field(
+        default=None,
+        description=(
+            "Human-readable description of what ``do_target`` refers "
+            "to. Mirrors the same field on :class:`InterventionBranch` "
+            "so threat-keyed Rung-2 briefs surface the surgery's actual "
+            "referent, not just its id."
+        ),
+    )
+    do_target_context: Optional[str] = Field(
+        default=None,
+        description=(
+            "Pre-rendered causal-neighbourhood block for the do_target. "
+            "Mirrors the same field on :class:`InterventionBranch`."
+        ),
+    )
     affected_propositions: List[str] = Field(
         default_factory=list,
         description=(
@@ -580,6 +610,13 @@ class InterventionBranch(BaseModel):
             "to in the world. Mirrors the same field on "
             ":class:`CounterfactualBranch` so the renderer sees the "
             "actual referent of the Rung-2 surgery, not just its id."
+        ),
+    )
+    do_target_context: Optional[str] = Field(
+        default=None,
+        description=(
+            "Pre-rendered causal-neighbourhood block for the do_target. "
+            "Mirrors the same field on :class:`CounterfactualBranch`."
         ),
     )
     do_targets: List[Dict[str, Any]] = Field(

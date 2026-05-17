@@ -23,6 +23,7 @@ Return a single `WorldStatePatch` object with only the fields you need. Every fi
 | `add_social_edges: [RelationshipEdge, ...]` | Append a missing social edge. |
 | `drop_spatial_edges: [{source_id, target_id}, ...]` / `add_spatial_edges` | Spatial edges between locations. |
 | `drop_channel_ids: [channel_id, ...]` / `add_channels: {channel_id: Channel}` | Information-channel adds/drops. |
+| `update_channel_intelligibility: {channel_id: {participant_id: float ∈ [0, 1]}}` | Edit per-participant decode probabilities on an *existing* channel without rebuilding it. Values are merged into the channel's `intelligibility` map (entries for other participants are preserved). Prefer this over drop+add when only the per-listener comprehensibility is wrong (e.g. a covert channel whose intelligibility should be 0.0 for a non-conspirator, or a noisy line for one recipient). |
 | `channel_renames: {old_id: new_id}` | Fix typo / spelling drift in CHN_ IDs (e.g. `CHN_TELEPHONE_LINE` → `CHN_TELEPHONE_LINK`). The pipeline forwards every `via_channel_id` and `acquired_via_channel_id` reference automatically — prefer this over `drop_channel_ids` + `add_channels` when the channel itself is correct and only the id is wrong, otherwise every belief / utterance pointing at the old id silently loses its provenance.|
 | `add_propositions: {prop_id: Proposition}` | Add a catalogued proposition that downstream beliefs / concerns reference but is missing from `propositions`. Every PROP_ id must match `^PROP_[A-Z0-9_]+$`. |
 | `update_proposition_snapshots: {prop_id: [PropositionSnapshot, ...]}` | Append snapshots into a proposition's `state_timeline`. Each snapshot needs `fabula_time` and `triggered_by` (an EVT_ id that exists in the world). Use this when validation reports orphaned framing drift or missing escalation. |
@@ -58,6 +59,7 @@ Return a single `WorldStatePatch` object with only the fields you need. Every fi
 | `broken_link` on `CausalEdge.source_id`/`target_id` | `event_renames` if the dangling id looks like a typo of an existing event; otherwise `drop_causal_edges`. |
 | `broken_link` on `RelationshipEdge` / `SpatialEdge` | `drop_social_edges` / `drop_spatial_edges`. |
 | `broken_link` on Channel `participant_id` or `<2 participants` | `drop_channel_ids` or `add_channels` with the corrected participant list. |
+| `channel_intelligibility_violation` / per-listener decode wrong on an existing channel | `update_channel_intelligibility` with `{channel_id: {participant_id: 0.0..1.0}}` — merges into the existing map; prefer over drop+add so utterance/belief provenance is preserved. |
 | `broken_link` on Utterance `via_channel_id` / `speaker_id` | `update_event_fields` to clear or correct the field. |
 | `missing_field` on Utterance (`speaker_id` / `addressee_ids`) | `update_event_fields` filling the field with a real `ENT_`/`OBJ_` id from the world state. |
 | `duplicate` event | `drop_event_ids` for the duplicate copy (keep the first), or `event_renames` to deduplicate. |

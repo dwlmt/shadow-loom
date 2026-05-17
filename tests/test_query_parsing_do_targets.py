@@ -24,6 +24,7 @@ from shadow_loom.models import (
 )
 from shadow_loom.query_models import (
     DoEvent, DoTrait, DoBelief, DoConcern, DoProposition,
+    DoChannel, DoRelationship, DoCausalEdge, DoSpatialEdge,
     InterventionQuery, CounterfactualQuery,
 )
 from shadow_loom.query_parsing import (
@@ -204,6 +205,115 @@ class TestDoTargetItemsToTyped:
         assert len(result) == 2
         kinds = {r.target_kind for r in result}
         assert kinds == {"proposition", "concern"}
+
+    def test_lift_channel(self):
+        items = [{"target_kind": "channel", "channel_id": "CHN_RAVENS",
+                  "active": False}]
+        result = _do_target_items_to_typed(items)
+        assert len(result) == 1
+        assert isinstance(result[0], DoChannel)
+        assert result[0].channel_id == "CHN_RAVENS"
+        assert result[0].active is False
+
+    def test_lift_channel_intelligibility(self):
+        items = [{"target_kind": "channel", "channel_id": "CHN_RAVENS",
+                  "intelligibility": {"ENT_LADY_M": 0.0}}]
+        result = _do_target_items_to_typed(items)
+        assert isinstance(result[0], DoChannel)
+        assert result[0].intelligibility == {"ENT_LADY_M": 0.0}
+
+    def test_drop_channel_noop(self):
+        # No active and no intelligibility → drop.
+        items = [{"target_kind": "channel", "channel_id": "CHN_RAVENS"}]
+        assert _do_target_items_to_typed(items) == []
+
+    def test_lift_relationship(self):
+        items = [{"target_kind": "relationship",
+                  "source_entity_id": "ENT_MACBETH",
+                  "target_entity_id": "ENT_MACDUFF",
+                  "metric": "fear", "value": 0.8}]
+        result = _do_target_items_to_typed(items)
+        assert isinstance(result[0], DoRelationship)
+        assert result[0].metric == "fear"
+        assert result[0].value == 0.8
+
+    def test_drop_relationship_missing_metric(self):
+        items = [{"target_kind": "relationship",
+                  "source_entity_id": "ENT_MACBETH",
+                  "target_entity_id": "ENT_MACDUFF",
+                  "value": 0.5}]
+        assert _do_target_items_to_typed(items) == []
+
+    def test_lift_causal_edge_sever(self):
+        items = [{"target_kind": "causal_edge",
+                  "edge_source_id": "EVT_MURDER",
+                  "edge_target_id": "ENT_MACBETH",
+                  "action": "sever"}]
+        result = _do_target_items_to_typed(items)
+        assert isinstance(result[0], DoCausalEdge)
+        assert result[0].action == "sever"
+
+    def test_lift_causal_edge_add(self):
+        items = [{"target_kind": "causal_edge",
+                  "edge_source_id": "EVT_MURDER",
+                  "edge_target_id": "ENT_MACBETH",
+                  "action": "add",
+                  "causality_type": "mutation",
+                  "mechanism": "psychological",
+                  "causal_force": 8.0,
+                  "trait_target": "guilt",
+                  "trait_delta": 0.6}]
+        result = _do_target_items_to_typed(items)
+        assert isinstance(result[0], DoCausalEdge)
+        assert result[0].action == "add"
+        assert result[0].causality_type == "mutation"
+        assert result[0].causal_force == 8.0
+        assert result[0].trait_target == "guilt"
+
+    def test_drop_causal_edge_add_missing_mechanism(self):
+        items = [{"target_kind": "causal_edge",
+                  "edge_source_id": "EVT_MURDER",
+                  "edge_target_id": "ENT_MACBETH",
+                  "action": "add",
+                  "causality_type": "mutation"}]
+        assert _do_target_items_to_typed(items) == []
+
+    def test_lift_spatial_edge(self):
+        items = [{"target_kind": "spatial_edge",
+                  "edge_source_id": "LOC_A",
+                  "edge_target_id": "LOC_A",
+                  "action": "lock"}]
+        result = _do_target_items_to_typed(items)
+        assert isinstance(result[0], DoSpatialEdge)
+        assert result[0].action == "lock"
+
+    def test_drop_spatial_edge_bad_action(self):
+        items = [{"target_kind": "spatial_edge",
+                  "edge_source_id": "LOC_A",
+                  "edge_target_id": "LOC_A",
+                  "action": "demolish"}]
+        assert _do_target_items_to_typed(items) == []
+
+
+class TestDoTargetItemModelExpanded:
+    def test_model_builds_all_eleven_kinds(self):
+        ws = _make_world()
+        Model = _build_do_target_item_model(ws)
+        # The 6 already-tested kinds are covered by TestDoTargetItemModel.
+        # Confirm the 4 new kinds construct cleanly.
+        Model(target_kind="channel", channel_id="CHN_RAVENS", active=False)
+        Model(target_kind="relationship",
+              source_entity_id="ENT_MACBETH",
+              target_entity_id="ENT_MACDUFF",
+              metric="fear", value=0.7)
+        Model(target_kind="causal_edge",
+              edge_source_id="EVT_MURDER",
+              edge_target_id="ENT_MACBETH",
+              action="sever")
+        Model(target_kind="spatial_edge",
+              edge_source_id="LOC_A",
+              edge_target_id="LOC_A",
+              action="lock")
 
 
 class TestParsedQueryToTypedDoTargets:

@@ -3512,6 +3512,11 @@ def _build_brief_for_query(
             affected_propositions=physics_result.get("affected_propositions"),
             affected_beliefs=physics_result.get("affected_beliefs"),
             affected_concerns=physics_result.get("affected_concerns"),
+            # Typed Rung-3 surgery target list — forward so the brief
+            # builder can populate ``CounterfactualBranch.do_target``
+            # and the renderer's "RUNG-3 SURGERY KIND" /
+            # precursor-attempt-survival guidance fires.
+            historical_do_targets=physics_result.get("historical_do_targets"),
             # Phase-10 downstream cascade payload (mirrors intervention
             # rung above — without these the counterfactual prose
             # silently skips engine-propagated consequences and lands

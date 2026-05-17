@@ -178,7 +178,7 @@ Same as before — relationships between `ENT_` ids with per-axis `metrics`. (Sc
     "CHN_MACBETH_LETTERS": {
       "id": "CHN_MACBETH_LETTERS",
       "name": "Macbeth ↔ Lady Macbeth correspondence",
-      "medium": "correspondence",
+      "medium": "writing",
       "participant_ids": ["ENT_MACBETH", "ENT_LADY_MACBETH"],
       "directionality": "duplex",
       "established_at_fabula": 200,

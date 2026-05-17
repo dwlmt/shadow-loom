@@ -16,8 +16,6 @@ from shadow_loom.query_models import (
     DoTrait,
     InterventionQuery,
     CounterfactualQuery,
-    coerce_intervention_query,
-    coerce_counterfactual_query,
 )
 
 
@@ -134,11 +132,13 @@ class TestRoundTrip:
 
 class TestLegacyMigration:
     def test_intervention_legacy_dict_lifts_to_do_events(self):
+        # The model_validator on InterventionQuery auto-coerces the
+        # legacy ``interventions`` dict into typed ``do_targets`` at
+        # construction time — no explicit migration call required.
         q = InterventionQuery(
             interventions={"EVT_FOO": "averted", "EVT_BAR": True, "EVT_BAZ": False},
             original_query="legacy",
         )
-        coerce_intervention_query(q)
         kinds = {(t.event_id, t.occurred) for t in q.do_targets}
         assert kinds == {("EVT_FOO", False), ("EVT_BAR", True), ("EVT_BAZ", False)}
 
@@ -149,8 +149,7 @@ class TestLegacyMigration:
             interventions={"EVT_OTHER": "averted"},
             original_query="both",
         )
-        coerce_intervention_query(q)
-        # Typed list already populated → migration is a no-op.
+        # Typed list already populated → validator is a no-op.
         assert len(q.do_targets) == 1
         assert q.do_targets[0].event_id == "EVT_X"
 
@@ -160,19 +159,18 @@ class TestLegacyMigration:
             evidence_node_ids=["EVT_DUNCAN_FOUND"],
             original_query="legacy cf",
         )
-        coerce_counterfactual_query(q)
         assert len(q.historical_do_targets) == 1
         assert q.historical_do_targets[0].event_id == "EVT_GUARD_DUTY"
         assert q.historical_do_targets[0].occurred is False
 
     def test_migration_idempotent(self):
+        # Construct once, then re-validate the dumped JSON; the typed
+        # list must remain stable across the round-trip.
         q = InterventionQuery(interventions={"EVT_A": "averted"}, original_query="x")
-        coerce_intervention_query(q)
         first = list(q.do_targets)
-        coerce_intervention_query(q)
-        assert q.do_targets == first
+        restored = InterventionQuery.model_validate_json(q.model_dump_json())
+        assert restored.do_targets == first
 
     def test_empty_legacy_dict_yields_empty_targets(self):
         q = InterventionQuery(original_query="x")
-        coerce_intervention_query(q)
         assert q.do_targets == []

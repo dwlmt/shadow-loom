@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 David Rae Wilmot
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import Any, Optional, Literal, Tuple, Union, Dict, List
 from typing_extensions import Annotated
 
@@ -444,6 +444,15 @@ DoTarget = Annotated[
 # generation prompts, audit feedback, and the persisted version row.
 # ---------------------------------------------------------------------
 class _QueryBase(BaseModel):
+    # ``validate_assignment=True`` re-runs all field validators (including
+    # the typed-do_targets backfill model_validator on
+    # InterventionQuery / CounterfactualQuery) on every post-construction
+    # attribute assignment. Without it, a caller mutating
+    # ``q.interventions[...] = ...`` after construction would desync
+    # the legacy dict from ``q.do_targets`` and silently serve an
+    # outdated typed surgery set to downstream consumers.
+    model_config = {"validate_assignment": True}
+
     original_query: Optional[str] = Field(
         default=None,
         description=(
@@ -570,6 +579,30 @@ class InterventionQuery(_QueryBase):
         "reason is still reported on the result so the caller can warn the user.",
     )
 
+    @model_validator(mode="after")
+    def _backfill_typed_do_targets(self) -> "InterventionQuery":
+        """Auto-coerce legacy ``interventions`` → typed ``do_targets``.
+
+        Ensures every consumer of an :class:`InterventionQuery` sees a
+        populated typed list as soon as the model is constructed,
+        regardless of which surface (LLM parser, MCP, fixture, REST
+        client) authored it. Without this, code paths that pulled
+        ``query.do_targets`` directly silently saw an empty list whenever
+        the caller used the legacy dotted-key dict, dropping the
+        renderer's "RUNG-2 SURGERY KIND" hints and auditor coverage.
+        """
+        if not self.do_targets and self.interventions:
+            # Use object.__setattr__ to bypass validate_assignment;
+            # otherwise this triggers the validator recursively.
+            object.__setattr__(
+                self, "do_targets", _coerce_legacy_dict(self.interventions),
+            )
+        _warn_on_unhandled_legacy_keys(
+            self.interventions, self.do_targets,
+            field_label="interventions", model=self,
+        )
+        return self
+
 # ==========================================
 # 3. THE COUNTERFACTUAL (Rung 3: Abduction)
 # ==========================================
@@ -611,6 +644,25 @@ class CounterfactualQuery(_QueryBase):
         "located for the requested interventions. The implausibility reason is still "
         "surfaced on the result.",
     )
+
+    @model_validator(mode="after")
+    def _backfill_typed_historical_do_targets(self) -> "CounterfactualQuery":
+        """Auto-coerce legacy ``historical_interventions`` → typed
+        ``historical_do_targets`` on construction. See
+        :meth:`InterventionQuery._backfill_typed_do_targets` for rationale."""
+        if not self.historical_do_targets and self.historical_interventions:
+            object.__setattr__(
+                self,
+                "historical_do_targets",
+                _coerce_legacy_dict(self.historical_interventions),
+            )
+        _warn_on_unhandled_legacy_keys(
+            self.historical_interventions,
+            self.historical_do_targets,
+            field_label="historical_interventions",
+            model=self,
+        )
+        return self
 
 # ==========================================
 # 4. THE NARRATIVE DIRECTIVE (Merged Suspense & Emotion)
@@ -802,31 +854,220 @@ def _coerce_legacy_dict(legacy: Dict[str, Any]) -> List[DoTarget]:
     targets: List[DoTarget] = []
     if not legacy:
         return targets
+    # Falsey value-strings emitted by various legacy callers / LLM parsers
+    # when the surgery is "prevent / avert / remove this event". Without
+    # the broader set here a value like ``"prevented"`` was treated as
+    # truthy and the resulting ``DoEvent`` was flipped to ``occurred=True``,
+    # which silently inverted the counterfactual semantics and stopped the
+    # renderer from emitting the precursor-attempt-survival hint.
+    _NOT_OCCURRED_VALUES = {
+        "averted",
+        "false",
+        "no",
+        "not_occurred",
+        "absent",
+        "prevented",
+        "removed",
+        "blocked",
+        "did_not_occur",
+        "didnt_occur",
+        "didn't_occur",
+        "never_happened",
+    }
     for key, value in legacy.items():
         if not isinstance(key, str):
             continue
-        if key.startswith("EVT_"):
-            occurred = not (
+        # Dotted-key form ("EVT_X.event_type") emitted by
+        # _items_to_dotted_dict in query_parsing — strip the property
+        # suffix so the DoEvent carries a clean event id rather than a
+        # malformed "EVT_X.event_type" identifier the engine and prose
+        # renderer cannot resolve back to a real event node.
+        base_key, _, prop = key.partition(".")
+        if base_key.startswith("EVT_"):
+            value_str = value.lower() if isinstance(value, str) else None
+            falsey = (
                 value is False
                 or value is None
-                or (isinstance(value, str) and value.lower() in {"averted", "false", "no", "not_occurred", "absent"})
+                or (value_str is not None and value_str in _NOT_OCCURRED_VALUES)
             )
-            targets.append(DoEvent(event_id=key, occurred=occurred))
-        # Heuristic legacy support for other prefixes: leave to query parser
-        # to emit typed targets going forward; legacy callers only ever set
-        # event ids so we keep this conservative.
+            # When the dotted property is ``event_type`` the LLM-style
+            # value carries the semantic flip directly: "prevented" /
+            # "averted" → did not occur; "occurred" / explicit event-type
+            # string → did occur. Honour that here so the renderer sees
+            # ``occurred=False`` and emits the precursor-attempt hint.
+            if prop == "event_type" and value_str == "occurred":
+                occurred = True
+            else:
+                occurred = not falsey
+            targets.append(DoEvent(event_id=base_key, occurred=occurred))
+            continue
+        # ---- Proposition truth clamp: ``PROP_X.truth = bool`` -----
+        if base_key.startswith("PROP_") and prop in ("truth", "is_true"):
+            try:
+                targets.append(DoProposition(
+                    proposition_id=base_key, truth=bool(value),
+                ))
+            except Exception:
+                pass
+            continue
+        # ---- World-trait magnitude clamp: ``WORLD_X.value`` / ``.magnitude`` ----
+        if base_key.startswith("WORLD_") and prop in ("value", "magnitude", "strength"):
+            if value is None:
+                continue
+            try:
+                targets.append(DoWorldTrait(
+                    world_trait_id=base_key, value=float(value),
+                ))
+            except (TypeError, ValueError):
+                pass
+            continue
+        # ---- Object position / ownership: ``OBJ_X.location_id`` / ``.owner_id`` ----
+        if base_key.startswith("OBJ_") and prop in ("location_id", "owner_id"):
+            kwargs: Dict[str, Any] = {"object_id": base_key}
+            if prop == "location_id":
+                if value is None:
+                    kwargs["set_location_null"] = True
+                else:
+                    kwargs["new_location_id"] = str(value)
+            else:  # owner_id
+                if value is None:
+                    kwargs["set_owner_null"] = True
+                else:
+                    kwargs["new_owner_id"] = str(value)
+            try:
+                targets.append(DoNarrativeObject(**kwargs))
+            except Exception:
+                pass
+            continue
+        # ---- Entity trait clamp: ``ENT_X.traits.<name> = float`` ----
+        # Mirrors the dotted shape emitted by ``_lift_do_targets_to_legacy_dict``
+        # for ``DoTrait`` round-trips. Anything outside the ``traits.``
+        # namespace stays in the legacy dict (handled by the engine's
+        # dotted-key state interpreter).
+        if base_key.startswith("ENT_") and prop.startswith("traits.") and value is not None:
+            trait_name = prop[len("traits."):]
+            if trait_name:
+                try:
+                    targets.append(DoTrait(
+                        holder_id=base_key,
+                        trait_name=trait_name,
+                        value=float(value),
+                    ))
+                except (TypeError, ValueError):
+                    pass
+                continue
+        # NOTE: ``DoBelief`` and ``DoConcern`` cannot be safely coerced
+        # from a single dotted key because they require a (holder, target)
+        # or (holder, concern_id) pair the legacy shape never carries.
+        # Callers must supply those via the typed ``do_targets`` /
+        # ``historical_do_targets`` channel.
     return targets
 
 
-def coerce_intervention_query(query: InterventionQuery) -> InterventionQuery:
-    """Populate ``do_targets`` from ``interventions`` when empty."""
-    if not query.do_targets and query.interventions:
-        query.do_targets = _coerce_legacy_dict(query.interventions)
-    return query
+# Prefixes that ONLY round-trip through the typed ``DoTarget`` channel.
+# Legacy dotted-key encodings for these are silently ignored by both the
+# coercer above and the engine's dotted-key dispatcher (instantiator.py
+# / causal_physics.py), so we surface a ``UserWarning`` at query
+# construction time to make the desync visible.
+_TYPED_ONLY_LEGACY_PREFIXES = (
+    "BEL_",
+    "CCN_",
+    "REL_",
+    "CAUSAL_EDGE_",
+    "SPATIAL_EDGE_",
+)
+
+# Module-level cache for the strict-mode env var. ``validate_assignment``
+# means ``_warn_on_unhandled_legacy_keys`` is called on every field
+# assignment to an Intervention / Counterfactual query, so resolving the
+# env var on each call adds noticeable overhead. Read once at import
+# time; tests that need to flip the mode can call
+# :func:`_refresh_strict_mode_from_env` (also invoked by a pytest
+# autouse fixture in the test suite).
+_STRICT_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 
 
-def coerce_counterfactual_query(query: CounterfactualQuery) -> CounterfactualQuery:
-    """Populate ``historical_do_targets`` from ``historical_interventions`` when empty."""
-    if not query.historical_do_targets and query.historical_interventions:
-        query.historical_do_targets = _coerce_legacy_dict(query.historical_interventions)
-    return query
+def _is_strict_legacy_prefixes_enabled() -> bool:
+    import os
+    return (
+        os.environ.get("SHADOW_LOOM_STRICT_LEGACY_PREFIXES", "")
+        .strip()
+        .lower()
+        in _STRICT_TRUE_VALUES
+    )
+
+
+_STRICT_LEGACY_PREFIXES = _is_strict_legacy_prefixes_enabled()
+
+
+def _refresh_strict_mode_from_env() -> None:
+    """Re-read the ``SHADOW_LOOM_STRICT_LEGACY_PREFIXES`` env var. Public
+    for tests using ``monkeypatch.setenv`` that need the new value to
+    take effect without re-importing the module."""
+    global _STRICT_LEGACY_PREFIXES
+    _STRICT_LEGACY_PREFIXES = _is_strict_legacy_prefixes_enabled()
+
+
+def _warn_on_unhandled_legacy_keys(
+    legacy: Dict[str, Any],
+    coerced: List[DoTarget],
+    *,
+    field_label: str,
+    model: Optional[BaseModel] = None,
+) -> None:
+    """Emit a ``UserWarning`` for legacy dict keys whose prefix indicates a
+    surgery (belief / concern / relationship / causal-edge / spatial-edge)
+    that has no single-key legacy encoding and was therefore dropped on
+    the floor by both the coercer and the engine's dotted-key dispatcher.
+
+    ``field_label`` is the public field name (``"interventions"`` /
+    ``"historical_interventions"``) included in the warning text so the
+    caller can locate the offending payload.
+
+    ``model`` (optional): when provided, the helper de-duplicates
+    warnings per-instance by stashing the last-warned offender signature
+    in a private attribute on the model. ``validate_assignment=True``
+    re-fires the model_validator on EVERY field write (even unrelated
+    ones like ``target_node_ids``), so without this guard a caller
+    setting N fields would emit the same warning N times.
+    """
+    if not legacy:
+        return
+    offenders: List[str] = []
+    for key in legacy.keys():
+        if not isinstance(key, str):
+            continue
+        base_key = key.partition(".")[0]
+        if base_key.startswith(_TYPED_ONLY_LEGACY_PREFIXES):
+            offenders.append(key)
+    if not offenders:
+        return
+    signature = (field_label, frozenset(offenders))
+    if model is not None:
+        already = getattr(model, "__shadow_loom_warned_legacy_keys__", None)
+        if already is None:
+            already = set()
+            # Bypass validate_assignment (and pydantic's field rejection
+            # of unknown attrs) via object.__setattr__.
+            object.__setattr__(
+                model, "__shadow_loom_warned_legacy_keys__", already,
+            )
+        if signature in already:
+            return
+        already.add(signature)
+    msg = (
+        f"{field_label} contains keys with prefixes that have no "
+        f"single-key legacy encoding and were ignored: {sorted(offenders)!r}. "
+        "Encode belief / concern / relationship / causal-edge / "
+        "spatial-edge surgeries via typed do_targets "
+        "(DoBelief / DoConcern / DoRelationship / DoCausalEdge / "
+        "DoSpatialEdge) instead."
+    )
+    # Opt-in strict mode: set ``SHADOW_LOOM_STRICT_LEGACY_PREFIXES=1``
+    # in the environment to fail loudly (e.g. in CI) instead of merely
+    # warning. Useful for shaking out LLM / MCP / REST callers that
+    # silently emit unencodable surgeries.
+    if _STRICT_LEGACY_PREFIXES:
+        raise ValueError(msg)
+    import warnings
+    warnings.warn(msg, UserWarning, stacklevel=3)

@@ -2429,6 +2429,25 @@ def assemble_evaluation_prompt(
     # directive was assembled around.
     sections.extend(_format_propositional_context(brief))
 
+    # Rung-2/3 surgery surfaces — mirror of the audit prompt's
+    # threat_proximity / intervention_branch / counterfactual_branch
+    # blocks. The evaluator must see the same do_target context,
+    # multi-hop history chain, and surgery-kind hints the renderer
+    # was given so the literary critique can grade the prose against
+    # the actual Rung-2/3 instructions, not just the factual canon.
+    if brief.threat_proximity:
+        sections.append("=== THREAT PROXIMITY ===")
+        sections.append(_format_threat_proximity(brief.threat_proximity))
+        sections.append("")
+    if brief.intervention_branch:
+        sections.append("=== INTERVENTION SANDBOX ===")
+        sections.append(_format_intervention_branch(brief.intervention_branch))
+        sections.append("")
+    if brief.counterfactual_branch:
+        sections.append("=== COUNTERFACTUAL BRANCH ===")
+        sections.append(_format_counterfactual(brief.counterfactual_branch))
+        sections.append("")
+
     # Engine-computed metrics (ground truth for the evaluator)
     if causal_feedback is not None:
         sections.append("=== ENGINE: CAUSAL PHYSICS METRICS (ground truth) ===")
@@ -2520,6 +2539,16 @@ def run_evaluation(
     logger.info(
         "[Evaluation] Running literary critique: effect=%s prompt_len=%d",
         brief.target_effect, len(eval_prompt),
+    )
+    # Emit the full evaluation prompt at INFO so the literary-
+    # critique instructions are visible alongside the renderer and
+    # auditor prompts in the log stream.
+    logger.info(
+        "[Evaluation] Evaluation prompt (%d chars):\n"
+        "========== BEGIN EVALUATION PROMPT ==========\n%s\n"
+        "========== END EVALUATION PROMPT ==========",
+        len(eval_prompt),
+        eval_prompt,
     )
 
     agent = _build_evaluation_agent(config)
@@ -2907,52 +2936,23 @@ def _cascade_exclusion_leak_violations(
                         ),
                     ))
 
-    # 3. Blocked propagation leaks: per-sentence node+trait co-mention.
-    if blocked_pairs:
-        ent_names: Dict[str, str] = {}
-        for store_attr in ("entities", "objects", "locations", "world_traits"):
-            store = getattr(world_state, store_attr, None) or {}
-            if isinstance(store, dict):
-                for nid, node in store.items():
-                    nm = getattr(node, "name", None)
-                    if isinstance(nm, str) and nm.strip():
-                        ent_names[nid] = nm.strip()
-        sentences = re.split(r"(?<=[.!?])\s+", prose)
-        seen_pairs: set[str] = set()
-        for pair in blocked_pairs:
-            if "." not in pair or pair in seen_pairs:
-                continue
-            node_id, trait = pair.split(".", 1)
-            trait_low = trait.replace("_", " ").lower().strip()
-            if len(trait_low) < 4:
-                continue
-            name_low = ent_names.get(node_id, "").lower()
-            for sent in sentences:
-                sl = sent.lower()
-                node_hit = (
-                    node_id in sent
-                    or (len(name_low) >= 3 and name_low in sl)
-                )
-                if node_hit and trait_low in sl:
-                    seen_pairs.add(pair)
-                    issues.append(AuditViolation(
-                        violation_type="blocked_propagation_leak",
-                        severity="major",
-                        description=(
-                            f"Prose names blocked propagation target "
-                            f"{pair}; the engine recorded this "
-                            f"(node, trait) as resisted \u2014 the "
-                            f"propagated state must not be depicted."
-                        ),
-                        evidence_quote=sent.strip()[:200],
-                        feedback=(
-                            f"Render the RESISTANCE for {pair}, not "
-                            f"the propagated state. Show the force, "
-                            f"inertia, or affordance constraint that "
-                            f"stopped the change from taking hold."
-                        ),
-                    ))
-                    break
+    # 3. Blocked-propagation leak: REMOVED.
+    #
+    # The renderer is *required* by the brief's BLOCKED PROPAGATIONS
+    # block to mention every (node, trait) pair on-page and depict
+    # the resistance (force, inertia, affordance constraint). The
+    # previous per-sentence node+trait co-mention scan flagged exactly
+    # the prose the brief asked for — e.g. "Ken's stutter stayed
+    # silent, the expected hesitation swallowed by his controlled
+    # breathing" — because the substring "stutter" co-occurs with
+    # "Ken". A deterministic scanner cannot tell "rendered as resisted"
+    # apart from "rendered as propagated" without parsing negation
+    # scope; mis-firing forces the refinement loop to chase its tail
+    # and produces a `passed=False` ledger that contradicts the LLM
+    # auditor's `passed=True` verdict (observed in the live trace as
+    # `[+1 ctf-calculus exclusion leak(s)]` post-mutation). Trust the
+    # LLM auditor to triage this category; it has the full BLOCKED
+    # PROPAGATIONS block in its prompt and can read negation scope.
 
     return issues
 
@@ -3522,6 +3522,16 @@ def run_audit(
     logger.info(
         "[Auditor] Running audit: effect=%s categories=%s prompt_len=%d",
         brief.target_effect, categories, len(audit_prompt),
+    )
+    # Emit the full audit prompt at INFO for log-based analysis,
+    # mirroring the renderer's prompt logging so generator and
+    # auditor instructions can be compared side-by-side.
+    logger.info(
+        "[Auditor] Audit prompt (%d chars):\n"
+        "========== BEGIN AUDIT PROMPT ==========\n%s\n"
+        "========== END AUDIT PROMPT ==========",
+        len(audit_prompt),
+        audit_prompt,
     )
 
     agent = _build_auditor_agent(config)

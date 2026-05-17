@@ -41,6 +41,10 @@ from shadow_loom.query_models import (
     DoProposition,
     DoWorldTrait,
     DoNarrativeObject,
+    DoChannel,
+    DoRelationship,
+    DoCausalEdge,
+    DoSpatialEdge,
 )
 
 from shadow_loom.settings import get_settings as _get_settings, resolve_model as _resolve_model
@@ -710,25 +714,33 @@ def _build_do_target_item_model(world_state: WorldStateV1):
     """Phase 6 — per-call Pydantic model for a single typed Pearl-rung
     do-target.
 
-    Five discriminated kinds via ``target_kind``:
+    Eleven discriminated kinds via ``target_kind``:
 
-      * ``event``       — DoEvent(event_id, occurred)
-      * ``trait``       — DoTrait(entity_id, trait_name, trait_value)
-      * ``belief``      — DoBelief(holder_id, target_id, proposition_id, confidence)
-      * ``concern``     — DoConcern(concern_id, polarity?, salience?, active?)
-      * ``proposition`` — DoProposition(proposition_id, truth, propagate_to_beliefs?)
-      * ``world_trait`` — DoWorldTrait(world_trait_id, value, inertia?,
+      * ``event``        — DoEvent(event_id, occurred?, new_at_location_id?)
+      * ``trait``        — DoTrait(entity_id, trait_name, trait_value)
+      * ``belief``       — DoBelief(holder_id, target_id, proposition_id?, confidence?, perceived_state?)
+      * ``concern``      — DoConcern(concern_id, polarity?, salience?, active?)
+      * ``proposition``  — DoProposition(proposition_id, truth, propagate_to_beliefs?)
+      * ``world_trait``  — DoWorldTrait(world_trait_id, value, inertia?,
         affected_domains_add?, affected_domains_remove?, fabula_time?,
         triggered_by?)
-      * ``object``      — DoNarrativeObject(object_id, new_location_id?,
+      * ``object``       — DoNarrativeObject(object_id, new_location_id?,
         new_owner_id?, set_location_null?, set_owner_null?,
         properties_set?, properties_unset?, fabula_time?, triggered_by?)
+      * ``channel``      — DoChannel(channel_id, active?, intelligibility?, fabula_time?)
+      * ``relationship`` — DoRelationship(source_entity_id, target_entity_id, metric,
+        value, inertia?, fabula_time?)
+      * ``causal_edge``  — DoCausalEdge(edge_source_id, edge_target_id, action,
+        causality_type?, mechanism?, causal_force?, trait_target?, trait_delta?,
+        rel_counterpart_id?, fabula_time?)
+      * ``spatial_edge`` — DoSpatialEdge(edge_source_id, edge_target_id, action,
+        connection_type?, bidirectional?, barrier_item_id?, fabula_time?)
 
     Every kind's id field is constrained to a ``Literal`` of valid IDs
     of the appropriate type. Other fields are Optional so a single
-    item-shape can carry any of the five kinds; the post-parse
-    converter (:func:`_do_target_items_to_typed`) drops items missing
-    their kind's required fields.
+    item-shape can carry any of the kinds; the post-parse converter
+    (:func:`_do_target_items_to_typed`) drops items missing their
+    kind's required fields.
     """
     typed = _collect_typed_ids(world_state)
     ent_lit = _make_id_literal(typed["entity_ids"])
@@ -741,11 +753,24 @@ def _build_do_target_item_model(world_state: WorldStateV1):
     any_actor_lit = _make_id_literal(
         typed["entity_ids"] + typed["object_ids"]
     )
+    chn_lit = _make_id_literal(typed.get("channel_ids", []))
+    # Causal-edge endpoints span EVT/ENT/OBJ/LOC/WORLD. Spatial-edge
+    # endpoints are LOC-only. We share a single ``edge_source_id`` /
+    # ``edge_target_id`` field pair, constrained to the broader union;
+    # the converter validates spatial-edge endpoints downstream.
+    edge_endpoint_lit = _make_id_literal(
+        typed["event_ids"] + typed["entity_ids"] + typed["object_ids"]
+        + typed["location_ids"] + typed.get("world_trait_ids", [])
+    )
 
     return create_model(
         "DoTargetItem",
         target_kind=(
-            Literal["event", "trait", "belief", "concern", "proposition", "world_trait", "object"],
+            Literal[
+                "event", "trait", "belief", "concern", "proposition",
+                "world_trait", "object", "channel", "relationship",
+                "causal_edge", "spatial_edge",
+            ],
             Field(..., description="Discriminator for the do-target kind."),
         ),
         # event
@@ -844,6 +869,59 @@ def _build_do_target_item_model(world_state: WorldStateV1):
             description="For target_kind='object': property keys to overwrite.")),
         properties_unset=(Optional[List[str]], Field(default=None,
             description="For target_kind='object': property keys to remove.")),
+        # channel
+        channel_id=(Optional[chn_lit], Field(default=None,
+            description="For target_kind='channel': CHN_ id to clamp.")),
+        intelligibility=(Optional[Dict[str, float]], Field(default=None,
+            description="For target_kind='channel': per-participant decode "
+                        "probability map (keys overwrite the channel's existing map).")),
+        # relationship (per-axis social-fabric clamp)
+        source_entity_id=(Optional[ent_lit], Field(default=None,
+            description="For target_kind='relationship': ENT_ id of the perspective entity.")),
+        target_entity_id=(Optional[ent_lit], Field(default=None,
+            description="For target_kind='relationship': ENT_ id of the counterpart entity.")),
+        metric=(Optional[Literal["affinity", "fear", "power_dynamic"]], Field(default=None,
+            description="For target_kind='relationship': which per-axis metric to clamp.")),
+        # causal_edge / spatial_edge
+        edge_source_id=(Optional[edge_endpoint_lit], Field(default=None,
+            description="For target_kind='causal_edge' or 'spatial_edge': source node id. "
+                        "Spatial edges require LOC_ on both endpoints; causal edges "
+                        "accept EVT_/ENT_/OBJ_/LOC_/WORLD_.")),
+        edge_target_id=(Optional[edge_endpoint_lit], Field(default=None,
+            description="For target_kind='causal_edge' or 'spatial_edge': target node id.")),
+        action=(Optional[Literal["add", "sever", "lock", "unlock"]], Field(default=None,
+            description="For target_kind='causal_edge' (add|sever) or 'spatial_edge' "
+                        "(add|sever|lock|unlock).")),
+        causality_type=(Optional[Literal[
+            "chain_reaction", "mutation", "mutation_social",
+            "affordance_gate", "ambient_propagation",
+        ]], Field(default=None,
+            description="For target_kind='causal_edge' with action='add': edge type.")),
+        mechanism=(Optional[str], Field(default=None,
+            description="For target_kind='causal_edge' with action='add': canonical "
+                        "domain key (physical, psychological, epistemic, social, "
+                        "emotional, informational, betrayal) or off-list label.")),
+        causal_force=(Optional[float], Field(default=None,
+            description="For target_kind='causal_edge' with action='add': impact "
+                        "magnitude 0.0–10.0 (defaults to 5.0).")),
+        trait_target=(Optional[str], Field(default=None,
+            description="For target_kind='causal_edge' (mutation / mutation_social adds): "
+                        "the specific trait or metric affected.")),
+        trait_delta=(Optional[float], Field(default=None,
+            description="For target_kind='causal_edge' (mutation / mutation_social adds): "
+                        "signed magnitude of the change.")),
+        rel_counterpart_id=(Optional[ent_lit], Field(default=None,
+            description="For target_kind='causal_edge' with causality_type='mutation_social': "
+                        "ENT_ id of the other entity in the dyad.")),
+        connection_type=(Optional[str], Field(default=None,
+            description="For target_kind='spatial_edge' with action='add': free-text "
+                        "classifier (e.g. 'doorway', 'corridor').")),
+        bidirectional=(Optional[bool], Field(default=None,
+            description="For target_kind='spatial_edge' with action='add': whether "
+                        "the edge is traversable both ways. Defaults to True.")),
+        barrier_item_id=(Optional[obj_lit], Field(default=None,
+            description="For target_kind='spatial_edge' (add or lock): optional OBJ_ "
+                        "id whose state determines the lock.")),
         __base__=BaseModel,
     )
 
@@ -1222,11 +1300,16 @@ def _do_target_items_to_typed(items: list[Any]) -> List[DoTarget]:
     """Phase 6 — convert flat ``do_targets`` records (with ``target_kind``
     discriminator) into the typed :class:`DoTarget` discriminated union.
 
-    Items missing required kind-specific fields are silently skipped so
-    a partial LLM emission can never crash the pipeline; callers can fall
-    back to the legacy dotted-key path.
+    Items missing required kind-specific fields are skipped so a partial
+    LLM emission can never crash the pipeline; callers can fall back to
+    the legacy dotted-key path. A ``UserWarning`` is emitted whenever
+    any record is dropped so silent typed-drop substitutions (where the
+    construction-time validator on InterventionQuery /
+    CounterfactualQuery later backfills from the legacy dict and
+    quietly serves a different surgery set) become auditable.
     """
     out: List[DoTarget] = []
+    total = len(items or [])
     for item in items or []:
         data = item if isinstance(item, dict) else item.model_dump()
         kind = data.get("target_kind")
@@ -1371,11 +1454,125 @@ def _do_target_items_to_typed(items: list[Any]) -> List[DoTarget]:
                 )):
                     continue
                 out.append(DoNarrativeObject(**kwargs))
+            elif kind == "channel":
+                chn_id = data.get("channel_id") or data.get("target_id") or data.get("node_id")
+                if not chn_id:
+                    continue
+                active = data.get("active")
+                intel = data.get("intelligibility")
+                # No-op when neither side of the clamp is supplied.
+                if active is None and not intel:
+                    continue
+                kwargs: Dict[str, Any] = {"channel_id": chn_id}
+                if active is not None:
+                    kwargs["active"] = bool(active)
+                if intel:
+                    kwargs["intelligibility"] = {
+                        str(k): float(v) for k, v in intel.items()
+                    }
+                ft = data.get("fabula_time")
+                if ft is not None:
+                    kwargs["fabula_time"] = int(ft)
+                out.append(DoChannel(**kwargs))
+            elif kind == "relationship":
+                src = data.get("source_entity_id")
+                tgt = data.get("target_entity_id")
+                metric = data.get("metric")
+                val = data.get("value")
+                if val is None:
+                    val = data.get("trait_value")
+                if not src or not tgt or not metric or val is None:
+                    continue
+                kwargs = {
+                    "source_entity_id": src,
+                    "target_entity_id": tgt,
+                    "metric": metric,
+                    "value": float(val),
+                }
+                inertia = data.get("inertia")
+                if inertia is not None:
+                    kwargs["inertia"] = float(inertia)
+                ft = data.get("fabula_time")
+                if ft is not None:
+                    kwargs["fabula_time"] = int(ft)
+                out.append(DoRelationship(**kwargs))
+            elif kind == "causal_edge":
+                src = data.get("edge_source_id") or data.get("source_id")
+                tgt = data.get("edge_target_id") or data.get("target_id")
+                action = data.get("action")
+                if not src or not tgt or action not in ("add", "sever"):
+                    continue
+                kwargs = {
+                    "source_id": src,
+                    "target_id": tgt,
+                    "action": action,
+                }
+                if action == "add":
+                    ctype = data.get("causality_type")
+                    mech = data.get("mechanism")
+                    if not ctype or not mech:
+                        continue
+                    kwargs["causality_type"] = ctype
+                    kwargs["mechanism"] = mech
+                    force = data.get("causal_force")
+                    if force is not None:
+                        kwargs["causal_force"] = float(force)
+                ttarget = data.get("trait_target")
+                if ttarget:
+                    kwargs["trait_target"] = str(ttarget)
+                tdelta = data.get("trait_delta")
+                if tdelta is not None:
+                    kwargs["trait_delta"] = float(tdelta)
+                rc = data.get("rel_counterpart_id")
+                if rc:
+                    kwargs["rel_counterpart_id"] = rc
+                ft = data.get("fabula_time")
+                if ft is not None:
+                    kwargs["fabula_time"] = int(ft)
+                out.append(DoCausalEdge(**kwargs))
+            elif kind == "spatial_edge":
+                src = data.get("edge_source_id") or data.get("source_id")
+                tgt = data.get("edge_target_id") or data.get("target_id")
+                action = data.get("action")
+                if not src or not tgt or action not in (
+                    "add", "sever", "lock", "unlock"
+                ):
+                    continue
+                kwargs = {
+                    "source_id": src,
+                    "target_id": tgt,
+                    "action": action,
+                }
+                ctype = data.get("connection_type")
+                if ctype:
+                    kwargs["connection_type"] = str(ctype)
+                bidir = data.get("bidirectional")
+                if bidir is not None:
+                    kwargs["bidirectional"] = bool(bidir)
+                barrier = data.get("barrier_item_id")
+                if barrier:
+                    kwargs["barrier_item_id"] = barrier
+                ft = data.get("fabula_time")
+                if ft is not None:
+                    kwargs["fabula_time"] = int(ft)
+                out.append(DoSpatialEdge(**kwargs))
             else:
                 continue
         except Exception:
             # Defensive: never let malformed LLM payloads crash parsing.
             continue
+    dropped_count = total - len(out)
+    if dropped_count > 0:
+        import warnings
+        warnings.warn(
+            f"_do_target_items_to_typed dropped {dropped_count} of "
+            f"{total} typed do_target records (missing required "
+            f"kind-specific fields or unknown target_kind). The legacy "
+            f"do-target dict may silently substitute a different "
+            f"surgery set at query-construction time.",
+            UserWarning,
+            stacklevel=2,
+        )
     return out
 
 
@@ -1570,12 +1767,31 @@ dict on a ``.spawn`` path = genesis spawn.
 Each item is ``{{target_kind, …kind-specific fields}}``. Pick at most one
 ``target_kind`` per item:
 
-  - ``event``       : event_id, occurred (true forces, false averts)
+  - ``event``       : event_id, occurred (true forces, false averts),
+                      [new_at_location_id]
   - ``trait``       : entity_id, trait_name, trait_value
   - ``belief``      : holder_id, target_id, [proposition_id], confidence,
                       [perceived_state for new beliefs]
   - ``concern``     : holder_id, concern_id, [polarity], [salience], [active]
-  - ``proposition`` : proposition_id, truth, [propagate_to_beliefs]
+  - ``proposition`` : proposition_id, truth, [propagate_to_beliefs],
+                      [fabula_time]
+  - ``world_trait`` : world_trait_id, value, [inertia], [fabula_time],
+                      [triggered_by], [affected_domains_add],
+                      [affected_domains_remove]
+  - ``object``      : object_id, [new_location_id | set_location_null],
+                      [new_owner_id | set_owner_null], [properties_set],
+                      [properties_unset], [triggered_by]
+  - ``channel``     : channel_id, [active] (true=re-enable, false=sever),
+                      [intelligibility map], [fabula_time]
+  - ``relationship``: source_entity_id, target_entity_id,
+                      metric (affinity|fear|power_dynamic), value,
+                      [inertia], [fabula_time]
+  - ``causal_edge`` : edge_source_id, edge_target_id, action (add|sever);
+                      for ``add``: causality_type, mechanism, [causal_force],
+                      [trait_target], [trait_delta], [rel_counterpart_id]
+  - ``spatial_edge``: edge_source_id (LOC_), edge_target_id (LOC_),
+                      action (add|sever|lock|unlock); for ``add``:
+                      [connection_type], [bidirectional], [barrier_item_id]
 
 ### `target_node_ids` (optional but RECOMMENDED)
 
@@ -1733,7 +1949,7 @@ parameters needed to execute that query.
 
 4. **directive** — "Maximise suspense" / "Make the reader feel grief" / "Create dramatic irony."
    Optimises the next event for a specific narrative/emotional effect.
-   Effects: suspense, surprise, mystery, dramatic_irony, grief, rage, joy, regret, love, fear.
+   Effects: suspense, surprise, mystery, dramatic_irony, narrative_tension, grief, rage, joy, regret, love, fear.
    Use when: the user wants to control the FEELING or EFFECT of the next scene.
 
 5. **interrogate** — "Is there a path from A to B?" / "Who caused X?"
@@ -1749,6 +1965,11 @@ parameters needed to execute that query.
    Use when: the user provides actual narrative prose they want to inject into the story,
    or explicitly says they want to write/edit the text themselves.
    The `edited_prose` field must contain the user's prose text.
+
+8. **evaluate** — "Audit the story" / "Score the narrative quality."
+   Runs the NarrativeOrderObject scorecard against the assembled world state.
+   Does NOT advance time or generate prose.
+   Use when: the user asks for a quality / coherence / scorecard report.
 
 ## ID RESOLUTION RULES
 
@@ -1771,7 +1992,8 @@ model summary. If no world model is provided, use reasonable ID conventions
 - Set ONLY the fields relevant to the chosen query_type. Leave others null.
 - For intervention: each key in `interventions` must be a valid node ID.
   String values = state changes. Dict values = genesis spawns. Number values = trait overrides.
-- For counterfactual: `historical_interventions` keys should be EVT_ IDs.
+- For counterfactual: `historical_interventions` keys should be EVT_ IDs (event-level
+  surgery) or CHN_ IDs (channel-level surgery: sever, re-route, change intelligibility).
   `evidence_node_ids` should be present-tense node IDs.
 - For directive: `target_entity_ids` is required. `target_effect` is required.
   `target_vector_id` is the specific trait/edge/event to target (optional).

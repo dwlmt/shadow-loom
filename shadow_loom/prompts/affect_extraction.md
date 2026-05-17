@@ -65,7 +65,7 @@ One entry per (CCN_id, fabula_time) where the concern's *per-entity weighting* s
 One entry per (holder_id, target_id [, proposition_id], fabula_time) where an **existing** belief on a character drifts in confidence (or inertia) because of an on-page event. Fields:
 
 - `holder_id` (str): ENT_ id of the believer.
-- `target_id` (str): The id (ENT_/EVT_/OBJ_/LOC_/WORLD_/PROP_) the belief is *about*. MUST match an existing belief on the holder; if no such belief exists, the snapshot is dropped — Affect must NOT forge new beliefs.
+- `target_id` (str): The id (ENT_/EVT_/OBJ_/LOC_/WORLD_) the belief is *about*. PROP_ ids are NOT valid `target_id` values — proposition linkage goes through `proposition_id`. MUST match an existing belief on the holder; if no such belief exists, the snapshot is dropped — Affect must NOT forge new beliefs.
 - `proposition_id` (str, optional): PROP_ id discriminator when `target_id` matches more than one belief on the holder.
 - `fabula_time` (int): Fabula tick at which the drift commits. MUST equal `triggered_by`'s `fabula_time`.
 - `triggered_by` (str): EVT_ id from this chunk that caused the drift. Required.
@@ -208,13 +208,10 @@ Note four patterns:
    - **Concern materialised** (a `desire` resolved `false`, or a `fear` resolved `true`) → snapshot `salience` to a low value AND set `activation_fabula_window` to `[<original_start>, <commit_fabula_time>]` so downstream affect (grief, regret, rage) is computed against the *post-resolution* state, not the pre-resolution standing fear/desire. The materialised harm/benefit is now an event on the page, not a standing concern.
    - **Concern that survives resolution** (rare — e.g. a fear of *exposure* about a now-confirmed-true secret remains active because the secret is still secret to the in-world audience) → emit no closure snapshot, but only if the on-page text makes that survival explicit. Default to closure.
 
-   Forgetting closure snapshots is a common failure mode: it leaves characters "fearing" things that have already happened or "desiring" things they already have, double-counting in suspense / surprise scoring and breaking grief / rage detectors. The reconciler logs a warning when a `proposition_truth_commits` arrives without paired closure snapshots for catalogue concerns anchored to that PROP_.
+   Forgetting closure leaves characters "fearing" things that have already happened or "desiring" things they already have, double-counting suspense and breaking grief / rage detectors.
 
-   **Worked closure example.** Suppose `EVT_DUNCAN_KILLED` (fabula=1500) commits `PROP_DUNCAN_DEAD = true` and the catalogue holds:
-   - `CCN_MACBETH_DESIRE_THRONE` (entity=ENT_MACBETH, prop=PROP_DUNCAN_DEAD, polarity=desire, salience=0.85) — desire-realised.
-   - `CCN_MACDUFF_FEAR_REGICIDE` (entity=ENT_MACDUFF, prop=PROP_DUNCAN_DEAD, polarity=fear, salience=0.60) — fear-materialised.
+   **Worked closure example.** `EVT_DUNCAN_KILLED` (fabula=1500) commits `PROP_DUNCAN_DEAD = true`. Catalogue holds `CCN_MACBETH_DESIRE_THRONE` (desire, salience=0.85) and `CCN_MACDUFF_FEAR_REGICIDE` (fear, salience=0.60).
 
-   The well-formed affect output for that chunk includes:
    ```json
    {
      "proposition_truth_commits": [
@@ -230,13 +227,8 @@ Note four patterns:
      ]
    }
    ```
-   Pre-1500 the engine still sees Macbeth's desire and Macduff's fear at full salience; post-1500 both close cleanly and grief / regicide-rage detectors fire on the *event*, not on the standing concern.
 
-   **Counter-concern propagation.** When a concern listed in `counter_concern_ids` exists, closing one side of the pair MUST be paired with closing the other side at the same fabula tick — even if the partner concern is anchored to a *different* (logically inverse) proposition that has not itself committed in this chunk. The partner's effective truth is the *inverse* of the trigger commit's truth, so its materialised-vs-realised classification flips accordingly. If you do not emit the partner's closure snapshot, the Phase C reconciler will inject one for you and log a warning; emit it explicitly to silence the warning and keep the on-page event auditable.
-
-   **Multi-commit propositions.** Some propositions resolve more than once over the source text (a character believed dead is revealed alive, then actually killed; a secret is exposed, retracted, then confirmed). When emitting `proposition_truth_commits`, treat each commit independently and emit closure (and, if applicable, re-opening) snapshots for the affected concerns at each commit tick. The reconciler treats the *latest* commit as canonical for closure but honours intermediate explicit re-openings (`concern_snapshots` with `salience >= 0.2` between two commits).
-
-   **Polarity flips and counter-concerns.** When you emit a `concern_snapshots` entry that flips a concern's `polarity` (Rule 6), emit a paired snapshot at the same fabula tick for every concern in its `counter_concern_ids` — the rivalry topology breaks if one side flips and the other does not. Closing the partner at the same tick (via salience<0.2 or `activation_fabula_window` cap) also counts as a valid pairing.
+   **Pair closures with counter-concerns and polarity flips.** When closing or flipping a concern that has `counter_concern_ids`, emit a paired snapshot for each partner at the same fabula tick (partner's truth is the inverse). When a proposition commits multiple times across the text, treat each commit independently and re-close/re-open per tick. Otherwise the Phase C reconciler will inject the missing snapshot and log a warning.
 
 10. **Conflicting concerns — explicit reconciliation, not silent drift.** When the same chunk drives two concerns held by the same entity in *opposing directions* (a desire intensifying while its anchored fear also intensifies, or two listed `counter_concern_ids` both spiking salience), you MUST emit *both* snapshots and let the engine compute the resulting ambivalence — do NOT silently pick a winner. The Phase C affect-unification reconciler reads the joint state to score sustained ambivalence (Macbeth simultaneously wanting and fearing the crown is a load-bearing dramatic signal); collapsing it to one side discards the conflict.
 
